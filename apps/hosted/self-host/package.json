@@ -2,7 +2,9 @@
   "name": "@executor-js/hosted-self-host",
   "private": true,
   "type": "module",
-  "exports": {},
+  "exports": {
+    "./server": "./src/main.ts"
+  },
   "scripts": {
     "start": "bun run ../../../packages/apps/scripts/build.mjs && bun src/main.ts",
     "build": "bun run ../../../packages/apps/scripts/build.mjs && bun build src/main.ts --target=bun --packages=external --outdir=dist --entry-naming=\"[name].mjs\"",

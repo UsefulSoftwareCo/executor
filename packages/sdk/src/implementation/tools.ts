@@ -170,6 +170,7 @@ export function snapshot(
      * the scope it was captured in: without a caller it binds no `user`. Replaces `accounts`.
      */
     captured?: { readonly accounts: SelectedAccounts; readonly scope: AccountScope } | undefined;
+    connecting?: string;
   },
   ahead?: SnapshotReads,
 ) {
@@ -205,6 +206,7 @@ export function snapshot(
             input.captured.scope,
           ),
       ahead?.accounts,
+      input.connecting,
     );
     return { app, version, scope, selections, accounts, actor: yield* CurrentActor };
   });
@@ -247,7 +249,7 @@ class GrantHint {
 }
 /** Whether any of these sign-in types reads a grant; an unknown definition may. */
 const readsGrant = (types: ReadonlyArray<string | undefined> | undefined) =>
-  types === undefined || types.some((type) => type !== "secrets");
+  types === undefined || types.some((type) => type !== "secrets" && type !== "interactive");
 /** The {@link GrantHint} for an app's accounts, from its version and any account rows read. */
 const grantHint = (
   app: Effect.Success<ReturnType<typeof gotApp>>,
@@ -474,7 +476,10 @@ function resolveFor(
       state.scope === "app"
         ? { app: selections.app }
         : { app: selections.app, user: selections.user };
-    return { accounts: Redacted.make(accounts) };
+    return {
+      accounts: Redacted.make(accounts),
+      ...(state.scope === "user" && state.actor !== undefined ? { caller: state.actor } : {}),
+    };
   });
 }
 
@@ -562,7 +567,7 @@ const renewRefused = (
       accounts.user === undefined
         ? { app: replaceScope(accounts.app) }
         : { app: replaceScope(accounts.app), user: replaceScope(accounts.user) };
-    return { accounts: Redacted.make(renewedAccounts) } satisfies InvocationContext;
+    return { ...context, accounts: Redacted.make(renewedAccounts) } satisfies InvocationContext;
   });
 
 function invocation(

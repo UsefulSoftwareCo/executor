@@ -9,6 +9,7 @@ import {
   OAuth2Method,
   Provider,
   SecretsMethod,
+  InteractiveMethod,
 } from "../contracts/provider.ts";
 import type { Placement } from "../contracts/placement.ts";
 import type { DeclarationInvalid } from "../contracts/schema.ts";
@@ -17,10 +18,17 @@ import { parseDeclaration } from "./schema.ts";
 /** Declare a secrets method with an Effect decoder. */
 export const secrets = <Fields extends Schema.Decoder<unknown>>(options: {
   readonly label: string;
+  readonly provisioned?: true;
   readonly fields: Fields;
   readonly exposure?: Readonly<Record<string, FieldExposure>>;
   readonly request?: readonly Placement[];
 }): SecretsMethod<Fields> => new SecretsMethod(options);
+
+/** Declare an app-acquired account without retaining any handlers on its provider. */
+export const interactive = (options: {
+  readonly label: string;
+  readonly acquisition?: "host";
+}): InteractiveMethod => new InteractiveMethod(options);
 
 /**
  * The `oauth2()` form an author chose: client credentials or authorization code by `grant`, then

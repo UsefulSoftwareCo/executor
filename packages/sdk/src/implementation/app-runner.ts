@@ -126,6 +126,7 @@ export interface AppRunnerHost {
 
 /** The authorized call. Credentials travel here, never in a Worker name or retained code. */
 export interface AppInvocation {
+  readonly caller?: string;
   readonly app: string;
   readonly build: string;
   /**
@@ -159,6 +160,7 @@ export interface AppCapabilities {
 /** Operations an app with a database serves from its data facet, with its storage. */
 const dataOperations: ReadonlySet<HostRequest["operation"]> = new Set([
   "migrate",
+  "connect",
   "call",
   "query",
   "mutate",
@@ -171,6 +173,7 @@ const dataOperations: ReadonlySet<HostRequest["operation"]> = new Set([
 ]);
 const writeOperations: ReadonlySet<HostRequest["operation"]> = new Set([
   "migrate",
+  "connect",
   "mutate",
   "webhook-register",
   "webhook-handle",
@@ -856,6 +859,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
         const body = protocol.invocation({
           command: invocation.command,
           accounts,
+          ...(invocation.caller === undefined ? {} : { caller: invocation.caller }),
           ...(invocation.approval === undefined ? {} : { approval: invocation.approval }),
           ...(invocation.replay === undefined ? {} : { replay: invocation.replay }),
           ...(invocation.deadline === undefined ? {} : { deadline: invocation.deadline }),

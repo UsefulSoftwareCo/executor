@@ -1,3 +1,6 @@
+import { protectProvisionedLinks } from "./provisioned-links.ts";
+import { InteractiveRemovalDone } from "@executor-js/sdk/core";
+import { canDeleteAccountWithSql } from "./interactive-retirement.ts";
 /**
  * The accounts linked to an app's requirements and the accounts every operation runs with. A
  * member's user accounts for an app are their user links intersected with the accounts they may
@@ -8,6 +11,8 @@
 import {
   AccountId,
   AccountNotFound,
+  AccountProvisioned,
+  ProviderId,
   AppId,
   StorageError,
   StorageHost,
@@ -170,12 +175,13 @@ const callerRequirements = (version: AppVersion, links?: CallerLinks) =>
  * caller's user links; the newest of a plain requirement, every one of a many() one. The caller's
  * grant must permit every user account the operation uses; app accounts follow app access.
  */
-export const versionAccounts = (version: AppVersion, links?: CallerLinks) =>
+export const versionAccounts = (version: AppVersion, links?: CallerLinks, connecting?: string) =>
   Effect.gen(function* () {
     const resolved = yield* resolveLinkedAccounts({
       app: version.app,
       version: version.version,
       ...(yield* callerRequirements(version, links)),
+      ...(connecting === undefined ? {} : { connecting }),
     });
     const policy = yield* CurrentAuthorization;
     if (!permitsAccounts(policy, version.app, userAccountIds(resolved)))
@@ -342,6 +348,10 @@ const RequiredRow = Schema.Struct({
   provider: Schema.NullOr(Schema.String),
   cardinality: Schema.NullOr(Schema.String),
   accountProvider: Schema.NullOr(Schema.String),
+  provisioned: Schema.Boolean,
+  interactive: Schema.Boolean,
+  acquiringApp: Schema.NullOr(Schema.String),
+  reusable: Schema.Boolean,
 });
 const AccountRow = Schema.Struct({ account: AccountId });
 
@@ -376,13 +386,14 @@ export const removeLink = (sql: SqlClient.SqlClient, webhooks: WebhookSources, i
  * the subject may make the link, under this lock (see {@link lockAppLinks}) when the check reads
  * access that can change meanwhile.
  */
-export const addLink = (
+const writeLink = (
   sql: SqlClient.SqlClient,
   webhooks: WebhookSources,
   input: LinkKey & {
     readonly linkedBy: string;
     readonly config?: typeof WebhookSourceConfig.Type | undefined;
   },
+  provisioning: boolean,
 ) =>
   Effect.gen(function* () {
     yield* lockLinks(sql, input.app);
@@ -391,7 +402,15 @@ export const addLink = (
         d.requirements::jsonb -> 'accounts' -> ${input.requirement} ->> 'scope' as scope,
         d.requirements::jsonb -> 'accounts' -> ${input.requirement} ->> 'provider' as provider,
         d.requirements::jsonb -> 'accounts' -> ${input.requirement} ->> 'cardinality' as cardinality,
-        a.provider as "accountProvider"
+        a.provider as "accountProvider",
+        coalesce((d.requirements::jsonb -> 'accounts' -> ${input.requirement} -> 'definition' -> 'auth' -> a.method ->> 'provisioned') = 'true', false) as provisioned,
+        coalesce((d.requirements::jsonb -> 'accounts' -> ${input.requirement} -> 'definition' -> 'auth' -> a.method ->> 'type') = 'interactive', false) as interactive,
+        (select c.state -> 'interactive' ->> 'app' from executor_account_connections c
+          where c.owner = a.owner and c.state ->> 'status' = 'completed' and c.state -> 'account' ->> 'id' = a.id
+          order by c.created_at desc limit 1) as "acquiringApp",
+        exists (select 1 from executor_account_acquisitions r where r.account = a.id
+          and r.owner = a.owner and r.provider = a.provider and r.method = a.method
+          and r.generation = a.credential_generation and r.removal is null) as reusable
       from executor_apps app
       left join executor_deployments d on d.id = app.active_deployment
       left join executor_accounts a on a.id = ${input.account} and a.owner = app.owner
@@ -406,6 +425,16 @@ export const addLink = (
     if (required.provider === null || (required.scope ?? "user") !== scope)
       return yield* refuse("requirement");
     if (required.provider !== required.accountProvider) return yield* refuse("provider");
+    if (!provisioning && required.provisioned)
+      return yield* new AccountProvisioned({ provider: ProviderId.make(required.provider) });
+    if (required.interactive && !required.reusable && required.acquiringApp !== input.app)
+      return yield* refuse("app_bound");
+    const retiring =
+      yield* sql`select id from executor_account_connections where state ->> 'status' = 'completed'
+      and state -> 'account' ->> 'id' = ${input.account} and ((state -> 'interactive' -> 'retirement' ->> 'token' is not null
+        and coalesce((state -> 'interactive' -> 'retirement' ->> 'expiresAt')::double precision, 0) > extract(epoch from clock_timestamp()) * 1000)
+        or state -> 'interactive' -> 'retirement' ->> 'removed' = 'true')`;
+    if (retiring.length > 0) return yield* new StorageError();
     const replaced =
       required.cardinality === "many"
         ? []
@@ -415,7 +444,23 @@ export const addLink = (
                 and ${sameSubject(sql, input.subject)} and account <> ${input.account}
               order by created_at, account`,
           );
-    for (const { account } of replaced) yield* removeLink(sql, webhooks, { ...input, account });
+    if (!provisioning)
+      yield* protectProvisionedLinks(sql, {
+        ...input,
+        provider: ProviderId.make(required.provider),
+      });
+    const retired = yield* InteractiveRemovalDone;
+    for (const { account } of replaced) {
+      const bindings =
+        yield* sql`select id from executor_account_connections where state ->> 'status' = 'completed' and state -> 'account' ->> 'id' = ${account} and state -> 'interactive' is not null`;
+      if (
+        bindings.length > 0 &&
+        (yield* canDeleteAccountWithSql(sql, account)) &&
+        !retired.has(account)
+      )
+        return yield* new StorageError();
+      yield* removeLink(sql, webhooks, { ...input, account });
+    }
     // Each link is dated when it is made, so links made in one transaction keep their order.
     const inserted = yield* sql`insert into hosted_app_account_links
         (app, requirement, subject, account, linked_by, created_at)
@@ -432,6 +477,20 @@ export const addLink = (
     });
     return true;
   }).pipe(Effect.catchTags(sqlFailures));
+
+/** Every user-driven link mutation, including agent policies and connect completion. */
+export const addLink = (
+  sql: SqlClient.SqlClient,
+  webhooks: WebhookSources,
+  input: Parameters<typeof writeLink>[2],
+) => writeLink(sql, webhooks, input, false);
+
+/** Trusted host provisioning only. Never select this path from an HTTP or app-author input. */
+export const provisionAccountLink = (
+  sql: SqlClient.SqlClient,
+  webhooks: WebhookSources,
+  input: Parameters<typeof writeLink>[2],
+) => writeLink(sql, webhooks, input, true).pipe(Effect.mapError(() => new StorageError()));
 
 /**
  * Link a member's account to a user requirement in its own transaction, as `appAccounts.userLink`

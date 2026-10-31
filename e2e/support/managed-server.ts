@@ -48,6 +48,8 @@ class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
 const maxClockOffset = 40 * 86_400_000;
 /** Operator settings a scenario may turn on between product generations. */
 export const OperatorSettings = Schema.Struct({
+  /** A full product entry composed through public typed capabilities. */
+  EXECUTOR_E2E_PRODUCT_ENTRY: Schema.optionalKey(Schema.NonEmptyString),
   EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: Schema.optionalKey(Schema.String),
   EXECUTOR_URL_ALLOW_HTTP_ORIGINS: Schema.optionalKey(Schema.String),
   NODE_EXTRA_CA_CERTS: Schema.optionalKey(Schema.NonEmptyString),
@@ -138,6 +140,7 @@ export const startManagedServer = (
     /** Writes the running generation's workerd coverage; see `workerd-coverage.ts`. */
     let saveWorkerdCoverage: Effect.Effect<void> = Effect.void;
     const env = {
+      EXECUTOR_E2E_PRODUCT_ENTRY: environment.EXECUTOR_E2E_PRODUCT_ENTRY,
       PATH: runtimePath,
       // Every Windows process has it: the local server runs Windows's own programs from there.
       ...(process.env.SystemRoot === undefined ? {} : { SystemRoot: process.env.SystemRoot }),
@@ -235,10 +238,16 @@ export const startManagedServer = (
             : path.join(coverageDirectory, String(generation++));
         // The product's workerd logs its function events here; see workerd-coverage.ts.
         if (coverage !== undefined) yield* fs.makeDirectory(coverage, { recursive: true });
-        const [program = "", ...programArgs] = entry.command;
+        const productEntry = env.EXECUTOR_E2E_PRODUCT_ENTRY;
+        const command = productEntry === undefined ? entry.command : [productEntry];
+        const [program = "", ...programArgs] = command;
         const launch =
           target.metadata.target === "local"
-            ? localEntryCommand(program, programArgs)
+            ? localEntryCommand(
+                program,
+                programArgs,
+                productEntry === undefined ? [] : preloads.flatMap((url) => ["--import", url.href]),
+              )
             : {
                 command: "bun",
                 args:
@@ -257,7 +266,7 @@ export const startManagedServer = (
                     : [
                         // Bun accepts Node's --import preload, so self-host can advance wall time too.
                         ...preloads.flatMap((url) => ["--import", url.href]),
-                        ...entry.command,
+                        ...command,
                       ],
               };
         const child = yield* processes.spawn(

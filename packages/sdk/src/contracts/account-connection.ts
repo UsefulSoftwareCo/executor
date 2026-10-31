@@ -1,9 +1,28 @@
+import { AccountProvisioned } from "./provider.ts";
+import { AccountAcquisitionUnavailable } from "./account-acquisition-driver.ts";
+import {
+  InteractiveConnectionFailed,
+  InteractiveConnectionStatus,
+} from "./interactive-accounts.ts";
+import { InteractiveInstructions } from "apps/contracts";
+import {
+  InteractiveRetirementBusy,
+  InteractiveRetirementFailed,
+  InteractiveReconnectUnsupported,
+} from "./interactive-errors.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 /** Pending account setup shared by browser forms, OAuth, and other SDK consumers. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { Account, AccountNotFound, AccountFieldsInput, AccountFieldsInvalid } from "./account.ts";
-import { AccountScope, AppNotFound, AccountSelectionInvalid } from "./apps.ts";
+import {
+  AccountScope,
+  AppNotFound,
+  AppNotDeployed,
+  AccountRequired,
+  AccountSelectionInvalid,
+} from "./apps.ts";
+import { VersionNotFound } from "./version.ts";
 import { AuthMethodName, AuthMethodInvalid, Provider, ProviderNotFound } from "./provider.ts";
 import {
   AccountConnectionId,
@@ -167,6 +186,14 @@ export const StartConnectionOAuth = Schema.Struct({
   redirectUri: Schema.optional(HttpUrl),
   client: Schema.optional(OAuthClientChoice),
 });
+export const StartConnectionInteractive = Schema.Struct({
+  ...GetAccountConnection.fields,
+  method: AuthMethodName,
+});
+export const SubmitConnectionInteractive = Schema.Struct({
+  ...GetAccountConnection.fields,
+  value: Schema.String.check(Schema.isMaxLength(16_384)),
+});
 /** Both request identity and OAuth state must match before exchanging a code. */
 export const CompleteConnectionOAuth = Schema.Struct({
   ...GetAccountConnection.fields,
@@ -222,12 +249,15 @@ export const AccountConnectionClosed = UserFacingError.define({
 export type AccountConnectionClosed = typeof AccountConnectionClosed.Type;
 
 const errors = [
+  AccountProvisioned,
   StorageError,
   AccountConnectionNotFound,
   ProviderNotFound,
   AccountNotFound,
 ] as const;
 const saveErrors = [
+  InteractiveRetirementBusy,
+  InteractiveRetirementFailed,
   ...errors,
   AccountConnectionClosed,
   AccountConnectionTargetChanged,
@@ -236,6 +266,15 @@ const saveErrors = [
   AuthMethodInvalid,
   AccountFieldsInvalid,
 ] as const;
+const interactiveErrors = [
+  ...saveErrors,
+  AppNotFound,
+  AppNotDeployed,
+  VersionNotFound,
+  AccountRequired,
+  InteractiveConnectionFailed,
+  AccountAcquisitionUnavailable,
+] as const;
 /** SDK account setup surface, independent of any dashboard, MCP transport or browser session. */
 export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
   .add(
@@ -243,6 +282,8 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
       payload: CreateAccountConnection,
       success: AccountConnection,
       error: [
+        AccountProvisioned,
+        InteractiveReconnectUnsupported,
         StorageError,
         ProviderNotFound,
         AccountNotFound,
@@ -269,7 +310,7 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
       params: { connection: AccountConnectionId },
       query: { owner: Schema.optional(OwnerId) },
       success: AccountConnection,
-      error: errors,
+      error: interactiveErrors,
     }).annotate(
       OpenApi.Description,
       "Cancel a pending connection request without changing saved accounts.",
@@ -303,6 +344,8 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
       payload: StartConnectionOAuth,
       success: OAuthStartResult,
       error: [
+        InteractiveRetirementBusy,
+        InteractiveRetirementFailed,
         ...errors,
         AccountConnectionClosed,
         AccountConnectionTargetChanged,
@@ -330,6 +373,8 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
       payload: CompleteConnectionOAuth,
       success: Account,
       error: [
+        InteractiveRetirementBusy,
+        InteractiveRetirementFailed,
         ...errors,
         AccountConnectionClosed,
         AccountConnectionTargetChanged,
@@ -337,5 +382,33 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
         CredentialsError,
         OAuthCompletionFailed,
       ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("startInteractive", "/v1/account-connections/interactive/start", {
+      payload: StartConnectionInteractive,
+      success: InteractiveInstructions,
+      error: interactiveErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("interactiveStatus", "/v1/account-connections/interactive/status", {
+      payload: GetAccountConnection,
+      success: InteractiveConnectionStatus,
+      error: interactiveErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("submitInteractive", "/v1/account-connections/interactive/submit", {
+      payload: SubmitConnectionInteractive,
+      success: InteractiveConnectionStatus,
+      error: interactiveErrors,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("cancelInteractive", "/v1/account-connections/interactive/cancel", {
+      payload: GetAccountConnection,
+      success: Schema.Void,
+      error: interactiveErrors,
     }),
   );

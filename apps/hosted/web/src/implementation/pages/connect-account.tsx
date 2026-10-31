@@ -18,13 +18,18 @@ import type {
   HostedOAuthStartResult,
 } from "@executor-js/hosted-server";
 import { Link } from "@tanstack/react-router";
-import { createContext, useContext, useRef } from "react";
 import { AtomRegistry } from "effect/reactivity";
 import { Cause, Effect, Match, Option, Exit, Schema } from "effect";
+import { createContext, useContext, useEffect, useRef } from "react";
 import { Button } from "@executor-js/ui/components/button";
 import { OAuthFields, OAuthSetup } from "@executor-js/ui/dashboard/oauth-fields";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { AccountForm } from "@executor-js/ui/dashboard/account-form";
+import {
+  InteractiveSignIn,
+  type InteractivePrompt,
+  type InteractiveState,
+} from "@executor-js/ui/dashboard/interactive-sign-in";
 import { accountToNameAtom, checkCredentialsAtom } from "../../contracts/accounts.ts";
 import {
   oauthSetupAtom,
@@ -33,6 +38,12 @@ import {
   PendingOAuth,
   type OAuthReturn,
 } from "../../contracts/apps.ts";
+import {
+  cancelInteractiveConnectionAtom,
+  interactiveConnectionStatusAtom,
+  startInteractiveConnectionAtom,
+  submitInteractiveConnectionAtom,
+} from "../../contracts/interactive-accounts.ts";
 import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
 import {
   oauthClientsAtom,
@@ -72,6 +83,22 @@ export function ConnectionFields({
   const params = { organization, connection: connection.id };
   const submit = useAtomSet(submitConnectionAtom(params), { mode: "promiseExit" });
   const startOAuth = useAtomSet(startOAuthAtom(params), { mode: "promiseExit" });
+  const cancel = useAtomSet(cancelInteractiveConnectionAtom(params), { mode: "promiseExit" });
+  const start = useAtomSet(startInteractiveConnectionAtom(params), { mode: "promiseExit" });
+  // This page has only this one request, so changing methods must not end it: the next start or
+  // submit retires the attempt left behind. Leaving the page with an attempt open cancels it.
+  const started = useRef(false);
+  const interactive = {
+    start: (input: { readonly method: string }) => {
+      started.current = true;
+      return start(input);
+    },
+    status: useAtomSet(interactiveConnectionStatusAtom(params), { mode: "promiseExit" }),
+    submit: useAtomSet(submitInteractiveConnectionAtom(params), { mode: "promiseExit" }),
+    cancel: () => Promise.resolve(),
+    // Runs in the form's step order, after any poll still answering.
+    leave: () => (started.current ? cancel() : Promise.resolve()),
+  };
   if (connection.state.status !== "pending")
     return (
       <>
@@ -102,6 +129,7 @@ export function ConnectionFields({
       editClient={editClient}
       submit={submit}
       start={startOAuth}
+      interactive={interactive}
       onSaved={onSaved}
       {...(onPendingChange ? { onPendingChange } : {})}
       onAuthorized={(value) =>
@@ -123,6 +151,20 @@ export function ConnectionFields({
   );
 }
 
+/** Steps of a sign-in the app runs itself, bound to one connection request. */
+export interface HostedInteractiveActions {
+  readonly start: (input: {
+    readonly method: string;
+  }) => Promise<Exit.Exit<InteractivePrompt, HostedError>>;
+  readonly status: () => Promise<Exit.Exit<InteractiveState<Account>, HostedError>>;
+  readonly submit: (input: {
+    readonly value: string;
+  }) => Promise<Exit.Exit<InteractiveState<Account>, HostedError>>;
+  readonly cancel: () => Promise<unknown>;
+  /** Run once when the form goes away, in step order; for a page that owns one request. */
+  readonly leave?: (() => Promise<unknown>) | undefined;
+}
+
 /** Render known provider metadata; the caller owns creating or resuming the connection attempt. */
 export function HostedAccountForm<A extends HostedOAuthSignIn>({
   provider,
@@ -137,7 +179,10 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   onAuthorized,
   onPendingChange,
   app,
+  interactive,
 }: {
+  /** Absent where the product can't run app sign-ins; the form then says it can't connect them. */
+  readonly interactive?: HostedInteractiveActions | undefined;
   readonly provider: Provider;
   /** The app that will use the account; its check confirms entered credentials. */
   readonly app?: AppId | null | undefined;
@@ -165,6 +210,28 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   const checkCredentials = useAtomSet(checkCredentialsAtom, { mode: "promiseExit" });
   // Only administrators register clients, so members are told to enter their own details.
   const role = useOrganizationDetails()?.role;
+  // One connection's steps run in order, whatever the method: a cancel from the method just left
+  // finishes before the next one starts or submits, and a poll never overlaps a pasted value.
+  const steps = useRef<Promise<unknown>>(Promise.resolve());
+  const inOrder = <T,>(run: () => Promise<T>): Promise<T> => {
+    const next = steps.current.then(run, run);
+    steps.current = next.catch(() => undefined);
+    return next;
+  };
+  const orderedSubmit = (input: AccountSubmission) => inOrder(() => submit(input));
+  // The latest leave step, run once when the form goes away rather than on every re-render.
+  const leave = useRef(interactive?.leave);
+  useEffect(() => {
+    leave.current = interactive?.leave;
+  });
+  useEffect(
+    () => () => {
+      const run = leave.current;
+      if (run) void inOrder(run);
+    },
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- the queue lives as long as the form
+    [],
+  );
   const admin = role !== undefined && role !== "member";
   const registry = useContext(RegistryContext);
   const register = useAtomSet(registerOAuthClientAtom(organization), { mode: "promiseExit" });
@@ -239,7 +306,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
       initialMethod={initialMethod}
       Failure={HostedFailure}
       submitLabel={account ? "Save credentials" : "Connect account"}
-      submit={submit}
+      submit={orderedSubmit}
       {...(app === undefined || app === null
         ? {}
         : {
@@ -248,6 +315,23 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
           })}
       onSaved={saved}
       {...(onPendingChange ? { onPendingChange } : {})}
+      {...(interactive
+        ? {
+            interactive: ({ method, label, disabled, onPendingChange }) => (
+              <InteractiveSignIn<Account, HostedError>
+                label={label}
+                disabled={disabled}
+                onPendingChange={onPendingChange}
+                Failure={HostedFailure}
+                start={() => inOrder(() => interactive.start({ method }))}
+                status={() => inOrder(interactive.status)}
+                submit={(value) => inOrder(() => interactive.submit({ value }))}
+                cancel={() => void inOrder(interactive.cancel)}
+                onSaved={saved}
+              />
+            ),
+          }
+        : {})}
       oauth={({ method, disabled, onPendingChange, access }) => (
         <OAuthSetup query={oauthSetupAtom({ organization, provider: provider.id, method })}>
           {({ setup, action, refresh }) => (
@@ -287,14 +371,16 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
                 if (Exit.isFailure(saved)) return Exit.failCause(saved.cause);
                 const registeredClient = saved.value;
                 if (registeredClient !== undefined) refresh();
-                const exit = await start({
-                  method,
-                  ...(registeredClient !== undefined
-                    ? { client: { id: registeredClient } }
-                    : input.client !== undefined
-                      ? { client: input.client }
-                      : {}),
-                });
+                const exit = await inOrder(() =>
+                  start({
+                    method,
+                    ...(registeredClient !== undefined
+                      ? { client: { id: registeredClient } }
+                      : input.client !== undefined
+                        ? { client: input.client }
+                        : {}),
+                  }),
+                );
                 return Exit.map(exit, (value) => ({
                   ...value,
                   // Entered details reopen after a failed return; chosen clients do not.

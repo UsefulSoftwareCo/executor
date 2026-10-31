@@ -28,6 +28,8 @@ import {
   StartConnectionOAuth,
   CompleteConnectionOAuth,
   FindConnectionOAuth,
+  StartConnectionInteractive,
+  SubmitConnectionInteractive,
 } from "../contracts/account-connection.ts";
 import { ScheduleInputs } from "../contracts/schedules.ts";
 import { AppInputs } from "../contracts/apps.ts";
@@ -109,6 +111,14 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
       get: (input) => run(GetAccountConnection, input, executor.accountConnections.get),
       cancel: (input) => run(GetAccountConnection, input, executor.accountConnections.cancel),
       submit: (input) => run(SubmitAccountConnection, input, executor.accountConnections.submit),
+      startInteractive: (input) =>
+        run(StartConnectionInteractive, input, executor.accountConnections.startInteractive),
+      interactiveStatus: (input) =>
+        run(GetAccountConnection, input, executor.accountConnections.interactiveStatus),
+      submitInteractive: (input) =>
+        run(SubmitConnectionInteractive, input, executor.accountConnections.submitInteractive),
+      cancelInteractive: (input) =>
+        run(GetAccountConnection, input, executor.accountConnections.cancelInteractive),
       startOAuth: (input) =>
         run(StartConnectionOAuth, input, executor.accountConnections.startOAuth),
       findOAuth: (input) => run(FindConnectionOAuth, input, executor.accountConnections.findOAuth),

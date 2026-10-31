@@ -1,7 +1,10 @@
+export * from "./account-acquisition-driver.ts";
 /** Shared SDK models and operation contracts. */
 export * from "./shared.ts";
 export * from "./provider.ts";
 export * from "./account.ts";
+export * from "./interactive-accounts.ts";
+export * from "./interactive-errors.ts";
 export * from "./account-connection.ts";
 export * from "./oauth.ts";
 export * from "./oauth-clients.ts";

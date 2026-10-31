@@ -361,7 +361,7 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
           },
         ]);
         yield* serverControl("start");
-        expect(version).toEqual([{ value: "4.0.16" }]);
+        expect(version).toEqual([{ value: "4.0.23" }]);
         expect(credentials).toEqual([
           { client: ids.a },
           { client: ids.a },

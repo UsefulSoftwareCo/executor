@@ -70,6 +70,18 @@ export const executorHandlers = (executor: Executor) =>
           executor.accountConnections.cancel({ ...params, ...query }),
         )
         .handle("submit", ({ payload }) => executor.accountConnections.submit(payload))
+        .handle("startInteractive", ({ payload }) =>
+          executor.accountConnections.startInteractive(payload),
+        )
+        .handle("interactiveStatus", ({ payload }) =>
+          executor.accountConnections.interactiveStatus(payload),
+        )
+        .handle("submitInteractive", ({ payload }) =>
+          executor.accountConnections.submitInteractive(payload),
+        )
+        .handle("cancelInteractive", ({ payload }) =>
+          executor.accountConnections.cancelInteractive(payload),
+        )
         .handle("oauthSetup", ({ payload }) => executor.accountConnections.oauthSetup(payload))
         .handle("startOAuth", ({ payload }) => executor.accountConnections.startOAuth(payload))
         .handle("findOAuth", ({ payload }) => executor.accountConnections.findOAuth(payload))

@@ -79,6 +79,7 @@ export {
 
 export {
   type AccountCheckContext,
+  type AccountStatus,
   type AccountCheckResult,
   type AccountInfo,
   type AccountOf,
@@ -89,6 +90,14 @@ export {
   type Provider,
   type ReservedAuthorizationParam,
 } from "./contracts/provider.ts";
+export { interactive } from "./implementation/provider.ts";
+export type { InteractiveMethod } from "./contracts/provider.ts";
+export type { ConnectContext } from "./implementation/connect.ts";
+export type {
+  InteractiveStart,
+  InteractiveStatus,
+  InteractiveInstructions,
+} from "./contracts/connect.ts";
 export { defineProvider, type ProviderOptions } from "./implementation/provider.ts";
 export {
   base64,
@@ -197,11 +206,14 @@ type WithoutReservedParams<Config> = Config extends unknown
  */
 export const secrets = <const F extends Fields>(options: {
   readonly label: string;
+  /** Only the host provisions this method. It is never offered in a connect form. */
+  readonly provisioned?: true;
   readonly fields: ObjectSchema<F>;
   readonly request?: RequestPlacements<keyof F & string>;
 }): SecretsMethod<ObjectSchema<F>> =>
   nativeSecrets({
     label: options.label,
+    ...(options.provisioned === true ? { provisioned: true } : {}),
     fields: accountDecoder(options.fields),
     ...exposureOf(options.fields),
     // SAFETY: the callback receives references named by the schema's own keys.

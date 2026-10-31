@@ -76,6 +76,8 @@ const decodeObject = Schema.decodeUnknownEffect(JsonObject);
 const ownerTables = [
   "apps",
   "accounts",
+  "accountAcquisitions",
+  "accountDriverChecks",
   "deployments",
   "profiles",
   "schedules",

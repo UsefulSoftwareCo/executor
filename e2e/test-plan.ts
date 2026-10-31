@@ -8223,6 +8223,302 @@ export const scenarios = plan({
       local: na("This scenario uses hosted app management routes."),
     },
   },
+  interactiveAccountLifecycle: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "interactive-account-lifecycle.spec.ts",
+    title:
+      "interactive account retirement enforces deletion authority, replacement and concurrent claims",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback backend through the shared hosted server."),
+      local: na("Uses hosted account deletion authority and links."),
+    },
+  },
+  interactiveAccountDeletionEligibility: {
+    fixtures: "actors",
+    file: "interactive-account-lifecycle.spec.ts",
+    title: "interactive account retirement refuses active app work before removing credentials",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback backend through the shared hosted server."),
+      local: na("Uses hosted account deletion authority and links."),
+    },
+  },
+  interactiveAccountRemovalCallback: {
+    fixtures: "actors",
+    file: "interactive-account-callback.spec.ts",
+    title:
+      "interactive removal calls the same server authenticated API without holding its database",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Proves same-process PGlite re-entry on an isolated self-host."),
+      local: na("Uses hosted account links and authentication."),
+    },
+  },
+  provisionedRadio: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "provisioned-link-boundary.spec.ts",
+    title: "account radio linking cannot replace a provisioned plain-slot account",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses isolated account fixtures."),
+      local: na("Uses hosted HTTP endpoints."),
+    },
+  },
+  provisionedAgent: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "provisioned-link-boundary.spec.ts",
+    title: "agent connection creation and updates cannot replace provisioned account links",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses isolated account fixtures."),
+      local: na("Uses hosted HTTP endpoints."),
+    },
+  },
+  accountDisplayProviderPrivacy: {
+    fixtures: "actors",
+    file: "account-display-privacy.spec.ts",
+    title: "provider health and unsaved credential checks reject encoded identity secrets",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses loopback provider health."),
+      local: na("Uses hosted HTTP endpoints."),
+    },
+  },
+  accountDisplayEncodedPrivacy: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "account-display-privacy.spec.ts",
+    title: "encoded credentials and references cannot enter account display status",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses isolated account fixtures."),
+      local: na("Uses hosted HTTP endpoints."),
+    },
+  },
+  accountDisplayIdentityPrivacy: {
+    fixtures: "actors",
+    file: "account-display-privacy.spec.ts",
+    title: "account identity strings reject raw and encoded credentials with or without status",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses isolated account fixtures."),
+      local: na("Uses hosted HTTP endpoints."),
+    },
+  },
+  accountStatusStorage: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "account-status-storage.spec.ts",
+    title:
+      "account status preserves the previous storage version and retained identity across restarts",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses isolated PGlite metadata."),
+      local: na("Uses hosted HTTP endpoints."),
+    },
+  },
+  accountStatusPrivacy: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "account-status-privacy.spec.ts",
+    title:
+      "account status rejects credential and opaque reference strings before storage and hides short-secret collisions",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses isolated loopback account fixtures."),
+      local: na("Uses hosted account HTTP endpoints."),
+    },
+  },
+  accountStatusFactory: {
+    fixtures: "actors",
+
+    file: "account-status-factory.spec.ts",
+    title: "dynamic interactive factories fall back when optional checks are absent",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses isolated loopback account fixtures."),
+      local: na("Uses hosted account HTTP endpoints."),
+    },
+  },
+  provisionedMixed: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "provisioned-mixed.spec.ts",
+    title: "mixed providers cannot replace provisioned links through manual or OAuth completion",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses isolated loopback account fixtures."),
+      local: na("Uses hosted account HTTP endpoints."),
+    },
+  },
+  accountDisplayStatus: {
+    fixtures: "actors",
+    file: "account-status.spec.ts",
+    title:
+      "app-acquired account checks publish bounded status, render it in account rows, and classify failures",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback credential backend and the shared hosted dashboard."),
+      local: na("Exercises hosted account checks and rows."),
+    },
+  },
+  provisionedAccounts: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "provisioned-accounts.spec.ts",
+    title:
+      "host-provisioned accounts keep working and offer automatic setup without connect or credential replacement",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a retained host-provisioned credential fixture in an isolated database."),
+      local: na("Exercises the hosted Accounts tab."),
+    },
+  },
+  accountAcquisition: {
+    fixtures: "actors",
+    file: "account-acquisition.spec.ts",
+    title:
+      "hosted driver accounts enforce caller ownership and retry deletion without changing its operation",
+    targets: {
+      "self-host": scheduled,
+      local: na("Local has no organization actors or hosted account authorization."),
+      cloud: na(
+        "Requires a process-owned public product composition and loopback credential service.",
+      ),
+    },
+  },
+  accountAcquisitionStartPrivacy: {
+    fixtures: "actors",
+    file: "account-acquisition-cleanup.spec.ts",
+    title: "driver reconnect instructions refuse raw and encoded saved references",
+    targets: {
+      "self-host": scheduled,
+      local: na("Exercises shared SDK start persistence through hosted Connect APIs."),
+      cloud: na("Requires process-owned registration and a loopback credential service."),
+    },
+  },
+  accountAcquisitionFailurePrivacy: {
+    fixtures: "actors",
+    file: "account-acquisition-cleanup.spec.ts",
+    title: "driver reconnect failures redact raw and encoded references before retaining messages",
+    targets: {
+      "self-host": scheduled,
+      local: na("Exercises shared SDK failure persistence through hosted Connect APIs."),
+      cloud: na("Requires process-owned registration and a loopback credential service."),
+    },
+  },
+  accountAcquisitionOwnerPurge: {
+    legacyStorage: true,
+    file: "account-acquisition-owner-purge.spec.ts",
+    title:
+      "driver owner purge retains receipts through storage failure without applying individual deletion policy",
+    targets: {
+      "self-host": scheduled,
+      local: na("Local intentionally excludes the owner-purge SDK API."),
+      cloud: na("Uses a complete loopback SDK host with real PGlite and workerd adapters."),
+    },
+  },
+  accountAcquisitionIdentity: {
+    fixtures: "actors",
+    file: "account-acquisition-cleanup.spec.ts",
+    title: "driver acquisition labels never expose raw or encoded references",
+    targets: {
+      "self-host": scheduled,
+      local: na("Exercises the shared SDK output guard through hosted Connect APIs."),
+      cloud: na("Requires process-owned registration and a loopback credential service."),
+    },
+  },
+  accountAcquisitionCleanup: {
+    fixtures: "actors",
+    file: "account-acquisition-cleanup.spec.ts",
+    title: "driver reconnect cleanup releases stale attempts without revoking the newer credential",
+    targets: {
+      "self-host": scheduled,
+      local: na("Exercises shared SDK cleanup through hosted Connect APIs."),
+      cloud: na("Requires process-owned registration and a loopback credential service."),
+    },
+  },
+  accountAcquisitionHealth: {
+    fixtures: "actors",
+    file: "account-acquisition-health.spec.ts",
+    title: "driver health stays private, survives app removal and rejects stale credential results",
+    targets: {
+      "self-host": scheduled,
+      local: na("Exercises the shared SDK health writer through hosted account APIs."),
+      cloud: na("Requires process-owned registration and a loopback credential service."),
+    },
+  },
+  accountAcquisitionLocal: {
+    file: "account-acquisition-local.spec.ts",
+    title: "local driver accounts survive app removal and restart and reconnect in place",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted account authority has a separate scenario."),
+      cloud: na(
+        "Requires a process-owned public product composition and loopback credential service.",
+      ),
+    },
+  },
+  interactiveAccounts: {
+    fixtures: "actors",
+    file: "interactive-accounts.spec.ts",
+    title:
+      "interactive accounts connect device and paste flows, keep sessions private, and retire app-bound references",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "This scenario uses a loopback credential backend and the shared hosted server through self-host.",
+      ),
+      local: na("This scenario exercises hosted connection and account-link permissions."),
+    },
+  },
+  interactiveAccountResume: {
+    fixtures: "actors",
+    file: "interactive-account-resume.spec.ts",
+    title:
+      "pending interactive connections restart failed and expired attempts and switch to secrets or OAuth",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses loopback sign-in and OAuth backends through the shared hosted server."),
+      local: na("Uses hosted pending connection HTTP routes."),
+    },
+  },
+  interactiveAccountDialog: {
+    fixtures: "actors",
+    file: "interactive-account-dialog.spec.ts",
+    title:
+      "the Connect dialog shows an app-owned sign-in's code and link, takes a pasted address, starts a refused sign-in again, and confirms before unlinking deletes the account",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "This scenario uses a loopback credential backend and the shared hosted dashboard through self-host.",
+      ),
+      local: na("This scenario exercises the hosted Accounts tab."),
+    },
+  },
+  appCallerIdentity: {
+    fixtures: "actors",
+    file: "app-caller-identity.spec.ts",
+    title: "shared app handlers and cached dynamic tools retain each caller's stable identity",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no hosted organization members to share an app with."),
+    },
+  },
+  localAppCallerIdentity: {
+    file: "local-app-caller-identity.spec.ts",
+    title: "Local app handlers receive the stable caller independently of accounts and tool input",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted caller identity has a separate shared-app scenario."),
+      cloud: na("Hosted caller identity has a separate shared-app scenario."),
+    },
+  },
   workflowStarts: {
     fixtures: "actors",
     file: "workflows.spec.ts",

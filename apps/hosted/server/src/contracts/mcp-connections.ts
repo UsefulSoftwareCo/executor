@@ -1,6 +1,7 @@
 /** A member's own scoped MCP connections and connected agents in one organization. Browser sessions only. */
 import {
   AccountNotFound,
+  AccountProvisioned,
   AccountSelectionInvalid,
   AppNotFound,
   StorageError,
@@ -33,6 +34,7 @@ const agentsPath = "/api/organizations/:organization/mcp-agents";
 const errors = [AuthenticationUnavailable, OrganizationForbidden] as const;
 /** Saving may link accounts to apps, so it reports account failures. */
 const saveErrors = [
+  AccountProvisioned,
   ...errors,
   ConnectionAccessInvalid,
   StorageError,
