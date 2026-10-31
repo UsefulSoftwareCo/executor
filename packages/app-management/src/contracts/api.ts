@@ -287,6 +287,14 @@ export const appManagementApi = <I extends HttpApiMiddleware.AnyId, S>(
           success: Schema.Array(GitCommit),
           error: appOperationErrors,
         }).annotate(OpenApi.Description, "Read recent commits in this app's private Git history."),
+        HttpApiEndpoint.get("publishing", "/app-publications/status", {
+          params: tenant,
+          success: Schema.Struct({ publishing: Schema.Boolean }),
+          error: appOperationErrors,
+        }).annotate(
+          OpenApi.Description,
+          "Read whether this host publishes apps. When it does not, publish and unpublish are refused and public listings stay readable.",
+        ),
         HttpApiEndpoint.get("catalog", "/app-publications", {
           params: tenant,
           query: { name: Schema.optional(PackageName) },

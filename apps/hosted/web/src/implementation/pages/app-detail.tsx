@@ -47,7 +47,7 @@ import {
 import type { HostedError } from "../../contracts/errors.ts";
 import { RenameApp } from "@executor-js/ui/dashboard/rename-app";
 import { CopyApp } from "@executor-js/ui/dashboard/copy-app";
-import { PublishApp } from "@executor-js/ui/dashboard/publish-app";
+import { PublishApp, WhenPublishing } from "@executor-js/ui/dashboard/publish-app";
 import { AppSettings } from "@executor-js/ui/dashboard/app-settings";
 import { AppDetailLayout } from "@executor-js/ui/dashboard/app-detail";
 import {
@@ -80,6 +80,7 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params) 
       appLinksAtom({ organization, app }),
       userLinksAtom({ organization, app }),
       appAccessAtom({ organization, app }),
+      appManagement(organization).publishing,
     ],
   });
 
@@ -196,26 +197,31 @@ export function AppDetailPage({
       }
       actions={
         app === undefined || access === undefined ? (
-          <Skeleton className="h-9 w-28 max-[740px]:h-11" />
+          // Hold no place for a Publish control on a host that does not publish.
+          <WhenPublishing atoms={appManagement(organization)}>
+            <Skeleton className="h-9 w-28 max-[740px]:h-11" />
+          </WhenPublishing>
         ) : (
           <>
             {canUse && openApp?.(app)}
             {canManage && (role === "owner" || role === "admin") ? (
               <PublishApp app={app} atoms={appManagement(organization)} Failure={HostedFailure} />
             ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                disabledReason={
-                  role === undefined
-                    ? "Checking organization access…"
-                    : role === "owner" || role === "admin"
-                      ? manageReason
-                      : "Only organization owners and admins can publish apps."
-                }
-              >
-                Publish
-              </Button>
+              <WhenPublishing atoms={appManagement(organization)}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabledReason={
+                    role === undefined
+                      ? "Checking organization access…"
+                      : role === "owner" || role === "admin"
+                        ? manageReason
+                        : "Only organization owners and admins can publish apps."
+                  }
+                >
+                  Publish
+                </Button>
+              </WhenPublishing>
             )}
           </>
         )

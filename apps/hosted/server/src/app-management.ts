@@ -98,7 +98,9 @@ export const hostedAppAccess = Layer.effect(
               }),
             );
           }),
-        endpoint.identifier === "list" || endpoint.identifier === "catalog"
+        endpoint.identifier === "list" ||
+          endpoint.identifier === "catalog" ||
+          endpoint.identifier === "publishing"
           ? "discover"
           : endpoint.identifier === "authoring" ||
               endpoint.identifier === "source" ||

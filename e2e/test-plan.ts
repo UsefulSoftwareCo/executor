@@ -2331,6 +2331,19 @@ export const scenarios = plan({
       local: na("Local does not publish apps."),
     },
   },
+  publishingOff: {
+    fixtures: "actors",
+    file: "publishing-off.spec.ts",
+    title:
+      "A host that does not publish says so, refuses publications and shows no Publish control",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud scenarios share one server that publishes; a host without publishing is checked on self-host.",
+      ),
+      local: na("Local does not publish apps."),
+    },
+  },
   appFrameworkPin: {
     fixtures: "actors",
     managementApps: ["owner"],

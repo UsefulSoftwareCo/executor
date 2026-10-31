@@ -9,7 +9,7 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import { App, Resource } from "../support/contracts.ts";
+import { App, PublishingStatus, Resource } from "../support/contracts.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -41,6 +41,11 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
             browser = yield* Browser;
           const prefix = `/api/organizations/${actors.organization.id}`;
           const name = `Member controls ${randomUUID().slice(0, 8)}`;
+          // A host that does not publish shows no Publish control, not even a disabled one.
+          const { publishing } = yield* body(
+            PublishingStatus,
+            yield* api.request(actors.member, "GET", `${prefix}/app-publications/status`),
+          );
           const app = yield* body(
             App,
             yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -315,13 +320,23 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
               "Delete app",
               "Save access",
               "Reset changes",
-              "Publish",
+              ...(publishing ? ["Publish"] : []),
             ])
               expect(
                 yield* browser.use(`Restricted ${label} remains visible`, (page) =>
                   page.getByRole("button", { name: label, exact: true }).isDisabled(),
                 ),
               ).toBe(true);
+            if (!publishing) {
+              yield* browser.use("The host has answered whether it publishes", (page) =>
+                page.getByLabel("Loading publishing access").waitFor({ state: "detached" }),
+              );
+              expect(
+                yield* browser.use("No Publish control where the host does not publish", (page) =>
+                  page.getByRole("button", { name: "Publish", exact: true }).count(),
+                ),
+              ).toBe(0);
+            }
             expect(
               yield* browser.use("Sharing selector remains disabled", (page) =>
                 page.getByRole("combobox", { name: "Who can use this app?" }).isDisabled(),

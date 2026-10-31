@@ -7,6 +7,7 @@ export const LastOrganization = Schema.Struct({ user: Schema.String, organizatio
 
 export const Resource = Schema.Struct({ id: Schema.String });
 export const App = Schema.Struct({ id: Schema.String, slug: Schema.String, name: Schema.String });
+export const PublishingStatus = Schema.Struct({ publishing: Schema.Boolean });
 export const Inventory = Schema.Struct({
   apps: Schema.Array(App),
   /** The caller's linked accounts by app. Local derives them from the apps' requirements. */
