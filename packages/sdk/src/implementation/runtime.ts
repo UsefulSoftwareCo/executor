@@ -41,11 +41,15 @@ export interface ResolvedAppRuntime {
     readonly app: string;
     readonly build: BuildId;
     readonly accounts: ResolvedAccountsInput;
+    /** Trusted host identity, never a public operation input. */
+    readonly caller?: string;
   }) => Promise<readonly AppSkillSource[]>;
   readonly inspect: (input: {
     readonly app: string;
     readonly build: BuildId;
     readonly accounts: ResolvedAccountsInput;
+    /** Trusted host identity, never a public operation input. */
+    readonly caller?: string;
     readonly tools?: readonly string[];
     readonly scheduled?: true;
   }) => Promise<HostedCatalog>;
@@ -53,12 +57,16 @@ export interface ResolvedAppRuntime {
     readonly app: string;
     readonly build: BuildId;
     readonly accounts: ResolvedAccountsInput;
+    /** Trusted host identity, never a public operation input. */
+    readonly caller?: string;
   }) => Promise<HostedCatalogSummary>;
   readonly query: (input: {
     readonly app: string;
     readonly build: BuildId;
     readonly database: boolean;
     readonly accounts: ResolvedAccountsInput;
+    /** Trusted host identity, never a public operation input. */
+    readonly caller?: string;
     readonly name: string;
     readonly input: Json;
   }) => Promise<Json>;
@@ -67,6 +75,8 @@ export interface ResolvedAppRuntime {
     readonly build: BuildId;
     readonly database: boolean;
     readonly accounts: ResolvedAccountsInput;
+    /** Trusted host identity, never a public operation input. */
+    readonly caller?: string;
     readonly name: string;
     readonly input: Json;
   }) => Promise<Json>;
@@ -75,6 +85,8 @@ export interface ResolvedAppRuntime {
     readonly build: BuildId;
     readonly database: boolean;
     readonly accounts: ResolvedAccountsInput;
+    /** Trusted host identity, never a public operation input. */
+    readonly caller?: string;
     readonly command: import("apps/contracts").WebhookCommand;
   }) => Promise<Json>;
   readonly call: (input: {
@@ -84,6 +96,8 @@ export interface ResolvedAppRuntime {
     readonly build: BuildId;
     readonly database: boolean;
     readonly accounts: ResolvedAccountsInput;
+    /** Trusted host identity, never a public operation input. */
+    readonly caller?: string;
     readonly tool: string;
     readonly kind?: "query" | "mutation";
     readonly input: Json;
@@ -223,6 +237,7 @@ export const toEffectRuntime = (
     workflow: (input) => runtime.workflow(input).pipe(provide),
     webhook: (input) => runtime.webhook(input).pipe(provide),
     call: (input) => runtime.call(input).pipe(provide),
+    connect: (input) => runtime.connect(input).pipe(provide),
     checkAccount: (input) => runtime.checkAccount(input).pipe(provide),
     migrate: (input) => runtime.migrate(input).pipe(provide),
   };

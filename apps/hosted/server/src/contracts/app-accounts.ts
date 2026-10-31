@@ -1,3 +1,8 @@
+import {
+  InteractiveRetirementBusy,
+  InteractiveRetirementFailed,
+  InteractiveReconnectUnsupported,
+} from "@executor-js/sdk/core";
 import { RequiredAction } from "./authorization.ts";
 /**
  * The accounts linked to an app's requirements. An app link fills an app requirement for every
@@ -12,6 +17,8 @@ import {
   AccountConnectionTargetChanged,
   AccountId,
   AccountNotFound,
+  AccountWebhooksActive,
+  AccountWorkflowsActive,
   AccountRequirement,
   AccountScope,
   AccountSelectionInvalid,
@@ -43,6 +50,11 @@ const mismatch = {
         ? "Link the account to one of the app's own requirements, or link it for yourself if the requirement is a user one."
         : "Link the account to one of the requirements each member links, or ask someone who can edit the app to link it for everyone.",
   },
+  app_bound: {
+    title: "This account belongs to another app",
+    description: () => "Only the app that acquired this account can use its reference.",
+    action: () => "Connect a new account from this app.",
+  },
   provider: {
     title: "This requirement uses another kind of account",
     description: () => "The account's provider is not the one this requirement uses.",
@@ -62,7 +74,7 @@ export const RequirementMismatch = UserFacingError.define({
     app: AppId,
     requirement: Schema.String,
     scope: AccountScope,
-    reason: Schema.Literals(["requirement", "provider"]),
+    reason: Schema.Literals(["requirement", "provider", "app_bound"]),
   },
   recorded: ({ scope, reason }) =>
     `The account cannot be linked to this ${scope} requirement: ${reason}`,
@@ -99,6 +111,7 @@ export const AppAccountLink = Schema.Struct({
   account: Account,
   createdAt: Schema.Date,
   signIn: LinkedAccountSignIn,
+  canReconnect: Schema.Boolean,
   health: Schema.optionalKey(AccountHealth),
 });
 export type AppAccountLink = typeof AppAccountLink.Type;
@@ -128,13 +141,18 @@ const requirement = { ...app, requirement: Schema.NonEmptyString };
 const link = { ...requirement, account: AccountId };
 const prefix = "/api/organizations/:organization/apps/:app/accounts";
 const errors = [
+  InteractiveRetirementBusy,
+  InteractiveRetirementFailed,
   StorageError,
   AppNotFound,
   AccountNotFound,
   RequirementMismatch,
+  AccountWebhooksActive,
+  AccountWorkflowsActive,
   OrganizationForbidden,
 ] as const;
 const connectErrors = [
+  InteractiveReconnectUnsupported,
   ...errors,
   ProviderNotFound,
   AccountSelectionInvalid,

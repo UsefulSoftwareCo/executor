@@ -203,8 +203,17 @@ export class OAuth2Method<Response extends Schema.Decoder<unknown>> extends Data
   readonly request?: readonly Placement[];
 }> {}
 
+/** A method whose credential is acquired by the requiring app. ref is always plain. */
+export class InteractiveMethod extends Data.TaggedClass("interactive")<{
+  readonly label: string;
+}> {
+  readonly exposure = { ref: "plain" } as const;
+  readonly request = undefined;
+}
+
 /** Supported declarations; these acquire credentials rather than normalize them. */
 export type AuthMethod =
+  | InteractiveMethod
   | SecretsMethod<Schema.Decoder<unknown>>
   | OAuth2Method<Schema.Decoder<unknown>>;
 
@@ -288,7 +297,9 @@ export type AuthMethodData<Method> =
     ? Fields["Type"]
     : Method extends OAuth2Method<infer Response>
       ? Response["Type"]
-      : never;
+      : Method extends InteractiveMethod
+        ? { readonly ref: string }
+        : never;
 
 /**
  * Render an account's credential placements. Each renders the method's `request` with the fields

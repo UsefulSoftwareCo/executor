@@ -12,6 +12,8 @@ import {
   WorkflowReplay,
 } from "../contracts/workflows.ts";
 import { makeWorkflowContext, workflowSafe } from "./workflow-context.ts";
+import { dispatchConnect } from "./connect.ts";
+
 /** Framework-owned dispatch. Each inspect/call binds accounts and evaluates afresh. */
 import { Cause, Clock, Effect, Match, Option, Redacted, Schema } from "effect";
 import { captureTelemetry, owned, type InvocationTelemetry } from "@executor-js/telemetry";
@@ -171,6 +173,9 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
         const auth = new Map<string, unknown>();
         for (const [name, method] of Object.entries(provider.auth)) {
           switch (method._tag) {
+            case "interactive":
+              auth.set(name, { type: "interactive", label: method.label, plain: ["ref"] });
+              break;
             case "secrets":
               auth.set(name, {
                 type: "secrets",
@@ -287,6 +292,7 @@ function bindScope(
   slots: AccountSlots,
   declarations: DeclaredAccountSlots,
   selected: ResolvedAccountSlots,
+  connecting?: string,
 ) {
   return Effect.gen(function* () {
     if (Object.keys(selected).some((slot) => !Object.hasOwn(slots, slot))) {
@@ -296,6 +302,7 @@ function bindScope(
     for (const [slot, selection] of Object.entries(slots)) {
       const requirement = Object.hasOwn(declarations, slot) ? declarations[slot] : undefined;
       const supplied = Object.hasOwn(selected, slot) ? selected[slot] : undefined;
+      if (supplied === undefined && connecting !== undefined) continue;
       if (requirement === undefined || supplied === undefined)
         return yield* Effect.fail(new HostAccountsInvalid());
       const provider = selection instanceof ManyAccounts ? selection.provider : selection;
@@ -316,7 +323,11 @@ function bindScope(
         const method = provider.auth[account.method];
         if (method === undefined) return yield* Effect.fail(new HostAccountsInvalid());
         const fields = yield* Schema.decodeUnknownEffect(
-          method._tag === "secrets" ? method.fields : method.response,
+          method._tag === "interactive"
+            ? Schema.Struct({ ref: Schema.String })
+            : method._tag === "secrets"
+              ? method.fields
+              : method.response,
         )(account.fields);
         const granted = Object.hasOwn(account.provider.auth, account.method)
           ? account.provider.auth[account.method]?.request
@@ -336,12 +347,13 @@ function bindScope(
 
 /**
  * Bind an invocation's accounts by scope: `ctx.app.accounts` always, and `ctx.user.accounts` when
- * the invocation has a caller. Without `user` accounts the context has no `user`.
+ * the host supplies a caller or a user-account scope. App-only work has neither.
  */
 function bindAccounts(
   slots: ScopedSlots,
   declarations: DeclaredRequirements,
   context: HostContext,
+  connecting?: string,
 ) {
   return safe(
     () =>
@@ -349,10 +361,25 @@ function bindAccounts(
         const selected = yield* Schema.decodeUnknownEffect(ResolvedAccounts)(
           Redacted.value(context.accounts),
         );
-        const app = yield* bindScope(slots.app, declarations.accounts.app, selected.app);
-        if (selected.user === undefined) return { app: { accounts: app } };
-        const user = yield* bindScope(slots.user, declarations.accounts.user, selected.user);
-        return { app: { accounts: app }, user: { accounts: user } };
+        const app = yield* bindScope(
+          slots.app,
+          declarations.accounts.app,
+          selected.app,
+          connecting,
+        );
+        if (selected.user === undefined && context.caller === undefined)
+          return { app: { accounts: app } };
+        const user = yield* bindScope(
+          slots.user,
+          declarations.accounts.user,
+          selected.user ?? {},
+          connecting,
+        );
+        const id =
+          context.caller === undefined
+            ? undefined
+            : yield* Schema.decodeUnknownEffect(Schema.NonEmptyString)(context.caller);
+        return { app: { accounts: app }, user: { id, accounts: user } };
       }),
     new HostAccountsInvalid(),
   );
@@ -430,6 +457,16 @@ function dispatch(
       // The build's migrations, not a flag, decide whether the app has a database.
       const ownsSql = hasMigrations(context.files ?? []);
       const declared = yield* requirements(native.accounts, ownsSql, native.events, native.icons);
+      if (request.operation === "connect") {
+        const selected = native.accounts.app[request.slot] ?? native.accounts.user[request.slot];
+        const provider = selected instanceof ManyAccounts ? selected.provider : selected;
+        if (
+          provider === undefined ||
+          !Object.hasOwn(provider.auth, request.input.method) ||
+          provider.auth[request.input.method]?._tag !== "interactive"
+        )
+          return yield* new HostInputInvalid();
+      }
       if (request.operation === "requirements")
         return yield* safe(
           () => Schema.decodeUnknownEffect(JsonValue)(declared),
@@ -610,9 +647,12 @@ function dispatch(
           deadline,
         ),
         files,
-        ...(yield* bindAccounts(native.accounts, declared, context).pipe(
-          Effect.withSpan("app.accounts.bind"),
-        )),
+        ...(yield* bindAccounts(
+          native.accounts,
+          declared,
+          context,
+          request.operation === "connect" ? request.slot : undefined,
+        ).pipe(Effect.withSpan("app.accounts.bind"))),
         workflows: workflowReads,
         signal: invocationSignal,
         fetch: yield* appInvocationFetch(fetching.signal),
@@ -639,6 +679,13 @@ function dispatch(
       const definition = yield* evaluationSafe(native.evaluate(bound), secrets).pipe(
         Effect.withSpan("app.evaluate"),
       );
+      if (request.operation === "connect") {
+        const session = yield* sqlSession();
+        return yield* dispatchConnect(definition.connect, request, {
+          ...bound,
+          sql: session.writer,
+        }).pipe(withinDeadline);
+      }
       if (request.operation === "skills") {
         const declared =
           definition.skills ??
@@ -715,7 +762,12 @@ function dispatch(
             Effect.gen(function* () {
               const current = yield* execution.resolve();
               const accounts = yield* safe(
-                () => bindAccounts(native.accounts, declared, current),
+                // A run keeps its initiating caller; each step refreshes only the accounts.
+                () =>
+                  bindAccounts(native.accounts, declared, {
+                    ...current,
+                    ...(context.caller === undefined ? {} : { caller: context.caller }),
+                  }),
                 new WorkflowFailure({ reason: "credentials", retryable: false }),
               );
               return {

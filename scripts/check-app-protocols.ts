@@ -34,7 +34,11 @@ import { Array as Arr, Schema, SchemaRepresentation } from "effect";
 import { frameworkProtocol } from "../packages/apps/src/contracts/protocol-version.ts";
 import { current, messageDirections } from "../packages/apps/src/contracts/protocols/current.ts";
 import { releasedProtocols } from "../packages/apps/src/contracts/protocols/released.ts";
-import { supportedProtocols } from "../packages/sdk/src/implementation/app-protocols.ts";
+import {
+  interactiveProtocolAdditions,
+  interactiveProtocolAdaptations,
+  supportedProtocols,
+} from "../packages/sdk/src/implementation/app-protocols.ts";
 
 const args = process.argv.slice(2);
 const write = args.includes("--write");
@@ -575,9 +579,13 @@ const Gates = Schema.Struct({
 type Gates = typeof Gates.Type;
 const decodeGates = Schema.decodeUnknownSync(Schema.fromJsonString(Gates));
 const gatesFile = new URL("gates.json", directory);
-const gates: Gates = existsSync(gatesFile)
+const recordedGates: Gates = existsSync(gatesFile)
   ? decodeGates(readFileSync(gatesFile, "utf8"))
   : { adapted: [], additions: [] };
+const gates: Gates = {
+  adapted: [...recordedGates.adapted, ...interactiveProtocolAdaptations],
+  additions: [...recordedGates.additions, ...interactiveProtocolAdditions],
+};
 
 /**
  * Whether the live protocol, read from `ours`, keeps the promises of each `against` protocol, read

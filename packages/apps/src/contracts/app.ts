@@ -11,6 +11,7 @@ type Handler<Context> = (context: Context, input: never) => Effect.Effect<unknow
 
 /** App capabilities share one account context. Package metadata belongs in package.json. */
 export interface AppDefinition<Context> {
+  readonly connect?: Readonly<Record<string, import("./connect.ts").ConnectHandlers<Context>>>;
   /** The app's root router. Its keys form tool paths such as `issues.list`. */
   readonly tools?: import("./router.ts").AppRouter | import("./router.ts").DynamicRouter;
   /** Omission reads packaged skills/. An explicit catalog replaces that default, including []. */
@@ -96,7 +97,11 @@ export interface AppAccountsContext<Slots extends AccountSlots> {
 
 /** The caller's own linked accounts. App-scope work has no caller, so it has none. */
 export interface UserAccountsContext<Slots extends AccountSlots> {
-  readonly user: { readonly accounts: BoundAccounts<Slots> };
+  readonly user: {
+    /** Opaque host identity, stable across calls. Undefined when the host has no subjects. */
+    readonly id: string | undefined;
+    readonly accounts: BoundAccounts<Slots>;
+  };
 }
 
 /**

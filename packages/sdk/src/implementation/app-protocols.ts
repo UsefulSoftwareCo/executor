@@ -12,6 +12,8 @@ import {
   protocol2,
   protocol3,
   type HostAccounts,
+  type HostAccount,
+  type HostAccountSlots,
   type HostInvocation,
   type HostRequest,
   type WorkflowExecution,
@@ -57,11 +59,11 @@ export interface AppProtocol {
   readonly sealedCredentials: boolean;
 }
 
-/** Protocol 13 is the host's current protocol, so its messages need no conversion. */
-const protocol13: AppProtocol = {
-  version: 13,
+/** Protocol 14 adds trusted caller identity and app-owned interactive sign-in. */
+const protocol14: AppProtocol = {
+  version: 14,
   workerEntry: appBridge,
-  nodeEntry: nodeAppEntry(13),
+  nodeEntry: nodeAppEntry(14),
   invocation: (input) => JSON.stringify(input),
   request: (command) => command,
   refuse: () => undefined,
@@ -69,6 +71,58 @@ const protocol13: AppProtocol = {
   workflow: (execution) => execution,
   concurrentData: true,
   sealedCredentials: true,
+};
+
+const withoutInteractiveAccount = (account: HostAccount): HostAccount => ({
+  ...account,
+  provider: {
+    ...account.provider,
+    auth: Object.fromEntries(
+      Object.entries(account.provider.auth).filter(([, method]) => method.type !== "interactive"),
+    ),
+  },
+});
+const withoutInteractiveAccounts = (accounts: HostAccounts): HostAccounts => {
+  const strip = (slots: HostAccountSlots): HostAccountSlots =>
+    Object.fromEntries(
+      Object.entries(slots).map(([slot, selected]) => [
+        slot,
+        "id" in selected
+          ? withoutInteractiveAccount(selected)
+          : selected.map(withoutInteractiveAccount),
+      ]),
+    );
+  return {
+    app: strip(accounts.app),
+    ...(accounts.user === undefined ? {} : { user: strip(accounts.user) }),
+  };
+};
+
+/** Earlier builds have no caller identity field. Keep their retained entry body unchanged. */
+const withoutCaller = ({ caller: _caller, ...input }: HostInvocation) => input;
+const protocol13: AppProtocol = {
+  ...protocol14,
+  version: 13,
+  nodeEntry: nodeAppEntry(13),
+  invocation: (input) =>
+    JSON.stringify({
+      ...withoutCaller(input),
+      accounts: withoutInteractiveAccounts(input.accounts),
+    }),
+  refuse: (command) =>
+    command.operation === "connect"
+      ? Schema.encodeSync(HostOperationNotFound)(new HostOperationNotFound())
+      : undefined,
+  workflow: (execution) => ({
+    ...execution,
+    resolve: () =>
+      execution.resolve().pipe(
+        Effect.map((context) => ({
+          ...context,
+          accounts: Redacted.make(withoutInteractiveAccounts(Redacted.value(context.accounts))),
+        })),
+      ),
+  }),
 };
 
 /**
@@ -94,8 +148,11 @@ const scopedRequirements = (command: HostRequest, body: unknown) =>
 
 /** Protocol 12 and earlier: the invocation's and each workflow step's accounts, unscoped. */
 const unscoped = {
-  invocation: <Input extends Pick<HostInvocation, "accounts">>(input: Input) =>
-    JSON.stringify({ ...input, accounts: unscopedAccounts(input.accounts) }),
+  invocation: (input: HostInvocation) =>
+    JSON.stringify({
+      ...withoutCaller(input),
+      accounts: unscopedAccounts(withoutInteractiveAccounts(input.accounts)),
+    }),
   workflow: (execution: WorkflowExecution): WorkflowExecution => ({
     ...execution,
     resolve: () =>
@@ -105,7 +162,9 @@ const unscoped = {
           // SAFETY: the step's accounts reach the bundle only as JSON, which a bundle of this
           // protocol reads as the flat record it declared.
           accounts: Redacted.make(
-            unscopedAccounts(Redacted.value(context.accounts)) as unknown as HostAccounts,
+            unscopedAccounts(
+              withoutInteractiveAccounts(Redacted.value(context.accounts)),
+            ) as unknown as HostAccounts,
           ),
         })),
       ),
@@ -152,7 +211,7 @@ const protocol9: AppProtocol = {
   version: 9,
   nodeEntry: nodeAppEntry(9),
   refuse: (command) =>
-    command.operation === "migrate"
+    command.operation === "migrate" || command.operation === "connect"
       ? Schema.encodeSync(HostOperationNotFound)(new HostOperationNotFound())
       : undefined,
   concurrentData: false,
@@ -214,7 +273,7 @@ type LegacyVersion = keyof typeof legacyProtocols;
  */
 const prefixKind = (tool: string) =>
   tool.startsWith("queries.") ? "query" : tool.startsWith("mutations.") ? "mutation" : undefined;
-const legacyCommand = (command: HostRequest) =>
+const legacyCommand = (command: HostRequest): HostRequest =>
   command.operation === "call"
     ? { operation: "call", tool: command.tool, input: command.input }
     : command;
@@ -229,6 +288,8 @@ const legacyProtocol = (version: LegacyVersion): AppProtocol => {
     invocation: (input) => unscoped.invocation({ ...input, command: legacyCommand(input.command) }),
     request: legacyCommand,
     refuse: (command) => {
+      if (command.operation === "connect")
+        return Schema.encodeSync(HostOperationNotFound)(new HostOperationNotFound());
       if (command.operation !== "call" || command.kind === undefined) return undefined;
       const actual = prefixKind(command.tool);
       return actual === undefined || actual === command.kind
@@ -272,6 +333,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
     protocol11,
     protocol12,
     protocol13,
+    protocol14,
   ].map((protocol) => [protocol.version, protocol]),
 );
 
@@ -289,3 +351,16 @@ export const appProtocol = (
       )
     : Effect.succeed(protocol);
 };
+
+export const interactiveProtocolAdditions = [
+  {
+    message: "request",
+    path: "operation=connect",
+    since: 14,
+    gate: "appProtocol.refuse rejects connect for protocols before 14",
+  },
+];
+export const interactiveProtocolAdaptations = [
+  { message: "invocation", protocols: [13], adapter: "protocol13.invocation" },
+  { message: "accounts", protocols: [13], adapter: "withoutInteractiveAccounts" },
+];

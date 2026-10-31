@@ -25,6 +25,7 @@ import { declaredOperations, nativeRouter, type RouterDeclaration } from "./rout
 import { decoderOf, isSchema, type Schema } from "./schema.ts";
 import { nativeEvent } from "./events.ts";
 import type { AppEvent } from "../contracts/events.ts";
+import { authorConnect, validateConnect, type AuthorConnect } from "./connect.ts";
 import { appIconsProblem } from "../contracts/icons.ts";
 
 /** One native webhook definition with the given handler context. */
@@ -88,11 +89,13 @@ export type AppDefinition<Requirements extends AppRequirements> = {
     ? AuthorWorkflows<Requirements>
     : Key extends "schedules"
       ? AuthorSchedules<Requirements>
-      : Key extends "tools"
-        ? RouterDeclaration<QueryContext<Requirements>, MutationContext<Requirements>>
-        : Key extends "webhooks"
-          ? AuthorWebhooks<Requirements>
-          : NativeDefinition<WebhookContext<Requirements>>[Key];
+      : Key extends "connect"
+        ? AuthorConnect<Requirements>
+        : Key extends "tools"
+          ? RouterDeclaration<QueryContext<Requirements>, MutationContext<Requirements>>
+          : Key extends "webhooks"
+            ? AuthorWebhooks<Requirements>
+            : NativeDefinition<WebhookContext<Requirements>>[Key];
 } & {
   readonly name?: never;
   readonly queries?: never;
@@ -106,19 +109,21 @@ type HostWebhookContext = WebhookContext<AppRequirements, AccountScope> &
 
 /** Adapt operation and webhook catalogs without evaluating their handlers. */
 export type EffectDefinition<Def> = {
-  readonly [Key in keyof Def]: Key extends "tools"
-    ? NonNullable<NativeDefinition<unknown>["tools"]>
-    : Key extends "workflows"
-      ? Readonly<Record<string, import("../contracts/workflows.ts").AppWorkflow>>
-      : Key extends "schedules"
-        ? NonNullable<NativeDefinition<unknown>["schedules"]>
-        : Key extends "webhooks"
-          ? NonNullable<NativeDefinition<HostWebhookContext>["webhooks"]>
-          : Key extends "skills"
-            ? NonNullable<NativeDefinition<unknown>["skills"]>
-            : Key extends "dynamicSkills"
-              ? NonNullable<NativeDefinition<unknown>["dynamicSkills"]>
-              : Def[Key];
+  readonly [Key in keyof Def]: Key extends "connect"
+    ? NonNullable<NativeDefinition<unknown>["connect"]>
+    : Key extends "tools"
+      ? NonNullable<NativeDefinition<unknown>["tools"]>
+      : Key extends "workflows"
+        ? Readonly<Record<string, import("../contracts/workflows.ts").AppWorkflow>>
+        : Key extends "schedules"
+          ? NonNullable<NativeDefinition<unknown>["schedules"]>
+          : Key extends "webhooks"
+            ? NonNullable<NativeDefinition<HostWebhookContext>["webhooks"]>
+            : Key extends "skills"
+              ? NonNullable<NativeDefinition<unknown>["skills"]>
+              : Key extends "dynamicSkills"
+                ? NonNullable<NativeDefinition<unknown>["dynamicSkills"]>
+                : Def[Key];
 };
 
 const InternalApp = Symbol("apps.App");
@@ -259,6 +264,7 @@ function adaptDefinition<
   // Object.entries/fromEntries erase those generic key associations.
   return {
     ...definition,
+    ...(definition.connect === undefined ? {} : { connect: authorConnect(definition.connect) }),
     ...webhooks,
     ...workflows,
     ...data,
@@ -300,7 +306,10 @@ export const defineApp = <
 ): App<Requirements, Def> => {
   const accounts = scopedSlots(requirements);
   // A static definition is checked when the module loads, so such source fails its build.
-  if (typeof definition !== "function") rejectCatalogs(definition);
+  if (typeof definition !== "function") {
+    rejectCatalogs(definition);
+    validateConnect(accounts, definition.connect);
+  }
   const evaluate = typeof definition === "function" ? definition : async () => definition;
   const factory = fromPromise(evaluate, "factory");
   const events =
@@ -328,7 +337,12 @@ export const defineApp = <
       ? {}
       : { icons: requirements.icons }),
     evaluate: (context) =>
-      factory(context).pipe(Effect.map((value) => adaptDefinition<Requirements, Def>(value))),
+      factory(context).pipe(
+        Effect.map((value) => {
+          validateConnect(accounts, value.connect);
+          return adaptDefinition<Requirements, Def>(value);
+        }),
+      ),
   };
   return {
     [InternalApp]: native,
