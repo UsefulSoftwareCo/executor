@@ -339,12 +339,18 @@ export const workerdApps = (options: {
     // workerd closes an idle keep-alive connection after 5 seconds, and reconciliation polls
     // every 5 seconds. A pooled socket can then close while a request is written to it, and
     // the fetch fails with a transport error. Each workflow request uses its own connection.
-    const backend = (operation: "start" | "status" | "terminate", run: WorkflowRunId) =>
+    const backend = (
+      operation: "start" | "status" | "terminate" | "input",
+      run: WorkflowRunId,
+      id?: string,
+    ) =>
       Effect.scoped(
         Effect.gen(function* () {
           const request = yield* HttpClientRequest.post(new URL("/workflow", origin), {
             headers: { ...headers, connection: "close" },
-          }).pipe(HttpClientRequest.bodyJson({ operation, run }));
+          }).pipe(
+            HttpClientRequest.bodyJson({ operation, run, ...(id === undefined ? {} : { id }) }),
+          );
           const response = yield* http.execute(request);
           if (response.status !== 200) return yield* engineFailure();
           return yield* response.json.pipe(

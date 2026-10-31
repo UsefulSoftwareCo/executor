@@ -146,6 +146,8 @@ export const cloudExecutor = Effect.fn(function* (
         blobs: yield* cachedVersionSources(origin, blobs),
         runtime: yield* makeRuntime,
         workflows,
+        workflowInputUrl: ({ owner, app, id }) =>
+          `${origin}/org/${encodeURIComponent(owner)}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
         registry: {
           storage: yield* Effect.flatMap(organizationPublishers, makeRegistryStorage).pipe(
             Effect.provideContext(services),

@@ -1,0 +1,872 @@
+{
+  "protocol": 14,
+  "previous": 13,
+  "messages": {
+    "workflowStep": {
+      "_tag": "Union",
+      "types": [
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "input"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "command",
+              "type": {
+                "_tag": "Union",
+                "types": [
+                  {
+                    "_tag": "Objects",
+                    "propertySignatures": [
+                      {
+                        "name": "operation",
+                        "type": {
+                          "_tag": "Literal",
+                          "literal": "request"
+                        },
+                        "isOptional": false
+                      },
+                      {
+                        "name": "stepId",
+                        "type": {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMinLength",
+                                "payload": {
+                                  "minLength": 1
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "isOptional": false
+                      },
+                      {
+                        "name": "name",
+                        "type": {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMinLength",
+                                "payload": {
+                                  "minLength": 1
+                                }
+                              }
+                            },
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMaxLength",
+                                "payload": {
+                                  "maxLength": 200
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "isOptional": false
+                      },
+                      {
+                        "name": "request",
+                        "type": {
+                          "_tag": "Objects",
+                          "propertySignatures": [
+                            {
+                              "name": "form",
+                              "type": {
+                                "$message": "elicitationRequest"
+                              },
+                              "isOptional": false
+                            },
+                            {
+                              "name": "evidence",
+                              "type": {
+                                "_tag": "Arrays",
+                                "rest": [
+                                  {
+                                    "_tag": "Objects",
+                                    "propertySignatures": [
+                                      {
+                                        "name": "label",
+                                        "type": {
+                                          "_tag": "String",
+                                          "checks": [
+                                            {
+                                              "_tag": "Filter",
+                                              "representation": {
+                                                "id": "effect/schema/isMinLength",
+                                                "payload": {
+                                                  "minLength": 1
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "_tag": "Filter",
+                                              "representation": {
+                                                "id": "effect/schema/isMaxLength",
+                                                "payload": {
+                                                  "maxLength": 120
+                                                }
+                                              }
+                                            }
+                                          ]
+                                        },
+                                        "isOptional": false
+                                      },
+                                      {
+                                        "name": "value",
+                                        "type": {
+                                          "_tag": "String",
+                                          "checks": [
+                                            {
+                                              "_tag": "Filter",
+                                              "representation": {
+                                                "id": "effect/schema/isMaxLength",
+                                                "payload": {
+                                                  "maxLength": 500
+                                                }
+                                              }
+                                            }
+                                          ]
+                                        },
+                                        "isOptional": false
+                                      }
+                                    ]
+                                  }
+                                ],
+                                "checks": [
+                                  {
+                                    "_tag": "Filter",
+                                    "representation": {
+                                      "id": "effect/schema/isMaxLength",
+                                      "payload": {
+                                        "maxLength": 12
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "isOptional": true
+                            },
+                            {
+                              "name": "timeoutMs",
+                              "type": {
+                                "_tag": "Number",
+                                "checks": [
+                                  {
+                                    "_tag": "Filter",
+                                    "representation": {
+                                      "id": "effect/schema/isInt",
+                                      "payload": null
+                                    }
+                                  },
+                                  {
+                                    "_tag": "Filter",
+                                    "representation": {
+                                      "id": "effect/schema/isBetween",
+                                      "payload": {
+                                        "minimum": 1,
+                                        "maximum": 2592000000
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "isOptional": false
+                            },
+                            {
+                              "name": "links",
+                              "type": {
+                                "_tag": "Arrays",
+                                "rest": [
+                                  {
+                                    "_tag": "Objects",
+                                    "propertySignatures": [
+                                      {
+                                        "name": "label",
+                                        "type": {
+                                          "_tag": "String",
+                                          "checks": [
+                                            {
+                                              "_tag": "Filter",
+                                              "representation": {
+                                                "id": "effect/schema/isMinLength",
+                                                "payload": {
+                                                  "minLength": 1
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "_tag": "Filter",
+                                              "representation": {
+                                                "id": "effect/schema/isMaxLength",
+                                                "payload": {
+                                                  "maxLength": 120
+                                                }
+                                              }
+                                            }
+                                          ]
+                                        },
+                                        "isOptional": false
+                                      },
+                                      {
+                                        "name": "href",
+                                        "type": {
+                                          "_tag": "String",
+                                          "checks": [
+                                            {
+                                              "_tag": "Filter",
+                                              "representation": {
+                                                "id": "effect/schema/isMinLength",
+                                                "payload": {
+                                                  "minLength": 1
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "_tag": "Filter",
+                                              "representation": {
+                                                "id": "effect/schema/isMaxLength",
+                                                "payload": {
+                                                  "maxLength": 2048
+                                                }
+                                              }
+                                            },
+                                            {
+                                              "_tag": "Filter"
+                                            }
+                                          ]
+                                        },
+                                        "isOptional": false
+                                      }
+                                    ]
+                                  }
+                                ],
+                                "checks": [
+                                  {
+                                    "_tag": "Filter",
+                                    "representation": {
+                                      "id": "effect/schema/isMaxLength",
+                                      "payload": {
+                                        "maxLength": 8
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              "isOptional": true
+                            }
+                          ]
+                        },
+                        "isOptional": false
+                      }
+                    ]
+                  },
+                  {
+                    "_tag": "Objects",
+                    "propertySignatures": [
+                      {
+                        "name": "operation",
+                        "type": {
+                          "_tag": "Literal",
+                          "literal": "get"
+                        },
+                        "isOptional": false
+                      },
+                      {
+                        "name": "id",
+                        "type": {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMinLength",
+                                "payload": {
+                                  "minLength": 1
+                                }
+                              }
+                            },
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isPattern",
+                                "payload": {
+                                  "source": "^wfi_[a-f0-9]{64}$",
+                                  "flags": "u"
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        "isOptional": false
+                      }
+                    ]
+                  }
+                ]
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "input-wait"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "name",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMaxLength",
+                      "payload": {
+                        "maxLength": 200
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "id",
+              "type": {
+                "_tag": "String"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "expiresAt",
+              "type": {
+                "_tag": "Number",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isFinite",
+                      "payload": null
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "do"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "name",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMaxLength",
+                      "payload": {
+                        "maxLength": 200
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "options",
+              "type": {
+                "_tag": "Objects",
+                "propertySignatures": [
+                  {
+                    "name": "retries",
+                    "type": {
+                      "_tag": "Objects",
+                      "propertySignatures": [
+                        {
+                          "name": "limit",
+                          "type": {
+                            "_tag": "Number",
+                            "checks": [
+                              {
+                                "_tag": "Filter",
+                                "representation": {
+                                  "id": "effect/schema/isInt",
+                                  "payload": null
+                                }
+                              },
+                              {
+                                "_tag": "Filter",
+                                "representation": {
+                                  "id": "effect/schema/isGreaterThanOrEqualTo",
+                                  "payload": {
+                                    "minimum": 0
+                                  }
+                                }
+                              }
+                            ]
+                          },
+                          "isOptional": false
+                        },
+                        {
+                          "name": "delay",
+                          "type": {
+                            "_tag": "Union",
+                            "types": [
+                              {
+                                "_tag": "Number",
+                                "checks": [
+                                  {
+                                    "_tag": "Filter",
+                                    "representation": {
+                                      "id": "effect/schema/isFinite",
+                                      "payload": null
+                                    }
+                                  },
+                                  {
+                                    "_tag": "Filter",
+                                    "representation": {
+                                      "id": "effect/schema/isGreaterThanOrEqualTo",
+                                      "payload": {
+                                        "minimum": 0
+                                      }
+                                    }
+                                  }
+                                ]
+                              },
+                              {
+                                "_tag": "String",
+                                "checks": [
+                                  {
+                                    "_tag": "Filter",
+                                    "representation": {
+                                      "id": "effect/schema/isMinLength",
+                                      "payload": {
+                                        "minLength": 1
+                                      }
+                                    }
+                                  }
+                                ]
+                              }
+                            ],
+                            "checks": [
+                              {
+                                "_tag": "Filter"
+                              }
+                            ]
+                          },
+                          "isOptional": false
+                        },
+                        {
+                          "name": "backoff",
+                          "type": {
+                            "_tag": "Union",
+                            "types": [
+                              {
+                                "_tag": "Literal",
+                                "literal": "constant"
+                              },
+                              {
+                                "_tag": "Literal",
+                                "literal": "linear"
+                              },
+                              {
+                                "_tag": "Literal",
+                                "literal": "exponential"
+                              }
+                            ]
+                          },
+                          "isOptional": true
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  },
+                  {
+                    "name": "timeout",
+                    "type": {
+                      "_tag": "Union",
+                      "types": [
+                        {
+                          "_tag": "Number",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isFinite",
+                                "payload": null
+                              }
+                            },
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isGreaterThanOrEqualTo",
+                                "payload": {
+                                  "minimum": 0
+                                }
+                              }
+                            }
+                          ]
+                        },
+                        {
+                          "_tag": "String",
+                          "checks": [
+                            {
+                              "_tag": "Filter",
+                              "representation": {
+                                "id": "effect/schema/isMinLength",
+                                "payload": {
+                                  "minLength": 1
+                                }
+                              }
+                            }
+                          ]
+                        }
+                      ],
+                      "checks": [
+                        {
+                          "_tag": "Filter"
+                        }
+                      ]
+                    },
+                    "isOptional": true
+                  }
+                ]
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "sleep"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "name",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMaxLength",
+                      "payload": {
+                        "maxLength": 200
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "duration",
+              "type": {
+                "_tag": "Union",
+                "types": [
+                  {
+                    "_tag": "Number",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isFinite",
+                          "payload": null
+                        }
+                      },
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isGreaterThanOrEqualTo",
+                          "payload": {
+                            "minimum": 0
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "_tag": "String",
+                    "checks": [
+                      {
+                        "_tag": "Filter",
+                        "representation": {
+                          "id": "effect/schema/isMinLength",
+                          "payload": {
+                            "minLength": 1
+                          }
+                        }
+                      }
+                    ]
+                  }
+                ],
+                "checks": [
+                  {
+                    "_tag": "Filter"
+                  }
+                ]
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "until"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "name",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  },
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMaxLength",
+                      "payload": {
+                        "maxLength": 200
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "timestamp",
+              "type": {
+                "_tag": "Number",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isFinite",
+                      "payload": null
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "context"
+              },
+              "isOptional": false
+            }
+          ]
+        },
+        {
+          "_tag": "Objects",
+          "propertySignatures": [
+            {
+              "name": "operation",
+              "type": {
+                "_tag": "Literal",
+                "literal": "invoke"
+              },
+              "isOptional": false
+            },
+            {
+              "name": "kind",
+              "type": {
+                "_tag": "Union",
+                "types": [
+                  {
+                    "_tag": "Literal",
+                    "literal": "query"
+                  },
+                  {
+                    "_tag": "Literal",
+                    "literal": "mutation"
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "name",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "input",
+              "type": {
+                "_tag": "Declaration",
+                "representation": {
+                  "id": "effect/schema/Json",
+                  "payload": null
+                }
+              },
+              "isOptional": false
+            },
+            {
+              "name": "stepId",
+              "type": {
+                "_tag": "String",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isMinLength",
+                      "payload": {
+                        "minLength": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            },
+            {
+              "name": "timeout",
+              "type": {
+                "_tag": "Number",
+                "checks": [
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isFinite",
+                      "payload": null
+                    }
+                  },
+                  {
+                    "_tag": "Filter",
+                    "representation": {
+                      "id": "effect/schema/isGreaterThanOrEqualTo",
+                      "payload": {
+                        "minimum": 0
+                      }
+                    }
+                  }
+                ]
+              },
+              "isOptional": false
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "unchanged": [
+    "invocation",
+    "request",
+    "response",
+    "requirements",
+    "catalog",
+    "catalogSummary",
+    "sharedCatalog",
+    "skills",
+    "elicitationRequest",
+    "elicitationReply",
+    "workflowStepReply",
+    "workflowControl",
+    "cacheCommand",
+    "cacheReply",
+    "accountCheck",
+    "accounts",
+    "migrate"
+  ],
+  "references": {},
+  "shared": {}
+}

@@ -144,6 +144,20 @@ export const executorHandlers = (executor: Executor) =>
         .handle("check", ({ params }) => executor.owners.check(params))
         .handle("remove", ({ params }) => executor.owners.remove(params)),
     ),
+    HttpApiBuilder.group(ExecutorApi, "workflowInputs", (handlers) =>
+      handlers
+        .handle("list", ({ query }) => executor.workflowInputs.list(query))
+        .handle("get", ({ params, query }) => executor.workflowInputs.get({ ...params, ...query }))
+        .handle("answer", ({ params, payload }) =>
+          executor.workflowInputs.answer({ ...params, ...payload }),
+        )
+        .handle("updateEvidence", ({ params, payload }) =>
+          executor.workflowInputs.updateEvidence({ ...params, ...payload }),
+        )
+        .handle("withdraw", ({ params, payload }) =>
+          executor.workflowInputs.withdraw({ ...params, ...payload }),
+        ),
+    ),
     HttpApiBuilder.group(ExecutorApi, "appWorkflows", (handlers) =>
       handlers.handle("list", ({ params, query }) =>
         executor.apps.workflows.list({ ...params, ...query }),

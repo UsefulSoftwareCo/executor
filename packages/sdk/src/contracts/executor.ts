@@ -270,6 +270,12 @@ export interface ExecutorInputs {
   /** Optional product-owned metadata lifecycle. Failures roll back the resource write. */
   readonly hooks?: ResourceLifecycle;
   readonly workflows?: WorkflowRuntime;
+  /** Authenticated product review page for a durable workflow question. */
+  readonly workflowInputUrl?: (input: {
+    readonly owner: OwnerId;
+    readonly app: AppId;
+    readonly id: import("apps/contracts").WorkflowInputId;
+  }) => string;
   readonly cache?: ExecutorCache;
   /** This host's own API, when apps call it; see `HostApi`. */
   readonly hostApi?: HostApi;

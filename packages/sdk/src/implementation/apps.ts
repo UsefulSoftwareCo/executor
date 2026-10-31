@@ -782,6 +782,9 @@ export const makeApps = (
             if (run !== null) return yield* new AppWorkflowsActive({ app: app.id });
             if (lifecycle) yield* lifecycle.appRemoving(app.id);
             yield* query(() =>
+              tx.deleteMany("workflowInputs", { where: (b) => b("app", "=", app.id) }),
+            );
+            yield* query(() =>
               tx.deleteMany("workflowRuns", { where: (b) => b("app", "=", app.id) }),
             );
 

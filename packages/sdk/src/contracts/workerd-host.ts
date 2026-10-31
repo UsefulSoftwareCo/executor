@@ -1,3 +1,4 @@
+import { WorkflowInputCommand } from "apps/contracts";
 /** Private host capabilities and parsed app requests for the embedded workerd runtime. */
 import { Schema } from "effect";
 import {
@@ -94,6 +95,11 @@ export interface WorkerdAppApi {
 }
 /** Background runs use finite host requests; no step callback or Promise lives in Node. */
 export const WorkflowHostCommand = Schema.Union([
+  Schema.Struct({
+    operation: Schema.Literal("input"),
+    run: WorkflowRunId,
+    command: WorkflowInputCommand,
+  }),
   Schema.Struct({ operation: Schema.Literal("prepare"), run: WorkflowRunId }),
   /** The run's build, read only when the runner cold-starts the run's Worker. */
   Schema.Struct({ operation: Schema.Literal("load"), run: WorkflowRunId }),

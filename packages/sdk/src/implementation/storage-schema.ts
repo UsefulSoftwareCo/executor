@@ -868,3 +868,26 @@ export const queueReadIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_webhook_sources_retry ON executor_webhook_sources (lease_until) WHERE status <> 'ready'",
   "CREATE INDEX IF NOT EXISTS executor_account_checks_account_app ON executor_account_checks (account, app)",
 ] as const;
+
+/** Questions and wake receipts survive process loss; form content is encrypted. */
+export const version4017Tables = {
+  ...version4015Tables,
+  workflowInputs: table("executor_workflow_inputs", {
+    id: idColumn("id", Schema.String, { type: "varchar(80)" }),
+    app: column("app", AppId, { type: "varchar(255)" }),
+    run: column("run", WorkflowRunId, { type: "varchar(255)" }),
+    owner: column("owner", OwnerId, { type: "varchar(255)" }),
+    actor: column("actor", Schema.String, { type: "varchar(255)" }),
+    status: column("status", Schema.String, { type: "varchar(32)" }),
+    expiresAt: column("expires_at", Schema.Date),
+    wakePending: column("wake_pending", Schema.Boolean),
+    answeredBy: column("answered_by", Schema.NullOr(Schema.String), { type: "varchar(255)" }),
+    encrypted: column("encrypted", Schema.Uint8Array),
+    createdAt: column("created_at", Schema.Date),
+  }),
+};
+export const workflowInputIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_workflow_inputs_recipient ON executor_workflow_inputs (owner, actor, status, id)",
+  "CREATE INDEX IF NOT EXISTS executor_workflow_inputs_wake ON executor_workflow_inputs (wake_pending, id)",
+  "CREATE INDEX IF NOT EXISTS executor_workflow_inputs_run ON executor_workflow_inputs (run)",
+] as const;

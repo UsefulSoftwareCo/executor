@@ -1,3 +1,9 @@
+import {
+  WorkflowInputTarget,
+  AnswerWorkflowInput,
+  ListWorkflowInputs,
+  UpdateWorkflowInputEvidence,
+} from "../contracts/workflow-inputs.ts";
 import { CheckOAuthSetup } from "../contracts/oauth.ts";
 import { OAuthClientInputs } from "../contracts/oauth-clients.ts";
 import {
@@ -126,6 +132,14 @@ export const promiseExecutor = (executor: Executor): PromiseExecutor => {
     owners: {
       check: (input) => run(OwnerInputs.check, input, executor.owners.check),
       remove: (input) => run(OwnerInputs.remove, input, executor.owners.remove),
+    },
+    workflowInputs: {
+      updateEvidence: (input) =>
+        run(UpdateWorkflowInputEvidence, input, executor.workflowInputs.updateEvidence),
+      get: (input) => run(WorkflowInputTarget, input, executor.workflowInputs.get),
+      answer: (input) => run(AnswerWorkflowInput, input, executor.workflowInputs.answer),
+      withdraw: (input) => run(WorkflowInputTarget, input, executor.workflowInputs.withdraw),
+      list: (input) => run(ListWorkflowInputs, input, executor.workflowInputs.list),
     },
     apps: {
       workflows: { list: (input) => run(WorkflowApp, input, executor.apps.workflows.list) },

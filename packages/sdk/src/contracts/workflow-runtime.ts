@@ -35,6 +35,8 @@ export interface WorkflowRuntime {
   readonly start: (run: WorkflowRunId) => Effect.Effect<void, WorkflowFailure>;
   readonly status: (run: WorkflowRunId) => Effect.Effect<WorkflowBackendState, WorkflowFailure>;
   readonly terminate: (run: WorkflowRunId) => Effect.Effect<void, WorkflowFailure>;
+  /** At-least-once wake only. The answer is read from encrypted storage, never from the event. */
+  readonly signalInput?: (run: WorkflowRunId, id: string) => Effect.Effect<void, WorkflowFailure>;
 }
 /** Source metadata is private to the host; no credential values enter engine parameters. */
 const WorkflowSeedFields = Schema.Struct({
@@ -87,6 +89,10 @@ export interface WorkflowHost {
           readonly detail?: WorkflowRunFailure;
         },
   ) => Effect.Effect<void, WorkflowFailure>;
+  readonly input: (
+    run: WorkflowRunId,
+    command: import("apps/contracts").WorkflowInputCommand,
+  ) => Effect.Effect<import("apps/contracts").WorkflowInput, WorkflowFailure>;
   readonly reconcile: Effect.Effect<void, WorkflowFailure>;
 }
 export type { WorkflowDriver };

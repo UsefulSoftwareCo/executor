@@ -1,4 +1,4 @@
-import type { WorkflowRunId } from "apps/contracts";
+import type { WorkflowInputId, WorkflowRunId } from "apps/contracts";
 import { appSlug } from "./app-slug.ts";
 /** Persisted records. Decode database results with these schemas before use. */
 import { Effect, Schema, Struct } from "effect";
@@ -129,6 +129,7 @@ export interface Credentials {
       | ApprovalRequestId
       | WebhookId
       | WorkflowRunId
+      | WorkflowInputId
       | import("./events.ts").EventSubscriptionId
       | import("./events.ts").StoredEventId,
     fields: Redacted.Redacted<JsonObject>,
@@ -142,6 +143,7 @@ export interface Credentials {
       | ApprovalRequestId
       | WebhookId
       | WorkflowRunId
+      | WorkflowInputId
       | import("./events.ts").EventSubscriptionId
       | import("./events.ts").StoredEventId,
     bytes: Redacted.Redacted<Uint8Array>,

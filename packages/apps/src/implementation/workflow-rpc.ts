@@ -1,3 +1,4 @@
+import { WorkflowInput } from "../contracts/workflow-input.ts";
 /** RPC adapters expose only parsed values and safe failures to isolated app code. */
 import { Cause, Effect, Redacted, Schema } from "effect";
 import { ResolvedAccounts } from "../contracts/host.ts";
@@ -34,7 +35,14 @@ export const isolatedWorkflowExecution = (
     );
   return {
     runId,
+    input: (command) =>
+      request({ operation: "input", command }).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(WorkflowInput)),
+        Effect.mapError(() => new WorkflowFailure({ reason: "engine", retryable: true })),
+      ),
     driver: {
+      waitForInput: (name, id, expiresAt) =>
+        request({ operation: "input-wait", name, id, expiresAt }).pipe(Effect.asVoid),
       do: (name, options, work) =>
         Effect.gen(function* () {
           const services = yield* Effect.context<never>();

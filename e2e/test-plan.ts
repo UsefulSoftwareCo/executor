@@ -8223,6 +8223,56 @@ export const scenarios = plan({
       local: na("This scenario uses hosted app management routes."),
     },
   },
+  localWorkflowInput: {
+    file: "local-workflow-inputs.spec.ts",
+    title: "local durable workflow input is visible and answered only through the paired browser",
+    targets: {
+      local: scheduled,
+      "self-host": na("Local pairing boundary."),
+      cloud: na("Local pairing boundary."),
+    },
+  },
+  workflowInputLifecycle: {
+    fixtures: "actors",
+    file: "workflow-inputs.spec.ts",
+    title: "durable workflow input survives restart and concurrent valid answers resume once",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Restart owns an isolated self-host process."),
+      local: na("Hosted routes have a separate local counterpart."),
+    },
+  },
+  workflowInputPagination: {
+    fixtures: "actors",
+    file: "workflow-inputs.spec.ts",
+    title: "durable workflow input pages past inaccessible questions without losing its cursor",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted app access filtering."),
+    },
+  },
+  workflowInputRevocation: {
+    fixtures: "actors",
+    file: "workflow-inputs.spec.ts",
+    title: "durable workflow input rechecks revoked app access and removed membership",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted membership and app access."),
+    },
+  },
+  workflowInputAuthority: {
+    fixtures: "actors",
+    file: "workflow-inputs.spec.ts",
+    title:
+      "durable workflow input enforces recipients, withdrawal, expiry and downstream tool consent",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted authority and organization routes."),
+    },
+  },
   workflowStarts: {
     fixtures: "actors",
     file: "workflows.spec.ts",
