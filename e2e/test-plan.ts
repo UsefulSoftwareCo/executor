@@ -2442,6 +2442,16 @@ export const scenarios = plan({
       local: na("Local has no hosted provisioning jobs."),
     },
   },
+  cloudDashboardBatchResources: {
+    fixtures: "actors",
+    file: "cloud-dashboard-batch-resources.spec.ts",
+    title: "Cloud dashboard batches share one SQL pool and executor within each request",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host builds its executor and SQL pool at startup."),
+      local: na("The local dashboard does not batch its reads."),
+    },
+  },
   cloudMcpObjectConnections: {
     fixtures: "actors",
     file: "cloud-database-placement.spec.ts",
