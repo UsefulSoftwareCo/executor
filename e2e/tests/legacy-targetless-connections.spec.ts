@@ -132,7 +132,7 @@ const expectUpgraded = (
   ids: Ids,
 ) => {
   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
-  expect(version).toEqual([{ value: "4.0.16" }]);
+  expect(version).toEqual([{ value: "4.0.17" }]);
   // Only the connection with a target is left, and only the sign-in no connection pointed at.
   expect(connections).toEqual([{ id: template, target: "object" }]);
   expect(attempts).toEqual([{ id: ids.unrelatedAttempt }]);

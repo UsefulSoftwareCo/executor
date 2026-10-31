@@ -16,7 +16,12 @@ import { initializeAppRepository, recoverAppRepositories } from "./initial-sourc
 import { makeWorkflowRuns } from "./workflows.ts";
 /** Compose native operations once for in-process and HTTP callers. */
 import { Crypto, Effect } from "effect";
-import type { Executor, ExecutorOptions, RemoteExecutorOptions } from "../contracts/executor.ts";
+import {
+  PersonalDataReportingHost,
+  type Executor,
+  type ExecutorOptions,
+  type RemoteExecutorOptions,
+} from "../contracts/executor.ts";
 import { AppId, CredentialsError, NotImplemented, StorageError } from "../contracts/shared.ts";
 import { makeWebhooks } from "./webhooks.ts";
 import { makeAppData } from "./app-storage.ts";
@@ -45,6 +50,7 @@ import { makeDeclarationCache, makeDeclarations } from "./declarations.ts";
 import { makeListings } from "./listings.ts";
 import { makeToolSearch } from "./tool-search.ts";
 import { makeEvents } from "./events.ts";
+import { makePersonalDataReporting } from "./personal-data-reporting.ts";
 import { AppEventSink, RuntimeProtocolFailed, type Runtime } from "../contracts/runtime.ts";
 
 /** Capture host cryptography; caller owns database and platform resource lifetimes. */
@@ -102,6 +108,15 @@ export const createExecutor = (
       options.hooks,
       options.background,
     );
+    const personalDataReporting = makePersonalDataReporting({
+      db,
+      credentials,
+      crypto,
+      oauth,
+      clients: options.oauth?.firstPartyClients ?? [],
+      httpClient: options.oauth?.httpClient,
+      urlPolicy: options.oauth?.urlPolicy,
+    });
     const declarations = makeDeclarations({
       cache,
       durable: options.cache?.durable,
@@ -252,6 +267,7 @@ export const createExecutor = (
         read: options.database.reactivity.read,
         write: options.database.reactivity.write,
       },
+      [PersonalDataReportingHost]: personalDataReporting,
       [PrefetchHost]: { invocation: tools.prefetchInvocation },
       [SavedOAuthClientsHost]: makeSavedOAuthClients(db, credentials, crypto, options.hooks, [
         ...(options.oauth?.savedClientCallbacks ?? []),

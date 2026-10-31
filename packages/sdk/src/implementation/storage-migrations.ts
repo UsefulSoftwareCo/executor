@@ -15,6 +15,7 @@ import {
   version4013Tables,
   version4014Tables,
   version4015Tables,
+  version4017Tables,
   appScheduleIndex,
   scopedRunKeyIndex,
   version402Tables,
@@ -27,6 +28,7 @@ import {
   storedOAuthClientIndexes,
   storedOAuthClientIssuerIndexes,
   queueReadIndexes,
+  accountReportIndexes,
 } from "./storage-schema.ts";
 
 /** Indexes the 4.0.1 step added. Released steps never change; later indexes join their own step. */
@@ -77,6 +79,7 @@ export const currentIndexes = [
   ...boundedReadIndexes,
   ...storedOAuthClientIssuerIndexes,
   ...queueReadIndexes,
+  ...accountReportIndexes,
 ] as const;
 
 /** Versions built by {@link indexOnlyVersion}. */
@@ -652,6 +655,26 @@ export const storageSchemas = [
   version4015Schema,
   // Additive: three indexes; the running server's queries are unchanged.
   indexOnlyVersion(version4015Schema, "4.0.16", queueReadIndexes),
+  // Additive: closed-account notices survive account removal, with the subject ID cleared.
+  schema({
+    version: "4.0.17",
+    tables: version4017Tables,
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
+    up: ({ auto }) =>
+      auto.pipe(
+        Effect.map((operations) => [
+          ...operations,
+          ...accountReportIndexes.map((sql) => ({ type: "custom" as const, sql })),
+        ]),
+      ),
+  }),
 ] as const;
 
 /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */

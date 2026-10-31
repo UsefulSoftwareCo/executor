@@ -2877,6 +2877,48 @@ export const makeOAuth = (
       // A refusal is the storage failure callers that do not distinguish it have always seen.
       Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())),
     );
+  /** Resolve an owner-scoped first-party grant for a trusted background task with no user actor. */
+  const resolveOwnedFirstParty = (
+    account: StoredAccount,
+    provider: ProviderDefinition,
+    owner: OwnerId,
+    firstParty: FirstPartyOAuthClientId,
+  ) =>
+    Effect.gen(function* () {
+      if (account.owner !== owner || !firstPartyClients.has(firstParty))
+        return yield* new StorageError();
+      const verifyOwner = () =>
+        query(() =>
+          db.findFirst("accounts", {
+            where: (b) => b.and(b("id", "=", account.id), b("owner", "=", owner)),
+          }),
+        ).pipe(
+          Effect.flatMap((row) =>
+            row === null
+              ? Effect.fail(new StorageError())
+              : Schema.decodeUnknownEffect(StoredAccount)(row).pipe(
+                  Effect.mapError(() => new StorageError()),
+                ),
+          ),
+          Effect.flatMap((current) =>
+            current.credentialGeneration === account.credentialGeneration
+              ? Effect.void
+              : Effect.fail(new StorageError()),
+          ),
+        );
+      yield* verifyOwner();
+      const credential = yield* resolveAuthorized(
+        account,
+        provider,
+        undefined,
+        { contested: false },
+        undefined,
+        verifyOwner(),
+      );
+      yield* verifyOwner();
+      if (credential.firstParty !== firstParty) return yield* new StorageError();
+      return credential;
+    });
   /**
    * Running the app's code needs the current actor to use the app; removing what the app
    * registered, or checking an account, does not. To run it, the actor's app access, its use of
@@ -3461,6 +3503,7 @@ export const makeOAuth = (
     },
     findOAuth,
     resolve: (account: StoredAccount, provider: ProviderDefinition) => resolve(account, provider),
+    resolveOwnedFirstParty,
     resolveSelected,
     renewRejected,
     usableAll,

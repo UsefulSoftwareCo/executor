@@ -628,7 +628,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
         ]);
         expect(ledger).toEqual([{ name: "app_account_links" }]);
-        expect(version).toEqual([{ value: "4.0.16" }]);
+        expect(version).toEqual([{ value: "4.0.17" }]);
         expect(plans).toEqual(
           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
         );

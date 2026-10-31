@@ -47,7 +47,7 @@ export const profileAppCopiesPending = (
 ];
 
 /**
- * Undo SDK 4.0.15 and 4.0.14 and label the database 4.0.13, as an upgrade from the version before
+ * Undo the SDK additions after 4.0.13 and label the fixture database 4.0.13, as the version before
  * app accounts finds it: webhook sources count no retries, schedules and webhook sources always have
  * an actor, workflow runs record no scope, and start keys are unique per app and actor without one.
  * The host's link step (hosted `9_app_account_links`, local `2_app_account_links`) ships with app
@@ -55,6 +55,7 @@ export const profileAppCopiesPending = (
  * ledger row and table.
  */
 export const beforeAppAccounts = (): ReadonlyArray<{ readonly sql: string }> => [
+  { sql: "DROP TABLE executor_account_reports" },
   { sql: "ALTER TABLE executor_webhook_sources DROP COLUMN retries" },
   { sql: "DROP INDEX executor_schedules_app" },
   { sql: "DROP INDEX executor_workflow_runs_scope_key" },

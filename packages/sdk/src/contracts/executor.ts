@@ -233,6 +233,13 @@ export interface ExecutorCache {
   readonly toolListings?: Partial<import("./declarations.ts").ToolListingPolicy>;
 }
 
+/** Host-only scheduled reporting of personal-data accounts for configured OAuth registrations. */
+export const PersonalDataReportingHost = Symbol("executor.PersonalDataReportingHost");
+export interface PersonalDataReportingHost {
+  /** Process bounded due work; interrupted leases become available after their stored expiry. */
+  readonly run: Effect.Effect<void, StorageError>;
+}
+
 /**
  * The API this host serves to apps that sign in to it, such as the built-in Executor app. Those
  * apps read the API through their own cache, keyed by their build, so an API change their build
@@ -436,6 +443,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
   readonly [WorkflowHost]: import("./workflow-runtime.ts").WorkflowHost;
   readonly [RepositoryHost]: RepositoryHost;
   readonly [StorageHost]: StorageHost;
+  readonly [PersonalDataReportingHost]: PersonalDataReportingHost;
   readonly [PrefetchHost]: PrefetchHost;
   readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
   readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
@@ -463,6 +471,7 @@ export type PromiseExecutor = Promisify<
     | typeof WebhookSourceHost
     | typeof RepositoryHost
     | typeof StorageHost
+    | typeof PersonalDataReportingHost
     | typeof PrefetchHost
     | typeof SavedOAuthClientsHost
     | typeof OwnerMovesHost

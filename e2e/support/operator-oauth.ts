@@ -12,9 +12,16 @@ export const OperatorOAuthFixture = Schema.Struct({
   clientId: Schema.String,
   clientSecret: Schema.String,
   v1Port: Schema.Number,
+  reportingPort: Schema.Number,
 });
 /** Where a managed Cloud run records its operator OAuth fixture, under the run directory. */
 export const operatorOAuthFile = "operator-oauth.json";
+/** Credentials for the isolated Cloud personal-data reporting scenario. */
+export const syntheticReportingClient = {
+  id: "synthetic-cloud-reporting",
+  clientId: "synthetic-reporting-client",
+  clientSecret: "synthetic-reporting-secret",
+} as const;
 
 /** The synthetic credentials of each client in `v1FirstPartyClients`, by ID. */
 export const v1FirstPartyCredentials = {

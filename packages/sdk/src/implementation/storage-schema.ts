@@ -837,11 +837,51 @@ const retriedWebhookSources = table("executor_webhook_sources", {
   retries: column("retries", Schema.Int).default(0),
 }).unique("executor_webhook_sources_app_account", ["app", "account"]);
 
-/** Tables of the 4.0.15 layout, the current one; 4.0.16 only adds indexes. */
+/** Tables of the 4.0.15 layout; 4.0.16 only adds indexes. */
 export const version4015Tables = {
   ...version4014Tables,
   webhookSources: retriedWebhookSources,
 };
+
+/** Per-registration personal-data reporting state; the subject ID is encrypted at rest. */
+const accountReports = table("executor_account_reports", {
+  /** This row follows one saved account connection, but deliberately survives upstream closure. */
+  id: idColumn("id", AccountId, { type: "varchar(255)" }),
+  /** The owning organization or self-host user. Network batches never cross this boundary. */
+  owner: column("owner", OwnerId, { type: "varchar(255)" }),
+  /** Fingerprint of the OAuth registration, not an access or client secret. */
+  clientFingerprint: column("client_fingerprint", Schema.String, { type: "varchar(64)" }),
+  /** A reconnect invalidates every identity and schedule saved for the former grant. */
+  credentialGeneration: column("credential_generation", Schema.Int),
+  status: column("status", Schema.Literals(["active", "refresh_pending", "closed"])),
+  encryptedExternalId: column("encrypted_external_id", Schema.NullOr(Schema.Uint8Array)),
+  /** Keyed digest coordinates duplicate subject copies without exposing the provider ID. */
+  externalIdFingerprint: column("external_id_fingerprint", Schema.NullOr(Schema.String), {
+    type: "varchar(64)",
+  }),
+  retrievedAt: column("retrieved_at", Schema.NullOr(Schema.Date)),
+  reportedAt: column("reported_at", Schema.NullOr(Schema.Date)),
+  cycleDays: column("cycle_days", Schema.Number).default(7),
+  nextReportAt: column("next_report_at", Schema.NullOr(Schema.Date)),
+  retryAt: column("retry_at", Schema.NullOr(Schema.Date)),
+  retries: column("retries", Schema.Int).default(0),
+  lease: column("lease", Schema.NullOr(Schema.String)),
+  leaseUntil: column("lease_until", Schema.NullOr(Schema.Date)),
+});
+
+/** Tables of the 4.0.17 layout, adding reporting state without changing the account row. */
+export const version4017Tables = {
+  ...version4015Tables,
+  accountReports,
+};
+
+/** Reporting state is read by owner, registration and due time. */
+export const accountReportIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_account_reports_due ON executor_account_reports (owner, client_fingerprint, next_report_at) WHERE status <> 'closed'",
+  "CREATE INDEX IF NOT EXISTS executor_account_reports_retry ON executor_account_reports (retry_at) WHERE status <> 'closed' AND retry_at IS NOT NULL",
+  "CREATE INDEX IF NOT EXISTS executor_account_reports_subject ON executor_account_reports (client_fingerprint, external_id_fingerprint) WHERE external_id_fingerprint IS NOT NULL",
+  "CREATE INDEX IF NOT EXISTS executor_account_reports_registration ON executor_account_reports (client_fingerprint, owner, id)",
+] as const;
 
 /**
  * Start keys are unique per app, actor and scope from 4.0.14, so a run started without a caller

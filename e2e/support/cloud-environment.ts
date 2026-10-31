@@ -31,6 +31,7 @@ import { freePort } from "./ports.ts";
 import {
   OperatorOAuthFixture,
   operatorOAuthFile,
+  syntheticReportingClient,
   v1FirstPartyClients,
   v1FirstPartyCredentials,
 } from "./operator-oauth.ts";
@@ -45,6 +46,7 @@ export const v1SyntheticCloudMailClientId = "synthetic-v1-cloud-mail-client";
  */
 const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
   const origin = `http://127.0.0.1:${fixture.port}`;
+  const reportingOrigin = `http://127.0.0.1:${fixture.reportingPort}`;
   return {
     EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS: JSON.stringify([
       {
@@ -59,10 +61,30 @@ const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
         defaultScopes: ["mail.read"],
         placement: { hosts: [`127.0.0.1:${fixture.port}`] },
       },
+      {
+        id: syntheticReportingClient.id,
+        label: "Executor for Synthetic Cloud Reporting",
+        server: {
+          issuer: reportingOrigin,
+          authorizationUrl: `${reportingOrigin}/authorize`,
+          tokenUrl: `${reportingOrigin}/token`,
+        },
+        tokenEndpointAuthMethod: "client_secret_basic",
+        defaultScopes: ["mail.read", "offline_access", "read:me"],
+        allowedScopes: ["mail.read", "offline_access", "read:me"],
+        placement: { hosts: [`127.0.0.1:${fixture.reportingPort}`] },
+        personalDataReporting: {
+          identityUrl: `${reportingOrigin}/me`,
+          reportUrl: `${reportingOrigin}/report-accounts`,
+          accountIdField: "accountId",
+        },
+      },
       ...v1FirstPartyClients(`http://127.0.0.1:${fixture.v1Port}`),
     ]),
     EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_ID: fixture.clientId,
     EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_SECRET: fixture.clientSecret,
+    EXECUTOR_OAUTH_SYNTHETIC_CLOUD_REPORTING_CLIENT_ID: syntheticReportingClient.clientId,
+    EXECUTOR_OAUTH_SYNTHETIC_CLOUD_REPORTING_CLIENT_SECRET: syntheticReportingClient.clientSecret,
     // v1's client IDs: the same as v2's for the clients v1's connections move to, and another for
     // the test client, so a v1 grant of it is a client the import must not move it to.
     V1_FIRST_PARTY_CLIENT_IDS: JSON.stringify({
@@ -192,6 +214,7 @@ export const startCloudEnvironment = (input: {
       clientId: "first-party-client",
       clientSecret: randomBytes(16).toString("hex"),
       v1Port: yield* freePort,
+      reportingPort: yield* freePort,
     });
     const operatorOAuthPath = `${directory}/${operatorOAuthFile}`;
     yield* fs.writeFileString(operatorOAuthPath, JSON.stringify(operatorOAuth), { mode: 0o600 });
@@ -285,6 +308,7 @@ export const startCloudEnvironment = (input: {
       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
       CLOUD_DEV_EXTERNAL_DATABASE: "true",
       EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
+      EXECUTOR_TEST_PERSONAL_DATA_REPORTING_CRON: "* * * * *",
       // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
       V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
       V1_DATABASE_URL: `postgresql://${v1DatabaseReader}:${v1ReaderPassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,

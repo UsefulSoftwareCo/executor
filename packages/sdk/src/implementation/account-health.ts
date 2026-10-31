@@ -69,6 +69,7 @@ type CheckRow = {
   readonly infoCheckedAt: Date | null;
   readonly message: string | null;
 };
+type ReportState = { readonly status: string };
 
 /** The slot whose provider check covers this account in the app's active version. */
 const checkedSlot = (app: App, account: Pick<HealthAccount, "provider">) =>
@@ -129,7 +130,12 @@ export const makeAccountHealth = (
   hostApi: HostApi | undefined,
 ) => {
   /** One account's health from the apps that use it and its recorded checks. */
-  const project = (account: HealthAccount, apps: readonly App[], rows: readonly CheckRow[]) =>
+  const project = (
+    account: HealthAccount,
+    apps: readonly App[],
+    rows: readonly CheckRow[],
+    report: ReportState | undefined,
+  ) =>
     Effect.gen(function* () {
       const latest = rows
         .filter((row) => row.info !== null && row.infoCheckedAt !== null)
@@ -140,6 +146,7 @@ export const makeAccountHealth = (
         account: account.id,
         info: Option.getOrNull(info),
         infoCheckedAt: Option.isSome(info) ? (latest?.infoCheckedAt ?? null) : null,
+        ...(report?.status === "closed" ? { personalDataStatus: "account_closed" as const } : {}),
         apps: yield* Effect.forEach(apps, (app) =>
           Effect.gen(function* () {
             const row = rows.find((item) => item.app === app.id);
@@ -170,7 +177,15 @@ export const makeAccountHealth = (
       const rows = yield* query(() =>
         db.findMany("accountChecks", { where: (b) => b("account", "=", account.id) }),
       );
-      return yield* project(account, apps, rows);
+      const report = yield* query(() =>
+        db.findFirst("accountReports", { where: (b) => b("id", "=", account.id) }),
+      );
+      return yield* project(
+        account,
+        apps,
+        rows,
+        report === null ? undefined : { status: report.status },
+      );
     });
 
   /**
@@ -192,6 +207,10 @@ export const makeAccountHealth = (
       const rows = yield* query(() =>
         db.findMany("accountChecks", { where: (b) => b("account", "in", ids) }),
       );
+      const reportRows = yield* query(() =>
+        db.findMany("accountReports", { where: (b) => b("id", "in", ids) }),
+      );
+      const reports = new Map(reportRows.map((row) => [row.id, row.status]));
       const linked = [...new Set(input.links.map((link) => link.app))];
       const apps = linked.length === 0 ? [] : yield* listApps({ ids: linked });
       return yield* Effect.forEach(accounts, (account) =>
@@ -201,6 +220,7 @@ export const makeAccountHealth = (
             input.links.some((link) => link.app === app.id && link.account === account.id),
           ),
           rows.filter((row) => row.account === account.id),
+          reports.has(account.id) ? { status: reports.get(account.id)! } : undefined,
         ),
       );
     }).pipe(Effect.withSpan("sdk.accounts.listHealth"));

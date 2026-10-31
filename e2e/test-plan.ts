@@ -3019,6 +3019,77 @@ export const scenarios = plan({
       local: na("The shared SDK and account view are exercised through hosted APIs."),
     },
   },
+  personalDataReporting: {
+    fixtures: "actors",
+    file: "personal-data-reporting.spec.ts",
+    title:
+      "scheduled personal-data reports refresh identity, retry safely and remove closed accounts",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: scheduled,
+    },
+  },
+  personalDataClientIsolation: {
+    fixtures: "actors",
+    file: "personal-data-reporting-clients.spec.ts",
+    title: "personal-data report state stays separate across operator OAuth registrations",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The proof uses two E2E operator OAuth clients on one issuer."),
+      local: scheduled,
+    },
+  },
+  personalDataReconnectCadence: {
+    fixtures: "actors",
+    file: "personal-data-reporting-cadence.spec.ts",
+    title: "personal-data reconnect keeps the subject's report cycle",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Self-host exercises persisted SDK cadence through the public OAuth API."),
+      local: na("Uses hosted account APIs."),
+    },
+  },
+  personalDataBatching: {
+    fixtures: "actors",
+    file: "personal-data-reporting-cadence.spec.ts",
+    title: "personal-data reports split 91 subjects and retain progress through restart",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Self-host exercises shared SDK batching and persisted cadence."),
+      local: na("Uses hosted account APIs."),
+    },
+  },
+  personalDataOwnerIsolation: {
+    fixtures: "actors",
+    file: "personal-data-reporting-cadence.spec.ts",
+    title: "personal-data reports use each organization's own grant and refuse peer account reads",
+    targets: {
+      "self-host": na("Self-host permits only one organization."),
+      cloud: managedCloud,
+      local: na("Uses hosted account APIs."),
+    },
+  },
+  personalDataOldestIdentity: {
+    fixtures: "actors",
+    file: "personal-data-reporting-cadence.spec.ts",
+    title: "personal-data reports retain the oldest saved identity retrieval time",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Self-host exercises shared SDK health and report state."),
+      local: na("Uses hosted account APIs."),
+    },
+  },
+  personalDataRetryCadence: {
+    fixtures: "actors",
+    file: "personal-data-reporting-cadence.spec.ts",
+    title: "personal-data failures honor persisted retry time without repeating in one run",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Self-host exercises shared SDK retry state through the external issuer."),
+      local: na("Uses hosted account APIs."),
+    },
+  },
   mcpAccountHealth: {
     fixtures: "actors",
     file: "mcp-account-health.spec.ts",

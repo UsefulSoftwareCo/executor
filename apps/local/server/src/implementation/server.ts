@@ -29,6 +29,7 @@ import { SqlClient } from "effect/sql";
 /** Local host composition. The SDK owns operations; this package owns local resources and access. */
 import {
   WorkflowHost,
+  PersonalDataReportingHost,
   RepositoryHost,
   type Executor,
   AccountNotFound,
@@ -246,6 +247,12 @@ export const localApi = (
         executor[WorkflowHost].reconcile.pipe(
           Effect.catch(() => Effect.logWarning("Workflow queue reconciliation failed")),
           Effect.repeat(Schedule.spaced("5 seconds")),
+        ),
+      );
+      yield* Effect.forkScoped(
+        executor[PersonalDataReportingHost].run.pipe(
+          Effect.catch(() => Effect.logWarning("Personal-data reporting failed")),
+          Effect.repeat(Schedule.spaced("15 minutes")),
         ),
       );
       const scheduleConcurrency = yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
