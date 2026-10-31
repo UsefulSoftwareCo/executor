@@ -1,5 +1,6 @@
 import type { AuthContext } from "@better-auth/core";
 import type { Principal } from "../contracts/auth.ts";
+import { requestAuthentication, requestTombstones } from "./batch-authentication.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import {
   CurrentUsage,
@@ -99,7 +100,7 @@ export const lookupOrganizationSlug = (call: () => Promise<unknown>) =>
  * organization that is being erased.
  */
 const refuseRemoved = (organization: OrganizationId) =>
-  Effect.flatMap(OrganizationTombstones, (removed) => removed(organization)).pipe(
+  Effect.flatMap(requestTombstones, (removed) => removed(organization)).pipe(
     Effect.mapError(() => new AuthenticationUnavailable()),
     Effect.flatMap((gone) => (gone ? Effect.fail(new OrganizationForbidden()) : Effect.void)),
   );
@@ -157,14 +158,15 @@ export const withOrganizationRequest = <E, R>(
       request.headers.origin !== auth.origin
     )
       return yield* new Forbidden();
-    const principal = yield* auth.current(headers);
+    const identity = yield* requestAuthentication(auth);
+    const principal = yield* identity.current(headers);
     if (principal === null) return yield* new Unauthorized();
-    const organization = yield* auth.organization(reference);
+    const organization = yield* identity.organization(reference);
     // Removal is reported before membership. The reads run one after the other: on Cloud they
     // share the event's one SQL connection, and overlapping them would open a second one, a TLS
     // login that costs far more than the few milliseconds the second read waits.
     yield* refuseRemoved(organization);
-    const membership = yield* auth.membership(principal, organization);
+    const membership = yield* identity.membership(principal, organization);
     // The route's reference resolves to any organization, so the request names it, and the session's
     // user, only once the membership shows it is the caller's own. A request refused before then,
     // for an organization the caller does not belong to or one being removed, names neither, and so

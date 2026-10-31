@@ -1,4 +1,5 @@
 import { apiKeys, apiKeyManagement } from "./api-keys.ts";
+import { requestAuthentication } from "./batch-authentication.ts";
 import {
   CurrentUsage,
   isReadMethod,
@@ -154,7 +155,8 @@ export const requireUserLive = Layer.effect(
         ) {
           return yield* Effect.fail(new Forbidden());
         }
-        const principal = yield* auth.current(new Headers(request.headers));
+        const identity = yield* requestAuthentication(auth);
+        const principal = yield* identity.current(new Headers(request.headers));
         if (principal === null) return yield* Effect.fail(new Unauthorized());
         const operation = {
           area: group.identifier,
