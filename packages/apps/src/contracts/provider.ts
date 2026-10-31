@@ -97,10 +97,13 @@ export type OAuthTokenRequestFormat = typeof OAuthTokenRequestFormat.Type;
 
 /**
  * Where a service nests the grant in its token response, as a dot-separated member path. Slack
- * returns a user token under `authed_user`.
+ * returns a user token under `authed_user`. When `requiredOnExchange` is true, an authorization
+ * code response must include the nested access token; a complete top-level grant cannot replace it.
+ * Refresh responses keep the usual top-level fallback.
  */
 export const OAuthTokenResponse = Schema.Struct({
   path: Schema.String.check(Schema.isPattern(/^[^.]+(\.[^.]+)*$/)),
+  requiredOnExchange: Schema.optionalKey(Schema.Boolean),
 });
 export type OAuthTokenResponse = typeof OAuthTokenResponse.Type;
 
@@ -115,8 +118,10 @@ const tokenRequestOptions = {
 const oauthOptions = {
   ...tokenRequestOptions,
   /**
-   * Read the grant from this nested member of the token response when the top-level response has
-   * no access token or no scope. Slack's user tokens use `{ path: "authed_user" }`.
+   * Read the grant from this nested member when the top-level response has no access token or no
+   * scope. `requiredOnExchange` makes the nested grant authoritative for authorization-code
+   * exchange while preserving top-level refresh responses. Slack's user tokens use
+   * `{ path: "authed_user" }`.
    */
   tokenResponse: Schema.optionalKey(OAuthTokenResponse),
   grant: Schema.optionalKey(Schema.Literal("authorization_code")),

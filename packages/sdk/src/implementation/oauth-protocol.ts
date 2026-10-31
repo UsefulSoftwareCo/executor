@@ -705,15 +705,20 @@ const isObject = (value: unknown): value is object =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 /**
- * The grant a provider declared at a nested member, used when the top-level response has no
- * access token or no scope. Slack answers a user-only install with `authed_user` holding the
- * user token and its comma-separated scopes. Other top-level members, such as Slack's `team`,
- * stay beside it; the top-level grant members do not.
+ * Select the declared nested grant when needed. An authorization-code exchange can require it,
+ * removing top-level grant fields if the path has no access token so a second grant cannot be used.
+ * Refreshes leave it optional because providers may return a top-level renewed grant. Slack's
+ * `team` and other non-grant members stay beside the selected grant.
  */
-const nestedGrant = (body: object, nested: OAuthTokenResponse | undefined) => {
+const nestedGrant = (
+  body: object,
+  nested: OAuthTokenResponse | undefined,
+  requireNestedPath: boolean,
+) => {
   if (nested === undefined) return body;
   const scope = Reflect.get(body, "scope");
   if (
+    !requireNestedPath &&
     typeof Reflect.get(body, "access_token") === "string" &&
     typeof scope === "string" &&
     scope !== ""
@@ -722,7 +727,10 @@ const nestedGrant = (body: object, nested: OAuthTokenResponse | undefined) => {
   let grant: unknown = body;
   for (const member of nested.path.split("."))
     grant = isObject(grant) ? Reflect.get(grant, member) : undefined;
-  if (!isObject(grant) || typeof Reflect.get(grant, "access_token") !== "string") return body;
+  if (!isObject(grant) || typeof Reflect.get(grant, "access_token") !== "string") {
+    if (!requireNestedPath) return body;
+    return Object.fromEntries(Object.entries(body).filter(([key]) => !grantMembers.includes(key)));
+  }
   const merged: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(body))
     if (!grantMembers.includes(key)) merged[key] = value;
@@ -740,10 +748,15 @@ const nestedGrant = (body: object, nested: OAuthTokenResponse | undefined) => {
 /**
  * An RFC 6749 §5.2 error body is an error response, whatever its HTTP status. Some services send
  * it with HTTP 200; with a 401 WWW-Authenticate challenge, oauth4webapi reports the challenge
- * before reading the body. Other HTTP 200 JSON objects are normalized for validation, reading a
- * declared nested grant first.
+ * before reading the body. Other HTTP 200 JSON objects are normalized for validation. Only an
+ * authorization-code exchange opts into requiring a declared nested grant; refreshes keep the
+ * existing top-level fallback.
  */
-const tokenResponse = async (response: Response, nested?: OAuthTokenResponse) => {
+const tokenResponse = async (
+  response: Response,
+  nested?: OAuthTokenResponse,
+  requireNestedGrant = false,
+) => {
   const body = await jsonObject(response);
   if (body === undefined) return response;
   const refused = oauthErrorBody(body);
@@ -758,10 +771,13 @@ const tokenResponse = async (response: Response, nested?: OAuthTokenResponse) =>
       },
     });
   if (response.status !== 200) return response;
-  return new Response(JSON.stringify(normalizedTokens(nestedGrant(body, nested))), {
-    status: response.status,
-    headers: response.headers,
-  });
+  return new Response(
+    JSON.stringify(normalizedTokens(nestedGrant(body, nested, requireNestedGrant))),
+    {
+      status: response.status,
+      headers: response.headers,
+    },
+  );
 };
 
 /**
@@ -1742,6 +1758,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
               },
             ),
             input.tokenResponse,
+            input.tokenResponse?.requiredOnExchange === true,
           );
           return oauth.processAuthorizationCodeResponse(server, input.client, response, {
             recognizedTokenTypes: await tokenTypes(response),
