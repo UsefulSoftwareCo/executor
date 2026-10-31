@@ -187,6 +187,7 @@ export const appRuntime = (host: AppRuntimeHost) =>
             database: input.database,
             command,
             accounts: Redacted.value(input.accounts),
+            ...(input.caller === undefined ? {} : { caller: input.caller }),
             // Workers RPC structured-clones its arguments; Effect headers carry a prototype it rejects.
             headers: Object.fromEntries(Object.entries(yield* traceHeaders)),
             ...(input.hostApi === undefined ? {} : { hostApi: input.hostApi }),
@@ -429,6 +430,8 @@ export const appRuntime = (host: AppRuntimeHost) =>
           Json,
           HostCallError,
         ).pipe(traced("call", app(input))),
+      connect: (input) =>
+        dispatch(input, input.command, Json, HostCallError).pipe(traced("connect", app(input))),
       webhook: (input) =>
         dispatch(input, input.command, Json, HostCallError).pipe(
           traced("webhook", {

@@ -8,6 +8,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "../components/avatar.tsx";
 import { Button } from "../components/button.tsx";
 import { LocalTime, shortMoment } from "../components/local-time.tsx";
 import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
+import { AccountDisplayStatus } from "./account-status.tsx";
 
 type AccountInfo = NonNullable<AccountHealth["info"]>;
 
@@ -248,7 +249,7 @@ export function AccountCheckResult({
     return <span className="text-[12px] text-muted-foreground">Not checked</span>;
   const { label, tone } = describeAccountCheck(health.check.status);
   return (
-    <span className="inline-flex min-w-0 flex-col items-end gap-1 text-[12px] text-muted-foreground">
+    <span className="inline-flex w-full min-w-0 max-w-[36rem] flex-col items-start gap-1 text-[12px] text-foreground/80">
       <span className="inline-flex items-center gap-2">
         <span
           className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${health.check.current ? pills[tone] : pills.muted}`}
@@ -264,6 +265,9 @@ export function AccountCheckResult({
         </span>
         <LocalTime value={health.check.checkedAt} options={shortMoment} />
       </span>
+      {health.check.displayStatus !== undefined && (
+        <AccountDisplayStatus status={health.check.displayStatus} current={health.check.current} />
+      )}
       {health.check.message !== undefined && (
         <span className="max-w-[28rem] text-right wrap-anywhere" data-check-message>
           {health.check.message}

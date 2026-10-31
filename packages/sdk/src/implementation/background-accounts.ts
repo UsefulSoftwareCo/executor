@@ -63,6 +63,7 @@ export const backgroundAccounts = (
     /** The subject a user-scope run is checked against; undefined for app-scope work. */
     readonly actor: string | undefined;
     readonly source?: AccountId | undefined;
+    readonly connecting?: string;
   },
 ) =>
   Effect.gen(function* () {
@@ -99,6 +100,7 @@ export const backgroundAccounts = (
           input.source !== undefined && linked.includes(input.source)
             ? input.source
             : plainAccount(linked);
+        if (account === undefined && input.connecting !== undefined) continue;
         if (account === undefined) return yield* fail(slot, "app");
         resolved.app[slot] = [account];
       }
@@ -147,6 +149,7 @@ export const backgroundAccounts = (
         input.source !== undefined && !appSource && candidates.includes(input.source)
           ? input.source
           : plainAccount(candidates);
+      if (account === undefined && input.connecting !== undefined) continue;
       if (account === undefined) return yield* fail(slot, "user");
       resolved.user[slot] = [account];
     }
