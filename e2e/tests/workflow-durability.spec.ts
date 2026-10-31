@@ -179,6 +179,7 @@ layer(HostedLive, { excludeTestServices: true })("Workflow durability", (it) => 
         });
         yield* Effect.logInfo(`Workflow sleep window: ${run.id}`);
         const completed = yield* app.wait(run.id, "complete", hold + 40000);
+        expect(JSON.stringify(completed)).not.toContain("ExecutorEncryptedWorkflow");
         const output = yield* Schema.decodeUnknownEffect(
           Schema.Struct({ before: Schema.String, after: Schema.String, deadline: Schema.Number }),
         )(completed.output);
