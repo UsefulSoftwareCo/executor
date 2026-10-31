@@ -8204,6 +8204,25 @@ export const scenarios = plan({
       local: na("This scenario uses hosted app management routes."),
     },
   },
+  appCallerIdentity: {
+    fixtures: "actors",
+    file: "app-caller-identity.spec.ts",
+    title: "shared app handlers and cached dynamic tools retain each caller's stable identity",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no hosted organization members to share an app with."),
+    },
+  },
+  localAppCallerIdentity: {
+    file: "local-app-caller-identity.spec.ts",
+    title: "Local app handlers receive the stable caller independently of accounts and tool input",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted caller identity has a separate shared-app scenario."),
+      cloud: na("Hosted caller identity has a separate shared-app scenario."),
+    },
+  },
   workflowStarts: {
     fixtures: "actors",
     file: "workflows.spec.ts",
