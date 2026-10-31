@@ -360,7 +360,7 @@ export const AccountSelectionInvalid = UserFacingError.define({
         },
         provider_mismatch: {
           title: "Account belongs to another provider",
-          description: `The account was connected for a different provider definition than the one this app now declares for “${slot}”. Changing a provider’s name, labels, fields or OAuth scopes makes it a new provider, and accounts connected for the old one don’t fit it.`,
+          description: `The account was connected for a different provider definition than the one this app now declares for “${slot}”. Changing a provider’s name, methods, fields or OAuth scopes makes it a new provider, and accounts connected for the old one don’t fit it. Changing only display text, such as a method’s label, doesn’t.`,
           recovery: {
             action: "Open Accounts and connect a new account for this requirement.",
             instructions:

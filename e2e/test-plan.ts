@@ -4601,6 +4601,45 @@ export const scenarios = plan({
       local: na("Hosted redirect returns to the app; local OAuth naming has its own scenario."),
     },
   },
+  providerLabelIdentity: {
+    fixtures: "actors",
+    file: "provider-label-identity.spec.ts",
+    title:
+      "Rewording a secrets method or its field's title and description keeps its provider and linked account, each app's connect form shows its own wording, and changing a field or removing a method makes a new provider",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Provider IDs are the SDK's deploy logic, which every host shares."),
+      local: na("Provider IDs are the SDK's deploy logic, which every host shares."),
+    },
+  },
+  providerLabelIdentityLegacy: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "provider-label-identity.spec.ts",
+    title:
+      "An account saved under a provider ID that included its label keeps filling the requirement when the label changes, and new apps with any wording of that provider get the same ID and account",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+      local: na("Provider IDs are the SDK's deploy logic, which every host shares."),
+    },
+  },
+  providerLabelIdentityUnrecorded: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "provider-label-identity.spec.ts",
+    title:
+      "Before the provider identity backfill, a deploy records stored providers' identity and new wordings converge on the least stored provider ID, while exact old wordings keep theirs",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+      local: na("Provider IDs are the SDK's deploy logic, which every host shares."),
+    },
+  },
   connectionLinkTargetChanged: {
     fixtures: "actors",
     file: "connection-link-target-changed.spec.ts",

@@ -30,6 +30,11 @@ import {
   profileAppCopiesStepName,
   type ProfileAppCopiesHost,
 } from "./profile-app-copies.ts";
+import {
+  providerIdentitiesStep,
+  providerIdentitiesStepName,
+  type ProviderIdentitiesStepHost,
+} from "./provider-identities.ts";
 import type { SqlClient } from "effect/sql";
 import type { DataStep } from "../contracts/data-steps.ts";
 
@@ -41,7 +46,8 @@ export type DataStepHost = FrameworkPinHost &
   StoredOAuthClientsHost &
   LocalOwnersHost &
   OAuthClientsByIssuerHost &
-  ProfileAppCopiesHost;
+  ProfileAppCopiesHost &
+  ProviderIdentitiesStepHost;
 
 /**
  * A step by its journal name. A `local` step is listed only by a host that passes local owners:
@@ -92,6 +98,8 @@ const listedSteps: ReadonlyArray<ListedStep> = [
   { name: savedOAuthClientsByIssuerStepName, step: savedOAuthClientsByIssuerStep },
   // One-off: make the app copies SDK storage 4.0.13 planned for profiles with other accounts.
   { name: profileAppCopiesStepName, step: profileAppCopiesStep },
+  // One-off: record the identity of providers stored before SDK storage 4.0.17.
+  { name: providerIdentitiesStepName, step: providerIdentitiesStep },
 ];
 
 export const hostDataSteps = (host: DataStepHost): ReadonlyArray<DataStep<SqlClient.SqlClient>> =>

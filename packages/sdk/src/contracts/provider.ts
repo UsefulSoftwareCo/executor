@@ -1,7 +1,7 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 /** Provider definitions are authored in apps, not registered through SDK CRUD. */
-import { Schema } from "effect";
-import { ProviderId } from "./shared.ts";
+import { type Effect, Schema } from "effect";
+import { ProviderId, type StorageError } from "./shared.ts";
 import { CredentialHost, DeclaredAuthMethod } from "apps/contracts";
 
 /** An author-chosen method name such as apiKey or oauth. */
@@ -27,7 +27,38 @@ export const ProviderDefinition = Schema.Struct({
 
 export type ProviderDefinition = typeof ProviderDefinition.Type;
 
-/** A provider reference with its definition, as exposed in app requirements. */
+/**
+ * Host-only: recording the identity of providers stored before SDK storage 4.0.17, outside the
+ * HTTP and Promise facades. Data step `11_provider_identities` walks them.
+ */
+export const ProviderIdentitiesHost = Symbol("executor.ProviderIdentities");
+
+/** What recording one provider's identity did, as a data step reports it. */
+export type ProviderIdentityOutcome =
+  | "recorded"
+  | "would_record"
+  | "already_recorded"
+  | "absent"
+  | "unreadable"
+  | "unavailable";
+
+export interface ProviderIdentities {
+  /** Providers stored without an identity, in ID order. */
+  readonly items: Effect.Effect<
+    ReadonlyArray<{
+      readonly id: ProviderId;
+      /** Records it with `apply`; otherwise reports what recording would do. Never fails. */
+      readonly record: (apply: boolean) => Effect.Effect<ProviderIdentityOutcome>;
+    }>,
+    StorageError
+  >;
+}
+
+/**
+ * A provider reference with its definition. In app requirements it is that app version's own
+ * definition. A stored provider's definition holds the display text, such as method labels, of the
+ * last app deployed with it, so show an app's wording from its requirements.
+ */
 export const Provider = Schema.Struct({
   id: ProviderId,
   definition: ProviderDefinition,
