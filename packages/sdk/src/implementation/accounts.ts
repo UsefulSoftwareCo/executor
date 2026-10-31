@@ -20,6 +20,8 @@ import {
 } from "../contracts/shared.ts";
 import { StoredAccount, type Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
+import { accountGrantId, accountIdentity } from "./account-identities.ts";
+import { releaseAccountGrant } from "./oauth-grant-bindings.ts";
 import { canonical, validateFields } from "./provider.ts";
 
 /** A stable digest of stored ciphertext; any credential write changes it. */
@@ -185,9 +187,11 @@ export const makeAccounts = (
   get: (input: Parameters<Executor["accounts"]["get"]>[0]) =>
     Effect.gen(function* () {
       const row = yield* ownedAccount(db, input);
-      return yield* Schema.decodeUnknownEffect(Account)(row).pipe(
-        Effect.mapError(() => new StorageError()),
-      );
+      const identity = yield* accountIdentity(db, row, lifecycle);
+      return yield* Schema.decodeUnknownEffect(Account)({
+        ...row,
+        ...(identity === undefined ? {} : { identity }),
+      }).pipe(Effect.mapError(() => new StorageError()));
     }).pipe(Effect.withSpan("sdk.accounts.get")),
   provider: (input: Parameters<Executor["accounts"]["provider"]>[0]) =>
     Effect.gen(function* () {
@@ -291,21 +295,14 @@ export const makeAccounts = (
             yield* query(() =>
               tx.deleteMany("webhookAccounts", { where: (b) => b("account", "=", input.account) }),
             );
-            const grant = yield* query(() =>
-              tx.findFirst("oauthGrants", { where: (b) => b("id", "=", input.account) }),
-            );
-            yield* query(() =>
-              tx.deleteMany("oauthGrants", { where: (b) => b("id", "=", input.account) }),
-            );
+
             yield* query(() =>
               tx.deleteMany("accountChecks", { where: (b) => b("account", "=", input.account) }),
             );
             yield* query(() =>
               tx.deleteMany("accounts", { where: (b) => b("id", "=", input.account) }),
             );
-            return grant === null
-              ? undefined
-              : { account: row.id, provider: row.provider, encrypted: grant.encrypted };
+            return yield* releaseAccountGrant(tx, row);
           }
           return undefined;
         }),
@@ -319,7 +316,16 @@ export const makeAccounts = (
     Effect.gen(function* () {
       const rows = yield* query(() =>
         db.findMany("accounts", {
-          select: ["id", "provider", "method", "label", "description", "owner", "createdAt"],
+          select: [
+            "id",
+            "provider",
+            "method",
+            "label",
+            "description",
+            "owner",
+            "createdAt",
+            "identityId",
+          ],
           where: (b) =>
             b.and(
               b("owner", "=", input.owner),
@@ -328,7 +334,13 @@ export const makeAccounts = (
           orderBy: ["id", "asc"],
         }),
       );
-      return yield* Schema.decodeUnknownEffect(Schema.Array(Account))(rows).pipe(
+      const identified = yield* Effect.forEach(rows, (row) =>
+        Effect.gen(function* () {
+          const identity = yield* accountIdentity(db, row, lifecycle);
+          return { ...row, ...(identity === undefined ? {} : { identity }) };
+        }),
+      );
+      return yield* Schema.decodeUnknownEffect(Schema.Array(Account))(identified).pipe(
         Effect.mapError(() => new StorageError()),
       );
     }).pipe(Effect.withSpan("sdk.accounts.list")),
@@ -356,9 +368,7 @@ export const makeAccounts = (
   signIn: (input: Parameters<Executor["accounts"]["signIn"]>[0]) =>
     Effect.gen(function* () {
       const account = yield* ownedAccount(db, input);
-      const credentialsFingerprint = yield* fingerprint(
-        Redacted.value(account.encryptedCredentials),
-      );
+      let credentialsFingerprint = yield* fingerprint(Redacted.value(account.encryptedCredentials));
       const unavailable: AccountSignIn = { state: "unavailable", credentialsFingerprint };
       const row = yield* query(() =>
         db.findFirst("providers", { where: (b) => b("id", "=", account.provider) }),
@@ -376,16 +386,19 @@ export const makeAccounts = (
           credentialsFingerprint,
         } satisfies AccountSignIn;
       const grant = yield* query(() =>
-        db.findFirst("oauthGrants", { where: (b) => b("id", "=", account.id) }),
+        db.findFirst("oauthGrants", { where: (b) => b("id", "=", accountGrantId(account)) }),
       );
+      if (grant !== null) credentialsFingerprint = yield* fingerprint(grant.encrypted);
       if (grant === null || grant.status === "reconnect")
         return { state: "reconnect", credentialsFingerprint } satisfies AccountSignIn;
       // A grant claimed by a renewal, including one a stopped process abandoned, still carries
       // the grant it started from; the next live resolve settles it.
-      const decoded = yield* credentials.decrypt(account.id, Redacted.make(grant.encrypted)).pipe(
-        Effect.flatMap((value) => Schema.decodeUnknownEffect(OAuthGrant)(Redacted.value(value))),
-        Effect.option,
-      );
+      const decoded = yield* credentials
+        .decrypt(accountGrantId(account), Redacted.make(grant.encrypted))
+        .pipe(
+          Effect.flatMap((value) => Schema.decodeUnknownEffect(OAuthGrant)(Redacted.value(value))),
+          Effect.option,
+        );
       if (decoded._tag === "None") return unavailable;
       const saved = decoded.value;
       const reconnectAt =
@@ -428,13 +441,15 @@ export const credentialsReadable = (db: Query, credentials: Credentials) => (acc
     if (method === undefined) return false;
     if (method.type === "secrets") return true;
     const grant = yield* query(() =>
-      db.findFirst("oauthGrants", { where: (b) => b("id", "=", account) }),
+      db.findFirst("oauthGrants", { where: (b) => b("id", "=", accountGrantId(stored.value)) }),
     );
     if (grant === null) return false;
-    const decoded = yield* credentials.decrypt(account, Redacted.make(grant.encrypted)).pipe(
-      Effect.flatMap((value) => Schema.decodeUnknownEffect(OAuthGrant)(Redacted.value(value))),
-      Effect.option,
-    );
+    const decoded = yield* credentials
+      .decrypt(accountGrantId(stored.value), Redacted.make(grant.encrypted))
+      .pipe(
+        Effect.flatMap((value) => Schema.decodeUnknownEffect(OAuthGrant)(Redacted.value(value))),
+        Effect.option,
+      );
     return Option.isSome(decoded);
   }).pipe(Effect.withSpan("sdk.accounts.credentialsReadable"));
 

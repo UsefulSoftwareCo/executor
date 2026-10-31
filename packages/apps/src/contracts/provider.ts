@@ -130,6 +130,8 @@ const oauthOptions = {
   tokenEndpointAuthMethod: Schema.optionalKey(OAuthClientAuth),
   /** Omitted uses discovery; null explicitly suppresses the resource parameter. */
   resource: Schema.optionalKey(Schema.NullOr(HttpUrl)),
+  /** The host verifies this issuer's discovery and UserInfo before grouping accounts. */
+  identity: Schema.optionalKey(Schema.Struct({ issuer: HttpUrl, name: Schema.NonEmptyString })),
 };
 
 /**

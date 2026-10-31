@@ -1,3 +1,9 @@
+import {
+  checkOAuthConnections,
+  planOAuth,
+  reuseOAuth,
+  cancelConnection,
+} from "./oauth-account-connections.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { CurrentAuthorization } from "../contracts/authorization.ts";
@@ -297,9 +303,7 @@ export const startOAuth = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const intent = yield* checkConnection(
-      yield* ownedConnection(executor, owner, input.connection),
-    );
+    const { intent } = yield* checkOAuthConnections(executor, owner, input);
     const client = yield* connectionClient(executor, owner, input);
     const { client: _selected, ...rest } = input;
     return yield* executor.accountConnections
@@ -313,9 +317,7 @@ export const completeOAuth = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const intent = yield* checkConnection(
-      yield* ownedConnection(executor, owner, input.connection),
-    );
+    const { intent } = yield* checkOAuthConnections(executor, owner, input);
     return yield* executor.accountConnections.completeOAuth({ ...input, owner }).pipe(
       accountDestination(intent.destination),
       Effect.tap(() => Effect.flatten(ScheduleWakeup)),
@@ -363,6 +365,21 @@ export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts",
       .handle("submit", ({ params, payload }) =>
         Effect.flatMap(currentOwner, (owner) =>
           submitConnection(owner, { connection: params.connection, ...payload }),
+        ),
+      )
+      .handle("planOAuth", ({ params, payload }) =>
+        Effect.flatMap(currentOwner, (owner) =>
+          planOAuth(owner, { connection: params.connection, ...payload }),
+        ),
+      )
+      .handle("reuseOAuth", ({ params, payload }) =>
+        Effect.flatMap(currentOwner, (owner) =>
+          reuseOAuth(owner, { connection: params.connection, ...payload }),
+        ),
+      )
+      .handle("cancelConnection", ({ params }) =>
+        Effect.flatMap(currentOwner, (owner) =>
+          cancelConnection(owner, { connection: params.connection }),
         ),
       )
       .handle("startOAuth", ({ params, payload }) =>

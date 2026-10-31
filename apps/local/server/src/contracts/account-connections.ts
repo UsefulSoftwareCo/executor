@@ -182,6 +182,7 @@ const accountConnectApi = HttpApi.make("account-connect").add(
           OAuthClientUnavailable,
           OAuthClientNotFound,
           OAuthSetupFailed,
+          OAuthCompletionFailed,
         ],
       }),
     )

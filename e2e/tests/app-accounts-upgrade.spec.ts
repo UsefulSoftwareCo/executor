@@ -281,7 +281,7 @@ const upgradeFlow = <E, R>(
       before: { schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore },
       after: { version, step, scopes, nullable, schedulesAfter, sourcesAfter, linksAfter },
     });
-    expect(version).toEqual([{ value: "4.0.16" }]);
+    expect(version).toEqual([{ value: "4.0.24" }]);
     expect(step).toEqual([{ name: "app_account_links" }]);
     // The member's user link as it was, and the app link without a subject.
     expect(linksAfter).toEqual([

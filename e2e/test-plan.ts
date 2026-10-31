@@ -104,6 +104,89 @@ const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof Tes
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = plan({
+  accountConsentBatch: {
+    file: "account-consent.spec.ts",
+    title:
+      "One consent connects a batch and covering grants add later apps without another authorization",
+    targets: {
+      local: scheduled,
+      "self-host": na("The shared SDK consent path is exercised through the local management API."),
+      cloud: na("The synthetic authorization server listens on loopback."),
+    },
+  },
+  accountConsentUpgrade: {
+    file: "account-consent.spec.ts",
+    title:
+      "Incremental consent retains the selected client and identity and shares the renewed grant",
+    targets: {
+      local: scheduled,
+      "self-host": na("The shared SDK consent path is exercised through the local management API."),
+      cloud: na("The synthetic authorization server listens on loopback."),
+    },
+  },
+  accountConsentRefusal: {
+    file: "account-consent.spec.ts",
+    title: "Wrong identities denial and partial scopes preserve every working app during consent",
+    targets: {
+      local: scheduled,
+      "self-host": na("The shared SDK consent path is exercised through the local management API."),
+      cloud: na("The synthetic authorization server listens on loopback."),
+    },
+  },
+  accountConsentStale: {
+    file: "account-consent.spec.ts",
+    title:
+      "Refresh and changed targets reject stale consent atomically and resources remain separate",
+    targets: {
+      local: scheduled,
+      "self-host": na("The shared SDK consent path is exercised through the local management API."),
+      cloud: na("The synthetic authorization server listens on loopback."),
+    },
+  },
+  accountIdentityUpgrade: {
+    file: "account-identities.spec.ts",
+    legacyStorage: true,
+    title:
+      "Additive identity storage upgrades retained grants and IDs and survives repeated startup",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "The SDK storage migration is shared; this fixture also uses the local management API.",
+      ),
+      cloud: na("The scenario stops and upgrades one runner-owned database."),
+    },
+  },
+
+  accountIdentityGrouping: {
+    file: "account-identities.spec.ts",
+    title: "Verified subjects group five app bindings without merging email addresses or issuers",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Identity grouping uses the shared SDK; hosted policy is covered separately.",
+      ),
+      cloud: na("The synthetic identity issuer listens on loopback."),
+    },
+  },
+  accountGrantReuse: {
+    file: "account-identities.spec.ts",
+    title: "Covering grants share one refresh lock and survive reconnecting or deleting a binding",
+    targets: {
+      local: scheduled,
+      "self-host": na("Shared grant primitives use the same SDK on every host."),
+      cloud: na("The synthetic identity issuer listens on loopback."),
+    },
+  },
+  accountGrantRefusal: {
+    file: "account-identities.spec.ts",
+    title: "Separate grants never combine scopes and failed consent keeps working accounts intact",
+    targets: {
+      local: scheduled,
+      "self-host": na("Grant coverage and callback rollback use the same SDK on every host."),
+      cloud: na("The synthetic identity issuer listens on loopback."),
+    },
+  },
+
   cloudRoleHostRoutes: {
     fixtures: "actors",
     file: "cloud-role-hosts.spec.ts",

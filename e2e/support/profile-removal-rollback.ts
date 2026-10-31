@@ -1,3 +1,14 @@
+/** Remove the additive identity layout before a fixture labels retained data as an older schema. */
+export const beforeAccountIdentities = () =>
+  [
+    { sql: "ALTER TABLE executor_accounts DROP COLUMN identity_id, DROP COLUMN oauth_grant_id" },
+    { sql: "DROP TABLE executor_account_identities" },
+    {
+      sql: "ALTER TABLE executor_account_connections DROP COLUMN source_account, DROP COLUMN additional_targets",
+    },
+    { sql: "ALTER TABLE executor_oauth_grants DROP COLUMN owner" },
+  ] as const;
+
 /**
  * Undo SDK 4.0.13 for a fixture that labels the database an earlier version: its webhook sources,
  * planned app copies, actor columns, tool search targets, indexes and, on a database upgraded
@@ -55,6 +66,7 @@ export const profileAppCopiesPending = (
  * ledger row and table.
  */
 export const beforeAppAccounts = (): ReadonlyArray<{ readonly sql: string }> => [
+  ...beforeAccountIdentities(),
   { sql: "ALTER TABLE executor_webhook_sources DROP COLUMN retries" },
   { sql: "DROP INDEX executor_schedules_app" },
   { sql: "DROP INDEX executor_workflow_runs_scope_key" },

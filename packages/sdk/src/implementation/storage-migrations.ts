@@ -27,6 +27,8 @@ import {
   storedOAuthClientIndexes,
   storedOAuthClientIssuerIndexes,
   queueReadIndexes,
+  version4024Tables,
+  accountIdentityIndexes,
 } from "./storage-schema.ts";
 
 /** Indexes the 4.0.1 step added. Released steps never change; later indexes join their own step. */
@@ -77,6 +79,7 @@ export const currentIndexes = [
   ...boundedReadIndexes,
   ...storedOAuthClientIssuerIndexes,
   ...queueReadIndexes,
+  ...accountIdentityIndexes,
 ] as const;
 
 /** Versions built by {@link indexOnlyVersion}. */
@@ -652,6 +655,25 @@ export const storageSchemas = [
   version4015Schema,
   // Additive: three indexes; the running server's queries are unchanged.
   indexOnlyVersion(version4015Schema, "4.0.16", queueReadIndexes),
+  schema({
+    version: "4.0.24",
+    tables: version4024Tables,
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
+    up: ({ auto }) =>
+      auto.pipe(
+        Effect.map((operations) => [
+          ...operations,
+          ...accountIdentityIndexes.map((sql) => ({ type: "custom" as const, sql })),
+        ]),
+      ),
+  }),
 ] as const;
 
 /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */

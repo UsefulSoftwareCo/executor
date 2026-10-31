@@ -2,6 +2,7 @@ import { UserFacingError } from "@executor-js/utils/user-facing-error";
 /** Pending account setup shared by browser forms, OAuth, and other SDK consumers. */
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
+import { AccountIdentity } from "./account-identity.ts";
 import { Account, AccountNotFound, AccountFieldsInput, AccountFieldsInvalid } from "./account.ts";
 import { AccountScope, AppNotFound, AccountSelectionInvalid } from "./apps.ts";
 import { AuthMethodName, AuthMethodInvalid, Provider, ProviderNotFound } from "./provider.ts";
@@ -21,6 +22,7 @@ import {
   OAuthCompletionFailed,
   OAuthStartResult,
   OAuthSetupFailed,
+  OAuthAdditionalConnection,
 } from "./oauth.ts";
 import { OAuthClientChoice, OAuthClientNotFound } from "./oauth-clients.ts";
 
@@ -124,6 +126,8 @@ export const AccountConnection = Schema.Struct({
   createdAt: Schema.Date,
   expiresAt: Schema.Date,
   state: AccountConnectionState,
+  sourceAccount: Schema.optionalKey(AccountId),
+  additionalConnections: Schema.optionalKey(Schema.Array(OAuthAdditionalConnection)),
 });
 export type AccountConnection = typeof AccountConnection.Type;
 /**
@@ -160,13 +164,54 @@ export const SubmitAccountConnection = Schema.Struct({
  * entered for it. Without one it signs in automatically; a reconnect keeps the stored client its
  * account signed in with while that client exists.
  */
+/** A batch combines already authorized requests, without changing their owners, targets, or scopes. */
+const oauthSelection = {
+  sourceAccount: Schema.optional(Schema.NullOr(AccountId)),
+  additionalConnections: Schema.optional(Schema.Array(OAuthAdditionalConnection)),
+};
+export const PlanConnectionOAuth = Schema.Struct({
+  ...GetAccountConnection.fields,
+  ...oauthSelection,
+  method: AuthMethodName,
+});
+export const OAuthConnectionPlan = Schema.Struct({
+  status: Schema.Literals(["reuse", "consent-required", "incompatible"]),
+  reason: Schema.optionalKey(
+    Schema.Literals(["identity", "placement", "client", "resource", "scopes", "busy"]),
+  ),
+  scopes: Schema.Array(Schema.String),
+  missingScopes: Schema.Array(Schema.String),
+  sourceAccount: Schema.optionalKey(AccountId),
+  identity: Schema.optionalKey(AccountIdentity),
+  targets: Schema.Array(
+    Schema.Struct({ connection: AccountConnectionId, ...AccountConnectionDestination.fields }),
+  ),
+});
+export type OAuthConnectionPlan = typeof OAuthConnectionPlan.Type;
+
 export const StartConnectionOAuth = Schema.Struct({
   ...GetAccountConnection.fields,
+  ...oauthSelection,
   method: AuthMethodName,
   label: Schema.optional(Schema.NonEmptyString),
   redirectUri: Schema.optional(HttpUrl),
   client: Schema.optional(OAuthClientChoice),
 });
+/** Reuse the selected account's actual grant, retaining its OAuth client. Hosts authorize both resources. */
+export const ReuseConnectionOAuth = Schema.Struct({
+  ...GetAccountConnection.fields,
+  additionalConnections: Schema.optional(Schema.Array(OAuthAdditionalConnection)),
+  account: AccountId,
+  method: AuthMethodName,
+  label: Schema.optional(Schema.NonEmptyString),
+});
+export const OAuthGrantReuseResult = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
+  Schema.Struct({
+    status: Schema.Literal("consent-required"),
+    reason: Schema.Literals(["identity", "placement", "client", "resource", "scopes", "busy"]),
+  }),
+]);
 /** Both request identity and OAuth state must match before exchanging a code. */
 export const CompleteConnectionOAuth = Schema.Struct({
   ...GetAccountConnection.fields,
@@ -238,6 +283,39 @@ const saveErrors = [
 ] as const;
 /** SDK account setup surface, independent of any dashboard, MCP transport or browser session. */
 export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
+  .add(
+    HttpApiEndpoint.post("planOAuth", "/v1/account-connections/oauth/plan", {
+      payload: PlanConnectionOAuth,
+      success: OAuthConnectionPlan,
+      error: [
+        ...errors,
+        AccountConnectionClosed,
+        AccountConnectionTargetChanged,
+        AccountConnectionRefused,
+        AuthMethodInvalid,
+        CredentialsError,
+        OAuthSetupFailed,
+      ],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("reuseOAuth", "/v1/account-connections/oauth/reuse", {
+      payload: ReuseConnectionOAuth,
+      success: OAuthGrantReuseResult,
+      error: [
+        ...errors,
+        AccountConnectionClosed,
+        AccountConnectionTargetChanged,
+        AccountConnectionRefused,
+        CredentialsError,
+        AuthMethodInvalid,
+        OAuthSetupFailed,
+      ],
+    }).annotate(
+      OpenApi.Description,
+      "Use one verified account's existing OAuth grant for a pending connection. Keeps the source's exact client and resource. Completes only when one real grant covers the target scopes and both bindings have the same durable placement; otherwise returns consent-required without saving an account or link. Hosts must authorize use of the source and completion of the target.",
+    ),
+  )
   .add(
     HttpApiEndpoint.post("create", "/v1/account-connections", {
       payload: CreateAccountConnection,
@@ -312,6 +390,7 @@ export const AccountConnectionsGroup = HttpApiGroup.make("accountConnections")
         OAuthClientUnavailable,
         OAuthClientNotFound,
         OAuthSetupFailed,
+        OAuthCompletionFailed,
       ],
     }),
   )
