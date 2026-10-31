@@ -9,7 +9,8 @@ import { Cookies } from "effect/http";
 import { LastOrganization as LastOrganizationSchema } from "@executor-js/hosted-server/browser/contracts";
 
 const lifetime = 365 * 24 * 60 * 60;
-const name = () => lastOrganizationCookie(window.location.host);
+const name = () =>
+  lastOrganizationCookie(window.location.host, window.location.protocol === "https:");
 const attributes = () =>
   `Path=/; SameSite=Lax${window.location.protocol === "https:" ? "; Secure" : ""}`;
 

@@ -1,4 +1,5 @@
 /** Privileged fixture helpers. Imported only by local test tooling, never a host entry point. */
+import { hostCookieName } from "@executor-js/hosted-server/browser/contracts";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { testUtils } from "better-auth/plugins";
 import { organization } from "better-auth/plugins/organization";
@@ -49,7 +50,10 @@ export const testAccountAuth = (settings: {
     ...base,
     database: settings.database,
     secret: Redacted.value(settings.secret),
-    advanced: { ...base.advanced, cookiePrefix: settings.cookiePrefix },
+    advanced: {
+      ...base.advanced,
+      cookiePrefix: hostCookieName(settings.origin, settings.cookiePrefix),
+    },
     session: { ...base.session, expiresIn: 3600 },
     plugins: [
       ...base.plugins,

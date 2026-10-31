@@ -10,7 +10,7 @@ export const DisplayFormat = Schema.Struct({ locale: Schema.String, timeZone: Sc
 export type DisplayFormat = typeof DisplayFormat.Type;
 
 /** Saved by the browser so later documents render its local time on the server. */
-export const timeZoneCookie = "executor-tz";
+export const timeZoneCookie = (secure = false) => `${secure ? "__Host-" : ""}executor-tz`;
 
 const supported = (format: DisplayFormat): boolean => {
   try {

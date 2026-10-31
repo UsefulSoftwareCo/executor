@@ -36,7 +36,12 @@ import {
   ProductAnalytics,
 } from "@executor-js/hosted-server";
 import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
-import { appAddresses, hostedAppUi } from "@executor-js/hosted-server/app-ui";
+import {
+  appUiAddressScheme,
+  appUiEmbedded,
+  appAddresses,
+  hostedAppUi,
+} from "@executor-js/hosted-server/app-ui";
 import { appSignInCallbackPath } from "apps/ui/auth";
 import { AppUiApi } from "apps/ui/contracts";
 import { HttpApiBuilder } from "effect/http-api";
@@ -103,7 +108,12 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       origin: auth.origin,
       oauthRedirectUri: Option.getOrUndefined((yield* authSettings).oauthRedirectUri),
     });
-    const addresses = appAddresses(auth.origin, yield* appUiBaseUrl(auth.origin));
+    const addresses = appAddresses(
+      auth.origin,
+      yield* appUiBaseUrl(auth.origin),
+      yield* appUiAddressScheme,
+      yield* appUiEmbedded,
+    );
     const appUi = hostedAppUi(addresses);
     const mcp = yield* selfHostMcp.pipe(Effect.provide(HttpServer.layerServices));
     const document = lazyHostedApiDocument(() => executorSelfHostApiDocument(auth.origin));
@@ -225,7 +235,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
           if (Option.isSome(addresses.fromHost(request.headers.host)))
-            return yield* observed(apps.pipe(requestTiming));
+            return yield* observed(appUi.frameResponse(apps).pipe(requestTiming));
           if (addresses.ownsHost(request.headers.host)) return notFound;
           return yield* observed(product);
         }).pipe(recordRequestRejections),

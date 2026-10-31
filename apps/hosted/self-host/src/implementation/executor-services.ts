@@ -46,8 +46,13 @@ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
 import { deliverEvents } from "@executor-js/sdk/scheduling";
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
-import { workerdHostHandler } from "@executor-js/sdk/workerd";
-import type { AppRuntime, BlobStorage, WorkflowRuntime } from "@executor-js/sdk/core";
+import { loadStoredWorkerBuild, workerdHostHandler } from "@executor-js/sdk/workerd";
+import {
+  BlobStore,
+  type AppRuntime,
+  type BlobStorage,
+  type WorkflowRuntime,
+} from "@executor-js/sdk/core";
 import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import { SqlClient } from "effect/sql";
@@ -216,7 +221,16 @@ export const selfHostExecutorServices = <E, R>(
         ),
         Layer.succeed(HostedExecutor, Effect.succeed(hosted)),
         Layer.succeed(OrganizationDefaults, initialize),
-        Layer.succeed(HostedAppRuntime, toEffectRuntime(runtime, blobs)),
+        Layer.succeed(HostedAppRuntime, {
+          ...toEffectRuntime(runtime, blobs),
+          screen: (build) =>
+            loadStoredWorkerBuild(build).pipe(
+              Effect.map(
+                (record) => record.ui?.some((file) => file.path === "index.html") === true,
+              ),
+              Effect.provideService(BlobStore, blobs),
+            ),
+        }),
         // Self-host cannot remove an organization.
         noOrganizationRemovals,
       );

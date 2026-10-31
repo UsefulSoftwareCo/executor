@@ -1,4 +1,3 @@
-import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import type { App } from "@executor-js/sdk";
 import { Button } from "@executor-js/ui/components/button";
 import { AsyncResult } from "effect/reactivity";
@@ -6,11 +5,10 @@ import { useEffect } from "react";
 import {
   appSignInFailureMessage,
   appUiError,
-  appUiLocationAtom,
   type AppSignInFailure,
   type AppSignInId,
 } from "../../contracts/app-ui.ts";
-import { useOrganizationRoute } from "../components/organization.tsx";
+import { useAppUiLocation } from "./app-screen.tsx";
 
 /**
  * The server answers `/app-auth` with a redirect whenever it has an attempt to resolve, so this page
@@ -43,28 +41,11 @@ export function AppSignInPage({
  * accounts the caller linked to it.
  */
 export function OpenAppAction({ app }: { readonly app: App }) {
-  return app.activeVersion === null ? null : (
-    <DeployedOpenAppAction app={app} version={app.activeVersion} />
-  );
+  return app.activeVersion === null ? null : <DeployedOpenAppAction app={app} />;
 }
 
-function DeployedOpenAppAction({
-  app,
-  version,
-}: {
-  readonly app: App;
-  readonly version: NonNullable<App["activeVersion"]>;
-}) {
-  const { organization, slug } = useOrganizationRoute();
-  const location = appUiLocationAtom({
-    organization,
-    slug,
-    app: app.id,
-    appSlug: app.slug,
-    version,
-  });
-  const result = useAtomValue(location);
-  const refresh = useAtomRefresh(location);
+function DeployedOpenAppAction({ app }: { readonly app: App }) {
+  const { result, refresh } = useAppUiLocation(app);
   if (AsyncResult.isFailure(result))
     return (
       <div className="flex items-center gap-2">
@@ -98,7 +79,7 @@ function DeployedOpenAppAction({
   return (
     <Button variant="outline" asChild>
       <a href={result.value.url} target="_blank" rel="noopener noreferrer">
-        Open app
+        {result.value.embedded ? "Open in new tab" : "Open app"}
       </a>
     </Button>
   );

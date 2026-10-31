@@ -23,6 +23,7 @@ import { productTitle, useDocumentTitle } from "../hooks/document-title.ts";
 import { cn } from "../lib/utils.ts";
 
 const sections = [
+  { view: "app", label: "App" },
   { view: "overview", label: "Overview" },
   { view: "accounts", label: "Accounts" },
   { view: "tools", label: "Tools" },
@@ -40,6 +41,8 @@ const sections = [
  */
 const sectionIcon = (view: (typeof sections)[number]["view"]) => {
   switch (view) {
+    case "app":
+      return GridViewIcon;
     case "overview":
       return GridViewIcon;
     case "accounts":
@@ -63,6 +66,7 @@ const sectionIcon = (view: (typeof sections)[number]["view"]) => {
   }
 };
 const contentClasses = {
+  app: "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
   skills: "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
   workflows: "min-h-0 min-w-0 flex-1 overflow-auto",
   webhooks: "min-h-0 min-w-0 flex-1 overflow-auto",
@@ -77,19 +81,52 @@ const contentClasses = {
   versions: "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden",
 } as const;
 
+/**
+ * Whether the App tab exists. `pending` holds its place while a direct link waits for the app and
+ * its access, so the tab neither pops in nor shows a screen nobody has authorized yet.
+ */
+export type AppScreenTab = "present" | "pending" | "absent";
+
+/**
+ * The App tab exists for an app whose active version has a screen, for a caller who may use it.
+ * An app known to have no screen has none at once. Otherwise the tab holds its place until the
+ * app and that access are known; a failed read leaves it out.
+ */
+export const appScreenTab = (
+  app: { readonly activeVersion: string | null; readonly hasUi?: boolean | undefined } | undefined,
+  access: { readonly canUse: boolean } | undefined,
+  failed: { readonly app?: boolean; readonly access?: boolean } = {},
+): AppScreenTab =>
+  app === undefined
+    ? failed.app
+      ? "absent"
+      : "pending"
+    : app.activeVersion === null || app.hasUi === false
+      ? "absent"
+      : access === undefined
+        ? failed.access
+          ? "absent"
+          : "pending"
+        : access.canUse
+          ? "present"
+          : "absent";
+
 /** A stable app heading and linked section tabs frame each product's app details. */
 export function AppDetailLayout({
   app,
   view,
   canInspectSource,
+  appScreen = "absent",
   sourceDisabledReason,
   back,
   actions,
   children,
 }: {
   readonly app: App | undefined;
-  readonly view: AppView;
+  /** Undefined while the default destination waits on the App tab's answer: no tab is selected. */
+  readonly view: AppView | undefined;
   readonly canInspectSource: boolean;
+  readonly appScreen?: AppScreenTab;
   readonly sourceDisabledReason?: string | undefined;
   readonly back: ReactNode;
   readonly actions?: ReactNode;
@@ -112,6 +149,7 @@ export function AppDetailLayout({
               {app ? (
                 <BoundAppLink
                   app={app.id}
+                  view="overview"
                   aria-label={`${app.name} overview`}
                   className="hover:underline"
                 >
@@ -148,58 +186,71 @@ export function AppDetailLayout({
           aria-label="App navigation"
           className="-mb-px flex gap-1 overflow-x-auto px-7 max-[740px]:px-4"
         >
-          {sections.map((section) => {
-            const classes = cn(
-              "relative flex min-h-11 shrink-0 items-center gap-2 rounded-t-lg border border-transparent px-4 text-[13px] text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground focus-visible:outline-ring focus-visible:-outline-offset-4 max-[740px]:px-3",
-              (view === section.view || (view === "history" && section.view === "source")) &&
-                "border-border border-b-background bg-background font-medium text-foreground hover:bg-background",
-            );
-            const content = (
-              <>
-                <HugeiconsIcon
-                  icon={sectionIcon(section.view)}
-                  size={16}
-                  strokeWidth={1.7}
-                  aria-hidden
-                  className="max-[740px]:hidden"
-                />
-                {section.label}
-              </>
-            );
-            if (!canInspectSource && (section.view === "source" || section.view === "versions"))
-              return (
-                <DisabledTooltip
-                  key={section.view}
-                  reason={sourceDisabledReason ?? "Checking app access…"}
-                >
-                  <button type="button" disabled className={cn(classes, "opacity-50")}>
-                    {content}
-                  </button>
-                </DisabledTooltip>
+          {sections
+            .filter((section) => section.view !== "app" || appScreen !== "absent")
+            .map((section) => {
+              const classes = cn(
+                "relative flex min-h-11 shrink-0 items-center gap-2 rounded-t-lg border border-transparent px-4 text-[13px] text-muted-foreground transition-colors hover:bg-muted/30 hover:text-foreground focus-visible:outline-ring focus-visible:-outline-offset-4 max-[740px]:px-3",
+                (view === section.view || (view === "history" && section.view === "source")) &&
+                  "border-border border-b-background bg-background font-medium text-foreground hover:bg-background",
               );
-            return app ? (
-              <BoundAppLink
-                key={section.view}
-                app={app.id}
-                view={section.view}
-                className={classes}
-                aria-current={
-                  view === section.view || (view === "history" && section.view === "source")
-                    ? "page"
-                    : undefined
-                }
-              >
-                {content}
-              </BoundAppLink>
-            ) : (
-              <span key={section.view} className={classes}>
-                {content}
-              </span>
-            );
-          })}
+              const content = (
+                <>
+                  <HugeiconsIcon
+                    icon={sectionIcon(section.view)}
+                    size={16}
+                    strokeWidth={1.7}
+                    aria-hidden
+                    className="max-[740px]:hidden"
+                  />
+                  {section.label}
+                </>
+              );
+              if (section.view === "app" && appScreen === "pending")
+                return (
+                  <span
+                    key={section.view}
+                    role="status"
+                    aria-label="Checking for an app screen"
+                    className={classes}
+                  >
+                    <Skeleton className="h-4 w-12" />
+                  </span>
+                );
+              if (!canInspectSource && (section.view === "source" || section.view === "versions"))
+                return (
+                  <DisabledTooltip
+                    key={section.view}
+                    reason={sourceDisabledReason ?? "Checking app access…"}
+                  >
+                    <button type="button" disabled className={cn(classes, "opacity-50")}>
+                      {content}
+                    </button>
+                  </DisabledTooltip>
+                );
+              const current =
+                view === section.view || (view === "history" && section.view === "source")
+                  ? "page"
+                  : undefined;
+              return app ? (
+                <BoundAppLink
+                  key={section.view}
+                  app={app.id}
+                  view={section.view}
+                  className={classes}
+                  aria-current={current}
+                >
+                  {content}
+                </BoundAppLink>
+              ) : (
+                <span key={section.view} className={classes} aria-current={current}>
+                  {content}
+                </span>
+              );
+            })}
         </nav>
       </div>
-      <div className={contentClasses[view]}>{children}</div>
+      <div className={contentClasses[view ?? "app"]}>{children}</div>
     </div>
   );
 }

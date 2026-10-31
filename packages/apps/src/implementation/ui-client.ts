@@ -92,12 +92,41 @@ export const createAppClient = () => {
       if (--pendingWrites === 0) window.removeEventListener("beforeunload", beforeUnload);
     });
   };
+  // A host that embeds this page keeps it mounted behind its other tabs, where the browser still
+  // reports it visible. The host says when it shows or hides the page; a page it never told is shown.
+  let shown = true;
+  const isActive = () => shown && document.visibilityState === "visible";
+  let active = isActive();
+  const activeListeners = new Set<(active: boolean) => void>();
+  const activeChanged = () => {
+    if (isActive() === active) return;
+    active = !active;
+    for (const listener of activeListeners) listener(active);
+  };
+  const onHostMessage = (event: MessageEvent) => {
+    if (
+      window.parent === window ||
+      event.source !== window.parent ||
+      event.data?.type !== "executor:app-active" ||
+      typeof event.data.active !== "boolean"
+    )
+      return;
+    shown = event.data.active;
+    activeChanged();
+  };
+  window.addEventListener("message", onHostMessage);
+  document.addEventListener("visibilitychange", activeChanged);
+  // The host answers with whether it shows this page; the request itself carries nothing.
+  if (window.parent !== window) window.parent.postMessage({ type: "executor:app-client" }, "*");
   const onHide = (event: PageTransitionEvent) => {
     if (!event.persisted) void dispose().catch((error) => console.error(error));
   };
   const dispose = async () => {
     window.removeEventListener("pagehide", onHide);
     window.removeEventListener("beforeunload", beforeUnload);
+    window.removeEventListener("message", onHostMessage);
+    document.removeEventListener("visibilitychange", activeChanged);
+    activeListeners.clear();
     optimistic.dispose();
     await runtime.dispose();
   };
@@ -335,5 +364,50 @@ export const createAppClient = () => {
     mutation: optimistic.mutation,
     /** Share a live query across mounts and reconcile optimistic changes against fresh server reads. */
     queryAtom: optimistic.queryAtom,
+    /** Whether someone can see this page: its browser tab is visible and its host shows it. */
+    isActive: () => active,
+    /** Call `listener` whenever `isActive` changes. Returns a function that stops it. */
+    onActiveChange: (listener: (active: boolean) => void) => {
+      activeListeners.add(listener);
+      return () => void activeListeners.delete(listener);
+    },
+    /**
+     * Call `refresh` every `interval` milliseconds while this page is active, starting one interval
+     * from now. A page that becomes active after a refresh came due refreshes once, at once; a page
+     * nobody sees makes no requests. Returns a function that stops it.
+     */
+    poll: (refresh: () => void, interval: number) => {
+      let last = Date.now();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const run = () => {
+        last = Date.now();
+        refresh();
+      };
+      const schedule = () => {
+        clearTimeout(timer);
+        timer = active
+          ? setTimeout(
+              () => {
+                try {
+                  run();
+                } finally {
+                  schedule();
+                }
+              },
+              Math.max(0, last + interval - Date.now()),
+            )
+          : undefined;
+      };
+      const changed = (now: boolean) => {
+        if (now && Date.now() - last >= interval) run();
+        schedule();
+      };
+      activeListeners.add(changed);
+      schedule();
+      return () => {
+        clearTimeout(timer);
+        activeListeners.delete(changed);
+      };
+    },
   };
 };

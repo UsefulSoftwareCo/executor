@@ -77,8 +77,20 @@ const check = Effect.gen(function* () {
           // This adapter observes the real OS store, never an application implementation.
           if (label === `support${path.sep}os-credential.ts` && specifier === "@napi-rs/keyring")
             return;
-          // This external MCP fixture needs a real TLS listener, not a product implementation.
-          if (label === `support${path.sep}mcp-auth-patterns.ts` && specifier === "node:https")
+          // This TLS transport observes the real host with a scenario-owned certificate.
+          if (
+            label === `support${path.sep}app-origin-tls.ts` &&
+            specifier === "@effect/platform-node/NodeHttpClient"
+          )
+            return;
+          // These transport fixtures need real TLS listeners, not product implementations.
+          if (
+            [
+              `support${path.sep}mcp-auth-patterns.ts`,
+              `support${path.sep}app-origin-tls.ts`,
+            ].includes(label) &&
+            specifier === "node:https"
+          )
             return;
           // This external upstream fixture generates its contract with Effect, not product code.
           if (

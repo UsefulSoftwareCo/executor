@@ -2,6 +2,7 @@ import { sourceDisplay, sourceDisplayFile } from "@executor-js/app-management/so
 import { requireAppAccess } from "./resource-policy.ts";
 /** App use cases and routes. Hosts supply an SDK; they do not enumerate these operations. */
 import { CatalogImportFailed, deployedCopy, type CustomAppInput } from "@executor-js/catalog";
+import { appUiIndicator } from "./app-ui.ts";
 import {
   scopeGeneratedPackage,
   type AppId,
@@ -92,7 +93,7 @@ export const getApp = (owner: OwnerId, input: { readonly app: AppId }) =>
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* requireAppAccess(input.app, "read");
     const app = yield* executor.apps.get({ ...input, owner });
-    return app;
+    return yield* appUiIndicator(app);
   });
 /** Retained source is administrative data; versions from other owners stay private. */
 export const appVersions = (owner: OwnerId, app: AppId) =>

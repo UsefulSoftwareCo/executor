@@ -103,9 +103,8 @@ const canonical = new URL(Astro.url.pathname, Astro.site ?? Astro.url).toString(
               client.register({ product_version: "v2", surface: "marketing",
                 environment: import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT, release: import.meta.env.PUBLIC_EXECUTOR_RELEASE,
                 executor_test: String(import.meta.env.PUBLIC_EXECUTOR_ENVIRONMENT).startsWith("test-") });
-              // Sign-up on the browser origin reads this to link the new account to this visit.
-              const domain = import.meta.env.PUBLIC_EXECUTOR_COOKIE_DOMAIN;
-              document.cookie = `${siteVisitorCookie}=${encodeURIComponent(client.get_distinct_id())}; Path=/; Max-Age=${siteVisitorDays * 86400}; SameSite=Lax${domain ? `; Domain=${domain}` : ""}${location.protocol === "https:" ? "; Secure" : ""}`;
+              // Only sign-up on this same host may consume this anonymous visitor identity.
+              document.cookie = `${siteVisitorCookie(location.origin)}=${encodeURIComponent(client.get_distinct_id())}; Path=/; Max-Age=${siteVisitorDays * 86400}; SameSite=Lax${location.protocol === "https:" ? "; Secure" : ""}`;
             },
           });
           return posthog;
