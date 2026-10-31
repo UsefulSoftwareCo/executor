@@ -917,6 +917,16 @@ export const scenarios = plan({
       local: na("Hosted version API scenario"),
     },
   },
+  mcpSearchAnalytics: {
+    fixtures: "actors",
+    file: "mcp-search-analytics.spec.ts",
+    title: "MCP empty searches record anonymous events without browsing or pagination noise",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Shared hosted search boundary; self-host checks the stricter anonymous sink"),
+      local: na("Local has a separate analytics boundary"),
+    },
+  },
   mcpDirectCalls: {
     fixtures: "actors",
     file: "mcp-direct-calls.spec.ts",

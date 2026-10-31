@@ -46,6 +46,7 @@ export type UsageEvent =
   | "tool_execution_started"
   | "tool_execution_completed"
   | "tool_approval_requested"
+  | "tool_search_empty"
   | "account_connected"
   | "agent_connected"
   | "app_deployed"

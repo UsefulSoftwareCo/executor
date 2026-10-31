@@ -37,8 +37,15 @@ send `desktop`.
   the HTTP status, the API operation name, the kind of sign-in an account uses,
   the client application's name and whether the request came from MCP, the API
   or the dashboard.
+- **Empty tool searches:** when the first page of a query has no matches,
+  without the query text. Browsing and exhausted pages are not counted.
 - **Feedback:** only the text you or your agent submit through
   `feedback.submit`.
+
+On self-host, a first-page tool search with a non-blank query and no matches
+also sends a usage event. It counts searches among the apps available to the
+caller. It does not search the community Apps directory. The search text and
+tool names are never included.
 
 On self-host, events from a signed-in person use an HMAC of their user ID, keyed
 by a secret that is created per instance (`analytics-secret.key` in the data
