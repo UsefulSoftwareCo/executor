@@ -76,7 +76,7 @@ scenarios per changed path and name them in the handoff. Investigate a failure
 CI reports instead of re-running suites to look for one.
 
 For authenticated testing and bug reproduction, use
-[test accounts](notes/test-accounts.md). The fixture command provisions
+[test accounts](apps/hosted/testing/cli.ts). The fixture command provisions
 synthetic users, organization roles and short-lived sessions for self-host,
 cloud dev and running test stages. On production, agents sign in through real
 email codes to `@agents.executor.engineering` inboxes. Keep session files
