@@ -2224,6 +2224,26 @@ export const scenarios = plan({
       local: na("Local uses its paired dashboard scenario."),
     },
   },
+  workflowDiagram: {
+    fixtures: "actors",
+    file: "workflow-diagram.spec.ts",
+    title:
+      "Workflows are drawn from the deployed code for people who can read it, and steps lead to the workflows they start",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has its own scenario: one person, who can always read the source."),
+    },
+  },
+  localWorkflowDiagram: {
+    file: "local-workflow-diagram.spec.ts",
+    title: "Local workflows are drawn from the deployed code",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted uses its member and manager scenario."),
+      cloud: na("Hosted uses its member and manager scenario."),
+    },
+  },
   localAppBrowser: {
     file: "local-app-browser.spec.ts",
     title: "Local app browser shows skill and workflow overviews",

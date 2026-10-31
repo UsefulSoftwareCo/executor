@@ -191,6 +191,17 @@ export const appAtom = Atom.family((app: AppId) =>
 export const sourceAtom = Atom.family((key: { readonly app: AppId; readonly version: VersionId }) =>
   DashboardClient.query("dashboard", "sourceDisplay", hydrated({ params: key })),
 );
+class VersionKey extends Data.Class<{ readonly app: AppId; readonly version: VersionId }> {}
+const versionSourceQuery = Atom.family((key: VersionKey) =>
+  DashboardClient.query(
+    "dashboard",
+    "source",
+    hydrated({ params: { app: key.app, version: key.version } }),
+  ),
+);
+/** A retained version's stored files, unformatted and complete, as workflow diagrams read them. */
+export const versionSourceAtom = (key: { readonly app: AppId; readonly version: VersionId }) =>
+  versionSourceQuery(new VersionKey(key));
 class SourceFileKey extends Data.Class<{
   readonly app: AppId;
   readonly version: VersionId;

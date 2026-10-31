@@ -703,6 +703,7 @@
         "@executor-js/mcp-auth": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@executor-js/utils": "workspace:*",
+        "@executor-js/workflow-graph": "workspace:*",
         "@hugeicons/core-free-icons": "4.3.3",
         "@hugeicons/react": "1.1.10",
         "@milkdown/kit": "7.22.2",
@@ -740,6 +741,15 @@
         "@effect/platform-node": "4.0.1",
         "effect": "4.0.1",
         "ipaddr.js": "2.5.0",
+      },
+    },
+    "packages/workflow-graph": {
+      "name": "@executor-js/workflow-graph",
+      "dependencies": {
+        "@babel/parser": "7.29.8",
+      },
+      "devDependencies": {
+        "@babel/types": "7.29.8",
       },
     },
     "playground/catalog": {
@@ -1456,6 +1466,8 @@
     "@executor-js/ui": ["@executor-js/ui@workspace:packages/ui"],
 
     "@executor-js/utils": ["@executor-js/utils@workspace:packages/utils"],
+
+    "@executor-js/workflow-graph": ["@executor-js/workflow-graph@workspace:packages/workflow-graph"],
 
     "@executor-playground/hosted": ["@executor-playground/hosted@workspace:playground/hosted"],
 
