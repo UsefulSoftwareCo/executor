@@ -4569,6 +4569,16 @@ export const scenarios = plan({
       local: na("Hosted app account controls and organization permissions."),
     },
   },
+  googleOAuthChoices: {
+    fixtures: "actors",
+    file: "google-oauth-choices.spec.ts",
+    title: "Google OAuth choices keep the shared default, visible BYO and independent accounts",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Hosted callback routing and saved-client management."),
+    },
+  },
   oauthClientRecovery: {
     fixtures: "actors",
     file: "oauth-client-recovery.spec.ts",

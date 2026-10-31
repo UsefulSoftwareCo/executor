@@ -140,6 +140,7 @@ export function OAuthFields<A, E>({
   /** A registered client whose details open prefilled; Connect updates it before signing in. */
   readonly editClient?: OAuthClientId | undefined;
 }) {
+  const googleProvider = /^(?:Google(?:\s|$)|Gmail$)/i.test(providerName);
   const choices = clientChoices(options, account !== undefined);
   const editing =
     editClient === undefined || options === "unresolved"
@@ -222,7 +223,11 @@ export function OAuthFields<A, E>({
       case "automatic":
         return "Automatic";
       case "manual":
-        return machine ? "New client credentials" : "Enter client details";
+        return machine
+          ? "New client credentials"
+          : googleProvider
+            ? "Your own Google app (OAuth)"
+            : "Enter client details";
     }
   };
   const connect = () => {
@@ -259,11 +264,15 @@ export function OAuthFields<A, E>({
       onPendingChange?.(false);
     });
   };
-  // The picker leads the form only when there is a real choice between clients. With one, the
-  // form uses it and keeps the picker, with entering details, under Advanced. A reconnect keeps
-  // the account's client, so replacing it is always an Advanced option.
+  // Google keeps its personal-client option beside a shared or current client.
+  const googleOwnClientChoice =
+    googleProvider &&
+    !machine &&
+    choices.some((offered) => offered.kind === "manual") &&
+    choices.some((offered) => offered.kind !== "manual");
   const prominent =
-    account === undefined && choices.filter((offered) => offered.kind !== "manual").length > 1;
+    googleOwnClientChoice ||
+    (account === undefined && choices.filter((offered) => offered.kind !== "manual").length > 1);
   const clientSelect =
     choice === undefined || choices.length < 2 ? undefined : (
       <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
