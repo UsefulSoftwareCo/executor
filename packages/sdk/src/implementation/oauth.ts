@@ -2161,6 +2161,7 @@ export const makeOAuth = (
       const issued = {
         response: attempt.response,
         fields,
+        redirectUri: attempt.redirectUri,
         ...(tokens.refresh_token === undefined ? {} : { refreshToken: tokens.refresh_token }),
         ...expiry(completedAt, tokens.expires_in),
       };

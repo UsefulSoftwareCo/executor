@@ -9409,6 +9409,21 @@ export const scenarios = plan({
       ),
     },
   },
+  oauthRefreshRedirectUri: {
+    legacyStorage: true,
+    file: "oauth-refresh-redirect-uri.spec.ts",
+    title:
+      "OAuth refreshes repeat the callback the sign-in used, and a grant an earlier release saved without one still refreshes without it",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Both hosts refresh grants through the same SDK; Local reaches the stored grant without organization fixtures.",
+      ),
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+    },
+  },
   hostedSchedules: {
     fixtures: "actors",
     file: "hosted-schedules.spec.ts",

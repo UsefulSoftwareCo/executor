@@ -1519,6 +1519,12 @@ export const OAuthGrant = Schema.Union([
     oauthClient: Schema.optionalKey(OAuthClientId),
     refreshToken: Schema.optional(Schema.NonEmptyString),
     /**
+     * The callback the sign-in sent, sent again on each refresh for servers that require it.
+     * Imported grants renew as the product that issued them did, and grants saved before it was
+     * retained renew as they did, so both omit it.
+     */
+    redirectUri: Schema.optional(HttpUrl),
+    /**
      * Scopes each refresh asks for again, space-separated. Only imported grants carry them, as the
      * product that issued the grant sent them; other refreshes ask for none, keeping what was
      * granted (RFC 6749 §6).
@@ -1551,6 +1557,8 @@ export const OAuthGrant = Schema.Union([
     expiresAt: Schema.optional(Schema.Number),
     fields: JsonObject,
     refreshToken: Schema.optional(Schema.NonEmptyString),
+    /** The callback the sign-in sent, kept across host callback changes; see the grant above. */
+    redirectUri: Schema.optional(HttpUrl),
     /**
      * Scopes each refresh asks for again. Only imported grants carry them, as the product that
      * issued the grant sent them; see the other authorization code grant's `scopes`.
