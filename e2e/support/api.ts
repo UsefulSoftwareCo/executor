@@ -1,3 +1,4 @@
+import { appOriginHttpClient } from "./app-origin-tls.ts";
 /** Effect HTTP adapter with independent cookie jars, bounded requests, and safe evidence. */
 import { Cause, Clock, Context, Effect, Layer, Redacted, Ref, Schema } from "effect";
 import { Cookies, HttpClient, HttpClientRequest } from "effect/http";
@@ -74,7 +75,10 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
     SessionClients,
     Effect.gen(function* () {
       const target = yield* Target,
-        client = yield* HttpClient.HttpClient;
+        client =
+          target.tlsCertificate === undefined
+            ? yield* HttpClient.HttpClient
+            : yield* appOriginHttpClient(target.tlsCertificate);
       // Sessions belong to the browser origin, Cloud's `app.` host: its cookies are host-only
       // there, wherever the fixture that issued them ran.
       const origin = targetHosts(target).browser;

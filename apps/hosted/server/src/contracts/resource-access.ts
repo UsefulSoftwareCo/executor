@@ -3,7 +3,6 @@ import { RequiredAction } from "./authorization.ts";
 import { requireAccount } from "./account-grants.ts";
 /** Hosted sharing policy stays separate from SDK tenant ownership and saved links. */
 import {
-  App,
   Account,
   AccountHealth,
   Provider,
@@ -25,6 +24,7 @@ import {
   OrganizationReference,
   OrganizationForbidden,
   RequireOrganization,
+  AppScreenRecord,
 } from "./organization.ts";
 
 /** Concurrent settings updates compare an opaque revision before changing any grant. */
@@ -131,7 +131,7 @@ export const ResourceDirectory = Schema.Struct({
   pendingApp: Schema.Boolean,
   apps: Schema.Array(
     Schema.Struct({
-      app: App,
+      app: AppScreenRecord,
       access: AppAccess,
       /** The accounts the caller linked to the app and may use; empty when they cannot use it. */
       linkedAccounts: Schema.Array(AccountId),

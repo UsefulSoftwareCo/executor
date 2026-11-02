@@ -12,9 +12,19 @@ import { Button } from "@executor-js/ui/components/button";
 import { Link } from "@tanstack/react-router";
 import { useQuery } from "@executor-js/ui/dashboard/context";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
-import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
+import {
+  type OrganizationPageReads,
+  useOrganizationDetails,
+  useOrganizationRoute,
+} from "../components/organization.tsx";
 import { OAuthClientsDialog } from "./oauth-clients.tsx";
 import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
+
+/** The organization's account directory. */
+export const accountsPageReads: OrganizationPageReads = (organization) => [
+  resourceDirectoryAtom(organization),
+];
+
 /**
  * Personal and shared credentials use one list. Administrators also manage the organization's
  * OAuth clients from here, since those clients only exist to connect accounts.

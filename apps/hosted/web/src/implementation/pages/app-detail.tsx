@@ -1,4 +1,5 @@
 import { usePreload } from "@executor-js/ui/dashboard/context";
+import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { AppResources } from "./app-resources.tsx";
 import { AppAccounts } from "./app-accounts.tsx";
 import { AppSkills } from "@executor-js/ui/dashboard/app-skills";
@@ -14,7 +15,7 @@ import {
   type RequirementLink,
 } from "@executor-js/ui/contracts/app-accounts";
 import { AppAccessSettings } from "./resource-settings.tsx";
-import { appAccessAtom } from "../../contracts/resource-access.ts";
+import { appAccessAtom, listedAppAtom } from "../../contracts/resource-access.ts";
 import {
   emptyManyRequirements,
   type AccountSummary,
@@ -25,7 +26,7 @@ import { scheduleBindings } from "../../contracts/schedules.ts";
 import { sessionAtom } from "../../contracts/auth.ts";
 import { AppDetailLoading, OverviewCardLoading } from "@executor-js/ui/dashboard/app-loading";
 import { Exit, Option, Schema } from "effect";
-import { AsyncResult } from "effect/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -49,7 +50,8 @@ import { RenameApp } from "@executor-js/ui/dashboard/rename-app";
 import { CopyApp } from "@executor-js/ui/dashboard/copy-app";
 import { PublishApp } from "@executor-js/ui/dashboard/publish-app";
 import { AppSettings } from "@executor-js/ui/dashboard/app-settings";
-import { AppDetailLayout } from "@executor-js/ui/dashboard/app-detail";
+import { AppScreen, NoAppScreen } from "./app-screen.tsx";
+import { AppDetailLayout, appScreenTab } from "@executor-js/ui/dashboard/app-detail";
 import {
   AppOverview,
   AppOverviewAccounts,
@@ -80,8 +82,46 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params) 
       appLinksAtom({ organization, app }),
       userLinksAtom({ organization, app }),
       appAccessAtom({ organization, app }),
+      listedAppReads(organization)(app),
     ],
   });
+
+/**
+ * The overview's tools, skills, workflows and source reads wait for the app and its links. When
+ * the Apps list already holds this app, its version, access and linked accounts start them with
+ * the page's first reads instead. Opening an app without the list loaded reads nothing extra, and
+ * a guess the page's own reads contradict costs one unused read: the page renders from its own.
+ */
+const listedAppReads = Atom.family((organization: OrganizationReference) =>
+  Atom.family((app: AppId) =>
+    Atom.readable((get) => {
+      const listed = get(listedAppAtom(organization)(app));
+      if (listed === undefined) return;
+      const { entry, accounts } = listed;
+      // The list names no requirement per link, so a user requirement counts any linked account of
+      // its provider, as the app card does. App requirements stay unknown, so never missing.
+      const user = Object.entries(entry.app.requirements.accounts).flatMap(([slot, requirement]) =>
+        requirement.scope === "user"
+          ? accounts.flatMap(({ account }) =>
+              entry.linkedAccounts.includes(account.id) && account.provider === requirement.provider
+                ? [{ requirement: slot, account }]
+                : [],
+            )
+          : [],
+      );
+      const requirements = requirementAccounts(entry.app, { user });
+      if (entry.access.canUse) {
+        const bindings = appBrowserBindings(organization, entry.app);
+        get(bindings.skills);
+        if (missingRequirements(requirements).length === 0) {
+          get(toolsAtom({ organization, app, version: entry.app.activeVersion ?? undefined }));
+          get(bindings.workflows);
+        }
+      }
+      if (entry.access.canManage) get(appManagement(organization).authoring(app));
+    }),
+  ),
+);
 
 /** Views that read only the app. The others also read the inventory and the app's links. */
 const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
@@ -132,7 +172,6 @@ export function AppDetailPage({
     : Option.isSome(inventory.data)
       ? inventory.data.value.apps.find((item) => item.id === appId)
       : undefined;
-  const selectedView = view ?? (tool === undefined ? "overview" : "tools");
   const appLinks = useQuery(appLinksAtom({ organization, app: appId }));
   const userLinks = useQuery(userLinksAtom({ organization, app: appId }));
   const session = useAtomValue(sessionAtom);
@@ -141,6 +180,31 @@ export function AppDetailPage({
   const access = Option.getOrUndefined(authority.data);
   const canManage = access?.canManage === true,
     canUse = access?.canUse === true;
+  // The settled Apps list already answers whether this caller has a screen here, so a page opened
+  // from it shows its App tab on first paint. The page's own reads replace that answer as they land.
+  const listed = useAtomValue(listedAppAtom(organization)(appId))?.entry;
+  // A read that failed means the list may be stale (the app was deleted or unshared since), so its
+  // entry stops answering for that read.
+  const screenRecord = app ?? (AsyncResult.isFailure(query.result) ? undefined : listed?.app);
+  const screenAccess =
+    access ?? (AsyncResult.isFailure(authority.result) ? undefined : listed?.access);
+  const screenTab = appScreenTab(screenRecord, screenAccess, {
+    app: AsyncResult.isFailure(query.result),
+    access: AsyncResult.isFailure(authority.result),
+  });
+  // Only callers who can use the app get its tab and its prewarmed frame.
+  const screenApp = screenTab === "present" ? screenRecord : undefined;
+  // Without a view in the URL, an app with a screen opens on it. The choice waits for that answer
+  // instead of showing Overview and switching once the screen turns up.
+  const selectedView: AppView | undefined =
+    view ??
+    (tool !== undefined
+      ? "tools"
+      : screenTab === "present"
+        ? "app"
+        : screenTab === "pending"
+          ? undefined
+          : "overview");
   const accessPendingReason = AsyncResult.isFailure(authority.result)
     ? "App access could not be checked. Retry the access request."
     : "Checking app access…";
@@ -176,13 +240,16 @@ export function AppDetailPage({
       </Button>
     </div>
   );
-  const pending = <AppDetailLoading view={selectedView} app={app} selectedTool={tool} />;
+  const pending = <AppDetailLoading view={selectedView} app={screenRecord} selectedTool={tool} />;
   return (
     <AppDetailLayout
       key={appId}
-      app={app}
+      // The list entry names the app and makes its tabs links on the first frame; actions and
+      // content still wait for the page's own reads.
+      app={screenRecord}
       view={selectedView}
       canInspectSource={canManage}
+      appScreen={screenTab}
       sourceDisabledReason={sourceReason}
       back={
         <Link
@@ -221,7 +288,34 @@ export function AppDetailPage({
         )
       }
     >
-      {appWideViews.has(selectedView) || !canUse ? (
+      <div className={selectedView === "app" ? "flex min-h-0 flex-1" : "hidden"}>
+        {screenApp !== undefined ? (
+          <AppScreen app={screenApp} active={selectedView === "app"} />
+        ) : selectedView === "app" ? (
+          <QueryResult
+            result={allResults({ access: authority.result, current: query.result })}
+            Failure={HostedFailure}
+            retry={() => {
+              authority.refresh();
+              query.refresh();
+            }}
+            pending={pending}
+          >
+            {() =>
+              canUse ? (
+                <NoAppScreen />
+              ) : (
+                <p className="p-5 text-sm text-muted-foreground">
+                  This app is not shared with you. You can manage its settings.
+                </p>
+              )
+            }
+          </QueryResult>
+        ) : null}
+      </div>
+      {selectedView === undefined ? (
+        pending
+      ) : selectedView !== "app" && (appWideViews.has(selectedView) || !canUse) ? (
         <QueryResult
           result={allResults({ access: authority.result, current: query.result })}
           Failure={HostedFailure}
@@ -303,7 +397,7 @@ export function AppDetailPage({
             );
           }}
         </QueryResult>
-      ) : (
+      ) : selectedView !== "app" ? (
         <QueryResult
           result={allResults({
             access: authority.result,
@@ -458,7 +552,7 @@ export function AppDetailPage({
             );
           }}
         </QueryResult>
-      )}
+      ) : null}
     </AppDetailLayout>
   );
 }

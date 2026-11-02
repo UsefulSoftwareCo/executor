@@ -129,11 +129,37 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
           browser = yield* Browser;
         yield* onboarding.passkey;
         const email = yield* onboarding.freshEmail;
-        yield* onboarding.emailSignIn(email);
+        yield* Effect.all(
+          [
+            browser.use("Browser checks existing passkeys for enrollment", (page) =>
+              page
+                .waitForResponse(
+                  (response) =>
+                    new URL(response.url()).pathname === "/api/auth/passkey/list-user-passkeys",
+                )
+                .then((response) => expect(response.status()).toBe(200)),
+            ),
+            onboarding.emailSignIn(email),
+          ],
+          { concurrency: "unbounded" },
+        );
         yield* browser.use("Passkey enrollment is offered", (page) =>
           page
             .getByRole("heading", { name: "Create a passkey", exact: true })
             .waitFor({ state: "visible" }),
+        );
+        yield* browser.use("Email signup issues this browser's enrollment cookie", (page) =>
+          page
+            .context()
+            .cookies(page.url())
+            .then((cookies) => {
+              const secure = new URL(page.url()).protocol === "https:";
+              const name = `${secure ? "__Host-" : ""}executor_passkey_enrollment`;
+              const cookie = cookies.find((cookie) => cookie.name === name);
+              expect(cookie).toBeDefined();
+              expect(cookie?.path).toBe("/");
+              expect(cookie?.secure).toBe(secure);
+            }),
         );
         // The Worker reads this browser's enrollment cookie, so the sign-in page it sends already
         // offers the passkey, rather than a placeholder the browser replaces.
@@ -170,6 +196,14 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
         yield* browser.checkpoint("Passkey enrollment can be skipped");
         yield* browser.use("Choose Not now", (page) =>
           page.getByRole("button", { name: "Not now", exact: true }).click(),
+        );
+        yield* browser.use("Dismissing enrollment removes its cookie", (page) =>
+          page.waitForFunction(() => {
+            const name = `${window.location.protocol === "https:" ? "__Host-" : ""}executor_passkey_enrollment`;
+            return !document.cookie
+              .split(";")
+              .some((cookie) => cookie.trim().startsWith(`${name}=`));
+          }),
         );
         const team = yield* onboarding.confirmTeam(yield* onboarding.prepareTeam);
         yield* onboarding.signOut;

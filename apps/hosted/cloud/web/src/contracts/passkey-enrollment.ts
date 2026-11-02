@@ -11,12 +11,14 @@ export const hasPasskeyEnrollment = (userId: string) =>
   document.cookie
     .split(";")
     .some(
-      (cookie) => cookie.trim() === `${passkeyEnrollmentCookie.name}=${encodeURIComponent(userId)}`,
+      (cookie) =>
+        cookie.trim() ===
+        `${passkeyEnrollmentCookie.name(window.location.origin)}=${encodeURIComponent(userId)}`,
     );
 const clearEnrollment = (userId: string) =>
   Effect.sync(() => {
     if (hasPasskeyEnrollment(userId))
-      document.cookie = `${passkeyEnrollmentCookie.name}=; Path=/; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+      document.cookie = `${passkeyEnrollmentCookie.name(window.location.origin)}=; Path=/; SameSite=Lax; Max-Age=0; Expires=Thu, 01 Jan 1970 00:00:00 GMT${window.location.protocol === "https:" ? "; Secure" : ""}`;
   });
 
 /**

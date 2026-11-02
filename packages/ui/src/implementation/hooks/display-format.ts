@@ -38,7 +38,7 @@ export function DisplayFormatSync() {
     // The page now responds to input; automation waits for this before interacting.
     document.documentElement.dataset.hydrated = "";
     const secure = window.location.protocol === "https:" ? "; Secure" : "";
-    document.cookie = `${timeZoneCookie}=${encodeURIComponent(currentBrowserFormat().timeZone)}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`;
+    document.cookie = `${timeZoneCookie(window.location.protocol === "https:")}=${encodeURIComponent(currentBrowserFormat().timeZone)}; Path=/; Max-Age=31536000; SameSite=Lax${secure}`;
   }, []);
   return null;
 }

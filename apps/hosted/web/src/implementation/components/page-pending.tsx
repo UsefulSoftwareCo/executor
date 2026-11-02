@@ -4,6 +4,13 @@ import { OrganizationSettingsPending } from "./organization-settings-pending.tsx
 import { AddAppBack } from "./add-app.tsx";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { AppDetailPending } from "@executor-js/ui/dashboard/app-loading";
+import { appScreenTab, type AppScreenTab } from "@executor-js/ui/dashboard/app-detail";
+import type { OrganizationReference } from "@executor-js/hosted-server/organization";
+import { AppId } from "@executor-js/sdk";
+import { useAtomValue } from "@effect/atom-react";
+import { Schema } from "effect";
+import { listedAppAtom } from "../../contracts/resource-access.ts";
+import { useOptionalOrganizationRoute } from "./organization.tsx";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { parseAppSearch } from "../../contracts/navigation.ts";
 import { Link, useLocation } from "@tanstack/react-router";
@@ -101,6 +108,72 @@ export function UnknownPagePending({ fullScreen = false }: { readonly fullScreen
   );
 }
 
+interface AppPageProps {
+  readonly app: string;
+  readonly organizationSlug: string;
+  readonly setup: boolean;
+  readonly search: Record<string, unknown>;
+}
+
+/**
+ * An app page loading inside its organization. Opened from the settled Apps list, its App tab and
+ * default view come from that list; otherwise the default waits for the page to know whether the
+ * app has a screen.
+ */
+function AppPagePending(props: AppPageProps) {
+  const organization = useOptionalOrganizationRoute()?.organization;
+  return organization === undefined || !Schema.is(AppId)(props.app) ? (
+    <AppPending {...props} screen="pending" />
+  ) : (
+    <ListedAppPending {...props} app={props.app} organization={organization} />
+  );
+}
+
+function ListedAppPending(
+  props: AppPageProps & { readonly app: AppId; readonly organization: OrganizationReference },
+) {
+  const listed = useAtomValue(listedAppAtom(props.organization)(props.app))?.entry;
+  return (
+    <AppPending
+      {...props}
+      screen={listed === undefined ? "pending" : appScreenTab(listed.app, listed.access)}
+    />
+  );
+}
+
+function AppPending({
+  organizationSlug,
+  setup,
+  search,
+  screen,
+}: AppPageProps & { readonly screen: AppScreenTab }) {
+  const selected = parseAppSearch(search);
+  return (
+    <AppDetailPending
+      view={
+        setup
+          ? "accounts"
+          : (selected.view ??
+            (selected.tool !== undefined
+              ? "tools"
+              : screen === "present"
+                ? "app"
+                : screen === "absent"
+                  ? "overview"
+                  : undefined))
+      }
+      appScreen={screen}
+      actions={<Skeleton className="h-9 w-28 max-[740px]:h-11" />}
+      selectedTool={setup ? undefined : selected.tool}
+      back={
+        <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
+          Apps
+        </Link>
+      }
+    />
+  );
+}
+
 /**
  * Lazy pages load inside the existing organization layout with the destination's content shape.
  * Each shape is the page's own loading state, so the page replaces it without moving. Nothing is
@@ -118,25 +191,15 @@ export function PagePending({
   if (root !== "org" || organizationSlug === undefined) return <UnknownPagePending fullScreen />;
   // Older setup links open the app's Accounts view. Sign-in can still return to one, so this
   // shape shows until the server redirects it there.
-  if (page === "apps" && item?.startsWith("app_") && (action === undefined || action === "setup")) {
-    const selected = parseAppSearch(search);
+  if (page === "apps" && item?.startsWith("app_") && (action === undefined || action === "setup"))
     return (
-      <AppDetailPending
-        view={
-          action === "setup"
-            ? "accounts"
-            : (selected.view ?? (selected.tool === undefined ? "overview" : "tools"))
-        }
-        actions={<Skeleton className="h-9 w-28 max-[740px]:h-11" />}
-        selectedTool={action === "setup" ? undefined : selected.tool}
-        back={
-          <Link to="/org/$organizationSlug/apps" params={{ organizationSlug }}>
-            Apps
-          </Link>
-        }
+      <AppPagePending
+        app={item}
+        organizationSlug={organizationSlug}
+        setup={action === "setup"}
+        search={search}
       />
     );
-  }
   if (page === "apps" && item === undefined)
     return (
       <InventoryPageSkeleton

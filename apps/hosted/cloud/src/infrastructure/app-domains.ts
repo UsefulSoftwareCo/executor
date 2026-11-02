@@ -1,7 +1,10 @@
 /** App domain status for API callers; the AppDomainController Worker hosts the coordinator. */
 import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext } from "alchemy";
-import { AppUiAddressInvalid } from "@executor-js/hosted-server/app-ui/contracts";
+import {
+  appUiAddressScheme,
+  AppUiAddressInvalid,
+} from "@executor-js/hosted-server/app-ui/contracts";
 import { OrganizationId, OrganizationSlug } from "@executor-js/hosted-server/organization";
 import { UiFailed } from "apps/ui/contracts";
 import { Clock, Effect, Redacted, Schema } from "effect";
@@ -51,6 +54,13 @@ const staleAfter = 15 * 60_000;
  * schedule if it was lost.
  */
 export const cloudAppDomains = Effect.gen(function* () {
+  if ((yield* appUiAddressScheme.pipe(Effect.orDie)) === "opaque")
+    return {
+      status: (_team: typeof Team.Type) => Effect.succeed("ready" as const),
+      control: (_operation: "resume" | "drain") =>
+        Effect.succeed(HttpServerResponse.empty({ status: 404 })),
+      heartbeat: Effect.succeed(jobCompleted),
+    };
   const coordinator = yield* AppDomainCoordinator.from(AppDomainController);
   const base = yield* cloudAppUiBase.pipe(Effect.orDie);
   // Local development serves apps over HTTP and provisions no domains.

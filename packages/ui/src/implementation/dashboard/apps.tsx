@@ -1,4 +1,5 @@
 import { PageFrame, PageHeader } from "./page.tsx";
+import type { App } from "@executor-js/sdk";
 import { Option } from "effect";
 import { AppCardsSkeleton } from "./loading.tsx";
 import { Card } from "@executor-js/ui/components/card";
@@ -26,7 +27,9 @@ export function AppsPage<E>({
   pending,
   query,
   Failure,
+  screen,
 }: QueryProps<Inventory, E> & {
+  readonly screen?: ((app: App) => ReactNode) | undefined;
   readonly action?: ReactNode;
   readonly connect: ReactNode;
   readonly filters?: ReactNode;
@@ -63,6 +66,7 @@ export function AppsPage<E>({
         {(data) => (
           <AppsList
             data={data}
+            screen={screen}
             search={search}
             clearSearch={() => setSearch("")}
             pending={search.length === 0 ? pending : undefined}
@@ -81,12 +85,14 @@ export function AppsPage<E>({
 }
 function AppsList({
   data,
+  screen,
   search,
   clearSearch,
   empty,
   pending,
 }: {
   readonly data: Inventory;
+  readonly screen?: ((app: App) => ReactNode) | undefined;
   readonly search: string;
   readonly clearSearch: () => void;
   readonly empty: ReactNode;
@@ -191,6 +197,7 @@ function AppsList({
                         </span>
                       )}
                     </div>
+                    {screen?.(app)}
                     {(needsSignIn || unavailable) && (
                       <span className="sign-in-status text-sign-in-warning text-[11px] font-medium whitespace-nowrap [.app-account-setup_h2_&]:ml-2">
                         {needsSignIn ? "Needs sign-in" : "Account unavailable"}

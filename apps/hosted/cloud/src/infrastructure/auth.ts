@@ -106,7 +106,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
             ),
           ),
       },
-      (userId) => runCallback(recordCloudSignup(userId)),
+      (userId) => runCallback(recordCloudSignup(userId, settings.url)),
       (userId) => {
         observation.sessionCreated();
         return runCallback(recordCloudLogin(userId));
@@ -311,9 +311,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
     const handler = observation
       .observe(requestHandler)
       .pipe(
-        Effect.flatMap(
-          clearSiteVisitorOnSignOut(Option.getOrUndefined(settings.hosts.sharedCookieDomain)),
-        ),
+        Effect.flatMap(clearSiteVisitorOnSignOut(settings.url)),
         Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")),
       );
     const browserSession = (headers: Headers) =>

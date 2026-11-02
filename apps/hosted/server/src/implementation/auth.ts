@@ -1,3 +1,4 @@
+import { hostCookieName } from "../contracts/browser.ts";
 import { apiKeys, apiKeyManagement } from "./api-keys.ts";
 import {
   CurrentUsage,
@@ -115,7 +116,16 @@ export const authOptions = (
       customRules: { "/get-session": false, "/organization/list": false },
     },
     advanced: {
-      cookiePrefix: "executor-hosted",
+      cookiePrefix: hostCookieName(settings.url, "executor-hosted"),
+      // Better Auth's automatic prefix is __Secure-. Supply __Host- ourselves, while
+      // keeping the actual Secure attribute on every core and plugin cookie.
+      useSecureCookies: false,
+      crossSubDomainCookies: { enabled: false },
+      defaultCookieAttributes: {
+        secure: new URL(settings.url).protocol === "https:",
+        path: "/",
+        httpOnly: true,
+      },
       ipAddress: { ipAddressHeaders },
       // Read a session and its user in one statement instead of one query each.
       database: { joins: true },

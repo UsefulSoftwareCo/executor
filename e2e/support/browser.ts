@@ -115,6 +115,7 @@ export class Browser extends Context.Service<
       const context = yield* driver("create browser context", () =>
         browser.newContext({
           baseURL: targetHosts(target).browser,
+          ...(target.tlsCertificate === undefined ? {} : { ignoreHTTPSErrors: true }),
           viewport: { width: 1440, height: 960 },
           ...visitorUserAgent(browser),
           recordVideo: { dir: `${evidence.directory}/raw`, size: { width: 1440, height: 960 } },
