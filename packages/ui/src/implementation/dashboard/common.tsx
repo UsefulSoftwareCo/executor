@@ -58,6 +58,7 @@ export function ProviderIcon({
   large = false,
   declared = null,
   pending = false,
+  showFallback = true,
 }: {
   readonly name: string;
   readonly url?: string | null | undefined;
@@ -67,6 +68,8 @@ export function ProviderIcon({
   readonly declared?: AppIconSources | null;
   /** The app's own icon is still loading. */
   readonly pending?: boolean;
+  /** Hide the generic package glyph when a provider has no logo. */
+  readonly showFallback?: boolean;
 }) {
   const catalogIcons = useCatalogIcons();
   const [failed, setFailed] = useState<readonly string[]>([]);
@@ -81,6 +84,7 @@ export function ProviderIcon({
   const own = sources !== null && !failed.includes(sources.light) ? sources : null;
   const icon =
     own === null && !waiting && source !== null && !failed.includes(source) ? source : null;
+  if (!showFallback && !waiting && own === null && icon === null) return null;
   const fail = (key: string) => () =>
     setFailed((current) => (current.includes(key) ? current : [...current, key]));
   return (
@@ -124,9 +128,9 @@ export function ProviderIcon({
         />
       ) : waiting ? (
         <Skeleton className="size-full rounded-[inherit]" data-icon="loading" />
-      ) : (
+      ) : showFallback ? (
         <HugeiconsIcon icon={PackageIcon} aria-hidden size={large ? 23 : 17} strokeWidth={1.5} />
-      )}
+      ) : null}
     </span>
   );
 }

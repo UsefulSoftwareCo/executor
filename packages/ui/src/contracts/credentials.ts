@@ -62,7 +62,7 @@ export const accountFields = (
         readonly plain?: readonly string[];
         readonly raw?: readonly string[];
       }
-    | { readonly type: "oauth2" },
+    | { readonly type: "oauth2" | "interactive" },
 ) =>
   method.type === "secrets"
     ? Option.gen(function* () {
@@ -109,6 +109,14 @@ export interface AccountOAuthProps {
   readonly onPendingChange: (pending: boolean) => void;
   /** Where the sign-in goes once it is saved; the OAuth form shows it just above its action. */
   readonly access: ReactNode;
+}
+
+/** A method the app signs in itself; the product runs its steps for the chosen method. */
+export interface AccountInteractiveProps {
+  readonly method: string;
+  readonly label: string;
+  readonly disabled: boolean;
+  readonly onPendingChange: (pending: boolean) => void;
 }
 
 /** Client selection submitted to the product's OAuth start operation. */

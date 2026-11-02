@@ -454,7 +454,7 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
             run: Schema.decodeUnknownSync(WorkflowRunId)(event.payload.run),
           }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(PreparedWorkflow)));
           if (prepared.state === "complete") return prepared.output;
-          const { seed, accounts } = prepared;
+          const { seed, accounts, caller } = prepared;
           const native = <A>(work: () => Promise<A>) =>
             Effect.tryPromise({ try: work, catch: decodeWorkflowFailure });
           const execution: WorkflowExecution = {
@@ -509,6 +509,7 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
                 ...(seed.hostApi === undefined ? {} : { hostApi: seed.hostApi }),
                 database: false,
                 accounts,
+                ...(caller === undefined ? {} : { caller }),
                 command: { operation: "workflow-run", name: seed.name, input: seed.input },
                 headers: {},
               },

@@ -1,3 +1,4 @@
+import { InteractiveSession, InteractiveBinding } from "./interactive-accounts.ts";
 import type { WorkflowRunId } from "apps/contracts";
 import { appSlug } from "./app-slug.ts";
 /** Persisted records. Decode database results with these schemas before use. */
@@ -72,9 +73,17 @@ export type StoredApp = typeof StoredApp.Type;
  * connection. See notes/oauth.md, "Failure reasons".
  */
 export const StoredConnectionState = Schema.Union([
-  Schema.Struct({ status: Schema.Literal("pending"), failure: Schema.optional(Schema.Json) }),
+  Schema.Struct({
+    status: Schema.Literal("pending"),
+    failure: Schema.optional(Schema.Json),
+    interactive: Schema.optionalKey(InteractiveSession),
+  }),
   Schema.Struct({ status: Schema.Literal("cancelled") }),
-  Schema.Struct({ status: Schema.Literal("completed"), account: Account }),
+  Schema.Struct({
+    status: Schema.Literal("completed"),
+    account: Account,
+    interactive: Schema.optionalKey(InteractiveBinding),
+  }),
 ]);
 export type StoredConnectionState = typeof StoredConnectionState.Type;
 
