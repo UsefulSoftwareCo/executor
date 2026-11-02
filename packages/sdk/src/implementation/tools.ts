@@ -474,7 +474,10 @@ function resolveFor(
       state.scope === "app"
         ? { app: selections.app }
         : { app: selections.app, user: selections.user };
-    return { accounts: Redacted.make(accounts) };
+    return {
+      accounts: Redacted.make(accounts),
+      ...(state.scope === "user" && state.actor !== undefined ? { caller: state.actor } : {}),
+    };
   });
 }
 
@@ -562,7 +565,7 @@ const renewRefused = (
       accounts.user === undefined
         ? { app: replaceScope(accounts.app) }
         : { app: replaceScope(accounts.app), user: replaceScope(accounts.user) };
-    return { accounts: Redacted.make(renewedAccounts) } satisfies InvocationContext;
+    return { ...context, accounts: Redacted.make(renewedAccounts) } satisfies InvocationContext;
   });
 
 function invocation(
