@@ -1,3 +1,6 @@
+import { prepareInteractiveCleanup } from "./interactive-cleanup.ts";
+import { transaction } from "./database.ts";
+import { makeInteractiveRetirement } from "./interactive-retirement.ts";
 import { WebhookSourceHost } from "../contracts/webhooks.ts";
 import { makeWebhookSources } from "./webhook-sources.ts";
 import { WorkflowHost } from "../contracts/workflow-runtime.ts";
@@ -11,15 +14,28 @@ import { remoteRegistry } from "./remote-registry.ts";
 import { aesGcmCredentials } from "./credentials.ts";
 import { hostedExecutorOrigin } from "../contracts/registry.ts";
 import { defaultToolListingPolicy } from "../contracts/declarations.ts";
-import { storedApp } from "./apps.ts";
+import {
+  storedApp,
+  checkAppRemoval,
+  AppFileReleaseDeferred,
+  releaseRemovedAppFiles,
+} from "./apps.ts";
 import { initializeAppRepository, recoverAppRepositories } from "./initial-source.ts";
 import { makeWorkflowRuns } from "./workflows.ts";
 /** Compose native operations once for in-process and HTTP callers. */
 import { Crypto, Effect } from "effect";
 import type { Executor, ExecutorOptions, RemoteExecutorOptions } from "../contracts/executor.ts";
-import { AppId, CredentialsError, NotImplemented, StorageError } from "../contracts/shared.ts";
+import {
+  AppCodeId,
+  AppId,
+  CredentialsError,
+  NotImplemented,
+  StorageError,
+} from "../contracts/shared.ts";
 import { makeWebhooks } from "./webhooks.ts";
 import { makeAppData } from "./app-storage.ts";
+import { makeInteractiveAccounts } from "./interactive-accounts.ts";
+import { InteractiveHost } from "../contracts/interactive-accounts.ts";
 import { makeAccountConnections } from "./account-connections.ts";
 import {
   credentialsReadable,
@@ -165,6 +181,15 @@ export const createExecutor = (
       workflows.controls,
       options.hooks,
     );
+    const interactive = makeInteractiveAccounts(
+      db,
+      credentials,
+      crypto,
+      runtime,
+      oauth.resolveSelected,
+      options.hooks,
+      options.hostApi,
+    );
     const connections = makeAccountConnections(db, credentials, crypto, options.hooks);
     const { add, replaceCredentials, ...accountOperations } = makeAccounts(
       db,
@@ -173,6 +198,14 @@ export const createExecutor = (
       options.hooks,
       oauth.revokeRemoved,
     );
+    const retirement = makeInteractiveRetirement(
+      db,
+      crypto,
+      interactive.remove,
+      accountOperations.remove,
+      options.hooks,
+    );
+    const ownerOperations = makeOwners(db);
     const { checkCredentials, ...accountHealth } = makeAccountHealth(
       db,
       runtime,
@@ -259,11 +292,27 @@ export const createExecutor = (
         new URL("/api/oauth/callback", origin).href,
       ]),
       [OwnerMovesHost]: makeOwnerMoves(db, credentials),
+      [InteractiveHost]: { ...interactive, ...retirement },
       scheduler: schedules.dispatcher,
       events,
       schedules: schedules.operations,
       accounts: {
         ...accountOperations,
+        remove: (input) =>
+          Effect.gen(function* () {
+            const saved = yield* storedAccount(db, input.account, input.owner).pipe(
+              Effect.catchTag("AccountNotFound", () => Effect.succeed(undefined)),
+            );
+            if (saved === undefined) return yield* accountOperations.remove(input);
+            if (
+              (yield* interactive.binding({ owner: saved.owner, account: saved.id })) === undefined
+            )
+              return yield* accountOperations.remove(input);
+            return yield* retirement.retire(
+              { owner: saved.owner, accounts: [saved.id] },
+              Effect.succeed({ account: saved.id }),
+            );
+          }),
         ...accountHealth,
         revocation: (input) =>
           storedAccount(db, input.account, input.owner).pipe(
@@ -275,6 +324,14 @@ export const createExecutor = (
       accountConnections: {
         ...connections,
         ...oauth.connections,
+        submit: (input) =>
+          interactive
+            .clearAttempt({ ...input, type: "secrets" })
+            .pipe(Effect.andThen(connections.submit(input))),
+        startOAuth: (input) =>
+          interactive
+            .clearAttempt({ ...input, type: "oauth2" })
+            .pipe(Effect.andThen(oauth.connections.startOAuth(input))),
         findOAuth: (input) =>
           Effect.flatMap(oauth.findOAuth(input), ({ redirectUri, ...found }) =>
             Effect.map(connections.get(found), (connection) => ({ ...connection, redirectUri })),
@@ -283,6 +340,27 @@ export const createExecutor = (
       oauthClients: oauth.clients,
       apps: {
         ...apps,
+        remove: (input) =>
+          Effect.gen(function* () {
+            const app = yield* checkAppRemoval(db, input);
+            if (app === undefined) return yield* apps.remove(input);
+            const acquired = yield* retirement.acquired({ owner: app.owner, app: app.id });
+            const cleanup = yield* prepareInteractiveCleanup(interactive.prepareRemoval, {
+              owner: app.owner,
+              accounts: acquired,
+            });
+            const result = yield* transaction(db, () =>
+              Effect.gen(function* () {
+                const result = yield* apps.remove(input);
+                const current = yield* retirement.acquired({ owner: app.owner, app: app.id });
+                yield* retirement.discard({ owner: app.owner, accounts: current });
+                return result;
+              }),
+            ).pipe(Effect.provideService(AppFileReleaseDeferred, true));
+            yield* cleanup;
+            yield* releaseRemovedAppFiles(options.blobs, AppCodeId.make(app.code));
+            return result;
+          }),
         deploy: (input) =>
           apps
             .deploy(input)
@@ -294,7 +372,20 @@ export const createExecutor = (
         activate: (input) => apps.activate(input).pipe(Effect.tap((app) => activated(app.id))),
         checkCredentials,
       },
-      owners: makeOwners(db),
+      owners: {
+        ...ownerOperations,
+        remove: (input) =>
+          Effect.gen(function* () {
+            const acquired = yield* retirement.acquired({ owner: input.owner });
+            const cleanup = yield* prepareInteractiveCleanup(interactive.prepareRemoval, {
+              owner: input.owner,
+              accounts: acquired,
+            });
+            const result = yield* ownerOperations.remove(input);
+            yield* cleanup;
+            return result;
+          }),
+      },
       publications: catalog.publications,
       registry: catalog.registry,
       skills: makeSkills(db, runtime, crypto, declarations, options.blobs),

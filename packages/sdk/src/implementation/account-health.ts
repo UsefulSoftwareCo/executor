@@ -29,6 +29,8 @@ import { AppNotFound } from "../contracts/apps.ts";
 import { type AccountCredential, invocationAccount, validateFields } from "./provider.ts";
 import { StoredVersion, type StoredAccount } from "../contracts/storage.ts";
 import { storedAccount } from "./accounts.ts";
+import { interactiveBinding, interactiveBindings } from "./interactive-state.ts";
+import type { InteractiveBinding } from "../contracts/interactive-accounts.ts";
 import { query, type Query } from "./database.ts";
 import type { makeOAuth } from "./oauth.ts";
 import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
@@ -129,7 +131,12 @@ export const makeAccountHealth = (
   hostApi: HostApi | undefined,
 ) => {
   /** One account's health from the apps that use it and its recorded checks. */
-  const project = (account: HealthAccount, apps: readonly App[], rows: readonly CheckRow[]) =>
+  const project = (
+    account: HealthAccount,
+    apps: readonly App[],
+    rows: readonly CheckRow[],
+    acquired?: InteractiveBinding,
+  ) =>
     Effect.gen(function* () {
       const latest = rows
         .filter((row) => row.info !== null && row.infoCheckedAt !== null)
@@ -138,8 +145,12 @@ export const makeAccountHealth = (
         latest === undefined ? Option.none() : Schema.decodeUnknownOption(AccountInfo)(latest.info);
       return {
         account: account.id,
-        info: Option.getOrNull(info),
-        infoCheckedAt: Option.isSome(info) ? (latest?.infoCheckedAt ?? null) : null,
+        info: Option.getOrNull(info) ?? acquired?.accountInfo ?? null,
+        infoCheckedAt: Option.isSome(info)
+          ? (latest?.infoCheckedAt ?? null)
+          : acquired?.accountInfo === undefined
+            ? null
+            : new Date(acquired.acquiredAt),
         apps: yield* Effect.forEach(apps, (app) =>
           Effect.gen(function* () {
             const row = rows.find((item) => item.app === app.id);
@@ -170,7 +181,12 @@ export const makeAccountHealth = (
       const rows = yield* query(() =>
         db.findMany("accountChecks", { where: (b) => b("account", "=", account.id) }),
       );
-      return yield* project(account, apps, rows);
+      return yield* project(
+        account,
+        apps,
+        rows,
+        yield* interactiveBinding(db, { account: account.id, owner: account.owner }),
+      );
     });
 
   /**
@@ -192,6 +208,10 @@ export const makeAccountHealth = (
       const rows = yield* query(() =>
         db.findMany("accountChecks", { where: (b) => b("account", "in", ids) }),
       );
+      const acquired = yield* interactiveBindings(db, {
+        accounts: ids,
+        ...(input.owner === undefined ? {} : { owner: input.owner }),
+      });
       const linked = [...new Set(input.links.map((link) => link.app))];
       const apps = linked.length === 0 ? [] : yield* listApps({ ids: linked });
       return yield* Effect.forEach(accounts, (account) =>
@@ -201,6 +221,7 @@ export const makeAccountHealth = (
             input.links.some((link) => link.app === app.id && link.account === account.id),
           ),
           rows.filter((row) => row.account === account.id),
+          acquired.get(account.id),
         ),
       );
     }).pipe(Effect.withSpan("sdk.accounts.listHealth"));

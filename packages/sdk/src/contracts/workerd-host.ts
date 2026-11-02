@@ -33,6 +33,7 @@ export const WorkerInvocation = Schema.Struct({
   database: Schema.Boolean,
   command: HostRequest,
   accounts: HostAccounts,
+  caller: Schema.optionalKey(Schema.NonEmptyString),
   approval: Schema.optionalKey(TrustedToolApproval),
   replay: Schema.optionalKey(WorkflowReplay),
   deadline: Schema.optionalKey(InvocationDeadline),
@@ -129,5 +130,6 @@ export const PreparedWorkflow = Schema.Union([
     state: Schema.Literal("execute"),
     seed: WorkflowSeed,
     accounts: HostAccounts,
+    caller: Schema.optionalKey(Schema.NonEmptyString),
   }),
 ]);

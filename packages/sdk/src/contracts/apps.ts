@@ -1,3 +1,4 @@
+import { InteractiveRetirementBusy, InteractiveRetirementFailed } from "./interactive-errors.ts";
 import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user-facing-error";
 import { ApiError } from "@executor-js/utils/api-error";
 import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
@@ -321,6 +322,7 @@ export const AccountSelectionInvalid = UserFacingError.define({
       "expected_one",
       "expected_many",
       "provider_mismatch",
+      "app_bound",
       "duplicate_account",
     ]),
   },
@@ -365,6 +367,15 @@ export const AccountSelectionInvalid = UserFacingError.define({
             action: "Open Accounts and connect a new account for this requirement.",
             instructions:
               "This account can’t be selected or reconnected for this requirement. Start a new connection for it without `account` (with the Executor app, appAccounts.userConnect or appAccounts.appConnect for the requirement, without `account`), and give the user the returned URL. If the provider change was unintended, restore the previous definition and redeploy instead. Keep the old account; never substitute another identity automatically. Verify tool discovery once the new account is selected.",
+          },
+        },
+        app_bound: {
+          title: "Account belongs to another app",
+          description: "Only the app that acquired this account can use its reference.",
+          recovery: {
+            action: "Connect a new account from this app.",
+            instructions:
+              "Interactive accounts are bound to the acquiring app. Start a connection for this app instead of linking another app's account.",
           },
         },
         duplicate_account: {
@@ -674,7 +685,13 @@ export const AppsGroup = HttpApiGroup.make("apps")
       params: appParams,
       query: ownerQuery,
       success: Schema.Struct({ app: AppId }),
-      error: [StorageError, AppWebhooksActive, AppWorkflowsActive],
+      error: [
+        StorageError,
+        InteractiveRetirementBusy,
+        InteractiveRetirementFailed,
+        AppWebhooksActive,
+        AppWorkflowsActive,
+      ],
     }).annotate(
       OpenApi.Description,
       "Delete one app, its schedules and its webhook sources. Saved accounts, retained versions and other copies are kept. Repeating removal is safe.",

@@ -1,3 +1,4 @@
+import { InteractiveRetirementBusy, InteractiveRetirementFailed } from "./interactive-errors.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ApiError } from "@executor-js/utils/api-error";
 /** Saved reusable accounts. Products decide access; pending setup lives in account-connection.ts. */
@@ -376,7 +377,13 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
       params: accountParams,
       query: ownerQuery,
       success: Schema.Struct({ account: AccountId }),
-      error: [StorageError, AccountWebhooksActive, AccountWorkflowsActive],
+      error: [
+        StorageError,
+        InteractiveRetirementBusy,
+        InteractiveRetirementFailed,
+        AccountWebhooksActive,
+        AccountWorkflowsActive,
+      ],
     }).annotate(
       OpenApi.Description,
       "Delete a saved account and its local credentials. Inspect the apps it is linked to and confirm the intended account first. When the service supports revocation, also asks it to revoke the account's OAuth grant after the deletion, best effort; accounts.revocation reports whether it will. To stop using the account in only one app, unlink it from that app instead.",

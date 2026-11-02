@@ -89,6 +89,14 @@ export {
   type Provider,
   type ReservedAuthorizationParam,
 } from "./contracts/provider.ts";
+export { interactive } from "./implementation/provider.ts";
+export type { InteractiveMethod } from "./contracts/provider.ts";
+export type { ConnectContext } from "./implementation/connect.ts";
+export type {
+  InteractiveStart,
+  InteractiveStatus,
+  InteractiveInstructions,
+} from "./contracts/connect.ts";
 export { defineProvider, type ProviderOptions } from "./implementation/provider.ts";
 export {
   base64,
