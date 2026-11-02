@@ -1,3 +1,5 @@
+import { identityAccounts, redactAccountHealth } from "./account-identity.ts";
+import { requireRequirementAccess } from "./contributed-account-policy.ts";
 /**
  * The routes that link accounts to an app's requirements, in either scope. App links need edit
  * access to the app and, to link, use of the account; reading them needs use of the app. User links
@@ -29,7 +31,7 @@ import { HostedExecutor } from "../contracts/executor.ts";
 import { OrganizationForbidden } from "../contracts/organization.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import type { ConnectionDestination } from "../contracts/resource-access.ts";
-import { appManagerOwner, currentOwner, usableApp } from "./access.ts";
+import { currentOwner, usableApp } from "./access.ts";
 import { connectAccount, connectionUrl } from "./accounts.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import { addLink, callerLinkedAccounts, lockedChange, removeLink } from "./app-accounts.ts";
@@ -50,6 +52,9 @@ const LinkRecord = Schema.Struct({
   requirement: Schema.NonEmptyString,
   account: Schema.String,
   createdAt: Schema.Date,
+  contributed: Schema.Boolean,
+  linkedBy: Schema.String,
+  linkedByName: Schema.NullOr(Schema.String),
 });
 type LinkRecord = typeof LinkRecord.Type;
 
@@ -67,8 +72,8 @@ const signIn = (executor: Executor, owner: OwnerId, account: AccountId) =>
 
 /**
  * Links with each account, its sign-in and its checks by this app, in the records' order. A link
- * whose account no longer exists, or belongs to another owner, is left out. Without `identity`, the
- * upstream identity the checks reported is left out.
+ * whose account no longer exists, or belongs to another owner, is left out. Ordinary app links
+ * show upstream identity only to app editors; contributed links also permit holders and managers.
  */
 const linkViews = (
   executor: Executor,
@@ -86,6 +91,8 @@ const linkViews = (
       const account = accounts.get(record.account);
       return account === undefined ? [] : [{ record, account }];
     });
+    const user = yield* CurrentUserId;
+    const visible = yield* identityAccounts(present.map(({ account }) => account.id));
     const health = new Map(
       (yield* executor.accounts.listHealth({
         owner,
@@ -103,10 +110,15 @@ const linkViews = (
               account,
               createdAt: record.createdAt,
               signIn: state,
+              linkedBy: { id: record.linkedBy, name: record.linkedByName },
+              canRemove: identity || (record.contributed && record.linkedBy === user),
               ...(checks === undefined
                 ? {}
                 : {
-                    health: identity ? checks : { ...checks, info: null, infoCheckedAt: null },
+                    health:
+                      identity || (record.contributed && visible.has(account.id))
+                        ? checks
+                        : redactAccountHealth(checks),
                   }),
             },
           ]),
@@ -123,8 +135,13 @@ const linkViews = (
 const linkRecords = (app: AppId, subject: string | null, requirement?: string) =>
   Effect.gen(function* () {
     const sql = yield* policyDatabase;
-    return yield* sql`select l.requirement, l.account, l.created_at as "createdAt"
-      from hosted_app_account_links l
+    return yield* sql`select l.requirement, l.account, l.created_at as "createdAt",
+        l.linked_by as "linkedBy", u.name as "linkedByName",
+        coalesce(d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope' = 'app'
+          and d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'contributed' = 'true', false) as contributed
+      from hosted_app_account_links l left join "user" u on u.id = l.linked_by
+      join executor_apps a on a.id = l.app
+      left join executor_deployments d on d.id = a.active_deployment
       where l.app = ${app}
         and ${subject === null ? sql`l.subject is null` : sql`l.subject = ${subject}`}
         and ${requirement === undefined ? sql`true` : sql`l.requirement = ${requirement}`}
@@ -175,6 +192,9 @@ const requirementView = (
 ) =>
   Effect.gen(function* () {
     const required = yield* scopedRequirement(app, scope, requirement);
+    const { access } = yield* requireCurrentAppAccess(app.id, "read");
+    const canContribute =
+      scope === "user" || (required.contributed ? access.canUse : access.canManage);
     const all = yield* executor.accounts.list({ owner, provider: required.provider });
     const byId = new Map(all.map((account) => [account.id as string, account]));
     const linkedAccounts = linked.flatMap((record) => {
@@ -188,6 +208,7 @@ const requirementView = (
       scope,
       provider: required.provider,
       cardinality: required.cardinality,
+      canContribute,
       accounts: [
         ...linkedAccounts.map((account: Account) => ({ account, linked: true })),
         ...usable.map((account: Account) => ({ account, linked: false })),
@@ -210,7 +231,14 @@ const savedLink = (
     const records = (yield* linkRecords(app, subject, requirement)).filter(
       (record) => record.account === account,
     );
-    const [view] = yield* linkViews(executor, owner, app, records, true);
+    const { access } = yield* requireCurrentAppAccess(app, "read");
+    const [view] = yield* linkViews(
+      executor,
+      owner,
+      app,
+      records,
+      subject !== null || access.canManage,
+    );
     if (view === undefined) return yield* new AccountNotFound({ account });
     return view;
   });
@@ -266,9 +294,12 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
       )
       .handle("appGet", ({ params }) =>
         Effect.gen(function* () {
-          const owner = yield* appManagerOwner(params.app);
+          const owner = yield* currentOwner;
           const executor = yield* Effect.flatten(HostedExecutor);
+          yield* requireCurrentAppAccess(params.app, "read");
           const app = yield* executor.apps.get({ owner, app: params.app });
+          if (!app.requirements.accounts[params.requirement]?.contributed)
+            yield* requireCurrentAppAccess(params.app, "manage");
           const linked = yield* linkRecords(params.app, null, params.requirement);
           return yield* requirementView(executor, owner, app, "app", params.requirement, linked);
         }),
@@ -276,14 +307,15 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
       .handle("appLink", ({ params }) =>
         Effect.gen(function* () {
           const user = yield* caller;
-          const owner = yield* appManagerOwner(params.app);
+          const owner = yield* currentOwner;
           const executor = yield* Effect.flatten(HostedExecutor);
+          yield* requireRequirementAccess({ ...params, scope: "app" });
           yield* executor.apps.get({ owner, app: params.app });
           yield* requireAccountAccess(params.account, "use");
           yield* executor.accounts.get({ owner, account: params.account });
           const changed = yield* lockedChange(
             executor,
-            { app: params.app, access: "manage", account: params.account },
+            { ...params, access: "contribute" },
             (sql) =>
               addLink(sql, executor.webhooks, {
                 app: params.app,
@@ -308,19 +340,16 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
         Effect.gen(function* () {
           // Unlinking needs edit access to the app, not use of the account: an editor can stop the
           // app using an account they cannot use.
-          const owner = yield* appManagerOwner(params.app);
+          const owner = yield* currentOwner;
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* executor.apps.get({ owner, app: params.app });
-          const removed = yield* lockedChange(
-            executor,
-            { app: params.app, access: "manage" },
-            (sql) =>
-              removeLink(sql, executor.webhooks, {
-                app: params.app,
-                requirement: params.requirement,
-                account: params.account,
-                subject: null,
-              }),
+          const removed = yield* lockedChange(executor, { ...params, access: "remove" }, (sql) =>
+            removeLink(sql, executor.webhooks, {
+              app: params.app,
+              requirement: params.requirement,
+              account: params.account,
+              subject: null,
+            }),
           );
           if (!removed) return yield* new AccountNotFound({ account: params.account });
           yield* wake;

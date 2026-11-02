@@ -99,6 +99,8 @@ export const AppAccountLink = Schema.Struct({
   account: Account,
   createdAt: Schema.Date,
   signIn: LinkedAccountSignIn,
+  linkedBy: Schema.Struct({ id: Schema.String, name: Schema.NullOr(Schema.String) }),
+  canRemove: Schema.Boolean,
   health: Schema.optionalKey(AccountHealth),
 });
 export type AppAccountLink = typeof AppAccountLink.Type;
@@ -119,6 +121,7 @@ export const AppAccountRequirement = Schema.Struct({
   scope: AccountScope,
   provider: AccountRequirement.fields.provider,
   cardinality: AccountRequirement.fields.cardinality,
+  canContribute: Schema.Boolean,
   accounts: Schema.Array(RequirementAccount),
 });
 export type AppAccountRequirement = typeof AppAccountRequirement.Type;
@@ -163,7 +166,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
       .annotate(
         OpenApi.Description,
         forEveryone
-          ? "List the accounts linked to this app's own requirements, oldest first per requirement, with each account's sign-in state and checks by this app. Every caller and the app's background work use them; a plain requirement uses its one linked account. Anyone who can use the app can read them; only people who can edit the app see the identity checks reported."
+          ? "List the accounts linked to this app's own requirements, oldest first per requirement, with each account's sign-in state and checks by this app. Every caller and the app's background work use them; a plain requirement uses its one linked account. Anyone who can use the app can read them; the account holder, account managers and people who can edit the app see the upstream identity."
           : "List the accounts you linked to this app's user requirements and can still use, oldest first per requirement, with each account's sign-in state and checks by this app. Your calls use them: a plain requirement uses your one linked account, and many() every one.",
       ),
     HttpApiEndpoint.get(`${scope}Get`, `${path}/:requirement`, {
@@ -175,7 +178,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
       .annotate(
         OpenApi.Description,
         forEveryone
-          ? "Read one of this app's own requirements: the accounts linked to it, then the other accounts of its provider you can use and could link, each marked linked or not. Needs edit access to the app."
+          ? "Read one of this app's own requirements: the accounts linked to it, then the other accounts of its provider you can use and could link, each marked linked or not. Ordinary requirements need edit access; contributed requirements need use of the app."
           : "Read one of this app's user requirements: the accounts you linked to it, then the other accounts of its provider you can use and could link, each marked linked or not. Choose from these accounts before linking.",
       ),
     HttpApiEndpoint.put(`${scope}Link`, `${path}/:requirement/:account`, {
@@ -187,7 +190,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
       .annotate(
         OpenApi.Description,
         forEveryone
-          ? "Link an account to one of this app's own requirements, so every caller and the app's background work use it through the app, without access to the account itself. Needs edit access to the app and use of the account. Linking an account to a plain requirement replaces the account linked to it before; for many() it adds one. Linking again changes nothing. The replaced account stays saved."
+          ? "Link an account to one of this app's own requirements, so every caller and the app's background work use it through the app, without access to the account itself. Contributed requirements need use of the app and account; ordinary requirements need edit access to the app and use of the account. Linking an account to a plain requirement replaces the account linked to it before; for many() it adds one. Linking again changes nothing. The replaced account stays saved."
           : "Link one of your accounts to one of this app's user requirements. Needs use of the app and of the account. Linking an account to a plain requirement replaces the account you linked to it before; for many() it adds one. Linking again changes nothing. The replaced account stays saved.",
       ),
     HttpApiEndpoint.delete(`${scope}Unlink`, `${path}/:requirement/:account`, {
@@ -199,7 +202,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
       .annotate(
         OpenApi.Description,
         forEveryone
-          ? "Stop this app using an account for one of its own requirements. Needs edit access to the app, not use of the account. Calls and background work that need the requirement fail until another account is linked, and the app's webhooks registered with the account are removed. The account stays saved."
+          ? "Stop this app using an account for one of its own requirements. Contributed links may be removed by their linker or an app editor; ordinary links need edit access. Calls and background work that need the requirement fail until another account is linked, and the app's webhooks registered with the account are removed. The account stays saved."
           : "Stop using an account for one of this app's user requirements. The account and its other links stay unchanged.",
       ),
     HttpApiEndpoint.post(`${scope}Connect`, `${path}/:requirement/connections`, {
@@ -213,7 +216,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
         OpenApi.Description,
         `${
           forEveryone
-            ? "Connect a new account for one of this app's own requirements. Needs edit access to the app."
+            ? "Connect a new account for one of this app's own requirements. Ordinary requirements need edit access; contributed requirements need use of the app."
             : "Connect a new account of your own for one of this app's user requirements."
         } Returns the url of the browser form where the user enters credentials or signs in; give the user that url. ${connectDescription}`,
       ),

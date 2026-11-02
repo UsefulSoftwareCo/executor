@@ -162,6 +162,7 @@ export type DeclaredProvider = typeof DeclaredProvider.Type;
 export const DeclaredAccountSlot = Schema.Struct({
   definition: DeclaredProvider,
   cardinality: Schema.Literals(["one", "many"]),
+  contributed: Schema.optionalKey(Schema.Boolean),
   /**
    * The slot's provider defines an account check. Kept beside the definition, not in it, so
    * adding or editing a check never changes the provider's identity.

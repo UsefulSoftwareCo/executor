@@ -24,6 +24,10 @@ interface LinkedAccount {
 export interface RequirementLink<A> {
   readonly requirement: string;
   readonly account: A;
+  /** Who linked it, for app links; `name` is null when that person is gone. */
+  readonly linkedBy?: { readonly id: string; readonly name: string | null } | undefined;
+  /** Whether the caller may unlink it: they linked it, or they can edit the app. */
+  readonly canRemove?: boolean | undefined;
 }
 
 /** One account a requirement lists: linked to it, or one the caller could link. */

@@ -280,7 +280,13 @@ export class Provider<Auth extends AuthMethods> extends Data.Class<{
 /** A collection requirement; selecting accounts does not copy or transfer them. */
 export class ManyAccounts<Auth extends AuthMethods> extends Data.TaggedClass("many")<{
   readonly provider: Provider<Auth>;
-}> {}
+  readonly isContributed?: true;
+}> {
+  /** Let members who can use the app add accounts to this app-scope requirement. */
+  contributed(): ManyAccounts<Auth> {
+    return new ManyAccounts({ provider: this.provider, isContributed: true });
+  }
+}
 
 /** Infer the data for one method from its native Effect decoder. */
 export type AuthMethodData<Method> =

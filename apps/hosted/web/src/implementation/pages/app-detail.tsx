@@ -96,6 +96,8 @@ const withSummaries = (
 ): readonly RequirementLink<AccountSummary>[] =>
   links.map((link) => ({
     requirement: link.requirement,
+    linkedBy: link.linkedBy,
+    canRemove: link.canRemove,
     account: {
       ...link.account,
       ...summaries.find((summary) => summary.id === link.account.id),

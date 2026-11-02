@@ -56,3 +56,52 @@ export const migrateProvisioning = Effect.gen(function* () {
     end $$`;
   yield* sql`create or replace trigger hosted_provision_user after insert or update of "emailVerified" on "user" for each row execute function hosted_queue_user()`;
 });
+
+/**
+ * Additive outbox. Use the existing member job kind so a running old server can still parse its
+ * queue. It may acknowledge the job without cleanup; retained snapshots let the new runner recover it.
+ */
+export const migrateContributedDepartures = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  // Snapshot the links at departure, so a delayed retry cannot remove a later contribution.
+  yield* sql`create table if not exists hosted_contributed_departures (
+    job text not null references hosted_provisioning(id) on delete cascade,
+    app text not null,
+    requirement text not null,
+    account text not null,
+    linked_at timestamptz not null,
+    primary key (job, app, requirement, account)
+  )`;
+  yield* sql`create or replace function hosted_queue_member() returns trigger language plpgsql as $$
+    declare team text; departure text;
+    begin
+      team := case when TG_OP = 'DELETE' then OLD."organizationId" else NEW."organizationId" end;
+      -- Cascade deletion must not insert an event referencing a removed team.
+      if exists (select 1 from organization where id = team) then
+        insert into hosted_provisioning (kind, organization_id) values ('billing', team);
+        if TG_OP <> 'DELETE' then
+          insert into hosted_provisioning (kind, organization_id, user_id) values ('member', team, NEW."userId");
+        elsif exists (select 1 from "user" where id = OLD."userId")
+          and to_regclass('hosted_app_account_links') is not null
+          and to_regclass('hosted_account_access') is not null
+          and to_regclass('executor_deployments') is not null then
+          departure := 'contributed-departure-' || gen_random_uuid()::text;
+          insert into hosted_provisioning (id, kind, organization_id, user_id)
+            values (departure, 'member', team, OLD."userId");
+          insert into hosted_contributed_departures (job, app, requirement, account, linked_at)
+            select departure, l.app, l.requirement, l.account, l.created_at
+            from hosted_app_account_links l
+            join hosted_account_access p on p.account_id = l.account
+            join executor_apps a on a.id = l.app and a.owner = 'organization:' || team
+            join executor_deployments d on d.id = a.active_deployment
+            where l.subject is null and l.linked_by = OLD."userId"
+              and p.organization_id = team and p.kind = 'personal' and p.personal_user_id = OLD."userId"
+              and d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'scope' = 'app'
+              and d.requirements::jsonb -> 'accounts' -> l.requirement ->> 'contributed' = 'true';
+          if not found then delete from hosted_provisioning where id = departure; end if;
+        end if;
+      end if;
+      return null;
+    end $$`;
+  yield* sql`create or replace trigger hosted_provision_member after insert or update of role or delete on member for each row execute function hosted_queue_member()`;
+});
