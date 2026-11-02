@@ -67,3 +67,26 @@ export const AuthMethodInvalid = UserFacingError.define({
 });
 /** Parsed AuthMethodInvalid failure. */
 export type AuthMethodInvalid = typeof AuthMethodInvalid.Type;
+
+/** The host creates this account. A connection form must never replace its credentials. */
+export const AccountProvisioned = UserFacingError.define({
+  tag: "AccountProvisioned",
+  status: 422,
+  fields: { provider: ProviderId },
+  title: "Account is set up automatically",
+  description:
+    "Executor provisions this account automatically. It cannot be connected or updated here.",
+  recovery: {
+    action:
+      "Return to the app. If its account is missing, ask the host administrator to provision it.",
+    instructions:
+      "Use the host's provisioning path. Do not start another connection or replace this account's credentials.",
+  },
+});
+export type AccountProvisioned = typeof AccountProvisioned.Type;
+
+/** Methods a person can connect. Host provisioning remains available through managedAccounts. */
+export const connectableMethods = (definition: ProviderDefinition) =>
+  Object.entries(definition.auth).filter(
+    ([, method]) => method.type !== "secrets" || method.provisioned !== true,
+  );

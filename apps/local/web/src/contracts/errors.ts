@@ -40,6 +40,11 @@ const unavailable = () =>
     : message("Could not reach Executor", "Check that the local server is running, then retry.");
 const errorMessage = Match.type<DashboardError>().pipe(
   Match.tagsExhaustive({
+    AccountProvisioned: () =>
+      message(
+        "Account is set up automatically",
+        "Executor provisions this account automatically. Ask the host administrator if it is missing.",
+      ),
     SkillRevisionChanged: () => ({
       title: "Skills changed",
       description: "Reload the skill to read its current instructions and references.",
@@ -53,6 +58,22 @@ const errorMessage = Match.type<DashboardError>().pipe(
       ),
     ConnectionNotFound: () =>
       message("Connection unavailable", "This connection was revoked or no longer exists."),
+    InteractiveRetirementBusy: () =>
+      message("Removal already running", "Wait for it to finish, then try again."),
+    InteractiveRetirementFailed: ({ reason }) =>
+      message(
+        "Account not removed",
+        reason === "authority"
+          ? "Only someone who can delete this account can remove it."
+          : reason === "active"
+            ? "Something still uses this account. Stop it, then try again."
+            : "The app couldn't finish removing this where it signed in. Nothing was deleted here, but anything the app already removed stays removed. Try again.",
+      ),
+    InteractiveReconnectUnsupported: () =>
+      message(
+        "Connect a new account",
+        "This account can't take new credentials. Connect a new one, then remove this one.",
+      ),
     ConnectionIdTaken: () =>
       message("Connection not created", "Close the form and create the connection again."),
     ConnectionAccessInvalid: ({ reason }) =>

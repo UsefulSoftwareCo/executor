@@ -8,6 +8,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "../components/avatar.tsx";
 import { Button } from "../components/button.tsx";
 import { LocalTime, shortMoment } from "../components/local-time.tsx";
 import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
+import { AccountDisplayStatus } from "./account-status.tsx";
 
 type AccountInfo = NonNullable<AccountHealth["info"]>;
 
@@ -264,6 +265,9 @@ export function AccountCheckResult({
         </span>
         <LocalTime value={health.check.checkedAt} options={shortMoment} />
       </span>
+      {health.check.displayStatus !== undefined && (
+        <AccountDisplayStatus status={health.check.displayStatus} current={health.check.current} />
+      )}
       {health.check.message !== undefined && (
         <span className="max-w-[28rem] text-right wrap-anywhere" data-check-message>
           {health.check.message}

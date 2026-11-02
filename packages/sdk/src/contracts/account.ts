@@ -1,10 +1,11 @@
+import { InteractiveRetirementBusy, InteractiveRetirementFailed } from "./interactive-errors.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ApiError } from "@executor-js/utils/api-error";
 /** Saved reusable accounts. Products decide access; pending setup lives in account-connection.ts. */
 import { type Effect, Schema, SchemaGetter } from "effect";
 import { StorageError, CredentialsError } from "./shared.ts";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
-import { AccountInfo } from "apps/contracts";
+import { AccountInfo, AccountStatus } from "apps/contracts";
 import type { UiAccountProblem } from "apps/ui/contracts";
 import type { App, AppAccounts } from "./apps.ts";
 import { AccountId, AppId, JsonObject, OwnerId, ProviderId, WebhookId } from "./shared.ts";
@@ -58,6 +59,8 @@ export const AccountAppHealth = Schema.Struct({
     Schema.Struct({
       status: AccountCheckStatus,
       checkedAt: Schema.Date,
+      /** Public display data from this check only; outdated results remain marked outdated. */
+      displayStatus: Schema.optionalKey(AccountStatus),
       current: Schema.Boolean,
       /** Why the check failed, as the app or host explained it. Absent when it gave no reason. */
       message: Schema.optionalKey(Schema.String),
@@ -376,7 +379,13 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
       params: accountParams,
       query: ownerQuery,
       success: Schema.Struct({ account: AccountId }),
-      error: [StorageError, AccountWebhooksActive, AccountWorkflowsActive],
+      error: [
+        StorageError,
+        InteractiveRetirementBusy,
+        InteractiveRetirementFailed,
+        AccountWebhooksActive,
+        AccountWorkflowsActive,
+      ],
     }).annotate(
       OpenApi.Description,
       "Delete a saved account and its local credentials. Inspect the apps it is linked to and confirm the intended account first. When the service supports revocation, also asks it to revoke the account's OAuth grant after the deletion, best effort; accounts.revocation reports whether it will. To stop using the account in only one app, unlink it from that app instead.",
