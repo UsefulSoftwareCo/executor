@@ -115,6 +115,8 @@ export const selfHostExecutorServices = <E, R>(
         blobs,
         runtime,
         workflows,
+        workflowInputUrl: ({ owner, app, id }) =>
+          `${origin}/org/${encodeURIComponent(owner)}/approvals/workflow/${encodeURIComponent(app)}/${encodeURIComponent(id)}`,
         registry,
         hooks: lifecycle.hooks,
         oauth: {

@@ -105,13 +105,17 @@ export const bindingWorkerdApps = (options: {
         }),
       { bufferSize: 1, strategy: "sliding" },
     );
-  const backend = (operation: "start" | "status" | "terminate", run: WorkflowRunId) =>
+  const backend = (
+    operation: "start" | "status" | "terminate" | "input",
+    run: WorkflowRunId,
+    id?: string,
+  ) =>
     Effect.tryPromise({
       try: async () => {
         const response = await options.binding.fetch("http://apps.internal/workflow", {
           method: "POST",
           headers,
-          body: JSON.stringify({ operation, run }),
+          body: JSON.stringify({ operation, run, ...(id === undefined ? {} : { id }) }),
         });
         if (response.status !== 200) throw new Error("Workflow request failed");
         return response.json();

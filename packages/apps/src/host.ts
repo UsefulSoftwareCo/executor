@@ -129,3 +129,5 @@ export {
   isolatedWorkflowExecution,
   isolatedWorkflowControls,
 } from "./implementation/workflow-rpc.ts";
+
+export { prepareElicitation } from "./implementation/elicitation.ts";

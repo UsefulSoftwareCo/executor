@@ -1,3 +1,4 @@
+import { DashboardWorkflowInputs } from "./workflow-inputs.ts";
 import {
   blockedRecovery,
   LocalOwnerMigration,
@@ -831,6 +832,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
     )
     .middleware(DashboardAccess),
   DashboardSchedules.middleware(DashboardAccess),
+  DashboardWorkflowInputs.middleware(DashboardAccess),
   DashboardAppBrowser.middleware(DashboardAccess),
   DashboardWorkflows.middleware(DashboardAccess),
   DashboardWebhooks.middleware(DashboardAccess),

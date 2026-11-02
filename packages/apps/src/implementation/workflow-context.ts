@@ -1,4 +1,5 @@
 /** Author-facing step methods delegate persistence to the host's durable engine. */
+import { WorkflowInputRequest, WorkflowInputOutcome } from "../contracts/workflow-input.ts";
 import { Cause, Effect, Schema } from "effect";
 import type { AccountScope, AppDefinition } from "../contracts/app.ts";
 import type { AppRequirements } from "../contracts/context.ts";
@@ -212,6 +213,44 @@ export const makeWorkflowContext = (
         invoke(operationStep("query", name, operation, input, options)),
       runMutation: (name, operation, input, options = {}) =>
         invoke(operationStep("mutation", name, operation, input, options)),
+      requestInput: (name, request) =>
+        invoke(
+          Effect.gen(function* () {
+            const stepId = yield* identify("input", name);
+            const parsed = yield* Schema.decodeUnknownEffect(WorkflowInputRequest)(request).pipe(
+              Effect.mapError(() => new WorkflowFailure({ reason: "input", retryable: false })),
+            );
+            const input = execution.input;
+            if (input === undefined)
+              return yield* new WorkflowFailure({ reason: "unavailable", retryable: false });
+            // A lost reply retries the same run/step identity. The host refuses changed form content.
+            return yield* input({ operation: "request", stepId, name, request: parsed });
+          }),
+        ),
+      waitForInput: (name, question) =>
+        invoke(
+          Effect.gen(function* () {
+            const input = execution.input;
+            const wait = execution.driver.waitForInput;
+            if (input === undefined || wait === undefined)
+              return yield* new WorkflowFailure({ reason: "unavailable", retryable: false });
+            const stepId = yield* identify("input-wait", name);
+            let current = yield* input({ operation: "get", id: question.id });
+            if (current.status === "pending") {
+              yield* wait(`input:${name.slice(0, 80)}:${stepId}`, question.id, current.expiresAt);
+              current = yield* input({ operation: "get", id: question.id });
+            }
+            if (current.status === "pending")
+              return yield* new WorkflowFailure({ reason: "engine", retryable: true });
+            return yield* Schema.decodeUnknownEffect(WorkflowInputOutcome)(
+              current.status === "answered"
+                ? { status: "answered", response: current.response }
+                : { status: current.status },
+            ).pipe(
+              Effect.mapError(() => new WorkflowFailure({ reason: "engine", retryable: false })),
+            );
+          }),
+        ),
       sleep: (name, duration) =>
         invoke(
           Schema.decodeUnknownEffect(WorkflowDuration)(duration).pipe(

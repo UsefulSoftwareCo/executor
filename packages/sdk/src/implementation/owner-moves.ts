@@ -81,6 +81,7 @@ const ownerTables = [
   "schedules",
   "scheduledRuns",
   "workflowRuns",
+  "workflowInputs",
   "webhooks",
   "webhookSources",
   "eventSubscriptions",

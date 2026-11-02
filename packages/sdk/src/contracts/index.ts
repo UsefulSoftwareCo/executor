@@ -29,3 +29,5 @@ export * from "./public-files.ts";
 export * from "./registry.ts";
 export * from "./wire-revision.ts";
 export * from "./publications.ts";
+
+export * from "./workflow-inputs.ts";

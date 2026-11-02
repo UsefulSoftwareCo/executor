@@ -83,6 +83,14 @@ export const cloudWorkflows: Effect.Effect<WorkflowRuntime, never, Cloudflare.Wo
       );
     return {
       status,
+      signalInput: (run, id) =>
+        binding.pipe(
+          Effect.flatMap((namespace) =>
+            safe(
+              native(async () => (await namespace.get(run)).sendEvent({ type: id, payload: null })),
+            ).pipe(Effect.asVoid),
+          ),
+        ),
       start: (run) =>
         Effect.gen(function* () {
           if ((yield* status(run)).status !== "missing") return;

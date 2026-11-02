@@ -1,3 +1,4 @@
+import { makeWorkflowInputs } from "./workflow-inputs.ts";
 import { CurrentActor } from "../contracts/executor.ts";
 /** Retained run identities pin code/accounts; the backend owns timers and checkpoint execution. */
 import { Cause, Clock, Effect, Exit, Redacted, Result, Schema, type Crypto } from "effect";
@@ -141,6 +142,7 @@ export const makeWorkflowRuns = (
   crypto: Crypto.Crypto,
   declarations: Declarations,
   backend?: WorkflowRuntime,
+  reviewUrl?: import("../contracts/executor.ts").ExecutorInputs["workflowInputUrl"],
 ) => {
   const db = database(storage);
   const read = (run: WorkflowRunId, app?: AppId) =>
@@ -210,6 +212,7 @@ export const makeWorkflowRuns = (
               },
             }),
           );
+          yield* inputs.close(run);
           yield* query(() =>
             db.deleteMany("workflowAccounts", { where: (b) => b("run", "=", run) }),
           );
@@ -342,6 +345,17 @@ export const makeWorkflowRuns = (
       "execution",
       true,
     );
+  const inputs = makeWorkflowInputs({
+    db,
+    credentials,
+    readRun: read,
+    authorize: (run) =>
+      safe(read(run).pipe(Effect.flatMap(captured), Effect.asVoid), "credentials"),
+    ...(backend === undefined ? {} : { backend }),
+    ...(reviewUrl === undefined ? {} : { reviewUrl }),
+  });
+  const input: WorkflowHost["input"] = (run, command) =>
+    safe(inputs.command(run, command), "execution");
   const execute: WorkflowHost["execute"] = (run, driver) =>
     Effect.gen(function* () {
       const existing = yield* safe(read(run), "engine", true);
@@ -370,6 +384,7 @@ export const makeWorkflowRuns = (
               driver,
               resolve: () => context(run),
               invoke: (input) => invoke(run, input),
+              input: (command) => input(run, command),
             },
           });
         }),
@@ -630,6 +645,7 @@ export const makeWorkflowRuns = (
               set: { status: "terminated" },
             }),
           );
+          yield* inputs.close(row.id);
           yield* query(() =>
             db.deleteMany("workflowAccounts", { where: (b) => b("run", "=", row.id) }),
           );
@@ -732,6 +748,13 @@ export const makeWorkflowRuns = (
   }
   return {
     controls,
+    inputs: {
+      get: inputs.get,
+      answer: inputs.answer,
+      updateEvidence: inputs.updateEvidence,
+      withdraw: inputs.withdraw,
+      list: inputs.list,
+    },
     definitions: (input: typeof WorkflowApp.Type) =>
       Effect.gen(function* () {
         const state = yield* snapshot(db, input);
@@ -782,11 +805,13 @@ export const makeWorkflowRuns = (
       seed,
       context,
       invoke,
+      input,
       execute,
       finish,
       reconcile: safe(
         Effect.gen(function* () {
           if (backend === undefined) return;
+          yield* inputs.reconcile;
           let cursor: WorkflowRunId | undefined;
           while (true) {
             const after = cursor;

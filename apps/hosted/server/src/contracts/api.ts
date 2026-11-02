@@ -1,3 +1,4 @@
+import { HostedWorkflowInputs } from "./workflow-inputs.ts";
 import { HostedAppAccounts } from "./app-accounts.ts";
 import { HostedResourceAccess } from "./resource-access.ts";
 import { HostedOAuthClients } from "./oauth-clients.ts";
@@ -173,6 +174,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
     HostedWebhookSetup,
     HostedWebhooks,
     HostedWorkflows,
+    HostedWorkflowInputs,
     HostedApps,
     HostedSkills,
     HostedSchedules,

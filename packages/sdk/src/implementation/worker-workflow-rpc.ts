@@ -1,6 +1,7 @@
 /** Invocation-owned RPC capabilities preserve the Effect context across Dynamic Worker calls. */
 import { Cause, Effect, Redacted, Schema, SchemaIssue } from "effect";
 import {
+  WorkflowInput,
   WorkflowFailure,
   WorkflowRpcCommand,
   WorkflowRpcResult,
@@ -41,6 +42,18 @@ export const invocationWorkflow = (
           Effect.gen(function* () {
             const command = yield* Schema.decodeUnknownEffect(WorkflowRpcCommand)(input);
             switch (command.operation) {
+              case "input":
+                if (execution.input === undefined)
+                  return yield* new WorkflowFailure({ reason: "unavailable", retryable: false });
+                return yield* execution
+                  .input(command.command)
+                  .pipe(Effect.flatMap(Schema.encodeEffect(WorkflowInput)));
+              case "input-wait":
+                if (execution.driver.waitForInput === undefined)
+                  return yield* new WorkflowFailure({ reason: "unavailable", retryable: false });
+                return yield* execution.driver
+                  .waitForInput(command.name, command.id, command.expiresAt)
+                  .pipe(Effect.as(null));
               case "do": {
                 if (callback === undefined)
                   return yield* new WorkflowFailure({ reason: "input", retryable: false });

@@ -1,3 +1,4 @@
+import { WorkflowInput } from "apps/contracts";
 /** Trusted workerd host. App modules get isolated Workers/facets, never this environment. */
 import { DurableObject, WorkerEntrypoint, WorkflowEntrypoint } from "cloudflare:workers";
 import { NonRetryableError } from "cloudflare:workflows";
@@ -91,6 +92,7 @@ interface NativeStepPort {
   ): Promise<unknown>;
   sleep(name: string, duration: WorkflowDuration): Promise<void>;
   sleepUntil(name: string, timestamp: number): Promise<void>;
+  waitForEvent(name: string, options: { type: string; timeout: number }): Promise<unknown>;
 }
 const NativeStep = Schema.declare(
   (value): value is NativeStepPort =>
@@ -459,7 +461,22 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
             Effect.tryPromise({ try: work, catch: decodeWorkflowFailure });
           const execution: WorkflowExecution = {
             runId: seed.runId,
+            input: (command) =>
+              hostRequest(this.env, { operation: "input", run: seed.runId, command }).pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(WorkflowInput)),
+                Effect.mapError(decodeWorkflowFailure),
+              ),
             driver: {
+              waitForInput: (name, id, expiresAt) =>
+                native(async () => {
+                  const remaining = expiresAt - Date.now();
+                  if (remaining <= 0) return;
+                  try {
+                    await nativeStep.waitForEvent(name, { type: id, timeout: remaining });
+                  } catch (error) {
+                    if (Date.now() < expiresAt) throw error;
+                  }
+                }),
               do: (name, options, work) =>
                 native(() =>
                   nativeStep.do(name, options, () =>
@@ -589,13 +606,16 @@ export default {
     }
     const input = Schema.decodeUnknownSync(
       Schema.Struct({
-        operation: Schema.Literals(["start", "status", "terminate"]),
+        operation: Schema.Literals(["start", "status", "terminate", "input"]),
+        id: Schema.optionalKey(Schema.String),
         run: Schema.NonEmptyString,
       }),
     )(await request.json());
     try {
       const handle = await env.RUNS.get(input.run);
       let state = await handle.status();
+      if (input.operation === "input" && input.id !== undefined)
+        await handle.sendEvent({ type: input.id, payload: null });
       const finished = () => ["complete", "errored", "terminated"].includes(state.status);
       if (input.operation === "terminate" && !finished()) {
         try {

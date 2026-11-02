@@ -1,3 +1,4 @@
+import { hostedWorkflowInputHandlers } from "./workflow-inputs.ts";
 import { hostedAppAccountHandlers } from "./app-account-links.ts";
 import {
   AppGitOrigins,
@@ -85,6 +86,7 @@ export const hostedHandlers = Layer.mergeAll(
   hostedWebhookSetupHandlers,
   hostedWebhookHandlers,
   hostedWorkflowHandlers,
+  hostedWorkflowInputHandlers,
   hostedAppHandlers,
   hostedSkillHandlers,
   hostedAccountHandlers,
