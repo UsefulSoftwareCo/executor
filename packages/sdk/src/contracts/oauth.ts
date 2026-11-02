@@ -428,6 +428,20 @@ export const FirstPartyOAuthClientId = Schema.String.check(
 export type FirstPartyOAuthClientId = typeof FirstPartyOAuthClientId.Type;
 
 /**
+ * A host-owned account reporting protocol for one OAuth registration. Endpoints and the subject
+ * ID field are reviewed configuration; no app-authored provider can redirect reporting traffic.
+ */
+export const PersonalDataReporting = Schema.Struct({
+  /** Read the identity of one saved subject using that subject's own grant. */
+  identityUrl: HttpUrl,
+  /** Report stored subject IDs through the registration's 3LO bearer token. */
+  reportUrl: HttpUrl,
+  /** Top-level field in the identity response containing the provider's stable subject ID. */
+  accountIdField: Schema.NonEmptyString,
+});
+export type PersonalDataReporting = typeof PersonalDataReporting.Type;
+
+/**
  * An OAuth client the instance's operator provides, such as one-click Google sign-in. It is offered
  * for a provider method only when the method's authorization and token endpoints are exactly the
  * client's and the scopes it asks for are among `allowedScopes`; scopes the method only discovered
@@ -450,6 +464,8 @@ export const FirstPartyOAuthClient = Schema.Struct({
   /** Every scope a sign-in may ask for and a grant may hold. Defaults to `defaultScopes`. */
   allowedScopes: Schema.optionalKey(Schema.Array(ScopeToken)),
   placement: ManagedPlacement,
+  /** Optional host-owned scheduled reporting for personal data held under this registration. */
+  personalDataReporting: Schema.optionalKey(PersonalDataReporting),
   /**
    * Withheld from new sign-ins: offered only to reconnect an account whose grant it issued. Its
    * grants keep renewing, so an operator can stop offering a client without stranding them.

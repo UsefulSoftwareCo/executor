@@ -165,6 +165,11 @@ export function AccountHealthPanel<E>({
   });
   return (
     <div className="flex flex-col gap-4">
+      {health?.personalDataStatus === "account_closed" && (
+        <p className="text-[13px] text-muted-foreground" role="status" data-account-status="closed">
+          This account was closed by its service. Saved credentials and identity were removed.
+        </p>
+      )}
       {health?.info && (
         <p className="text-[13px] text-muted-foreground">
           <AccountIdentity info={health.info} />

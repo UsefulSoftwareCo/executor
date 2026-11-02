@@ -76,6 +76,8 @@ export const AccountHealth = Schema.Struct({
   account: AccountId,
   info: Schema.NullOr(AccountInfo),
   infoCheckedAt: Schema.NullOr(Schema.Date),
+  /** A host removed this account's credentials after its service reported the account closed. */
+  personalDataStatus: Schema.optionalKey(Schema.Literal("account_closed")),
   apps: Schema.Array(AccountAppHealth),
 });
 export type AccountHealth = typeof AccountHealth.Type;

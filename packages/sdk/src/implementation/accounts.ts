@@ -300,6 +300,10 @@ export const makeAccounts = (
             yield* query(() =>
               tx.deleteMany("accountChecks", { where: (b) => b("account", "=", input.account) }),
             );
+            // Closed-account notices are kept until the owner explicitly removes the account.
+            yield* query(() =>
+              tx.deleteMany("accountReports", { where: (b) => b("id", "=", input.account) }),
+            );
             yield* query(() =>
               tx.deleteMany("accounts", { where: (b) => b("id", "=", input.account) }),
             );
