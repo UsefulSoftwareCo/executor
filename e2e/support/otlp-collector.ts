@@ -24,9 +24,15 @@ const Listening = Schema.Struct({
 /**
  * Serve one Motel from the bundle `e2e:prepare` built, storing its data in `diagnostics/<name>`
  * and its output in `<name>.log`. Every target in a run serves the same bundle directory, and a
- * build replaces it, so nothing in a run builds it.
+ * build replaces it, so nothing in a run builds it. `bounds` replaces the values of the bundle's
+ * own `MOTEL_OTEL_*` settings in a copy of its config, beside a copy of its worker.
  */
-const serveMotel = (directory: string, name: string, log: string) =>
+const serveMotel = (
+  directory: string,
+  name: string,
+  log: string,
+  bounds: Readonly<Record<string, string>> = {},
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -36,6 +42,22 @@ const serveMotel = (directory: string, name: string, log: string) =>
     const bundle = path.resolve("packages/telemetry/dist/motel");
     if (!(yield* fs.exists(path.join(bundle, "motel.capnp"))))
       return yield* Effect.die("Run bun run e2e:prepare to build the telemetry collector first.");
+    let config = path.join(bundle, "motel.capnp");
+    if (Object.keys(bounds).length > 0) {
+      let text = yield* fs.readFileString(config);
+      for (const [setting, value] of Object.entries(bounds)) {
+        const binding = `(name="${setting}",text="`;
+        if (!text.includes(binding))
+          return yield* Effect.die(`The collector's config has no ${setting} setting.`);
+        text = text.replace(
+          new RegExp(`\\(name="${setting}",text="[^"]*"\\)`),
+          `${binding}${value}")`,
+        );
+      }
+      config = path.join(directory, `${name}.capnp`);
+      yield* fs.writeFileString(config, text, { mode: 0o600 });
+      yield* fs.copyFile(path.join(bundle, "motel.mjs"), path.join(directory, "motel.mjs"));
+    }
     // The bundle's config names its directories and socket; this supplies their paths and a free port.
     const child = yield* processes.spawn(
       ChildProcess.make(
@@ -46,7 +68,7 @@ const serveMotel = (directory: string, name: string, log: string) =>
           `--directory-path=motel-data=${data}`,
           `--directory-path=motel-assets=${path.join(bundle, "web/dist")}`,
           "--socket-addr=motel=127.0.0.1:0",
-          path.join(bundle, "motel.capnp"),
+          config,
         ],
         {
           cwd: data,
@@ -97,10 +119,13 @@ const announce = (directory: string, url: string) =>
     );
   });
 
-/** One Motel, as a scenario that owns its own collector uses it. */
-export const serveOtlpCollector = (directory: string) =>
+/** One Motel, as a scenario that owns its own collector uses it, with any `bounds` it sets. */
+export const serveOtlpCollector = (
+  directory: string,
+  bounds: Readonly<Record<string, string>> = {},
+) =>
   Effect.gen(function* () {
-    const url = yield* serveMotel(directory, "motel", "collector.log");
+    const url = yield* serveMotel(directory, "motel", "collector.log", bounds);
     yield* announce(directory, url);
     return url;
   });

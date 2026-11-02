@@ -8518,6 +8518,16 @@ export const scenarios = plan({
       ),
     },
   },
+  telemetryStoreIdleAtBound: {
+    file: "telemetry-store-bound.spec.ts",
+    title:
+      "The bundled collector at its size bound keeps its traces while an idle server's exports trickle in",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud exports to its own collector, not the bundled one."),
+      local: na("Local ships the same collector bundle; the self-host run covers it."),
+    },
+  },
   failedPollTraces: {
     legacyStorage: true,
     file: "idle-poll-traces.spec.ts",
