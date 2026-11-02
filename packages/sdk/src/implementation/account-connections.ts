@@ -1,3 +1,5 @@
+import { AccountProvisioned, connectableMethods } from "../contracts/provider.ts";
+import { InteractiveReconnectUnsupported } from "../contracts/interactive-errors.ts";
 /** Reusable setup lifecycle. Hosts own access checks and browser links; each target selects the saved account. */
 import { Clock, type Crypto, Effect, Schema } from "effect";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
@@ -17,6 +19,7 @@ import {
   readConnection,
   requireOpen,
   finishConnection,
+  savingConnection,
   lockConnection,
 } from "./connection-state.ts";
 import {
@@ -24,6 +27,7 @@ import {
   requireTargetProvider,
   targetProvider,
 } from "./connection-target.ts";
+import { interactiveBinding } from "./interactive-state.ts";
 import { query, transaction, type Query } from "./database.ts";
 
 /** Requests survive host restarts. Pending requests expire after thirty minutes. */
@@ -48,7 +52,13 @@ export const makeAccountConnections = (
   ) => ({
     id: row.id,
     owner: row.owner,
-    provider,
+    provider: {
+      ...provider,
+      definition: {
+        ...provider.definition,
+        auth: Object.fromEntries(connectableMethods(provider.definition)),
+      },
+    },
     reconnectAccount,
     target: {
       app: row.target.app,
@@ -90,11 +100,35 @@ export const makeAccountConnections = (
     get,
     create: (input: typeof CreateAccountConnection.Type) =>
       Effect.gen(function* () {
+        const reconnect =
+          input.account === undefined
+            ? undefined
+            : yield* ownedAccount(db, { account: input.account, owner: input.owner });
+        if (
+          reconnect !== undefined &&
+          (yield* interactiveBinding(db, { account: reconnect.id, owner: reconnect.owner })) !==
+            undefined
+        )
+          return yield* new InteractiveReconnectUnsupported({ account: reconnect.id });
         const destination = yield* captureConnectionTarget(db, input.target);
         const resolved = yield* provider(destination.provider);
+        const reconnectMethod =
+          reconnect === undefined ? undefined : resolved.definition.auth[reconnect.method];
+        if (reconnectMethod?.type === "secrets" && reconnectMethod.provisioned === true)
+          return yield* new AccountProvisioned({ provider: resolved.id });
         let reconnectAccount: Account | null = null;
-        if (input.account !== undefined) {
-          const account = yield* ownedAccount(db, { account: input.account, owner: input.owner });
+        if (reconnect !== undefined) {
+          const account = reconnect;
+          const binding = yield* interactiveBinding(db, {
+            account: account.id,
+            owner: account.owner,
+          });
+          if (binding !== undefined && binding.app !== input.target.app)
+            return yield* new AccountSelectionInvalid({
+              app: input.target.app,
+              slot: input.target.requirement,
+              reason: "app_bound",
+            });
           // The account exists, but it was saved for another provider definition of this slot.
           if (account.provider !== resolved.id)
             return yield* new AccountSelectionInvalid({
@@ -151,44 +185,54 @@ export const makeAccountConnections = (
         }),
       ).pipe(Effect.withSpan("sdk.connections.cancel")),
     submit: (input: typeof SubmitAccountConnection.Type) =>
-      transaction(db, (tx) =>
-        Effect.gen(function* () {
-          const saved = yield* lockConnection(tx, input, crypto);
-          if (saved.state.status === "completed") return saved.state.account;
-          const row = yield* requireOpen(input, saved);
-          yield* requireTargetProvider(tx, row);
-          const accounts = makeAccounts(tx, credentials, crypto, lifecycle);
-          let account;
-          if (row.reconnectAccount !== null) {
-            const existing = yield* accounts.get({
-              account: row.reconnectAccount,
-              owner: row.owner,
-            });
-            if (existing.method !== input.method)
-              return yield* new AuthMethodInvalid({ provider: row.provider, method: input.method });
-            account = yield* accounts.replaceCredentials({
-              account: existing.id,
-              owner: row.owner,
-              fields: input.fields,
-            });
-          } else
-            account = yield* accounts.add({
-              owner: row.owner,
-              provider: row.provider,
-              method: input.method,
-              ...(input.label === undefined ? {} : { label: input.label }),
-              fields: input.fields,
-            });
-          if (lifecycle)
-            yield* lifecycle.connectionCompleting({
-              id: row.id,
-              owner: row.owner,
-              reconnectAccount: row.reconnectAccount,
-              target: { app: row.target.app, requirement: row.target.requirement },
-            });
-          yield* finishConnection(tx, row, account, lifecycle);
-          return account;
-        }),
+      savingConnection(
+        lifecycle,
+        input.connection,
+        transaction(db, (tx) =>
+          Effect.gen(function* () {
+            const saved = yield* lockConnection(tx, input, crypto);
+            if (saved.state.status === "completed") return saved.state.account;
+            const row = yield* requireOpen(input, saved);
+            const shown = yield* requireTargetProvider(tx, row);
+            const method = shown.definition.auth[input.method];
+            if (method?.type === "secrets" && method.provisioned === true)
+              return yield* new AccountProvisioned({ provider: row.provider });
+            const accounts = makeAccounts(tx, credentials, crypto, lifecycle);
+            let account;
+            if (row.reconnectAccount !== null) {
+              const existing = yield* accounts.get({
+                account: row.reconnectAccount,
+                owner: row.owner,
+              });
+              if (existing.method !== input.method)
+                return yield* new AuthMethodInvalid({
+                  provider: row.provider,
+                  method: input.method,
+                });
+              account = yield* accounts.replaceCredentials({
+                account: existing.id,
+                owner: row.owner,
+                fields: input.fields,
+              });
+            } else
+              account = yield* accounts.add({
+                owner: row.owner,
+                provider: row.provider,
+                method: input.method,
+                ...(input.label === undefined ? {} : { label: input.label }),
+                fields: input.fields,
+              });
+            if (lifecycle)
+              yield* lifecycle.connectionCompleting({
+                id: row.id,
+                owner: row.owner,
+                reconnectAccount: row.reconnectAccount,
+                target: { app: row.target.app, requirement: row.target.requirement },
+              });
+            yield* finishConnection(tx, row, account, lifecycle);
+            return account;
+          }),
+        ),
       ).pipe(Effect.withSpan("sdk.connections.submit")),
   };
 };

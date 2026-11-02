@@ -14,7 +14,7 @@ import {
   permitsApp,
   permittedAppIds,
 } from "@executor-js/authorization";
-import { AppId } from "@executor-js/sdk/core";
+import { AppId, isProvisionedMethod } from "@executor-js/sdk/core";
 import { Context } from "effect";
 import { currentResourceAuthority, visibleAccountsAs, visibleAppsAs } from "./resource-policy.ts";
 import { readOrganizationIconUpload } from "./organization-icons.ts";
@@ -233,11 +233,21 @@ export const inventory = (owner: OwnerId) =>
     // Membership is read once for both the app and the account policies.
     const actor = yield* currentResourceAuthority;
     const apps = yield* visibleAppsAs(actor, listedApps);
-    const accounts = permitsAction(policy, "read")
+    const visible = permitsAction(policy, "read")
       ? yield* executor.accounts
           .list({ owner })
           .pipe(Effect.flatMap((listed) => visibleAccountsAs(actor, listed)))
       : [];
+    const providers = new Map(
+      (yield* executor.accounts.providers({ owner })).map((provider) => [
+        provider.id,
+        provider.definition,
+      ]),
+    );
+    const accounts = visible.filter((account) => {
+      const definition = providers.get(account.provider);
+      return definition !== undefined && !isProvisionedMethod(definition, account.method);
+    });
     const linked = yield* callerLinkedAccounts(apps.map((app) => app.id));
     // An account linked to several requirements of one app is listed once for it.
     const links = [

@@ -14,6 +14,7 @@ export type HostedError =
   | Schema.SchemaError;
 const errorMessage = Match.type<HostedError>().pipe(
   Match.tagsExhaustive({
+    AccountProvisioned: ({ message }) => message,
     AccessConflict: ({ reason }) =>
       ({
         changed:
@@ -58,6 +59,17 @@ const errorMessage = Match.type<HostedError>().pipe(
       "This app changed while you were editing. Reload its source and try again.",
     AppDataNotFound: () => "This data operation is no longer available. Reload the app.",
     AppDataFailed: () => "The app could not complete this data operation.",
+    InteractiveConnectionFailed: () => "The app could not finish sign-in. Cancel and start again.",
+    InteractiveRetirementBusy: () =>
+      "This account is already being removed. Wait a moment, then try again.",
+    InteractiveRetirementFailed: ({ reason }) =>
+      reason === "authority"
+        ? "Only someone who can delete this account can remove it. Your own link is unchanged."
+        : reason === "active"
+          ? "Something still uses this account. Stop it, then remove the account again."
+          : "The app couldn't finish removing this where it signed in. Nothing was deleted here, but anything the app already removed stays removed. Try again.",
+    InteractiveReconnectUnsupported: () =>
+      "This account can't take new credentials. Connect a new account, then remove this one.",
     AppNotDeployed: () => "Deploy this app before running its tools or configuring accounts.",
     SourceError: (error) =>
       error.reason === "conflict"

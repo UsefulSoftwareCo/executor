@@ -1,3 +1,5 @@
+import { accountFieldSecrets } from "@executor-js/utils/account-secrets";
+export { accountFieldSecrets } from "@executor-js/utils/account-secrets";
 import { Match, Option, Predicate, Redacted, Schema } from "effect";
 import { CacheError, cacheLimits } from "@executor-js/app-cache/contracts";
 import { OpenapiError } from "../contracts/openapi.ts";
@@ -104,34 +106,6 @@ const unverifiedMessage = ({ anonymous }: McpCredentialsUnverified) =>
             ? "The MCP server could not answer the request."
             : `The MCP server answered HTTP ${anonymous.status}.`
       }`;
-
-/** Account field values of at least this length are replaced wherever a message contains them. */
-const minimumSecretLength = 6;
-
-const secretValues = (value: unknown, found: Set<string>): Set<string> => {
-  if (typeof value === "string") {
-    if (value.length >= minimumSecretLength) found.add(value);
-  } else if (Array.isArray(value)) for (const item of value) secretValues(item, found);
-  else if (Predicate.isObject(value))
-    for (const item of Object.values(value)) secretValues(item, found);
-  return found;
-};
-
-/**
- * Every credential field value of an invocation's accounts by scope, longest first. The accounts
- * may not have been checked yet, so each scope is read only when it is a slot-to-account record;
- * each account keeps its credential values in `fields`.
- */
-export const accountFieldSecrets = (accounts: unknown) => {
-  const found = new Set<string>();
-  if (Predicate.isObject(accounts))
-    for (const scope of [accounts["app"], accounts["user"]])
-      if (Predicate.isObject(scope))
-        for (const slot of Object.values(scope))
-          for (const account of Array.isArray(slot) ? slot : [slot])
-            if (Predicate.hasProperty(account, "fields")) secretValues(account.fields, found);
-  return [...found].sort((a, b) => b.length - a.length);
-};
 
 /** Every credential field value of an invocation's selected accounts. */
 export const accountSecrets = (accounts: Redacted.Redacted<ResolvedAccounts>) =>

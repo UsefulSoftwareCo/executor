@@ -1,3 +1,4 @@
+import { InteractiveRetirementBusy, InteractiveRetirementFailed } from "@executor-js/sdk/core";
 import {
   VersionDisplay,
   SourceDisplayFile,
@@ -136,7 +137,14 @@ export const HostedApps = HttpApiGroup.make("apps")
     HttpApiEndpoint.delete("remove", `${prefix}/:app`, {
       params: app,
       success: Schema.Struct({ app: AppId }),
-      error: [StorageError, AppWebhooksActive, AppWorkflowsActive, OrganizationForbidden],
+      error: [
+        StorageError,
+        InteractiveRetirementBusy,
+        InteractiveRetirementFailed,
+        AppWebhooksActive,
+        AppWorkflowsActive,
+        OrganizationForbidden,
+      ],
     }).annotate(RequiredAction, "manage"),
   )
   .add(

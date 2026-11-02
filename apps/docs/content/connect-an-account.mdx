@@ -4,14 +4,18 @@ description: "Save a credential once as an account, from the app you are configu
 ---
 
 An **account** is one saved set of credentials for one **provider**. You connect
-it once. Every app that needs that provider can use it, and none of them holds
-a second copy.
+it once. Secrets and OAuth accounts can be used by every app that needs that
+provider without copying credentials. App-owned sign-ins stay bound to the app
+that acquired them.
 
-There are two kinds of credential, and the provider decides which it accepts:
+The provider decides which sign-in methods it accepts:
 
 - **Secrets**: fields you paste, such as an API token, or an email and a key.
 - **OAuth**: browser sign-in or a client ID and secret for machine-to-machine access.
   Executor stores and renews the resulting tokens.
+- **App-owned sign-in**: the app presents a link, device code or paste-back step
+  in the Connect dialog. Its backend keeps the credential; Executor stores an
+  opaque reference that only this app can use.
 
 ## From the dashboard
 
@@ -51,6 +55,14 @@ account** dialog offers to rename it to something such as “Work” or “Perso
 Closing it keeps the default. Reconnecting keeps the existing name. You can also
 rename an account later from its menu on the app's **Accounts** tab, or with **Edit
 details** on the **Accounts** page.
+
+For app-owned sign-in, the initial name comes from the identity the app reports,
+when available. Close an unfinished dialog to cancel its sign-in. A refused or
+expired attempt can be started again. Removing an app-owned account's final
+link also removes it from the app's backend, so the dialog asks for confirmation.
+If removal fails, the account stays available for another attempt. These
+accounts cannot be reused by another app or reconnected in place; connect a
+new account instead.
 
 Completing a connection saves the account and links it to this app. There is
 no separate step. Browser sign-in returns to the app's Accounts tab;

@@ -4,6 +4,7 @@ import {
   AccountConnectionTargetChanged,
   type CreateAccountConnection,
 } from "../contracts/account-connection.ts";
+import { AccountProvisioned, connectableMethods } from "../contracts/provider.ts";
 import { AccountSelectionInvalid } from "../contracts/apps.ts";
 import type { Account } from "../contracts/account.ts";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
@@ -30,6 +31,8 @@ export const captureConnectionTarget = (
     const invalid = (reason: AccountSelectionInvalid["reason"]) =>
       new AccountSelectionInvalid({ app: app.id, slot: target.requirement, reason });
     if (requirement === undefined) return yield* invalid("unknown_slot");
+    if (connectableMethods(requirement.definition).length === 0)
+      return yield* new AccountProvisioned({ provider: requirement.provider });
     if (target.scope !== undefined && target.scope !== requirement.scope)
       return yield* new AccountConnectionTargetChanged({
         app: app.id,
