@@ -1,5 +1,5 @@
 import { usePreload } from "@executor-js/ui/dashboard/context";
-import { useGuardedPreload } from "@executor-js/dashboard-start/registry";
+import { type RouteReads, useGuardedPreload } from "@executor-js/dashboard-start/registry";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import {
   OrganizationSlug,
@@ -8,7 +8,7 @@ import {
   organizationSlugMaxLength,
 } from "@executor-js/hosted-server/organization";
 import { organizationTargetAtom } from "../../contracts/organization-reference.ts";
-import { type Atom, AsyncResult } from "effect/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { RegistryContext, useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import type { OrganizationId, OrganizationAccess } from "@executor-js/hosted-server/organization";
@@ -255,17 +255,42 @@ function ResumeOrganization({
   );
 }
 
+/** The reference the mounted organization boundary keys its reads by, for reads started early. */
+const queryReferenceAtom = Atom.make<OrganizationReference | undefined>(undefined).pipe(
+  Atom.keepAlive,
+);
+
+/**
+ * Reads stay keyed by the retained reference while the route's reference names the same verified
+ * organization, such as the slug a resumed ID is rewritten to; any other destination uses its own.
+ */
+const queryReference = (
+  route: OrganizationReference,
+  retained: OrganizationReference | undefined,
+  target: (reference: OrganizationReference) => OrganizationId | undefined,
+) => {
+  if (retained === undefined || retained === route) return route;
+  const retainedTarget = target(retained);
+  return retainedTarget !== undefined && retainedTarget === target(route) ? retained : route;
+};
+
 /** Keep query keys unchanged when verified aliases identify the same organization. */
 function useOrganizationQueryReference(routeReference: OrganizationReference) {
   const [retained, setRetained] = useState(routeReference);
   const retainedTarget = useAtomValue(organizationTargetAtom(retained));
   const routeTarget = useAtomValue(organizationTargetAtom(routeReference));
-  const sameOrganization =
-    routeReference === retained || (retainedTarget !== undefined && retainedTarget === routeTarget);
-  const reference = sameOrganization ? retained : routeReference;
+  const reference = queryReference(routeReference, retained, (candidate) =>
+    candidate === retained ? retainedTarget : routeTarget,
+  );
   // A different or unknown destination resets before children render. A canonical
   // URL replacement keeps the existing atoms and their in-flight requests.
   if (reference !== retained) setRetained(reference);
+  const setQueryReference = useAtomSet(queryReferenceAtom);
+  // A boundary mounted later starts from its URL again, so the mirror lasts only as long as this one.
+  useEffect(() => {
+    setQueryReference(reference);
+    return () => setQueryReference(undefined);
+  }, [reference, setQueryReference]);
   return reference;
 }
 
@@ -287,6 +312,21 @@ declare module "@tanstack/react-router" {
     readonly organizationReads?: OrganizationPageReads;
   }
 }
+
+/** The reads an organization page declares, for the router to start ahead of its render. */
+export const organizationRouteReads: RouteReads = ({ staticData, params }, get) => {
+  if (staticData.organizationReads === undefined) return [];
+  return Option.match(Schema.decodeUnknownOption(OrganizationReference)(params.organizationSlug), {
+    onNone: () => [],
+    onSome: (route) =>
+      staticData.organizationReads?.(
+        queryReference(route, get(queryReferenceAtom), (reference) =>
+          get(organizationTargetAtom(reference)),
+        ),
+        params,
+      ) ?? [],
+  });
+};
 
 /** The API refused this user the organization, as opposed to failing to answer. */
 const refused = (access: Atom.Type<ReturnType<typeof accessAtom>>) =>

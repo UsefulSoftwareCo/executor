@@ -1,4 +1,6 @@
 import { usePreload } from "@executor-js/ui/dashboard/context";
+import { loadedValue } from "@executor-js/dashboard-start/loaded-value";
+import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { AppResources } from "./app-resources.tsx";
 import { AppAccounts } from "./app-accounts.tsx";
 import { AppSkills } from "@executor-js/ui/dashboard/app-skills";
@@ -14,7 +16,7 @@ import {
   type RequirementLink,
 } from "@executor-js/ui/contracts/app-accounts";
 import { AppAccessSettings } from "./resource-settings.tsx";
-import { appAccessAtom } from "../../contracts/resource-access.ts";
+import { appAccessAtom, resourceDirectoryAtom } from "../../contracts/resource-access.ts";
 import {
   emptyManyRequirements,
   type AccountSummary,
@@ -25,7 +27,7 @@ import { scheduleBindings } from "../../contracts/schedules.ts";
 import { sessionAtom } from "../../contracts/auth.ts";
 import { AppDetailLoading, OverviewCardLoading } from "@executor-js/ui/dashboard/app-loading";
 import { Exit, Option, Schema } from "effect";
-import { AsyncResult } from "effect/reactivity";
+import { Atom, AsyncResult } from "effect/reactivity";
 import { HostedFailure, useDashboardAtoms } from "../components/dashboard-bindings.tsx";
 import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
@@ -80,8 +82,47 @@ export const appDetailPageReads: OrganizationPageReads = (organization, params) 
       appLinksAtom({ organization, app }),
       userLinksAtom({ organization, app }),
       appAccessAtom({ organization, app }),
+      listedAppReads(organization)(app),
     ],
   });
+
+/**
+ * The overview's tools, skills, workflows and source reads wait for the app and its links. When
+ * the Apps list already holds this app, its version, access and linked accounts start them with
+ * the page's first reads instead. Opening an app without the list loaded reads nothing extra, and
+ * a guess the page's own reads contradict costs one unused read: the page renders from its own.
+ */
+const listedAppReads = Atom.family((organization: OrganizationReference) =>
+  Atom.family((app: AppId) =>
+    Atom.readable((get) => {
+      const listed = loadedValue(get.registry, resourceDirectoryAtom(organization));
+      if (listed === undefined || !AsyncResult.isSuccess(listed)) return;
+      const entry = listed.value.apps.find((item) => item.app.id === app);
+      if (entry === undefined) return;
+      // The list names no requirement per link, so a user requirement counts any linked account of
+      // its provider, as the app card does. App requirements stay unknown, so never missing.
+      const user = Object.entries(entry.app.requirements.accounts).flatMap(([slot, requirement]) =>
+        requirement.scope === "user"
+          ? listed.value.accounts.flatMap(({ account }) =>
+              entry.linkedAccounts.includes(account.id) && account.provider === requirement.provider
+                ? [{ requirement: slot, account }]
+                : [],
+            )
+          : [],
+      );
+      const requirements = requirementAccounts(entry.app, { user });
+      if (entry.access.canUse) {
+        const bindings = appBrowserBindings(organization, entry.app);
+        get(bindings.skills);
+        if (missingRequirements(requirements).length === 0) {
+          get(toolsAtom({ organization, app, version: entry.app.activeVersion ?? undefined }));
+          get(bindings.workflows);
+        }
+      }
+      if (entry.access.canManage) get(appManagement(organization).authoring(app));
+    }),
+  ),
+);
 
 /** Views that read only the app. The others also read the inventory and the app's links. */
 const appWideViews: ReadonlySet<AppView> = new Set(["settings", "versions", "source", "history"]);
