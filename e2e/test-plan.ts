@@ -104,6 +104,17 @@ const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof Tes
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = plan({
+  storageMigrationDiagnostics: {
+    legacyStorage: true,
+    file: "storage-migration-diagnostics.spec.ts",
+    title:
+      "failed executor upgrades report a safe SQLSTATE and version and leave the journal unchanged",
+    targets: {
+      "self-host": scheduled,
+      local: na("Hosted startup reports the migration diagnostics this scenario asserts."),
+      cloud: na("Requires a runner-owned database with a deliberately interrupted upgrade."),
+    },
+  },
   cloudRoleHostRoutes: {
     fixtures: "actors",
     file: "cloud-role-hosts.spec.ts",
