@@ -8,6 +8,7 @@ import { Credentials, apiTokenCredentials } from "@distilled.cloud/cloudflare/Cr
 import { PgClient } from "@effect/sql-pg";
 import { Cause, Clock, DateTime, Effect, Layer, Redacted, Schema, Semaphore } from "effect";
 import { SqlClient } from "effect/sql";
+import { appUiAddressScheme } from "@executor-js/hosted-server/app-ui/contracts";
 import { cloudAppUiBase } from "./contracts/app-ui.ts";
 import { AppDomainZoneSettings } from "./contracts/app-domains.ts";
 import {
@@ -69,7 +70,11 @@ const inventoryTimeout = "5 minutes";
 
 const makeAppDomainCoordinator = Effect.gen(function* () {
   const base = yield* cloudAppUiBase.pipe(Effect.orDie);
-  if (base === undefined || new URL(base).protocol !== "https:") {
+  if (
+    base === undefined ||
+    new URL(base).protocol !== "https:" ||
+    (yield* appUiAddressScheme) === "opaque"
+  ) {
     return Effect.succeed({
       wake: () => Effect.void,
       heartbeat: () => Effect.void,

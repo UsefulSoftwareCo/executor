@@ -177,10 +177,72 @@ proxy:
 EXECUTOR_APP_UI_BASE_URL=https://apps.example.net
 ```
 
-Each page is served at `<app-slug>--<organization-slug>.<base>`, forwarded to
-container port 4400. That whole first label must fit in 63 characters, so keep
-app and organization slugs short. On localhost the origin is derived for you and
-you do not need to set this.
+The default address scheme is `nested`: `<app-slug>.<organization-slug>.<base>`.
+Forward these hosts to container port 4400. Each slug must fit in one DNS label
+of 63 characters. Your proxy needs DNS and certificate coverage for every
+organization's app hosts. A certificate for `*.apps.example.net` does not cover
+`app.organization.apps.example.net`. On localhost the base origin is derived
+for you.
+
+### Address scheme and embedding
+
+| Variable | Default | Behavior |
+| --- | --- | --- |
+| `EXECUTOR_APP_UI_ADDRESS_SCHEME` | `nested` | `nested` uses app and organization slugs. `opaque` uses one immutable app UUID label. |
+| `EXECUTOR_APP_UI_EMBEDDED` | `false` | Adds an App tab for deployed apps with a web page. Opens that tab by default unless the link selects another tab or tool. |
+
+For a single wildcard certificate and an embedded screen, configure:
+
+```bash
+EXECUTOR_APP_UI_BASE_URL=https://apps.example.net
+EXECUTOR_APP_UI_ADDRESS_SCHEME=opaque
+EXECUTOR_APP_UI_EMBEDDED=true
+```
+
+Opaque addresses use `a-<app UUID>.apps.example.net`. Executor removes the
+`app_` prefix from the immutable app ID. Reserve the complete `a-<lowercase UUID>`
+namespace for apps; never assign dashboard or other product hosts there. Renaming
+an app or organization preserves its opaque origin. Only the configured scheme
+is accepted. Switching schemes changes app URLs and requires app sign-in again.
+
+The iframe is sandboxed and keeps Open in new tab available. App responses permit
+only the configured dashboard origin as a frame ancestor. The dashboard's
+`/app-auth` route permits same-origin framing for the existing browser-bound
+sign-in handshake. Other dashboard pages remain unframeable. App sessions are
+host-only, HttpOnly and SameSite=Lax. HTTPS app cookies also use `Secure` and the
+`__Host-` prefix. Use a same-site HTTPS app base and dashboard for embedding;
+cross-site cookies are restricted by browsers. Safari remains unverified.
+
+### Dashboard cookie migration
+
+Every HTTPS hosted deployment now uses `__Host-executor-hosted.<cookie>` for
+Better Auth cookies, including session and plugin cookies. The browser requires
+`Secure`, `Path=/` and no Domain attribute for these names. An app on a sibling
+origin cannot inject a parent-domain cookie under the dashboard's new name.
+
+This applies even when embedding is off. Existing HTTPS browser sessions require
+one sign-in after upgrading because Executor no longer reads the old
+`__Secure-executor-hosted.<cookie>` names. Database sessions and bearer credentials
+are unchanged. Self-host deployments served over HTTP retain their existing
+unprefixed cookie names and do not require re-sign-in for this migration.
+
+Last-organization memory, time-zone preferences, passkey enrollment and anonymous
+visitor cookies also become host-only on HTTPS. Anonymous signup attribution no
+longer crosses subdomains; same-origin attribution remains available.
+
+### Cloud operator settings
+
+Cloud uses the same address and embedding options. Nested mode keeps the existing
+per-organization domain provisioning. Opaque mode skips that provisioning;
+operators supply the wildcard DNS, certificate and route to the AppPages Worker.
+
+`EXECUTOR_APP_UI_MANAGED_ROUTE` defaults to `true` on Cloud. Set it to `false` only
+when an external router owns the app host route. Executor then omits the managed
+AppPages route. The router must send only reserved app hosts to that Worker and
+preserve dashboard routes. This setting does not add DNS records or certificates.
+`EXECUTOR_APP_UI_BASE_URL` remains required to enable Cloud app hosting.
+`CLOUD_DEV_APP_UI_PORT` controls the task-local AppPages development listener and
+defaults to `4413`. Live DNS and certificate setups remain unverified.
 
 ## Running without Docker
 

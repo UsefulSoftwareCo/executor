@@ -122,11 +122,13 @@ export function PagePending({
     const selected = parseAppSearch(search);
     return (
       <AppDetailPending
+        // Without a view, the default waits for the page to know whether the app has a screen.
         view={
           action === "setup"
             ? "accounts"
-            : (selected.view ?? (selected.tool === undefined ? "overview" : "tools"))
+            : (selected.view ?? (selected.tool === undefined ? undefined : "tools"))
         }
+        appScreen="pending"
         actions={<Skeleton className="h-9 w-28 max-[740px]:h-11" />}
         selectedTool={action === "setup" ? undefined : selected.tool}
         back={

@@ -2,6 +2,10 @@ import { Option, Schema } from "effect";
 import { OrganizationId } from "./organization.ts";
 import type { ResourceOrigins } from "@executor-js/mcp-auth";
 
+/** HTTPS cookies are host-only by browser enforcement; never read the old shadowable names. */
+export const hostCookieName = (origin: string, name: string): string =>
+  new URL(origin).protocol === "https:" && !name.startsWith("__Host-") ? `__Host-${name}` : name;
+
 /** Display identity only; session tokens and organization preferences never cross this boundary. */
 export const BrowserSession = Schema.NullOr(
   Schema.Struct({
@@ -74,9 +78,9 @@ export const LastOrganization = Schema.Struct({
 export type LastOrganization = typeof LastOrganization.Type;
 
 /** Cookies do not distinguish ports, so local cloud and self-host keep separate memories. */
-export const lastOrganizationCookie = (host: string) => {
+export const lastOrganizationCookie = (host: string, secure = false) => {
   const port = new URL(`http://${host}`).port;
-  return `executor-org${port === "" ? "" : `-${port}`}`;
+  return `${secure ? "__Host-" : ""}executor-org${port === "" ? "" : `-${port}`}`;
 };
 
 /** Parse the saved memory for this signed-in person; anything else is ignored. */

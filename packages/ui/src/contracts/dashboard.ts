@@ -97,6 +97,7 @@ export interface MutationProps<Input, A, E> {
 }
 /** App sections use one URL vocabulary across local and hosted dashboards. */
 export const AppView = Schema.Literals([
+  "app",
   "overview",
   "schedules",
   "skills",
