@@ -25,6 +25,10 @@ export {
 } from "./implementation/runtime.ts";
 export { executorDatabase } from "./implementation/storage-migrations.ts";
 export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
+export {
+  accountAcquisitionDriver,
+  type PromiseAccountAcquisitionDriver,
+} from "./implementation/account-acquisition-adapter.ts";
 /** Create an in-process Executor using caller-owned storage, runtime and credential encryption. */
 export const createExecutor = (options: ExecutorOptions): Promise<Executor> =>
   Effect.runPromise(

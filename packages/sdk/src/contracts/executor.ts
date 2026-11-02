@@ -1,3 +1,8 @@
+import { InteractiveHost } from "./interactive-accounts.ts";
+import {
+  AccountAcquisitionHost,
+  type AccountAcquisitionOptions,
+} from "./account-acquisition-driver.ts";
 import { WorkflowHost, type WorkflowRuntime } from "./workflow-runtime.ts";
 import { WebhookSourceHost, type WebhookSourceDispatcher } from "./webhooks.ts";
 /** The shared Executor interface and remote client options; projected from ExecutorApi. */
@@ -27,6 +32,7 @@ import type {
 import type { AccountScope, App, AppRequirements } from "./apps.ts";
 import type { BuildMemoryExceeded, BuildUnanswered, VersionBuildFailed } from "./version.ts";
 import type { Account } from "./account.ts";
+import type { AccountProvisioned } from "./provider.ts";
 import type {
   AccountConnectionRefused,
   AccountConnectionTargetChanged,
@@ -163,6 +169,26 @@ export interface ResourceLifecycle {
   readonly connectionCompleting: (
     connection: AccountConnectionCompletion,
   ) => Effect.Effect<void, StorageError | AccountConnectionRefused>;
+  /** External retirement wraps account persistence without holding its SQL transaction open. */
+  readonly connectionSaving?: <A, E, R>(
+    connection: AccountConnectionId,
+    save: Effect.Effect<A, E, R>,
+  ) => Effect.Effect<
+    A,
+    | E
+    | StorageError
+    | AccountConnectionTargetChanged
+    | import("./interactive-errors.ts").InteractiveRetirementBusy
+    | import("./interactive-errors.ts").InteractiveRetirementFailed,
+    R
+  >;
+  /** Product deletion authority, checked before an external remove call. No writes. */
+  readonly accountRetiring?: (account: Account) => Effect.Effect<void, StorageError>;
+  /**
+   * Host-only deployment guard, in each short reservation/persistence transaction. The final
+   * check runs after compilation and before saving or promoting the app; no external I/O.
+   */
+  readonly appDeploying?: (owner: OwnerId) => Effect.Effect<void, StorageError>;
   /** Called once after inserting a new configured app, before its transaction commits. */
   readonly appCreated: (app: App) => Effect.Effect<void, StorageError>;
   /** Called after active-work checks, before deleting the app in the same transaction. */
@@ -186,7 +212,7 @@ export interface ResourceLifecycle {
     readonly account: Account;
   }) => Effect.Effect<
     void,
-    StorageError | AccountConnectionTargetChanged | AccountConnectionRefused
+    StorageError | AccountConnectionTargetChanged | AccountConnectionRefused | AccountProvisioned
   >;
   /** Called once for a newly saved account, including secrets and OAuth completion. */
   readonly accountCreated: (account: Account) => Effect.Effect<void, StorageError>;
@@ -264,6 +290,7 @@ export interface ExecutorInputs {
   readonly git: RepositoryBackend;
   readonly blobs: BlobStorage;
   readonly runtime: AppRuntime;
+  readonly acquisition?: AccountAcquisitionOptions;
   readonly oauth?: OAuthOptions;
   /** Defaults to reading the hosted Executor registry. */
   readonly registry?: RegistryOptions;
@@ -436,6 +463,8 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
   readonly [WorkflowHost]: import("./workflow-runtime.ts").WorkflowHost;
   readonly [RepositoryHost]: RepositoryHost;
   readonly [StorageHost]: StorageHost;
+  readonly [InteractiveHost]: import("./interactive-accounts.ts").InteractiveHost;
+  readonly [AccountAcquisitionHost]: AccountAcquisitionHost;
   readonly [PrefetchHost]: PrefetchHost;
   readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
   readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
@@ -462,6 +491,8 @@ export type PromiseExecutor = Promisify<
     | typeof WorkflowHost
     | typeof WebhookSourceHost
     | typeof RepositoryHost
+    | typeof InteractiveHost
+    | typeof AccountAcquisitionHost
     | typeof StorageHost
     | typeof PrefetchHost
     | typeof SavedOAuthClientsHost

@@ -162,6 +162,16 @@ export const makeOwners = (db: Query): Executor["owners"] => ({
             tx.deleteMany("accountChecks", { where: (b) => b("account", "in", accountIds) }),
           );
           yield* query(() =>
+            tx.deleteMany("accountAcquisitions", {
+              where: (b) => b("account", "in", accountIds),
+            }),
+          );
+          yield* query(() =>
+            tx.deleteMany("accountDriverChecks", {
+              where: (b) => b("account", "in", accountIds),
+            }),
+          );
+          yield* query(() =>
             tx.deleteMany("oauthGrants", { where: (b) => b("id", "in", accountIds) }),
           );
           yield* query(() => tx.deleteMany("accounts", { where: (b) => b("owner", "=", owner) }));

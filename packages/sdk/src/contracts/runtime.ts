@@ -525,10 +525,16 @@ export interface Runtime<Requirements = never> {
       readonly input: Json;
     } & HostContext,
   ) => Effect.Effect<Json, RuntimeLoadError | typeof HostCallError.Type, Requirements>;
-  /**
-   * Run one slot's provider check with the single account in `accounts`, without evaluating the
-   * app. Send only to builds whose requirements declare a check for that slot.
-   */
+  /** Run an app-owned account acquisition step through its retained framework. */
+  readonly connect: (
+    input: {
+      readonly app: string;
+      readonly build: BuildId;
+      readonly database: boolean;
+      readonly hostApi: HostApiCheck | undefined;
+      readonly command: import("apps/contracts").ConnectCommand;
+    } & HostContext,
+  ) => Effect.Effect<Json, RuntimeLoadError | typeof HostCallError.Type, Requirements>;
   readonly checkAccount: (
     input: {
       readonly app: string;

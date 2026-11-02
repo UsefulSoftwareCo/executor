@@ -126,6 +126,115 @@ access token then arrives as `ctx.user.accounts.<name>.fields.access_token`.
 For a requirement that takes several accounts, use `provider.many()`. The
 context gives you a list.
 
+### App-owned sign-in
+
+Use `interactive({ label })` when your app must acquire the credential itself.
+Examples include a device code, a sign-in with a fixed loopback callback that
+the person pastes back, or a backend that keeps the service's rotating tokens.
+The same **Connect new account** dialog presents the steps your app returns.
+
+Declare the method on a provider and implement `connect` on the app definition,
+keyed by the account requirement's slot. The method declares the label; the
+requiring app owns the handlers. These are ordinary async functions:
+
+```ts
+import {
+  defineApp,
+  defineProvider,
+  interactive,
+  type InteractiveStart,
+  type InteractiveStatus,
+} from "apps";
+import { subscriptionBackend } from "./subscription-backend.ts";
+
+const subscription = defineProvider({
+  name: "Example subscription",
+  auth: { signIn: interactive({ label: "Sign in" }) },
+});
+
+export default defineApp(
+  { user: { accounts: { subscription } } },
+  {
+    connect: {
+      subscription: {
+        start: async (ctx): Promise<InteractiveStart> =>
+          subscriptionBackend.start({ caller: ctx.user.id, signal: ctx.signal }),
+        status: async (ctx, { session }): Promise<InteractiveStatus> =>
+          subscriptionBackend.status({ caller: ctx.user.id, session, signal: ctx.signal }),
+        submit: async (ctx, { session, value }): Promise<InteractiveStatus> =>
+          subscriptionBackend.submit({ caller: ctx.user.id, session, value, signal: ctx.signal }),
+        cancel: async (ctx, { session }) => {
+          await subscriptionBackend.cancel({ caller: ctx.user.id, session, signal: ctx.signal });
+        },
+        remove: async (ctx, { ref }) => {
+          await subscriptionBackend.remove({ caller: ctx.user.id, ref, signal: ctx.signal });
+        },
+      },
+    },
+  },
+);
+```
+
+`subscriptionBackend` is your app's service adapter. Keep its credentials in
+an app account and use `ctx.fetch` and that account's `headers()` for requests.
+The `connect` context includes the app's and caller's linked accounts, but an
+unfilled single-account requirement is optional while connecting. Check that
+the backend account exists before using it. `ctx.user.id` is the host's opaque
+caller identity, supplied outside public input; it can be undefined on a
+subjectless portable host. Pass `ctx.signal` to cancellable I/O.
+
+`start` returns `{ session, url?, code?, paste?, expiresAt?, message? }`.
+Use `paste: { label, placeholder? }` to ask for a value, such as the browser's
+final address. `expiresAt` is a Unix timestamp in milliseconds. The host keeps
+`session` on the server; the dialog receives only the public instructions.
+
+`status` and `submit` return `{ state: "waiting" }`,
+`{ state: "failed", message }`, or
+`{ state: "connected", ref, accountInfo? }`. The dialog polls `status` while
+waiting and calls `submit` with the pasted value. `submit` is optional for
+device-code methods. Closing an unfinished dialog calls `cancel`, if supplied.
+Implement cancellation and removal so retries are safe.
+
+Executor saves only the opaque `ref`, available as
+`ctx.user.accounts.subscription.fields.ref`. The app or its backend owns token
+storage, refresh and revocation. `health` continues to work and may report a
+reference the backend no longer serves. `accountInfo` can supply `displayName`,
+`email` or `username`; Executor uses that identity as the initial account name
+and still offers to rename it.
+
+The account is bound to the app that acquired it, even when another app declares
+the same provider. Removing its final link calls `remove` before deleting the
+local account. A failed explicit removal keeps local state so it can be retried.
+A single-account replacement retires the previous reference too. Deleting the
+app or its owner removes the local accounts, then attempts bounded backend
+cleanup; backend failure does not block that deletion. Interactive accounts do
+not support replacing credentials in place; connect a new account instead.
+Keep the retained version's handlers usable until its references have been
+retired.
+
+### Host-owned sign-in
+
+Use `interactive({ label: "Sign in", acquisition: "host" })` when the host
+manages the credential backend and the saved account should work across apps.
+The host must register a driver for the exact provider reference and method.
+This declaration selects host acquisition; it does not register a driver or
+supply backend credentials. Omit `connect` handlers for these methods.
+
+The account survives removal of the app that first connected it. Other apps
+with the same provider can link it when the caller has permission. Reconnecting
+keeps its account ID and replaces its saved reference. Unlinking it does not
+revoke the credential; explicit account deletion runs the host driver's removal
+callback. App-owned sign-in above keeps its existing app-bound lifecycle.
+
+Hosts supply Effect-native registrations through `ExecutorOptions.acquisition`
+or `AccountAcquisitionConfiguration` from `@executor-js/sdk/core`.
+`accountAcquisitionDriver` from `@executor-js/sdk` wraps Promise callbacks for
+start, status, optional submit, cancel, remove and optional credential checks.
+Callbacks receive the host's owner, operation ID, deadline, signal and fetch.
+Removal must be idempotent for its operation ID. Keep retained driver revisions
+available for pending sign-ins and saved accounts; only the current revision
+accepts new sign-ins. Missing registrations fail without deleting the account.
+
 ### App accounts
 
 Some accounts belong to the app rather than to whoever calls it: a team's
@@ -140,6 +249,7 @@ const requirements = {
 
 async (ctx: MutationContext<typeof requirements>) => {
   ctx.app.accounts.datadog; // linked for everyone by people who can edit the app
+  ctx.user.id; // the host's opaque caller identity, independent of linked accounts
   ctx.user.accounts.github; // the caller's own linked account
 };
 ```

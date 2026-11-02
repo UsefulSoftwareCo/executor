@@ -1,3 +1,5 @@
+import { accountAcquisitions } from "./account-acquisition-schema.ts";
+import { accountDriverChecks } from "./account-driver-check-schema.ts";
 /** Current baseline and the upgrades required by existing version 4 databases. */
 import { fumadb } from "fumadb-effect";
 import { Effect, Schema } from "effect";
@@ -652,6 +654,19 @@ export const storageSchemas = [
   version4015Schema,
   // Additive: three indexes; the running server's queries are unchanged.
   indexOnlyVersion(version4015Schema, "4.0.16", queueReadIndexes),
+  // Additive: saved host-driver bindings and checks are independent of app lifetime.
+  schema({
+    version: "4.0.23",
+    tables: { ...version4015Tables, accountAcquisitions, accountDriverChecks },
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
+  }),
 ] as const;
 
 /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */

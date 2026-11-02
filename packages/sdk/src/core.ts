@@ -32,6 +32,10 @@ export {
 export { executorDatabase } from "./implementation/storage-migrations.ts";
 export { StorageMigrationFailed } from "./implementation/storage-migration-error.ts";
 export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
+export {
+  accountAcquisitionDriver,
+  type PromiseAccountAcquisitionDriver,
+} from "./implementation/account-acquisition-adapter.ts";
 
 /** Optional Web Crypto adapter; callers retain signing-key custody. */
 export { aesGcmCredentials } from "./implementation/credentials.ts";

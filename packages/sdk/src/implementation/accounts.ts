@@ -127,6 +127,10 @@ export const defaultLabel = (tx: Query, owner: OwnerId, provider: ProviderId) =>
 export const ownedAccount = (db: Query, input: Parameters<Executor["accounts"]["get"]>[0]) =>
   storedAccount(db, input.account, input.owner);
 
+/** Decode only public metadata; stored credential bytes never leave this boundary. */
+export const publicAccount = (stored: Account) =>
+  Schema.decodeUnknownEffect(Account)(stored).pipe(Effect.mapError(() => new StorageError()));
+
 /** An encrypted OAuth grant whose account deletion has committed. */
 export interface RemovedGrant {
   readonly account: AccountId;
@@ -301,6 +305,16 @@ export const makeAccounts = (
               tx.deleteMany("accountChecks", { where: (b) => b("account", "=", input.account) }),
             );
             yield* query(() =>
+              tx.deleteMany("accountAcquisitions", {
+                where: (b) => b("account", "=", input.account),
+              }),
+            );
+            yield* query(() =>
+              tx.deleteMany("accountDriverChecks", {
+                where: (b) => b("account", "=", input.account),
+              }),
+            );
+            yield* query(() =>
               tx.deleteMany("accounts", { where: (b) => b("id", "=", input.account) }),
             );
             return grant === null
@@ -369,7 +383,7 @@ export const makeAccounts = (
       );
       const method = provider.definition.auth[account.method];
       if (method === undefined) return unavailable;
-      if (method.type === "secrets")
+      if (method.type === "secrets" || method.type === "interactive")
         return {
           state: "saved",
           reconnectAt: null,
@@ -426,7 +440,7 @@ export const credentialsReadable = (db: Query, credentials: Credentials) => (acc
     );
     const method = provider.definition.auth[stored.value.method];
     if (method === undefined) return false;
-    if (method.type === "secrets") return true;
+    if (method.type === "secrets" || method.type === "interactive") return true;
     const grant = yield* query(() =>
       db.findFirst("oauthGrants", { where: (b) => b("id", "=", account) }),
     );
