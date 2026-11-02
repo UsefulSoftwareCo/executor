@@ -1210,6 +1210,28 @@ export const scenarios = plan({
       local: na("The local dashboard does not batch its reads; most of them are live streams"),
     },
   },
+  dashboardBatchAuthentication: {
+    fixtures: "actors",
+    file: "dashboard-batch-authentication.spec.ts",
+    title:
+      "A dashboard batch checks its session and each membership once, without retaining authority for the next request",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The local dashboard does not batch its reads"),
+    },
+  },
+  dashboardBatchIsolation: {
+    fixtures: "actors",
+    file: "dashboard-batch-isolation.spec.ts",
+    title:
+      "A dashboard batch answers each read with its own caller's identity, organization and role",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The local dashboard does not batch its reads"),
+    },
+  },
   dashboardBuildChange: {
     fixtures: "actors",
     file: "dashboard-read-batches.spec.ts",
@@ -5534,6 +5556,18 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: scheduled,
       local: na("The API document and catalog installation are hosted product surfaces."),
+    },
+  },
+  cloudAppQueryAuth: {
+    fixtures: "actors",
+    file: "cloud-app-query-auth.spec.ts",
+    appOrigin: true,
+    title:
+      "Cloud app queries read current authorization without deleting expired verification records",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("AppPages has a separate Better Auth adapter only on Cloud."),
+      local: na("Local does not serve hosted app origins."),
     },
   },
   appUiApiDocument: {

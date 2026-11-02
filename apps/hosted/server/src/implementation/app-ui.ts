@@ -39,7 +39,7 @@ import {
   UiForbidden,
   UiUnauthorized,
 } from "apps/ui/contracts";
-import { appAsset, appDocument, appWatchScript, assetPath, storedAppFile } from "apps/ui/serving";
+import { appAsset, appDocument, appFile, assetPath, storedAppFile } from "apps/ui/serving";
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { currentTraceContext, recordRoute } from "@executor-js/telemetry";
 import { Clock, Context, Effect, Layer, Option, Redacted, Schema, Stream } from "effect";
@@ -469,15 +469,6 @@ export const hostedAppUi = <R = never>(
         HttpServerResponse.text("App unavailable.", { status: 422, headers: appPrivateHeaders }),
       ),
   });
-  const watch = authorize.pipe(
-    Effect.as(
-      HttpServerResponse.text(appWatchScript, {
-        contentType: "text/javascript",
-        headers: appPrivateHeaders,
-      }),
-    ),
-    htmlFailure,
-  );
   const versions = Effect.gen(function* () {
     const current = yield* authorize;
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -539,6 +530,12 @@ export const hostedAppUi = <R = never>(
     if (Option.isNone(authorized)) return yield* beginSignIn(resolved);
     const current = authorized.value;
     const version = yield* readVersion(current.app);
+    // A file needs no accounts, and fetching one is no app view.
+    const file = yield* appFile({
+      origin: current.target.origin,
+      asset: (path) => assets(version, path),
+    });
+    if (Option.isSome(file)) return file.value;
     const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
     const asCaller = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
@@ -598,7 +595,6 @@ export const hostedAppUi = <R = never>(
       // The page names the caller's own accounts; the app's are not theirs to see.
       accountIds: accounts?.user,
       accounts: yield* accountNotice,
-      origin: current.target.origin,
       version: version.id,
       asset: (path) => assets(version, path),
     });
@@ -689,7 +685,6 @@ export const hostedAppUi = <R = never>(
     calls,
     page,
     asset,
-    watch,
     versions,
     originAccess,
     sessionAccess,
