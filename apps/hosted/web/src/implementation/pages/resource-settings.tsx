@@ -3,7 +3,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { Option } from "effect";
 import type { AppId, AccountId } from "@executor-js/sdk";
-import { QueryView } from "@executor-js/ui/dashboard/context";
+import { QueryView, usePreload } from "@executor-js/ui/dashboard/context";
 import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
 import {
   appAccessAtom,
@@ -20,6 +20,8 @@ import { SharingEditor } from "../components/sharing.tsx";
 export function AppAccessSettings({ app }: { readonly app: AppId }) {
   const { organization } = useOrganizationRoute();
   const save = useAtomSet(shareAppAtom({ organization, app }), { mode: "promiseExit" });
+  // The editor always needs the groups, so they load alongside the access rather than after it.
+  usePreload(appAccessAtom({ organization, app }), groupsAtom(organization));
   const session = AsyncResult.value(useAtomValue(sessionAtom));
   const user = Option.isSome(session) ? session.value?.user.id : undefined;
   return (

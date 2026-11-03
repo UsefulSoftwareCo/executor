@@ -490,14 +490,17 @@ export const makeSchedules = (
         yield* apps.get(input);
         const settings = yield* savedFor(input.app);
         // Enabled schedules report what they wait on, so the owner sees why none run.
-        return yield* Effect.forEach(settings, (setting) =>
-          setting.enabled
-            ? waitingOn(setting).pipe(
-                Effect.map((waiting) =>
-                  waiting === undefined ? setting : { ...setting, ...waiting },
-                ),
-              )
-            : Effect.succeed(setting),
+        return yield* Effect.forEach(
+          settings,
+          (setting) =>
+            setting.enabled
+              ? waitingOn(setting).pipe(
+                  Effect.map((waiting) =>
+                    waiting === undefined ? setting : { ...setting, ...waiting },
+                  ),
+                )
+              : Effect.succeed(setting),
+          { concurrency: 4 },
         );
       }),
     configure: (input: typeof ScheduleInputs.configure.Type) =>

@@ -47,10 +47,13 @@ const treeEntry = Schema.Struct({
   hash: Schema.String,
   type: Schema.String,
 });
+type TreeFile = { path: string; mode: string; type: string; object: string };
 const commitTree = Schema.Struct({ hash: Schema.String, treeHash: Schema.String });
 const objectId = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u));
 /** Blobs read at once: each is held only until its size, and bytes within budget, are taken. */
 const blobReads = 4;
+/** Subtree reads at once across a whole walk, however deep it goes. */
+const treeReads = 4;
 const pendingPreparation = Schema.Struct({
   repository: AppCodeId,
   trace: Schema.NullOr(TraceContext),
@@ -218,31 +221,43 @@ const makeArtifactsTokenCoordinator = Effect.gen(function* () {
           Effect.gen(function* () {
             const repository = yield* Schema.decodeUnknownEffect(AppCodeId)(id);
             const repo = yield* open(repository);
-            const files: Array<{ path: string; mode: string; type: string; object: string }> = [];
-            const walk = (hash: string, prefix: string): Effect.Effect<void, SourceError> =>
+            const reads = yield* Semaphore.make(treeReads);
+            // Sibling subtrees are read together; each level keeps its entries' order, so the
+            // list is the same depth-first order a one-at-a-time walk produces.
+            const walk = (
+              hash: string,
+              prefix: string,
+            ): Effect.Effect<ReadonlyArray<TreeFile>, SourceError> =>
               Effect.gen(function* () {
                 const entries = yield* Effect.tryPromise({
                   try: () => repo.raw.readTree(hash),
                   catch: unavailable,
                 }).pipe(
+                  reads.withPermits(1),
                   Effect.flatMap(
                     Schema.decodeUnknownEffect(Schema.NullOr(Schema.Array(treeEntry))),
                   ),
                   Effect.mapError(unavailable),
                 );
                 if (entries === null) return yield* unavailable();
-                for (const entry of entries) {
-                  if (entry.type === "tree") yield* walk(entry.hash, `${prefix}${entry.name}/`);
-                  else
-                    files.push({
-                      path: `${prefix}${entry.name}`,
-                      mode: entry.mode,
-                      type: entry.type,
-                      object: entry.hash,
-                    });
-                }
+                const listed = yield* Effect.forEach(
+                  entries,
+                  (entry) =>
+                    entry.type === "tree"
+                      ? walk(entry.hash, `${prefix}${entry.name}/`)
+                      : Effect.succeed([
+                          {
+                            path: `${prefix}${entry.name}`,
+                            mode: entry.mode,
+                            type: entry.type,
+                            object: entry.hash,
+                          },
+                        ]),
+                  { concurrency: "unbounded" },
+                );
+                return listed.flat();
               });
-            yield* walk(yield* Schema.decodeUnknownEffect(objectId)(root), "");
+            const files = yield* walk(yield* Schema.decodeUnknownEffect(objectId)(root), "");
             yield* Effect.annotateCurrentSpan("source.tree.files", files.length);
             return files;
           }),

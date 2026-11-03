@@ -345,8 +345,18 @@ const checkAppLinked = (app: AppId, linked: AppAccounts["app"]) =>
  * links now is still checked by the caller's use.
  */
 export const checkScopedAccounts = (owner: OwnerId, app: AppId, accounts: AppAccounts) =>
+  Effect.flatMap(currentResourceAuthority, (actor) =>
+    checkScopedAccountsAs(actor, owner, app, accounts),
+  );
+/** {@link checkScopedAccounts} for an actor already resolved in this operation. */
+export const checkScopedAccountsAs = (
+  actor: ResourceAuthority,
+  owner: OwnerId,
+  app: AppId,
+  accounts: AppAccounts,
+) =>
   Effect.gen(function* () {
-    yield* checkAccounts(owner, accounts.user ?? {});
+    yield* checkAccountsAs(actor, owner, accounts.user ?? {});
     yield* checkAppLinked(app, accounts.app);
   });
 /** Pending approvals retain their original accounts even if the caller's links later change. */

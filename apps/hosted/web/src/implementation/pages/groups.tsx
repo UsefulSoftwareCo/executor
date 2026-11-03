@@ -1,6 +1,6 @@
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { resourceDirectoryAtom } from "../../contracts/resource-access.ts";
-import { QueryView } from "@executor-js/ui/dashboard/context";
+import { QueryView, usePreload } from "@executor-js/ui/dashboard/context";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { Cause, Exit, Option } from "effect";
@@ -26,7 +26,7 @@ import {
 } from "@executor-js/ui/components/dialog";
 import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import type { Group, GroupMember, GroupsView } from "@executor-js/hosted-server/groups";
-import { useOrganizationRoute } from "../components/organization.tsx";
+import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { GroupsFrame, GroupsLoading, groupsTitle } from "../components/page-pending.tsx";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { groupsAtom, saveGroupAtom, removeGroupAtom } from "../../contracts/groups.ts";
@@ -34,9 +34,16 @@ import { appError, type HostedError } from "../../contracts/errors.ts";
 import { GroupConflict } from "@executor-js/hosted-server/groups";
 import { Alert, AlertTitle, AlertDescription } from "@executor-js/ui/components/alert";
 
+/** The groups, keyed by the URL; a group's page also lists the apps shared with it. */
+export const groupsPageReads: OrganizationPageReads = (organization, params) => [
+  groupsAtom(organization),
+  ...(typeof params.groupId === "string" ? [resourceDirectoryAtom(organization)] : []),
+];
+
 /** Shared hosted groups page. A reload reads persisted membership, never fixture data. */
 export function GroupsPage({ id }: { readonly id?: string }) {
   const { organization } = useOrganizationRoute();
+  usePreload(...groupsPageReads(organization, { groupId: id }));
   const result = useAtomValue(groupsAtom(organization));
   const refresh = useAtomRefresh(groupsAtom(organization));
   const data = AsyncResult.value(result);

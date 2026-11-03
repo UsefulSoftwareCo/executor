@@ -58,7 +58,7 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
 import { cn } from "../lib/utils.ts";
 import { PageFrame } from "./page.tsx";
-import { allResults, LoadingRows, QueryResult, useQuery } from "./context.tsx";
+import { allResults, LoadingRows, QueryResult, usePreload, useQuery } from "./context.tsx";
 import { AppIcon } from "./common.tsx";
 import {
   appChoices,
@@ -124,6 +124,7 @@ function ConnectionReads<E, EL extends E>({
   readonly pending: ReactNode;
   readonly children: (inventory: Inventory, connections: readonly ConnectionView[]) => ReactNode;
 }) {
+  usePreload(query, connections);
   const inventory = useQuery(query);
   const stored = useQuery(connections);
   return (

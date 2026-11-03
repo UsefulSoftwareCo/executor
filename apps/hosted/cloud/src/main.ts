@@ -452,7 +452,10 @@ export default Api.make(
           document.document,
           catalogFeedUrl === undefined
             ? egress
-            : { ...egress, client: cachedFeedClient(apiOrigin, catalogFeedUrl, egress.client) },
+            : {
+                ...egress,
+                client: yield* cachedFeedClient(apiOrigin, catalogFeedUrl, egress.client),
+              },
           clientMetadata,
           apiOrigin,
           catalogFeedUrl,

@@ -10,7 +10,7 @@ import {
 } from "@executor-js/ui/dashboard/scoped-connections";
 import { ConnectedAgents } from "@executor-js/ui/dashboard/connected-agents";
 import { ConnectionToolPicker } from "@executor-js/ui/dashboard/connection-tool-picker";
-import { useOrganizationRoute } from "../components/organization.tsx";
+import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { resourceInventoryAtom } from "../../contracts/resource-access.ts";
 import { connectionToolListAtom } from "../../contracts/apps.ts";
@@ -23,6 +23,18 @@ import {
 } from "../../contracts/mcp-connections.ts";
 import { useDocumentationUrl } from "../documentation.ts";
 import { useResourceOrigins } from "../resource-origin.ts";
+
+/** The inventory and the member's connections, keyed by the URL. */
+export const connectionPageReads: OrganizationPageReads = (organization) => [
+  resourceInventoryAtom(organization),
+  mcpConnectionsAtom(organization),
+];
+
+/** The connection page's reads and the agents connected through them. */
+export const connectPageReads: OrganizationPageReads = (organization, params) => [
+  ...connectionPageReads(organization, params),
+  mcpAgentsAtom(organization),
+];
 
 /** Headless setup: a personal access token against this organization's own addresses. */
 function PersonalTokenSetup({

@@ -29,7 +29,7 @@ import { AppNotFound } from "../contracts/apps.ts";
 import { type AccountCredential, invocationAccount, validateFields } from "./provider.ts";
 import { StoredVersion, type StoredAccount } from "../contracts/storage.ts";
 import { storedAccount } from "./accounts.ts";
-import { query, type Query } from "./database.ts";
+import { inOrder, query, type Query } from "./database.ts";
 import type { makeOAuth } from "./oauth.ts";
 import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
 
@@ -162,15 +162,23 @@ export const makeAccountHealth = (
       } satisfies AccountHealth;
     });
 
-  const report = (account: StoredAccount, ids: readonly AppId[]) =>
+  /** The account's health, read beside `account`'s own read, which fails first. */
+  const report = <E>(
+    account: Effect.Effect<StoredAccount, E>,
+    id: AccountId,
+    ids: readonly AppId[],
+  ) =>
     Effect.gen(function* () {
-      // The product names the apps; their owner can differ from the account's, as in local, where
-      // apps belong to the host and accounts to its user.
-      const apps = ids.length === 0 ? [] : yield* listApps({ ids });
-      const rows = yield* query(() =>
-        db.findMany("accountChecks", { where: (b) => b("account", "=", account.id) }),
+      const [stored, [apps, rows]] = yield* inOrder(
+        account,
+        inOrder(
+          // The product names the apps; their owner can differ from the account's, as in local,
+          // where apps belong to the host and accounts to its user.
+          ids.length === 0 ? Effect.succeed<readonly App[]>([]) : listApps({ ids }),
+          query(() => db.findMany("accountChecks", { where: (b) => b("account", "=", id) })),
+        ),
       );
-      return yield* project(account, apps, rows);
+      return yield* project(stored, apps, rows);
     });
 
   /**
@@ -189,11 +197,11 @@ export const makeAccountHealth = (
       );
       if (accounts.length === 0) return [];
       const ids = accounts.map((account) => account.id);
-      const rows = yield* query(() =>
-        db.findMany("accountChecks", { where: (b) => b("account", "in", ids) }),
-      );
       const linked = [...new Set(input.links.map((link) => link.app))];
-      const apps = linked.length === 0 ? [] : yield* listApps({ ids: linked });
+      const [rows, apps] = yield* inOrder(
+        query(() => db.findMany("accountChecks", { where: (b) => b("account", "in", ids) })),
+        linked.length === 0 ? Effect.succeed<readonly App[]>([]) : listApps({ ids: linked }),
+      );
       return yield* Effect.forEach(accounts, (account) =>
         project(
           account,
@@ -358,19 +366,22 @@ export const makeAccountHealth = (
     checkCredentials,
     listHealth,
     health: (input: Parameters<Executor["accounts"]["health"]>[0]) =>
-      storedAccount(db, input.account, input.owner).pipe(
-        Effect.flatMap((account) => report(account, input.apps)),
+      report(storedAccount(db, input.account, input.owner), input.account, input.apps).pipe(
         Effect.withSpan("sdk.accounts.health"),
       ),
     check: (input: Parameters<Executor["accounts"]["check"]>[0]) =>
       Effect.gen(function* () {
-        const account = yield* storedAccount(db, input.account, input.owner);
-        const apps = input.apps.length === 0 ? [] : yield* listApps({ ids: input.apps });
+        const [account, apps] = yield* inOrder(
+          storedAccount(db, input.account, input.owner),
+          input.apps.length === 0
+            ? Effect.succeed<readonly App[]>([])
+            : listApps({ ids: input.apps }),
+        );
         yield* Effect.forEach(apps, (app) => checkApp(app, account), {
           concurrency: 4,
           discard: true,
         });
-        return yield* report(account, input.apps);
+        return yield* report(Effect.succeed(account), account.id, input.apps);
       }).pipe(Effect.withSpan("sdk.accounts.check")),
   };
 };

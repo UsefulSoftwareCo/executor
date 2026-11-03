@@ -10,11 +10,22 @@ import { AccountsPage as SharedPage } from "@executor-js/ui/dashboard/accounts";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { Button } from "@executor-js/ui/components/button";
 import { Link } from "@tanstack/react-router";
-import { useQuery } from "@executor-js/ui/dashboard/context";
+import { usePreload, useQuery } from "@executor-js/ui/dashboard/context";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
-import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
+import {
+  type OrganizationPageReads,
+  useOrganizationDetails,
+  useOrganizationRoute,
+} from "../components/organization.tsx";
 import { OAuthClientsDialog } from "./oauth-clients.tsx";
 import { resourceDirectoryAtom, resourceInventoryAtom } from "../../contracts/resource-access.ts";
+
+/** Each account's access and the account list, keyed by the URL. */
+export const accountsPageReads: OrganizationPageReads = (organization) => [
+  resourceDirectoryAtom(organization),
+  resourceInventoryAtom(organization),
+];
+
 /**
  * Personal and shared credentials use one list. Administrators also manage the organization's
  * OAuth clients from here, since those clients only exist to connect accounts.
@@ -27,6 +38,7 @@ export function AccountsPage({
   readonly oauthClients: { readonly open: boolean; readonly onOpenChange: (open: boolean) => void };
 }) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
+  usePreload(...accountsPageReads(organization, {}));
   const directory = useQuery(resourceDirectoryAtom(organization));
   const [dialog, setDialog] = useState<{ account: AccountId; kind: AccountDialogKind }>();
   const role = useOrganizationDetails()?.role;

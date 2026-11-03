@@ -117,8 +117,10 @@ const runsQuery = pollingQuery(runsSource, steadyPolling);
 /** Join safe run metadata with app names; keep either read failure visible. */
 export const pendingApprovalsAtom = DashboardClient.runtime.atom((get) =>
   Effect.gen(function* () {
-    const runs = yield* get.result(runsQuery);
-    const inventory = yield* get.result(overviewAtom);
+    // App names come from the inventory; read it alongside the runs rather than after them.
+    const [runs, inventory] = yield* Effect.all([get.result(runsQuery), get.result(overviewAtom)], {
+      concurrency: "unbounded",
+    });
     return runs.map((run): ApprovalListItem => ({
       run,
       app: {

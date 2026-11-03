@@ -159,10 +159,10 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
         Effect.gen(function* () {
           const executor = yield* Effect.flatten(HostedExecutor);
           // Event deliveries due for a retry wake this coordinator too.
-          const [schedule, delivery] = yield* Effect.all([
-            executor.scheduler.nextWake,
-            executor.events.nextWake,
-          ]);
+          const [schedule, delivery] = yield* Effect.all(
+            [executor.scheduler.nextWake, executor.events.nextWake],
+            { concurrency: "unbounded" },
+          );
           const next =
             schedule === null || delivery === null
               ? (schedule ?? delivery)
@@ -196,20 +196,27 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
           Effect.gen(function* () {
             const executor = yield* Effect.flatten(HostedExecutor);
             const authorize = yield* ScheduledAuthority;
-            yield* Effect.annotateCurrentSpan({
-              "executor.schedule.runner": "cloud",
-              "cloudflare.colo": yield* colo,
-            });
-            yield* lifecycle.withPermits(1)(
-              Effect.gen(function* () {
-                if (initialized) return;
-                // One bounded attempt at most, unless a wake's attempt failed and its retry is not
-                // due. Dispatch then proceeds: Postgres claims keep each occurrence to one run
-                // even if old code still answers, and the stored retry hands over later.
-                yield* restore;
-                yield* executor.scheduler.recover("cloud");
-                initialized = true;
-              }),
+            yield* Effect.annotateCurrentSpan("executor.schedule.runner", "cloud");
+            // A fresh object's colo lookup and its first-pass recovery both wait on the network;
+            // neither needs the other.
+            yield* Effect.all(
+              [
+                colo.pipe(
+                  Effect.flatMap((code) => Effect.annotateCurrentSpan("cloudflare.colo", code)),
+                ),
+                lifecycle.withPermits(1)(
+                  Effect.gen(function* () {
+                    if (initialized) return;
+                    // One bounded attempt at most, unless a wake's attempt failed and its retry is
+                    // not due. Dispatch then proceeds: Postgres claims keep each occurrence to one
+                    // run even if old code still answers, and the stored retry hands over later.
+                    yield* restore;
+                    yield* executor.scheduler.recover("cloud");
+                    initialized = true;
+                  }),
+                ),
+              ],
+              { concurrency: "unbounded", discard: true },
             );
             // Alarm callbacks own this work through waitUntil; new wakes can discover other due apps meanwhile.
             yield* dispatch.run(
