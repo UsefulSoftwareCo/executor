@@ -99,7 +99,7 @@ import {
 import { StoredAccount, type Credentials } from "../contracts/storage.ts";
 import { type AccountCredential, invocationAccount } from "./provider.ts";
 import { intersectCredentialHosts } from "./credential-handles.ts";
-import { query, transaction, type Query } from "./database.ts";
+import { inOrder, query, transaction, type Query } from "./database.ts";
 import {
   claimCredentials,
   credentialsDigest,
@@ -1330,15 +1330,21 @@ export const makeOAuth = (
       if (methods.length === 0)
         return yield* new OAuthClientsUnsupported({ provider: input.provider });
       if (protocol === undefined) return yield* new OAuthSetupFailed({ reason: "unsupported" });
-      return yield* Effect.forEach(methods, ({ name, method }) =>
-        protocol.discover(method).pipe(
-          Effect.mapError(discoveryFailed),
-          Effect.map((discovered) => ({
-            method: name,
-            issuer: HttpUrl.make(oauthClientIssuer(discovered.server)),
-          })),
-        ),
+      // Discovered at once; the first method that failed, in order, is the one reported.
+      const discovered = yield* Effect.forEach(
+        methods,
+        ({ name, method }) =>
+          protocol.discover(method).pipe(
+            Effect.mapError(discoveryFailed),
+            Effect.map((found) => ({
+              method: name,
+              issuer: HttpUrl.make(oauthClientIssuer(found.server)),
+            })),
+            Effect.result,
+          ),
+        { concurrency: "unbounded" },
       );
+      return yield* Effect.forEach(discovered, (result) => Effect.fromResult(result));
     }).pipe(Effect.withSpan("oauth.clients.issuers"));
 
   const clients = {
@@ -2157,10 +2163,16 @@ export const makeOAuth = (
             }),
         ),
       );
+      // A grant that expires without a refresh token needs a reconnect then; record it at sign-in.
+      yield* Effect.annotateCurrentSpan(
+        "oauth.grant.refresh_token",
+        tokens.refresh_token !== undefined,
+      );
       const completedAt = yield* Clock.currentTimeMillis;
       const issued = {
         response: attempt.response,
         fields,
+        redirectUri: attempt.redirectUri,
         ...(tokens.refresh_token === undefined ? {} : { refreshToken: tokens.refresh_token }),
         ...expiry(completedAt, tokens.expires_in),
       };
@@ -2951,29 +2963,32 @@ export const makeOAuth = (
       selected,
     ),
   ) =>
-    Effect.flatMap(authority, (checked) =>
-      Effect.gen(function* () {
-        const recheck = selectionAuthorized(use, selected);
-        // Without grant rows the caller read in its own batch, the selection's grants are read
-        // here in one query and stand in for each grant's first read, as the caller's would.
-        const readAhead = (yield* GrantReadAhead) ?? (yield* selectionGrants(selected));
-        return yield* Effect.forEach(selected, ({ account, provider }) =>
-          Effect.gen(function* () {
-            const credential = yield* resolveAuthorized(
-              account,
-              provider,
-              checked,
-              { contested: false },
-              undefined,
-              recheck,
-            );
-            /** The account as one slot's invocation sends it, under that slot's definition. */
-            return (definition: ProviderDefinition) =>
-              invocationAccount(account, definition, credential, firstPartyClients);
-          }),
-        ).pipe(Effect.provideService(GrantReadAhead, readAhead));
-      }),
-    );
+    Effect.gen(function* () {
+      const supplied = yield* GrantReadAhead;
+      // Without grant rows the caller read in its own batch, the selection's grants are read
+      // here in one query, beside the authority check, and stand in for each grant's first read,
+      // as the caller's would. Nothing is decrypted or returned unless the check passed.
+      const [checked, readAhead] =
+        supplied === undefined
+          ? yield* inOrder(authority, selectionGrants(selected))
+          : [yield* authority, supplied];
+      const recheck = selectionAuthorized(use, selected);
+      return yield* Effect.forEach(selected, ({ account, provider }) =>
+        Effect.gen(function* () {
+          const credential = yield* resolveAuthorized(
+            account,
+            provider,
+            checked,
+            { contested: false },
+            undefined,
+            recheck,
+          );
+          /** The account as one slot's invocation sends it, under that slot's definition. */
+          return (definition: ProviderDefinition) =>
+            invocationAccount(account, definition, credential, firstPartyClients);
+        }),
+      ).pipe(Effect.provideService(GrantReadAhead, readAhead));
+    });
   /**
    * The grant rows of the selected accounts that sign in with OAuth, read in one query, by
    * account. An account without a row maps to null, as a missing grant reads.

@@ -1,5 +1,5 @@
 /** Native Effect database operations; SQL failures are projected to safe domain errors. */
-import { Effect } from "effect";
+import { Effect, Result } from "effect";
 import { SqlError } from "effect/sql";
 import { failureAttributes, withFailureAttributes } from "@executor-js/telemetry/failed-span";
 import { StorageError } from "../contracts/shared.ts";
@@ -29,5 +29,22 @@ export const transaction = <A, E, R>(db: Query, work: (tx: Query) => Effect.Effe
         ...(SqlError.isSqlError(error) && { "executor.storage.reason": error.reason._tag }),
         ...failureAttributes(error),
       }),
+    ),
+  );
+/**
+ * Run two effects at once but report the first one's failure first, as if they ran in order. Read
+ * ahead of a check this way only: the second's result is released only once the first succeeded.
+ */
+export const inOrder = <A, B, E1, E2, R1, R2>(
+  first: Effect.Effect<A, E1, R1>,
+  second: Effect.Effect<B, E2, R2>,
+) =>
+  Effect.all([Effect.result(first), Effect.result(second)], { concurrency: "unbounded" }).pipe(
+    Effect.flatMap(([a, b]) =>
+      Result.isFailure(a)
+        ? Effect.fail<E1 | E2>(a.failure)
+        : Result.isFailure(b)
+          ? Effect.fail<E1 | E2>(b.failure)
+          : Effect.succeed([a.success, b.success] as const),
     ),
   );

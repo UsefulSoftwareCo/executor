@@ -7,7 +7,7 @@ import {
   type OrganizationId,
 } from "@executor-js/hosted-server";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
-import { Cause, Effect, Layer, Schema } from "effect";
+import { Cause, Effect, Fiber, Layer, Schema } from "effect";
 import { FetchHttpClient, HttpServerRequest } from "effect/http";
 import { AutumnClient, type AutumnRequestFailed } from "../contracts/autumn.ts";
 import { autumnLive, autumnReads } from "./autumn-client.ts";
@@ -93,11 +93,13 @@ export const billingLive = Effect.gen(function* () {
       const customer = yield* use(
         autumn.getOrCreateCustomer({ customerId, autoEnablePlanId: catalog.free }),
       );
+      // The plan list is read while the seat plan is written; the write still finishes first.
+      const listing = yield* Effect.forkChild(use(autumn.listPlans({ customerId })));
       // Checkout returns here after Stripe settles, so a new seat plan joins the daily reconcile.
       yield* members.use(
         recordSeatPlan(organization, active(customer, [catalog.team, catalog.enterprise])),
       );
-      const plans = yield* use(autumn.listPlans({ customerId }));
+      const plans = yield* Fiber.join(listing);
       // The billing provider lists plans in its own order; the page shows the smallest first.
       const offered = [catalog.free, catalog.team, catalog.enterprise];
       return yield* Schema.decodeUnknownEffect(BillingOverview)({

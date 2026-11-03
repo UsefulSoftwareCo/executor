@@ -729,7 +729,17 @@ export const makeListings = (options: {
         const running = cache.pending(id);
         // Rows from before the app's cached data last changed are not served; see `followChanges`.
         yield* options.declarations.followChanges(state.app.id);
-        const kept = policy.maxStaleMillis <= 0 ? undefined : yield* search.listing(state, listing);
+        // The checks kept rows are served after run beside their read; only kept rows wait on them.
+        const [kept, access] =
+          policy.maxStaleMillis <= 0
+            ? ([undefined, undefined] as const)
+            : yield* Effect.all(
+                [
+                  search.listing(state, listing),
+                  Effect.result(options.declarations.authorize(state)),
+                ],
+                { concurrency: "unbounded" },
+              );
         // Rows missing, stale or removed are filled from an evaluation through the shared gate,
         // which keeps no decoded listing: rows are what later searches read. Readers of the same
         // listing share one evaluation, which the load bound stops like any other once nobody
@@ -755,13 +765,14 @@ export const makeListings = (options: {
           memory.at > kept.at;
         if (
           kept !== undefined &&
+          access !== undefined &&
           now - kept.at < policy.maxStaleMillis &&
           !cache.outdated(state.app.id, kept.at) &&
           !newer &&
           // Written only for the search that evaluated them; see `partial`.
           !partial(kept.routers)
         ) {
-          yield* options.declarations.authorize(state);
+          yield* Effect.fromResult(access);
           // A superseded listing is kept again unless cleanup removed it since it was read; then
           // it is written again like a missing one.
           if (kept.superseded === null || (yield* search.revive(listing))) {

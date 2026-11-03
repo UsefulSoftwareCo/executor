@@ -427,7 +427,6 @@ export const localApi = (
         HttpRouter.add("POST", "/_executor/api/telemetry/logs", ui.telemetry("logs")),
         HttpRouter.add("GET", appSignInCallbackPath, signIn.callback),
         HttpRouter.add("GET", "/_executor/version", ui.versions),
-        HttpRouter.add("GET", "/_executor/watch.js", ui.watch),
         HttpRouter.add("GET", "/_executor/assets/:version/*", ui.asset),
         // Keep the GET/HEAD SPA fallback out of host-owned namespaces. Unregistered methods already return 404.
         HttpRouter.add("GET", "/_executor/*", notFound),

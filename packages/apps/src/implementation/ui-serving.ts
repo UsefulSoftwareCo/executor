@@ -19,17 +19,15 @@ import {
 import { appPrivateHeaders } from "./ui-auth.ts";
 import { versionDocument } from "./ui-document.ts";
 import { appFailureBootstrap } from "./ui-errors.ts";
+import { appWatchSource } from "./browser-scripts.gen.ts";
 
 /**
- * Render an authorized version with a host-owned version watcher. Account problems that stop
- * the app replace its document with a page that links to their fix; others add a dismissible card.
+ * The version's public file a page path names, or a 404 for a missing file. `None` means the path
+ * is the page itself. Hosts answer files before the page's account and usage work, which a file
+ * needs none of.
  */
-export const appDocument = <E, R>(options: {
-  readonly version: string;
-  /** The account IDs the page runs with, by requirement. */
-  readonly accountIds?: Readonly<Record<string, readonly string[]>> | undefined;
+export const appFile = <E, R>(options: {
   readonly origin: string;
-  readonly accounts?: UiAccountNotice | undefined;
   readonly asset: (path: string) => Effect.Effect<AppUiAsset | undefined, E, R>;
 }) =>
   Effect.gen(function* () {
@@ -44,15 +42,33 @@ export const appDocument = <E, R>(options: {
         ? undefined
         : yield* options.asset(path);
     if (file !== undefined && "body" in file)
-      return HttpServerResponse.uint8Array(file.body, {
-        contentType: file.contentType,
-        headers: appPrivateHeaders,
-      });
+      return Option.some(
+        HttpServerResponse.uint8Array(file.body, {
+          contentType: file.contentType,
+          headers: appPrivateHeaders,
+        }),
+      );
     // The page's origin serves the active version, so the same URL can change content on the
     // next activation: browsers revalidate against the content hash.
-    if (file !== undefined) return yield* storedFile(file, "private, no-cache");
+    if (file !== undefined) return Option.some(yield* storedFile(file, "private, no-cache"));
     if (pathname.includes(".") && pathname !== "/index.html")
-      return HttpServerResponse.empty({ status: 404 });
+      return Option.some(HttpServerResponse.empty({ status: 404 }));
+    return Option.none();
+  });
+
+/**
+ * Render an authorized version with a host-owned version watcher, for a path `appFile` left to
+ * the page. Account problems that stop the app replace its document with a page that links to
+ * their fix; others add a dismissible card.
+ */
+export const appDocument = <E, R>(options: {
+  readonly version: string;
+  /** The account IDs the page runs with, by requirement. */
+  readonly accountIds?: Readonly<Record<string, readonly string[]>> | undefined;
+  readonly accounts?: UiAccountNotice | undefined;
+  readonly asset: (path: string) => Effect.Effect<AppUiAsset | undefined, E, R>;
+}) =>
+  Effect.gen(function* () {
     const notice = options.accounts;
     if (notice?.problems.some(accountProblemBlocks))
       return HttpServerResponse.text(accountBlockedPage(notice), {
@@ -78,7 +94,9 @@ export const appDocument = <E, R>(options: {
       telemetry === undefined
         ? ""
         : `<meta name="executor-build" content="${attribute(telemetry.version)}"><meta name="executor-environment" content="${attribute(telemetry.environment)}">`;
-    const boot = `${metadata}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script src="/_executor/watch.js" defer></script>`;
+    // The watcher is inline so a page costs no extra request. An inline module runs after
+    // parsing, as the deferred file it replaces did.
+    const boot = `${metadata}<script type="application/json" id="executor-context">${context}</script>${appFailureBootstrap}${notice === undefined || notice.problems.length === 0 ? "" : accountNoticeBootstrap(notice)}<script type="module">${appWatchSource}</script>`;
     return HttpServerResponse.text(
       versionDocument(new TextDecoder().decode(document.body), options.version).replace(
         "<!--executor-ui-->",

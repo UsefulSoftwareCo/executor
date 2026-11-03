@@ -37,6 +37,8 @@ export const cloudAppSessions = Effect.gen(function* () {
   const options = {
     database: database.options,
     plugins: [organizationTables],
+    // The dashboard cleans expired records during sign-in. App reads check expiry themselves.
+    verification: { disableCleanup: true },
     // As in the dashboard: the deployment migration validates the schema, not requests.
     advanced: { database: { validateSchema: false } },
   } satisfies BetterAuthOptions;

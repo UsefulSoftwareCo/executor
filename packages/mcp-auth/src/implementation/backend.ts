@@ -84,15 +84,12 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
   ): GrantRefusal | undefined =>
     appRefusal(policy, app) ??
     (permitsAccounts(policy, app, ids) ? undefined : targetRefusal(app, ids));
+  const appCheck = (policy: AuthorizationPolicy, app: AppId, accounts: AppAccounts | undefined) => {
+    const ids = named(accounts);
+    return refuse(ids.length === 0 ? appRefusal(policy, app) : accountsRefusal(policy, app, ids));
+  };
   const checkApp = (app: AppId, accounts: AppAccounts | undefined) =>
-    authority.pipe(
-      Effect.flatMap((policy) => {
-        const ids = named(accounts);
-        return refuse(
-          ids.length === 0 ? appRefusal(policy, app) : accountsRefusal(policy, app, ids),
-        );
-      }),
-    );
+    authority.pipe(Effect.flatMap((policy) => appCheck(policy, app, accounts)));
   /** The page's tools and routers this policy lets the caller discover. */
   const permittedPage = (policy: AuthorizationPolicy, app: AppId, page: ToolPage): ToolPage => ({
     ...page,
@@ -323,9 +320,9 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
       }),
     searchableTools: (input, options) =>
       Effect.gen(function* () {
-        yield* checkApp(input.app, input.accounts);
-        const searchable = yield* backend.searchableTools(input, options);
         const policy = yield* authority;
+        yield* appCheck(policy, input.app, input.accounts);
+        const searchable = yield* backend.searchableTools(input, options);
         // The listing names the accounts the host resolved; one entry must permit all of them.
         yield* refuse(accountsRefusal(policy, input.app, named(searchable.accounts)));
         // Failed routers list no tools, so the grant decides them without the catalog.

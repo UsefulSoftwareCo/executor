@@ -39,7 +39,7 @@ import {
   UiForbidden,
   UiUnauthorized,
 } from "apps/ui/contracts";
-import { appAsset, appDocument, appWatchScript, assetPath, storedAppFile } from "apps/ui/serving";
+import { appAsset, appDocument, appFile, assetPath, storedAppFile } from "apps/ui/serving";
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { currentTraceContext, recordRoute } from "@executor-js/telemetry";
 import { Clock, Context, Effect, Layer, Option, Redacted, Schema, Stream } from "effect";
@@ -469,15 +469,6 @@ export const hostedAppUi = <R = never>(
         HttpServerResponse.text("App unavailable.", { status: 422, headers: appPrivateHeaders }),
       ),
   });
-  const watch = authorize.pipe(
-    Effect.as(
-      HttpServerResponse.text(appWatchScript, {
-        contentType: "text/javascript",
-        headers: appPrivateHeaders,
-      }),
-    ),
-    htmlFailure,
-  );
   const versions = Effect.gen(function* () {
     const current = yield* authorize;
     const request = yield* HttpServerRequest.HttpServerRequest;
@@ -539,6 +530,12 @@ export const hostedAppUi = <R = never>(
     if (Option.isNone(authorized)) return yield* beginSignIn(resolved);
     const current = authorized.value;
     const version = yield* readVersion(current.app);
+    // A file needs no accounts, and fetching one is no app view.
+    const file = yield* appFile({
+      origin: current.target.origin,
+      asset: (path) => assets(version, path),
+    });
+    if (Option.isSome(file)) return file.value;
     const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
     const asCaller = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
@@ -553,29 +550,31 @@ export const hostedAppUi = <R = never>(
     fix.searchParams.set("view", "accounts");
     // The page runs with the app's linked accounts and the caller's linked accounts; a plain
     // requirement with none shows what to link.
-    const resolution = yield* callerAccounts(current.app).pipe(
-      asCaller,
-      Effect.map((accounts) => ({ kind: "resolved" as const, accounts })),
-      Effect.catchTag("AccountRequired", (error) =>
-        Effect.succeed({ kind: "missing" as const, slot: error.slot }),
-      ),
-      Effect.mapError((error) =>
-        Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
-      ),
-    );
-    const accounts = resolution.kind === "resolved" ? resolution.accounts : undefined;
-    const accountNotice = Effect.gen(function* () {
+    const accountReads = Effect.gen(function* () {
+      const resolution = yield* callerAccounts(current.app).pipe(
+        asCaller,
+        Effect.map((accounts) => ({ kind: "resolved" as const, accounts })),
+        Effect.catchTag("AccountRequired", (error) =>
+          Effect.succeed({ kind: "missing" as const, slot: error.slot }),
+        ),
+        Effect.mapError((error) =>
+          Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
+        ),
+      );
       if (resolution.kind === "missing") {
         const requirement = current.app.requirements.accounts[resolution.slot];
         if (requirement === undefined) return yield* unavailable();
         return {
-          app: current.app.name,
-          problems: [{ provider: requirement.definition.name, reason: "missing" as const }],
-          fix: fix.href,
+          accounts: undefined,
+          notice: {
+            app: current.app.name,
+            problems: [{ provider: requirement.definition.name, reason: "missing" as const }],
+            fix: fix.href,
+          },
         };
       }
       const used = accountIds(resolution.accounts);
-      if (used.length === 0) return undefined;
+      if (used.length === 0) return { accounts: resolution.accounts, notice: undefined };
       const found = yield* Effect.forEach(used, (account) =>
         Effect.all({
           account: executor.accounts.get({ owner: current.access.owner, account }),
@@ -591,16 +590,24 @@ export const hostedAppUi = <R = never>(
         ),
       );
       const problems = accountProblems(current.app, resolution.accounts, new Map(found.flat()));
-      if (problems.length === 0) return undefined;
-      return { app: current.app.name, problems, fix: fix.href };
+      return {
+        accounts: resolution.accounts,
+        notice:
+          problems.length === 0 ? undefined : { app: current.app.name, problems, fix: fix.href },
+      };
     });
+    // The document's read needs only the version and no SQL, so it runs beside the account
+    // reads. Its failure counts only where the document reads it, as before.
+    const [{ accounts, notice }, index] = yield* Effect.all(
+      [accountReads, Effect.exit(assets(version, "index.html"))],
+      { concurrency: 2 },
+    );
     const document = yield* appDocument({
       // The page names the caller's own accounts; the app's are not theirs to see.
       accountIds: accounts?.user,
-      accounts: yield* accountNotice,
-      origin: current.target.origin,
+      accounts: notice,
       version: version.id,
-      asset: (path) => assets(version, path),
+      asset: (path) => (path === "index.html" ? index : assets(version, path)),
     });
     yield* recordUsage("app_viewed", { app_id: current.app.id, version_id: version.id }).pipe(
       Effect.provideService(CurrentUserId, current.access.userId),
@@ -689,7 +696,6 @@ export const hostedAppUi = <R = never>(
     calls,
     page,
     asset,
-    watch,
     versions,
     originAccess,
     sessionAccess,

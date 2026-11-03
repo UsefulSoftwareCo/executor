@@ -226,24 +226,32 @@ const merge = (name: string, variants: readonly (readonly [string, HostedTool])[
     ...sameAcross("_meta", variants),
   });
 
+/** Accounts whose sources are read at once. Each read may reach its account's upstream service. */
+const accountConcurrency = 8;
+
 /**
  * Read every account's source, each on its own: one account's failure does not stop the others.
- * Each failure is attributed to its account, in account order.
+ * Reads run together; values and failures are kept in account order, each failure attributed to
+ * its account.
  */
 const eachAccount = <A>(
   sources: ReadonlyMap<string, DynamicRouter>,
   read: (source: DynamicRouter) => Effect.Effect<A, unknown>,
 ) =>
   Effect.gen(function* () {
+    const results = yield* Effect.forEach(
+      sources,
+      ([accountId, source]) =>
+        Effect.result(
+          read(source).pipe(Effect.mapError((error) => accountProviderError(error, accountId))),
+        ).pipe(Effect.map((result) => [accountId, result] as const)),
+      { concurrency: accountConcurrency },
+    );
     const values = new Map<string, A>();
     const failed = new Map<string, unknown>();
-    for (const [accountId, source] of sources) {
-      const result = yield* Effect.result(
-        read(source).pipe(Effect.mapError((error) => accountProviderError(error, accountId))),
-      );
+    for (const [accountId, result] of results)
       if (Result.isSuccess(result)) values.set(accountId, result.success);
       else failed.set(accountId, result.failure);
-    }
     return { values, failed };
   });
 

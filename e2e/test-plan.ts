@@ -104,6 +104,17 @@ const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof Tes
 
 /** Scenario names and applicability used by both test declarations and test selection. */
 export const scenarios = plan({
+  storageMigrationDiagnostics: {
+    legacyStorage: true,
+    file: "storage-migration-diagnostics.spec.ts",
+    title:
+      "failed executor upgrades report a safe SQLSTATE and version and leave the journal unchanged",
+    targets: {
+      "self-host": scheduled,
+      local: na("Hosted startup reports the migration diagnostics this scenario asserts."),
+      cloud: na("Requires a runner-owned database with a deliberately interrupted upgrade."),
+    },
+  },
   cloudRoleHostRoutes: {
     fixtures: "actors",
     file: "cloud-role-hosts.spec.ts",
@@ -1197,6 +1208,28 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: scheduled,
       local: na("The local dashboard does not batch its reads; most of them are live streams"),
+    },
+  },
+  dashboardBatchAuthentication: {
+    fixtures: "actors",
+    file: "dashboard-batch-authentication.spec.ts",
+    title:
+      "A dashboard batch checks its session and each membership once, without retaining authority for the next request",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The local dashboard does not batch its reads"),
+    },
+  },
+  dashboardBatchIsolation: {
+    fixtures: "actors",
+    file: "dashboard-batch-isolation.spec.ts",
+    title:
+      "A dashboard batch answers each read with its own caller's identity, organization and role",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The local dashboard does not batch its reads"),
     },
   },
   dashboardBuildChange: {
@@ -4960,6 +4993,17 @@ export const scenarios = plan({
       local: na("Exercises shared OAuth through the hosted API."),
     },
   },
+  oauthGoogleRenewableGrant: {
+    fixtures: "actors",
+    file: "oauth-google-renewable-grant.spec.ts",
+    title:
+      "A Google sign-in asks for an offline grant with fresh consent unless the app declares otherwise",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Exercises shared OAuth sign-in through the hosted API; self-host covers it."),
+      local: na("Exercises shared OAuth sign-in through the hosted API."),
+    },
+  },
   oauthAuthorizationParams: {
     fixtures: "actors",
     file: "oauth-authorization-params.spec.ts",
@@ -5523,6 +5567,18 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: scheduled,
       local: na("The API document and catalog installation are hosted product surfaces."),
+    },
+  },
+  cloudAppQueryAuth: {
+    fixtures: "actors",
+    file: "cloud-app-query-auth.spec.ts",
+    appOrigin: true,
+    title:
+      "Cloud app queries read current authorization without deleting expired verification records",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("AppPages has a separate Better Auth adapter only on Cloud."),
+      local: na("Local does not serve hosted app origins."),
     },
   },
   appUiApiDocument: {
@@ -8518,6 +8574,16 @@ export const scenarios = plan({
       ),
     },
   },
+  telemetryStoreIdleAtBound: {
+    file: "telemetry-store-bound.spec.ts",
+    title:
+      "The bundled collector at its size bound keeps its traces while an idle server's exports trickle in",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud exports to its own collector, not the bundled one."),
+      local: na("Local ships the same collector bundle; the self-host run covers it."),
+    },
+  },
   failedPollTraces: {
     legacyStorage: true,
     file: "idle-poll-traces.spec.ts",
@@ -9403,6 +9469,21 @@ export const scenarios = plan({
       local: scheduled,
       "self-host": na(
         "Both hosts read connections through the same SDK; Local reaches the stored row without organization fixtures.",
+      ),
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+    },
+  },
+  oauthRefreshRedirectUri: {
+    legacyStorage: true,
+    file: "oauth-refresh-redirect-uri.spec.ts",
+    title:
+      "OAuth refreshes repeat the callback the sign-in used, and a grant an earlier release saved without one still refreshes without it",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Both hosts refresh grants through the same SDK; Local reaches the stored grant without organization fixtures.",
       ),
       cloud: na(
         "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",

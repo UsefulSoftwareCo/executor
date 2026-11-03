@@ -21,6 +21,7 @@ import { RuntimeContext } from "alchemy";
 import type * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Layer } from "effect";
 import { AppDomainDatabase } from "../implementation/app-domain-records.ts";
+import { RemovedOrganizations } from "../implementation/organization-removal.ts";
 import { V1ImportDatabase, V1ImportUnavailable } from "../contracts/v1-import.ts";
 import { UiFailed } from "apps/ui/contracts";
 import type { ArtifactsTokens } from "@executor-js/app-source/cloudflare";
@@ -104,6 +105,7 @@ export const cloudProduct = Effect.fn(function* (
     ),
     Layer.succeed(OrganizationRemovals, removals.removals),
     Layer.succeed(OrganizationTombstones, removals.tombstones),
+    Layer.succeed(RemovedOrganizations, removals.removed),
     Layer.succeed(
       AppDomainDatabase,
       sql.pipe(Effect.mapError(() => new UiFailed({ reason: "unavailable" }))),

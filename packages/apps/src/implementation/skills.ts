@@ -1,5 +1,5 @@
 /** Remote skill readers return complete portable bundles, never installed host files. */
-import { Effect, Ref, Schema, Stream } from "effect";
+import { Effect, Ref, Result, Schema, Stream } from "effect";
 import { Base64, Hex } from "effect/encoding";
 import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
 import { skillFromFiles } from "./skill-files.ts";
@@ -431,11 +431,24 @@ const cachedCatalog = (
         summary: { schema: AppSkillMetadata, of: ({ files: _files, ...metadata }) => metadata },
         load: (context, kept) =>
           Effect.gen(function* () {
-            const source = yield* context === undefined
-              ? publication(options, options.cache)
-              : publication({ fetch: options.fetch, signal: context.signal }, context.cache);
+            // The check and the kept catalog's manifest are read together. The kept read decides
+            // nothing until the check succeeds with an identified publication.
+            const [checkedSource, keptCatalog] = yield* Effect.all(
+              [
+                Effect.result(
+                  context === undefined
+                    ? publication(options, options.cache)
+                    : publication({ fetch: options.fetch, signal: context.signal }, context.cache),
+                ),
+                Effect.result(kept ?? Effect.succeed(undefined)),
+              ],
+              { concurrency: "unbounded" },
+            );
+            if (Result.isFailure(checkedSource)) return yield* Effect.fail(checkedSource.failure);
+            const source = checkedSource.success;
             if (source.id === undefined) return { tools: yield* source.load };
-            const previous = kept === undefined ? undefined : yield* kept;
+            if (Result.isFailure(keptCatalog)) return yield* Effect.fail(keptCatalog.failure);
+            const previous = keptCatalog.success;
             const tools =
               previous?.header?.["publication"] === source.id
                 ? yield* previous.tools
