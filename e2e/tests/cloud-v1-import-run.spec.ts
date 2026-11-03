@@ -313,6 +313,259 @@ const seedShared = (
     return { tracker };
   });
 
+/**
+ * A shared workspace whose toolkits are as large as a busy organization's: 20 members, 8 MCP
+ * servers of 200 tools each, 344 workspace rules, and 10 toolkits (8 the organization's, 2 members'
+ * own) with 58 connection rules and 1,052 policies. Every server has the organization's `team`
+ * connection; two members also have their own `mine` on the first, whose `team` alone v1 blocks a
+ * tool for, so it becomes an app per connection. The workspace blocks one tool on each other
+ * server. Each toolkit's policies name a tool each, so the tools a copy grants are the server's,
+ * less the toolkit's blocks and the workspace's.
+ */
+const toolkitScale = (organization: string, members: readonly string[]) => {
+  const prefix = `scale_${randomUUID().slice(0, 6)}`;
+  const servers = Array.from({ length: 8 }, (_, index) => ({
+    slug: `${prefix}_${index}`,
+    label: `Scale ${index}`,
+  }));
+  const tools = Array.from({ length: 200 }, (_, index) => `tool_${String(index).padStart(3, "0")}`);
+  const slugOf = (server: number) => servers[server]?.slug ?? "";
+  const memberOf = (index: number) => members[index] ?? "";
+  const connections = [
+    ...servers.map((server) => ({
+      row_id: `${server.slug}-team`,
+      owner: "org",
+      subject: "",
+      integration: server.slug,
+      name: "team",
+    })),
+    ...[0, 1].map((index) => ({
+      row_id: `${slugOf(0)}-mine-${index}`,
+      owner: "user",
+      subject: memberOf(index),
+      integration: slugOf(0),
+      name: "mine",
+    })),
+  ];
+  const workspaceRules = [
+    { owner: "org", subject: "", pattern: `${slugOf(0)}.org.team.tool_000`, action: "block" },
+    ...servers.slice(1).map((server) => ({
+      owner: "org",
+      subject: "",
+      pattern: `${server.slug}.*.*.tool_001`,
+      action: "block",
+    })),
+    // The rest ask or allow, so they shape each app's approvals but leave every tool in.
+    ...Array.from({ length: 336 }, (_, index) => ({
+      owner: index % 3 === 0 ? "user" : "org",
+      subject: index % 3 === 0 ? memberOf(index % members.length) : "",
+      pattern: `${slugOf(index % 8)}.*.*.${tools[2 + (index % (tools.length - 2))]}`,
+      action: index % 2 === 0 ? "approve" : "require_approval",
+    })),
+  ].map((rule, index) => ({
+    ...rule,
+    id: `rule-${index}`,
+    position: `a${String(index).padStart(4, "0")}`,
+  }));
+  /** The organization's toolkits are 0 to 7; 8 is the second member's own, 9 the first's. */
+  const owners = [...Array.from({ length: 8 }, () => ""), memberOf(1), memberOf(0)];
+  const kits = owners.map((subject, kit) => {
+    // Each organization toolkit reaches the `team` connection of seven or six servers.
+    const access =
+      kit === 8
+        ? [`${slugOf(0)}.user.mine.*`, `${slugOf(1)}.org.team.*`]
+        : kit === 9
+          ? [`${slugOf(0)}.*`, `${slugOf(2)}.org.team.*`]
+          : servers
+              .filter((_, server) => server !== kit && (kit < 6 || server !== (kit + 1) % 8))
+              .map((server) => `${server.slug}.org.team.*`);
+    const policies = Array.from({ length: kit === 0 ? 500 : kit === 9 ? 64 : 61 }, (_, index) => ({
+      server: index % 8,
+      tool: tools[2 + ((Math.floor(index / 8) + 7 * kit) % (tools.length - 2))] ?? "",
+      action: index % 7 === 0 ? "block" : index % 7 === 1 ? "require_approval" : "approve",
+    }));
+    return { id: `kit-${kit}`, name: `Kit ${kit}`, subject, access, policies };
+  });
+  const storage = kits.flatMap((kit) => {
+    const owner = kit.subject === "" ? "org" : "user";
+    const rule = (collection: string, key: string, data: object) => ({
+      owner,
+      subject: kit.subject,
+      collection,
+      key,
+      data: { id: key, toolkitId: kit.id, ...data },
+    });
+    return [
+      {
+        owner,
+        subject: kit.subject,
+        collection: "toolkits",
+        key: kit.id,
+        data: { id: kit.id, name: kit.name, slug: kit.id },
+      },
+      ...kit.access.map((pattern, index) =>
+        rule("toolkitConnections", `${kit.id}-c${index}`, {
+          pattern,
+          position: `a${index}`,
+        }),
+      ),
+      ...kit.policies.map((policy, index) =>
+        rule("toolkitPolicies", `${kit.id}-p${index}`, {
+          pattern: `${slugOf(policy.server)}.*.*.${policy.tool}`,
+          action: policy.action,
+          position: `a${String(index).padStart(4, "0")}`,
+        }),
+      ),
+    ];
+  });
+  const keyOf = (connection: (typeof connections)[number]) =>
+    `connection:${connection.owner}:${connection.integration}:${connection.name}:token`;
+  const mcp = (server: number) => ({
+    transport: "remote",
+    endpoint: `https://scale-${server}.example.com/mcp`,
+    remoteTransport: "auto",
+    authenticationTemplate: [
+      { slug: "header", kind: "apikey", placements: [{ carrier: "header", name: "X-Key" }] },
+    ],
+  });
+  const seed = Effect.gen(function* () {
+    const emulators = yield* Emulators;
+    for (const connection of connections)
+      yield* emulators.v1VaultObject(
+        `${connection.owner === "org" ? vaultScope(organization) : vaultScope(organization, connection.subject)}/secrets/${encodeURIComponent(keyOf(connection))}`,
+        `synthetic-${connection.row_id}`,
+      );
+    yield* writeRows("v1-database.json", [
+      row(
+        "insert into organizations (id, name, slug) values ($1, $2, $3)",
+        organization,
+        "Synthetic toolkit scale workspace",
+        `v1-${randomUUID().slice(0, 8)}`,
+      ),
+      ...servers.map((server, index) =>
+        row(
+          "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'mcp', $3, $4::json)",
+          organization,
+          server.slug,
+          server.label,
+          JSON.stringify(mcp(index)),
+        ),
+      ),
+      row(
+        `insert into connection (tenant, row_id, owner, subject, integration, name, template, item_ids)
+          select $1, c->>'row_id', c->>'owner', c->>'subject', c->>'integration', c->>'name',
+            'header', json_build_object('token', c->>'key')
+          from json_array_elements($2::json) c`,
+        organization,
+        JSON.stringify(
+          connections.map((connection) => ({ ...connection, key: keyOf(connection) })),
+        ),
+      ),
+      // Every connection lists all 200 of its server's tools.
+      row(
+        `insert into tool (tenant, owner, subject, integration, connection, plugin_id, name, annotations)
+          select $1, c->>'owner', c->>'subject', c->>'integration', c->>'name', 'mcp', t.name,
+            json_build_object('mcp', json_build_object('toolName', t.name))
+          from json_array_elements($2::json) c,
+            json_array_elements_text($3::json) as t(name)`,
+        organization,
+        JSON.stringify(connections),
+        JSON.stringify(tools),
+      ),
+      row(
+        `insert into tool_policy (tenant, owner, subject, id, pattern, action, position)
+          select $1, r->>'owner', r->>'subject', r->>'id', r->>'pattern', r->>'action', r->>'position'
+          from json_array_elements($2::json) r`,
+        organization,
+        JSON.stringify(workspaceRules),
+      ),
+      row(
+        `insert into plugin_storage (tenant, owner, subject, plugin_id, collection, key, data)
+          select $1, r->>'owner', r->>'subject', 'toolkits', r->>'collection', r->>'key', r->'data'
+          from json_array_elements($2::json) r`,
+        organization,
+        JSON.stringify(storage),
+      ),
+    ]);
+  });
+  /**
+   * What each toolkit's copy grants, from its rules: for each server it reaches, the tools of each
+   * app it runs in, less what the toolkit blocks there and what the app leaves out, run as the
+   * app for `team` and as the member's own account for `mine`. `apps` names each server's app and
+   * `accounts` each connection's account, by connection row id.
+   */
+  const expectedPolicy = (
+    kit: (typeof kits)[number],
+    apps: ReadonlyMap<string, string>,
+    accounts: ReadonlyMap<string, string>,
+  ) => {
+    const granted = kit.access.flatMap((pattern) => {
+      const server = servers.findIndex((candidate) => pattern.startsWith(`${candidate.slug}.`));
+      const through = connections.filter(
+        (connection) =>
+          connection.integration === slugOf(server) &&
+          (pattern.endsWith(".org.team.*")
+            ? connection.owner === "org"
+            : pattern.endsWith(".user.mine.*")
+              ? connection.subject === kit.subject
+              : connection.owner === "org" || connection.subject === kit.subject),
+      );
+      return through.map((connection) => ({ server, connection }));
+    });
+    const blocked = (server: number) =>
+      new Set(
+        kit.policies
+          .filter((policy) => policy.server === server && policy.action === "block")
+          .map((policy) => policy.tool),
+      );
+    return granted
+      .map(({ server, connection }) => {
+        // The first server's `team` app alone leaves out `tool_000`; the others' apps `tool_001`.
+        const left =
+          server === 0 ? (connection.owner === "org" ? "tool_000" : undefined) : "tool_001";
+        return {
+          app: apps.get(server === 0 ? connection.row_id : connection.integration) ?? "unknown app",
+          runsAs:
+            connection.owner === "org"
+              ? [{ kind: "app" }]
+              : [{ kind: "account", id: accounts.get(connection.row_id) ?? "unknown account" }],
+          tools: {
+            kind: "selected",
+            names: tools.filter((tool) => tool !== left && !blocked(server).has(tool)),
+          },
+        };
+      })
+      .toSorted((a, b) => (a.app < b.app ? -1 : 1));
+  };
+  /** The tools each organization toolkit grants that the workspace blocks, as its note lists them. */
+  const blockedNote = (kit: (typeof kits)[number]) => {
+    const left = kit.access
+      .map((pattern) => servers.findIndex((server) => pattern.startsWith(`${server.slug}.`)))
+      .map((server) => `Scale ${server} ${server === 0 ? "tool_000" : "tool_001"}`)
+      .toSorted();
+    return `${left.length} tools v1 allowed only through this toolkit are blocked in the workspace, so they are left out: ${left.join(", ")}.`;
+  };
+  return { seed, servers, connections, kits, expectedPolicy, blockedNote };
+};
+
+const ToolkitCopy = Schema.Struct({
+  name: Schema.String,
+  userId: Schema.String,
+  policy: Schema.fromJsonString(
+    Schema.Struct({
+      apps: Schema.Array(
+        Schema.Struct({
+          app: Schema.String,
+          runsAs: Schema.Array(
+            Schema.Struct({ kind: Schema.String, id: Schema.optional(Schema.String) }),
+          ),
+          tools: Schema.Struct({ kind: Schema.String, names: Schema.Array(Schema.String) }),
+        }),
+      ),
+    }),
+  ),
+});
+
 const IdRow = Schema.Struct({ id: Schema.String });
 
 /** A synthetic address no other scenario uses. */
@@ -705,6 +958,145 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         ).toEqual([{ id: target.id }]);
       }).pipe(Effect.provide(services)),
     ),
+  );
+
+  it.effect(
+    scenarios.v1ImportToolkitScale.title,
+    (context) =>
+      withCase(
+        context,
+        Effect.gen(function* () {
+          const emulators = yield* Emulators;
+          const operator = yield* v1ImportOperator;
+          const emails = Array.from({ length: 20 }, (_, index) => syntheticEmail(`scale-${index}`));
+          const [owner, ...others] = emails;
+          if (owner === undefined) return yield* Effect.die("The workspace has no members");
+          const workspace = yield* emulators.v1Workspace([owner, ...others]);
+          const members = [workspace.user];
+          for (const email of others) members.push(yield* emulators.v1User(email));
+          const scale = toolkitScale(workspace.organization, members);
+          yield* scale.seed;
+          const copies = 8 * members.length + 2;
+
+          // The dry run plans every member's copy of every toolkit in one step.
+          const dry = v1RunId("kits-dry");
+          expect(
+            (yield* operator.start({
+              mode: "dry-run",
+              runId: dry,
+              organizations: [workspace.organization],
+            })).status,
+          ).toBe(200);
+          const planned = yield* operator.waitForReport(dry, workspace.organization);
+          expect(planned.status, planned.reason ?? "").toBe("planned");
+          expect(planned.counts.v1).toMatchObject({
+            integrations: 8,
+            connections: scale.connections.length,
+            policies: 344,
+            toolkits: 10,
+          });
+          // Only planned toolkits count their copies: one that failed or whose step gave up has
+          // none.
+          expect(planned.counts.v2).toMatchObject({
+            apps: 7 + 3,
+            accounts: scale.connections.length,
+            mcpConnections: copies,
+          });
+          expect(planned.integrationFailures).toEqual([]);
+          expect(planned.connectionFailures).toEqual([]);
+          expect(
+            (planned.splitIntegrations ?? []).map((split) => [
+              split.label,
+              split.apps.map((app) => app.status),
+            ]),
+          ).toEqual([["Scale 0", ["planned", "planned", "planned"]]]);
+
+          yield* allowV1Import(workspace.organization);
+          const run = v1RunId("kits");
+          expect(
+            (yield* operator.start({
+              mode: "import",
+              runId: run,
+              organizations: [workspace.organization],
+            })).status,
+          ).toBe(200);
+          const report = yield* operator.waitForReport(run, workspace.organization);
+          expect(report.status, report.reason ?? "").toBe("imported");
+          expect(report.verification?.passed).toBe(true);
+          expect(report.verification?.items.failed).toBe(0);
+          const target = report.v2Organization;
+          if (target === undefined) return yield* Effect.die("The import named no organization");
+          const items = report.items ?? [];
+          const toolkits = items.filter((item) => item.kind === "toolkit");
+          expect(toolkits.map((item) => [item.label, item.status]).toSorted()).toEqual(
+            scale.kits.map((kit) => [kit.name, "imported"]).toSorted(),
+          );
+          expect(report.counts.v2.mcpConnections).toBe(copies);
+          // A toolkit's note is its first copy's, which lists what the workspace blocks.
+          for (const kit of scale.kits.slice(0, 8))
+            expect(toolkits.find((item) => item.label === kit.name)?.note).toBe(
+              scale.blockedNote(kit),
+            );
+
+          // Each server's app, each connection's own app on the first, and each account.
+          const apps = new Map<string, string>();
+          for (const item of items)
+            if (item.kind === "integration" && item.v2Id !== undefined) {
+              const server = scale.servers.find((candidate) => candidate.label === item.label);
+              if (server !== undefined) apps.set(server.slug, item.v2Id);
+            }
+          for (const split of report.splitIntegrations ?? [])
+            for (const app of split.apps)
+              if (app.v2Id !== undefined) apps.set(app.connection, app.v2Id);
+          expect(apps.size).toBe(7 + 3);
+          const accounts = new Map(
+            items.flatMap((item) =>
+              item.kind === "connection" && item.v2Id !== undefined
+                ? [[item.id, item.v2Id] as const]
+                : [],
+            ),
+          );
+          expect(accounts.size).toBe(scale.connections.length);
+
+          // Every member has their own copy of each organization toolkit, granting exactly what
+          // its rules and the workspace allow; a member's own toolkit is theirs alone.
+          const users = yield* cloudRows(
+            Schema.Struct({ id: Schema.String, email: Schema.String }),
+            `select id, lower(email) as email from "user"
+              where lower(email) in (select lower(value) from json_array_elements_text($1::json))`,
+            JSON.stringify(emails),
+          );
+          const v2Of = new Map(
+            emails.map((email, index) => [
+              members[index] ?? "",
+              users.find((user) => user.email === email.toLowerCase())?.id ?? "",
+            ]),
+          );
+          const saved = yield* cloudRows(
+            ToolkitCopy,
+            `select name, "userId", policy::text as policy from "mcpConnection"
+              where resource = $1 and not revoked`,
+            target.id,
+          );
+          expect(saved).toHaveLength(copies);
+          for (const kit of scale.kits) {
+            const own = saved.filter((copy) => copy.name === kit.name);
+            expect(own.map((copy) => copy.userId).toSorted()).toEqual(
+              (kit.subject === "" ? members : [kit.subject])
+                .map((member) => v2Of.get(member) ?? "")
+                .toSorted(),
+            );
+            const expected = scale.expectedPolicy(kit, apps, accounts);
+            for (const copy of own)
+              expect(
+                copy.policy.apps.toSorted((a, b) => (a.app < b.app ? -1 : 1)),
+                `${kit.name} for ${copy.userId}`,
+              ).toEqual(expected);
+          }
+        }).pipe(Effect.provide(services)),
+      ),
+    // A dry run and an import of a workspace of 20 members.
+    { timeout: 240_000 },
   );
 
   it.effect(scenarios.v1ImportRollback.title, (context) =>

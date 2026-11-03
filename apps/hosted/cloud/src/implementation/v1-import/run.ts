@@ -94,6 +94,7 @@ import {
   toolkitCopyKey,
   toolkitMembers,
   updateCopiedAccount,
+  toolkitPlanning,
   toolkitPolicy,
   type AppAccountRequirements,
   type AppScope,
@@ -1449,7 +1450,11 @@ const dryToolkits = (assessment: Assessment, organization: string, split: Readon
       organization,
       allSnapshotTables,
     );
-    const lookup = plannedLookup(snapshot, firstParty, split);
+    // Every copy of every toolkit is planned from the same apps, tools and accounts.
+    const planning = toolkitPlanning(
+      { snapshot, source },
+      plannedLookup(snapshot, firstParty, split),
+    );
     // Only the toolkits the assessment plans, as an import moves: none when v1's data stays in v1.
     const planned = new Set(assessment.items.toolkits);
     const rows = snapshot.toolkits.filter((row) => planned.has(row.row_id));
@@ -1467,9 +1472,7 @@ const dryToolkits = (assessment: Assessment, organization: string, split: Readon
           } satisfies Outcome;
         const members = toolkitMembers(toolkit, snapshot.subjects);
         // Plan each member's copy as an import would.
-        yield* Effect.forEach(members, (member) =>
-          toolkitPolicy({ snapshot, source }, lookup, toolkit, member),
-        );
+        yield* Effect.forEach(members, (member) => toolkitPolicy(planning, toolkit, member));
         return {
           kind: "toolkit",
           id: row.row_id,
@@ -2110,6 +2113,8 @@ const importToolkitItem = (context: ItemContext, id: string) =>
     }
     const base = { kind: "toolkit", id, label: toolkit.data.name, context: null } as const;
     const members = toolkitMembers(toolkit, snapshot.subjects);
+    // Every member's copy follows the same imported apps and accounts.
+    const planning = toolkitPlanning(context, mapLookup(context.store, snapshot));
     const copies = yield* Effect.forEach(members, (member) => {
       const key = toolkitCopyKey(toolkit, member);
       return Effect.gen(function* () {
@@ -2145,7 +2150,7 @@ const importToolkitItem = (context: ItemContext, id: string) =>
         // Otherwise its connection follows the apps and accounts imported since; saving it again
         // is safe.
         const copy = existing?.status === "imported" ? existing.v2_id : null;
-        return yield* importToolkit(context, toolkit, member, copy ?? undefined).pipe(
+        return yield* importToolkit(context, planning, toolkit, member, copy ?? undefined).pipe(
           Effect.tap(recorded(context, "toolkit", key, hash)),
           Effect.map((result) => outcomeOf(base, result)),
           Effect.catch(failedItem(context, "toolkit", key, hash, base)),

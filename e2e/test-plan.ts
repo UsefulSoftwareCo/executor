@@ -8892,6 +8892,12 @@ export const scenarios = plan({
       "Cloud v1 import moves a shared workspace on the server and cuts it over once it verifies: the oldest admin owns it, members keep their roles without a welcome email, org connections become shared accounts linked for everyone and members' their own, a member's approve rule is dropped while their block applies to everyone, every member gets their own copy of an org toolkit, and a former member's rows stay behind",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportToolkitScale: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import dry runs and moves a workspace of 20 members with 10 toolkits of over a thousand rules over 8 MCP servers of 200 tools, one of them an app per connection, planning and saving every member's copy of each toolkit with exactly the tools its rules and the workspace's allow",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportSlugDisplacement: {
     file: "cloud-v1-import-run.spec.ts",
     title:
