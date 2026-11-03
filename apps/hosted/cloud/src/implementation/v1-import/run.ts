@@ -578,9 +578,9 @@ const assessCarryOver = (
  * (`intoOwner`). `nothing_to_copy` and `leave_v1_data` move a free workspace of one active member
  * with no pending invitation, which WorkOS lists as a pending membership; `nothing_to_copy` also
  * needs it to have nothing to copy, no item of any kind the import moves. `copy_into_empty` takes
- * any workspace an import takes, paid or shared, into an organization with nothing set up
- * (`setUpIn`), or the one an earlier run recorded. An import reads it under the freeze, as the rest
- * of the assessment.
+ * any workspace an import takes, paid, Enterprise or shared, into an organization with nothing set
+ * up (`setUpIn`), or the one an earlier run recorded. An import reads it under the freeze, as the
+ * rest of the assessment.
  */
 const intoPlan = (
   sql: SqlClient.SqlClient,
@@ -636,9 +636,11 @@ const intoPlan = (
 
 /**
  * Read the organization's members, plan and rows, and decide whether it moves now. Enterprise
- * organizations move by hand (decision 15). A paid organization moves with its v1 subscription
- * (decision 5) when it can carry over (`assessCarryOver`); an import holds it back otherwise. One
- * on a grandfathered Hobby or Professional plan moves to v2's Free plan, as a free one does.
+ * organizations move by hand (decision 15): only when the operator lists one to copy into an
+ * existing v2 organization, with nothing carried over (decision 34). A paid organization moves with
+ * its v1 subscription (decision 5) when it can carry over (`assessCarryOver`); an import holds it
+ * back otherwise. One on a grandfathered Hobby or Professional plan moves to v2's Free plan, as a
+ * free one does.
  */
 const assess = (params: V1ImportParams) =>
   Effect.gen(function* () {
@@ -752,7 +754,8 @@ const assess = (params: V1ImportParams) =>
               changed: copy.slug !== snapshot.organization.slug,
             };
     // A copy into an existing organization carries billing over as into a copy: its own customer
-    // must bill nothing.
+    // must bill nothing. Only a paid organization carries over; an Enterprise one carries nothing,
+    // so its copy never holds, renames or deletes a v2 customer (decision 34).
     const carry =
       billing.kind === "paid"
         ? yield* assessCarryOver(
@@ -761,10 +764,13 @@ const assess = (params: V1ImportParams) =>
             copy?.id ?? (into?.kind === "into" ? (into.target.id as OrganizationId) : undefined),
           )
         : null;
+    // Moving an Enterprise organization by hand means the operator lists it to copy into an
+    // existing v2 organization (decision 34); otherwise it is held.
+    const listedCopy = into?.kind === "into" && listed?.mode === "copy_into_empty";
     const held =
       into?.kind === "refused"
         ? `It does not move into the listed v2 organization: ${into.refused}`
-        : billing.kind === "enterprise"
+        : billing.kind === "enterprise" && !listedCopy
           ? "Enterprise organizations move by hand, after their v2 SSO is set up."
           : carry !== null && carry.problem !== null && params.mode === "import"
             ? `Its v1 subscription cannot carry over: ${carry.problem}`

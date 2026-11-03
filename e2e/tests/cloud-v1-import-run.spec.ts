@@ -1805,6 +1805,233 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
     ),
   );
 
+  it.effect(scenarios.v1ImportIntoEnterprise.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators,
+          onboarding = yield* Onboarding;
+        const operator = yield* v1ImportOperator;
+        // The owner's v2 team is on v2's Enterprise plan, with a colleague already in it as a
+        // member, and nothing else set up.
+        const identity = yield* onboarding.socialSignIn("google");
+        const team = yield* onboarding.confirmTeam(yield* onboarding.prepareTeam);
+        const owner = (yield* cloudRows(
+          IdRow,
+          `select id from "user" where email = $1`,
+          identity.email,
+        ))[0]?.id;
+        if (owner === undefined) return yield* Effect.die("The owner has no v2 user");
+        const colleague = syntheticEmail("colleague");
+        const colleagueUser = yield* v2User(colleague);
+        yield* writeRows("sso-database.json", [
+          row(
+            `insert into member (id, "organizationId", "userId", role, "createdAt") values ($1, $2, $3, 'member', now())`,
+            randomUUID(),
+            team.id,
+            colleagueUser,
+          ),
+        ]);
+        const customerId = yield* emulators.v2BillingCustomer(team.id);
+        const catalog = customerId.slice(0, customerId.indexOf(":organization:"));
+        yield* emulators.billingSubscription({
+          organizationId: team.id,
+          planId: `${catalog}-enterprise`,
+          status: "active",
+        });
+        // Their v1 Enterprise workspace has the colleague, a newcomer and the shared seed's
+        // integration, connections, rules and toolkits.
+        const newcomer = syntheticEmail("newcomer");
+        const workspace = yield* emulators.v1Workspace([identity.email, colleague, newcomer]);
+        const organization = workspace.organization;
+        const former = yield* emulators.v1Workspace([syntheticEmail("former")]);
+        yield* seedShared(organization, `v1-${randomUUID().slice(0, 8)}`, {
+          first: workspace.user,
+          second: yield* emulators.v1User(colleague),
+          former: former.user,
+        });
+        yield* emulators.v1Plan(organization, "enterprise");
+        yield* allowV1Import(organization);
+        yield* listV1Into(organization, team.id, "copy_into_empty");
+        // Another Enterprise workspace of the owner is allowed but not listed into anything.
+        const unlisted = yield* emulators.v1Workspace([identity.email]);
+        yield* writeRows("v1-database.json", [
+          row(
+            "insert into organizations (id, name, slug) values ($1, $2, $3)",
+            unlisted.organization,
+            "Synthetic unlisted workspace",
+            `v1-${randomUUID().slice(0, 8)}`,
+          ),
+          goneRule(unlisted.organization),
+        ]);
+        yield* emulators.v1Plan(unlisted.organization, "enterprise");
+        yield* allowV1Import(unlisted.organization);
+
+        const Contents = Schema.Struct({
+          apps: Schema.Number,
+          accounts: Schema.Number,
+          connections: Schema.Number,
+        });
+        /** What the team holds; accounts leave out the Executor keys v2 gives owners and admins. */
+        const contents = cloudRows(
+          Contents,
+          `select
+            (select count(*)::int from executor_apps a where a.owner = 'organization:' || o.id) as apps,
+            (select count(*)::int from executor_accounts a where a.owner = 'organization:' || o.id
+              and not exists (
+                select 1 from jsonb_each_text(coalesce(o.metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb)) k
+                where k.value = a.id
+              )) as accounts,
+            (select count(*)::int from "mcpConnection" c where c.resource = o.id and not c.revoked) as connections
+          from organization o where o.id = $1`,
+          team.id,
+        ).pipe(Effect.map((rows) => rows[0]));
+        const TeamMember = Schema.Struct({ userId: Schema.String, role: Schema.String });
+        const teamMembers = cloudRows(
+          TeamMember,
+          `select "userId", role from member where "organizationId" = $1 order by "createdAt", "userId"`,
+          team.id,
+        );
+        /** Each Autumn customer's plans and Stripe subscriptions, v2's team's and v1's own. */
+        const plansOf = (id: string) =>
+          Effect.map(emulators.autumnCustomer(id), (customer) =>
+            customer === null
+              ? null
+              : customer.subscriptions
+                  .map((plan) => ({ plan: plan.plan_id, status: plan.status }))
+                  .toSorted((a, b) => a.plan.localeCompare(b.plan)),
+          );
+        const billingOf = Effect.gen(function* () {
+          const team = yield* plansOf(customerId);
+          return {
+            team,
+            teamStripe:
+              team === null ? null : yield* emulators.autumnStripeSubscriptions(customerId),
+            v1: yield* plansOf(organization),
+          };
+        });
+        const holds = cloudRows(
+          IdRow,
+          "select organization_id as id from private_v1_import_billing where organization_id = $1",
+          team.id,
+        );
+        const before = {
+          contents: yield* contents,
+          members: yield* teamMembers,
+          billing: yield* billingOf,
+        };
+        if (before.contents === undefined) return yield* Effect.die("The team has no row");
+        expect(before.contents).toMatchObject({ accounts: 0, connections: 0 });
+        expect(before.members).toEqual([
+          { userId: owner, role: "owner" },
+          { userId: colleagueUser, role: "member" },
+        ]);
+        expect(before.billing.team).toContainEqual({
+          plan: `${catalog}-enterprise`,
+          status: "active",
+        });
+        expect(before.billing.v1).toEqual([{ plan: "enterprise", status: "active" }]);
+        const into = { organization: team.id, mode: "copy_into_empty" };
+
+        const dry = v1RunId("enterprise-dry");
+        expect(
+          (yield* operator.start({ mode: "dry-run", runId: dry, organizations: [organization] }))
+            .status,
+        ).toBe(200);
+        const planned = yield* operator.waitForReport(dry, organization);
+        expect(planned.status, planned.reason ?? "").toBe("planned");
+        expect(planned.into).toEqual(into);
+        expect(planned.slug?.v2).toBe(team.slug);
+        // Nothing carries over, so the report has no billing. It still reports the SSO flag, which
+        // is null here: the emulated v1 WorkOS does not list SSO connections.
+        expect(planned.billing).toBeUndefined();
+        expect(planned.flags).toEqual({
+          sso: null,
+          overFreeMemberLimit: false,
+          paidPlans: ["enterprise"],
+        });
+
+        const run = v1RunId("enterprise");
+        const started = yield* operator.start({
+          mode: "import",
+          runId: run,
+          organizations: [unlisted.organization, organization],
+        });
+        expect(started.status, JSON.stringify(started.body)).toBe(200);
+        // An Enterprise workspace the operator did not list is held back as before, and v1 has it
+        // back at once.
+        const held = yield* operator.waitForReport(run, unlisted.organization);
+        expect(held.status, held.reason ?? "").toBe("held_back");
+        expect(held.reason).toBe(
+          "Enterprise organizations move by hand, after their v2 SSO is set up.",
+        );
+        expect(held.into).toBeUndefined();
+        expect(yield* movedFlag(unlisted.organization)).toEqual([
+          { state: "rolled_back", v2_org_id: null, v2_org_slug: null },
+        ]);
+        expect(
+          yield* cloudRows(
+            IdRow,
+            "select v1_id as id from private_v1_import_map where v1_org_id = $1",
+            unlisted.organization,
+          ),
+        ).toEqual([]);
+
+        const report = yield* operator.waitForReport(run, organization);
+        expect(report.status, report.reason ?? "").toBe("imported");
+        expect(report.into).toEqual(into);
+        expect(report.v2Organization).toEqual({ id: team.id, slug: team.slug });
+        expect(report.cutover).toBe(true);
+        expect(report.verification).toMatchObject({ members: { planned: 3, inV2: 3 } });
+        expect(report.billing).toBeUndefined();
+        expect(report.flags).toMatchObject({ sso: null, paidPlans: ["enterprise"] });
+        expect(yield* movedFlag(organization)).toEqual([
+          { state: "moved", v2_org_id: team.id, v2_org_slug: team.slug },
+        ]);
+        expect(yield* contents).toEqual({
+          apps: before.contents.apps + 1,
+          accounts: 3,
+          connections: 4,
+        });
+        // The newcomer joins with their v1 role; the colleague keeps their membership and role.
+        const newcomerUser = yield* cloudRows(
+          IdRow,
+          `select id from "user" where lower(email) = lower($1)`,
+          newcomer,
+        );
+        expect(newcomerUser).toHaveLength(1);
+        expect(yield* teamMembers).toEqual([
+          ...before.members,
+          { userId: newcomerUser[0]?.id, role: "admin" },
+        ]);
+        const Membership = Schema.Struct({ v2_kind: Schema.NullOr(Schema.String) });
+        expect(
+          yield* cloudRows(
+            Membership,
+            "select v2_kind from private_v1_import_map where v1_org_id = $1 and v1_kind = 'membership' order by v2_kind",
+            organization,
+          ),
+        ).toEqual([{ v2_kind: "existing_member" }, { v2_kind: "member" }]);
+        // The team's billing and v1's customer are as they were, and no hold was written.
+        expect(yield* billingOf).toEqual(before.billing);
+        expect(yield* holds).toEqual([]);
+
+        // A rollback needs no billing return; it removes only what the import added.
+        const rolledBack = yield* operator.rollback(organization);
+        expect(rolledBack.status, JSON.stringify(rolledBack.body)).toBe(200);
+        expect(rolledBack.body).toEqual({
+          organization,
+          state: "rolled_back",
+          removed: { apps: 1, accounts: 3, toolkitCopies: 4, members: 1 },
+        });
+        expect(yield* contents).toEqual(before.contents);
+        expect(yield* teamMembers).toEqual(before.members);
+        expect(yield* billingOf).toEqual(before.billing);
+        expect(yield* holds).toEqual([]);
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
   it.effect(scenarios.v1ImportIntoRefused.title, (context) =>
     withCase(
       context,
@@ -1877,6 +2104,11 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
           yield* ownTeam(leaveOwner),
           "leave_v1_data",
         );
+        // An Enterprise workspace moves only when listed to copy (decision 34).
+        const enterprise = yield* ownWorkspace("enterprise");
+        yield* emulators.v1Plan(enterprise.organization, "enterprise");
+        const leaveEnterprise = yield* ownWorkspace("leave-enterprise", "leave_v1_data");
+        yield* emulators.v1Plan(leaveEnterprise.organization, "enterprise");
         const unlisted = yield* ownWorkspace("mode", "everything");
         const onlyOne =
           "only a workspace of one moves into an existing v2 organization without its data.";
@@ -1890,6 +2122,8 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
           [missing, "nothing_to_copy", "The listed v2 organization does not exist."],
           [leavePaid, "leave_v1_data", "It has a paid v1 plan (team)."],
           [leaveShared, "leave_v1_data", `It has 2 active members; ${onlyOne}`],
+          [enterprise, "nothing_to_copy", "It has a paid v1 plan (enterprise)."],
+          [leaveEnterprise, "leave_v1_data", "It has a paid v1 plan (enterprise)."],
           [unlisted, null, "The allow table lists a mode the import does not know."],
         ] as const;
         const organizations = refusals.map(([workspace]) => workspace.organization);

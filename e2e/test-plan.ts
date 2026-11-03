@@ -8916,10 +8916,16 @@ export const scenarios = plan({
       "Cloud v1 import copies a paid, shared v1 workspace into the empty v2 team its owner owns when the operator lists it: the team keeps its name and slug, gains the workspace's app, accounts and toolkit copies, its teammate joins, its subscription carries over to the team, a second copy into the team is refused as it is no longer empty, and after its billing goes back a rollback removes only what the import added",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportIntoEnterprise: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import copies an Enterprise v1 workspace into the empty v2 team on v2's Enterprise plan that its owner owns when the operator lists it to copy: the dry run plans it with no billing and still flags SSO, the import copies its items, its newcomer joins, a member already in the team keeps their membership and role, the team's and v1's billing stay as they were with no hold, a rollback needs no billing return and removes only what the import added, and an Enterprise workspace the operator did not list is still held back",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportIntoRefused: {
     file: "cloud-v1-import-run.spec.ts",
     title:
-      "Cloud v1 import refuses to move a v1 workspace into a listed existing v2 organization when it has items to copy, a second active member, a pending invitation or a paid plan, also when it would leave its data behind, when its owner has no v2 account or does not own the organization, also to copy into it, when the organization does not exist, and when the listed mode is unknown: the dry run says why, and the import holds it back and gives it to v1 again without writing its import map or changing the organization",
+      "Cloud v1 import refuses to move a v1 workspace into a listed existing v2 organization when it has items to copy, a second active member, a pending invitation or a paid plan, Enterprise included, also when it would leave its data behind, when its owner has no v2 account or does not own the organization, also to copy into it, when the organization does not exist, and when the listed mode is unknown: the dry run says why, and the import holds it back and gives it to v1 again without writing its import map or changing the organization",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportAllowed: {

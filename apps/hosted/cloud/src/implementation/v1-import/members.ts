@@ -90,7 +90,10 @@ export const planMembers = (
 /** v1's billing for an organization, from the plans Autumn bills it on. */
 export type V1Billing =
   | { readonly kind: "free" }
-  /** Enterprise orgs move by hand, after their v2 SSO is set up (decision 15). */
+  /**
+   * Enterprise orgs move by hand (decision 15): only when the operator lists one to copy into an
+   * existing v2 organization, carrying nothing over (decision 34).
+   */
   | { readonly kind: "enterprise"; readonly plans: readonly string[] }
   /**
    * v1's grandfathered Hobby and Professional plans, which no Stripe subscription bills. The
