@@ -29,8 +29,10 @@ import {
 } from "./accounts.ts";
 import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
 import { makeOwnerMoves } from "./owner-moves.ts";
+import { makeProviderIdentities } from "./provider-identities.ts";
 import { SavedOAuthClientsHost } from "../contracts/oauth-clients.ts";
 import { OwnerMovesHost } from "../contracts/owner.ts";
+import { ProviderIdentitiesHost } from "../contracts/provider.ts";
 import { makeAccountHealth } from "./account-health.ts";
 import { makeApps } from "./apps.ts";
 import { makeOwners } from "./owners.ts";
@@ -259,6 +261,7 @@ export const createExecutor = (
         new URL("/api/oauth/callback", origin).href,
       ]),
       [OwnerMovesHost]: makeOwnerMoves(db, credentials),
+      [ProviderIdentitiesHost]: makeProviderIdentities(db, crypto),
       scheduler: schedules.dispatcher,
       events,
       schedules: schedules.operations,

@@ -478,5 +478,8 @@ export const AccountsGroup = HttpApiGroup.make("accounts")
       query: AccountInputs.providers.fields,
       success: Schema.Array(Provider),
       error: StorageError,
-    }).annotate(OpenApi.Description, "Provider definitions of an owner's saved accounts."),
+    }).annotate(
+      OpenApi.Description,
+      "Provider definitions of an owner's saved accounts. A provider's ID leaves out a secrets method's `label` and its fields' `title` and `description`, so apps that differ only there share one definition, which holds the text the last app deployed with it. A provider stored before this keeps its ID; a deploy with its exact earlier wording keeps that one too. An app's own wording is in its requirements.",
+    ),
   );

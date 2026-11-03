@@ -837,11 +837,31 @@ const retriedWebhookSources = table("executor_webhook_sources", {
   retries: column("retries", Schema.Int).default(0),
 }).unique("executor_webhook_sources_app_account", ["app", "account"]);
 
-/** Tables of the 4.0.15 layout, the current one; 4.0.16 only adds indexes. */
+/** Tables of the 4.0.15 layout; 4.0.16 only adds indexes. */
 export const version4015Tables = {
   ...version4014Tables,
   webhookSources: retriedWebhookSources,
 };
+
+/**
+ * Version 4.0.17 records each provider's identity: its ID as the definition hashes without display
+ * text. Rows stored before then have IDs that hashed labels too, so a deploy finds the provider a
+ * definition already has by this column. Null on rows no deploy or data step has recorded yet.
+ */
+const identifiedProviders = table("executor_providers", {
+  ...version4015Tables.providers.columns,
+  identity: column("identity", Schema.NullOr(ProviderId), { type: "varchar(255)" }).default(null),
+});
+
+/** Tables of the 4.0.17 layout, the current one; 4.0.18 only adds its index. */
+export const version4017Tables = {
+  ...version4015Tables,
+  providers: identifiedProviders,
+};
+
+/** Providers by identity, which each deploy reads. Added in 4.0.18. */
+export const providerIdentityIndex =
+  "CREATE INDEX IF NOT EXISTS executor_providers_identity ON executor_providers (identity)";
 
 /**
  * Start keys are unique per app, actor and scope from 4.0.14, so a run started without a caller

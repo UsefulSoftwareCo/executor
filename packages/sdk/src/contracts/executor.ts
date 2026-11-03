@@ -10,6 +10,7 @@ import { StorageHost, type Credentials } from "./storage.ts";
 import { PrefetchHost } from "./tools.ts";
 import { SavedOAuthClientsHost } from "./oauth-clients.ts";
 import { OwnerMovesHost } from "./owner.ts";
+import { ProviderIdentitiesHost } from "./provider.ts";
 import { OAuthGrantImport } from "./oauth.ts";
 import type { ExecutorDatabase } from "../implementation/storage.ts";
 import type { AppRuntime } from "../implementation/runtime.ts";
@@ -439,6 +440,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
   readonly [PrefetchHost]: PrefetchHost;
   readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
   readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
+  readonly [ProviderIdentitiesHost]: import("./provider.ts").ProviderIdentities;
   /** Host-only: the v1 importer's grant import (`notes/v1-import.md`). */
   readonly [OAuthGrantImport]: OAuthGrantImport;
   readonly scheduler: import("./scheduler.ts").ScheduleDispatcher;
@@ -466,6 +468,7 @@ export type PromiseExecutor = Promisify<
     | typeof PrefetchHost
     | typeof SavedOAuthClientsHost
     | typeof OwnerMovesHost
+    | typeof ProviderIdentitiesHost
     | typeof OAuthGrantImport
     | "scheduler"
     | "events"

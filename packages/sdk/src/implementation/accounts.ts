@@ -20,7 +20,7 @@ import {
 } from "../contracts/shared.ts";
 import { StoredAccount, type Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
-import { canonical, validateFields } from "./provider.ts";
+import { canonical, methodCredential, validateFields } from "./provider.ts";
 
 /** A stable digest of stored ciphertext; any credential write changes it. */
 const fingerprint = (bytes: Uint8Array) =>
@@ -468,10 +468,14 @@ export const moveImportedAccount =
           const { definition } = yield* Schema.decodeUnknownEffect(Provider)(row).pipe(
             Effect.mapError(() => new StorageError()),
           );
-          if (!Object.hasOwn(definition.auth, method)) return undefined;
-          const json = yield* Schema.decodeUnknownEffect(JsonObject)(definition.auth[method]).pipe(
-            Effect.mapError(() => new StorageError()),
-          );
+          const declared = Object.hasOwn(definition.auth, method)
+            ? definition.auth[method]
+            : undefined;
+          if (declared === undefined) return undefined;
+          // Display text such as labels doesn't count, so a reworded method still fits.
+          const json = yield* Schema.decodeUnknownEffect(JsonObject)(
+            methodCredential(declared),
+          ).pipe(Effect.mapError(() => new StorageError()));
           return canonical(json);
         });
       const from = yield* methodOf(account.provider, account.method);

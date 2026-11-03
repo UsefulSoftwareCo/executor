@@ -28,7 +28,11 @@ browser sign-in.
 A provider is not registered anywhere and has no owner and no slug. Two apps
 that declare the same provider resolve to the same provider reference, so an
 account saved for one can be used by the other. You do not coordinate an
-identifier between apps; matching definitions are enough.
+identifier between apps; matching definitions are enough. Display text, a secrets
+method's label and its fields' titles and descriptions, doesn't count: each app's connect
+form shows its own. One exception comes from before display text left the reference: an app
+that uses the exact wording of a provider stored then keeps that provider's reference, while
+other wordings share one.
 
 A provider reference is also not permission. Knowing it does not let an app read
 an account. Access is authorized separately.

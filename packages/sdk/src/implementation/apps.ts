@@ -42,11 +42,13 @@ import {
   OwnerId,
   StorageError,
   JsonObject,
+  type ProviderId,
 } from "../contracts/shared.ts";
 import { StoredApp, StoredVersion } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { removeToolSearch } from "./tool-search-store.ts";
 import { identifyProvider } from "./provider.ts";
+import { recordStoredIdentities } from "./provider-identities.ts";
 import {
   CodeFiles,
   SourceError,
@@ -192,6 +194,86 @@ export const gotApp = (row: { readonly deployment: unknown }) => {
   return projectedApp({ app, version });
 };
 
+/**
+ * The ID each declared provider gets. Before storage 4.0.17 an ID also hashed display text, so a
+ * provider stored then can have an ID other than its identity. A deploy keeps the ID its app's
+ * active version gives a provider of the same identity, preferring the same requirement. Else it
+ * uses a stored provider of that identity: the row stored under this exact definition's earlier
+ * ID, then the least ID. Only when no row has the identity does it take the identity as a new ID.
+ * Stored rows without a recorded identity are recorded first, so an identity's rows only grow
+ * from none to one and the choice stays put. Only a server before storage 4.0.17 storing another
+ * row of the identity meanwhile, as in a rollback, can add a second.
+ */
+const chooseProviderIds = <
+  Entry extends {
+    readonly slot: string;
+    readonly provider: {
+      readonly identity: ProviderId;
+      readonly legacy: ProviderId;
+      readonly shared: { readonly name: string };
+    };
+  },
+>(
+  db: Query,
+  crypto: Crypto.Crypto,
+  entries: ReadonlyArray<Entry>,
+  previous: AppRequirements["accounts"] | undefined,
+) =>
+  Effect.gen(function* () {
+    // A previous ID that is one of these identities is its own identity; only others need hashing.
+    const identities = new Set(entries.map(({ provider }) => provider.identity));
+    const kept = yield* Effect.forEach(Object.entries(previous ?? {}), ([slot, required]) =>
+      identities.has(required.provider)
+        ? Effect.succeed({ slot, identity: required.provider, provider: required.provider })
+        : identifyProvider(required.definition, crypto).pipe(
+            Effect.map(({ identity }) => ({ slot, identity, provider: required.provider })),
+          ),
+    );
+    const continued = entries.map((entry) => {
+      const same = kept.filter((item) => item.identity === entry.provider.identity);
+      return (same.find((item) => item.slot === entry.slot) ?? same[0])?.provider;
+    });
+    const open = entries.filter((_, index) => continued[index] === undefined);
+    yield* recordStoredIdentities(
+      db,
+      crypto,
+      new Set(open.map(({ provider }) => provider.shared.name)),
+    );
+    const rows =
+      open.length === 0
+        ? []
+        : yield* query(() =>
+            db.findMany("providers", {
+              select: ["id", "identity"],
+              where: (b) =>
+                b.or(
+                  b(
+                    "identity",
+                    "in",
+                    open.map(({ provider }) => provider.identity),
+                  ),
+                  b(
+                    "id",
+                    "in",
+                    open.map(({ provider }) => provider.legacy),
+                  ),
+                ),
+            }),
+          );
+    return entries.map((entry, index) => {
+      const { identity, legacy } = entry.provider;
+      const exact = rows.some((row) => row.id === legacy) ? legacy : undefined;
+      const stored = rows
+        .filter((row) => row.identity === identity)
+        .map((row) => row.id)
+        .toSorted()[0];
+      return {
+        ...entry,
+        provider: { ...entry.provider, id: continued[index] ?? exact ?? stored ?? identity },
+      };
+    });
+  });
+
 /** Project an app without reading or decoding its retained source files. */
 function project(db: Query, app: StoredApp) {
   if (app.activeVersion === null)
@@ -273,9 +355,17 @@ export const makeApps = (
     owner: OwnerId,
     name: string,
     suppliedFiles: unknown,
-    check?: { readonly unanswered: () => E },
+    options: {
+      readonly check?: { readonly unanswered: () => E };
+      /**
+       * The requirements of the app's active version, whose provider IDs a redeploy keeps. A build
+       * without them, as `apps.build` does, derives IDs as for a new app.
+       */
+      readonly previous?: AppRequirements["accounts"];
+    } = {},
   ) =>
     Effect.gen(function* () {
+      const { check } = options;
       const files = yield* Schema.decodeUnknownEffect(SourceFiles)(suppliedFiles).pipe(
         Effect.mapError(
           () =>
@@ -353,7 +443,7 @@ export const makeApps = (
           message: reason,
         });
       }
-      const entries = yield* Effect.forEach(declared, ([slot, scope, value]) =>
+      const identified = yield* Effect.forEach(declared, ([slot, scope, value]) =>
         identifyProvider(value.definition, crypto).pipe(
           Effect.map((provider) => ({
             slot,
@@ -364,6 +454,7 @@ export const makeApps = (
           })),
         ),
       );
+      const entries = yield* chooseProviderIds(db, crypto, identified, options.previous);
       const requirements: AppRequirements = {
         ...(built.requirements.capabilities === undefined
           ? {}
@@ -439,8 +530,14 @@ export const makeApps = (
         input.commit === undefined
           ? input.files
           : yield* sources.read({ code, commit: input.commit });
+      const previous = before === null ? undefined : (yield* project(db, before)).requirements;
       const { files, built, entries, requirements, codeFiles, split, invalidSource } =
-        yield* buildSource(input.owner, deployName, suppliedFiles);
+        yield* buildSource(
+          input.owner,
+          deployName,
+          suppliedFiles,
+          previous === undefined ? {} : { previous: previous.accounts },
+        );
       // The app's database lives in its data facet, keyed by app ID, so a new app's ID is chosen
       // before its migrations run. A failed migration fails the deploy before anything activates.
       const appId =
@@ -556,14 +653,15 @@ export const makeApps = (
           const promote = existing === undefined || sequence > existing.activatedSequence;
           for (const { provider } of entries) {
             // Apps sharing a provider ID can declare different hosts; the row keeps what they share.
+            // Its display text is the last deploy's; forms read the version's own definition.
             const definition = yield* Schema.decodeUnknownEffect(JsonObject)(provider.shared).pipe(
               Effect.mapError(() => new StorageError()),
             );
             yield* query(() =>
               tx.upsert("providers", {
                 where: (b) => b("id", "=", provider.id),
-                create: { id: provider.id, definition },
-                update: { definition },
+                create: { id: provider.id, definition, identity: provider.identity },
+                update: { definition, identity: provider.identity },
               }),
             );
           }
@@ -683,7 +781,9 @@ export const makeApps = (
     deploy: (input: DeployInput) => deploy(input),
     build: (input: Parameters<Executor["apps"]["build"]>[0]) =>
       buildSource(input.owner, input.name, input.files, {
-        unanswered: () => new BuildUnanswered({ owner: input.owner, name: input.name }),
+        check: {
+          unanswered: () => new BuildUnanswered({ owner: input.owner, name: input.name }),
+        },
       }).pipe(
         Effect.map(({ requirements }) => ({ requirements })),
         Effect.withSpan("sdk.apps.build"),

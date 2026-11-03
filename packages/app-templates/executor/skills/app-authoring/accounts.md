@@ -16,10 +16,12 @@ Each requirement is one of two scopes:
 Use `user` unless the account belongs to the team rather than to whoever calls
 the tool. A requirement name is used once across both scopes.
 
-**The provider ID comes from the whole definition except `hosts`, including
-`name`, labels and OAuth `scopes`.** Changing any of them after users connect
-gives a new provider, and existing accounts no longer fit the slot. Users must
-connect a new account. Settle these before users connect.
+**The provider ID comes from the whole definition except `hosts` and display
+text, including `name`, method names, fields and OAuth `scopes`.** Changing any
+of them after users connect gives a new provider, and existing accounts no
+longer fit the slot. Users must connect a new account. Settle these before users
+connect. A `secrets` label and its fields' `title` and `description` only word
+the connect form, so you can change them at any time.
 
 This is a complete `index.ts` for Vercel with an API token:
 
