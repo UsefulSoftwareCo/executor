@@ -121,8 +121,8 @@ const slackMcpUserScopes = [
  *   `uploads.github.com`, where GitHub takes release asset uploads; and `api.githubcopilot.com`,
  *   GitHub's MCP server. GitHub accepts GitHub App user tokens on all three, and v1 sent this
  *   client's tokens to every GitHub REST operation, uploads included, and to GitHub's MCP server.
- * - `google` is Executor for Google, v1's Google client. `access_type=offline` and
- *   `prompt=consent` make every sign-in return a refresh token. It has no revocation URL: Google
+ * - `google` is Executor for Google, v1's Google client. Like every Google
+ *   sign-in, it sends `access_type=offline` and `prompt=consent`, so each returns a refresh token. It has no revocation URL: Google
  *   revokes every grant a user gave the client at once, so removing one account would end the
  *   user's other Google accounts in every organization. Its tokens go to Google's API hosts.
  * - `slack` is Executor for Slack, v1's Slack MCP client (`apps/cloud/src/engine/first-party-oauth-
@@ -160,7 +160,6 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
     server: {
       authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
       tokenUrl: "https://oauth2.googleapis.com/token",
-      authorizationParams: { access_type: "offline", prompt: "consent" },
     },
     tokenEndpointAuthMethod: "client_secret_post",
     defaultScopes: ["openid", "email", "profile"],

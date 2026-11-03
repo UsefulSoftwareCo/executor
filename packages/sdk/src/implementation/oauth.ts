@@ -2157,6 +2157,11 @@ export const makeOAuth = (
             }),
         ),
       );
+      // A grant that expires without a refresh token needs a reconnect then; record it at sign-in.
+      yield* Effect.annotateCurrentSpan(
+        "oauth.grant.refresh_token",
+        tokens.refresh_token !== undefined,
+      );
       const completedAt = yield* Clock.currentTimeMillis;
       const issued = {
         response: attempt.response,

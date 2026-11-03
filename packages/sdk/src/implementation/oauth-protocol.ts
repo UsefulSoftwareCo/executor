@@ -904,6 +904,18 @@ const applicationType = (redirect: URL) =>
     : "web";
 
 /**
+ * Authorization parameters a server needs before it issues a renewable grant, where its metadata
+ * cannot say so. Google issues a refresh token only for `access_type=offline` and, once a person
+ * has consented, again only with `prompt=consent`; it neither advertises nor accepts
+ * `offline_access`. Without them every Google sign-in, including each reconnect, lasts an hour.
+ * A value the endpoint's own query or the method's `authorizationParams` sets replaces these.
+ */
+const renewableGrantParams = (endpoint: URL): Readonly<Record<string, string>> =>
+  endpoint.protocol === "https:" && endpoint.host === "accounts.google.com"
+    ? { access_type: "offline", prompt: "consent" }
+    : {};
+
+/**
  * A token request as the JSON object some services require instead of RFC 6749's form. The
  * library's parameters and client authentication are kept; only their encoding changes.
  */
@@ -1664,6 +1676,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         const verifier = yield* Effect.sync(oauth.generateRandomCodeVerifier);
         const challenge = yield* request(() => oauth.calculatePKCECodeChallenge(verifier));
         const url = new URL(input.server.authorization_endpoint);
+        for (const [key, value] of Object.entries(renewableGrantParams(url)))
+          if (!url.searchParams.has(key)) url.searchParams.set(key, value);
         // Declared extras go first so the protocol parameters below always win.
         for (const [key, value] of Object.entries(input.authorizationParams ?? {}))
           url.searchParams.set(key, value);

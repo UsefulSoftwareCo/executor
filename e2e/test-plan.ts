@@ -4993,6 +4993,17 @@ export const scenarios = plan({
       local: na("Exercises shared OAuth through the hosted API."),
     },
   },
+  oauthGoogleRenewableGrant: {
+    fixtures: "actors",
+    file: "oauth-google-renewable-grant.spec.ts",
+    title:
+      "A Google sign-in asks for an offline grant with fresh consent unless the app declares otherwise",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Exercises shared OAuth sign-in through the hosted API; self-host covers it."),
+      local: na("Exercises shared OAuth sign-in through the hosted API."),
+    },
+  },
   oauthAuthorizationParams: {
     fixtures: "actors",
     file: "oauth-authorization-params.spec.ts",

@@ -393,7 +393,10 @@ export const FirstPartyOAuthServer = Schema.Struct({
    * reports `repo,gist` whatever separator the request used. Defaults to whitespace only.
    */
   grantedScopeSeparator: Schema.optionalKey(Schema.NonEmptyString),
-  /** Extra authorization request parameters, such as `{ access_type: "offline" }`. */
+  /**
+   * Extra authorization request parameters. Google's `access_type=offline` and `prompt=consent`
+   * are always sent to Google, so they need not be listed.
+   */
   authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
   tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
   tokenResponse: Schema.optionalKey(OAuthTokenResponse),
