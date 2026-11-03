@@ -135,9 +135,9 @@ a `workflow_call` workflow, so another repository can call the same jobs.
 ### Choosing a PR's E2E scenarios
 
 A pull request runs only the E2E scenarios it selects. Pushes to `main` run the
-full suite. The static checks (`check`, `apps-version`, `self-host-native`) always
-run, except in a skipped stack layer. Put exactly one fenced `e2e` block in the PR
-description, listing spec files from `e2e/tests/`:
+full suite. The static checks (`check` and the jobs it gates, `apps-version`,
+`self-host-native`) always run, except in a skipped stack layer. Put exactly one
+fenced `e2e` block in the PR description, listing spec files from `e2e/tests/`:
 
 ````md
 ```e2e
@@ -242,14 +242,19 @@ Do not run CI checks on macOS runners. They cost 5-20x as much per minute as Lin
 runners and were most of the CI bill, and no check needs macOS. Fix slow or flaky
 scenarios on Linux instead of moving them to a Mac.
 
-- `check` runs `bun run check`: the format check, `oxlint`, the typecheck, the
+- `check` passes when `select` and each static check job passed. The static checks run as
+  parallel jobs, so a pull request waits for the slowest, about a minute and a half, not their
+  sum. `static` runs `bun run check`: the format check, `oxlint`, the typecheck, the
   no-tests-outside-`e2e/` check and the e2e boundary check.
-  It also builds the public site and runs `bun run site:links`, which fails when
+  `site` builds the public site and runs `bun run site:links`, which fails when
   any marketing or docs page links to a path that would 404. Then
   `bun run hosted:cloud:worker-sizes` builds each Cloud Worker as the deploy does,
   for production and for the pull request's preview, and fails when one exceeds
   its upload budget; the job summary shows each Worker's size, its change from
-  `main` and the packages and files that grew.
+  `main` and the packages and files that grew. `apps-package` checks the apps npm
+  tarball, and `tooling` checks the dependency patches and the scripts that run CI,
+  releases, the public export and deploys. Put a new static check in the job it fits, or
+  in a new job that `check` needs.
 - `select` runs [`e2e/ci-selection.ts`](e2e/ci-selection.ts) and gives each e2e job
   its `--test-name` pattern, or skips the job when none of its scenarios is selected.
   Its job patterns hold the exclusions and splits below.
@@ -278,8 +283,9 @@ scenarios on Linux instead of moving them to a Mac.
   per-address limit off, as deployed test stages do; the scenario that proves the limit gets
   its own local Cloud with it on (`e2e:cloud --auth-rate-limit`).
   Each of these local Clouds is a Cloud job in `e2e/ci-selection.ts`, and its `runner`
-  there puts it on one of three `e2e-cloud` runners that run at once, about four minutes each
-  on a full run. Each runner builds the apps package and Motel once before its runs; runs only
+  there puts it on one of four `e2e-cloud` runners that run at once. On a full run
+  `cloud-product` has a runner to itself, about eleven minutes, and the others take about six or
+  seven each. Each runner builds the apps package and Motel once before its runs; runs only
   serve that Motel bundle, because every target in a run shares it.
 - `e2e` passes when `select` succeeded, every E2E job it chose passed and every other one was
   skipped; it runs even after a cancellation, which fails it. The matrix runners' check

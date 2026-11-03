@@ -312,7 +312,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
   );
 
   it.effect(
-    "a full run splits local and self-host by spec file and spreads Cloud over three runners",
+    "a full run splits local and self-host by spec file and spreads Cloud over four runners",
     () =>
       Effect.gen(function* () {
         const [main, all, named] = yield* Effect.all(
@@ -355,9 +355,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           }
           const runners = cloudRunners(run.outputs);
           expect(runners.map(({ name }) => name)).toEqual([
-            "cloud, cloud-autumn, cloud-isolate, cloud-v1-bound",
+            "cloud, cloud-isolate",
             "cloud-workers, cloud-locks, cloud-batch, cloud-rollback",
-            "cloud-product, cloud-domains, cloud-rate-limit, cloud-oauth-proxy-preview",
+            "cloud-product",
+            "cloud-domains, cloud-autumn, cloud-v1-bound, cloud-rate-limit, cloud-oauth-proxy-preview",
           ]);
           // Each Cloud job's pattern is on exactly one runner and empty on the others. The runner
           // runs it unchanged, except cloud-product past what one local Cloud holds: its local
