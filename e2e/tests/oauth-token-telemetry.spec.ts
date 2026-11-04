@@ -472,11 +472,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
         };
         const registrationCases = [
           {
-            // A private-use callback without `application_type` registers as a web client.
+            // Without an HTTP loopback or private-use callback, a client is a web client, which
+            // may not use a loopback host even over HTTPS.
             body: {
               ...grants,
               client_name: "Cursor",
-              redirect_uris: ["cursor://anysphere.cursor-retrieval/oauth/callback"],
+              redirect_uris: ["https://localhost:8443/oauth/callback"],
             },
             expected: {
               status: 400,

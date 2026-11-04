@@ -1302,6 +1302,17 @@ export const scenarios = plan({
       cloud: na("Hosted Tools pages are covered through organization routes."),
     },
   },
+  appLoadFailureContainment: {
+    fixtures: "actors",
+    file: "app-load-failure-containment.spec.ts",
+    title:
+      "An app whose code fails to load fails only its own reads and names its error in every preview",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("The hosted app overview and dashboard batches own this presentation."),
+    },
+  },
   toolsErrorState: {
     fixtures: "actors",
     file: "tools-error-state.spec.ts",
@@ -4193,6 +4204,12 @@ export const scenarios = plan({
   oauthProvisioning: {
     file: "oauth-provisioning.spec.ts",
     title: "OAuth resources are provisioned before client registration",
+    targets: { local: scheduled, "self-host": scheduled, cloud: scheduled },
+  },
+  oauthRegistrationApplicationType: {
+    file: "oauth-registration-application-type.spec.ts",
+    title:
+      "a registration without application_type is native for a loopback or private-use callback, held to the native rules, and web otherwise",
     targets: { local: scheduled, "self-host": scheduled, cloud: scheduled },
   },
   apiDocumentPatterns: {
