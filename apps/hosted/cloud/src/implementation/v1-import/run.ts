@@ -18,7 +18,14 @@ import {
   type McpConnectionStore,
   type OrganizationId,
 } from "@executor-js/hosted-server";
-import { AccountId, AppId, OAuthGrantImport, OwnerId, type Executor } from "@executor-js/sdk/core";
+import {
+  AccountId,
+  AppId,
+  appSlug,
+  OAuthGrantImport,
+  OwnerId,
+  type Executor,
+} from "@executor-js/sdk/core";
 import {
   Clock,
   Context,
@@ -70,11 +77,14 @@ import {
 } from "./identity.ts";
 import {
   ItemFailed,
+  appNames,
   artifactMapping,
+  artifactNaming,
   checkAccount,
   checkFixedAccount,
   checkIntegration,
   connectionAppName,
+  connectionAppNaming,
   connectionAppOf,
   connectionPlans,
   connectionTarget,
@@ -85,8 +95,10 @@ import {
   importFixedAccount,
   importIntegration,
   importToolkit,
+  integrationNaming,
   linkConnectionAccount,
   mapLookup,
+  namesTaken,
   needsNoAccount,
   readSecretCompared,
   refreshCopiedGrant,
@@ -97,6 +109,7 @@ import {
   toolkitPlanning,
   toolkitPolicy,
   type AppAccountRequirements,
+  type AppNaming,
   type AppScope,
   type DroppedFixed,
   type ImportedLookup,
@@ -871,6 +884,11 @@ interface Outcome {
    * (decision 33): each connection's app.
    */
   readonly apps?: readonly ConnectionAppOutcome[] | undefined;
+  /**
+   * The name of the app a dry run plans for an integration or artifact, for its check that each
+   * app gets one (`namedApps`). Absent from steps that ran before it was kept.
+   */
+  readonly naming?: AppNaming | undefined;
 }
 
 /** One connection's own app (decision 33): what it did or would do, and its rules' counts. */
@@ -887,6 +905,8 @@ interface ConnectionAppOutcome {
   readonly rules?: RuleCounts | undefined;
   /** As an integration's `accounts`: what a dry run's build of this app takes. */
   readonly accounts?: AppAccountRequirements | undefined;
+  /** As an integration's `naming`: the name a dry run plans for this app. */
+  readonly naming?: AppNaming | undefined;
 }
 
 /** What the user should know about an integration that moves as an app per connection. */
@@ -1201,6 +1221,7 @@ const dryIntegration = (assessment: Assessment, organization: string, id: string
           staleTools: checked.stale,
           droppedCredentials: checked.dropped,
           accounts: checked.accounts,
+          naming: integrationNaming(row),
         };
         // As an import's `withFixedAccount`: a refused fixed account fails the integration, whose
         // app its connections still get.
@@ -1248,6 +1269,7 @@ const dryConnectionApps = (checking: Parameters<typeof checkIntegration>[0], row
         label: connection.name,
         owner: connection.owner,
         name: connectionAppName(checking.snapshot, row, connection),
+        naming: connectionAppNaming(checking.snapshot, row, connection),
       };
       const failed = (
         error: unknown,
@@ -1274,6 +1296,42 @@ const dryConnectionApps = (checking: Parameters<typeof checkIntegration>[0], row
       );
     },
   );
+
+/**
+ * The dry run's check that each app it plans gets a name. App names and addresses are unique in
+ * an organization, so it names the apps as an import would, in the order the import makes them:
+ * each takes the first of its names (`appNames`) whose address no earlier app took, and one left
+ * with none fails, as its import would (`namesTaken`). A connection's own app is planned under the
+ * name it takes. It does not read the target organization's apps: a copy goes only into an
+ * organization with none of its own (decision 32).
+ */
+const namedApps = (outcomes: readonly Outcome[]): readonly Outcome[] => {
+  const taken = new Set<string>();
+  /** The name an app takes, or undefined when every one is taken. */
+  const take = (naming: AppNaming) => {
+    const name = appNames(naming).find((candidate) => !taken.has(appSlug(candidate)));
+    if (name !== undefined) taken.add(appSlug(name));
+    return name;
+  };
+  return outcomes.map((outcome): Outcome => {
+    if (outcome.apps !== undefined) {
+      const apps = outcome.apps.map((app): ConnectionAppOutcome => {
+        if (app.status !== "planned" || app.naming === undefined) return app;
+        const name = take(app.naming);
+        return name === undefined
+          ? { ...app, status: "failed", reason: namesTaken }
+          : { ...app, name };
+      });
+      return apps.some((app, index) => app.status !== outcome.apps?.[index]?.status)
+        ? { ...outcome, status: "failed", reason: splitFailure(apps), apps }
+        : { ...outcome, apps };
+    }
+    if (outcome.status !== "planned" || outcome.naming === undefined) return outcome;
+    return take(outcome.naming) === undefined
+      ? { ...outcome, status: "failed", reason: namesTaken }
+      : outcome;
+  });
+};
 
 /** The integrations a dry run plans as an app per connection, by row id. */
 const splitIntegrations = (outcomes: readonly Outcome[]): ReadonlySet<string> =>
@@ -1505,7 +1563,11 @@ const dryArtifacts = (assessment: Assessment, organization: string, split: Reado
       "clients",
     ]);
     const lookup = plannedLookup(snapshot, firstParty, split);
-    const rows = yield* artifactRows(source, snapshot, assessment.items.artifacts);
+    const ids = assessment.items.artifacts;
+    // In the order an import saves them, so the dry run names them as it would (`namedApps`).
+    const rows = (yield* artifactRows(source, snapshot, ids)).toSorted(
+      (a, b) => ids.indexOf(a.row_id) - ids.indexOf(b.row_id),
+    );
     return yield* Effect.forEach(rows, (row) =>
       artifactMapping(snapshot, lookup, row).pipe(
         Effect.map((mapping): Outcome => ({
@@ -1515,6 +1577,7 @@ const dryArtifacts = (assessment: Assessment, organization: string, split: Reado
           context: null,
           status: "planned",
           needsRepair: true,
+          naming: artifactNaming(row),
           unmappedRoles: mapping.roles.flatMap((role) =>
             role.problem === null ? [] : [{ role: role.role, problem: role.problem }],
           ),
@@ -2363,6 +2426,7 @@ const verify = (
  */
 const blocking = (report: Omit<V1OrgReport, "status">, assessment: Assessment) =>
   report.integrationFailures.length > 0 ||
+  report.artifacts.some((artifact) => artifact.error !== undefined) ||
   report.connectionFailures.some((failure) => failure.reconnect !== true) ||
   report.firstPartyMismatches.length > 0 ||
   assessment.emailMatches.some((match) => match.match === "conflict");
@@ -2588,7 +2652,14 @@ const reportOf = (
       : { read: false },
     artifacts: outcomes.flatMap((outcome) =>
       outcome.kind === "artifact"
-        ? [{ id: outcome.id, title: outcome.label, unmappedRoles: outcome.unmappedRoles ?? [] }]
+        ? [
+            {
+              id: outcome.id,
+              title: outcome.label,
+              unmappedRoles: outcome.unmappedRoles ?? [],
+              ...(outcome.status === "failed" ? { error: outcome.reason ?? "" } : {}),
+            },
+          ]
         : [],
     ),
     splitIntegrations: outcomes.flatMap((outcome) =>
@@ -3047,7 +3118,7 @@ export const runV1Import = <S>(
             ),
           )),
         );
-      return yield* finish(assessment, outcomes, undefined, undefined, undefined);
+      return yield* finish(assessment, namedApps(outcomes), undefined, undefined, undefined);
     }
 
     const written = yield* step(

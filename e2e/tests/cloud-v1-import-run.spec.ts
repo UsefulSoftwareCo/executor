@@ -639,7 +639,265 @@ const goneRule = (organization: string) =>
     `gone_${randomUUID().slice(0, 6)}.*.*.search`,
   );
 
+/** Names longer than an app's address holds: it keeps the first 63 characters of a name's slug. */
+const longNames = {
+  integration: "Billing System (Account 1234567, read-only)",
+  connection: "personalBillingSystemAccount1234567ReadOnly",
+  artifact: "Billing reconciliation board for account 1234567, read-only weekly view",
+};
+
+/**
+ * A workspace of three members whose names are longer than an app's address holds. Its MCP server
+ * `longNames.integration` becomes an app per connection (decision 33): a workspace rule blocks a
+ * tool through the workspace's connection alone. Each member named a connection
+ * `longNames.connection`; the workspace's connection and one member's other connection add a digit
+ * to it. Its org artifacts are `artifacts`, by their place among six. Every row's id starts with
+ * `ids`, so another workspace seeded alike can take over this one's import map.
+ */
+const seedLongNames = (
+  organization: string,
+  ids: string,
+  server: string,
+  members: readonly [string, string, string],
+  artifacts: readonly { readonly index: number; readonly title: string }[],
+) =>
+  Effect.gen(function* () {
+    const emulators = yield* Emulators;
+    const [first, second, third] = members;
+    const connections = [
+      { owner: "org", subject: "", name: `${longNames.connection}2`, age: "5 days" },
+      { owner: "user", subject: first, name: longNames.connection, age: "4 days" },
+      { owner: "user", subject: second, name: longNames.connection, age: "3 days" },
+      { owner: "user", subject: third, name: longNames.connection, age: "2 days" },
+      { owner: "user", subject: first, name: `${longNames.connection}3`, age: "1 day" },
+    ] as const;
+    const keyOf = (connection: (typeof connections)[number]) =>
+      `connection:${connection.owner}:${server}:${connection.name}:token`;
+    for (const connection of connections)
+      yield* emulators.v1VaultObject(
+        `${connection.owner === "org" ? vaultScope(organization) : vaultScope(organization, connection.subject)}/secrets/${encodeURIComponent(keyOf(connection))}`,
+        `synthetic-${randomUUID().slice(0, 8)}`,
+      );
+    const mcp = {
+      transport: "remote",
+      endpoint: "https://billing.example.com/mcp",
+      remoteTransport: "auto",
+      authenticationTemplate: [
+        { slug: "header", kind: "apikey", placements: [{ carrier: "header", name: "X-Key" }] },
+      ],
+    };
+    yield* writeRows("v1-database.json", [
+      row(
+        "insert into organizations (id, name, slug) values ($1, $2, $3)",
+        organization,
+        "Synthetic long names workspace",
+        `v1-${randomUUID().slice(0, 8)}`,
+      ),
+      row(
+        "insert into integration (tenant, row_id, slug, plugin_id, name, config) values ($1, $2, $3, 'mcp', $4, $5::json)",
+        organization,
+        `${ids}-server`,
+        server,
+        longNames.integration,
+        JSON.stringify(mcp),
+      ),
+      ...connections.flatMap((connection, index) => [
+        row(
+          "insert into connection (tenant, row_id, owner, subject, integration, name, template, item_ids, created_at) values ($1, $2, $3, $4, $5, $6, 'header', $7::json, now() - $8::interval)",
+          organization,
+          `${ids}-connection-${index}`,
+          connection.owner,
+          connection.subject,
+          server,
+          connection.name,
+          JSON.stringify({ token: keyOf(connection) }),
+          connection.age,
+        ),
+        ...["search", "delete_item"].map((tool) =>
+          row(
+            "insert into tool (tenant, owner, subject, integration, connection, plugin_id, name, annotations) values ($1, $2, $3, $4, $5, 'mcp', $6, $7::json)",
+            organization,
+            connection.owner,
+            connection.subject,
+            server,
+            connection.name,
+            tool,
+            JSON.stringify({ mcp: { toolName: tool } }),
+          ),
+        ),
+      ]),
+      row(
+        "insert into tool_policy (tenant, row_id, owner, subject, pattern, action, position) values ($1, $2, 'org', '', $3, 'block', 'b0')",
+        organization,
+        `${ids}-rule`,
+        `${server}.org.${longNames.connection}2.search`,
+      ),
+      ...artifacts.map(({ index, title }) =>
+        row(
+          "insert into artifact (tenant, row_id, owner, subject, title, code, bindings, created_at) values ($1, $2, 'org', '', $3, 'export const App = () => null', '{}'::json, now() - $4::interval)",
+          organization,
+          `${ids}-artifact-${index}`,
+          title,
+          `${6 - index} minutes`,
+        ),
+      ),
+    ]);
+  });
+
 layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
+  it.effect(
+    scenarios.v1ImportLongNames.title,
+    (context) =>
+      withCase(
+        context,
+        Effect.gen(function* () {
+          const emulators = yield* Emulators;
+          const operator = yield* v1ImportOperator;
+          const emails = [
+            syntheticEmail("long-first"),
+            syntheticEmail("long-second"),
+            syntheticEmail("long-third"),
+          ] as const;
+          const server = `billing_${randomUUID().slice(0, 6)}`;
+          // The first run imports a twin workspace; handing its import map to this one makes this
+          // one's import run again over what the first made, as a restarted import does.
+          const twin = yield* emulators.v1Workspace([...emails]);
+          const members = [
+            twin.user,
+            yield* emulators.v1User(emails[1]),
+            yield* emulators.v1User(emails[2]),
+          ] as const;
+          const twinIds = `twin-${randomUUID().slice(0, 8)}`;
+          // Six artifacts share one long title.
+          yield* seedLongNames(
+            twin.organization,
+            twinIds,
+            server,
+            members,
+            Array.from({ length: 6 }, (_, index) => ({ index, title: longNames.artifact })),
+          );
+          yield* allowV1Import(twin.organization);
+
+          // Each app's name is shortened only as far as its address needs to hold its connection's
+          // name and number whole, so every app has an address of its own.
+          const shortened = `Billing System… (${longNames.connection}`;
+          const connectionApps = [
+            [`${shortened})`, "billing-system-personalbillingsystemaccount1234567readonly"],
+            [`${shortened} 2)`, "billing-system-personalbillingsystemaccount1234567readonly-2"],
+            [`${shortened} 3)`, "billing-system-personalbillingsystemaccount1234567readonly-3"],
+            [`${shortened}2)`, "billing-system-personalbillingsystemaccount1234567readonly2"],
+            [`${shortened}3)`, "billing-system-personalbillingsystemaccount1234567readonly3"],
+          ];
+          // Artifacts of one title are numbered by retries, each shortened so its number survives.
+          const artifactApps = [
+            [longNames.artifact, "billing-reconciliation-board-for-account-1234567-read-only-week"],
+            ...[2, 3, 4, 5].map((attempt) => [
+              `Billing reconciliation board for account 1234567, read-only… (v1 ${attempt})`,
+              `billing-reconciliation-board-for-account-1234567-read-only-v1-${attempt}`,
+            ]),
+          ];
+          const at = (index: number) => (a: readonly string[], b: readonly string[]) =>
+            (a[index] ?? "") < (b[index] ?? "") ? -1 : 1;
+          const appsOf = (report: V1Report) =>
+            (
+              report.splitIntegrations?.find((split) => split.label === longNames.integration)
+                ?.apps ?? []
+            ).toSorted((a, b) => (a.name < b.name ? -1 : 1));
+          const namesTaken = "Every name for this app is taken in the organization.";
+          const run = (mode: "dry-run" | "import", label: string, organization: string) =>
+            Effect.gen(function* () {
+              const id = v1RunId(label);
+              const started = yield* operator.start({
+                mode,
+                runId: id,
+                organizations: [organization],
+              });
+              expect(started.status, JSON.stringify(started.body)).toBe(200);
+              return yield* operator.waitForReport(id, organization);
+            });
+
+          // The dry run plans the import's names, and finds that the last artifact of one title
+          // would have none left.
+          const planned = yield* run("dry-run", "long-dry", twin.organization);
+          expect(planned.integrationFailures).toEqual([]);
+          expect(appsOf(planned).map((app) => [app.name, app.status])).toEqual(
+            connectionApps.map(([name = ""]) => [name, "planned"]).toSorted(at(0)),
+          );
+          expect(
+            planned.artifacts.flatMap((artifact) =>
+              artifact.error === undefined ? [] : [[artifact.id, artifact.error]],
+            ),
+          ).toEqual([[`${twinIds}-artifact-5`, namesTaken]]);
+          expect(planned.status).toBe("blocked");
+
+          // The import makes every connection's app, and fails the artifact the dry run named.
+          const first = yield* run("import", "long", twin.organization);
+          expect(appsOf(first).map((app) => [app.name, app.status])).toEqual(
+            connectionApps.map(([name = ""]) => [name, "imported"]).toSorted(at(0)),
+          );
+          const artifacts = (first.items ?? []).filter((item) => item.kind === "artifact");
+          expect(
+            artifacts.map((item) => [item.id, item.status, item.reason ?? ""]).toSorted(at(0)),
+          ).toEqual([
+            ...[0, 1, 2, 3, 4].map((index) => [`${twinIds}-artifact-${index}`, "imported", ""]),
+            [`${twinIds}-artifact-5`, "failed", namesTaken],
+          ]);
+          expect(first.status).toBe("failed");
+          expect(first.cutover).not.toBe(true);
+          const target = first.v2Organization;
+          if (target === undefined) return yield* Effect.die("The import named no organization");
+          const appRows = cloudRows(
+            Schema.Struct({ id: Schema.String, name: Schema.String, slug: Schema.String }),
+            `select id, name, slug from executor_apps where owner = $1 and name like 'Billing%'`,
+            `organization:${target.id}`,
+          ).pipe(Effect.map((apps) => apps.toSorted((a, b) => (a.slug < b.slug ? -1 : 1))));
+          const before = yield* appRows;
+          expect(before.map((app) => [app.name, app.slug])).toEqual(
+            [...connectionApps, ...artifactApps].toSorted(at(1)),
+          );
+
+          // This workspace has the same server, connections and rule, and the artifact the import
+          // failed, which its member gave another title. It takes over the twin's import map, and
+          // its import keeps every app the first run made, saves that artifact and cuts over. The
+          // artifacts the first run saved are left out: saving one again commits to its source,
+          // which managed local Cloud cannot store; their apps stay as the first run made them.
+          const own = yield* emulators.v1Workspace([...emails]);
+          const ownIds = `own-${randomUUID().slice(0, 8)}`;
+          yield* seedLongNames(own.organization, ownIds, server, members, [
+            { index: 5, title: "Billing reconciliation archive" },
+          ]);
+          yield* allowV1Import(own.organization);
+          yield* writeRows("sso-database.json", [
+            row(
+              "update private_v1_import_map set v1_id = replace(replace(v1_id, $1, $2), $3, $4), v1_org_id = $4 where v1_org_id = $3",
+              twinIds,
+              ownIds,
+              twin.organization,
+              own.organization,
+            ),
+          ]);
+          const second = yield* run("import", "long-again", own.organization);
+          expect(
+            second.status,
+            JSON.stringify((second.items ?? []).filter((item) => item.status === "failed")),
+          ).toBe("imported");
+          expect(second.cutover).toBe(true);
+          expect(second.v2Organization).toEqual(target);
+          expect(appsOf(second).map((app) => [app.name, app.v2Id])).toEqual(
+            appsOf(first).map((app) => [app.name, app.v2Id]),
+          );
+          const after = yield* appRows;
+          expect(after.filter((app) => app.name !== "Billing reconciliation archive")).toEqual(
+            before,
+          );
+          expect(after.map((app) => app.name)).toContain("Billing reconciliation archive");
+          expect(after).toHaveLength(before.length + 1);
+        }).pipe(Effect.provide(services)),
+      ),
+    // A dry run and two imports of a workspace whose five apps each build.
+    { timeout: 120_000 },
+  );
+
   it.effect(scenarios.v1ImportSplitNames.title, (context) =>
     withCase(
       context,

@@ -37,6 +37,8 @@ import {
 import {
   AccountId,
   AppId,
+  appSlug,
+  appSlugFits,
   OAuthGrantImport,
   OAuthRegistration,
   scopeGeneratedPackage,
@@ -436,20 +438,93 @@ export const connectionSnapshot = <S extends Pick<V1Snapshot, "connections">>(
 });
 
 /**
+ * An app name the importer makes, in parts: fixed text, and text it may shorten (`{ cut }`). The
+ * fixed text tells apps apart whose other text is the same, such as a connection's number.
+ */
+export type AppNaming = readonly (string | { readonly cut: string })[];
+
+/** Why the importer made no app: every name it tries (`appNames`) is taken in the organization. */
+export const namesTaken = "Every name for this app is taken in the organization.";
+
+/** The names the importer tries for one app before it gives up (`namesTaken`). */
+const nameAttempts = 5;
+
+/** The longest app name (`AppName`). */
+const nameLength = 120;
+
+/** Spaces and punctuation that would dangle before a shortened text's "…". */
+const dangling = /[\s\p{Ps}\p{Pd}\p{Po}]+$/u;
+
+/** `text` shortened with "…", longest first: at each word, then at each character. */
+const shortenings = (text: string) => {
+  const characters = Array.from(text);
+  const words = [...text.matchAll(/\s+/gu)].map((match) => text.slice(0, match.index)).reverse();
+  const cuts = characters.map((_, end) => characters.slice(0, end).join("")).reverse();
+  return [...words, ...cuts].map((kept) => `${kept.replace(dangling, "")}…`);
+};
+
+/**
+ * The name the importer gives an app on its `attempt`: `naming`'s parts, then on a retry
+ * `(v1 <attempt>)`. An app's address keeps only the start of a long name (`appSlugFits`), so a
+ * name with fixed text keeps it whole and shortens the other parts, the first first, until its
+ * address holds the whole name. A name that already fits stays as it is. A name of only text it
+ * may shorten has nothing to tell apart, and only keeps to the length names may have.
+ */
+const appName = (naming: AppNaming, attempt: number) => {
+  const parts = attempt === 1 ? naming : [...naming, ` (v1 ${attempt})`];
+  const tellsApart = parts.some((part) => typeof part === "string");
+  const fits = (texts: readonly string[]) => {
+    const name = texts.join("");
+    return name.length <= nameLength && (!tellsApart || appSlugFits(name));
+  };
+  let texts = parts.map((part) => (typeof part === "string" ? part : part.cut));
+  for (const [index, part] of parts.entries()) {
+    if (fits(texts)) break;
+    if (typeof part === "string") continue;
+    texts =
+      shortenings(part.cut)
+        .map((cut) => texts.with(index, cut))
+        .find(fits) ?? texts.with(index, "…");
+  }
+  return texts.join("");
+};
+
+/**
+ * The names the importer tries for an app, in order: its own, then retries numbered `(v1 N)`. Each
+ * has an address of its own, so a retry never tries an address already refused.
+ */
+export const appNames = (naming: AppNaming) =>
+  Array.from({ length: nameAttempts }, (_, index) => appName(naming, index + 1)).filter(
+    (name, index, names) => names.findIndex((other) => appSlug(other) === appSlug(name)) === index,
+  );
+
+/** An integration's one app's name: its label. */
+export const integrationNaming = (integration: IntegrationRow): AppNaming => [
+  { cut: integrationLabel(integration) },
+];
+
+/** An artifact's app's name: its title. */
+export const artifactNaming = (row: Pick<ArtifactRow, "title">): AppNaming => [
+  { cut: row.title.trim() === "" ? "Artifact" : row.title },
+];
+
+/**
  * A connection's own app's name (decision 33): its integration's, then the connection's. A
  * workspace connection that shares its name with a member's says so, as its account does. App
  * names are unique in an organization, and members often gave their connections the same name, so
- * each later connection of a name is numbered, in the order v1 made them.
+ * each later connection of a name is numbered, in the order v1 made them. When the name is too
+ * long for its address to hold, the integration's label is shortened first, then the connection's
+ * name; the marker and number stay whole (`appName`).
  */
-export const connectionAppName = (
+export const connectionAppNaming = (
   snapshot: Pick<V1Snapshot, "connections">,
   integration: IntegrationRow,
   connection: ConnectionRow,
-) => {
-  const own = (row: ConnectionRow) => {
-    const name = row.name.trim() === "" ? "connection" : row.name.trim().slice(0, 56);
-    return accountLabel(snapshot, row) === row.name ? name : `${name}, workspace`;
-  };
+): AppNaming => {
+  const nameOf = (row: ConnectionRow) =>
+    row.name.trim() === "" ? "connection" : row.name.trim().slice(0, 56);
+  const own = (row: ConnectionRow) =>
+    accountLabel(snapshot, row) === row.name ? nameOf(row) : `${nameOf(row)}, workspace`;
   const base = own(connection);
   const index = snapshot.connections
     .filter((row) => row.integration === connection.integration && own(row) === base)
@@ -463,9 +538,21 @@ export const connectionAppName = (
             : 0,
     )
     .findIndex((row) => row.row_id === connection.row_id);
-  const label = index > 0 ? `${base} ${index + 1}` : base;
-  return `${integrationLabel(integration).slice(0, 117 - label.length)} (${label})`;
+  const marker = base === nameOf(connection) ? "" : ", workspace";
+  return [
+    { cut: integrationLabel(integration) },
+    " (",
+    { cut: nameOf(connection) },
+    `${marker}${index > 0 ? ` ${index + 1}` : ""})`,
+  ];
 };
+
+/** A connection's own app's name, as its first deploy tries it (`connectionAppNaming`). */
+export const connectionAppName = (
+  snapshot: Pick<V1Snapshot, "connections">,
+  integration: IntegrationRow,
+  connection: ConnectionRow,
+) => appName(connectionAppNaming(snapshot, integration, connection), 1);
 
 /** An item context narrowed to one connection's own app (decision 33). */
 const connectionContext = <C extends { readonly snapshot: ConnectionSnapshot }>(
@@ -1313,12 +1400,14 @@ export const generate = (
     }
   }).pipe(Effect.catchTag("TemplateError", (error) => fail(error.reason)));
 
-/** Deploy under the integration's name, then a numbered name when the organization has it. */
-const deployNamed = (context: ItemContext, name: string, files: SourceFiles) =>
+/**
+ * Deploy under the app's name, then a numbered one when another app in the organization has its
+ * name or address (`appNames`).
+ */
+const deployNamed = (context: ItemContext, naming: AppNaming, files: SourceFiles) =>
   Effect.gen(function* () {
     const owner = organizationOwner(context.target.id);
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      const candidate = attempt === 1 ? name : `${name.slice(0, 110)} (v1 ${attempt})`;
+    for (const candidate of appNames(naming)) {
       const scoped = yield* scopeGeneratedPackage(files, context.target.slug, candidate).pipe(
         Effect.catch(() => fail("The app package could not be named.")),
       );
@@ -1333,7 +1422,7 @@ const deployNamed = (context: ItemContext, name: string, files: SourceFiles) =>
         );
       if (Option.isSome(deployed)) return deployed.value;
     }
-    return yield* fail("Every name for this app is taken in the organization.");
+    return yield* fail(namesTaken);
   });
 
 /**
@@ -1375,7 +1464,7 @@ export const importIntegration = (
     const owner = organizationOwner(context.target.id);
     const app =
       existing === undefined
-        ? yield* deployNamed(context, integrationLabel(integration), generated.files)
+        ? yield* deployNamed(context, integrationNaming(integration), generated.files)
         : (yield* context.executor.apps.deploy({
             owner,
             app: existing,
@@ -1431,10 +1520,11 @@ export const importConnectionApp = (
         yield* redundantFixed(own, integration),
       );
       const generated = yield* generate(own, integration, plan.value, planned);
+      const naming = connectionAppNaming(context.snapshot, integration, connection);
       const name = connectionAppName(context.snapshot, integration, connection);
       const app =
         existing === undefined
-          ? yield* deployNamed(context, name, generated.files)
+          ? yield* deployNamed(context, naming, generated.files)
           : (yield* context.executor.apps.deploy({
               owner: organizationOwner(context.target.id),
               app: existing,
@@ -1445,7 +1535,8 @@ export const importConnectionApp = (
       return {
         result: imported("app", app.id, generated.note),
         app: app.id,
-        name,
+        // The name it has: a retry's when an earlier app took the first (`appNames`).
+        name: app.name,
         traced: generated.traced,
         stale: generated.stale,
         dropped: generated.dropped,
@@ -2769,9 +2860,7 @@ const saveArtifact = (
       }).pipe(Effect.catchTag("AppNotFound", () => Effect.succeed(Option.none<AppId>())));
       if (Option.isSome(updated)) return { ...imported("undeployed_app", updated.value, note) };
     }
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      const candidate =
-        attempt === 1 ? title.slice(0, 120) : `${title.slice(0, 110)} (v1 ${attempt})`;
+    for (const candidate of appNames(artifactNaming(row))) {
       const scoped = yield* scopeGeneratedPackage(files, context.target.slug, candidate).pipe(
         Effect.catch(() => fail("The app package could not be named.")),
       );
@@ -2786,5 +2875,5 @@ const saveArtifact = (
         );
       if (Option.isSome(created)) return imported("undeployed_app", created.value, note);
     }
-    return yield* fail("Every name for this app is taken in the organization.");
+    return yield* fail(namesTaken);
   });

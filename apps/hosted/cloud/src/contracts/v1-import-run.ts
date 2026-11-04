@@ -206,6 +206,8 @@ const Artifact = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
   unmappedRoles: Schema.Array(Schema.Struct({ role: Schema.String, problem: Schema.String })),
+  /** Why it fails, or would: absent when it moves. */
+  error: Schema.optionalKey(Schema.String),
 });
 const VaultFailure = Schema.Struct({
   id: Schema.String,

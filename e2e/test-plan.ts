@@ -8880,6 +8880,12 @@ export const scenarios = plan({
       "Cloud v1 import retries v1 plan reads that time out or fail and still reports the organization",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportLongNames: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import gives every app an address of its own when its name is longer than an address holds: a long integration label's apps per connection, numbered for members' connections of one long name, shorten the label so each keeps its connection's name and number, artifacts of one long title are numbered by retries that each change the address, the dry run plans those names and reports the artifact left without one, and the import started again after it is renamed keeps every app the first run made",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportSplitNames: {
     file: "cloud-v1-import-run.spec.ts",
     title:
