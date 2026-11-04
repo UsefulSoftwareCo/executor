@@ -97,6 +97,7 @@ export const V1Report = Schema.Struct({
       id: Schema.String,
       title: Schema.String,
       unmappedRoles: Schema.Array(Schema.Struct({ role: Schema.String, problem: Schema.String })),
+      error: Schema.optionalKey(Schema.String),
     }),
   ),
   flags: Schema.Struct({

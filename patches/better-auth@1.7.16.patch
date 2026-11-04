@@ -1,0 +1,108 @@
+diff --git a/dist/api/rate-limiter/index.mjs b/dist/api/rate-limiter/index.mjs
+index abe4c5e..6f07ec0 100644
+--- a/dist/api/rate-limiter/index.mjs
++++ b/dist/api/rate-limiter/index.mjs
+@@ -88,7 +88,11 @@ function createDatabaseStorageWrapper(ctx) {
+ 				value: key
+ 			}]
+ 		}))[0];
+-		if (data) data.lastRequest = Number(data.lastRequest);
++		if (data) {
++			const lastRequest = Number(data.lastRequest);
++			if (!Number.isSafeInteger(lastRequest) || lastRequest < 0) throw new BetterAuthError("Invalid persisted rate-limit timestamp");
++			data.lastRequest = lastRequest;
++		}
+ 		return data;
+ 	};
+ 	const consume = async (key, rule) => {
+diff --git a/dist/plugins/generic-oauth/index.mjs b/dist/plugins/generic-oauth/index.mjs
+index 8615d9a..bd17c28 100644
+--- a/dist/plugins/generic-oauth/index.mjs
++++ b/dist/plugins/generic-oauth/index.mjs
+@@ -60,26 +60,39 @@ async function fetchDiscovery(url, headers, timeout) {
+ async function fetchUserInfo(tokens, userInfoUrl, idTokenClaims) {
+ 	if (tokens.idToken) {
+ 		const decoded = idTokenClaims ?? readIdTokenClaims(tokens.idToken);
+-		if (decoded?.sub && decoded?.email) return {
+-			id: decoded.sub,
+-			emailVerified: toBoolean(decoded.email_verified),
+-			image: decoded.picture,
+-			...decoded
+-		};
++		if (decoded?.sub && decoded?.email) {
++			const userInfo = decoded.email_verified === void 0 && userInfoUrl && tokens.accessToken ? await requestUserInfo(tokens, userInfoUrl) : null;
++			const { id: _, ...userInfoClaims } = userInfo && userInfo.sub === decoded.sub ? userInfo : {};
++			const claims = {
++				...userInfoClaims,
++				...decoded
++			};
++			return {
++				id: decoded.sub,
++				emailVerified: toBoolean(claims.email_verified),
++				image: claims.picture,
++				...claims
++			};
++		}
+ 	}
+ 	if (!userInfoUrl || !tokens.accessToken) return null;
++	const userInfo = await requestUserInfo(tokens, userInfoUrl);
++	if (!userInfo) return null;
++	return {
++		...userInfo,
++		email: userInfo.email,
++		emailVerified: toBoolean(userInfo.email_verified),
++		image: userInfo.picture,
++		name: userInfo.name
++	};
++}
++async function requestUserInfo(tokens, userInfoUrl) {
+ 	const userInfo = await betterFetch(userInfoUrl, {
+ 		method: "GET",
+ 		headers: { Authorization: `Bearer ${tokens.accessToken}` }
+ 	});
+ 	if (userInfo.error || !userInfo.data) return null;
+-	return {
+-		...userInfo.data,
+-		email: userInfo.data.email,
+-		emailVerified: toBoolean(userInfo.data.email_verified),
+-		image: userInfo.data.picture,
+-		name: userInfo.data.name
+-	};
++	return userInfo.data;
+ }
+ /**
+ * A generic OAuth plugin that registers any OAuth/OIDC provider
+@@ -107,8 +120,8 @@ const genericOAuth = (options) => {
+ 			let issuer;
+ 			let isOidc = false;
+ 			let idTokenConfig;
+-			if (c.discoveryUrl) {
+-				const discovered = await fetchDiscovery(c.discoveryUrl, c.discoveryHeaders, discoveryTimeout).catch((err) => {
++			if (c.discoveryUrl || c.discoveryDocument) {
++				const discovered = c.discoveryDocument ?? await fetchDiscovery(c.discoveryUrl, c.discoveryHeaders, discoveryTimeout).catch((err) => {
+ 					ctx.logger.error(`Discovery fetch failed for "${c.providerId}": ${err}`);
+ 					return null;
+ 				});
+diff --git a/dist/plugins/generic-oauth/types.d.mts b/dist/plugins/generic-oauth/types.d.mts
+index 8109668..30839db 100644
+--- a/dist/plugins/generic-oauth/types.d.mts
++++ b/dist/plugins/generic-oauth/types.d.mts
+@@ -40,6 +40,18 @@ export interface GenericOAuthConfig<ID extends string = string> {
+    * If provided, the authorization and token endpoints will be fetched from this URL.
+    */
+   discoveryUrl?: string | undefined;
++  /** Resolved metadata for an explicitly configured provider. Obtain and validate it
++   * before creating the auth instance; token signatures and claims remain verified
++   * against its issuer, audience, algorithms, and live JWKS endpoint. */
++  discoveryDocument?: {
++    readonly issuer: string;
++    readonly authorization_endpoint: string;
++    readonly token_endpoint: string;
++    readonly userinfo_endpoint?: string;
++    readonly jwks_uri: string;
++    readonly id_token_signing_alg_values_supported: readonly string[];
++    readonly end_session_endpoint?: string;
++  } | undefined;
+   /**
+    * Require discovery to provide the issuer and JWKS metadata needed to verify
+    * ID tokens before this provider is registered.

@@ -12,7 +12,7 @@ import {
   credentialLike,
   decodeIntegration,
   decodeItemIds,
-  decodeToolkit,
+  decodeToolkits,
   firstPartyClientPrefix,
   placementVariables,
   tokenEndpointAuthMethod,
@@ -509,10 +509,7 @@ export const connectionPlan = (
 
 /** The workspace's toolkits that decode, with their rules. */
 export const decodedToolkits = (snapshot: Pick<V1Snapshot, "toolkits" | "toolkitRules">) =>
-  snapshot.toolkits.flatMap((row) => {
-    const toolkit = decodeToolkit(row, snapshot.toolkitRules);
-    return toolkit === undefined ? [] : [toolkit];
-  });
+  decodeToolkits(snapshot.toolkits, snapshot.toolkitRules);
 
 /** The note on a toolkit whose access patterns reach none of the workspace's connections. */
 export const grantsNoConnection = "It grants no connection in this workspace.";

@@ -3,7 +3,7 @@ import { ApiError } from "@executor-js/utils/api-error";
 import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { DeclaredRequirements } from "apps/contracts";
 import { AppSlug } from "./app-slug.ts";
-export { AppSlug, appSlug } from "./app-slug.ts";
+export { AppSlug, appSlug, appSlugFits } from "./app-slug.ts";
 /** Apps own deployed code and declared requirements. Callers choose accounts for each operation. */
 import { Effect, Schema } from "effect";
 import { StorageError } from "./shared.ts";

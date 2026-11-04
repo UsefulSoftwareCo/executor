@@ -414,9 +414,10 @@ const bundleAccounts = (
   key: Effect.Effect<CryptoKey>,
   accounts: HostAccounts,
 ): Effect.Effect<ResolvedAccounts, RuntimeProtocolFailed> => {
-  if (protocol.sealedCredentials) return sealAccounts(accounts, { app, key });
+  if (protocol.sealedCredentials)
+    return sealAccounts(accounts, { app, key }).pipe(Effect.map(protocol.accounts));
   const unsealed = unsealedAccounts(accounts);
-  return unsealed === undefined ? failed("managed") : Effect.succeed(unsealed);
+  return unsealed === undefined ? failed("managed") : Effect.succeed(protocol.accounts(unsealed));
 };
 
 /**

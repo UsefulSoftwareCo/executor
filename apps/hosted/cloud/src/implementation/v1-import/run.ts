@@ -18,7 +18,14 @@ import {
   type McpConnectionStore,
   type OrganizationId,
 } from "@executor-js/hosted-server";
-import { AccountId, AppId, OAuthGrantImport, OwnerId, type Executor } from "@executor-js/sdk/core";
+import {
+  AccountId,
+  AppId,
+  appSlug,
+  OAuthGrantImport,
+  OwnerId,
+  type Executor,
+} from "@executor-js/sdk/core";
 import {
   Clock,
   Context,
@@ -70,11 +77,14 @@ import {
 } from "./identity.ts";
 import {
   ItemFailed,
+  appNames,
   artifactMapping,
+  artifactNaming,
   checkAccount,
   checkFixedAccount,
   checkIntegration,
   connectionAppName,
+  connectionAppNaming,
   connectionAppOf,
   connectionPlans,
   connectionTarget,
@@ -85,8 +95,10 @@ import {
   importFixedAccount,
   importIntegration,
   importToolkit,
+  integrationNaming,
   linkConnectionAccount,
   mapLookup,
+  namesTaken,
   needsNoAccount,
   readSecretCompared,
   refreshCopiedGrant,
@@ -94,14 +106,17 @@ import {
   toolkitCopyKey,
   toolkitMembers,
   updateCopiedAccount,
+  toolkitPlanning,
   toolkitPolicy,
   type AppAccountRequirements,
+  type AppNaming,
   type AppScope,
   type DroppedFixed,
   type ImportedLookup,
   type ItemContext,
   type RuleCounts,
   type StaleTool,
+  type ToolkitCopyRecord,
 } from "./items.ts";
 import {
   memberProfile,
@@ -578,9 +593,9 @@ const assessCarryOver = (
  * (`intoOwner`). `nothing_to_copy` and `leave_v1_data` move a free workspace of one active member
  * with no pending invitation, which WorkOS lists as a pending membership; `nothing_to_copy` also
  * needs it to have nothing to copy, no item of any kind the import moves. `copy_into_empty` takes
- * any workspace an import takes, paid or shared, into an organization with nothing set up
- * (`setUpIn`), or the one an earlier run recorded. An import reads it under the freeze, as the rest
- * of the assessment.
+ * any workspace an import takes, paid, Enterprise or shared, into an organization with nothing set
+ * up (`setUpIn`), or the one an earlier run recorded. An import reads it under the freeze, as the
+ * rest of the assessment.
  */
 const intoPlan = (
   sql: SqlClient.SqlClient,
@@ -636,9 +651,11 @@ const intoPlan = (
 
 /**
  * Read the organization's members, plan and rows, and decide whether it moves now. Enterprise
- * organizations move by hand (decision 15). A paid organization moves with its v1 subscription
- * (decision 5) when it can carry over (`assessCarryOver`); an import holds it back otherwise. One
- * on a grandfathered Hobby or Professional plan moves to v2's Free plan, as a free one does.
+ * organizations move by hand (decision 15): only when the operator lists one to copy into an
+ * existing v2 organization, with nothing carried over (decision 34). A paid organization moves with
+ * its v1 subscription (decision 5) when it can carry over (`assessCarryOver`); an import holds it
+ * back otherwise. One on a grandfathered Hobby or Professional plan moves to v2's Free plan, as a
+ * free one does.
  */
 const assess = (params: V1ImportParams) =>
   Effect.gen(function* () {
@@ -752,7 +769,8 @@ const assess = (params: V1ImportParams) =>
               changed: copy.slug !== snapshot.organization.slug,
             };
     // A copy into an existing organization carries billing over as into a copy: its own customer
-    // must bill nothing.
+    // must bill nothing. Only a paid organization carries over; an Enterprise one carries nothing,
+    // so its copy never holds, renames or deletes a v2 customer (decision 34).
     const carry =
       billing.kind === "paid"
         ? yield* assessCarryOver(
@@ -761,10 +779,13 @@ const assess = (params: V1ImportParams) =>
             copy?.id ?? (into?.kind === "into" ? (into.target.id as OrganizationId) : undefined),
           )
         : null;
+    // Moving an Enterprise organization by hand means the operator lists it to copy into an
+    // existing v2 organization (decision 34); otherwise it is held.
+    const listedCopy = into?.kind === "into" && listed?.mode === "copy_into_empty";
     const held =
       into?.kind === "refused"
         ? `It does not move into the listed v2 organization: ${into.refused}`
-        : billing.kind === "enterprise"
+        : billing.kind === "enterprise" && !listedCopy
           ? "Enterprise organizations move by hand, after their v2 SSO is set up."
           : carry !== null && carry.problem !== null && params.mode === "import"
             ? `Its v1 subscription cannot carry over: ${carry.problem}`
@@ -864,6 +885,11 @@ interface Outcome {
    * (decision 33): each connection's app.
    */
   readonly apps?: readonly ConnectionAppOutcome[] | undefined;
+  /**
+   * The name of the app a dry run plans for an integration or artifact, for its check that each
+   * app gets one (`namedApps`). Absent from steps that ran before it was kept.
+   */
+  readonly naming?: AppNaming | undefined;
 }
 
 /** One connection's own app (decision 33): what it did or would do, and its rules' counts. */
@@ -880,6 +906,8 @@ interface ConnectionAppOutcome {
   readonly rules?: RuleCounts | undefined;
   /** As an integration's `accounts`: what a dry run's build of this app takes. */
   readonly accounts?: AppAccountRequirements | undefined;
+  /** As an integration's `naming`: the name a dry run plans for this app. */
+  readonly naming?: AppNaming | undefined;
 }
 
 /** What the user should know about an integration that moves as an app per connection. */
@@ -1194,6 +1222,7 @@ const dryIntegration = (assessment: Assessment, organization: string, id: string
           staleTools: checked.stale,
           droppedCredentials: checked.dropped,
           accounts: checked.accounts,
+          naming: integrationNaming(row),
         };
         // As an import's `withFixedAccount`: a refused fixed account fails the integration, whose
         // app its connections still get.
@@ -1241,6 +1270,7 @@ const dryConnectionApps = (checking: Parameters<typeof checkIntegration>[0], row
         label: connection.name,
         owner: connection.owner,
         name: connectionAppName(checking.snapshot, row, connection),
+        naming: connectionAppNaming(checking.snapshot, row, connection),
       };
       const failed = (
         error: unknown,
@@ -1267,6 +1297,42 @@ const dryConnectionApps = (checking: Parameters<typeof checkIntegration>[0], row
       );
     },
   );
+
+/**
+ * The dry run's check that each app it plans gets a name. App names and addresses are unique in
+ * an organization, so it names the apps as an import would, in the order the import makes them:
+ * each takes the first of its names (`appNames`) whose address no earlier app took, and one left
+ * with none fails, as its import would (`namesTaken`). A connection's own app is planned under the
+ * name it takes. It does not read the target organization's apps: a copy goes only into an
+ * organization with none of its own (decision 32).
+ */
+const namedApps = (outcomes: readonly Outcome[]): readonly Outcome[] => {
+  const taken = new Set<string>();
+  /** The name an app takes, or undefined when every one is taken. */
+  const take = (naming: AppNaming) => {
+    const name = appNames(naming).find((candidate) => !taken.has(appSlug(candidate)));
+    if (name !== undefined) taken.add(appSlug(name));
+    return name;
+  };
+  return outcomes.map((outcome): Outcome => {
+    if (outcome.apps !== undefined) {
+      const apps = outcome.apps.map((app): ConnectionAppOutcome => {
+        if (app.status !== "planned" || app.naming === undefined) return app;
+        const name = take(app.naming);
+        return name === undefined
+          ? { ...app, status: "failed", reason: namesTaken }
+          : { ...app, name };
+      });
+      return apps.some((app, index) => app.status !== outcome.apps?.[index]?.status)
+        ? { ...outcome, status: "failed", reason: splitFailure(apps), apps }
+        : { ...outcome, apps };
+    }
+    if (outcome.status !== "planned" || outcome.naming === undefined) return outcome;
+    return take(outcome.naming) === undefined
+      ? { ...outcome, status: "failed", reason: namesTaken }
+      : outcome;
+  });
+};
 
 /** The integrations a dry run plans as an app per connection, by row id. */
 const splitIntegrations = (outcomes: readonly Outcome[]): ReadonlySet<string> =>
@@ -1443,7 +1509,11 @@ const dryToolkits = (assessment: Assessment, organization: string, split: Readon
       organization,
       allSnapshotTables,
     );
-    const lookup = plannedLookup(snapshot, firstParty, split);
+    // Every copy of every toolkit is planned from the same apps, tools and accounts.
+    const planning = toolkitPlanning(
+      { snapshot, source },
+      plannedLookup(snapshot, firstParty, split),
+    );
     // Only the toolkits the assessment plans, as an import moves: none when v1's data stays in v1.
     const planned = new Set(assessment.items.toolkits);
     const rows = snapshot.toolkits.filter((row) => planned.has(row.row_id));
@@ -1461,9 +1531,7 @@ const dryToolkits = (assessment: Assessment, organization: string, split: Readon
           } satisfies Outcome;
         const members = toolkitMembers(toolkit, snapshot.subjects);
         // Plan each member's copy as an import would.
-        yield* Effect.forEach(members, (member) =>
-          toolkitPolicy({ snapshot, source }, lookup, toolkit, member),
-        );
+        yield* Effect.forEach(members, (member) => toolkitPolicy(planning, toolkit, member));
         return {
           kind: "toolkit",
           id: row.row_id,
@@ -1496,7 +1564,11 @@ const dryArtifacts = (assessment: Assessment, organization: string, split: Reado
       "clients",
     ]);
     const lookup = plannedLookup(snapshot, firstParty, split);
-    const rows = yield* artifactRows(source, snapshot, assessment.items.artifacts);
+    const ids = assessment.items.artifacts;
+    // In the order an import saves them, so the dry run names them as it would (`namedApps`).
+    const rows = (yield* artifactRows(source, snapshot, ids)).toSorted(
+      (a, b) => ids.indexOf(a.row_id) - ids.indexOf(b.row_id),
+    );
     return yield* Effect.forEach(rows, (row) =>
       artifactMapping(snapshot, lookup, row).pipe(
         Effect.map((mapping): Outcome => ({
@@ -1506,6 +1578,7 @@ const dryArtifacts = (assessment: Assessment, organization: string, split: Reado
           context: null,
           status: "planned",
           needsRepair: true,
+          naming: artifactNaming(row),
           unmappedRoles: mapping.roles.flatMap((role) =>
             role.problem === null ? [] : [{ role: role.role, problem: role.problem }],
           ),
@@ -2104,6 +2177,8 @@ const importToolkitItem = (context: ItemContext, id: string) =>
     }
     const base = { kind: "toolkit", id, label: toolkit.data.name, context: null } as const;
     const members = toolkitMembers(toolkit, snapshot.subjects);
+    // Every member's copy follows the same imported apps and accounts.
+    const planning = toolkitPlanning(context, mapLookup(context.store, snapshot));
     const copies = yield* Effect.forEach(members, (member) => {
       const key = toolkitCopyKey(toolkit, member);
       return Effect.gen(function* () {
@@ -2138,8 +2213,13 @@ const importToolkitItem = (context: ItemContext, id: string) =>
           });
         // Otherwise its connection follows the apps and accounts imported since; saving it again
         // is safe.
-        const copy = existing?.status === "imported" ? existing.v2_id : null;
-        return yield* importToolkit(context, toolkit, member, copy ?? undefined).pipe(
+        const record: ToolkitCopyRecord =
+          existing === undefined
+            ? { kind: "unmapped" }
+            : existing.status === "imported" && existing.v2_id !== null
+              ? { kind: "saved", connection: existing.v2_id }
+              : { kind: "unsaved" };
+        return yield* importToolkit(context, planning, toolkit, member, record).pipe(
           Effect.tap(recorded(context, "toolkit", key, hash)),
           Effect.map((result) => outcomeOf(base, result)),
           Effect.catch(failedItem(context, "toolkit", key, hash, base)),
@@ -2352,6 +2432,7 @@ const verify = (
  */
 const blocking = (report: Omit<V1OrgReport, "status">, assessment: Assessment) =>
   report.integrationFailures.length > 0 ||
+  report.artifacts.some((artifact) => artifact.error !== undefined) ||
   report.connectionFailures.some((failure) => failure.reconnect !== true) ||
   report.firstPartyMismatches.length > 0 ||
   assessment.emailMatches.some((match) => match.match === "conflict");
@@ -2577,7 +2658,14 @@ const reportOf = (
       : { read: false },
     artifacts: outcomes.flatMap((outcome) =>
       outcome.kind === "artifact"
-        ? [{ id: outcome.id, title: outcome.label, unmappedRoles: outcome.unmappedRoles ?? [] }]
+        ? [
+            {
+              id: outcome.id,
+              title: outcome.label,
+              unmappedRoles: outcome.unmappedRoles ?? [],
+              ...(outcome.status === "failed" ? { error: outcome.reason ?? "" } : {}),
+            },
+          ]
         : [],
     ),
     splitIntegrations: outcomes.flatMap((outcome) =>
@@ -3036,7 +3124,7 @@ export const runV1Import = <S>(
             ),
           )),
         );
-      return yield* finish(assessment, outcomes, undefined, undefined, undefined);
+      return yield* finish(assessment, namedApps(outcomes), undefined, undefined, undefined);
     }
 
     const written = yield* step(

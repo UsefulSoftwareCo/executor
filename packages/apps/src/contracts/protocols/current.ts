@@ -89,13 +89,21 @@ export class SkillLoadFailed extends Schema.TaggedError<SkillLoadFailed>()("Skil
 
 /**
  * Where a provider's credentials may be sent: an exact host, `host:port`, or `*.` followed by a
- * domain, matching exactly one more label. Lowercase, without a scheme or path.
+ * domain, matching exactly one more label. Lowercase, without a scheme or path. Labels may hold
+ * underscores, as Docker container and service names do (`n8n_server_1:5678`); URLs keep them.
  */
-export const CredentialHost = Schema.String.check(
-  Schema.isPattern(
-    /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/,
+export const CredentialHost = Schema.Union([
+  Schema.String.check(
+    Schema.isPattern(
+      /^(\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[0-9]{1,5})?$/,
+    ),
   ),
-);
+  Schema.String.check(
+    Schema.isPattern(
+      /^(\*\.)?[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*(?::[0-9]{1,5})?$/,
+    ),
+  ),
+]);
 
 /**
  * Field names an auth method exposes to app code, and where its secret fields may be sent. Every

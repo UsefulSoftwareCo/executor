@@ -1,8 +1,8 @@
 diff --git a/dist/index.mjs b/dist/index.mjs
-index bf85c8b78915bee1252a41420a742b306ed3bcdd..661dc2537968058c46af712b42e897b895ea1793 100644
+index 65f487a..75074c9 100644
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
-@@ -1986,8 +1986,11 @@ function verifyApiKey({ configurations, schema, deleteAllExpiredApiKeys }) {
+@@ -1988,8 +1988,11 @@ function verifyApiKey({ configurations, schema, deleteAllExpiredApiKeys }) {
  				ctx.context.logger.error("Failed to delete expired API keys:", err);
  			}));
  		} catch (error) {
@@ -15,7 +15,7 @@ index bf85c8b78915bee1252a41420a742b306ed3bcdd..661dc2537968058c46af712b42e897b8
  				valid: false,
  				error: {
  					...error.body,
-@@ -1996,14 +1999,6 @@ function verifyApiKey({ configurations, schema, deleteAllExpiredApiKeys }) {
+@@ -1998,14 +2001,6 @@ function verifyApiKey({ configurations, schema, deleteAllExpiredApiKeys }) {
  				},
  				key: null
  			});

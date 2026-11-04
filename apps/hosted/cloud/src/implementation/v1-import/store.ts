@@ -37,14 +37,23 @@ export type MapKind =
 export const toolkitCopyId = (toolkitRow: string, member: string) => `${toolkitRow}:${member}`;
 
 /**
- * The id the import gives a member's copy of a toolkit in a v2 organization, which v1 computes too
- * when it forwards the toolkit's URL. A copy the opt-in import made before copies were per member
+ * The id the import gives a member's copy of a toolkit in a v2 organization. Generation 0 is the
+ * id v1 computes too when it forwards the toolkit's URL. A rollback leaves the copies it revoked
+ * under their ids, which are never used again, so an import after it gives such a copy the next
+ * generation's id (`importToolkit`). A copy the opt-in import made before copies were per member
  * keeps the id it got then (`adoptToolkitCopy`).
  */
-export const toolkitCopyConnectionId = (organization: string, toolkitRow: string, member: string) =>
-  sourceHash([organization, toolkitRow, member]).pipe(
-    Effect.map((hash) => `v1-${hash.slice(0, 40)}`),
-  );
+export const toolkitCopyConnectionId = (
+  organization: string,
+  toolkitRow: string,
+  member: string,
+  generation: number,
+) =>
+  sourceHash(
+    generation === 0
+      ? [organization, toolkitRow, member]
+      : [organization, toolkitRow, member, generation],
+  ).pipe(Effect.map((hash) => `v1-${hash.slice(0, 40)}`));
 
 export const MapRow = Schema.Struct({
   v1_kind: Schema.String,

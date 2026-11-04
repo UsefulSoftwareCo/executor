@@ -664,37 +664,50 @@ const restriction = { approve: 1, require_approval: 2, block: 3 } as const;
  * but only when stricter: a member's `approve` result, including "don't ask again", is dropped, so
  * the tool asks again (decision 10). Each member's own first match still decides, so a member's
  * `block` that their own earlier `approve` shadowed in v1 stays shadowed.
+ *
+ * The policies are ordered and their actions read once, so deciding each tool only matches them.
  */
-export const resolvePolicy = (
-  toolId: string,
-  policies: readonly PolicyRow[],
-  multiMember = false,
-): PolicyAction | undefined => {
-  const sorted = [...policies].sort((a, b) =>
-    a.position < b.position
-      ? -1
-      : a.position > b.position
-        ? 1
-        : a.id < b.id
-          ? -1
-          : a.id > b.id
-            ? 1
-            : 0,
-  );
-  const first = new Map<string, { readonly owner: V1Owner; readonly action: PolicyAction }>();
-  for (const row of sorted) {
-    const partition = row.owner === "org" ? "org" : `user:${row.subject}`;
-    if (first.has(partition)) continue;
-    const action = Schema.decodeUnknownOption(PolicyAction)(row.action);
-    if (Option.isSome(action) && matchPattern(row.pattern, toolId))
-      first.set(partition, { owner: row.owner, action: action.value });
-  }
-  let selected: PolicyAction | undefined;
-  for (const { owner, action } of first.values()) {
-    if (multiMember && owner === "user" && action === "approve") continue;
-    if (selected === undefined || restriction[action] > restriction[selected]) selected = action;
-  }
-  return selected;
+export const policyResolver = (policies: readonly PolicyRow[], multiMember = false) => {
+  const ordered = [...policies]
+    .sort((a, b) =>
+      a.position < b.position
+        ? -1
+        : a.position > b.position
+          ? 1
+          : a.id < b.id
+            ? -1
+            : a.id > b.id
+              ? 1
+              : 0,
+    )
+    .flatMap((row) => {
+      // A row whose action v1 does not know never matched a tool.
+      const action = Schema.decodeUnknownOption(PolicyAction)(row.action);
+      return Option.isSome(action)
+        ? [
+            {
+              partition: row.owner === "org" ? "org" : `user:${row.subject}`,
+              owner: row.owner,
+              pattern: row.pattern,
+              action: action.value,
+            },
+          ]
+        : [];
+    });
+  return (toolId: string): PolicyAction | undefined => {
+    const first = new Map<string, { readonly owner: V1Owner; readonly action: PolicyAction }>();
+    for (const row of ordered) {
+      if (first.has(row.partition)) continue;
+      if (matchPattern(row.pattern, toolId))
+        first.set(row.partition, { owner: row.owner, action: row.action });
+    }
+    let selected: PolicyAction | undefined;
+    for (const { owner, action } of first.values()) {
+      if (multiMember && owner === "user" && action === "approve") continue;
+      if (selected === undefined || restriction[action] > restriction[selected]) selected = action;
+    }
+    return selected;
+  };
 };
 
 /** v1 accepted only these patterns; anything else never matched a tool. */
@@ -767,6 +780,30 @@ const byPosition = (a: ToolkitRuleData, b: ToolkitRuleData) =>
           ? 1
           : 0;
 
+/** A toolkit rule that decodes, with its owner partition. */
+interface DecodedToolkitRule {
+  readonly owner: ToolkitRuleRow["owner"];
+  readonly subject: string;
+  readonly collection: ToolkitRuleRow["collection"];
+  readonly rule: ToolkitRuleData;
+}
+
+/** The rules that decode, in their order; v1 skipped the others. */
+const decodeToolkitRules = (rules: readonly ToolkitRuleRow[]): readonly DecodedToolkitRule[] =>
+  rules.flatMap((rule) => {
+    const decoded = Schema.decodeUnknownOption(ToolkitRuleData)(jsonValue(rule.data));
+    return Option.isSome(decoded)
+      ? [
+          {
+            owner: rule.owner,
+            subject: rule.subject,
+            collection: rule.collection,
+            rule: decoded.value,
+          },
+        ]
+      : [];
+  });
+
 /**
  * A toolkit and its rules, or undefined when its row does not decode. v1 reads an `approve` policy
  * ending in `*` with three or four segments as access, unless a connection rule already covers it.
@@ -774,16 +811,37 @@ const byPosition = (a: ToolkitRuleData, b: ToolkitRuleData) =>
 export const decodeToolkit = (
   row: ToolkitRow,
   rules: readonly ToolkitRuleRow[],
+): V1Toolkit | undefined =>
+  toolkitWith(
+    row,
+    decodeToolkitRules(
+      rules.filter((rule) => rule.owner === row.owner && rule.subject === row.subject),
+    ),
+  );
+
+/** Every toolkit that decodes, as `decodeToolkit` reads it, decoding each rule once. */
+export const decodeToolkits = (
+  rows: readonly ToolkitRow[],
+  rules: readonly ToolkitRuleRow[],
+): readonly V1Toolkit[] => {
+  const decoded = decodeToolkitRules(rules);
+  return rows.flatMap((row) => {
+    const toolkit = toolkitWith(row, decoded);
+    return toolkit === undefined ? [] : [toolkit];
+  });
+};
+
+/** A toolkit with the decoded rules of its owner partition and id. */
+const toolkitWith = (
+  row: ToolkitRow,
+  rules: readonly DecodedToolkitRule[],
 ): V1Toolkit | undefined => {
   const data = Option.getOrUndefined(Schema.decodeUnknownOption(ToolkitData)(jsonValue(row.data)));
   if (data === undefined) return undefined;
-  const own = rules.flatMap((rule) => {
-    if (rule.owner !== row.owner || rule.subject !== row.subject) return [];
-    const decoded = Schema.decodeUnknownOption(ToolkitRuleData)(jsonValue(rule.data));
-    return Option.isSome(decoded) && decoded.value.toolkitId === data.id
-      ? [{ collection: rule.collection, rule: decoded.value }]
-      : [];
-  });
+  const own = rules.filter(
+    (rule) =>
+      rule.owner === row.owner && rule.subject === row.subject && rule.rule.toolkitId === data.id,
+  );
   const connections = own
     .filter((entry) => entry.collection === "toolkitConnections")
     .map((entry) => entry.rule);

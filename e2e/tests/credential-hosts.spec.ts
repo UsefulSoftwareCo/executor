@@ -672,6 +672,33 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
     ),
   );
 
+  // Docker names containers and services with underscores, such as `n8n_server_1`, and an app
+  // on the same network reaches the service by that name. `.localhost` names resolve to loopback.
+  it.effect(scenarios.credentialHostsUnderscore.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { deploy, connect, call } = yield* scenario;
+        const upstream = yield* credentialUpstream;
+        const host = `n8n_server_1.localhost:${upstream.port}`;
+        const name = `Credential hosts ${randomUUID().slice(0, 8)}`;
+        const { path, app } = yield* deploy(name, credentialApp({ name, host, health: null }));
+        expect(app.requirements.accounts.service).toBeDefined();
+        const values = synthetic();
+        yield* connect(path, name, values);
+        const { token } = yield* call(path, Fields, "fields", {});
+        expect(token).toMatch(handle);
+
+        const sent = yield* call(path, Sent, "send", { url: `http://${host}/underscore` });
+        expect(sent.status, sent.text).toBe(200);
+        const received = (yield* upstream.received).find(
+          (entry) => new URL(entry.url, upstream.origin).pathname === "/underscore",
+        );
+        expect(received?.authorization).toBe(`Bearer ${values.token}`);
+      }),
+    ),
+  );
+
   it.effect(scenarios.credentialHostsRestart.title, (context) =>
     withHostedCase(
       context,

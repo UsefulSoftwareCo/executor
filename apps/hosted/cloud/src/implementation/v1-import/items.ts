@@ -37,6 +37,8 @@ import {
 import {
   AccountId,
   AppId,
+  appSlug,
+  appSlugFits,
   OAuthGrantImport,
   OAuthRegistration,
   scopeGeneratedPackage,
@@ -60,7 +62,7 @@ import {
   credentialLike,
   itemOwner,
   mcpToolName,
-  resolvePolicy,
+  policyResolver,
   secretPrefix,
   tokenEndpointAuthMethod,
   toolkitAction,
@@ -436,20 +438,93 @@ export const connectionSnapshot = <S extends Pick<V1Snapshot, "connections">>(
 });
 
 /**
+ * An app name the importer makes, in parts: fixed text, and text it may shorten (`{ cut }`). The
+ * fixed text tells apps apart whose other text is the same, such as a connection's number.
+ */
+export type AppNaming = readonly (string | { readonly cut: string })[];
+
+/** Why the importer made no app: every name it tries (`appNames`) is taken in the organization. */
+export const namesTaken = "Every name for this app is taken in the organization.";
+
+/** The names the importer tries for one app before it gives up (`namesTaken`). */
+const nameAttempts = 5;
+
+/** The longest app name (`AppName`). */
+const nameLength = 120;
+
+/** Spaces and punctuation that would dangle before a shortened text's "…". */
+const dangling = /[\s\p{Ps}\p{Pd}\p{Po}]+$/u;
+
+/** `text` shortened with "…", longest first: at each word, then at each character. */
+const shortenings = (text: string) => {
+  const characters = Array.from(text);
+  const words = [...text.matchAll(/\s+/gu)].map((match) => text.slice(0, match.index)).reverse();
+  const cuts = characters.map((_, end) => characters.slice(0, end).join("")).reverse();
+  return [...words, ...cuts].map((kept) => `${kept.replace(dangling, "")}…`);
+};
+
+/**
+ * The name the importer gives an app on its `attempt`: `naming`'s parts, then on a retry
+ * `(v1 <attempt>)`. An app's address keeps only the start of a long name (`appSlugFits`), so a
+ * name with fixed text keeps it whole and shortens the other parts, the first first, until its
+ * address holds the whole name. A name that already fits stays as it is. A name of only text it
+ * may shorten has nothing to tell apart, and only keeps to the length names may have.
+ */
+const appName = (naming: AppNaming, attempt: number) => {
+  const parts = attempt === 1 ? naming : [...naming, ` (v1 ${attempt})`];
+  const tellsApart = parts.some((part) => typeof part === "string");
+  const fits = (texts: readonly string[]) => {
+    const name = texts.join("");
+    return name.length <= nameLength && (!tellsApart || appSlugFits(name));
+  };
+  let texts = parts.map((part) => (typeof part === "string" ? part : part.cut));
+  for (const [index, part] of parts.entries()) {
+    if (fits(texts)) break;
+    if (typeof part === "string") continue;
+    texts =
+      shortenings(part.cut)
+        .map((cut) => texts.with(index, cut))
+        .find(fits) ?? texts.with(index, "…");
+  }
+  return texts.join("");
+};
+
+/**
+ * The names the importer tries for an app, in order: its own, then retries numbered `(v1 N)`. Each
+ * has an address of its own, so a retry never tries an address already refused.
+ */
+export const appNames = (naming: AppNaming) =>
+  Array.from({ length: nameAttempts }, (_, index) => appName(naming, index + 1)).filter(
+    (name, index, names) => names.findIndex((other) => appSlug(other) === appSlug(name)) === index,
+  );
+
+/** An integration's one app's name: its label. */
+export const integrationNaming = (integration: IntegrationRow): AppNaming => [
+  { cut: integrationLabel(integration) },
+];
+
+/** An artifact's app's name: its title. */
+export const artifactNaming = (row: Pick<ArtifactRow, "title">): AppNaming => [
+  { cut: row.title.trim() === "" ? "Artifact" : row.title },
+];
+
+/**
  * A connection's own app's name (decision 33): its integration's, then the connection's. A
  * workspace connection that shares its name with a member's says so, as its account does. App
  * names are unique in an organization, and members often gave their connections the same name, so
- * each later connection of a name is numbered, in the order v1 made them.
+ * each later connection of a name is numbered, in the order v1 made them. When the name is too
+ * long for its address to hold, the integration's label is shortened first, then the connection's
+ * name; the marker and number stay whole (`appName`).
  */
-export const connectionAppName = (
+export const connectionAppNaming = (
   snapshot: Pick<V1Snapshot, "connections">,
   integration: IntegrationRow,
   connection: ConnectionRow,
-) => {
-  const own = (row: ConnectionRow) => {
-    const name = row.name.trim() === "" ? "connection" : row.name.trim().slice(0, 56);
-    return accountLabel(snapshot, row) === row.name ? name : `${name}, workspace`;
-  };
+): AppNaming => {
+  const nameOf = (row: ConnectionRow) =>
+    row.name.trim() === "" ? "connection" : row.name.trim().slice(0, 56);
+  const own = (row: ConnectionRow) =>
+    accountLabel(snapshot, row) === row.name ? nameOf(row) : `${nameOf(row)}, workspace`;
   const base = own(connection);
   const index = snapshot.connections
     .filter((row) => row.integration === connection.integration && own(row) === base)
@@ -463,9 +538,21 @@ export const connectionAppName = (
             : 0,
     )
     .findIndex((row) => row.row_id === connection.row_id);
-  const label = index > 0 ? `${base} ${index + 1}` : base;
-  return `${integrationLabel(integration).slice(0, 117 - label.length)} (${label})`;
+  const marker = base === nameOf(connection) ? "" : ", workspace";
+  return [
+    { cut: integrationLabel(integration) },
+    " (",
+    { cut: nameOf(connection) },
+    `${marker}${index > 0 ? ` ${index + 1}` : ""})`,
+  ];
 };
+
+/** A connection's own app's name, as its first deploy tries it (`connectionAppNaming`). */
+export const connectionAppName = (
+  snapshot: Pick<V1Snapshot, "connections">,
+  integration: IntegrationRow,
+  connection: ConnectionRow,
+) => appName(connectionAppNaming(snapshot, integration, connection), 1);
 
 /** An item context narrowed to one connection's own app (decision 33). */
 const connectionContext = <C extends { readonly snapshot: ConnectionSnapshot }>(
@@ -594,10 +681,11 @@ export const toolActions = (
 ) => {
   const actions = new Map<string, PolicyAction | "default">();
   const toolkits = decodedToolkits(snapshot);
+  const resolve = policyResolver(snapshot.policies, snapshot.multiMember);
   for (const tool of tools) {
     const id = `${integration.slug}.${tool.owner}.${tool.connection}.${tool.name}`;
     const fallback = unruled(integration, tool);
-    const own = resolvePolicy(id, snapshot.policies, snapshot.multiMember) ?? fallback;
+    const own = resolve(id) ?? fallback;
     // The least the app may do for each toolkit that grants the tool: ask when the toolkit asks,
     // keep the tool's default when the toolkit left it to the default.
     const action = toolkits.reduce<PolicyAction | "default">((current, toolkit) => {
@@ -1312,12 +1400,14 @@ export const generate = (
     }
   }).pipe(Effect.catchTag("TemplateError", (error) => fail(error.reason)));
 
-/** Deploy under the integration's name, then a numbered name when the organization has it. */
-const deployNamed = (context: ItemContext, name: string, files: SourceFiles) =>
+/**
+ * Deploy under the app's name, then a numbered one when another app in the organization has its
+ * name or address (`appNames`).
+ */
+const deployNamed = (context: ItemContext, naming: AppNaming, files: SourceFiles) =>
   Effect.gen(function* () {
     const owner = organizationOwner(context.target.id);
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      const candidate = attempt === 1 ? name : `${name.slice(0, 110)} (v1 ${attempt})`;
+    for (const candidate of appNames(naming)) {
       const scoped = yield* scopeGeneratedPackage(files, context.target.slug, candidate).pipe(
         Effect.catch(() => fail("The app package could not be named.")),
       );
@@ -1332,7 +1422,7 @@ const deployNamed = (context: ItemContext, name: string, files: SourceFiles) =>
         );
       if (Option.isSome(deployed)) return deployed.value;
     }
-    return yield* fail("Every name for this app is taken in the organization.");
+    return yield* fail(namesTaken);
   });
 
 /**
@@ -1374,7 +1464,7 @@ export const importIntegration = (
     const owner = organizationOwner(context.target.id);
     const app =
       existing === undefined
-        ? yield* deployNamed(context, integrationLabel(integration), generated.files)
+        ? yield* deployNamed(context, integrationNaming(integration), generated.files)
         : (yield* context.executor.apps.deploy({
             owner,
             app: existing,
@@ -1430,10 +1520,11 @@ export const importConnectionApp = (
         yield* redundantFixed(own, integration),
       );
       const generated = yield* generate(own, integration, plan.value, planned);
+      const naming = connectionAppNaming(context.snapshot, integration, connection);
       const name = connectionAppName(context.snapshot, integration, connection);
       const app =
         existing === undefined
-          ? yield* deployNamed(context, name, generated.files)
+          ? yield* deployNamed(context, naming, generated.files)
           : (yield* context.executor.apps.deploy({
               owner: organizationOwner(context.target.id),
               app: existing,
@@ -1444,7 +1535,8 @@ export const importConnectionApp = (
       return {
         result: imported("app", app.id, generated.note),
         app: app.id,
-        name,
+        // The name it has: a retry's when an earlier app took the first (`appNames`).
+        name: app.name,
         traced: generated.traced,
         stale: generated.stale,
         dropped: generated.dropped,
@@ -2281,6 +2373,100 @@ const sameTarget = (a: RunTarget, b: RunTarget) =>
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
 
+/** `read` once per key; a failed read is not kept, so a later call reads again. */
+const readOnce = <R, A, E>(key: (row: R) => string, read: (row: R) => Effect.Effect<A, E>) => {
+  const known = new Map<string, { readonly value: A }>();
+  return (row: R): Effect.Effect<A, E> => {
+    const found = known.get(key(row));
+    return found !== undefined
+      ? Effect.succeed(found.value)
+      : read(row).pipe(Effect.tap((value) => Effect.sync(() => known.set(key(row), { value }))));
+  };
+};
+
+/** An integration a toolkit reaches, as its app was imported, with every member's tools. */
+interface ReachedIntegration {
+  readonly imported: ImportedIntegration;
+  readonly all: readonly ToolRow[];
+  readonly aliases: Readonly<Record<string, string>>;
+  /**
+   * The names the app a tool runs in leaves out: the integration's one app's, or, for an app per
+   * connection, the tool's connection's own app's. None for a tool without its connection there.
+   */
+  readonly omitted: (connection: ConnectionRow | undefined) => ReadonlySet<string> | undefined;
+}
+
+/**
+ * What every member's copy of a step's toolkits is planned from, read and decided once for the
+ * step: each integration's imported app, tools and the names its app leaves out, each
+ * connection's own app and what it runs as, and what each toolkit does with each tool. None of it
+ * depends on the member, and a toolkit's copies write none of what `lookup` reads, so every copy
+ * reads the same.
+ */
+export const toolkitPlanning = (
+  context: { readonly snapshot: V1Snapshot; readonly source: Pick<V1Source, "tools"> },
+  lookup: ImportedLookup,
+) => {
+  const { snapshot, source } = context;
+  // The first of v1's connections at each address, as a tool names its connection.
+  const addresses = new Map<string, ConnectionRow>();
+  const address = (integration: string, owner: string, subject: string, name: string) =>
+    JSON.stringify([integration, owner, subject, name]);
+  for (const connection of snapshot.connections) {
+    const key = address(
+      connection.integration,
+      connection.owner,
+      connection.subject,
+      connection.name,
+    );
+    if (!addresses.has(key)) addresses.set(key, connection);
+  }
+  const integration = readOnce(
+    (row: IntegrationRow) => row.row_id,
+    (row) =>
+      Effect.gen(function* () {
+        const imported = yield* lookup.app(row);
+        if (imported === undefined) return undefined;
+        // Approvals are the app's, for every member, so they read every member's tools.
+        const all = yield* source.tools(snapshot.tenant, snapshot.subjects, row.slug);
+        const aliases = row.plugin_id === "mcp" ? mcpNaming(all).aliases : {};
+        const omittedOf = (tools: readonly ToolRow[]) =>
+          new Set(approvalRules(toolActions(snapshot, row, tools, aliases)).omitted);
+        const integrationOmitted = imported.kind === "one" ? omittedOf(all) : undefined;
+        // A connection's own app leaves out what v1's rules blocked for it alone.
+        const ownOmitted = new Map<string, ReadonlySet<string>>();
+        const omitted = (connection: ConnectionRow | undefined) => {
+          if (integrationOmitted !== undefined || connection === undefined)
+            return integrationOmitted;
+          const own = ownOmitted.get(connection.row_id) ?? omittedOf(listedAs(connection, all));
+          ownOmitted.set(connection.row_id, own);
+          return own;
+        };
+        return { imported, all, aliases, omitted } satisfies ReachedIntegration;
+      }),
+  );
+  // What each toolkit does with each tool, which is the same for every member's copy.
+  const actions = new Map<V1Toolkit, Map<string, ReturnType<typeof toolkitAction>>>();
+  return {
+    snapshot,
+    integration,
+    action: (toolkit: V1Toolkit, toolId: string) => {
+      const known = actions.get(toolkit) ?? new Map<string, ReturnType<typeof toolkitAction>>();
+      actions.set(toolkit, known);
+      if (known.has(toolId)) return known.get(toolId);
+      const action = toolkitAction(toolkit, toolId);
+      known.set(toolId, action);
+      return action;
+    },
+    /** The connection v1 listed a tool of the integration through. */
+    connectionOf: (row: Pick<IntegrationRow, "slug">, tool: ToolRow) =>
+      addresses.get(address(row.slug, tool.owner, tool.subject, tool.connection)),
+    connectionApp: readOnce((row: ConnectionRow) => row.row_id, lookup.connectionApp),
+    connection: readOnce((row: ConnectionRow) => row.row_id, lookup.connection),
+  };
+};
+export type ToolkitPlanning = ReturnType<typeof toolkitPlanning>;
+
 /**
  * A toolkit's scoped MCP connection: for each imported app whose tools it granted, the tools v1
  * served through it (`selected`, by the app's names) and what the connections it granted run as:
@@ -2292,14 +2478,9 @@ const plural = (count: number, one: string, many: string) => `${count} ${count =
  * Each member gets their own copy (decision 11), which reaches org connections and, for the
  * member's own toolkit, their own connections; never another member's.
  */
-export const toolkitPolicy = (
-  context: { readonly snapshot: V1Snapshot; readonly source: Pick<V1Source, "tools"> },
-  lookup: ImportedLookup,
-  toolkit: V1Toolkit,
-  member: string,
-) =>
+export const toolkitPolicy = (planning: ToolkitPlanning, toolkit: V1Toolkit, member: string) =>
   Effect.gen(function* () {
-    const { snapshot, source } = context;
+    const { snapshot } = planning;
     const apps: ConnectionApp[] = [];
     const notes: string[] = [];
     const missingApps = new Set<string>();
@@ -2310,19 +2491,13 @@ export const toolkitPolicy = (
     const reached = toolkitConnections(snapshot, toolkit).filter(visible);
     for (const integration of snapshot.integrations) {
       if (!reached.some((connection) => connection.integration === integration.slug)) continue;
-      const imported = yield* lookup.app(integration);
+      const found = yield* planning.integration(integration);
       const label = integrationLabel(integration);
-      if (imported === undefined) {
+      if (found === undefined) {
         missingApps.add(label);
         continue;
       }
-      // Approvals are the app's, for every member, so they read every member's tools.
-      const all = yield* source.tools(snapshot.tenant, snapshot.subjects, integration.slug);
-      const aliases = integration.plugin_id === "mcp" ? mcpNaming(all).aliases : {};
-      const omittedOf = (tools: readonly ToolRow[]) =>
-        new Set(approvalRules(toolActions(snapshot, integration, tools, aliases)).omitted);
-      const integrationOmitted = imported.kind === "one" ? omittedOf(all) : undefined;
-      const ownOmitted = new Map<string, ReadonlySet<string>>();
+      const { imported, all, aliases } = found;
       const tools = all.filter(visible);
       // The tools granted through each app, the connections granted, and which tool through which.
       const byApp = new Map<
@@ -2330,7 +2505,7 @@ export const toolkitPolicy = (
         { names: Set<string>; granted: Map<string, ConnectionRow>; pairs: Set<string> }
       >();
       for (const tool of tools) {
-        const action = toolkitAction(
+        const action = planning.action(
           toolkit,
           `${integration.slug}.${tool.owner}.${tool.connection}.${tool.name}`,
         );
@@ -2338,26 +2513,14 @@ export const toolkitPolicy = (
         const name = Object.hasOwn(aliases, tool.name)
           ? (aliases[tool.name] ?? tool.name)
           : tool.name;
-        const connection = snapshot.connections.find(
-          (candidate) =>
-            candidate.integration === integration.slug &&
-            candidate.owner === tool.owner &&
-            candidate.subject === tool.subject &&
-            candidate.name === tool.connection,
-        );
-        // A connection's own app leaves out what v1's rules blocked for it alone.
-        let omitted: ReadonlySet<string> | undefined = integrationOmitted;
-        if (omitted === undefined && connection !== undefined) {
-          omitted = ownOmitted.get(connection.row_id) ?? omittedOf(listedAs(connection, all));
-          ownOmitted.set(connection.row_id, omitted);
-        }
-        if (omitted?.has(name) === true) {
+        const connection = planning.connectionOf(integration, tool);
+        if (found.omitted(connection)?.has(name) === true) {
           blockedElsewhere.add(`${label} ${name}`);
           continue;
         }
         if (connection === undefined) continue;
         const appId =
-          imported.kind === "one" ? imported.id : yield* lookup.connectionApp(connection);
+          imported.kind === "one" ? imported.id : yield* planning.connectionApp(connection);
         if (appId === undefined) {
           missingApps.add(connectionAppName(snapshot, integration, connection));
           continue;
@@ -2375,7 +2538,7 @@ export const toolkitPolicy = (
       for (const [appId, { names, granted, pairs }] of byApp) {
         const targets: RunTarget[] = [];
         for (const connection of granted.values()) {
-          const target = (yield* lookup.connection(connection))?.target;
+          const target = (yield* planning.connection(connection))?.target;
           if (target === undefined) missingConnections.add(`${label} ${connection.name}`);
           else if (!targets.some((other) => sameTarget(other, target))) targets.push(target);
         }
@@ -2410,13 +2573,29 @@ export const toolkitPolicy = (
   });
 
 /**
- * The connection's id: stable for the toolkit, the member's copy and the organization, so a retry
- * updates it.
+ * The connection's id: stable for the toolkit, the member's copy, the organization and the
+ * generation, so a retry updates it.
  */
-export const toolkitConnectionId = (organization: string, toolkit: V1Toolkit, member: string) =>
-  toolkitCopyConnectionId(organization, toolkit.row.row_id, member).pipe(
+export const toolkitConnectionId = (
+  organization: string,
+  toolkit: V1Toolkit,
+  member: string,
+  generation: number,
+) =>
+  toolkitCopyConnectionId(organization, toolkit.row.row_id, member, generation).pipe(
     Effect.map((id) => ConnectionId.make(id)),
   );
+
+/**
+ * What the import map holds for one member's copy of a toolkit: the connection an earlier run saved
+ * it as, a row for an attempt that saved none, or no row at all. Only a rollback deletes map rows,
+ * so a connection that already holds an unmapped copy's id was made by an import that was rolled
+ * back.
+ */
+export type ToolkitCopyRecord =
+  | { readonly kind: "saved"; readonly connection: string }
+  | { readonly kind: "unsaved" }
+  | { readonly kind: "unmapped" };
 
 /** The members who get a copy of a toolkit: everyone for an org toolkit, else its owner. */
 export const toolkitMembers = (toolkit: V1Toolkit, members: readonly string[]) =>
@@ -2429,39 +2608,54 @@ export const toolkitCopyKey = (toolkit: Pick<V1Toolkit, "row">, member: string) 
   toolkitCopyId(toolkit.row.row_id, member);
 
 /**
- * Create or update a member's copy of the toolkit: a scoped MCP connection they own. `copy` is the
- * connection the import map already records for it, which for a copy the opt-in import made is not
- * the id an import gives a copy now.
+ * Create or update a member's copy of the toolkit: a scoped MCP connection they own. A copy the
+ * import map records keeps its connection, which for a copy the opt-in import made is not the id an
+ * import gives a copy now. Any other copy takes generation 0's id. When another connection holds
+ * an unmapped copy's id, one a rolled-back import made, the copy takes the next generation's: that
+ * connection stays revoked under its id, so its grants and tokens never come back. Otherwise a
+ * taken id means its users removed the copy. `planning` is the step's, shared by every copy it
+ * saves.
  */
 export const importToolkit = (
   context: ItemContext,
+  planning: ToolkitPlanning,
   toolkit: V1Toolkit,
   member: string,
-  copy?: string,
+  record: ToolkitCopyRecord,
 ) =>
   Effect.gen(function* () {
     const user = context.users.get(member);
     if (user === undefined) return yield* fail("Its member is not imported.");
-    const { policy, notes } = yield* toolkitPolicy(
-      context,
-      mapLookup(context.store, context.snapshot),
-      toolkit,
-      member,
-    );
+    const { policy, notes } = yield* toolkitPolicy(planning, toolkit, member);
     const owner = { userId: user, resource: context.target.id };
-    const id =
-      copy === undefined
-        ? yield* toolkitConnectionId(context.target.id, toolkit, member)
-        : ConnectionId.make(copy);
     const name = (toolkit.data.name.trim() === "" ? toolkit.data.slug : toolkit.data.name).slice(
       0,
       80,
     );
-    const existing = yield* context.connections.list(owner);
-    const saved = existing.some((connection) => connection.id === id)
-      ? yield* context.connections.update(owner, { id, name, policy })
-      : yield* context.connections.create(owner, { id, name, policy });
-    return imported("mcp_connection", saved.id, notes.length === 0 ? undefined : notes.join(" "));
+    const note = notes.length === 0 ? undefined : notes.join(" ");
+    const live = yield* context.connections.list(owner);
+    const save = (id: ConnectionId) =>
+      Effect.gen(function* () {
+        return live.some((connection) => connection.id === id)
+          ? yield* context.connections.update(owner, { id, name, policy })
+          : yield* context.connections.create(owner, { id, name, policy });
+      });
+    if (record.kind === "saved") {
+      const saved = yield* save(ConnectionId.make(record.connection));
+      return imported("mcp_connection", saved.id, note);
+    }
+    // Each rollback leaves at most one generation of a copy behind, so the walk ends at the first
+    // generation after them. A retry finds the copy it saved there live and updates it.
+    for (let generation = 0; ; generation++) {
+      const id = yield* toolkitConnectionId(context.target.id, toolkit, member, generation);
+      const saved = yield* save(id).pipe(
+        Effect.map(Option.some),
+        Effect.catchTag("ConnectionIdTaken", (taken) =>
+          record.kind === "unmapped" ? Effect.succeedNone : Effect.fail(taken),
+        ),
+      );
+      if (Option.isSome(saved)) return imported("mcp_connection", saved.value.id, note);
+    }
   }).pipe(
     Effect.catchTags({
       ConnectionIdTaken: () => fail("Its MCP connection was removed in v2."),
@@ -2701,9 +2895,7 @@ const saveArtifact = (
       }).pipe(Effect.catchTag("AppNotFound", () => Effect.succeed(Option.none<AppId>())));
       if (Option.isSome(updated)) return { ...imported("undeployed_app", updated.value, note) };
     }
-    for (let attempt = 1; attempt <= 5; attempt++) {
-      const candidate =
-        attempt === 1 ? title.slice(0, 120) : `${title.slice(0, 110)} (v1 ${attempt})`;
+    for (const candidate of appNames(artifactNaming(row))) {
       const scoped = yield* scopeGeneratedPackage(files, context.target.slug, candidate).pipe(
         Effect.catch(() => fail("The app package could not be named.")),
       );
@@ -2718,5 +2910,5 @@ const saveArtifact = (
         );
       if (Option.isSome(created)) return imported("undeployed_app", created.value, note);
     }
-    return yield* fail("Every name for this app is taken in the organization.");
+    return yield* fail(namesTaken);
   });
