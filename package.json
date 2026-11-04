@@ -173,17 +173,17 @@
   },
   "patchedDependencies": {
     "@cfworker/json-schema@4.1.1": "patches/@cfworker%2Fjson-schema@4.1.1.patch",
-    "@better-auth/oauth-provider@1.7.5": "patches/@better-auth%2Foauth-provider@1.7.5.patch",
+    "@better-auth/oauth-provider@1.7.16": "patches/@better-auth%2Foauth-provider@1.7.16.patch",
     "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
     "miniflare@4.20260730.0": "patches/miniflare@4.20260730.0.patch",
     "tailwindcss-iso@1.0.7": "patches/tailwindcss-iso@1.0.7.patch",
-    "@better-auth/sso@1.7.5": "patches/@better-auth%2Fsso@1.7.5.patch",
-    "better-auth@1.7.5": "patches/better-auth@1.7.5.patch",
+    "@better-auth/sso@1.7.16": "patches/@better-auth%2Fsso@1.7.16.patch",
+    "better-auth@1.7.16": "patches/better-auth@1.7.16.patch",
     "@swagger-api/apidom-ns-openapi-3-1@1.11.6": "patches/@swagger-api%2Fapidom-ns-openapi-3-1@1.11.6.patch",
     "tree-sitter@0.21.1": "patches/tree-sitter@0.21.1.patch",
     "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
     "pg-cloudflare@1.4.0": "patches/pg-cloudflare@1.4.0.patch",
-    "@better-auth/passkey@1.7.5": "patches/@better-auth%2Fpasskey@1.7.5.patch",
+    "@better-auth/passkey@1.7.16": "patches/@better-auth%2Fpasskey@1.7.16.patch",
     "@electric-sql/pglite@0.5.8": "patches/@electric-sql%2Fpglite@0.5.8.patch",
     "effect@4.0.1": "patches/effect@4.0.1.patch",
     "@effect/platform-node-shared@4.0.1": "patches/@effect%2Fplatform-node-shared@4.0.1.patch",
@@ -193,8 +193,7 @@
     "alchemy@2.0.0-beta.80": "patches/alchemy@2.0.0-beta.80.patch",
     "@alchemy.run/cloudflare-runtime@2.0.0-beta.80": "patches/@alchemy.run%2Fcloudflare-runtime@2.0.0-beta.80.patch",
     "@distilled.cloud/cloudflare@1.0.0-rc.13": "patches/@distilled.cloud%2Fcloudflare@1.0.0-rc.13.patch",
-    "@better-auth/api-key@1.7.5": "patches/@better-auth%2Fapi-key@1.7.5.patch",
-    "@better-auth/core@1.7.5": "patches/@better-auth%2Fcore@1.7.5.patch"
+    "@better-auth/api-key@1.7.16": "patches/@better-auth%2Fapi-key@1.7.16.patch"
   },
   "trustedDependencies": [
     "dugite",

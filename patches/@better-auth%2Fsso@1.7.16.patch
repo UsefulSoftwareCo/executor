@@ -1,9 +1,9 @@
 diff --git a/dist/index.mjs b/dist/index.mjs
-index 5989b7213499593c256ffcb47cc3aee882916ac5..2d8b5a253a73b8851e136914a361a3646b27c457 100644
+index c5ede32..f6052f6 100644
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
 @@ -1,8 +1,6 @@
- import { t as PACKAGE_VERSION } from "./version-syldHUph.mjs";
+ import { t as PACKAGE_VERSION } from "./version-CVbZQOHF.mjs";
 -import { APIError, addOAuthServerContext, createAuthEndpoint, createAuthMiddleware, getSessionFromCtx, sessionMiddleware } from "better-auth/api";
 -import { XMLParser, XMLValidator } from "fast-xml-parser";
 +import { APIError, addOAuthServerContext, createAuthEndpoint as createNativeAuthEndpoint, createAuthMiddleware as createNativeAuthMiddleware, getSessionFromCtx, sessionMiddleware } from "better-auth/api";
@@ -12,17 +12,16 @@ index 5989b7213499593c256ffcb47cc3aee882916ac5..2d8b5a253a73b8851e136914a361a364
  import { generateRandomString } from "better-auth/crypto";
  import * as z from "zod";
  import { getCurrentAdapter, getCurrentDBAdapterAsyncLocalStorage, runWithTransaction } from "@better-auth/core/context";
-@@ -12,9 +10,6 @@ import { betterFetch } from "@better-fetch/fetch";
- import { createRemoteJWKSet, customFetch, jwtVerify } from "jose";
+@@ -13,8 +11,6 @@ import { betterFetch } from "@better-fetch/fetch";
+ import { createRemoteJWKSet, customFetch } from "jose";
  import { base64, base64Url } from "@better-auth/utils/base64";
  import { createHash } from "@better-auth/utils/hash";
 -import { DOMParser } from "@xmldom/xmldom";
--import * as samlifyNamespace from "samlify";
--import samlifyDefault from "samlify";
+-import samlifyDefault, * as samlifyNamespace from "samlify";
  import { defineErrorCodes } from "@better-auth/core/utils/error-codes";
  import { parseInputData, toZodSchema } from "better-auth/db";
  import { isAPIError } from "@better-auth/core/utils/is-api-error";
-@@ -22,6 +17,45 @@ import { appendQueryParams } from "@better-auth/core/utils/url";
+@@ -22,6 +18,45 @@ import { appendQueryParams } from "@better-auth/core/utils/url";
  import { HIDE_METADATA, PRIVATE_KEY_JWT_SIGNING_ALGORITHMS, authorizationCodeRequest, createAuthorizationURL, createPrivateKeyJwtClientAssertionGetter, generateGenericState, generateState, getOAuth2Tokens, parseGenericState, parseState } from "better-auth";
  import { deleteSessionCookie, setAccountCookie, setSessionCookie } from "better-auth/cookies";
  import { additionalAuthorizationParamsSchema, handleOAuthUserInfo } from "better-auth/oauth2";
@@ -68,7 +67,7 @@ index 5989b7213499593c256ffcb47cc3aee882916ac5..2d8b5a253a73b8851e136914a361a364
  //#region src/constants.ts
  /**
  * SAML Constants
-@@ -391,8 +425,7 @@ function computeDiscoveryUrl(issuer) {
+@@ -392,8 +427,7 @@ function computeDiscoveryUrl(issuer) {
  * @throws DiscoveryError if URL is invalid
  */
  function validateDiscoveryUrl(url, isTrustedOrigin) {
@@ -78,7 +77,7 @@ index 5989b7213499593c256ffcb47cc3aee882916ac5..2d8b5a253a73b8851e136914a361a364
  }
  /**
  * Validate that a user-supplied OIDC endpoint URL is safe to fetch.
-@@ -682,10 +715,7 @@ function normalizeDiscoveryUrls(document, issuer, isTrustedOrigin) {
+@@ -685,10 +719,7 @@ function normalizeDiscoveryUrls(document, issuer, isTrustedOrigin) {
  */
  function normalizeAndValidateUrl(name, endpoint, issuer, isTrustedOrigin) {
  	const url = normalizeUrl(name, endpoint, issuer);
@@ -90,7 +89,7 @@ index 5989b7213499593c256ffcb47cc3aee882916ac5..2d8b5a253a73b8851e136914a361a364
  	return url;
  }
  /**
-@@ -964,12 +994,6 @@ async function isCurrentSSOProviderReference(provider, reference) {
+@@ -967,12 +998,6 @@ async function isCurrentSSOProviderReference(provider, reference) {
  }
  //#endregion
  //#region src/saml/parser.ts
@@ -103,7 +102,7 @@ index 5989b7213499593c256ffcb47cc3aee882916ac5..2d8b5a253a73b8851e136914a361a364
  function findNode(obj, nodeName) {
  	if (!obj || typeof obj !== "object") return null;
  	const record = obj;
-@@ -1176,7 +1200,6 @@ function validateConfigAlgorithms(config, options = {}) {
+@@ -1176,7 +1201,6 @@ function validateConfigAlgorithms(config, options = {}) {
  		});
  	}
  }
@@ -111,7 +110,7 @@ index 5989b7213499593c256ffcb47cc3aee882916ac5..2d8b5a253a73b8851e136914a361a364
  //#endregion
  //#region src/saml/assertions.ts
  const SAML_ASSERTION_NAMESPACE = "urn:oasis:names:tc:SAML:2.0:assertion";
-@@ -4428,10 +4451,6 @@ const initiateSLO = (options) => {
+@@ -4462,10 +4486,6 @@ const initiateSLO = (options) => {
  };
  //#endregion
  //#region src/index.ts
