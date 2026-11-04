@@ -38,6 +38,7 @@ import {
   V1McpForwardSecret,
   v1ForwardBearer,
   v1McpForwardFile,
+  v1ToolkitConnectionId,
 } from "../support/v1-mcp-forward.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -190,11 +191,16 @@ const personalApproveDropped =
  * `mine` connection of two members, and a `gone` connection of someone who left. Rules: one member
  * approves `search` for themselves, another blocks `delete_item`, and the former member blocked
  * `search`. An org toolkit grants the `team` connection; one member's own toolkit grants theirs.
+ * `toolkits` gives the two toolkits' rows their ids, which a toolkit copy's id is made from.
  */
 const seedShared = (
   organization: string,
   slug: string,
   members: { readonly first: string; readonly second: string; readonly former: string },
+  toolkits: { readonly team: string; readonly mine: string } = {
+    team: randomUUID(),
+    mine: randomUUID(),
+  },
 ) =>
   Effect.gen(function* () {
     const emulators = yield* Emulators;
@@ -257,9 +263,11 @@ const seedShared = (
       collection: string,
       key: string,
       data: object,
+      rowId: string = randomUUID(),
     ) =>
       row(
-        "insert into plugin_storage (tenant, owner, subject, plugin_id, collection, key, data) values ($1, $2, $3, 'toolkits', $4, $5, $6::json)",
+        "insert into plugin_storage (row_id, tenant, owner, subject, plugin_id, collection, key, data) values ($1, $2, $3, $4, 'toolkits', $5, $6, $7::json)",
+        rowId,
         organization,
         owner,
         subject,
@@ -291,18 +299,28 @@ const seedShared = (
       policy(members.second, `${tracker}.*.*.search`, "approve"),
       policy(members.first, `${tracker}.*.*.delete_item`, "block"),
       policy(members.former, `${tracker}.*.*.search`, "block"),
-      storage("org", "", "toolkits", "tk_team", { id: "tk_team", name: "Team kit", slug: "team" }),
+      storage(
+        "org",
+        "",
+        "toolkits",
+        "tk_team",
+        { id: "tk_team", name: "Team kit", slug: "team" },
+        toolkits.team,
+      ),
       storage("org", "", "toolkitConnections", "tc_team", {
         id: "tc_team",
         toolkitId: "tk_team",
         pattern: `${tracker}.org.team.*`,
         position: "a0",
       }),
-      storage("user", members.first, "toolkits", "tk_mine", {
-        id: "tk_mine",
-        name: "Mine",
-        slug: "mine",
-      }),
+      storage(
+        "user",
+        members.first,
+        "toolkits",
+        "tk_mine",
+        { id: "tk_mine", name: "Mine", slug: "mine" },
+        toolkits.mine,
+      ),
       storage("user", members.first, "toolkitConnections", "tc_mine", {
         id: "tc_mine",
         toolkitId: "tk_mine",
@@ -638,6 +656,179 @@ const goneRule = (organization: string) =>
     organization,
     `gone_${randomUUID().slice(0, 6)}.*.*.search`,
   );
+
+/** A v1 member: their WorkOS user id and their email. */
+interface V1Member {
+  readonly user: string;
+  readonly email: string;
+}
+
+const byJson = (a: unknown, b: unknown) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1);
+
+const Copy = Schema.Struct({ id: Schema.String, name: Schema.String, userId: Schema.String });
+/** An organization's live MCP connections: its members' toolkit copies. */
+const liveCopies = (organization: string) =>
+  cloudRows(
+    Copy,
+    `select id, name, "userId" from "mcpConnection" where resource = $1 and not revoked`,
+    organization,
+  );
+/** Whether each of these MCP connections is revoked. */
+const connectionsRevoked = (ids: readonly string[]) =>
+  cloudRows(
+    Schema.Struct({ id: Schema.String, revoked: Schema.Boolean }),
+    `select id, revoked from "mcpConnection"
+      where id in (select jsonb_array_elements_text($1::jsonb)) order by id`,
+    JSON.stringify(ids),
+  );
+
+/**
+ * The status of the initialize request v1 forwards when `member` opens the v1 URL of `toolkit`, a
+ * toolkit row of `organization`, once it moved to `v2Organization`. v1 names the member's copy by
+ * the id it computes.
+ */
+const forwardedToolkit = (input: {
+  readonly organization: string;
+  readonly v2Organization: string;
+  readonly toolkit: string;
+  readonly member: string;
+}) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem,
+      target = yield* Target,
+      http = yield* HttpClient.HttpClient;
+    const { secret } = yield* fs
+      .readFileString(`${target.directory}/${v1McpForwardFile}`)
+      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(V1McpForwardSecret))));
+    const connection = v1ToolkitConnectionId(input.v2Organization, input.toolkit, input.member);
+    const bearer = v1ForwardBearer(secret, {
+      account: input.member,
+      organization: input.organization,
+      exp: Math.floor(Date.now() / 1000) + 300,
+      toolkit: input.toolkit,
+      connection,
+    });
+    const request = HttpClientRequest.post(
+      `${target.metadata.origin}/mcp?connection=${connection}`,
+    ).pipe(
+      HttpClientRequest.setHeaders({
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${bearer}`,
+      }),
+    );
+    const response = yield* http.execute(
+      yield* HttpClientRequest.bodyJson(request, {
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: {
+          protocolVersion: "2025-06-18",
+          capabilities: {},
+          clientInfo: { name: "forwarded-toolkit", version: "1" },
+        },
+      }),
+    );
+    yield* response.text;
+    return response.status;
+  }).pipe(Effect.scoped, Effect.provide(FetchHttpClient.layer));
+
+/**
+ * Import a rolled-back workspace of the shared seed (`seedShared`) again and check its toolkit
+ * copies. Its own import instance has completed, so starting it again runs nothing; an operator
+ * restarts it. A twin workspace with the same members and toolkit rows stands in for that restart:
+ * a copy's id comes from the v2 organization, the toolkit's row and the member, so the twin's
+ * copies take the ids of the copies the first import made (`earlier`). It moves into `into` as a
+ * copy, or into a new organization. It cuts over, its owner and teammate each have a live copy of
+ * the org toolkit and the owner one of their own toolkit, none under an id of `earlier`, the import
+ * map names each, and v1's URL of the org toolkit forwards each member to their copy. The twin and
+ * its report.
+ */
+const importTwin = (input: {
+  readonly label: string;
+  readonly owner: V1Member;
+  readonly teammate: V1Member;
+  readonly former: string;
+  readonly toolkits: { readonly team: string; readonly mine: string };
+  readonly into?: string;
+  readonly earlier: readonly string[];
+}) =>
+  Effect.gen(function* () {
+    const emulators = yield* Emulators;
+    const operator = yield* v1ImportOperator;
+    const twin = yield* emulators.v1Workspace([input.owner.email, input.teammate.email]);
+    expect(twin.user).toBe(input.owner.user);
+    const organization = twin.organization;
+    yield* seedShared(
+      organization,
+      `v1-${randomUUID().slice(0, 8)}`,
+      { first: input.owner.user, second: input.teammate.user, former: input.former },
+      input.toolkits,
+    );
+    yield* allowV1Import(organization);
+    if (input.into !== undefined) yield* listV1Into(organization, input.into, "copy_into_empty");
+    const run = v1RunId(input.label);
+    const started = yield* operator.start({
+      mode: "import",
+      runId: run,
+      organizations: [organization],
+    });
+    expect(started.status, JSON.stringify(started.body)).toBe(200);
+    const report = yield* operator.waitForReport(run, organization);
+    const toolkits = (report.items ?? []).filter((item) => item.kind === "toolkit");
+    expect(
+      toolkits.map((item) => [item.label, item.status, item.reason ?? null]).toSorted(byJson),
+    ).toEqual([
+      ["Mine", "imported", null],
+      ["Team kit", "imported", null],
+    ]);
+    expect(report.status, report.reason ?? "").toBe("imported");
+    expect(report.verification).toMatchObject({ items: { failed: 0 }, passed: true });
+    expect(report.cutover).toBe(true);
+    const target = report.v2Organization;
+    if (target === undefined) return yield* Effect.die("The import named no organization");
+    expect(yield* movedFlag(organization)).toEqual([
+      { state: "moved", v2_org_id: target.id, v2_org_slug: target.slug },
+    ]);
+
+    const v2Id = (member: V1Member) =>
+      cloudRows(IdRow, `select id from "user" where lower(email) = lower($1)`, member.email).pipe(
+        Effect.map((users) => users[0]?.id),
+      );
+    const owner = yield* v2Id(input.owner);
+    const teammate = yield* v2Id(input.teammate);
+    const copies = yield* liveCopies(target.id);
+    expect(copies.map((copy) => [copy.name, copy.userId]).toSorted(byJson)).toEqual(
+      [
+        ["Mine", owner],
+        ["Team kit", owner],
+        ["Team kit", teammate],
+      ].toSorted(byJson),
+    );
+    expect(copies.filter((copy) => input.earlier.includes(copy.id))).toEqual([]);
+    const mapped = yield* cloudRows(
+      Schema.Struct({ v2_id: Schema.String }),
+      `select v2_id from private_v1_import_map
+        where v1_org_id = $1 and v1_kind = 'toolkit' and status = 'imported'`,
+      organization,
+    );
+    expect(mapped.map((row) => row.v2_id).toSorted()).toEqual(
+      copies.map((copy) => copy.id).toSorted(),
+    );
+
+    // v1 names each member's copy by the id it computes; the forward finds their live copy.
+    expect(toolkits.find((item) => item.label === "Team kit")?.id).toBe(input.toolkits.team);
+    for (const member of [input.owner, input.teammate])
+      expect(
+        yield* forwardedToolkit({
+          organization,
+          v2Organization: target.id,
+          toolkit: input.toolkits.team,
+          member: member.user,
+        }),
+      ).toBe(200);
+
+    return { organization, report };
+  });
 
 /** Names longer than an app's address holds: it keeps the first 63 characters of a name's slug. */
 const longNames = {
@@ -1365,23 +1556,19 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
           browser = yield* Browser;
         const operator = yield* v1ImportOperator;
         const identity = yield* emulators.identity("google");
-        const workspace = yield* emulators.v1Workspace([identity.email]);
-        const slug = `v1-${randomUUID().slice(0, 8)}`;
-        yield* writeRows("v1-database.json", [
-          row(
-            "insert into organizations (id, name, slug) values ($1, $2, $3)",
-            workspace.organization,
-            "Synthetic rollback workspace",
-            slug,
-          ),
-          // Some v1 data, so v1's sign-in check holds the member on v1: a rule of an integration
-          // v1 deleted, which has nothing to import.
-          row(
-            "insert into tool_policy (tenant, owner, subject, pattern, action, position) values ($1, 'org', '', $2, 'block', 'a0')",
-            workspace.organization,
-            `gone_${randomUUID().slice(0, 6)}.*.*.search`,
-          ),
-        ]);
+        // A workspace with a teammate and the shared seed's integration, connections, rules and
+        // toolkits; its data holds the member on v1 at sign-in.
+        const teammate = syntheticEmail("teammate");
+        const workspace = yield* emulators.v1Workspace([identity.email, teammate]);
+        const teammateUser = yield* emulators.v1User(teammate);
+        const former = yield* emulators.v1Workspace([syntheticEmail("former")]);
+        const toolkits = { team: randomUUID(), mine: randomUUID() };
+        yield* seedShared(
+          workspace.organization,
+          `v1-${randomUUID().slice(0, 8)}`,
+          { first: workspace.user, second: teammateUser, former: former.user },
+          toolkits,
+        );
         yield* signInOnV1(identity.email);
 
         yield* allowV1Import(workspace.organization);
@@ -1400,6 +1587,8 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         expect(yield* movedFlag(workspace.organization)).toEqual([
           { state: "moved", v2_org_id: target.id, v2_org_slug: target.slug },
         ]);
+        const copies = (yield* liveCopies(target.id)).map((copy) => copy.id);
+        expect(copies).toHaveLength(3);
 
         // While its v2 organization exists, its grants could renew beside v1's: no rollback.
         const refused = yield* operator.rollback(workspace.organization);
@@ -1439,6 +1628,17 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
             workspace.organization,
           ),
         ).toEqual([{ v1_kind: "user" }]);
+
+        // Imported again, it moves into a new v2 organization with every member's toolkit copy.
+        const again = yield* importTwin({
+          label: "rollback-again",
+          owner: { user: workspace.user, email: identity.email },
+          teammate: { user: teammateUser, email: teammate },
+          former: former.user,
+          toolkits,
+          earlier: copies,
+        });
+        expect(again.report.v2Organization?.id).not.toBe(target.id);
       }).pipe(Effect.provide(services)),
     ),
   );
@@ -2302,12 +2502,15 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         const teammate = syntheticEmail("teammate");
         const workspace = yield* emulators.v1Workspace([identity.email, teammate]);
         const organization = workspace.organization;
+        const teammateUser = yield* emulators.v1User(teammate);
         const former = yield* emulators.v1Workspace([syntheticEmail("former")]);
-        yield* seedShared(organization, `v1-${randomUUID().slice(0, 8)}`, {
-          first: workspace.user,
-          second: yield* emulators.v1User(teammate),
-          former: former.user,
-        });
+        const toolkits = { team: randomUUID(), mine: randomUUID() };
+        yield* seedShared(
+          organization,
+          `v1-${randomUUID().slice(0, 8)}`,
+          { first: workspace.user, second: teammateUser, former: former.user },
+          toolkits,
+        );
         const subscription = yield* emulators.v1TeamSubscription(organization, {
           version: 3,
           seats: 2,
@@ -2391,6 +2594,8 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
           connections: 3,
           members: 2,
         });
+        const copies = (yield* liveCopies(team.id)).map((copy) => copy.id);
+        expect(copies).toHaveLength(3);
         // The subscription now bills the team, on v1's Stripe subscription.
         const customerId = yield* emulators.v2BillingCustomer(team.id);
         expect(yield* emulators.autumnStripeSubscriptions(customerId)).toEqual([
@@ -2451,6 +2656,35 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
             team.id,
           ),
         ).toEqual([]);
+        // The rollback revoked the members' copies and kept them under their ids.
+        expect(yield* connectionsRevoked(copies)).toEqual(
+          copies.toSorted().map((id) => ({ id, revoked: true })),
+        );
+
+        // Imported again, the workspace copies into the team as before. Each member's toolkit copy
+        // is made again under a new id, and v1's toolkit URL forwards to it.
+        const again = yield* importTwin({
+          label: "copy-again",
+          owner: { user: workspace.user, email: identity.email },
+          teammate: { user: teammateUser, email: teammate },
+          former: former.user,
+          toolkits,
+          into: team.id,
+          earlier: copies,
+        });
+        expect(again.report.into).toEqual(into);
+        expect(again.report.v2Organization).toEqual({ id: team.id, slug: team.slug });
+        expect(yield* contents).toEqual({
+          ...before,
+          apps: before.apps + 1,
+          accounts: before.accounts + 3,
+          connections: 3,
+          members: 2,
+        });
+        // The first import's copies stay revoked, with their grants and tokens.
+        expect(yield* connectionsRevoked(copies)).toEqual(
+          copies.toSorted().map((id) => ({ id, revoked: true })),
+        );
       }).pipe(Effect.provide(services)),
     ),
   );

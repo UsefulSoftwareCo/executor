@@ -2573,13 +2573,29 @@ export const toolkitPolicy = (planning: ToolkitPlanning, toolkit: V1Toolkit, mem
   });
 
 /**
- * The connection's id: stable for the toolkit, the member's copy and the organization, so a retry
- * updates it.
+ * The connection's id: stable for the toolkit, the member's copy, the organization and the
+ * generation, so a retry updates it.
  */
-export const toolkitConnectionId = (organization: string, toolkit: V1Toolkit, member: string) =>
-  toolkitCopyConnectionId(organization, toolkit.row.row_id, member).pipe(
+export const toolkitConnectionId = (
+  organization: string,
+  toolkit: V1Toolkit,
+  member: string,
+  generation: number,
+) =>
+  toolkitCopyConnectionId(organization, toolkit.row.row_id, member, generation).pipe(
     Effect.map((id) => ConnectionId.make(id)),
   );
+
+/**
+ * What the import map holds for one member's copy of a toolkit: the connection an earlier run saved
+ * it as, a row for an attempt that saved none, or no row at all. Only a rollback deletes map rows,
+ * so a connection that already holds an unmapped copy's id was made by an import that was rolled
+ * back.
+ */
+export type ToolkitCopyRecord =
+  | { readonly kind: "saved"; readonly connection: string }
+  | { readonly kind: "unsaved" }
+  | { readonly kind: "unmapped" };
 
 /** The members who get a copy of a toolkit: everyone for an org toolkit, else its owner. */
 export const toolkitMembers = (toolkit: V1Toolkit, members: readonly string[]) =>
@@ -2592,35 +2608,54 @@ export const toolkitCopyKey = (toolkit: Pick<V1Toolkit, "row">, member: string) 
   toolkitCopyId(toolkit.row.row_id, member);
 
 /**
- * Create or update a member's copy of the toolkit: a scoped MCP connection they own. `copy` is the
- * connection the import map already records for it, which for a copy the opt-in import made is not
- * the id an import gives a copy now. `planning` is the step's, shared by every copy it saves.
+ * Create or update a member's copy of the toolkit: a scoped MCP connection they own. A copy the
+ * import map records keeps its connection, which for a copy the opt-in import made is not the id an
+ * import gives a copy now. Any other copy takes generation 0's id. When another connection holds
+ * an unmapped copy's id, one a rolled-back import made, the copy takes the next generation's: that
+ * connection stays revoked under its id, so its grants and tokens never come back. Otherwise a
+ * taken id means its users removed the copy. `planning` is the step's, shared by every copy it
+ * saves.
  */
 export const importToolkit = (
   context: ItemContext,
   planning: ToolkitPlanning,
   toolkit: V1Toolkit,
   member: string,
-  copy?: string,
+  record: ToolkitCopyRecord,
 ) =>
   Effect.gen(function* () {
     const user = context.users.get(member);
     if (user === undefined) return yield* fail("Its member is not imported.");
     const { policy, notes } = yield* toolkitPolicy(planning, toolkit, member);
     const owner = { userId: user, resource: context.target.id };
-    const id =
-      copy === undefined
-        ? yield* toolkitConnectionId(context.target.id, toolkit, member)
-        : ConnectionId.make(copy);
     const name = (toolkit.data.name.trim() === "" ? toolkit.data.slug : toolkit.data.name).slice(
       0,
       80,
     );
-    const existing = yield* context.connections.list(owner);
-    const saved = existing.some((connection) => connection.id === id)
-      ? yield* context.connections.update(owner, { id, name, policy })
-      : yield* context.connections.create(owner, { id, name, policy });
-    return imported("mcp_connection", saved.id, notes.length === 0 ? undefined : notes.join(" "));
+    const note = notes.length === 0 ? undefined : notes.join(" ");
+    const live = yield* context.connections.list(owner);
+    const save = (id: ConnectionId) =>
+      Effect.gen(function* () {
+        return live.some((connection) => connection.id === id)
+          ? yield* context.connections.update(owner, { id, name, policy })
+          : yield* context.connections.create(owner, { id, name, policy });
+      });
+    if (record.kind === "saved") {
+      const saved = yield* save(ConnectionId.make(record.connection));
+      return imported("mcp_connection", saved.id, note);
+    }
+    // Each rollback leaves at most one generation of a copy behind, so the walk ends at the first
+    // generation after them. A retry finds the copy it saved there live and updates it.
+    for (let generation = 0; ; generation++) {
+      const id = yield* toolkitConnectionId(context.target.id, toolkit, member, generation);
+      const saved = yield* save(id).pipe(
+        Effect.map(Option.some),
+        Effect.catchTag("ConnectionIdTaken", (taken) =>
+          record.kind === "unmapped" ? Effect.succeedNone : Effect.fail(taken),
+        ),
+      );
+      if (Option.isSome(saved)) return imported("mcp_connection", saved.value.id, note);
+    }
   }).pipe(
     Effect.catchTags({
       ConnectionIdTaken: () => fail("Its MCP connection was removed in v2."),

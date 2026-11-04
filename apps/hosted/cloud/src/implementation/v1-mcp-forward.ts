@@ -268,7 +268,8 @@ export const v1ForwardAccess = (
     )
       return yield* new McpForbidden({ reason: "organization_mismatch" });
     // A toolkit runs under the caller's copy, the scoped connection its import made for them. v1
-    // names it by the id the import gives a copy; one the opt-in import made keeps its earlier id.
+    // names it by the id the import gives a copy first, generation 0's; one the opt-in import made
+    // keeps its earlier id, and one made again after a rollback has a later generation's.
     const copy = row.toolkitConnection;
     if (claims.toolkit !== undefined) {
       if (copy === null) return yield* forbidden;
@@ -276,6 +277,7 @@ export const v1ForwardAccess = (
         row.organization,
         claims.toolkit,
         claims.account,
+        0,
       );
       if (claims.connection !== copy && claims.connection !== derived) return yield* forbidden;
     }

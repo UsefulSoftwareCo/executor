@@ -8822,7 +8822,7 @@ export const scenarios = plan({
   v1ImportRollback: {
     file: "cloud-v1-import-run.spec.ts",
     title:
-      "Cloud v1 import marks a verified workspace moved in v1 and gives it back on rollback only once its v2 organization is deleted, clearing its import map but its users",
+      "Cloud v1 import marks a verified workspace moved in v1 and gives it back on rollback only once its v2 organization is deleted, clearing its import map but its users, and imports it again into a new organization where every member's toolkit copy is live and v1's toolkit URL forwards to it",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportPaidBilling: {
@@ -8925,7 +8925,7 @@ export const scenarios = plan({
   v1ImportIntoCopy: {
     file: "cloud-v1-import-run.spec.ts",
     title:
-      "Cloud v1 import copies a paid, shared v1 workspace into the empty v2 team its owner owns when the operator lists it: the team keeps its name and slug, gains the workspace's app, accounts and toolkit copies, its teammate joins, its subscription carries over to the team, a second copy into the team is refused as it is no longer empty, and after its billing goes back a rollback removes only what the import added",
+      "Cloud v1 import copies a paid, shared v1 workspace into the empty v2 team its owner owns when the operator lists it: the team keeps its name and slug, gains the workspace's app, accounts and toolkit copies, its teammate joins, its subscription carries over to the team, a second copy into the team is refused as it is no longer empty, after its billing goes back a rollback removes only what the import added, and importing it again copies it into the team once more, each member's toolkit copy under a new live connection v1's toolkit URL forwards to while the first import's copies stay revoked",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportIntoEnterprise: {

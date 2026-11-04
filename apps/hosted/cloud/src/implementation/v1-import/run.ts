@@ -116,6 +116,7 @@ import {
   type ItemContext,
   type RuleCounts,
   type StaleTool,
+  type ToolkitCopyRecord,
 } from "./items.ts";
 import {
   memberProfile,
@@ -2212,8 +2213,13 @@ const importToolkitItem = (context: ItemContext, id: string) =>
           });
         // Otherwise its connection follows the apps and accounts imported since; saving it again
         // is safe.
-        const copy = existing?.status === "imported" ? existing.v2_id : null;
-        return yield* importToolkit(context, planning, toolkit, member, copy ?? undefined).pipe(
+        const record: ToolkitCopyRecord =
+          existing === undefined
+            ? { kind: "unmapped" }
+            : existing.status === "imported" && existing.v2_id !== null
+              ? { kind: "saved", connection: existing.v2_id }
+              : { kind: "unsaved" };
+        return yield* importToolkit(context, planning, toolkit, member, record).pipe(
           Effect.tap(recorded(context, "toolkit", key, hash)),
           Effect.map((result) => outcomeOf(base, result)),
           Effect.catch(failedItem(context, "toolkit", key, hash, base)),
