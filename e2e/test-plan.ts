@@ -2619,6 +2619,16 @@ export const scenarios = plan({
       local: na("Exercises the hosted import and account connection APIs."),
     },
   },
+  appFetchUserAgent: {
+    fixtures: "actors",
+    file: "app-fetch-user-agent.spec.ts",
+    title: "An app's fetch without a User-Agent names Executor and keeps an app's own",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback upstream to exercise the shared outbound network."),
+      local: na("Exercises the hosted app deploy, account check and tool call APIs."),
+    },
+  },
   mcpUserAgent: {
     fixtures: "actors",
     file: "mcp-user-agent.spec.ts",
