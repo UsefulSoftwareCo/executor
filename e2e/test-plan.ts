@@ -3437,6 +3437,17 @@ export const scenarios = plan({
       local: na("Local runs apps through the same workerd runner and outbound as self-host."),
     },
   },
+  credentialHostsUnderscore: {
+    fixtures: "actors",
+    file: "credential-hosts.spec.ts",
+    title:
+      "a provider may declare a host with an underscore, as Docker names containers, and its credentials reach it",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a loopback service; Cloud app Workers reach only public addresses."),
+      local: na("Local runs apps through the same workerd runner and outbound as self-host."),
+    },
+  },
   credentialHostsRestart: {
     fixtures: "actors",
     file: "credential-hosts.spec.ts",
