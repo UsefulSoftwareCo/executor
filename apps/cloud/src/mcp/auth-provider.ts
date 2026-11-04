@@ -16,7 +16,8 @@
 //       (an organization the mirror has never seen). Either is TRANSIENT, not
 //       evidence the org is gone, and must NOT reach the Forbidden/destroy
 //       path below.
-//   - no org / revoked org  -> Forbidden ("No organization in session …", -32001).
+//   - no org selected       -> Forbidden (connect Executor v2's MCP URL, -32001).
+//   - revoked org           -> Forbidden ("No organization in session …", -32001).
 //       This requires a POSITIVE determination (the lookup SUCCEEDED and the org
 //       is absent), never a failed lookup. Because authenticate reads the
 //       mcp-session-id header to do the membership check, the envelope's
@@ -73,6 +74,17 @@ const AUTHORIZATION_SERVER_METADATA_PATH = "/.well-known/oauth-authorization-ser
 const TOOLKIT_PROTECTED_RESOURCE_METADATA_PATH = `${PROTECTED_RESOURCE_METADATA_PATH}/toolkits/:toolkitSlug`;
 
 const NO_ORGANIZATION_MESSAGE = "No organization in session — log in via the web app first";
+
+/** Executor v2's MCP endpoint, the one to connect instead of this server. */
+const V2_MCP_URL = "https://mcp.executor.sh/mcp";
+
+// A token that names no organization, on a URL that names none either. New
+// sign-ups happen on Executor v2, so nearly every such account was created by
+// an MCP client's sign-in here and has no v1 organization at all: the fix is
+// to connect v2's MCP server. The rarer account that joined a v1 organization
+// after signing in holds a token minted before that membership; signing in
+// again gives it one that names the organization.
+const NO_ORGANIZATION_SELECTED_MESSAGE = `Executor has moved. This account has no organization on executor.sh/mcp: connect ${V2_MCP_URL} instead. If you belong to an organization on executor.sh, reconnect this server and sign in again to choose it.`;
 
 // A transient failure during the membership lookup must NOT masquerade as
 // "org revoked". The lookup reads the local mirror, so in steady state its
@@ -201,7 +213,7 @@ export const cloudMcpAuthProviderLayer: Layer.Layer<
         const organizationSelector = mcpOrganizationFromRequest(request) ?? token.organizationId;
         if (!organizationSelector) {
           yield* annotateMcpRequest(request, { token, parseBody });
-          return forbidden(NO_ORGANIZATION_MESSAGE, -32001);
+          return forbidden(NO_ORGANIZATION_SELECTED_MESSAGE, -32001);
         }
 
         // Capture success-vs-failure explicitly instead of collapsing both into
