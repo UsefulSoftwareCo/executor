@@ -5,6 +5,7 @@ import { Hex } from "effect/encoding";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import {
   HostedWorkflow,
+  ProviderError,
   WorkflowFailure,
   WorkflowRun,
   WorkflowRunId,
@@ -36,6 +37,8 @@ import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
 import { invocationScope, scopedSelection } from "./selection.ts";
 import type { Declarations } from "./declarations.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
+import { AppEvaluationFailed, evaluationFailure } from "../contracts/tools.ts";
+import { appProviderFailure } from "./provider-error.ts";
 
 const StoredRun = Schema.Struct({
   id: WorkflowRunId,
@@ -735,21 +738,31 @@ export const makeWorkflowRuns = (
     definitions: (input: typeof WorkflowApp.Type) =>
       Effect.gen(function* () {
         const state = yield* snapshot(db, input);
+        const identity = { app: state.app.id, version: state.version.id };
+        // Listing workflows evaluates the app's definition, as listing its tools or skills does,
+        // so it keeps the same account of what failed: the app's own error, a service's refusal
+        // or the runtime failure Executor observed, attributed to this app alone.
         const value = yield* declarations.read("workflows", state, (context) =>
-          safe(
-            runtime.workflow({
+          runtime
+            .workflow({
               app: input.app,
               build: state.version.build,
               hostApi: declarations.hostApi(state.version),
               ...context,
               command: { operation: "workflows" },
-            }),
-            "execution",
-          ),
+            })
+            .pipe(
+              Effect.mapError((error) =>
+                Schema.is(ProviderError)(error)
+                  ? appProviderFailure(state, error)
+                  : evaluationFailure(identity, error, "Workflow evaluation failed"),
+              ),
+            ),
         );
-        return yield* safe(
-          Schema.decodeUnknownEffect(Schema.Array(HostedWorkflow))(value),
-          "execution",
+        return yield* Schema.decodeUnknownEffect(Schema.Array(HostedWorkflow))(value).pipe(
+          Effect.mapError(
+            () => new AppEvaluationFailed({ ...identity, reason: "Invalid workflow catalog" }),
+          ),
         );
       }).pipe(Effect.withSpan("sdk.workflows.definitions")),
     runs: {

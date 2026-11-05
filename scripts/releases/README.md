@@ -1,7 +1,6 @@
 # Executor 2 beta
 
-Install with npm, `npm i -g executor@beta --include=optional`, on Node 14.18
-or newer. Without Node, run `curl -fsSL https://executor.sh/docs/install.sh | sh`
+Install with npm, `npm i -g executor@beta`, on Node 14.18 or newer. Without Node, run `curl -fsSL https://executor.sh/docs/install.sh | sh`
 on macOS or Linux, or `irm https://executor.sh/docs/install.ps1 | iex` in
 PowerShell on Windows. Each release also attaches its archives and `SHA256SUMS`.
 Run `executor` to start the background Executor, or join the one already
@@ -23,10 +22,13 @@ Executor is one executable, built with Bun, with the files it runs or reads
 beside it: the dashboard, the app framework and compiler references, workerd,
 Git, the native credential-store binding and the Motel collector. It needs no
 source checkout, Node, Bun or 1Password on the user machine. The `executor` npm
-package is a launcher that starts the executable from the platform package npm
-installs as an optional dependency, for macOS (Apple Silicon and Intel), Linux
-(arm64 and x64, glibc) and Windows (x64). The same archive is the release
-download the install scripts and Homebrew use.
+package is a launcher. The first time a version starts, it downloads that
+release's archive for the platform, for macOS (Apple Silicon and Intel), Linux
+(arm64 and x64, glibc) or Windows (x64), from the public GitHub release, checks it
+against the SHA-256 the package records, and keeps it in
+`~/.executor/v2/launcher/<version>` with the version before it. The same archive
+is the release download the install scripts and Homebrew use.
+`EXECUTOR_DOWNLOAD_URL` names a mirror of the releases for all of them.
 
 Beta uses `~/.executor/v2/cli` for its data. This path stays the same at the
 stable release. It is separate from Executor 1 data. One server runs per data
@@ -79,20 +81,25 @@ Native artifacts are under `.local/releases/<version>-<platform>-<arch>/`.
 `release:cli` bundles the runtime twice. `package/` holds the JavaScript runtime
 the desktop app runs with its own Node. `standalone/` holds the release install:
 the `executor` executable (`bun build --compile`) and the files beside it, which
-`executor-<version>-<platform>-<arch>.tgz` packs as the platform's npm package
-and release archive. The executable takes `runtime/cli.mjs` in its install
-directory as every module's location, so resources, `require` and
-`import.meta.resolve` find the same files beside it as from the npm package,
-through any launcher symlink. Packages that must stay on disk load from
+`executor-<version>-<platform>-<arch>.tgz` packs as the platform's release
+archive. The executable takes `runtime/cli.mjs` in its install directory as
+every module's location, so resources, `require` and `import.meta.resolve` find
+the same files beside it wherever the archive is unpacked, through any launcher
+symlink. Packages that must stay on disk load from
 `runtime/node_modules`; Git is in `runtime/git`.
-The npm launcher is under `.local/releases/<version>/wrapper/` and uses exact
-native version aliases. These build commands do not publish anything.
-The app compiler and framework are prepared for workerd at build time. No
-runtime download is needed. Each compressed native archive must fit within
-178 MiB before publication (`npmArchiveBudgetBytes` in `config.ts`). npm
-documents no limit; the budget stays below the largest archive it has accepted
-from Executor. Most of each archive is the executable, workerd and the bundled
-Git, which keeps only what the runtime runs (`keptGit` in `runtime-bundle.ts`).
+The npm launcher is under `.local/releases/<version>/wrapper/`. Its
+package.json records the SHA-256 of each platform archive found under
+`.local/releases/<version>-<platform>-<arch>/`, or under the directory
+`release:wrapper` is given; publishing requires all five. The runtimes are never
+published to npm. Through 2.0.0-beta.36 each was published as a version of the
+`executor` package, such as `2.0.0-beta.36-win32-x64`, which semver ranks above
+the launcher, so a range update such as `bun update -g` replaced the launcher
+with a runtime. Those versions are deprecated so package managers skip them.
+These build commands do not publish anything.
+The app compiler and framework are prepared for workerd at build time, so the
+executable downloads nothing more. Most of each archive is the executable,
+workerd and the bundled Git, which keeps only what the runtime runs (`keptGit`
+in `runtime-bundle.ts`).
 External source maps stay in the separate CI artifact for release diagnostics.
 
 Stock Bun lets any local process run its own code inside a compiled executable,

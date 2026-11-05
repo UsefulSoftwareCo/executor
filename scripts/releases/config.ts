@@ -14,15 +14,6 @@ export {
 } from "@executor-js/utils/release-version";
 
 /**
- * The compressed archive budget, checked before npm receives any upload. npm documents no size
- * limit. It refused a 298.9 MB archive with HTTP 413, and others report refusals from about
- * 185 MB; the largest Executor archive it has accepted is 187,186,037 bytes. The budget stays
- * below that.
- */
-export const npmArchiveBudgetMiB = 178;
-export const npmArchiveBudgetBytes = npmArchiveBudgetMiB * 1024 * 1024;
-
-/**
  * Native platforms supported by the packaged runtime. The full CLI suite runs against the packaged
  * archive on linux x64 and on Windows, which no other workflow tests; CI runs it from source on
  * every push to main. The other targets run only the checks specific to them: the OS credential
@@ -128,15 +119,14 @@ export const desktopUpdateFile = (target: Platform, channel: ReleaseChannel): st
   return target.arch === "x64" ? `${name}-linux.yml` : `${name}-linux-${target.arch}.yml`;
 };
 
-/** Immutable npm version for one native runtime, aliased by the launcher package. */
+/**
+ * The version one native runtime's package.json carries. The runtime is not published to npm:
+ * its archive is a release asset, which the `executor` launcher downloads.
+ */
 export const platformVersion = (target: Platform): string =>
   `${release.version}-${target.platform}-${target.arch}`;
 
-/** npm alias name installed under the wrapper's node_modules. */
-export const platformPackage = (target: Platform): string =>
-  `executor-${target.platform}-${target.arch}`;
-
-/** The actual platform archive filename produced by npm pack. */
+/** The platform's release archive, as npm pack names it. */
 export const platformArchive = (target: Platform): string =>
   `executor-${platformVersion(target)}.tgz`;
 

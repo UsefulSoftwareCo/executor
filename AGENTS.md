@@ -304,9 +304,7 @@ A pull request that changes the release paths (the `paths` in
 `.github/workflows/release-artifacts.yml`) also runs "Executor releases". Gate its
 merge on that workflow as on CI: wait for both
 (`ci-wait --workflow CI --workflow "Executor releases"`) and do not merge while
-either fails. Its packaging jobs fail when a native archive exceeds the npm budget
-(`npmArchiveBudgetBytes` in `scripts/releases/config.ts`); an archive over it cannot be
-published, so that failure blocks every later release until it is fixed.
+either fails.
 
 A failed e2e job uploads raw reports and server logs. Product database files,
 runtime dependencies and private `actors.json` sessions are excluded.

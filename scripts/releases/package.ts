@@ -4,14 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { bundleLocalRuntime } from "./runtime-bundle.ts";
-import {
-  nativePlatform,
-  npmArchiveBudgetBytes,
-  npmArchiveBudgetMiB,
-  platformArchive,
-  platformVersion,
-  release,
-} from "./config.ts";
+import { nativePlatform, platformArchive, platformVersion, release } from "./config.ts";
 import { installWindowsGitHttpBackend } from "./windows-git.ts";
 import { launcherAnalytics } from "./analytics.ts";
 import { buildStandalone } from "./standalone.ts";
@@ -169,19 +162,7 @@ const build = Effect.gen(function* () {
   )
     return yield* Effect.die(new Error("A published macOS build must be signed and notarized."));
   yield* buildStandalone(root, output, stage, target, signing);
-  // Guard each native target before its offline tests or any publication can run.
   const bytes = Number((yield* fs.stat(path.join(output, platformArchive(target)))).size);
-  const budgetBytes = npmArchiveBudgetBytes;
-  yield* fs.writeFileString(
-    path.join(output, "npm-size.json"),
-    JSON.stringify({ bytes, budgetBytes }, null, 2),
-  );
-  if (bytes > budgetBytes)
-    return yield* Effect.die(
-      new Error(
-        `npm archive exceeds the ${npmArchiveBudgetMiB} MiB release budget: ${bytes} bytes`,
-      ),
-    );
   yield* Console.log(`Native artifact: ${output} (${(bytes / 1024 / 1024).toFixed(1)} MiB)`);
 });
 NodeRuntime.runMain(Effect.scoped(build).pipe(Effect.provide(NodeServices.layer)));

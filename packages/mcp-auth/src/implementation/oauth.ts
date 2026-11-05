@@ -82,10 +82,6 @@ const Claims = Schema.Struct({
   aud: Schema.Union([Schema.String, Schema.Array(Schema.String)]),
   cnf: Schema.optionalKey(Schema.Unknown),
 });
-const Registration = Schema.Struct({
-  application_type: Schema.optionalKey(Schema.String),
-  redirect_uris: Schema.Array(Schema.String),
-});
 /** Authorization parameters this plugin reads; every other parameter passes through unchanged. */
 const AuthorizeRequest = Schema.StructWithRest(
   Schema.Struct({
@@ -230,6 +226,11 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     allowDynamicClientRegistration: true,
     allowUnauthenticatedClientRegistration: true,
     clientRegistrationRequirePKCE: true,
+    // RFC 7591 has no `application_type`, so MCP clients often omit it. A registration with an
+    // RFC 8252 loopback or private-use callback is a native client, and every callback it names
+    // is checked against the native rules; any other stays a web client. The OpenID default of
+    // `web` refused such registrations, including Cursor's.
+    clientRegistrationDefaultApplicationType: "infer",
     // Hosted MCP clients such as Cursor register from a shared backend address, and Cursor
     // spends two requests per attempt. The default of 5 per minute rejected real sign-ins.
     // Better Auth's count resets only after a whole window without requests, so a device client
@@ -1460,19 +1461,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     },
     hooks: {
       before: [
-        {
-          matcher: (ctx: { path?: string }) => ctx.path === "/oauth2/register",
-          handler: createAuthMiddleware(async (ctx) => {
-            const input = Schema.decodeUnknownOption(Registration)(ctx.body);
-            if (
-              Option.isSome(input) &&
-              input.value.application_type === undefined &&
-              input.value.redirect_uris.length > 0 &&
-              input.value.redirect_uris.every(loopback)
-            )
-              return { context: { body: { ...ctx.body, application_type: "native" } } };
-          }),
-        },
         {
           // Bind a request without `resource` before Better Auth signs and stores it, so consent,
           // the authorization code and its tokens all carry the same single audience.

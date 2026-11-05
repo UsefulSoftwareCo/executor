@@ -58,6 +58,7 @@ import {
 } from "apps/contracts";
 import { isLoopbackHostname, isPrivateHostname } from "@executor-js/utils/url-policy";
 import type { HostApiCheck } from "../contracts/host-api.ts";
+import { executorUserAgent } from "./user-agent.ts";
 import {
   hostApiChangingHeader,
   hostApiChangingResponse,
@@ -799,23 +800,30 @@ const forward = async (request: Request, outbound: CredentialOutbound): Promise<
   const send = (sent: Request) => outbound.send(sent).catch(sendFailed(request.signal));
   const blocked = egressRefusal(url, outbound.egress);
   if (blocked !== undefined) return networkRefusalResponse(blocked);
-  const kind = request.body === null ? undefined : rewritable(request.headers.get("content-type"));
+  // Every app request names its sender, as app code's own User-Agent or as Executor.
+  const requestHeaders = new Headers(request.headers);
+  if (!requestHeaders.has("user-agent")) requestHeaders.set("user-agent", executorUserAgent);
+  const kind = request.body === null ? undefined : rewritable(requestHeaders.get("content-type"));
   const body =
     kind === undefined || request.body === null ? undefined : await readBody(request.body);
   const found = new Set([
     ...handlesIn(url.href),
     ...[...url.searchParams.values()].flatMap(handlesWithin),
-    ...[...request.headers].flatMap(([, value]) => handlesWithin(value)),
+    ...[...requestHeaders].flatMap(([, value]) => handlesWithin(value)),
     ...(body?.complete === true ? handlesIn(body.text) : []),
   ]);
   if (found.size === 0)
     return send(
-      body === undefined
-        ? request
-        : new Request(request, {
-            body: body.complete ? body.text : body.stream,
-            ...(body.complete ? {} : { duplex: "half" }),
-          }),
+      new Request(
+        request,
+        body === undefined
+          ? { headers: requestHeaders }
+          : {
+              headers: requestHeaders,
+              body: body.complete ? body.text : body.stream,
+              ...(body.complete ? {} : { duplex: "half" }),
+            },
+      ),
     ).then(unmarked);
   // TRACE asks the service to send the request back, credentials included.
   if (request.method.toUpperCase() === "TRACE")
@@ -866,12 +874,10 @@ const forward = async (request: Request, outbound: CredentialOutbound): Promise<
     // Managed handles go only in the operator's header, placed handles only where a placement
     // matches, and every other handle anywhere.
     const searched = body?.complete === true ? body.text : undefined;
-    const placed = Result.flatMap(
-      placeManaged(url, request.headers, searched, opened),
-      (headers) =>
-        [...opened.values()].some((sealed) => sealed.request !== undefined)
-          ? placeCredentials(url, headers, searched, opened)
-          : Result.succeed({ href: url.href, headers }),
+    const placed = Result.flatMap(placeManaged(url, requestHeaders, searched, opened), (headers) =>
+      [...opened.values()].some((sealed) => sealed.request !== undefined)
+        ? placeCredentials(url, headers, searched, opened)
+        : Result.succeed({ href: url.href, headers }),
     );
     if (Result.isFailure(placed))
       return networkRefusalResponse(

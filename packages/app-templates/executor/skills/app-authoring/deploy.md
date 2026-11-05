@@ -560,8 +560,9 @@ types and a local type check do not catch:
 - `integrity` must be empty or omitted.
 
 `ctx.fetch` rejects an unsupported value with `FetchOptionUnsupported`, which
-names the option and the values it accepts. Workers also send no `User-Agent`;
-some APIs, such as GitHub's, answer 403 without one, so set it yourself.
+names the option and the values it accepts. A request without a `User-Agent`
+is sent with `User-Agent: Executor`, because some APIs, such as GitHub's, answer
+403 without one. A `User-Agent` app code sets is sent unchanged.
 
 App code can reach public hosts with no allowlist, so a 403 or 404 from one is
 that service's answer. Executor refuses only requests it must not send:

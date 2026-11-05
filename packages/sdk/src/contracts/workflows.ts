@@ -25,6 +25,7 @@ import {
 import { AccountNotFound } from "./account.ts";
 import { VersionNotFound } from "./version.ts";
 import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
+import { AppEvaluationFailed, AppProviderFailed } from "./tools.ts";
 
 export { HostedWorkflow, WorkflowRun, WorkflowRunId, WorkflowRunPage, WorkflowFailure };
 /**
@@ -85,6 +86,15 @@ export const WorkflowErrors = [
   OAuthRenewalFailed,
   WorkflowFailure,
 ] as const;
+/**
+ * Listing an app's workflows evaluates the app's definition, so it fails as listing its tools or
+ * skills does: with the app's own evaluation error or a service's refusal, attributed to the app.
+ */
+export const WorkflowDefinitionErrors = [
+  ...WorkflowErrors,
+  AppEvaluationFailed,
+  AppProviderFailed,
+] as const;
 
 const path = "/v1/apps/:app/workflow-runs";
 /** Flat transport groups are projected beneath executor.apps in the public SDK. */
@@ -95,7 +105,7 @@ export const AppWorkflowsGroup = HttpApiGroup.make("appWorkflows").add(
       withLegacyKeys({ version: "deployment" }),
     ),
     success: Schema.Array(HostedWorkflow),
-    error: WorkflowErrors,
+    error: WorkflowDefinitionErrors,
   }),
 );
 /** Lifecycle operations start quickly and return a retained run identity. */
