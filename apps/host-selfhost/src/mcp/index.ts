@@ -12,7 +12,8 @@ import { BetterAuth, type BetterAuthHandle } from "../auth/better-auth";
 import { resolveSelfHostOrgRole } from "../auth/identity";
 import type { SelfHostDbHandle } from "../db/self-host-db";
 import type { SelfHostConfig } from "../config";
-import { selfHostMcpAuth } from "./auth";
+import { makeInMemoryMcpClientBridge } from "@executor-js/host-mcp/in-memory-client-bridge";
+import { selfHostMcpAuth, SelfHostMcpClientBridge } from "./auth";
 import {
   makeSelfHostMcpSessionStore,
   selfHostMcpReporter,
@@ -64,6 +65,8 @@ export interface SelfHostMcpSeams {
    * `/resume`) for the console approval page. Browser elicitation mode only.
    */
   readonly approvalHandler: (request: Request) => Promise<Response>;
+  /** Ephemeral client bindings used by the persistent client channel. */
+  readonly clientBridge: ReturnType<typeof makeInMemoryMcpClientBridge>;
   /** Dispose all live in-process MCP sessions at shutdown (not a seam). */
   readonly close: () => Promise<void>;
 }
@@ -154,21 +157,25 @@ export const makeSelfHostMcpSeams = (
   betterAuth: BetterAuthHandle,
   config: SelfHostConfig,
 ): SelfHostMcpSeams => {
+  const clientBridge = makeInMemoryMcpClientBridge();
   // The pinned public origin keeps browser-approval URLs reachable behind a
   // reverse proxy (not the internal 127.0.0.1 bind from the request URL).
   const sessionStore = makeSelfHostMcpSessionStore(
     dbHandle,
     config.webBaseUrl,
     config.mcpSessionIdleTtlMs,
+    clientBridge,
   );
   const auth: Layer.Layer<McpAuthProvider, never, IdentityProvider> = selfHostMcpAuth.pipe(
     Layer.provide(Layer.succeed(BetterAuth)(betterAuth)),
+    Layer.provide(Layer.succeed(SelfHostMcpClientBridge)(clientBridge)),
   );
   return {
     auth,
     sessions: selfHostMcpSessions(sessionStore),
     reporter: selfHostMcpReporter,
     approvalHandler: makeApprovalHandler(sessionStore, betterAuth),
+    clientBridge,
     close: sessionStore.close,
   };
 };

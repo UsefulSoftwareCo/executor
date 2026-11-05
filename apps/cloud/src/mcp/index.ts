@@ -17,3 +17,4 @@
 // its `McpAuth`/`McpOrganizationAuth` seams provided internally), shaped as the
 // `Layer<McpAuthProvider, never, IdentityProvider>` `ExecutorApp.make` expects.
 export { cloudMcpAuth } from "./auth-provider";
+export { authenticatedClientChannel } from "./client-channel-durable-object";

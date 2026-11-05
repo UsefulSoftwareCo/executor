@@ -26,6 +26,8 @@ import {
   SelfHostPluginsProvider,
 } from "./execution";
 import { makeSelfHostMcpSeams } from "./mcp";
+import { makeMcpClientChannelRoute } from "./mcp/client-channel";
+import { SelfHostMcpClientBridge } from "./mcp/auth";
 import { selfHostPlugins } from "./plugins";
 import { ErrorCaptureLive } from "./observability";
 import { oauthCallbackSignInRedirectLocation } from "./auth/oauth-callback-login";
@@ -115,6 +117,13 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
     },
     extensions: {
       routes: [
+        // Persistent in-process MCP client link. The WebSocket upgrade uses
+        // Effect's request upgrade capability and shares the auth/bridge
+        // services with ordinary MCP HTTP requests.
+        makeMcpClientChannelRoute([
+          new URL(config.webBaseUrl).origin,
+          ...config.trustedOrigins.map((origin) => new URL(origin).origin),
+        ]).pipe(Layer.provideMerge(mcp.auth)),
         // CLI device-login discovery, must precede the /api/auth/* wildcard
         // below (Better Auth would otherwise 404 it). The verification page it
         // points at (/device) is a console SPA route
@@ -153,6 +162,7 @@ export const makeSelfHostApp = async (options: MakeSelfHostAppOptions = {}) => {
     // layer, so operations it serves file as `via: "ui"`).
     boot: Layer.mergeAll(
       Layer.succeed(SelfHostDb)(dbHandle),
+      Layer.succeed(SelfHostMcpClientBridge)(mcp.clientBridge),
       identityLayer,
       memberDirectoryLayer,
       Layer.succeed(ArtifactUsageObserver)((action) =>

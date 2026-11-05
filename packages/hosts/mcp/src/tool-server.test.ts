@@ -8,13 +8,21 @@ import type { ClientCapabilities } from "@modelcontextprotocol/sdk/types.js";
 import type * as Cause from "effect/Cause";
 
 import {
+  AuthTemplateSlug,
+  ConnectionName,
   ElicitationId,
   FormElicitation,
+  IntegrationSlug,
+  ProviderItemId,
+  ProviderKey,
   ToolAddress,
+  ToolName,
   ToolResult,
   UrlElicitation,
+  definePlugin,
 } from "@executor-js/sdk";
-import type { ToolFileValue } from "@executor-js/sdk";
+import type { CredentialProvider, ToolFileValue } from "@executor-js/sdk";
+import { makeTestExecutor } from "@executor-js/sdk/testing";
 import type { ExecutionEngine, ExecutionResult } from "@executor-js/execution";
 
 import {
@@ -68,6 +76,8 @@ type TestServerConfig<E extends Cause.YieldableError> = Pick<
   | "pausedExecutionHooks"
   | "pausedExecutionLeaseMs"
   | "resumeFallback"
+  | "clientManifest"
+  | "invokeClient"
 >;
 
 /** Connect a real MCP Client to our executor MCP server over in-memory transports. */
@@ -2140,4 +2150,238 @@ describe("formatMcpExecutionOutcome serialization cost", () => {
     if (returned.type !== "text") return;
     expect(returned.text).toContain('"data"');
   });
+
+  it("serves client tools, resources, and prompts from the session manifest", async () => {
+    const routed: string[] = [];
+    await withClient(
+      makeStubEngine({}),
+      {},
+      async (client) => {
+        const tools = await client.listTools();
+        expect(tools.tools.some((tool) => tool.name === "client_echo")).toBe(true);
+        const called = await client.callTool({
+          name: "client_echo",
+          arguments: { value: "hello" },
+        });
+        expect(called.content).toEqual([{ type: "text", text: "hello" }]);
+        const resources = await client.listResources();
+        expect(resources.resources.some((resource) => resource.uri === "client://item")).toBe(true);
+        const read = await client.readResource({ uri: "client://item" });
+        expect(read.contents[0]).toMatchObject({ uri: "client://item", text: "resource" });
+        const prompts = await client.listPrompts();
+        expect(prompts.prompts.some((prompt) => prompt.name === "client_prompt")).toBe(true);
+        const prompt = await client.getPrompt({ name: "client_prompt", arguments: { topic: "x" } });
+        expect(prompt.messages[0]).toMatchObject({
+          role: "user",
+          content: { type: "text", text: "x" },
+        });
+      },
+      {
+        clientManifest: {
+          tools: [
+            {
+              name: "client_echo",
+              inputSchema: { type: "object", properties: { value: { type: "string" } } },
+            },
+          ],
+          resources: [{ uri: "client://item" }],
+          prompts: [{ name: "client_prompt", arguments: [{ name: "topic" }] }],
+        },
+        invokeClient: async (request) => {
+          routed.push(request.method);
+          if (request.method === "tools/call") {
+            return { content: [{ type: "text", text: request.params.arguments?.value }] };
+          }
+          if (request.method === "resources/read") {
+            return { contents: [{ uri: request.params.uri, text: "resource" }] };
+          }
+          return {
+            messages: [
+              {
+                role: "user",
+                content: { type: "text", text: request.params.arguments?.topic ?? "" },
+              },
+            ],
+          };
+        },
+      },
+    );
+    expect(routed).toEqual(["tools/call", "resources/read", "prompts/get"]);
+  });
+
+  it("keeps same-named client tools confined to their server session", async () => {
+    const callWith = async (text: string) => {
+      let routed = false;
+      await withClient(
+        makeStubEngine({}),
+        {},
+        async (client) => {
+          const result = await client.callTool({ name: "shared_name", arguments: {} });
+          expect(result.content).toEqual([{ type: "text", text }]);
+          expect(
+            await client
+              .listTools()
+              .then((listed) => listed.tools.some((tool) => tool.name === "only_other_session")),
+          ).toBe(false);
+        },
+        {
+          clientManifest: { tools: [{ name: "shared_name" }], resources: [], prompts: [] },
+          invokeClient: async () => {
+            routed = true;
+            return { content: [{ type: "text", text }] };
+          },
+        },
+      );
+      expect(routed).toBe(true);
+    };
+    await callWith("session A");
+    await callWith("session B");
+  });
+
+  it("rejects calls for capabilities absent from the session manifest", async () => {
+    let routed = false;
+    await withClient(
+      makeStubEngine({}),
+      {},
+      async (client) => {
+        const response = await client.callTool({ name: "hidden_tool", arguments: {} });
+        expect(response.isError).toBe(true);
+      },
+      {
+        clientManifest: { tools: [], resources: [], prompts: [] },
+        invokeClient: async () => {
+          routed = true;
+          return { content: [] };
+        },
+      },
+    );
+    expect(routed).toBe(false);
+  });
+
+  it.effect("hides omitted client tools while keeping common Executor tools available", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const integration = IntegrationSlug.make("shared");
+        const toolCode = `return await tools["shared.org.main.read"]({ value: "hello" });`;
+        const executed: string[] = [];
+        const commonCalls: unknown[] = [];
+        let routedToClient = false;
+        const credentials = new Map<string, string>();
+        const commonProvider: CredentialProvider = {
+          key: ProviderKey.make("shared-tool-test-memory"),
+          writable: true,
+          get: (id) => Effect.sync(() => credentials.get(String(id)) ?? null),
+          set: (id, value) =>
+            Effect.sync(() => {
+              credentials.set(String(id), value);
+            }),
+          has: (id) => Effect.sync(() => credentials.has(String(id))),
+          list: () =>
+            Effect.sync(() =>
+              Array.from(credentials.keys()).map((id) => ({
+                id: ProviderItemId.make(id),
+                name: id,
+              })),
+            ),
+        };
+        const commonPlugin = definePlugin(() => ({
+          id: "shared-tool-test",
+          credentialProviders: [commonProvider],
+          storage: () => ({}),
+          resolveTools: () =>
+            Effect.succeed({
+              tools: [
+                {
+                  name: ToolName.make("read"),
+                  description: "Read from the shared integration",
+                  inputSchema: {
+                    type: "object",
+                    properties: { value: { type: "string" } },
+                    required: ["value"],
+                  },
+                },
+              ],
+            }),
+          invokeTool: ({ toolRow, args }) =>
+            Effect.sync(() => {
+              const call = { name: String(toolRow.name), args };
+              commonCalls.push(call);
+              return { source: "shared integration", args };
+            }),
+          extension: (ctx) => ({
+            seed: () =>
+              ctx.core.integrations.register({
+                slug: integration,
+                description: "Shared integration",
+                config: {},
+              }),
+          }),
+        }))();
+        const executor = yield* makeTestExecutor({
+          plugins: [commonPlugin] as const,
+        });
+        yield* executor["shared-tool-test"].seed();
+        yield* executor.connections.create({
+          owner: "org",
+          name: ConnectionName.make("main"),
+          integration,
+          template: AuthTemplateSlug.make("apiKey"),
+          value: "test-token",
+        });
+        const commonToolAddress = ToolAddress.make("tools.shared.org.main.read");
+        const availableTools = yield* executor.tools.list();
+        expect(availableTools.map((tool) => tool.address)).toContain(commonToolAddress);
+        const engine = makeStubEngine({
+          executeWithPause: (code) => {
+            executed.push(code);
+            return executor.execute(commonToolAddress, { value: "hello" }).pipe(
+              Effect.map((result) => ({
+                status: "completed" as const,
+                result: { result, logs: [] },
+              })),
+            );
+          },
+        });
+
+        yield* Effect.promise(() =>
+          withClient(
+            engine,
+            NO_CAPS,
+            async (client) => {
+              const tools = await client.listTools();
+              expect(tools.tools.some((tool) => tool.name === "execute")).toBe(true);
+              expect(tools.tools.some((tool) => tool.name === "client_hidden")).toBe(false);
+
+              const hidden = await client.callTool({ name: "client_hidden", arguments: {} });
+              expect(hidden.isError).toBe(true);
+
+              const common = await client.callTool({
+                name: "execute",
+                arguments: { code: toolCode },
+              });
+              expect(executed).toEqual([toolCode]);
+              expect(common.isError).toBeFalsy();
+              expect(common.structuredContent).toEqual(
+                expect.objectContaining({
+                  result: { source: "shared integration", args: { value: "hello" } },
+                }),
+              );
+              expect(commonCalls).toEqual([{ name: "read", args: { value: "hello" } }]);
+            },
+            {
+              clientManifest: { tools: [], resources: [], prompts: [] },
+              invokeClient: async () => {
+                routedToClient = true;
+                return { content: [] };
+              },
+            },
+          ),
+        ).pipe(Effect.ensuring(engine.shutdown));
+
+        expect(routedToClient).toBe(false);
+        expect(executed).toEqual([toolCode]);
+        expect(commonCalls).toEqual([{ name: "read", args: { value: "hello" } }]);
+      }),
+    ),
+  );
 });

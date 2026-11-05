@@ -73,6 +73,10 @@ interface McpSessionInitBase {
   /** The organization's URL slug, from the same resolved record. */
   readonly organizationSlug?: string;
   readonly userId: string;
+  /** Verified persistent-client identity, pinned for the session lifetime. */
+  readonly clientIdentity?: string;
+  /** Capability manifest revision, pinned for the session lifetime. */
+  readonly clientManifestGeneration?: number;
   readonly elicitationMode: McpElicitationMode;
   /** Whether this session serves artifacts, read off `?artifacts=` at connect
    *  time. Absent means the default (enabled). */
@@ -101,6 +105,11 @@ export interface McpSessionProps extends Record<string, unknown> {
 export type McpApprovalOwner = {
   readonly accountId: string;
   readonly organizationId: string;
+};
+
+export type McpSessionOwnerIdentity = McpApprovalOwner & {
+  readonly clientIdentity?: string;
+  readonly clientManifestGeneration?: number;
 };
 
 /** A model `resume` forwarded from another session of the same owner, carrying
@@ -155,6 +164,10 @@ interface SessionMetaBase {
    * Pins browser-handoff URLs to the right org's console. */
   readonly organizationSlug?: string;
   readonly userId: string;
+  /** Verified persistent-client identity, pinned for cold restoration. */
+  readonly clientIdentity?: string;
+  /** Capability manifest revision, pinned for cold restoration. */
+  readonly clientManifestGeneration?: number;
   readonly elicitationMode?: McpElicitationMode;
   /** Whether the session serves artifacts (carried from {@link McpSessionInit}).
    *  Absent — including for sessions persisted before the flag existed — means
@@ -1611,7 +1624,7 @@ export abstract class McpAgentSessionDOBase<
   }
 
   async validateMcpSessionOwner(
-    identity: McpApprovalOwner,
+    identity: McpSessionOwnerIdentity,
     resource: McpResource,
   ): Promise<"ok" | "not_found" | "forbidden" | "terminated"> {
     const self = this;
@@ -1643,7 +1656,10 @@ export abstract class McpAgentSessionDOBase<
         }
         const ownerMatches =
           identity.accountId === sessionMeta.userId &&
-          identity.organizationId === sessionMeta.organizationId;
+          identity.organizationId === sessionMeta.organizationId &&
+          (identity.clientIdentity ?? null) === (sessionMeta.clientIdentity ?? null) &&
+          (identity.clientManifestGeneration ?? null) ===
+            (sessionMeta.clientManifestGeneration ?? null);
         const resourceMatches = mcpResourceKey(resource) === mcpResourceKey(sessionMeta.resource);
         return ownerMatches && resourceMatches ? ("ok" as const) : ("forbidden" as const);
       }).pipe(

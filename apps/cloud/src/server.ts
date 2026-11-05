@@ -19,6 +19,8 @@ import { makeCloudMcpAgentHandler } from "./mcp/agent-handler";
 import { classifyMcpPath, prepareMcpOrgScope } from "./mcp/mount";
 import { parseTraceparent } from "./mcp/traceparent";
 import { McpSessionDOSqlite as McpSessionDOBase } from "./mcp/session-durable-object";
+import { McpClientChannelDO } from "./mcp/client-channel-durable-object";
+import { handleMcpClientChannel } from "./mcp/client-channel-route";
 import {
   cloudSentryOptions,
   captureCause,
@@ -48,6 +50,7 @@ export const McpSessionDOSqlite = Sentry.instrumentDurableObjectWithSentry(
 // exported here only to satisfy the migration. It can be removed in a later deploy
 // (with a `deleted_classes: ["McpSessionDO"]` migration) now that nothing binds it.
 export class McpSessionDO extends DurableObject {}
+export { McpClientChannelDO };
 
 // Per-org execution rate-limit counter DO (abuse backstop; migration v3,
 // `EXECUTION_RATE_LIMITER` binding). Plain counter, no Sentry wrapper needed:
@@ -349,6 +352,9 @@ const cloudflareHandler = {
     // early return below: the handler invokes it for uncached MCP traffic, and
     // this entry invokes it for non-MCP paths.
     const url = new URL(request.url);
+    if (url.pathname === "/mcp/client-channel") {
+      return handleMcpClientChannel(request, env);
+    }
     const mcpRoute = classifyMcpPath(url.pathname);
     if (mcpRoute?.kind === "mcp") {
       // The Cloudflare Agents MCP bridge needs the platform ExecutionContext

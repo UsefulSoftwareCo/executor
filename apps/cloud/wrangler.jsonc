@@ -61,6 +61,10 @@
         "name": "EXECUTION_RATE_LIMITER",
         "class_name": "ExecutionRateLimiterDO",
       },
+      {
+        "name": "MCP_CLIENT_CHANNEL",
+        "class_name": "McpClientChannelDO",
+      },
     ],
   },
   // The MCP session DO moved to the Cloudflare Agents (`McpAgent`) base, which
@@ -88,6 +92,10 @@
     {
       "tag": "v4",
       "new_sqlite_classes": ["McpExecutionOwnerDirectoryDO"],
+    },
+    {
+      "tag": "v5",
+      "new_sqlite_classes": ["McpClientChannelDO"],
     },
   ],
   "services": [
