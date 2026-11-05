@@ -31,7 +31,6 @@ export const OBSERVED_TEST_DURATIONS_MS: Readonly<
     "cloud/org-api-keys-console.test.ts": 9_520,
     "cloud/org-delete.test.ts": 8_075,
     "cloud/org-last-visited.test.ts": 6_696,
-    "cloud/org-limit.test.ts": 19_139,
     "cloud/org-multitab-cookie.test.ts": 15_626,
     "cloud/org-switcher.test.ts": 7_686,
     "cloud/repro-transport-brick.test.ts": 5_474,

@@ -7,15 +7,17 @@
 // executions and NONE of them reach the meter. The product looks perfectly
 // healthy while every execution is unbilled and unmetered.
 //
-// Three guarantees are pinned here, all read from Autumn's own state rather than
+// Two guarantees are pinned here, all read from Autumn's own state rather than
 // from the execution's response (which can never show any of them):
 //
-//   1. creating an organization provisions its billing customer up front,
-//   2. if a customer is missing anyway, the billing seam heals it in place and
-//      the execution still lands on the meter, and
-//   3. any OTHER billing failure is left alone — the repair is scoped to the
+//   1. if an organization's customer is missing, the billing seam heals it in
+//      place and the execution still lands on the meter, and
+//   2. any OTHER billing failure is left alone — the repair is scoped to the
 //      "no such customer" answer, so a real provider failure is still reported
 //      rather than quietly retried away.
+//
+// (v1 no longer creates organizations — they are created in Executor v2 — so
+// there is no creation step left to provision a customer up front.)
 //
 // The missing customer is produced with the emulator's fault injector — one
 // 404 `customer_not_found` per billing endpoint — because the emulator, like
@@ -53,31 +55,6 @@ const UNRELATED_NOT_FOUND = {
   status: 404,
   body: { message: "Not Found", code: "not_found" },
 } as const;
-
-scenario(
-  "Billing · creating an organization provisions it as a billing customer",
-  { timeout: 180_000 },
-  Effect.gen(function* () {
-    yield* Billing;
-    const autumn = yield* Autumn;
-    const target = yield* Target;
-    const mcp = yield* Mcp;
-
-    // A brand-new user creating their first organization: none of the
-    // opportunistic billing lookups (the over-the-free-limit check, the members
-    // page's seat count, the rate limiter's paid-plan exemption) are reached on
-    // this journey, so org creation is the only chance to provision.
-    const identity = yield* target.newIdentity();
-    const bearer = yield* mcp.mintBearer(emailOf(identity));
-    const organizationId = orgIdOf(bearer);
-
-    const customerIds = yield* autumn.customerIds();
-    expect(
-      customerIds,
-      "the new organization exists as a customer at the billing provider",
-    ).toContain(organizationId);
-  }),
-);
 
 scenario(
   "Billing · a missing billing customer is healed in place and the execution is still metered",

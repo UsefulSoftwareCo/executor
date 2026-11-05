@@ -2,7 +2,7 @@
 // React shell + api-keys page consume. Happy paths go through the typed
 // AccountHttpApi client (the same contract the UI's AccountApiClient uses);
 // refusal edges and the bearer cross-check use raw fetch with the identity's
-// real sealed-session cookie (the org-limit cross-check pattern).
+// real sealed-session cookie.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 import { AccountHttpApi } from "@executor-js/api";

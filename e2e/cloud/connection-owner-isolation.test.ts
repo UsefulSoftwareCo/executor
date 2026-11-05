@@ -2,8 +2,9 @@ import { verifyAdmin } from "./support/admin-mfa";
 // Cloud-only: the connection OWNER model, with real multi-user organizations.
 // Every connection is filed under `owner: "org"` (shared with the whole tenant)
 // or `owner: "user"` (this subject's own). The org membership is built through
-// the real product flows — invite → accept-invitation, create-organization,
-// switch-organization — so the guarantees hold for genuine sessions:
+// the real product flows — invite → accept-invitation, and a second org the
+// account belongs to in WorkOS (v1 creates none; see `addOrg`) — so the
+// guarantees hold for genuine sessions:
 //
 //   1. A user-owned connection is private to its creator, even from co-workers
 //      in the same org (personal OAuth tokens don't leak to colleagues).
@@ -22,6 +23,7 @@ import { AuthTemplateSlug, ConnectionName, IntegrationSlug } from "@executor-js/
 import { scenario } from "../src/scenario";
 import { Api, Target } from "../src/services";
 import type { Identity, Target as TargetShape } from "../src/target";
+import { addOrg } from "./support/session";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
@@ -125,14 +127,6 @@ const joinOrg = (target: TargetShape, admin: Identity, member: Identity) =>
       invitationId: invitation.id,
     });
     return withRefreshedSession(member, acceptResponse, orgSelectorOf(admin));
-  });
-
-/** Create another org for this account; returns the identity bound to it. */
-const createAnotherOrg = (target: TargetShape, identity: Identity, name: string) =>
-  Effect.gen(function* () {
-    const response = yield* postJson(target, "/api/auth/create-organization", identity, { name });
-    const created = (yield* Effect.promise(() => response.clone().json())) as { id: string };
-    return withRefreshedSession(identity, response, created.id);
   });
 
 // `/api/auth/switch-organization` (session-cookie-based org switching) was
@@ -297,8 +291,8 @@ scenario(
       },
     });
 
-    // The SAME account creates and switches into a second org.
-    const userInOrgB = yield* createAnotherOrg(
+    // The SAME account in a second org.
+    const { identity: userInOrgB } = yield* addOrg(
       target,
       userInOrgA,
       `Second Org ${randomBytes(3).toString("hex")}`,

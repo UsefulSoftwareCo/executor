@@ -14,8 +14,7 @@ import { Effect } from "effect";
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
 import { visit } from "../src/surfaces/browser";
-
-const CLOUD_ORIGIN_HEADERS = (baseUrl: string) => ({ origin: new URL(baseUrl).origin });
+import { activeOrg, addOrg, cookieOf } from "./support/session";
 
 scenario(
   "Org URLs · opening another of your orgs by slug works without switching the session",
@@ -24,48 +23,15 @@ scenario(
     const target = yield* Target;
     const browser = yield* Browser;
 
-    // Identity starts in org A. Create org B through the real endpoint, which
-    // returns its refreshed cookie (the session is now pinned to B).
+    // Identity starts in org A, then joins org B and signs in to it: the
+    // session is pinned to B.
     const identity = yield* target.newIdentity();
-    const cookie = identity.headers?.cookie ?? "";
-
-    const createB = yield* Effect.promise(() =>
-      fetch(new URL("/api/auth/create-organization", target.baseUrl), {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          cookie,
-          ...CLOUD_ORIGIN_HEADERS(target.baseUrl),
-        },
-        body: JSON.stringify({ name: "Foreign Slug Org B" }),
-      }),
-    );
-    expect(createB.ok, "org B was created").toBe(true);
-    const orgB = (yield* Effect.promise(() => createB.json())) as { slug: string };
-    const setCookie = createB.headers.get("set-cookie") ?? "";
-    const sessionB = /wos-session=([^;]+)/.exec(setCookie)?.[1];
-    expect(sessionB, "creating org B pinned the session into it").toBeTruthy();
-
-    // Both orgs' slugs (the org list is the same whichever org the cookie pins).
-    const orgs = (yield* Effect.promise(() =>
-      fetch(new URL("/api/auth/organizations", target.baseUrl), {
-        headers: { cookie: `wos-session=${sessionB}` },
-      }).then((r) => r.json()),
-    )) as {
-      organizations: ReadonlyArray<{ name: string; slug: string }>;
-    };
-    const slugA = orgs.organizations.find((o) => o.name.startsWith("Org user-"))?.slug;
-    expect(slugA, "org A has a slug").toBeTruthy();
-    expect(orgB.slug, "org B has a slug").toBeTruthy();
+    const { slug: slugA } = yield* activeOrg(target, identity);
+    const { org: orgB, identity: inB } = yield* addOrg(target, identity, "Foreign Slug Org B");
+    const sessionB = cookieOf(inB).slice("wos-session=".length);
     expect(slugA, "the two orgs have distinct slugs").not.toBe(orgB.slug);
 
     // Drive the browser as the session pinned to B.
-    const inB = {
-      ...identity,
-      headers: { cookie: `wos-session=${sessionB}` },
-      cookies: [{ name: "wos-session", value: sessionB! }],
-    };
-
     yield* browser.session(inB, async ({ page, step }) => {
       await step("Land in org B, then open org A's slug URL directly", async () => {
         await visit(page, `/${orgB.slug}`);

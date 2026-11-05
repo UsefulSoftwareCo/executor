@@ -3,10 +3,10 @@
 // "who uses my workspace, and what have they connected", reading across every
 // member of the tenant instead of binding to one.
 //
-// Two members are built through the REAL flows (login → create-organization →
-// invite → accept-invitation), each connects their own Personal credential, and
-// the admin then reads the joined view — the exact shape a customer dashboard's
-// icon grid consumes. The guarantees pinned here:
+// Two members are built through the REAL flows (login into the admin's
+// organization → invite → accept-invitation), each connects their own Personal
+// credential, and the admin then reads the joined view — the exact shape a
+// customer dashboard's icon grid consumes. The guarantees pinned here:
 //
 //   1. the joined view reports BOTH members and each one's own connections,
 //      even though no single product-view caller can see another member's;

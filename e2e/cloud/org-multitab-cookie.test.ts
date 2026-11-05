@@ -14,14 +14,17 @@
 // reproduction of the corruption — now asserts the opposite: each tab's
 // requests stay scoped to its own URL org, no matter what the other tab does.
 //
-// Everything runs through the browser (onboarding + the menu create-org), so
-// the single-use WorkOS refresh-token chain stays browser-owned and valid.
+// The account's two orgs exist in WorkOS (v1 creates none; see `addOrg`) and
+// the session is signed in before the browser opens; from then on only the
+// browser uses it, so the single-use WorkOS refresh-token chain stays
+// browser-owned and valid.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
 import { visit } from "../src/surfaces/browser";
+import { addOrg } from "./support/session";
 
 scenario(
   "Org tabs · two tabs on different orgs stay independent (URL-scoped, no cookie steal)",
@@ -29,11 +32,14 @@ scenario(
   Effect.gen(function* () {
     const target = yield* Target;
     const browser = yield* Browser;
-    const identity = yield* target.newIdentity({ org: false });
+    const account = yield* target.newIdentity({ org: false });
+    const { org: orgA } = yield* addOrg(target, account, "Multitab A");
+    const { org: orgB, identity } = yield* addOrg(target, account, "Multitab B");
+    const slugA = orgA.slug;
+    const slugB = orgB.slug;
+    expect(slugB, "the two orgs have distinct slugs").not.toBe(slugA);
 
     yield* browser.session(identity, async ({ page: tab1, step }) => {
-      const slugOf = (page: typeof tab1) => new URL(page.url()).pathname.replace(/^\/|\/.*$/g, "");
-
       // The org slug a page's REAL app requests carry — read straight off the
       // outgoing `x-executor-organization` header, the actual request scope.
       // This is what makes the two tabs independent; the shared session cookie
@@ -50,35 +56,10 @@ scenario(
         return (await matching).headers()["x-executor-organization"]!;
       };
 
-      let slugA = "";
-      let slugB = "";
-
-      await step("Onboard org A in tab 1", async () => {
-        await visit(tab1, "/");
-        await tab1.getByPlaceholder("Northwind Labs").fill("Multitab A");
-        await tab1.getByRole("button", { name: "Create organization" }).click();
-        await tab1.getByText("Connect your MCP client").waitFor({ timeout: 30_000 });
-        await tab1.getByRole("button", { name: "Continue to app" }).click();
-        await tab1.waitForURL((url) => /^\/[a-z0-9-]+\/?$/.test(url.pathname), { timeout: 30_000 });
+      await step("Tab 1 opens org B", async () => {
+        await visit(tab1, `/${slugB}`);
         await tab1.getByText("Integrations").first().waitFor({ timeout: 30_000 });
-        slugA = slugOf(tab1);
       });
-
-      await step("Create org B from tab 1's account menu — tab 1 is now in B", async () => {
-        await tab1.getByRole("button", { name: /Test User/ }).click();
-        await tab1.getByRole("menuitem", { name: "Multitab A" }).click();
-        await tab1
-          .locator('[data-slot="dropdown-menu-sub-content"]')
-          .getByText("Create organization", { exact: true })
-          .click();
-        await tab1.getByText("Add another organization").waitFor();
-        await tab1.getByPlaceholder("Northwind Labs").fill("Multitab B");
-        await tab1.getByRole("button", { name: "Create organization" }).click();
-        await tab1.waitForURL((url) => url.pathname !== `/${slugA}`, { timeout: 30_000 });
-        await tab1.getByText("Integrations").first().waitFor({ timeout: 30_000 });
-        slugB = slugOf(tab1);
-      });
-      expect(slugB, "the two orgs have distinct slugs").not.toBe(slugA);
 
       // A second tab in the SAME context — shares tab 1's cookie jar.
       const tab2 = await tab1.context().newPage();
