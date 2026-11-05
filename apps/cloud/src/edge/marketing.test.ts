@@ -7,8 +7,10 @@ import {
   isV2Path,
   marketingProxyRequest,
   parseV2Edge,
+  v2AppOrigin,
   v2EdgeResponse,
   v2PageForSlashedPath,
+  v2SignUpUrl,
   type V2EdgeEnv,
   type V2Service,
 } from "./marketing";
@@ -251,6 +253,31 @@ describe("parseV2Edge", () => {
     expect(edge.analyticsProxyPath).toBe("/api/0123456789abcdef");
     expect(edge.errorTunnelPath).toBe("/api/fedcba9876543210/submit");
     expect(typeof parseV2Edge({ ...settings, V2_OAUTH_STATE_PREFIX: "v2~" })).toBe("object");
+  });
+});
+
+// Where v1 sends anything that would create an organization: v2's sign-up page
+// (and its origin, v2's app host).
+describe("v2SignUpUrl", () => {
+  const service: V2Service = { fetch: () => Promise.resolve(new Response(null)) };
+  const settings = {
+    V2: service,
+    V2_SIGN_UP_URL: "https://app.executor.sh/login?mode=signup",
+    V2_OAUTH_STATE_PREFIX: "x2.",
+    V2_ANALYTICS_PROXY_PATH: "/api/0123456789abcdef",
+    V2_ERROR_TUNNEL_PATH: "/api/fedcba9876543210/submit",
+  };
+
+  it("is v2's sign-up page, query kept, and v2AppOrigin is its origin", () => {
+    expect(v2SignUpUrl(settings)?.href).toBe("https://app.executor.sh/login?mode=signup");
+    expect(v2AppOrigin(settings)?.href).toBe("https://app.executor.sh/");
+  });
+
+  it("is null where v1 has no v2: no settings, or broken ones", () => {
+    expect(v2SignUpUrl({})).toBeNull();
+    expect(v2SignUpUrl({ ...settings, V2: undefined })).toBeNull();
+    expect(v2SignUpUrl({ ...settings, V2_SIGN_UP_URL: "/login?mode=signup" })).toBeNull();
+    expect(v2AppOrigin({})).toBeNull();
   });
 });
 

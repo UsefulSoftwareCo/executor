@@ -5,6 +5,10 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
+import { seedOrganization } from "../targets/cloud";
+
+/** A signed-in member's landing: the dashboard at their org's `/<slug>`. */
+const isDashboard = (url: URL) => /^\/[a-z0-9-]+\/?$/.test(url.pathname);
 
 scenario(
   "Login CSRF · state is required, bound to the browser, and consumed after login",
@@ -13,6 +17,8 @@ scenario(
     const target = yield* Target;
     const browser = yield* Browser;
     const email = `csrf-${randomUUID()}@e2e.test`;
+    // A member of an existing organization, so the completed login lands in the app.
+    yield* Effect.promise(() => seedOrganization(email, "CSRF Org"));
     yield* browser.session({ label: "anonymous" }, async ({ page, step }) => {
       const interceptCallback = async (): Promise<string> => {
         let callback: string | undefined;
@@ -59,7 +65,7 @@ scenario(
       await step("Complete a fresh login, then reject the same callback again", async () => {
         const callback = await interceptCallback();
         await page.goto(callback);
-        await page.waitForURL((url) => url.pathname === "/create-org", { timeout: 30_000 });
+        await page.waitForURL(isDashboard, { timeout: 30_000 });
         const cookies = await page.context().cookies();
         expect(cookies.some((cookie) => cookie.name === "wos-session")).toBe(true);
         expect(cookies.some((cookie) => cookie.name === "wos-login-state")).toBe(false);
@@ -81,6 +87,8 @@ scenario(
     const target = yield* Target;
     const browser = yield* Browser;
     const email = `provider-login-${randomUUID()}@e2e.test`;
+    // A member of an existing organization, so the completed login lands in the app.
+    yield* Effect.promise(() => seedOrganization(email, "Provider Login Org"));
     // Discover this deployment's provider URL without setting a browser cookie.
     const login = yield* Effect.promise(() =>
       fetch(new URL("/api/auth/login", target.baseUrl), { redirect: "manual" }),
@@ -113,7 +121,7 @@ scenario(
         // The emulator asks again; hosted AuthKit can reuse its browser session.
         await page.getByPlaceholder("new-user@example.com").fill(email);
         await page.getByRole("button", { name: /Continue/ }).click();
-        await page.waitForURL((url) => url.pathname === "/create-org", { timeout: 30_000 });
+        await page.waitForURL(isDashboard, { timeout: 30_000 });
         const me = await page.request.get(new URL("/api/auth/me", target.baseUrl).toString());
         expect(me.status()).toBe(200);
         expect(await me.json()).toMatchObject({ user: { email } });

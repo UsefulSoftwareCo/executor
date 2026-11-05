@@ -8,10 +8,11 @@
 // most here — that a plain member who reaches the URL is told they don't have
 // access rather than shown an empty workspace.
 //
-// Two members are built through the REAL flows (login → create-organization →
-// invite → accept-invitation, in `./support/session`). Each connects a Personal
-// credential; the plain member's Workspace attempt is refused, so the directory
-// and connection UI prove the owner-aware permission boundary together.
+// Two members are built through the REAL flows (login into the admin's
+// organization → invite → accept-invitation, in `./support/session`). Each
+// connects a Personal credential; the plain member's Workspace attempt is
+// refused, so the directory and connection UI prove the owner-aware permission
+// boundary together.
 import { randomBytes } from "node:crypto";
 
 import { expect } from "@effect/vitest";

@@ -1,7 +1,8 @@
 // Cloud-specific: the SSR auth gate's session handling BEYOND the basic
 // signed-out redirect (unauthenticated-skeleton.test.ts owns that): an
 // invalid cookie is actively cleared, /cloud (the marketing CTA path) routes
-// into the app, and — the nastiest path — a session whose access token no
+// into the app, a session with no organization is sent to Executor v2, and —
+// the nastiest path — a session whose access token no
 // longer verifies is refreshed in-flight, with the rotated sealed session
 // reaching the browser. WorkOS refresh tokens are single-use, so losing that
 // Set-Cookie silently logs the user out on next expiry; these scenarios pin
@@ -82,30 +83,65 @@ scenario(
 );
 
 scenario(
-  "Session gate · an org-less session is sent to onboarding before the app shell exists",
+  "Session gate · an org-less session is sent to Executor v2 before the app shell exists",
   {},
   Effect.gen(function* () {
     // Gate: the REST API plane is mounted on this target.
     yield* Api;
     const target = yield* Target;
 
-    // A verified user with no organization belongs in onboarding — the gate
-    // decides that at the edge, so the app shell (whose every query needs an
-    // org) is never even served.
+    // v1 creates no organizations. A verified user with none (and no pending
+    // invitation) is sent to v2's sign-up page, where organizations are
+    // created now — decided at the edge, so the app shell (whose every query
+    // needs an org) is never served.
     const orgless = yield* target.newIdentity({ org: false });
-    const gated = yield* documentRequest(
-      new URL("/tools", target.baseUrl),
-      orgless.headers!.cookie!,
-    );
-    expect(gated.status, "the app page is not served org-less").toBe(302);
-    expect(gated.headers.get("location"), "…onboarding owns this session").toBe("/create-org");
+    for (const path of ["/", "/tools", "/create-org"]) {
+      const gated = yield* documentRequest(new URL(path, target.baseUrl), orgless.headers!.cookie!);
+      expect(gated.status, `${path} is not served org-less`).toBe(302);
+      const location = new URL(gated.headers.get("location") ?? "", target.baseUrl);
+      expect(location.origin, `${path} leaves v1 for v2's host`).not.toBe(
+        new URL(target.baseUrl).origin,
+      );
+      expect(location.pathname, `${path} opens v2's sign-in page`).toBe("/login");
+      expect(location.searchParams.get("mode"), `${path} opens it to sign up`).toBe("signup");
+    }
 
-    // The onboarding page itself is served (no redirect loop).
-    const onboarding = yield* documentRequest(
-      new URL("/create-org", target.baseUrl),
+    // The join page (pending invitations) is served, not redirected — no loop.
+    const join = yield* documentRequest(new URL("/join", target.baseUrl), orgless.headers!.cookie!);
+    expect(join.status, "/join renders for the org-less session").toBe(200);
+  }),
+);
+
+scenario(
+  "Session gate · /create-org opens Executor v2 for a member too, and nothing else moves",
+  {},
+  Effect.gen(function* () {
+    // Gate: the REST API plane is mounted on this target.
+    yield* Api;
+    const target = yield* Target;
+
+    const member = yield* target.newIdentity();
+    const cookie = member.headers!.cookie!;
+    const orgless = yield* target.newIdentity({ org: false });
+
+    // v1's create-an-organization address opens v2's sign-up page whatever
+    // organizations the session has — the same page an org-less session gets.
+    const createOrg = yield* documentRequest(new URL("/create-org", target.baseUrl), cookie);
+    const orglessRoot = yield* documentRequest(
+      new URL("/", target.baseUrl),
       orgless.headers!.cookie!,
     );
-    expect(onboarding.status, "/create-org renders for the org-less session").toBe(200);
+    expect(createOrg.status, "/create-org redirects a member").toBe(302);
+    expect(createOrg.headers.get("location"), "…to the same v2 sign-up page").toBe(
+      orglessRoot.headers.get("location"),
+    );
+
+    // The member's own dashboard is served exactly as before.
+    const slug = member.headers!["x-executor-organization"]!;
+    for (const path of ["/", `/${slug}`, `/${slug}/policies`]) {
+      const page = yield* documentRequest(new URL(path, target.baseUrl), cookie);
+      expect(page.status, `${path} serves the member's app`).toBe(200);
+    }
   }),
 );
 

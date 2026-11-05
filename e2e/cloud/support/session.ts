@@ -21,6 +21,7 @@ import { verifyAdmin } from "./admin-mfa";
 import { Effect } from "effect";
 
 import type { Identity, Target as TargetShape } from "../../src/target";
+import { seedOrganization, signIn } from "../../targets/cloud";
 
 /**
  * The per-request org selector. `/api/auth/switch-organization` was removed
@@ -44,7 +45,7 @@ export const cookieOf = (identity: Identity): string => identity.headers?.["cook
 
 /**
  * The identity re-bound so the BROWSER carries the same session the API calls
- * do. `joinOrg` / `createOrg` refresh `headers.cookie` (the org is baked into
+ * do. `joinOrg` refreshes `headers.cookie` (the org is baked into
  * the sealed session) but leave `cookies` on the pre-change value, and the
  * browser context is seeded from `cookies`.
  */
@@ -140,16 +141,49 @@ export const joinOrg = (
     return withRefreshedSession(member, acceptResponse, orgSelectorOf(admin));
   });
 
-/** Create another org for this account; returns the identity bound to it. */
-export const createOrg = (
+/**
+ * Give this account another organization, as its admin, and sign in to it.
+ * v1 creates no organizations, so it is seeded in WorkOS (`seedOrganization`);
+ * one sign-in mirrors it and mints its slug, and a second, returning to its
+ * URL, lands the session in it. Returns the org and the identity bound to it:
+ * a fresh session (the account's earlier sessions stay valid) and the org's
+ * selector. `name` must be unique among the account's organizations.
+ */
+export const addOrg = (
   target: TargetShape,
   identity: Identity,
   name: string,
-): Effect.Effect<Identity> =>
-  Effect.gen(function* () {
-    const response = yield* postJson(target, "/api/auth/create-organization", identity, { name });
-    const created = (yield* Effect.promise(() => response.clone().json())) as { id: string };
-    return withRefreshedSession(identity, response, created.id);
+): Effect.Effect<{
+  readonly org: { readonly id: string; readonly name: string; readonly slug: string };
+  readonly identity: Identity;
+}> =>
+  Effect.promise(async () => {
+    const email = identity.credentials?.email;
+    if (!email) throw new Error(`identity ${identity.label} carries no email to sign in with`);
+    await seedOrganization(email, name);
+    const mirrored = await signIn(email);
+    const response = await fetch(new URL("/api/auth/organizations", target.baseUrl), {
+      headers: { cookie: mirrored },
+    });
+    if (!response.ok) throw new Error(`/api/auth/organizations failed (${response.status})`);
+    const { organizations } = (await response.json()) as {
+      organizations: ReadonlyArray<{ id: string; name: string; slug: string }>;
+    };
+    const named = organizations.filter((organization) => organization.name === name);
+    if (named.length !== 1) {
+      throw new Error(`expected one organization named "${name}", found ${named.length}`);
+    }
+    const org = named[0]!;
+    const session = await signIn(email, `/${org.slug}`);
+    const separator = session.indexOf("=");
+    return {
+      org,
+      identity: {
+        ...identity,
+        headers: { cookie: session, [ORG_SELECTOR_HEADER]: org.slug },
+        cookies: [{ name: session.slice(0, separator), value: session.slice(separator + 1) }],
+      },
+    };
   });
 
 /** This identity, scoped to `organizationId` for the requests it makes. */
@@ -170,21 +204,25 @@ export const accountIdOf = (target: TargetShape, identity: Identity): Effect.Eff
     return body.user.id;
   });
 
-/** The org this identity's session is currently bound to: id and URL slug. */
+/** The org this identity's session is currently bound to: id, URL slug and name. */
 export const activeOrg = (
   target: TargetShape,
   identity: Identity,
-): Effect.Effect<{ readonly id: string; readonly slug: string }> =>
+): Effect.Effect<{ readonly id: string; readonly slug: string; readonly name: string }> =>
   Effect.promise(async () => {
     const response = await fetch(new URL("/api/auth/me", target.baseUrl), {
       headers: { cookie: cookieOf(identity) },
     });
     if (!response.ok) throw new Error(`/api/auth/me failed (${response.status})`);
     const body = (await response.json()) as {
-      organization: { id: string; slug: string } | null;
+      organization: { id: string; slug: string; name: string } | null;
     };
     if (!body.organization) throw new Error("identity has no active organization");
-    return { id: body.organization.id, slug: body.organization.slug };
+    return {
+      id: body.organization.id,
+      slug: body.organization.slug,
+      name: body.organization.name,
+    };
   });
 
 /** Every org this account is a member of, plus the one the session is on. */

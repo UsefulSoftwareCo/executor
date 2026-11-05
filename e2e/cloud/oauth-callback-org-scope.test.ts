@@ -18,17 +18,11 @@ import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
 import type { Identity } from "../src/target";
 import { visit } from "../src/surfaces/browser";
+import { addOrg } from "./support/session";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
-
-const cookiePair = (response: Response, name: string): string | undefined => {
-  for (const header of response.headers.getSetCookie?.() ?? []) {
-    if (header.startsWith(`${name}=`)) return header.split(";")[0];
-  }
-  return undefined;
-};
 
 const cookieValue = (pair: string): string => {
   const [, value] = pair.split(/=(.*)/s);
@@ -37,8 +31,6 @@ const cookieValue = (pair: string): string => {
 };
 
 const cookieOf = (identity: Identity): string => identity.headers?.cookie ?? "";
-
-const originHeaders = (baseUrl: string) => ({ origin: new URL(baseUrl).origin });
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -115,26 +107,6 @@ const activeOrg = (baseUrl: string, cookie: string) =>
     return body.organization;
   });
 
-const createOrganization = (baseUrl: string, cookie: string, name: string) =>
-  Effect.promise(async () => {
-    const response = await fetch(new URL("/api/auth/create-organization", baseUrl), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        cookie,
-        ...originHeaders(baseUrl),
-      },
-      body: JSON.stringify({ name }),
-    });
-    if (!response.ok) {
-      throw new Error(`/api/auth/create-organization failed (${response.status})`);
-    }
-    const session = cookiePair(response, "wos-session");
-    if (!session) throw new Error("create organization did not refresh the session");
-    const org = (await response.json()) as { id: string; name: string; slug: string };
-    return { org, session };
-  });
-
 const oauthIntegrationSpec = (oauth: {
   readonly authorizationEndpoint: string;
   readonly tokenEndpoint: string;
@@ -180,11 +152,12 @@ scenario(
     const sessionA = cookieOf(identity);
     const orgA = yield* activeOrg(target.baseUrl, sessionA);
 
-    const { org: orgB, session: sessionB } = yield* createOrganization(
-      target.baseUrl,
-      sessionA,
+    const { org: orgB, identity: inB } = yield* addOrg(
+      target,
+      identity,
       `OAuth Callback Org B ${randomBytes(3).toString("hex")}`,
     );
+    const sessionB = cookieOf(inB);
     expect(orgB.slug, "the test has two distinct org URLs").not.toBe(orgA.slug);
 
     const client = yield* makeApiClient(api, identity);

@@ -35,7 +35,7 @@ export interface Target {
    * Mint a fresh identity — THE isolation model: no resets, every scenario
    * is its own user (and org where applicable) on the shared instance.
    * `org: false` yields an identity with no active organization (for flows
-   * that create one, like onboarding / billing limits).
+   * that join one by invitation, or that have none).
    */
   readonly newIdentity: (options?: { readonly org?: boolean }) => Effect.Effect<Identity>;
   /** Headless OAuth consent for the MCP surface, when "mcp-oauth" is supported. */

@@ -1,14 +1,18 @@
 // Cloud-specific (browser): switching organizations changes the active workspace.
-// A fresh user creates two organizations through the real web UI — the first
-// via onboarding and the second via the account-menu → org switcher → "Create
-// organization" modal — then uses the same switcher to return to the first org
-// and confirms the workspace label in the bottom-left account button updates.
+// An account in two organizations (they exist in WorkOS; v1 creates none, see
+// `addOrg`) opens the second, finds the switcher's link to create an
+// organization in Executor v2 where v1's create dialog used to be, then uses
+// the switcher to return to the first org and confirms the workspace label in
+// the bottom-left account button updates.
 import { expect } from "@effect/vitest";
 import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
 import { visit, settle } from "../src/surfaces/browser";
+import { addOrg } from "./support/session";
+
+const NEW_ORG_LINK = "New organization in Executor v2";
 
 scenario(
   "Organizations · switching organizations switches the workspace",
@@ -16,107 +20,61 @@ scenario(
   Effect.gen(function* () {
     const target = yield* Target;
     const browser = yield* Browser;
-    const identity = yield* target.newIdentity({ org: false });
+
+    const ORG_1 = "Switcher Org One";
+    const ORG_2 = "Switcher Org Two";
+    const account = yield* target.newIdentity({ org: false });
+    yield* addOrg(target, account, ORG_1);
+    const { org: org2, identity } = yield* addOrg(target, account, ORG_2);
 
     yield* browser.session(identity, async ({ page, step }) => {
-      // ── Step 1: onboarding, create the first org ─────────────────────
-      await step("Fresh user lands on onboarding (no organization yet)", async () => {
-        await visit(page, "/");
-        await page.getByPlaceholder("Northwind Labs").waitFor();
-      });
-
-      const ORG_1 = "Switcher Org One";
-      const ORG_2 = "Switcher Org Two";
-
-      await step(`Create "${ORG_1}" via onboarding`, async () => {
-        await page.getByPlaceholder("Northwind Labs").fill(ORG_1);
-        await page.getByRole("button", { name: "Create organization" }).click();
-        // Onboarding step 2 — proves the first org was created.
-        await page.getByText("Connect your MCP client").waitFor();
-      });
-
-      await step("Continue into the app", async () => {
-        await page.getByRole("button", { name: "Continue to app" }).click();
+      await step(`Open "${ORG_2}"`, async () => {
+        await visit(page, `/${org2.slug}`);
         await page.getByText("Integrations").first().waitFor();
+        await page.getByRole("button", { name: new RegExp(ORG_2) }).waitFor();
         // Let the router navigation fully settle before opening menus — a late
-        // remount closes them mid-interaction. The console canonicalizes onto
-        // the org's URL slug (/switcher-org-one).
-        await page.waitForURL((url) => /^\/[a-z0-9-]+\/?$/.test(url.pathname), {
-          timeout: 30_000,
-        });
+        // remount closes them mid-interaction.
         await settle(page);
       });
 
-      // ── Step 2: create the second org via the account-menu switcher ──
-      await step('Open the org switcher and choose "Create organization"', async () => {
+      // Capture the label while we are in ORG_2 as a baseline.
+      const labelInOrg2 = await page.getByRole("button", { name: new RegExp(ORG_2) }).innerText();
+      expect(labelInOrg2, "account button shows the second org").toContain(ORG_2);
+
+      const subContent = page.locator('[data-slot="dropdown-menu-sub-content"]');
+
+      // ── The switcher offers v2 for new organizations, not v1 ─────────
+      await step("Open the org switcher: new organizations open Executor v2", async () => {
         // Bounded retry: under parallel-suite load the radix menu re-renders
         // while the org list loads and a click can land on a closing menu.
         for (let attempt = 1; ; attempt++) {
           try {
             await page.keyboard.press("Escape");
             await page.getByRole("button", { name: /Test User/ }).click();
-            await page.getByRole("menuitem", { name: ORG_1 }).click({ timeout: 5_000 });
-            const subContent = page.locator('[data-slot="dropdown-menu-sub-content"]');
+            await page.getByRole("menuitem", { name: ORG_2 }).click({ timeout: 5_000 });
             await subContent.waitFor({ state: "visible", timeout: 5_000 });
-            await subContent
-              .getByText("Create organization", { exact: true })
-              .click({ timeout: 5_000 });
-            await page.getByText("Add another organization").waitFor({ timeout: 5_000 });
+            await subContent.getByRole("menuitem", { name: ORG_1 }).waitFor({ timeout: 5_000 });
             break;
           } catch (error) {
             if (attempt >= 3) throw error;
           }
         }
+        const newOrgLink = subContent.getByRole("menuitem", { name: NEW_ORG_LINK });
+        expect(
+          await newOrgLink.getAttribute("href"),
+          "the link is v1's create-org address, which the auth gate answers with v2's sign-up page",
+        ).toBe("/create-org");
+        expect(await newOrgLink.getAttribute("target"), "it opens in a new tab").toBe("_blank");
+        expect(
+          await subContent.getByText("Create organization", { exact: true }).count(),
+          "v1's create-organization dialog is gone",
+        ).toBe(0);
       });
 
-      await step(`Create "${ORG_2}" via the org switcher modal`, async () => {
-        await page.getByPlaceholder("Northwind Labs").fill(ORG_2);
-        await page.getByRole("button", { name: "Create organization" }).click();
-        // The modal closes and the session switches into the new org.
-        await page.getByText("Add another organization").waitFor({ state: "hidden" });
-        // Confirm the account button now shows ORG_2.
-        await page.getByRole("button", { name: new RegExp(ORG_2) }).waitFor();
-      });
-
-      // Capture the label while we are in ORG_2 as a baseline.
-      const labelAfterOrg2 = await page
-        .getByRole("button", { name: new RegExp(ORG_2) })
-        .innerText();
-      expect(labelAfterOrg2, "account button shows the second org after creation").toContain(ORG_2);
-
-      // ── Step 3: switch back to the first org ─────────────────────────
-      // The org-switcher sub-menu shows org IDs (not names) because the stub's
-      // getOrganization returns the ID as the name. The currently-active org is
-      // rendered with data-disabled="" (Radix convention). The only item without
-      // data-disabled that isn't "Create organization" is ORG_1.
-      await step(`Open the org switcher and switch back to "${ORG_1}"`, async () => {
-        await settle(page);
-        await page.getByRole("button", { name: /Test User/ }).click();
-        // Click the SubTrigger (shows current org name = ORG_2) to expand the list.
-        await page.getByRole("menuitem", { name: ORG_2 }).click();
-        // Wait for the sub-content to open.
-        await page.locator('[data-slot="dropdown-menu-sub-content"]').waitFor({ state: "visible" });
-        // The organizationsAtom loads asynchronously — wait until the loading state
-        // clears and the org items appear. The org items have data-disabled="" when
-        // active and no data-disabled when not. "Create organization" is always shown
-        // and always enabled; wait until there are at least 2 non-disabled items
-        // (the non-active org + "Create organization") before clicking.
-        await page
-          .locator('[data-slot="dropdown-menu-sub-content"]')
-          .locator('[role="menuitem"]:not([data-disabled])')
-          .nth(1)
-          .waitFor();
-        // Now the sub-content has loaded. The org items appear BEFORE the separator and
-        // "Create organization". ORG_1 (non-active, not disabled) appears before ORG_2
-        // (active, disabled) and before "Create organization". Click the first
-        // non-disabled item that is NOT "Create organization" — that is ORG_1.
-        await page
-          .locator('[data-slot="dropdown-menu-sub-content"]')
-          .locator('[role="menuitem"]:not([data-disabled])')
-          .filter({ hasNot: page.getByText("Create organization") })
-          .first()
-          .click();
-        // The menu closes, the page reloads, and the session switches into ORG_1.
+      // ── Switch to the first org ──────────────────────────────────────
+      await step(`Switch to "${ORG_1}" from the org switcher`, async () => {
+        await subContent.getByRole("menuitem", { name: ORG_1 }).click();
+        // The page navigates to ORG_1's URL and the workspace re-scopes.
         await page.getByRole("button", { name: new RegExp(ORG_1) }).waitFor();
       });
 

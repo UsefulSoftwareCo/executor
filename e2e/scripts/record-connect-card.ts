@@ -8,7 +8,9 @@
 //
 // It mints a real signed-in session through the headless WorkOS-emulator login
 // (the same flow targets/cloud.ts uses), then screenshots just the command
-// block so the URL is legible.
+// block so the URL is legible. The account's organization is seeded in this
+// checkout's WorkOS emulator, so run it against a cloud stack this checkout
+// booted.
 //
 // Usage: bun e2e/scripts/record-connect-card.ts <base-url> <out-prefix>
 //   writes <out-prefix>-ssr.png (first paint) and <out-prefix>-hydrated.png
@@ -16,6 +18,7 @@ import { randomUUID } from "node:crypto";
 
 import { chromium } from "playwright";
 import { visit } from "../src/surfaces/browser";
+import { seedOrganization } from "../targets/cloud";
 
 const [baseUrl, outPrefix] = process.argv.slice(2);
 if (!baseUrl || !outPrefix) {
@@ -30,9 +33,11 @@ const cookiePair = (response: Response, name: string): string | undefined => {
   return undefined;
 };
 
-// The real product login, headless (login → hosted AuthKit → callback), then
-// the real create-organization flow so the card renders an org-scoped URL.
+// An organization in WorkOS with this account as its admin (v1 creates none),
+// then the real product login, headless (login → hosted AuthKit → callback),
+// which lands in it, so the card renders an org-scoped URL.
 const signInWithOrg = async (email: string): Promise<string> => {
+  await seedOrganization(email, `Org ${email.split("@")[0]!}`);
   const login = await fetch(new URL("/api/auth/login", baseUrl), { redirect: "manual" });
   const stateCookie = cookiePair(login, "wos-login-state");
   const authorizeUrl = new URL(login.headers.get("location") ?? "");
@@ -47,21 +52,8 @@ const signInWithOrg = async (email: string): Promise<string> => {
     redirect: "manual",
     headers: { cookie: stateCookie },
   });
-  let session = cookiePair(callback, "wos-session");
+  const session = cookiePair(callback, "wos-session");
   if (!session) throw new Error(`callback set no session (${callback.status})`);
-
-  const label = email.split("@")[0]!;
-  const created = await fetch(new URL("/api/auth/create-organization", baseUrl), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      origin: new URL(baseUrl).origin,
-      cookie: session,
-    },
-    body: JSON.stringify({ name: `Org ${label}` }),
-  });
-  if (!created.ok) throw new Error(`create-organization failed (${created.status})`);
-  session = cookiePair(created, "wos-session") ?? session;
   return session; // "wos-session=<sealed>"
 };
 

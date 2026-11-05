@@ -1,7 +1,8 @@
 import { verifyAdminInBrowser } from "./support/admin-mfa";
 // Cloud-specific (browser): an admin permanently deletes their organization.
-// A fresh user creates an org through onboarding, opens Organization settings,
-// and uses the danger-zone "Delete organization" flow — which requires
+// A user who is the admin of an org (it exists in WorkOS; v1 creates none, see
+// `addOrg`) opens Organization settings, and uses the danger-zone "Delete
+// organization" flow — which requires
 // re-typing the org name to confirm. Deleting tears the org down in WorkOS +
 // billing + the tenant database and clears the session, so the app drops the
 // user out of the (now gone) workspace.
@@ -10,7 +11,8 @@ import { Effect } from "effect";
 
 import { scenario } from "../src/scenario";
 import { Browser, Target } from "../src/services";
-import { visit, settle } from "../src/surfaces/browser";
+import { visit } from "../src/surfaces/browser";
+import { addOrg } from "./support/session";
 
 scenario(
   "Organizations · an admin deletes the organization from settings",
@@ -18,27 +20,14 @@ scenario(
   Effect.gen(function* () {
     const target = yield* Target;
     const browser = yield* Browser;
-    const identity = yield* target.newIdentity({ org: false });
+    const ORG = "Doomed Org";
+    const account = yield* target.newIdentity({ org: false });
+    const {
+      org: { slug },
+      identity,
+    } = yield* addOrg(target, account, ORG);
 
     yield* browser.session(identity, async ({ page, step }) => {
-      const ORG = "Doomed Org";
-
-      await step("Fresh user creates an org via onboarding", async () => {
-        await visit(page, "/");
-        await page.getByPlaceholder("Northwind Labs").fill(ORG);
-        await page.getByRole("button", { name: "Create organization" }).click();
-        await page.getByText("Connect your MCP client").waitFor();
-        await page.getByRole("button", { name: "Continue to app" }).click();
-        await page.getByText("Integrations").first().waitFor();
-        // The console canonicalizes onto the org's URL slug (/doomed-org).
-        await page.waitForURL((url) => /^\/[a-z0-9-]+\/?$/.test(url.pathname), {
-          timeout: 30_000,
-        });
-        await settle(page);
-      });
-
-      const slug = new URL(page.url()).pathname.split("/").filter(Boolean)[0]!;
-
       await step("Open Organization settings and find the danger zone", async () => {
         await visit(page, `/${slug}/org`);
         await verifyAdminInBrowser(page);

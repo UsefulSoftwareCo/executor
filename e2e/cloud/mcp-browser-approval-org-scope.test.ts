@@ -15,6 +15,7 @@ import { scenario } from "../src/scenario";
 import { Api, Browser, Mcp, Target } from "../src/services";
 import { type McpBrowserApproval, parseBrowserApproval } from "../src/surfaces/mcp";
 import { visit } from "../src/surfaces/browser";
+import { addOrg } from "./support/session";
 
 const coreApi = composePluginApi([] as const);
 
@@ -25,13 +26,6 @@ const result = await tools.executor.coreTools.policies.list({});
 return JSON.stringify(result);
 `;
 
-const cookiePair = (response: Response, name: string): string | undefined => {
-  for (const header of response.headers.getSetCookie?.() ?? []) {
-    if (header.startsWith(`${name}=`)) return header.split(";")[0];
-  }
-  return undefined;
-};
-
 const cookieValue = (pair: string): string => {
   const [, value] = pair.split(/=(.*)/s);
   if (!value) throw new Error("cookie pair has no value");
@@ -40,8 +34,6 @@ const cookieValue = (pair: string): string => {
 
 const cookieOf = (identity: { readonly headers?: Record<string, string> }): string =>
   identity.headers?.cookie ?? "";
-
-const originHeaders = (baseUrl: string) => ({ origin: new URL(baseUrl).origin });
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -80,26 +72,6 @@ const activeOrg = (baseUrl: string, cookie: string) =>
     };
     if (!body.organization) throw new Error("identity has no active organization");
     return body.organization;
-  });
-
-const createOrganization = (baseUrl: string, cookie: string, name: string) =>
-  Effect.promise(async () => {
-    const response = await fetch(new URL("/api/auth/create-organization", baseUrl), {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        cookie,
-        ...originHeaders(baseUrl),
-      },
-      body: JSON.stringify({ name }),
-    });
-    if (!response.ok) {
-      throw new Error(`/api/auth/create-organization failed (${response.status})`);
-    }
-    const session = cookiePair(response, "wos-session");
-    if (!session) throw new Error("create organization did not refresh the session");
-    const org = (await response.json()) as { id: string; name: string; slug: string };
-    return { org, session };
   });
 
 const approvalApiRequest =
@@ -157,11 +129,12 @@ scenario(
         `/${orgA.slug}/resume/${approval.executionId}`,
       );
 
-      const { org: orgB, session: sessionB } = yield* createOrganization(
-        target.baseUrl,
-        sessionA,
+      const { org: orgB, identity: inB } = yield* addOrg(
+        target,
+        identity,
         `MCP Approval Org B ${randomBytes(3).toString("hex")}`,
       );
+      const sessionB = cookieOf(inB);
       expect(orgB.slug, "the browser can be pinned to a different org").not.toBe(orgA.slug);
 
       const [resumed] = yield* Effect.all(
