@@ -1,5 +1,12 @@
 # @executor-js/plugin-example
 
+## 1.6.12
+
+### Patch Changes
+
+- Updated dependencies [[`56aec8b`](https://github.com/UsefulSoftwareCo/executor/commit/56aec8bd1b5d227554bf67f8ff82f9fa3227bda9), [`fb8f45a`](https://github.com/UsefulSoftwareCo/executor/commit/fb8f45a14d8baa666dc926d4927459d15ec8d8c3)]:
+  - @executor-js/sdk@1.6.12
+
 ## 1.6.11
 
 ### Patch Changes
