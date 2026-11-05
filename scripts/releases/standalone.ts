@@ -1,8 +1,9 @@
 /**
  * Turn the packaged runtime into the release install: one `executor` executable that carries the
  * runtime's code, and beside it the files it runs or reads from disk. Those are workerd, Git, the
- * native bindings, PGlite, TypeScript, the dashboard and Motel. npm publishes this directory as the
- * platform package, and the same archive is the download the installers and Homebrew use.
+ * native bindings, PGlite, TypeScript, the dashboard and Motel. npm pack archives this directory as
+ * the platform's release asset: the download the `executor` npm launcher, the install scripts and
+ * Homebrew use.
  *
  * Layout, relative to the executable:
  * - `runtime/node_modules/`: packages loaded from disk (see `installedPackages`) and resources
@@ -55,7 +56,7 @@ const bunRuntime = Effect.gen(function* () {
 
 /**
  * Build the release install from `stage`, the packaged runtime, into `<output>/standalone`, and
- * pack it as the platform's npm archive in `output`. Returns the install directory.
+ * pack it as the platform's release archive in `output`. Returns the install directory.
  */
 export const buildStandalone = (
   root: string,
@@ -179,14 +180,12 @@ export const buildStandalone = (
         {
           name: "executor",
           version: platformVersion(target),
+          // A release asset that the executor npm package downloads, never published to npm.
+          private: true,
           description: "Executor for one platform, started by the executor package",
           license: "MIT",
           homepage: release.cloudOrigin,
           repository: { type: "git", url: `https://github.com/${release.repository}.git` },
-          publishConfig: {
-            access: "public",
-            tag: `${release.channel}-${target.platform}-${target.arch}`,
-          },
           os: [target.platform],
           cpu: [target.arch],
           files: [

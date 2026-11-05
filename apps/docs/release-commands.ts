@@ -16,8 +16,8 @@ export const ReleaseCommandProduct = Schema.Literals([
 /** Concrete instructions generated from the same identity as the published artifacts. */
 export const releaseCommands = {
   cli: {
-    description: `With npm, on Node ${release.minimumNodeVersion} or newer. Executor carries its own runtime, so Node only starts it. Check that executor --version prints ${release.version} before starting. Supports macOS on Apple Silicon and Intel, Linux (glibc) on ARM64 and x64, and Windows on x64.`,
-    command: `${release.npmInstall} --include=optional\nexecutor --version\nexecutor`,
+    description: `With npm, on Node ${release.minimumNodeVersion} or newer. The package is a launcher that downloads Executor's own runtime for your platform on first run, so Node only starts it. Check that executor --version prints ${release.version} before starting. Supports macOS on Apple Silicon and Intel, Linux (glibc) on ARM64 and x64, and Windows on x64.`,
+    command: `${release.npmInstall}\nexecutor --version\nexecutor`,
   },
   "cli-script": {
     description:

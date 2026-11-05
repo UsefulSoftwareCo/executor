@@ -22,10 +22,11 @@ browser and exits. Executor keeps running until you stop it; see
 with its runtime, dashboard, Git and workerd beside it; no source checkout, Node
 or Bun is needed to run it.
 
-The npm package is a small launcher: npm installs the executable for your
-platform as an optional dependency. If `executor` reports that its native
-runtime is missing, npm skipped optional dependencies; install again with
-`--include=optional`.
+The npm package is a small launcher. The first time a version starts, it
+downloads that release's archive for your platform from the public GitHub
+release, checks it against the SHA-256 the package records, and keeps it in
+`~/.executor/v2/launcher/<version>`. Set `EXECUTOR_DOWNLOAD_URL` to use a mirror
+of the releases.
 
 The install script keeps each release in `~/.executor/v2/runtime/versions/`,
 points `~/.executor/v2/runtime/current` at the one in use and links

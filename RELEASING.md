@@ -108,19 +108,26 @@ The workflow refuses a channel that does not match the committed version.
 1. Build and test every native runtime, desktop installer and Docker architecture.
 2. Export the filtered source snapshot to the public repository's `v2-releases`
    branch. Create `executor@<version>` on that public commit, never a private SHA.
-3. Publish native npm variants, then the launcher with exact optional aliases.
-   Poll each public registry archive and compare its integrity before continuing.
-4. Verify a clean `executor@<version>` installation from npm.
-5. Upload installers, native packages, bundled Git source and SHA256SUMS.
-6. Publish the tested Docker manifest as `:<version>` and `:beta`, then make the
+3. Upload installers, native archives, the npm launcher, bundled Git source and
+   SHA256SUMS to the draft.
+4. Publish the tested Docker manifest as `:<version>` and `:beta`, then make the
    GitHub prerelease public with `latest=false`.
-7. Point the desktop `beta` update channel at the public release assets.
+5. Publish the npm launcher, which downloads the native archives from that public
+   release. It records each archive's SHA-256; publication checks them against
+   the build and the release's SHA256SUMS, then polls the registry archive and
+   compares its integrity.
+6. Verify a clean `executor@<version>` installation from npm, including its first
+   download.
+7. Point the Homebrew formula and the desktop `beta` update channel at the public
+   release assets.
 
 The npm `latest` tag, Docker `latest`, and Executor 1 desktop updater stay
 unchanged. A draft public release blocks accidental repeat publication of the
 same version. After a partial failure, re-run the failed publish job. It resumes
-only its own draft, whose target is this source's unchanged public snapshot, and
-skips npm versions whose registry integrity matches the local archive. Any other
+only its own release, whose target is this source's unchanged public snapshot:
+a draft gets its assets again, and a release already public keeps them, which
+npm publication then checks. It skips an npm launcher whose registry integrity
+matches the local archive. Any other
 existing release or npm version stops publication for inspection. Never
 republish an accepted immutable npm version merely because its registry entry is
 still propagating.
