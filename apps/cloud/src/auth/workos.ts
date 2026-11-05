@@ -535,22 +535,6 @@ const make = Effect.gen(function* () {
         }),
       ),
 
-    /** Create a new organization in WorkOS. */
-    createOrganization: (name: string) =>
-      use("organizations.createOrganization", (wos) =>
-        wos.organizations.createOrganization({ name }),
-      ),
-
-    /** Add a user to an organization. */
-    createMembership: (organizationId: string, userId: string, roleSlug?: string) =>
-      use("userManagement.createOrganizationMembership", (wos) =>
-        wos.userManagement.createOrganizationMembership({
-          organizationId,
-          userId,
-          ...(roleSlug ? { roleSlug } : {}),
-        }),
-      ),
-
     /** List organization memberships for a user. */
     listUserMemberships: (userId: string) =>
       use("userManagement.listOrganizationMemberships", async (wos) =>
@@ -893,6 +877,15 @@ const make = Effect.gen(function* () {
 });
 
 export type WorkOSClientService = Effect.Success<typeof make>;
+
+/** An invitation (from `listInvitationsByEmail`) still waiting to be accepted
+ *  into an organization. */
+export const isPendingOrganizationInvitation = <
+  Invitation extends { readonly state: string; readonly organizationId: string | null },
+>(
+  invitation: Invitation,
+): invitation is Invitation & { readonly organizationId: string } =>
+  invitation.state === "pending" && invitation.organizationId !== null;
 
 export class WorkOSClient extends Context.Service<WorkOSClient, WorkOSClientService>()(
   "@executor-js/cloud/WorkOSClient",

@@ -9,9 +9,8 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as CreateOrgRouteImport } from './routes/bare/create-org'
+import { Route as JoinRouteImport } from './routes/bare/join'
 import { Route as LoginRouteImport } from './routes/bare/login'
-import { Route as SetupMcpRouteImport } from './routes/bare/setup-mcp'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRouteImport } from './../../../packages/react/src/routes/index'
 import { Route as ApiKeysRouteImport } from './routes/app/api-keys'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteImport } from './../../../packages/react/src/routes/artifacts'
@@ -31,19 +30,14 @@ import { Route as ResumeDotexecutionIdRouteImport } from './routes/app/resume.$e
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsDottoolkitSlugRouteImport } from './../../../packages/react/src/routes/toolkits.$toolkitSlug'
 import { Route as DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotaddDotpluginKeyRouteImport } from './../../../packages/react/src/routes/integrations.add.$pluginKey'
 
-const CreateOrgRoute = CreateOrgRouteImport.update({
-  id: '/create-org',
-  path: '/create-org',
+const JoinRoute = JoinRouteImport.update({
+  id: '/join',
+  path: '/join',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const SetupMcpRoute = SetupMcpRouteImport.update({
-  id: '/setup-mcp',
-  path: '/setup-mcp',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIndexRoute =
@@ -164,9 +158,8 @@ const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotaddDotpluginK
   )
 
 export interface FileRoutesByFullPath {
-  '/create-org': typeof CreateOrgRoute
+  '/join': typeof JoinRoute
   '/login': typeof LoginRoute
-  '/setup-mcp': typeof SetupMcpRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
   '/{-$orgSlug}/billing': typeof BillingRoute
@@ -187,9 +180,8 @@ export interface FileRoutesByFullPath {
   '/{-$orgSlug}/integrations/add/$pluginKey': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesIntegrationsDotaddDotpluginKeyRoute
 }
 export interface FileRoutesByTo {
-  '/create-org': typeof CreateOrgRoute
+  '/join': typeof JoinRoute
   '/login': typeof LoginRoute
-  '/setup-mcp': typeof SetupMcpRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
   '/{-$orgSlug}/billing': typeof BillingRoute
@@ -211,9 +203,8 @@ export interface FileRoutesByTo {
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
-  '/create-org': typeof CreateOrgRoute
+  '/join': typeof JoinRoute
   '/login': typeof LoginRoute
-  '/setup-mcp': typeof SetupMcpRoute
   '/{-$orgSlug}/api-keys': typeof ApiKeysRoute
   '/{-$orgSlug}/artifacts': typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
   '/{-$orgSlug}/billing': typeof BillingRoute
@@ -236,9 +227,8 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    | '/create-org'
+    | '/join'
     | '/login'
-    | '/setup-mcp'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/billing'
@@ -259,9 +249,8 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/integrations/add/$pluginKey'
   fileRoutesByTo: FileRoutesByTo
   to:
-    | '/create-org'
+    | '/join'
     | '/login'
-    | '/setup-mcp'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/billing'
@@ -282,9 +271,8 @@ export interface FileRouteTypes {
     | '/{-$orgSlug}/integrations/add/$pluginKey'
   id:
     | '__root__'
-    | '/create-org'
+    | '/join'
     | '/login'
-    | '/setup-mcp'
     | '/{-$orgSlug}/api-keys'
     | '/{-$orgSlug}/artifacts'
     | '/{-$orgSlug}/billing'
@@ -306,9 +294,8 @@ export interface FileRouteTypes {
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
-  CreateOrgRoute: typeof CreateOrgRoute
+  JoinRoute: typeof JoinRoute
   LoginRoute: typeof LoginRoute
-  SetupMcpRoute: typeof SetupMcpRoute
   ApiKeysRoute: typeof ApiKeysRoute
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRoute: typeof DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren
   BillingRoute: typeof BillingRoute
@@ -329,11 +316,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/create-org': {
-      id: '/create-org'
-      path: '/create-org'
-      fullPath: '/create-org'
-      preLoaderRoute: typeof CreateOrgRouteImport
+    '/join': {
+      id: '/join'
+      path: '/join'
+      fullPath: '/join'
+      preLoaderRoute: typeof JoinRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/login': {
@@ -341,13 +328,6 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/setup-mcp': {
-      id: '/setup-mcp'
-      path: '/setup-mcp'
-      fullPath: '/setup-mcp'
-      preLoaderRoute: typeof SetupMcpRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/{-$orgSlug}/': {
@@ -510,9 +490,8 @@ const DotDotDotDotDotDotDotDotPackagesReactSrcRoutesToolkitsRouteWithChildren =
   )
 
 const rootRouteChildren: RootRouteChildren = {
-  CreateOrgRoute: CreateOrgRoute,
+  JoinRoute: JoinRoute,
   LoginRoute: LoginRoute,
-  SetupMcpRoute: SetupMcpRoute,
   ApiKeysRoute: ApiKeysRoute,
   DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRoute:
     DotDotDotDotDotDotDotDotPackagesReactSrcRoutesArtifactsRouteWithChildren,

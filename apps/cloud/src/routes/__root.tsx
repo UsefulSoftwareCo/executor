@@ -25,7 +25,7 @@ import { ArtifactRendererProvider } from "@executor-js/react/api/artifact-render
 import { plugins as clientPlugins } from "virtual:executor/plugins-client";
 import { AuthProvider, useAuth } from "../web/auth";
 import { loginPath } from "../auth/return-to";
-import { ONBOARDING_PATHS, PUBLIC_PATHS } from "../auth/route-paths";
+import { JOIN_PATH, PUBLIC_PATHS } from "../auth/route-paths";
 import { SupportOptions } from "../web/components/support-options";
 import { minimizeSentryEvent } from "../observability/sentry-privacy";
 import { Shell } from "../web/shell";
@@ -191,7 +191,7 @@ function AuthGate() {
   const auth = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
-  const isOnboardingRoute = ONBOARDING_PATHS.has(location.pathname);
+  const isJoinRoute = location.pathname === JOIN_PATH;
   const isPublicRoute = PUBLIC_PATHS.has(location.pathname);
   // The org the URL names (the `{-$orgSlug}` segment), if any. `/account/me`
   // is scoped to it, so `auth.organization` IS this org when the caller is a
@@ -206,21 +206,22 @@ function AuthGate() {
   const firstSegment = location.pathname.split("/")[1] ?? "";
   const pathnameOrgSlug = isValidOrgSlug(firstSegment) ? firstSegment : null;
 
-  // The SSR gate already bounced fresh org-less document requests to
-  // /create-org; this catches the MID-SESSION transitions (org deleted,
-  // membership revoked → /account/me now reports no org). Only for BARE paths:
-  // an org-less result on a slugged URL is a wrong address (404 below), not a
-  // reason to send the user to onboarding.
+  // The SSR gate already sent fresh org-less document requests on (to v2, or
+  // to the join page with a pending invitation); this catches the MID-SESSION
+  // transitions (org deleted, membership revoked → /account/me now reports no
+  // org). The join page shows any pending invitation and otherwise sends the
+  // user to v2. Only for BARE paths: an org-less result on a slugged URL is a
+  // wrong address (404 below), not a reason to leave the app.
   const needsOrgRedirect =
     auth.status === "authenticated" &&
     auth.organization == null &&
     !urlOrgSlug &&
-    !isOnboardingRoute &&
+    !isJoinRoute &&
     !isPublicRoute;
 
   React.useEffect(() => {
     if (needsOrgRedirect) {
-      void navigate({ to: "/create-org", replace: true });
+      void navigate({ to: JOIN_PATH, replace: true });
     }
   }, [needsOrgRedirect, navigate]);
 
@@ -248,15 +249,16 @@ function AuthGate() {
     return <BlankScreen />;
   }
 
-  if (isOnboardingRoute) {
+  if (isJoinRoute) {
     return <Outlet />;
   }
 
   if (auth.organization == null) {
     // A URL naming an org this session can't access (`/account/me` returned no
     // org for its slug) is a wrong address → the route 404, framed by nothing
-    // (the user isn't "in" any org here). A bare path with no org is a new
-    // user — the redirect effect above is taking them to onboarding.
+    // (the user isn't "in" any org here). A bare path with no org is a user
+    // with no organization — the redirect effect above is taking them to the
+    // join page.
     return urlOrgSlug ? <NotFoundPage /> : <BlankScreen />;
   }
 

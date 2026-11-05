@@ -33,7 +33,7 @@ import { WorkerTelemetryLive } from "./observability/telemetry";
 // session store (the DO class is exported straight from server.ts), console+Sentry error
 // capture — and Autumn BILLING entering ONLY as extensions: the engine
 // metering decorator, the account seat-gate, the `/api/billing/*` proxy route,
-// and the createOrganization free-limit gate. `diff` against
+// and the org-deletion customer cancel. `diff` against
 // `apps/host-selfhost/src/app.ts` is the entire product difference.
 //
 // `ExecutorApp.make` owns the assembly (the execution-stack middleware wrapping

@@ -34,7 +34,7 @@ import { useCanCreateWorkspaceConnections } from "./use-admin-nav";
 // Provider-neutral: identity comes from the shared `useAuth()` seam. The bits
 // that genuinely differ per product are injected:
 //   - `onSignOut`     how the session is ended (WorkOS logout vs Better Auth)
-//   - `orgMenuSlot`   org switcher / create-org (cloud only)
+//   - `orgMenuSlot`   org switcher (cloud only)
 //   - `supportSlot`   support dialog button (cloud only)
 //   - `navItems`      which sections show (e.g. cloud adds Billing)
 // Everything visual is identical so both products look the same.
@@ -103,7 +103,7 @@ export interface ShellProps {
   readonly onSignOut: () => void | Promise<void>;
   /** Nav sections; defaults to {@link defaultShellNavItems}. */
   readonly navItems?: ReadonlyArray<ShellNavItem>;
-  /** Injected into the account dropdown — cloud's org switcher / create-org. */
+  /** Injected into the account dropdown — cloud's org switcher. */
   readonly orgMenuSlot?: ReactNode;
   /** Injected support button above the account footer (cloud). */
   readonly supportSlot?: ReactNode;

@@ -63,9 +63,9 @@ export const BootSharedServices = Layer.mergeAll(
 // boot scope and Cloudflare Workers' I/O isolation kills the second
 // request.
 //
-// `AutumnService.Default` is provided HERE because the `createOrganization`
-// handler reads it for the free-organizations-per-user limit gate — one of the
-// few app-only billing touchpoints. (It is NOT on the neutral boot core.)
+// `AutumnService.Default` is provided HERE because the `deleteOrganization`
+// handler cancels the org's billing customer — one of the few app-only billing
+// touchpoints. (It is NOT on the neutral boot core.)
 export const makeNonProtectedApiLive = (
   rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror | MemberDirectory>,
 ) =>

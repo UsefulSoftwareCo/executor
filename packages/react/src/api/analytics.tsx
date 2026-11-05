@@ -166,7 +166,7 @@ export interface AnalyticsEvents {
   mcp_install_command_copied: {
     transport: "http" | "stdio";
     elicitation_mode?: string;
-    surface: "integrations" | "setup_mcp";
+    surface: "integrations";
   };
   mcp_install_transport_switched: { transport: "http" | "stdio" };
   mcp_install_elicitation_mode_changed: { elicitation_mode: string };
@@ -186,13 +186,12 @@ export interface AnalyticsEvents {
   // ── Cloud: auth & onboarding ─────────────────────────────────────────────
   login_cta_clicked: {};
   signed_out: {};
-  org_created: { success: boolean };
   org_deleted: { success: boolean };
   org_switched: { success: boolean };
   org_invitation_accepted: { success: boolean };
-  setup_mcp_completed: {};
-  setup_mcp_skipped: {};
   v2_import_opened: {};
+  /** The org switcher's link to create an organization in Executor v2. */
+  v2_new_org_opened: {};
   // The "moved to Executor v2" notice, for an org v2 has already imported.
   // The org rides on the posthog group, like every other event.
   v2_moved_modal_shown: {};

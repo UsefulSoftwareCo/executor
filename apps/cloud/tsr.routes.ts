@@ -14,8 +14,8 @@ import { consoleRoutes } from "@executor-js/react/console-routes";
 //
 // Org-scoped vs bare: console routes and most app routes live INSIDE the
 // optional `{-$orgSlug}` scope; src/routes/bare stays OUTSIDE it — /login is
-// for signed-out visitors and /create-org and /setup-mcp are reached
-// precisely when the user has no organization yet.
+// for signed-out visitors and /join is reached precisely when the user has no
+// organization yet.
 export const routes = rootRoute("__root.tsx", [
   ...consoleRoutes({
     dir: "../../../../packages/react/src/routes",

@@ -35,8 +35,8 @@ export const SessionAuthLive = Layer.effect(
           }
 
           // Per-request cookie queue. Typed `.handle()` session handlers (the
-          // WorkOS session-refresh on switchOrganization / createOrganization /
-          // acceptInvitation) return DATA, so they can't attach a Set-Cookie
+          // WorkOS session-refresh on acceptInvitation, the cookie clear on
+          // deleteOrganization) return DATA, so they can't attach a Set-Cookie
           // themselves — they `yield* SessionCookies` and queue writes, which we
           // drain onto the response below. This is what lets `handlers.ts` drop
           // the `@tanstack/react-start/server` `setCookie` import (the sole thing

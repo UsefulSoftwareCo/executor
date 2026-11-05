@@ -46,8 +46,8 @@ export class SessionContext extends Context.Service<SessionContext, Session>()(
 
 // A request-scoped cookie setter, provided ALONGSIDE `SessionContext` by
 // `SessionAuth` (see its `provides` below). Typed `.handle()` handlers — the
-// WorkOS session-refresh on switchOrganization / createOrganization /
-// acceptInvitation — return DATA, not an `HttpServerResponse`, so they can't
+// WorkOS session-refresh on acceptInvitation, the cookie clear on
+// deleteOrganization — return DATA, not an `HttpServerResponse`, so they can't
 // attach a `Set-Cookie` directly. They `yield* SessionCookies` and queue writes;
 // `SessionAuthLive` drains the queue onto the outgoing response. It's a SEPARATE
 // service, not a field on `Session`, so the session DATA stays pure — `OrgAuth`

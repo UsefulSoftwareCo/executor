@@ -1,6 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAtomValue, useAtomSet } from "@effect/atom-react";
-import { useNavigate } from "@tanstack/react-router";
 import * as AsyncResult from "effect/unstable/reactivity/AsyncResult";
 import * as Exit from "effect/Exit";
 import { authWriteKeys } from "@executor-js/react/api/reactivity-keys";
@@ -8,11 +7,17 @@ import { trackEvent } from "@executor-js/react/api/analytics";
 import { Button } from "@executor-js/react/components/button";
 
 import { AUTH_PATHS } from "../../auth/api";
+import { CREATE_ORG_PATH } from "../../auth/route-paths";
 import { acceptInvitation, pendingInvitationsAtom, useAuth } from "../auth";
-import {
-  CreateOrganizationFields,
-  useCreateOrganizationForm,
-} from "../components/create-organization-form";
+
+// ---------------------------------------------------------------------------
+// The page for a signed-in user with no organization who holds a pending
+// invitation into an existing one. v1 creates no organizations (they are
+// created in Executor v2), so this page only accepts invitations: accepting
+// one opens that organization, and with none to accept the user is sent on
+// to v2 through `/create-org`, which the document auth gate answers with v2's
+// sign-up page.
+// ---------------------------------------------------------------------------
 
 type PendingInvitation = {
   id: string;
@@ -40,14 +45,16 @@ const formatRelativeTime = (iso: string): string => {
   return `${Math.floor(days / 365)}y ago`;
 };
 
-export const CreateOrgPage = () => {
+export const JoinPage = () => {
   const auth = useAuth();
-  const navigate = useNavigate();
   const invitationsResult = useAtomValue(pendingInvitationsAtom);
   const doAccept = useAtomSet(acceptInvitation, { mode: "promiseExit" });
 
   const [acceptingId, setAcceptingId] = useState<string | null>(null);
   const [errorByInvitationId, setErrorByInvitationId] = useState<Record<string, string>>({});
+  // Set once an invitation is accepted and the page is navigating into its
+  // organization, so the refetched (now empty) list cannot send the user to v2.
+  const joining = useRef(false);
 
   const handleAccept = async (invitation: PendingInvitation) => {
     setAcceptingId(invitation.id);
@@ -61,97 +68,113 @@ export const CreateOrgPage = () => {
       payload: { invitationId: invitation.id },
       reactivityKeys: authWriteKeys,
     });
-    setAcceptingId(null);
     trackEvent("org_invitation_accepted", { success: Exit.isSuccess(exit) });
-    if (!Exit.isSuccess(exit)) {
-      setErrorByInvitationId((prev) => ({
-        ...prev,
-        [invitation.id]: "Couldn't accept this invitation. Try again or ask the inviter to resend.",
-      }));
+    if (Exit.isSuccess(exit)) {
+      joining.current = true;
+      window.location.href = `/${exit.value.slug}`;
+      return;
     }
+    setAcceptingId(null);
+    setErrorByInvitationId((prev) => ({
+      ...prev,
+      [invitation.id]: "Couldn't accept this invitation. Try again or ask the inviter to resend.",
+    }));
   };
 
-  const suggestedName =
-    auth.status === "authenticated" && auth.user.name != null && auth.user.name.trim() !== ""
-      ? `${auth.user.name}'s Organization`
-      : "";
+  const invitations = AsyncResult.isSuccess(invitationsResult)
+    ? invitationsResult.value.invitations
+    : null;
+  const organizationSlug =
+    auth.status === "authenticated" ? (auth.organization?.slug ?? null) : null;
 
-  const form = useCreateOrganizationForm({
-    defaultName: suggestedName,
-    onSuccess: () => {
-      void navigate({ to: "/setup-mcp" });
-    },
-  });
+  // Nothing to accept: a member goes back to their organization, anyone else
+  // on to v2 (a document navigation, so the auth gate answers it).
+  const nothingToAccept = invitations !== null && invitations.length === 0;
+  useEffect(() => {
+    if (!nothingToAccept || joining.current) return;
+    window.location.replace(organizationSlug ? `/${organizationSlug}` : CREATE_ORG_PATH);
+  }, [nothingToAccept, organizationSlug]);
 
-  // Almost no new user has a pending invitation, so we never show a loading
-  // placeholder for them — the create form renders immediately and stays put.
-  // Invitations (when they exist) just appear above it once the fetch resolves;
-  // a refetch (the create-org submit invalidates the auth-keyed atom) keeps the
-  // last value, so nothing flickers.
-  const invitations = AsyncResult.match(invitationsResult, {
-    onInitial: () => [] as readonly PendingInvitation[],
-    onFailure: () => [] as readonly PendingInvitation[],
-    onSuccess: ({ value }) => value.invitations,
-  });
+  if (AsyncResult.isFailure(invitationsResult)) return <MovedNotice />;
+  if (invitations === null || invitations.length === 0) {
+    return <div className="h-screen bg-background" />;
+  }
 
-  const count = invitations.length;
-  const sole = count === 1 ? invitations[0]! : null;
+  const sole = invitations.length === 1 ? invitations[0]! : null;
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background px-4">
-      <div className="mx-auto flex w-full max-w-sm flex-col gap-6">
-        <header className="flex flex-col gap-2">
-          <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-            Step 1 of 2
-          </p>
-          <h1 className="font-sans text-3xl font-semibold">
-            {count > 0 ? "You've been invited" : "Create your organization"}
-          </h1>
-          {count === 0 && (
-            <p className="text-sm text-muted-foreground">
-              Organizations group your sources, secrets, and teammates. You can invite others once
-              it's set up.
-            </p>
-          )}
-        </header>
+    <JoinLayout title="You've been invited">
+      {sole && (
+        <SingleInvitationView
+          invitation={sole}
+          accepting={acceptingId === sole.id}
+          error={errorByInvitationId[sole.id] ?? null}
+          onAccept={() => void handleAccept(sole)}
+        />
+      )}
 
-        {sole && (
-          <SingleInvitationView
-            invitation={sole}
-            accepting={acceptingId === sole.id}
-            error={errorByInvitationId[sole.id] ?? null}
-            onAccept={() => void handleAccept(sole)}
-          />
-        )}
+      {invitations.length > 1 && (
+        <MultiInvitationsView
+          invitations={invitations}
+          acceptingId={acceptingId}
+          errorByInvitationId={errorByInvitationId}
+          onAccept={(inv) => void handleAccept(inv)}
+        />
+      )}
 
-        {count > 1 && (
-          <MultiInvitationsView
-            invitations={invitations}
-            acceptingId={acceptingId}
-            errorByInvitationId={errorByInvitationId}
-            onAccept={(inv) => void handleAccept(inv)}
-          />
-        )}
-
-        <CreateOrgSection isPrimary={count === 0} form={form} />
-
-        <footer className="flex items-center justify-center">
-          {/* oxlint-disable-next-line react/forbid-elements */}
-          <button
-            type="button"
-            className="text-xs text-muted-foreground transition-colors hover:text-foreground"
-            onClick={async () => {
-              await fetch(AUTH_PATHS.logout, { method: "POST" });
-              window.location.href = "/";
-            }}
-          >
-            Sign out
-          </button>
-        </footer>
-      </div>
-    </div>
+      <p className="text-center text-xs text-muted-foreground">
+        New organizations are created in{" "}
+        <a
+          href={CREATE_ORG_PATH}
+          className="underline-offset-4 transition-colors hover:text-foreground hover:underline"
+        >
+          Executor v2
+        </a>
+        .
+      </p>
+    </JoinLayout>
   );
 };
+
+/** The invitations could not be read: say where organizations are created
+ *  now, and let the user go there or sign out. */
+const MovedNotice = () => (
+  <JoinLayout title="Executor has moved">
+    <p className="text-sm text-muted-foreground">
+      New organizations are created in Executor v2. If you were invited to an organization here,
+      reload this page to see the invitation.
+    </p>
+    <Button asChild size="sm" className="w-full">
+      <a href={CREATE_ORG_PATH}>Continue to Executor v2</a>
+    </Button>
+  </JoinLayout>
+);
+
+const JoinLayout = (props: { title: string; children: ReactNode }) => (
+  <div className="flex min-h-screen items-center justify-center bg-background px-4">
+    <div className="mx-auto flex w-full max-w-sm flex-col gap-6">
+      <header className="flex flex-col gap-2">
+        <h1 className="font-sans text-3xl font-semibold">{props.title}</h1>
+      </header>
+
+      {props.children}
+
+      <footer className="flex items-center justify-center">
+        {/* oxlint-disable-next-line react/forbid-elements */}
+        <button
+          type="button"
+          className="text-xs text-muted-foreground transition-colors hover:text-foreground"
+          onClick={async () => {
+            await fetch(AUTH_PATHS.logout, { method: "POST" });
+            window.location.href = "/";
+          }}
+        >
+          Sign out
+        </button>
+      </footer>
+    </div>
+  </div>
+);
 
 // ---------------------------------------------------------------------------
 
@@ -246,53 +269,3 @@ const MultiInvitationsView = ({
     </ul>
   </section>
 );
-
-// ---------------------------------------------------------------------------
-
-const CreateOrgSection = ({
-  isPrimary,
-  form,
-}: {
-  isPrimary: boolean;
-  form: ReturnType<typeof useCreateOrganizationForm>;
-}) => {
-  const [expanded, setExpanded] = useState(isPrimary);
-
-  if (!isPrimary && !expanded) {
-    return (
-      <div className="text-center text-xs text-muted-foreground">
-        {/* oxlint-disable-next-line react/forbid-elements */}
-        <button
-          type="button"
-          onClick={() => setExpanded(true)}
-          className="underline-offset-4 transition-colors hover:text-foreground hover:underline"
-        >
-          Or create a new organization
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <section aria-label="Create organization" className="flex flex-col gap-3">
-      <CreateOrganizationFields
-        name={form.name}
-        onNameChange={(name) => {
-          form.setName(name);
-          if (form.error) form.setError(null);
-        }}
-        error={form.error}
-        onSubmit={() => void form.submit()}
-      />
-      <div className="flex justify-end">
-        <Button
-          size="sm"
-          onClick={() => void form.submit()}
-          disabled={!form.canSubmit || form.creating}
-        >
-          {form.creating ? "Creating…" : "Create organization"}
-        </Button>
-      </div>
-    </section>
-  );
-};
