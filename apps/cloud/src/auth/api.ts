@@ -52,16 +52,6 @@ const V2ImportResponse = Schema.Struct({
   moved: Schema.NullOr(V2MovedResponse),
 });
 
-const CreateOrganizationBody = Schema.Struct({
-  name: Schema.String,
-});
-
-const CreateOrganizationResponse = Schema.Struct({
-  id: Schema.String,
-  name: Schema.String,
-  slug: Schema.String,
-});
-
 // Deleting an org requires re-typing its name (the label the UI shows) as a
 // deliberate, non-automatable confirmation. Verified server-side too.
 const DeleteOrganizationBody = Schema.Struct({
@@ -192,6 +182,18 @@ export class OrganizationFrozen extends Schema.TaggedErrorClass<OrganizationFroz
   { httpApiStatus: 423 },
 ) {}
 
+/** Shown wherever v1 is asked to create an organization. */
+export const ORGANIZATION_CREATION_MOVED_MESSAGE =
+  "Executor has moved. New organizations are created in Executor v2.";
+
+// v1 creates no organizations: every new organization is created in Executor
+// v2. `url` is v2's sign-up page, or null where this deployment has no v2.
+export class OrganizationCreationMoved extends Schema.TaggedErrorClass<OrganizationCreationMoved>()(
+  "OrganizationCreationMoved",
+  { message: Schema.String, url: Schema.NullOr(Schema.String) },
+  { httpApiStatus: 410 },
+) {}
+
 // Whether the organization is moving to v2 could not be read, so a change to
 // it is refused rather than risked. Retryable.
 export class OrganizationStateUnavailable extends Schema.TaggedErrorClass<OrganizationStateUnavailable>()(
@@ -272,10 +274,9 @@ export class CloudAuthApi extends HttpApiGroup.make("cloudAuth")
     }),
   )
   .add(
+    // Refuses every request: new organizations are created in Executor v2.
     HttpApiEndpoint.post("createOrganization", "/auth/create-organization", {
-      payload: CreateOrganizationBody,
-      success: CreateOrganizationResponse,
-      error: AuthErrors,
+      error: OrganizationCreationMoved,
     }),
   )
   .add(

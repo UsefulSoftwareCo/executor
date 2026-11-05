@@ -93,8 +93,8 @@ const ExecutionStackMiddleware = makeExecutionStackMiddleware<
 //
 // `AutumnService` is provided HERE — the billing service is scoped to the
 // executor plane that meters, not to the neutral boot core. (`/autumn`, the
-// account seat-gate, and the createOrganization free-limit gate each provide it
-// where they run.)
+// account seat-gate, and org deletion's customer cancel each provide it where
+// they run.)
 export const makeProtectedApiLive = (
   rsLive: Layer.Layer<DbService | UserStoreService | MemberDirectory | WorkOsMirror>,
 ) => {

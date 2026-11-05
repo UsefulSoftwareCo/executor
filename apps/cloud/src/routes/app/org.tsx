@@ -119,8 +119,8 @@ function DangerZoneSection() {
     trackEvent("org_deleted", { success: Exit.isSuccess(exit) });
     if (Exit.isSuccess(exit)) {
       // The org (and the caller's session) are gone. A full navigation resets
-      // all app state and lets the auth gate rehydrate to another membership or
-      // the create-org screen.
+      // all app state and lets the auth gate rehydrate to another membership,
+      // or with none left send the user on to Executor v2.
       toast.success(`Deleted ${organizationName}`);
       window.location.href = "/";
       return;

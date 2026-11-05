@@ -11,9 +11,11 @@ import {
   McpExecutionNotFoundError,
   McpSessionForbiddenError,
   OrganizationDeletionForbidden,
+  OrganizationCreationMoved,
   OrganizationDeletionIncomplete,
   OrganizationFrozen,
   OrganizationStateUnavailable,
+  ORGANIZATION_CREATION_MOVED_MESSAGE,
 } from "./api";
 import { MemberDirectory, NoOrganization } from "@executor-js/api/server";
 // Pure constants/codec module (no React) — safe in the backend graph.
@@ -25,15 +27,9 @@ import { UserStoreService } from "./context";
 import { mirrorMembership, mirrorSignIn } from "./mirror-feeders";
 import { env } from "cloudflare:workers";
 import { WorkOSError } from "./errors";
-import { WorkOSClient } from "./workos";
+import { WorkOSClient, isPendingOrganizationInvitation } from "./workos";
 import { AutumnService, autumnStatusOf } from "../extensions/billing/service";
 import { forkReportMemberSeats } from "../extensions/billing/member-seats";
-import { captureCauseEffect } from "../observability";
-import {
-  hasPaidOrganizationSubscription,
-  isOverFreeOrganizationLimit,
-  shouldApplyFreeOrganizationLimit,
-} from "../extensions/billing/plans";
 import { LAST_ORG_COOKIE } from "./last-org-cookie";
 import {
   ORG_SELECTOR_HEADER,
@@ -47,6 +43,7 @@ import { mcpSessionStub } from "@executor-js/cloudflare/mcp/session-stub";
 import { liveV2ImportSource, v2ImportAnswer } from "./v2-import";
 import { liveV2MovedSource } from "./v2-moved";
 import { assertOrgWritable, orgFreezeRefusal } from "../org/move-to-v2";
+import { v2SignUpUrl } from "../edge/marketing";
 
 const COOKIE_OPTIONS = {
   path: "/",
@@ -456,110 +453,15 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           });
         }),
       )
-      .handle("createOrganization", ({ payload }) =>
-        Effect.gen(function* () {
-          const workos = yield* WorkOSClient;
-          const users = yield* UserStoreService;
-          const session = yield* SessionContext;
-          const autumn = yield* AutumnService;
-
-          const name = payload.name.trim();
-          // The free-organizations-per-user limit counts the caller's ACTIVE
-          // memberships, read from the local mirror.
-          const directory = yield* MemberDirectory;
-          const activeMemberships = yield* directory.membershipsOf(session.accountId, ["active"]);
-
-          if (isOverFreeOrganizationLimit(activeMemberships)) {
-            const paidOrganizationIds = yield* Effect.all(
-              activeMemberships.map((membership) =>
-                autumn
-                  .use((client) =>
-                    client.customers.getOrCreate({
-                      customerId: membership.organizationId,
-                    }),
-                  )
-                  .pipe(
-                    Effect.map((customer) =>
-                      hasPaidOrganizationSubscription(customer.subscriptions)
-                        ? membership.organizationId
-                        : null,
-                    ),
-                  ),
-              ),
-              { concurrency: 3 },
-            ).pipe(
-              // Any Autumn failure here (outage or missing customer) leaves the
-              // paid/free split unknown, and the limit must fail closed.
-              Effect.mapError(() => new WorkOSError()),
-              Effect.map((ids) => new Set(ids.filter(Predicate.isNotNull))),
-            );
-
-            if (shouldApplyFreeOrganizationLimit(activeMemberships, paidOrganizationIds)) {
-              return yield* new WorkOSError();
-            }
-          }
-
-          const org = yield* workos.createOrganization(name);
-          const membership = yield* workos.createMembership(org.id, session.accountId, "admin");
-          // `upsertOrganization` mints the slug at insert — no separate heal step.
-          const mirrored = yield* users.use("upsertOrganization", (s) =>
-            s.upsertOrganization({
-              id: org.id,
-              name: org.name,
-              updatedAt: new Date(org.updatedAt),
-            }),
-          );
-          // Write-through: the creator's admin membership, from the create
-          // response, lands in the mirror before anything reads it.
-          yield* mirrorMembership(membership);
-
-          // Provision the org's billing customer while we're the ones creating
-          // the org. Without this the first billing call an org ever makes is a
-          // non-creating one (balance check / usage track), which 404s and keeps
-          // 404ing — unlimited unbilled executions. Non-fatal: a billing blip
-          // must not block signup, and the billing seam heals a customer that
-          // is still missing later.
-          yield* autumn.ensureCustomer(org.id).pipe(
-            Effect.catch((error) =>
-              Effect.gen(function* () {
-                yield* Effect.logWarning(
-                  "createOrganization: could not provision the Autumn customer",
-                  { organizationId: org.id },
-                );
-                yield* captureCauseEffect(error);
-              }),
-            ),
-          );
-          // Seed the new org's billed seat count (the creator's seat).
-          yield* forkReportMemberSeats(org.id);
-
-          // Try to attach the new org to the current session. This can fail
-          // (or silently return a session still scoped to the old org) when
-          // the caller's current session is stale — most commonly after the
-          // user was removed from the org their cookie is pinned to. In that
-          // case we can't repair the session in-place, so we clear the
-          // cookie and fail loudly; the frontend will bounce to login and
-          // the callback's rehydrate path will pick up the new membership.
-          const refreshed = yield* workos.refreshSession(session.sealedSession, org.id);
-          const verified = refreshed ? yield* workos.authenticateSealedSession(refreshed) : null;
-
-          if (!refreshed || !verified || verified.organizationId !== org.id) {
-            yield* Effect.logWarning(
-              "createOrganization: unable to attach new org to current session",
-              {
-                userId: session.accountId,
-                newOrgId: org.id,
-                refreshReturnedSession: refreshed != null,
-                verifiedOrgId: verified?.organizationId ?? null,
-              },
-            );
-            (yield* SessionCookies).set("wos-session", "", DELETE_COOKIE_OPTIONS);
-            return yield* new WorkOSError();
-          }
-
-          (yield* SessionCookies).set("wos-session", refreshed, RESPONSE_COOKIE_OPTIONS);
-          return { id: org.id, name: org.name, slug: mirrored.slug };
-        }),
+      // v1 creates no organizations; Executor v2 does. Nothing is written to
+      // WorkOS, the mirror or billing: the request is answered with where to go.
+      .handle("createOrganization", () =>
+        Effect.fail(
+          new OrganizationCreationMoved({
+            message: ORGANIZATION_CREATION_MOVED_MESSAGE,
+            url: v2SignUpUrl(env)?.href ?? null,
+          }),
+        ),
       )
       .handle("deleteOrganization", ({ payload }) =>
         Effect.gen(function* () {
@@ -721,7 +623,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
 
           // The caller's session is pinned to the now-deleted org — clear it so
           // the browser bounces to login and rehydrates to another membership
-          // (or the create-org screen when they have none left).
+          // (or, with none left, is sent on to Executor v2).
           (yield* SessionCookies).set("wos-session", "", DELETE_COOKIE_OPTIONS);
 
           return { success: true };
@@ -733,9 +635,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           const session = yield* SessionContext;
 
           const invitations = yield* workos.listInvitationsByEmail(session.email);
-          const pending = invitations.data.filter(
-            (i) => i.state === "pending" && i.organizationId !== null,
-          );
+          const pending = invitations.data.filter(isPendingOrganizationInvitation);
 
           // Resolve org names + inviter identities in parallel. Treat
           // individual failures as "skip the field" rather than failing the
@@ -747,7 +647,7 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
             pending.map((inv) =>
               Effect.gen(function* () {
                 const org = yield* workos
-                  .getOrganization(inv.organizationId!)
+                  .getOrganization(inv.organizationId)
                   .pipe(Effect.orElseSucceed(() => null));
                 if (!org) return null;
                 const inviter = inv.inviterUserId
@@ -827,10 +727,9 @@ export const CloudSessionAuthHandlers = HttpApiBuilder.group(
           // seat count now.
           yield* forkReportMemberSeats(org.id);
 
-          // Attach the just-accepted org to the current session. Same shape
-          // as createOrganization: refresh + verify; if we can't pin the
-          // session in-place, clear the cookie and let the user bounce
-          // through login again. The acceptance has already succeeded
+          // Attach the just-accepted org to the current session: refresh +
+          // verify; if we can't pin the session in-place, clear the cookie
+          // and let the user bounce through login again. The acceptance has already succeeded
           // server-side, so the next login will pick up the membership.
           const refreshed = yield* workos.refreshSession(session.sealedSession, org.id);
           const verified = refreshed ? yield* workos.authenticateSealedSession(refreshed) : null;

@@ -14,7 +14,7 @@ import { V2MovedNotice } from "./components/v2-moved-notice";
 // cloud-only bits injected through its slots:
 //   - sign-out          navigate through cloud's WorkOS logout, land home
 //   - nav items         defaults + Organization + Billing (cloud-only sections)
-//   - org menu slot     multi-org switcher + create-org dialog (cloud-only)
+//   - org menu slot     multi-org switcher + link to create one in v2 (cloud-only)
 //   - support slot      the "Move to Executor v2" link, shown only to users
 //                       v2 would let import this org ("Open in Executor v2"
 //                       once it has moved, with the moved notice), and the

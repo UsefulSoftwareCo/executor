@@ -1,60 +1,25 @@
-// Paid plan IDs, mirroring the Autumn plan definitions in the repo-root
+// Plan IDs mirror the Autumn plan definitions in the repo-root
 // `autumn.config.ts` (the deploy-time source synced via `atmn`). These IDs are
 // stable, so we keep them as literals here rather than importing the config
 // across the app boundary.
-export const PAID_AUTUMN_PLAN_IDS = new Set(["team", "enterprise"]);
 
 export const ACTIVE_AUTUMN_SUBSCRIPTION_STATUSES = new Set(["active", "trialing"]);
-
-// ---------------------------------------------------------------------------
-// Free-tier organization-creation limit — the createOrganization gate.
-//
-// These predicates read the Autumn plan config above, so they live with the
-// billing config (NOT in `auth/organization.ts`, which the billing-free MCP
-// session DO bundle reaches). Used only by `auth/handlers.ts`'s
-// `createOrganization` handler.
-// ---------------------------------------------------------------------------
-
-export const FREE_ORGANIZATIONS_PER_USER_LIMIT = 3;
-
-export type OrganizationLimitSubscriptionSummary = {
-  readonly planId?: string | null;
-  readonly status?: string | null;
-};
-
-export type OrganizationLimitMembershipSummary = {
-  readonly organizationId: string;
-  readonly status?: string | null;
-};
-
-export const isPaidOrganizationSubscription = (
-  subscription: OrganizationLimitSubscriptionSummary,
-): boolean =>
-  subscription.planId != null &&
-  PAID_AUTUMN_PLAN_IDS.has(subscription.planId) &&
-  ACTIVE_AUTUMN_SUBSCRIPTION_STATUSES.has(subscription.status ?? "");
-
-export const hasPaidOrganizationSubscription = (
-  subscriptions: ReadonlyArray<OrganizationLimitSubscriptionSummary>,
-): boolean => subscriptions.some(isPaidOrganizationSubscription);
 
 // ---------------------------------------------------------------------------
 // Execution rate-limit exemption.
 //
 // The hourly execution backstop exists for FREE-tier abuse, so the only orgs
-// it may cap are those with nothing but the Free plan. This is deliberately
-// NOT `hasPaidOrganizationSubscription`: that set names only the plans sold
-// today, and every other plan an org can legitimately hold — grandfathered
-// (`hobby`, `professional`), pay-as-you-go, or one added later and not yet
-// listed here — fell through to the cap. A paying customer blocked by an
-// abuse backstop is the worse failure, so the exemption is "anything but
-// Free" rather than "one of the plans we remembered to list".
+// it may cap are those with nothing but the Free plan. The exemption is
+// "anything but Free", not a list of the plans sold today: every other plan
+// an org can legitimately hold — grandfathered (`hobby`, `professional`),
+// pay-as-you-go, or one added later — must stay uncapped. A paying customer
+// blocked by an abuse backstop is the worse failure.
 // ---------------------------------------------------------------------------
 
 export const FREE_AUTUMN_PLAN_ID = "free";
 
 export const hasNonFreeOrganizationSubscription = (
-  subscriptions: ReadonlyArray<OrganizationLimitSubscriptionSummary>,
+  subscriptions: ReadonlyArray<AutumnSubscriptionSummary>,
 ): boolean =>
   subscriptions.some(
     (subscription) =>
@@ -62,16 +27,6 @@ export const hasNonFreeOrganizationSubscription = (
       subscription.planId !== FREE_AUTUMN_PLAN_ID &&
       ACTIVE_AUTUMN_SUBSCRIPTION_STATUSES.has(subscription.status ?? ""),
   );
-
-export const shouldApplyFreeOrganizationLimit = (
-  activeMemberships: ReadonlyArray<OrganizationLimitMembershipSummary>,
-  paidOrganizationIds: ReadonlySet<string>,
-): boolean =>
-  !activeMemberships.some((membership) => paidOrganizationIds.has(membership.organizationId));
-
-export const isOverFreeOrganizationLimit = (
-  activeMemberships: ReadonlyArray<OrganizationLimitMembershipSummary>,
-): boolean => activeMemberships.length >= FREE_ORGANIZATIONS_PER_USER_LIMIT;
 
 // ---------------------------------------------------------------------------
 // Per-plan member seat limits — the org member seat-gate (reserveMemberSlot).

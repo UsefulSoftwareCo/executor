@@ -74,10 +74,9 @@ const spec = OpenApi.fromApi(CloudOpenApi);
  * Build cloud's app-only extension routes. `rsLive` is the per-request DB layer
  * the session handlers read; passed in so tests can swap a counting fake.
  *
- * `AutumnService.Default` is provided to the session + org groups because the
- * `createOrganization` free-limit gate and the domain-verification-link gate
- * read it — the few app-only billing touchpoints. It is NOT on the neutral boot
- * core.
+ * `AutumnService.Default` is provided to the session + org groups because org
+ * deletion's customer cancel and the domain-verification-link gate read it —
+ * the few app-only billing touchpoints. It is NOT on the neutral boot core.
  */
 export const makeCloudExtensionRoutes = (
   rsLive: Layer.Layer<DbService | UserStoreService | WorkOsMirror | MemberDirectory>,

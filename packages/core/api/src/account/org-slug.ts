@@ -21,8 +21,9 @@ const ORG_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9]|-(?=[a-z0-9])){1,47}$/;
  *                       toolkits, artifacts, resume, plugins (the shared
  *                       contract, i.e. every entry in `CONSOLE_ROUTE_PATHS`),
  *                       plus host extras:
- *                       api-keys, org, billing, create-org, setup-mcp (cloud),
- *                       admin, join, docs (selfhost), login (Better Auth
+ *                       api-keys, org, billing, create-org, join (cloud;
+ *                       setup-mcp was a cloud route), admin, join, docs
+ *                       (selfhost), login (Better Auth
  *                       `mcp({ loginPage })` + cloud/selfhost login UX)
  *  - Marketing worker:  home, setup, privacy, terms, blog, pricing, careers,
  *                       changelog, _astro (executor.sh edge routes; the
