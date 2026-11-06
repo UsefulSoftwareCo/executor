@@ -5,7 +5,7 @@
  */
 import { ApiError } from "@executor-js/utils/api-error";
 import { Schema } from "effect";
-import { ConnectionName } from "./connection.ts";
+import { SavedConnectionName } from "./connection.ts";
 import { ApprovalMode, ConnectionId, GrantId } from "./grant.ts";
 
 /** What the grant lets the agent reach, as the user approved it. */
@@ -18,7 +18,7 @@ export const ConnectedAgentAccess = Schema.Union([
   Schema.Struct({
     kind: Schema.Literal("connection"),
     connection: ConnectionId,
-    name: ConnectionName,
+    name: SavedConnectionName,
   }),
   /** The Executor HTTP API rather than MCP. */
   Schema.Struct({ kind: Schema.Literal("api") }),

@@ -9,11 +9,21 @@ import { Schema } from "effect";
 import { ConnectionId, GrantPolicy } from "./grant.ts";
 export { ConnectionId } from "./grant.ts";
 
-/** Display name chosen by the user; not an identity. */
-export const ConnectionName = Schema.String.check(
+/** A name already saved, read back as it was written. Rows from before `ConnectionName` tightened stay readable. */
+export const SavedConnectionName = Schema.String.check(
   Schema.isMinLength(1),
   Schema.isMaxLength(80),
   Schema.isPattern(/\S/u),
+);
+/**
+ * Display name chosen by the user; not an identity. A new name is one line of text with a visible
+ * character. Storage cannot hold NUL, so it is refused here as a bad request instead of surfacing
+ * as a failed sign-in; a line break splits the connection's title, and a name made only of
+ * invisible characters (zero-width space, joiner) lists as blank. `\s` does not match those.
+ */
+export const ConnectionName = SavedConnectionName.check(
+  Schema.isPattern(/^[^\p{Cc}\p{Zl}\p{Zp}]*$/u),
+  Schema.isPattern(/[^\s\p{Cc}\p{Cf}]/u),
 );
 /**
  * One included app. Runs-as targets are exact: the account-free app, or accounts the user linked
@@ -39,7 +49,7 @@ export type ConnectionPolicy = typeof ConnectionPolicy.Type;
 /** A live connection owned by the current user in one organization (or the local instance). */
 export const Connection = Schema.Struct({
   id: ConnectionId,
-  name: ConnectionName,
+  name: SavedConnectionName,
   policy: ConnectionPolicy,
   createdAt: Schema.String,
   updatedAt: Schema.String,

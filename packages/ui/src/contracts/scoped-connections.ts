@@ -1,10 +1,12 @@
 import type { AccountId, AppId } from "@executor-js/sdk";
-import type {
-  ConnectionApp as StoredConnectionApp,
-  ConnectionId,
-  ConnectionInput,
-  ConnectionView,
+import {
+  ConnectionName,
+  type ConnectionApp as StoredConnectionApp,
+  type ConnectionId,
+  type ConnectionInput,
+  type ConnectionView,
 } from "@executor-js/mcp-auth/connections";
+import { Schema } from "effect";
 import type { Atom } from "effect/reactivity";
 import type { Query } from "./dashboard.ts";
 
@@ -93,7 +95,11 @@ export const connectionInput = (draft: ConnectionDraft): ConnectionInput | undef
       ...(app.events === undefined ? {} : { events: app.events }),
     });
   }
-  return { id: draft.id, name: draft.name.trim() || defaultConnectionName(draft.apps), apps };
+  // A name the server would refuse, such as invisible characters pasted alone, is unnamed, as an
+  // empty one already is.
+  const typed = draft.name.trim();
+  const name = Schema.is(ConnectionName)(typed) ? typed : defaultConnectionName(draft.apps);
+  return { id: draft.id, name, apps };
 };
 
 /** Create a new connection or replace an existing one's name and access. */
