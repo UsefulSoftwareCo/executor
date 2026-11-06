@@ -59,6 +59,14 @@ and the Bun TypeScript entry points (`src/`). It carries:
   time it peaks at 4-4.7 GB and starts as fast. Rebuilds after an edit and
   deploy builds (`Bundle.build`) do not wait. Drop this part when alchemy
   bounds concurrent first builds itself.
+- **State store probe.** A `/version` probe of the Cloudflare state store
+  that still fails after its retries, or a failed workers.dev subdomain
+  lookup, fails the run. beta.80 read either as "no store", and with `--yes`
+  (every deploy and preview job) bootstrapped a new store over the live one.
+  That replaced `AlchemyStateStoreEncryptionKey` and made every stored entry
+  unreadable. The store now counts as missing only when the probe gets a 404
+  and Cloudflare reports no `alchemy-state-store` Worker. Upstream beta.85
+  behaves the same way; drop this part when upgrading to it.
 
 Upstream beta.80 now provides what the beta.79 patch also carried: storing a
 no-op resource before signalling dependents

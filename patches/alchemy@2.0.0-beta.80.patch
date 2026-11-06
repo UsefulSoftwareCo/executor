@@ -2033,3 +2033,75 @@ diff --git a/src/Bundle/Bundle.ts b/src/Bundle/Bundle.ts
    ).pipe(
      Stream.mapEffect((event) =>
        Effect.gen(function* () {
+diff --git a/lib/Cloudflare/StateStore/State.js b/lib/Cloudflare/StateStore/State.js
+index eedcce0da9510202685455fb8fa4735f670173a6..7c1a2fb160bf7163a7c032a08719c9a4a7abce60 100644
+--- a/lib/Cloudflare/StateStore/State.js
++++ b/lib/Cloudflare/StateStore/State.js
+@@ -611,7 +611,7 @@ const isStateStoreAvailable = (scriptName = "alchemy-state-store") => Effect.gen
+ const isStateStoreServing = (accountId) => Effect.gen(function* () {
+     const url = yield* workers.getSubdomain({ accountId }).pipe(Effect.map(({ subdomain }) => subdomain
+         ? `https://${STATE_STORE_SCRIPT_NAME}.${subdomain}.workers.dev`
+-        : undefined), Effect.catch(() => Effect.succeed(undefined)));
++        : undefined));
+     if (url === undefined)
+         return false;
+     const { observed } = yield* checkStateStoreVersion(url);
+@@ -664,9 +664,9 @@ const checkStateStoreVersion = (url) => Effect.gen(function* () {
+     // The /version route may 404 transiently after a fresh deploy
+     // while Cloudflare propagates the new script to the edge, and may
+     // also surface transport-level blips on cold workers.dev hosts.
+-    // Retry the probe itself for ~10s before giving up — only after
+-    // exhausting that budget do we collapse to `undefined` and let
+-    // the caller treat it as a version mismatch.
++    // Retry the probe itself for ~10s before giving up. `observed` is
++    // `undefined` only when the worker is confirmed absent; a probe that
++    // still fails after that budget fails the check.
+     const result = yield* client.version.getVersion().pipe(Effect.catchTag("HttpClientError", (e) => 
+     // if we get a 404 here, it means we assumed the worker shoudl exist, but it does not
+     // we should do a check to see if it does
+@@ -680,7 +680,7 @@ const checkStateStoreVersion = (url) => Effect.gen(function* () {
+             Schedule.spaced("250 millis"),
+             Schedule.recurs(40),
+         ]),
+-    }), Effect.catch(() => Effect.succeed(undefined)));
++    }));
+     const matches = result?.version === STATE_STORE_VERSION;
+     yield* Effect.annotateCurrentSpan({
+         "alchemy.state_store.expected_version": STATE_STORE_VERSION,
+diff --git a/src/Cloudflare/StateStore/State.ts b/src/Cloudflare/StateStore/State.ts
+index 195e301897bdcb118592206f57043045269d61c3..20fc3b04120a131aeb710b390e4d5284c8f74b3b 100644
+--- a/src/Cloudflare/StateStore/State.ts
++++ b/src/Cloudflare/StateStore/State.ts
+@@ -906,7 +906,8 @@ const isStateStoreServing = (accountId: string) =>
+           ? `https://${STATE_STORE_SCRIPT_NAME}.${subdomain}.workers.dev`
+           : undefined,
+       ),
+-      Effect.catch(() => Effect.succeed(undefined)),
++      // A failed lookup is not proof that no store exists; let it fail the
++      // run instead of bootstrapping over the live store's secrets.
+     );
+     if (url === undefined) return false;
+     const { observed } = yield* checkStateStoreVersion(url);
+@@ -979,9 +980,11 @@ const checkStateStoreVersion = (url: string) =>
+     // The /version route may 404 transiently after a fresh deploy
+     // while Cloudflare propagates the new script to the edge, and may
+     // also surface transport-level blips on cold workers.dev hosts.
+-    // Retry the probe itself for ~10s before giving up — only after
+-    // exhausting that budget do we collapse to `undefined` and let
+-    // the caller treat it as a version mismatch.
++    // Retry the probe itself for ~10s before giving up. `observed` is
++    // `undefined` only when the worker is confirmed absent; a probe that
++    // still fails after that budget fails the check. Treating it as
++    // absent made `--yes` bootstrap a new store over the live one,
++    // replacing the encryption key every stored entry depends on.
+     const result = yield* client.version.getVersion().pipe(
+       Effect.catchTag("HttpClientError", (e) =>
+         // if we get a 404 here, it means we assumed the worker shoudl exist, but it does not
+@@ -1002,7 +1005,6 @@ const checkStateStoreVersion = (url: string) =>
+           Schedule.recurs(40),
+         ]),
+       }),
+-      Effect.catch(() => Effect.succeed(undefined)),
+     );
+     const matches = result?.version === STATE_STORE_VERSION;
+     yield* Effect.annotateCurrentSpan({
