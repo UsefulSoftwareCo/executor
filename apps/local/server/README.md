@@ -51,7 +51,7 @@ Press Ctrl+C to stop `bun run server` or `bun run dev`. Package-level
 `bun run start` reads its existing process environment only. Relative data paths
 are resolved from the process working directory. `bun run with:local …` loads
 1Password values instead; see
-[configuration](../../../README.md#development-configuration).
+[configuration](../../../DEVELOPMENT.md#development-configuration).
 
 ## Configuration
 
