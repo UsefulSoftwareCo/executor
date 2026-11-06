@@ -424,6 +424,12 @@ export const DashboardOverview = Schema.Struct({
   apps: Schema.Array(App),
   /** The accounts linked to each app, oldest first. */
   links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
+  /** Distinct app-scope accounts linked for everyone, counted without returning account details. */
+  appAccountCounts: Schema.Array(
+    Schema.Struct({ app: AppId, count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)) }),
+  ),
+  /** The accounts linked to each app for everyone, oldest first. */
+  appLinks: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
   accounts: Schema.Array(DashboardAccount),
 });
 export type DashboardOverview = typeof DashboardOverview.Type;

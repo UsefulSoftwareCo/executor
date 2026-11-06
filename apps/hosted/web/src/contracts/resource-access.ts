@@ -177,18 +177,32 @@ const inventory = Atom.family((key: ListKey) =>
                   access.audience.groups.some((id) => id === key.group))),
         )
         .map(({ app }) => app);
-      const links = data.apps
-        .filter(({ app }) => apps.some((item) => item.id === app.id))
-        .flatMap(({ app, linkedAccounts }) =>
-          linkedAccounts.map((account) => ({ app: app.id, account })),
+      const listedAppIds = new Set(apps.map((app) => app.id));
+      const listed = data.apps.filter(({ app }) => listedAppIds.has(app.id));
+      const appAccountCounts = listed.map(({ app, appAccountCount }) => ({
+        app: app.id,
+        count: appAccountCount,
+      }));
+      const pairs = (accounts: (entry: (typeof listed)[number]) => readonly AccountId[]) =>
+        listed.flatMap((entry) =>
+          accounts(entry).map((account) => ({ app: entry.app.id, account })),
         );
+      const links = pairs((entry) => entry.linkedAccounts);
+      const appLinks = pairs((entry) => entry.appLinkedAccounts);
       const accounts = data.accounts.map(({ account, provider, health }) => ({
         ...account,
         providerName: provider.definition.name,
         providerUrl: providerDisplayUrl(provider.definition),
         ...(health === undefined ? {} : { health }),
       }));
-      return { apps, accounts, links, pendingApp: key.group !== "private" && data.pendingApp };
+      return {
+        apps,
+        accounts,
+        links,
+        appLinks,
+        appAccountCounts,
+        pendingApp: key.group !== "private" && data.pendingApp,
+      };
     }),
   ),
 );

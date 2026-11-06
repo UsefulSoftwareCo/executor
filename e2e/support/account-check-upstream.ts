@@ -37,7 +37,7 @@ const McpMessage = Schema.Struct({
 
 /**
  * A synthetic service with one safe read, `GET /me`, and an MCP server at `/mcp`. `/me` returns a
- * synthetic user for the accepted token and 401 for any other token. The MCP server initializes
+ * synthetic user, with a photo at `/avatar.svg`, for the accepted token and 401 for any other token. The MCP server initializes
  * anyone but lists its tools only for the accepted token. Both answer the configured failure.
  * `anonymousRequests` counts the MCP requests that carried no credentials.
  */
@@ -128,14 +128,24 @@ export const accountCheckUpstream = Effect.gen(function* () {
         id: "user-4242",
         name: "Synthetic Person",
         login: "synthetic-person",
-        avatar: "https://avatars.example.test/u/4242.png",
+        avatar: `http://${request.headers.host}/avatar.svg`,
       });
     }),
   );
-  const services = yield* Layer.build(
-    HttpRouter.serve(Layer.mergeAll(me, mcp), { disableLogger: true, disableListenLog: true }).pipe(
-      Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+  // A black mark, so a dark theme without a light tile would hide it.
+  const avatar = HttpRouter.add(
+    "GET",
+    "/avatar.svg",
+    HttpServerResponse.text(
+      `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><path d="M4 4h24v24H4z"/></svg>`,
+      { contentType: "image/svg+xml" },
     ),
+  );
+  const services = yield* Layer.build(
+    HttpRouter.serve(Layer.mergeAll(me, mcp, avatar), {
+      disableLogger: true,
+      disableListenLog: true,
+    }).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
   );
   const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
   if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");

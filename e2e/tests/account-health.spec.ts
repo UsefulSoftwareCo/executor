@@ -12,11 +12,6 @@ import { acceptedToken, accountCheckUpstream } from "../support/account-check-up
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** The synthetic photo the identity check reports; the browser request is answered locally. */
-const avatar = "https://avatars.example.test/u/4242.png";
-const pixel =
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-
 const Health = Schema.Struct({
   account: Schema.String,
   info: Schema.NullOr(
@@ -101,6 +96,8 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
           actors = yield* Actors,
           browser = yield* Browser;
         const upstream = yield* accountCheckUpstream;
+        /** The synthetic photo the identity check reports, served by the fake service. */
+        const avatar = `${upstream.origin}/avatar.svg`;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const deploy = (name: string, health: string) =>
           Effect.gen(function* () {
@@ -236,13 +233,6 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
 
         // The account's health shows why the last check failed.
         yield* browser.login(actors.owner);
-        yield* browser.use("Serve the reported photo from its external origin", (page) =>
-          page
-            .context()
-            .route(avatar, (route) =>
-              route.fulfill({ contentType: "image/png", body: Buffer.from(pixel, "base64") }),
-            ),
-        );
         yield* browser.use("Open the accounts with a failed check", (page) =>
           page
             .goto(`/org/${actors.organization.slug}/accounts`)
@@ -376,7 +366,58 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
             return photo.waitFor({ state: "visible" }).then(() => photo.getAttribute("src"));
           }),
         ).toBe(avatar);
+        // The photo is also the row's logo, on a light tile that keeps a black mark visible.
+        for (const scheme of ["dark", "light"] as const) {
+          const logo = yield* browser.use(`Read the row logo in ${scheme} mode`, (page) => {
+            const image = page
+              .locator(".inventory-row")
+              .filter({ hasText: "Synthetic Person" })
+              .locator(".app-cell > [data-slot='account-avatar'] img");
+            return page
+              .emulateMedia({ colorScheme: scheme })
+              .then(() => image.waitFor())
+              .then(() =>
+                image.evaluate((element) => ({
+                  source: (element as HTMLImageElement).src,
+                  width: (element as HTMLImageElement).naturalWidth,
+                  background: getComputedStyle(element.parentElement!).backgroundColor,
+                })),
+              );
+          });
+          expect(logo).toEqual({ source: avatar, width: 32, background: "rgb(255, 255, 255)" });
+        }
         yield* browser.checkpoint("Account list with check results");
+
+        const fallback = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const held = yield* holdQuery(["/avatar.svg"], "fail", { allRequests: true });
+            yield* browser.use("Open the list while the photo is still loading", (page) =>
+              page.reload({ waitUntil: "domcontentloaded" }),
+            );
+            yield* held.requested;
+            const providerVisible = () =>
+              browser.use("Read the row's provider fallback", (page) =>
+                page
+                  .locator(".inventory-row")
+                  .filter({ hasText: "Synthetic Person" })
+                  .locator(".app-cell > [data-slot='account-avatar'] .provider-icon")
+                  .isVisible(),
+              );
+            const loading = yield* providerVisible();
+            yield* held.release;
+            yield* browser.use("Wait for the failed photo requests to finish", (page) =>
+              page.waitForLoadState("networkidle"),
+            );
+            return { loading, failed: yield* providerVisible() };
+          }),
+        );
+        expect(fallback).toEqual({ loading: true, failed: true });
+        yield* browser.checkpoint("Provider icon after the reported photo fails");
+        yield* browser.use("Load the reported photo after it recovers", (page) =>
+          page
+            .reload()
+            .then(() => page.locator(".app-cell > [data-slot='account-avatar'] img").waitFor()),
+        );
 
         // Another redeploy makes the result outdated; viewing the app's accounts shows it at once
         // and checks it again in the background, without any action.

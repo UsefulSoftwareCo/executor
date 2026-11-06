@@ -118,8 +118,10 @@ function AppsList({
               const account = data.accounts.find((item) => item.id === id);
               return account === undefined ? [] : [account];
             });
+            const appAccountCount =
+              data.appAccountCounts?.find((item) => item.app === app.id)?.count ?? 0;
             // The inventory names no requirements, so a user requirement counts any linked
-            // account of its provider; app links are not listed here.
+            // account of its provider. App-scope links contribute only their inventory count.
             const user = Object.entries(app.requirements.accounts).flatMap(([slot, requirement]) =>
               requirement.scope === "user"
                 ? selected
@@ -131,6 +133,22 @@ function AppsList({
             const needsSignIn = selected.some((account) => accountNeedsSignIn(account));
             const unavailable = selected.some((account) => account.signIn?.state === "unavailable");
             const provider = Object.values(app.requirements.accounts)[0]?.definition;
+            const userAccounts = selected
+              .map((account) => account.label || "Unnamed account")
+              .join(", ");
+            const sharedAccounts =
+              appAccountCount === 0
+                ? ""
+                : `${appAccountCount} ${appAccountCount === 1 ? "account" : "accounts"}`;
+            const accountSummary = missing
+              ? `Needs account${sharedAccounts ? ` · ${sharedAccounts} for everyone` : ""}`
+              : selected.length === 0
+                ? sharedAccounts
+                  ? `${sharedAccounts} · for everyone`
+                  : provider === undefined
+                    ? "No account required"
+                    : "No accounts linked"
+                : `${userAccounts}${sharedAccounts ? ` · ${sharedAccounts} for everyone` : ""}`;
             return (
               <Card asChild key={app.id} className="gap-0 rounded-lg p-4 shadow-none">
                 <AppLink
@@ -155,25 +173,9 @@ function AppsList({
                   </div>
                   <div className="app-card-footer flex items-center justify-between gap-3 mt-auto pt-4 text-[11px] text-muted-foreground max-[600px]:col-start-2 max-[600px]:row-start-2 max-[600px]:mt-0 max-[600px]:self-start max-[600px]:pt-0">
                     <div className="account-cell [.app-card_&]:flex-1 [.app-card_&]:[align-content:start] [.app-card_&]:text-foreground max-[600px]:[.app-card_&]:text-muted-foreground [.app-card_&_>_span]:min-w-0 grid gap-1.25 text-[12px] min-w-0 [&_>_span]:flex [&_>_span]:items-center [&_>_span]:gap-1.5 [&_>_span]:wrap-anywhere [&_svg]:text-muted-foreground [&_svg]:shrink-0">
-                      {missing ? (
-                        <span className="setup-state inline-flex items-center gap-1">
-                          <HugeiconsIcon
-                            icon={AlertCircleIcon}
-                            strokeWidth={2}
-                            aria-hidden
-                            size={12}
-                          />
-                          <span className="app-card-account-label min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                            Needs account
-                          </span>
-                        </span>
-                      ) : selected.length === 0 ? (
-                        <span className="muted text-muted-foreground">
-                          {provider === undefined ? "No account required" : "No accounts linked"}
-                        </span>
-                      ) : (
+                      {missing || selected.length > 0 || appAccountCount > 0 ? (
                         <span>
-                          {needsSignIn || unavailable ? (
+                          {missing || needsSignIn || unavailable ? (
                             <HugeiconsIcon
                               icon={AlertCircleIcon}
                               strokeWidth={2}
@@ -184,11 +186,11 @@ function AppsList({
                             <HugeiconsIcon icon={Key01Icon} strokeWidth={2} aria-hidden size={12} />
                           )}
                           <span className="app-card-account-label min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                            {selected
-                              .map((account) => account.label || "Unnamed account")
-                              .join(", ")}
+                            {accountSummary}
                           </span>
                         </span>
+                      ) : (
+                        <span className="muted text-muted-foreground">{accountSummary}</span>
                       )}
                     </div>
                     {(needsSignIn || unavailable) && (

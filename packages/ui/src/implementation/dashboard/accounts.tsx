@@ -2,7 +2,7 @@ import { LocalTime, shortMoment } from "../components/local-time.tsx";
 import { PageFrame, PageHeader } from "./page.tsx";
 import { Option } from "effect";
 import { AccountRowsSkeleton } from "./loading.tsx";
-import { AccountCheckDot, AccountIdentity } from "./account-health.tsx";
+import { AccountCheckDot, AccountIdentity, AccountLogo } from "./account-health.tsx";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { QueryResult, useQuery, useDashboard } from "./context.tsx";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -11,7 +11,7 @@ import type { AccountId } from "@executor-js/sdk";
 import type { Inventory, AccountSummary, QueryProps } from "../../contracts/dashboard.ts";
 import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
 
-import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
+import { Empty, SearchInput } from "./common.tsx";
 import { Button } from "../components/button.tsx";
 
 /** Saved account metadata is shared across app references, without exposing credential values. */
@@ -93,6 +93,8 @@ function AccountsList({
   useEffect(() => {
     highlighted.current?.scrollIntoView({ block: "center" });
   }, [highlight]);
+  // App-scope links list the apps an account serves for everyone, beside the caller's own.
+  const links = [...data.links, ...(data.appLinks ?? [])];
   const accounts = data.accounts.filter((account) =>
     `${account.label} ${account.providerName ?? ""}`.toLowerCase().includes(search.toLowerCase()),
   );
@@ -121,7 +123,7 @@ function AccountsList({
           </div>
           {accounts.map((account) => {
             const apps = data.apps.filter((app) =>
-              data.links.some((link) => link.app === app.id && link.account === account.id),
+              links.some((link) => link.app === app.id && link.account === account.id),
             );
             return (
               <div
@@ -132,10 +134,7 @@ function AccountsList({
                   : {})}
               >
                 <div className="app-cell [.app-card_&_strong]:text-[14px] [.app-card_&_strong]:overflow-hidden [.app-card_&_strong]:text-ellipsis [.app-card_&_strong]:whitespace-nowrap flex items-center gap-3 min-w-0 [&_>_div]:min-w-0 [&_strong]:text-[13px] [&_strong]:font-medium [&_strong]:block [&_strong]:wrap-anywhere max-[740px]:[&_strong]:text-[14px]">
-                  <ProviderIcon
-                    name={account.providerName ?? "Account"}
-                    url={account.providerUrl}
-                  />
+                  <AccountLogo account={account} />
                   <div>
                     <strong>{account.label || "Unnamed account"}</strong>
                     {account.description && (

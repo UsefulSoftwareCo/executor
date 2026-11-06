@@ -6,7 +6,13 @@ import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { teamAppPending } from "./provisioning.ts";
 import { HttpApiBuilder } from "effect/http-api";
-import { StorageError, type AppId, type Provider, type ProviderId } from "@executor-js/sdk/core";
+import {
+  StorageError,
+  type AccountId,
+  type AppId,
+  type Provider,
+  type ProviderId,
+} from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization } from "../contracts/organization.ts";
@@ -17,7 +23,7 @@ import {
   type AccessRevision,
 } from "../contracts/resource-access.ts";
 import { requireGroupSharing } from "./group-sharing.ts";
-import { callerLinkedAccounts } from "./app-accounts.ts";
+import { appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
 import {
   policyDatabase,
   currentResourceAuthority,
@@ -50,13 +56,16 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
     });
     const usableApps = listedApps.filter(({ access }) => access.canUse).map(({ app }) => app.id);
     const links = yield* callerLinkedAccounts(usableApps);
-    const appEntries = listedApps.map(({ app, access }) => ({
-      app,
-      access,
-      linkedAccounts: [
-        ...new Set(links.filter((link) => link.app === app.id).map((link) => link.id)),
-      ],
-    }));
+    const appLinked = yield* appLinkedAccounts(
+      yield* policyDatabase,
+      listedApps.map(({ app }) => app.id),
+    );
+    const appAccounts = new Map<AppId, Set<AccountId>>();
+    for (const link of appLinked) {
+      const accounts = appAccounts.get(link.app) ?? new Set<AccountId>();
+      accounts.add(link.id);
+      appAccounts.set(link.app, accounts);
+    }
     const linked = new Set(links.map((link) => link.id));
     const accounts = (yield* executor.accounts.list({ owner })).filter(
       (account) => policy.tools.kind === "all" || linked.has(account.id),
@@ -96,6 +105,20 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
         ];
       }),
     );
+    const listedAccounts = accountEntries.flat();
+    const listed = new Set(listedAccounts.map(({ account }) => account.id));
+    const appEntries = listedApps.map(({ app, access }) => {
+      const shared = [...(appAccounts.get(app.id) ?? [])];
+      return {
+        app,
+        access,
+        appAccountCount: shared.length,
+        appLinkedAccounts: shared.filter((id) => listed.has(id)),
+        linkedAccounts: [
+          ...new Set(links.filter((link) => link.app === app.id).map((link) => link.id)),
+        ],
+      };
+    });
     const pendingApp =
       policy.tools.kind === "all" && (view === "available" || actor.role !== "member")
         ? yield* teamAppPending(
@@ -103,7 +126,7 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
             (yield* executor.apps.list({ owner, name: "Executor" })).length > 0,
           ).pipe(Effect.provideService(SqlClient.SqlClient, yield* policyDatabase))
         : false;
-    return { apps: appEntries, accounts: accountEntries.flat(), pendingApp };
+    return { apps: appEntries, accounts: listedAccounts, pendingApp };
   });
 /** The compare-and-swap revision protects settings and all group grants as one update. */
 export const shareApp = (
