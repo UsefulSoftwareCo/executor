@@ -19,7 +19,7 @@ export const HostedFeedback = HttpApiGroup.make("feedback")
       .annotate(OpenApi.Summary, "Submit feedback")
       .annotate(
         OpenApi.Description,
-        "Send feedback about Executor to the Executor team. Returns accepted only after ingestion succeeds. Returns FeedbackDisabled when this instance has analytics turned off. Do not include credentials or other sensitive information.",
+        "Send feedback about Executor to the Executor team. Returns accepted only after ingestion succeeds. Returns FeedbackDisabled when this instance has no feedback destination. Do not include credentials or other sensitive information.",
       ),
   )
   .middleware(RequireOrganization);

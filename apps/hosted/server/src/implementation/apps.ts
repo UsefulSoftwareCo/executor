@@ -14,8 +14,9 @@ import { CurrentOrganizationNamespace } from "../contracts/organization.ts";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
 import type { DeployApp, InstallApp } from "../contracts/apps.ts";
-import { HostedCatalog } from "../contracts/catalog.ts";
+import { executorCatalogPackage, HostedCatalog } from "../contracts/catalog.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
+import { recordUsage } from "../contracts/product-analytics.ts";
 import { appManagerOwner, currentOwner } from "./access.ts";
 
 /** Install a catalog entry as a new app without replacing an existing name. */
@@ -25,8 +26,8 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
     const catalog = yield* HostedCatalog;
     const generated = yield* catalog.prepare(input);
     // An official app keeps its own package name, as an installed published app does.
-    if (generated.origin !== undefined)
-      return yield* executor.apps
+    if (generated.origin !== undefined) {
+      const app = yield* executor.apps
         .copy({
           from: { files: generated.files, origin: generated.origin, activation: "deploy" },
           owner,
@@ -41,6 +42,10 @@ export const installApp = (owner: OwnerId, input: typeof InstallApp.Type) =>
           }),
           Effect.flatMap(deployedCopy),
         );
+      if (input.entry !== executorCatalogPackage)
+        yield* recordUsage("app_installed", { app_id: input.entry });
+      return app;
+    }
     const namespace = yield* Effect.flatten(CurrentOrganizationNamespace);
     const files = yield* scopeGeneratedPackage(generated.files, namespace, input.name).pipe(
       Effect.mapError(
