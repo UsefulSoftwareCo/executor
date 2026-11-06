@@ -1,15 +1,17 @@
 /** Search, describe and call reach app tools through MCP without an execute program. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
-import { App } from "../support/contracts.ts";
+import { App, Resource } from "../support/contracts.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { Target } from "../support/platform.ts";
 
 const source = `import { defineApp, mutation, query, object, string, router } from "apps";
 import { always } from "apps/operations/approval";
@@ -226,6 +228,115 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
         );
         expect(executed.execution).toMatchObject({ ok: true, value: { reviewed: "program" } });
         expect(yield* client.elicitationCount).toBe(1);
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+
+  it.effect(scenarios.mcpNestedExecutorResult.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          mcp = yield* McpClient,
+          evidence = yield* Evidence;
+        const origin = (yield* Target).metadata.origin;
+        const { key, app, organization } = yield* fixture;
+        const prefix = `/api/organizations/${organization}`;
+        // An app that reaches this same Executor through its MCP server, as a remote MCP router.
+        // Its account holds the access token the inner Executor accepts.
+        const name = `Nested executor ${randomUUID().slice(0, 8)}`;
+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name,
+          files: [
+            {
+              path: "index.ts",
+              content: `import { defineApp, defineProvider, object, secrets, string } from "apps";
+import { mcpRouter } from "apps/mcp";
+const service = defineProvider({ name: ${JSON.stringify(name)}, hosts: [${JSON.stringify(new URL(origin).host)}], auth: {
+  key: secrets({ label: "Key", fields: object({ token: string() }) }),
+} });
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts }, signal }) => ({
+  tools: await mcpRouter({
+    url: ${JSON.stringify(`${origin}/mcp`)},
+    account: accounts.service,
+    headers: { Authorization: "Bearer " + accounts.service.fields.token, "X-Executor-Organization": ${JSON.stringify(organization)} },
+    signal,
+  }),
+}));`,
+            },
+            appsManifest,
+          ],
+        });
+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+        const outer = yield* body(App, deployed);
+        const outerPath = `${prefix}/apps/${outer.id}`;
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", outerPath).pipe(Effect.orDie),
+        );
+        const connection = yield* body(
+          Resource,
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(outerPath, "user", "service"),
+            {},
+          ),
+        );
+        const saved = yield* api.request(
+          actors.owner,
+          "POST",
+          `${prefix}/connections/${connection.id}/submit`,
+          { method: "key", label: "Inner Executor", fields: { token: Redacted.value(key.key) } },
+        );
+        expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+        const account = (yield* body(Resource, saved)).id;
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
+        );
+
+        const client = yield* mcp.connect(key.key, "nested-executor", { organization });
+        const echo = `tools[${JSON.stringify(app.slug)}].echo`;
+        const nestedCall = `tools[${JSON.stringify(outer.slug)}].call`;
+        const id = randomUUID();
+        const marker = `say "nested" ${id}`;
+        const result = yield* client.use("Call Executor through Executor", (client, signal) =>
+          client.callTool(
+            {
+              name: "call",
+              arguments: {
+                calls: {
+                  path: nestedCall,
+                  input: { calls: { path: echo, input: { text: marker } } },
+                },
+              },
+            },
+            undefined,
+            { signal },
+          ),
+        );
+        yield* evidence.json("nested-executor-result.json", result);
+        const completed = yield* Schema.decodeUnknownEffect(Completed)(result.structuredContent);
+        // The inner Executor's text block only repeats its structured result, so the outer
+        // Executor keeps the structured result alone.
+        expect(completed.execution).toMatchObject({
+          ok: true,
+          value: {
+            path: nestedCall,
+            ok: true,
+            value: {
+              content: [],
+              structuredContent: {
+                status: "completed",
+                execution: { ok: true, value: { path: echo, ok: true, value: { text: marker } } },
+              },
+            },
+          },
+        });
+        // Each hop carries the payload once, so nesting does not multiply the agent's context.
+        const nested = JSON.stringify(completed.execution.value);
+        expect(nested.split(id).length - 1).toBe(1);
+        expect(nested).toContain(JSON.stringify(marker));
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

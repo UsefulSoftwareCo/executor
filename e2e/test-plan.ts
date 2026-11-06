@@ -938,6 +938,16 @@ export const scenarios = plan({
       local: na("Hosted version API scenario"),
     },
   },
+  mcpNestedExecutorResult: {
+    fixtures: "actors",
+    file: "mcp-direct-calls.spec.ts",
+    title: "Executor behind Executor returns each nested result once",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback MCP router; covered on self-host"),
+      local: na("Hosted version API scenario"),
+    },
+  },
   mcpNativeCallApproval: {
     fixtures: "actors",
     file: "mcp-direct-calls.spec.ts",
