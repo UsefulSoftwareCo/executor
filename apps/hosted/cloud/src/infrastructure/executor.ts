@@ -22,7 +22,7 @@ import { hostedEventAuthority } from "@executor-js/hosted-server/events";
 import { SqlClient } from "effect/sql";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Context, Effect, FiberSet, Option } from "effect";
+import { Config, Context, Effect, FiberSet, Option } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { cachedVersionSources } from "../implementation/version-source-cache.ts";
 import { organizationPublishers } from "../implementation/publishers.ts";
@@ -51,6 +51,11 @@ export const cloudEgress = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
   return { policy, client } satisfies HostEgress;
 });
+
+/** `off` keeps the catalog readable and refuses new publications, from people and agents alike. */
+const appPublishing = Config.Literals(["on", "off"], "EXECUTOR_APP_PUBLISHING").pipe(
+  Config.withDefault("on"),
+);
 
 /**
  * The operator's OAuth clients whose credentials this stage has. Only an emulated Cloud, which E2E
@@ -108,6 +113,7 @@ export const cloudExecutor = Effect.fn(function* (
   const makeRuntime = yield* cloudRuntime(origin, databases);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
+  const publishing = (yield* appPublishing.pipe(Effect.orDie)) === "on";
   // App storage, hosted permission checks and Better Auth share the event's client.
   const database = (yield* InvocationDatabase).pipe(Effect.mapError(() => new StorageError()));
   const executor = yield* makeExecutionMemo(
@@ -150,6 +156,7 @@ export const cloudExecutor = Effect.fn(function* (
           storage: yield* Effect.flatMap(organizationPublishers, makeRegistryStorage).pipe(
             Effect.provideContext(services),
           ),
+          publishing,
         },
         hooks: lifecycle.hooks,
         // Executor apps read this deployment's API at any of its resource origins; their caches and

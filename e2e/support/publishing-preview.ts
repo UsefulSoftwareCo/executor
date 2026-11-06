@@ -22,6 +22,7 @@ export const publishingPreview = (
     const workspace = (url: URL) => url.pathname.endsWith(`/apps/${app}/workspace/display`);
     const authoring = (url: URL) => url.pathname.endsWith(`/apps/${app}/authoring`);
     const listings = (url: URL) => url.pathname.endsWith("/app-publications/published");
+    const status = (url: URL) => url.pathname.endsWith("/app-publications/status");
     const source = (route: Route) =>
       route.fetch().then((response) => {
         if (response.status() !== 200) throw new Error("The real workspace must be readable");
@@ -45,6 +46,15 @@ export const publishingPreview = (
         contentType: "application/json",
         body: JSON.stringify(published),
       });
+    yield* browser.use("Report a host that publishes", (page) =>
+      page.route(status, (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ publishing: true }),
+        }),
+      ),
+    );
     yield* browser.use("Enable publishing in the shared authoring controls", (page) =>
       page.route(authoring, (route) =>
         route.fetch().then((response) => {

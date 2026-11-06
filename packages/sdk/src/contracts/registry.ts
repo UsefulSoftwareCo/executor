@@ -185,8 +185,11 @@ export interface RegistryStorage {
 /**
  * Where this executor's public catalog lives. A remote registry only reads another host's
  * listings. A stored catalog is this executor's own, published at the executor's origin.
+ * `publishing: false` keeps a stored catalog readable and refuses new publications.
  */
-export type RegistryOptions = Registry | { readonly storage: RegistryStorage };
+export type RegistryOptions =
+  | Registry
+  | { readonly storage: RegistryStorage; readonly publishing?: boolean };
 
 /** Scope only freshly generated source, before Git retains it. Never rewrite an existing app. */
 export const scopeGeneratedPackage = (files: SourceFiles, namespace: string, name: string) =>
