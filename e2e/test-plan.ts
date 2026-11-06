@@ -6156,6 +6156,17 @@ export const scenarios = plan({
       local: na("Local has no organizations, so its MCP spans name none."),
     },
   },
+  securityObservability: {
+    fixtures: "actors",
+    file: "security-observability.spec.ts",
+    title:
+      "Hosted request spans record the client, the credential and why a request was refused, and security actions leave audit records, never a credential",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local has no hosted sign-in, API keys or organizations to refuse."),
+    },
+  },
   organizationRequestSpans: {
     fixtures: "actors",
     file: "organization-request-spans.spec.ts",

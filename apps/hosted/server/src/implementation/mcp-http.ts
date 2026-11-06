@@ -4,6 +4,7 @@ import { requiresToolMetadata } from "@executor-js/authorization";
 import { grantAuthorization } from "@executor-js/mcp-auth";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentUserId, callerSpanAttributes } from "../contracts/auth.ts";
+import { recordAuthFailure } from "./auth-telemetry.ts";
 import {
   restrictMcpBackend,
   deliveryRefusal,
@@ -467,7 +468,10 @@ export const authenticatedMcp = <E, R>(
     const request = yield* HttpServerRequest.HttpServerRequest;
     // Programmatic clients have no Origin. Untrusted browser pages cannot call MCP.
     if (request.headers.origin !== undefined && request.headers.origin !== auth.origin)
-      return HttpServerResponse.empty({ status: 403 });
+      return yield* Effect.as(
+        recordAuthFailure("origin_mismatch"),
+        HttpServerResponse.empty({ status: 403 }),
+      );
     const url = new URL(request.url, auth.origin);
     const address = requestedMcpAddress(url);
     if (address === undefined) return invalidAddress;

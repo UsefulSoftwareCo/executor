@@ -106,20 +106,26 @@ export interface McpConnectionStore {
     owner: ConnectionOwner,
     input: { readonly id: ConnectionId; readonly name: string; readonly policy: ConnectionPolicy },
   ) => Effect.Effect<Connection, ConnectionNotFound | AuthenticationUnavailable>;
-  /** Revoke the connection, every grant issued through it, and their tokens. */
+  /**
+   * Revoke the connection, every grant issued through it, and their tokens. Succeeds with the
+   * stored connection's ID once every step is stored.
+   */
   readonly revoke: (
     owner: ConnectionOwner,
     id: ConnectionId,
-  ) => Effect.Effect<void, ConnectionNotFound | AuthenticationUnavailable>;
+  ) => Effect.Effect<ConnectionId, ConnectionNotFound | AuthenticationUnavailable>;
   /** The owner's authorized MCP and API clients, one per live grant. */
   readonly agents: (
     owner: ConnectionOwner,
   ) => Effect.Effect<readonly ConnectedAgent[], AuthenticationUnavailable>;
-  /** Revoke one of the owner's grants and delete its access and refresh tokens. */
+  /**
+   * Revoke one of the owner's grants and delete its access and refresh tokens. Succeeds with the
+   * stored grant's ID once every step is stored.
+   */
   readonly revokeAgent: (
     owner: ConnectionOwner,
     id: GrantId,
-  ) => Effect.Effect<void, ConnectedAgentNotFound | AuthenticationUnavailable>;
+  ) => Effect.Effect<GrantId, ConnectedAgentNotFound | AuthenticationUnavailable>;
 }
 
 /** Better Auth owns grant validation; each host supplies its native request lifetime. */

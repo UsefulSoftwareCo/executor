@@ -18,12 +18,14 @@ import { Effect } from "effect";
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { OrganizationForbidden } from "../contracts/organization.ts";
+import { refuse } from "./auth-telemetry.ts";
 
 /** Check the shared app policy before reading or evaluating an app; ownership is checked separately. */
 export const authorizeApp = (app: AppId) =>
   Effect.gen(function* () {
     const policy = yield* CurrentAuthorization;
-    if (!permitsApp(policy, app)) return yield* new OrganizationForbidden();
+    if (!permitsApp(policy, app))
+      return yield* refuse("insufficient_scope", new OrganizationForbidden());
     return policy;
   });
 /**
@@ -68,7 +70,8 @@ export const authorizeTool = (
       accounts: userAccountIds(input.accounts),
     };
     if (!requiresToolMetadata(policy.tools, input.app)) {
-      if (!permitsTool(policy, request)) return yield* new OrganizationForbidden();
+      if (!permitsTool(policy, request))
+        return yield* refuse("insufficient_scope", new OrganizationForbidden());
       return { tool: undefined, kind: input.kind } satisfies ToolAuthorization;
     }
     const executor = yield* Effect.flatten(HostedExecutor);
@@ -78,9 +81,11 @@ export const authorizeTool = (
         .get(input)
         .pipe(Effect.catchTag("ToolNotFound", () => Effect.fail(new OrganizationForbidden()))));
     const permission = runPermission(policy, { ...request, tool });
-    if (permission === undefined) return yield* new OrganizationForbidden();
+    if (permission === undefined)
+      return yield* refuse("insufficient_scope", new OrganizationForbidden());
     if (permission === "any") return { tool, kind: input.kind } satisfies ToolAuthorization;
-    if (input.kind === "mutation") return yield* new OrganizationForbidden();
+    if (input.kind === "mutation")
+      return yield* refuse("insufficient_scope", new OrganizationForbidden());
     return { tool, kind: "query" } satisfies ToolAuthorization;
   });
 /**

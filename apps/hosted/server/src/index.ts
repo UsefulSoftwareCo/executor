@@ -22,7 +22,26 @@ export {
   AuthenticationUnavailable,
   RequireUser,
   CurrentPrincipal,
+  AuthCredentialKind,
+  AuthFailureReason,
 } from "./contracts/auth.ts";
+export {
+  recordAuthFailure,
+  recordCaller,
+  recordCredential,
+  recordNoCredential,
+  recordNoSession,
+  recordUnclassifiedRefusals,
+  refuse,
+} from "./implementation/auth-telemetry.ts";
+export {
+  SecurityAuditAction,
+  auditFailureCodes,
+  type SecurityAuditEvent,
+  type SecurityAuditFailure,
+  type SecurityAuditOutcome,
+} from "./contracts/security-audit.ts";
+export { audited, recordSecurityAudit } from "./implementation/security-audit.ts";
 export { authOptions, authSettings, sessionPrincipal } from "./implementation/auth.ts";
 export * from "./contracts/organization.ts";
 export {

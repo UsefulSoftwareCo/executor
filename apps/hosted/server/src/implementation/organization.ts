@@ -22,7 +22,14 @@ import { readOrganizationIconUpload } from "./organization-icons.ts";
 import { OrganizationTombstones } from "../contracts/organization-removal.ts";
 import { requireOrganizationAdmin } from "./access.ts";
 import { callerLinkedAccounts } from "./app-accounts.ts";
-import { CurrentPrincipal, CurrentUserId, callerSpanAttributes } from "../contracts/auth.ts";
+import { CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
+import {
+  recordCaller,
+  recordNoSession,
+  recordSessionCredential,
+  refuse,
+  refusedAs,
+} from "./auth-telemetry.ts";
 import { APIError } from "better-auth/api";
 import { ErrorReporter, Effect, Layer, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -102,7 +109,9 @@ export const lookupOrganizationSlug = (call: () => Promise<unknown>) =>
 const refuseRemoved = (organization: OrganizationId) =>
   Effect.flatMap(requestTombstones, (removed) => removed(organization)).pipe(
     Effect.mapError(() => new AuthenticationUnavailable()),
-    Effect.flatMap((gone) => (gone ? Effect.fail(new OrganizationForbidden()) : Effect.void)),
+    Effect.flatMap((gone) =>
+      gone ? refuse("organization_not_found", new OrganizationForbidden()) : Effect.void,
+    ),
   );
 
 /** Access resolves only the explicit route ID or slug. Shared session preferences never participate. */
@@ -120,25 +129,29 @@ export const withOrganizationRequest = <E, R>(
     const params = yield* HttpRouter.params;
     const reference = yield* Schema.decodeUnknownEffect(OrganizationReference)(
       params.organization,
-    ).pipe(Effect.mapError(() => new OrganizationForbidden()));
+    ).pipe(
+      Effect.mapError(() => new OrganizationForbidden()),
+      refusedAs("organization_not_found"),
+    );
     if (headers.has("authorization")) {
       if (request.headers.origin !== undefined && request.headers.origin !== auth.origin)
-        return yield* new Forbidden();
+        return yield* refuse("origin_mismatch", new Forbidden());
       const grant = yield* api.authenticate(headers, reference);
       // The request's span records the organization's opaque ID, never the route's reference,
       // which can be its slug, and the caller's user ID: an OAuth grant's user or a key's. The
       // bearer check returns only an organization it authorized for the caller, so the refusals
       // below, a removed organization or a key's policy, keep both.
-      yield* Effect.annotateCurrentSpan(
-        callerSpanAttributes(grant.access.organization, grant.userId),
-      );
+      yield* recordCaller(grant.access.organization, grant.userId);
       yield* refuseRemoved(grant.access.organization);
-      if (!permitsAction(grant.policy, action)) return yield* new OrganizationForbidden();
+      if (!permitsAction(grant.policy, action))
+        return yield* refuse("insufficient_scope", new OrganizationForbidden());
       if (params.app !== undefined) {
         const app = yield* Schema.decodeUnknownEffect(AppId)(params.app).pipe(
           Effect.mapError(() => new OrganizationForbidden()),
+          refusedAs("insufficient_scope"),
         );
-        if (!permitsApp(grant.policy, app)) return yield* new OrganizationForbidden();
+        if (!permitsApp(grant.policy, app))
+          return yield* refuse("insufficient_scope", new OrganizationForbidden());
       }
       if (grant.key !== undefined)
         yield* Effect.annotateCurrentSpan("executor.api_key.id", grant.key.id);
@@ -157,21 +170,27 @@ export const withOrganizationRequest = <E, R>(
       request.method !== "HEAD" &&
       request.headers.origin !== auth.origin
     )
-      return yield* new Forbidden();
+      return yield* refuse("origin_mismatch", new Forbidden());
     const identity = yield* requestAuthentication(auth);
     const principal = yield* identity.current(headers);
-    if (principal === null) return yield* new Unauthorized();
-    const organization = yield* identity.organization(reference);
+    if (principal === null)
+      return yield* Effect.andThen(recordNoSession(headers), Effect.fail(new Unauthorized()));
+    yield* recordSessionCredential(principal);
+    const organization = yield* identity
+      .organization(reference)
+      .pipe(refusedAs("organization_not_found"));
     // Removal is reported before membership. The reads run one after the other: on Cloud they
     // share the event's one SQL connection, and overlapping them would open a second one, a TLS
     // login that costs far more than the few milliseconds the second read waits.
     yield* refuseRemoved(organization);
-    const membership = yield* identity.membership(principal, organization);
+    const membership = yield* identity
+      .membership(principal, organization)
+      .pipe(refusedAs("not_member"));
     // The route's reference resolves to any organization, so the request names it, and the session's
     // user, only once the membership shows it is the caller's own. A request refused before then,
     // for an organization the caller does not belong to or one being removed, names neither, and so
     // never counts against that organization's failures or among its users.
-    yield* Effect.annotateCurrentSpan(callerSpanAttributes(organization, principal.userId));
+    yield* recordCaller(organization, principal.userId);
     const access = {
       organization,
       owner: organizationOwner(organization),

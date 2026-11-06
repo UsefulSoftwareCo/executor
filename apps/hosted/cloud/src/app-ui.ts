@@ -1,4 +1,4 @@
-import { requestServices } from "@executor-js/hosted-server";
+import { recordUnclassifiedRefusals, requestServices } from "@executor-js/hosted-server";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
@@ -10,7 +10,12 @@ import { Config, Effect, Layer, Option } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpRouter, HttpServer, HttpServerError, HttpServerResponse } from "effect/http";
 import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
-import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
+import {
+  toRequestHttpEffect,
+  recordRequestRejections,
+  requestTiming,
+} from "@executor-js/telemetry/http";
+import { recordClientNetwork } from "./implementation/client-network.ts";
 import { cloudSentry } from "./implementation/error-reporting.ts";
 import { cloudAnalytics } from "./implementation/product-analytics.ts";
 import { postHogBindings } from "./infrastructure/posthog.ts";
@@ -99,7 +104,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     ).pipe(Layer.provide(appUi.originAccess.layer));
     const handle = yield* routes.pipe(
       Layer.provide(HttpServer.layerServices),
-      HttpRouter.toHttpEffect,
+      toRequestHttpEffect,
       Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),
     );
     const lifetime = yield* previewLifetime;
@@ -124,6 +129,8 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
             : Effect.succeed(HttpServerResponse.empty({ status: 500, headers: appPrivateHeaders })),
         ),
         requestTiming,
+        recordClientNetwork,
+        recordUnclassifiedRefusals,
         lifetime.http,
       ),
     };

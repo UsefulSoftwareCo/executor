@@ -14,9 +14,9 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api
 import {
   AuthenticationUnavailable,
   BrowserSessionOnly,
-  Principal,
   RequireUser,
   Unauthorized,
+  Viewer,
 } from "./auth.ts";
 import {
   HostedOrganization,
@@ -207,7 +207,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
   .add(HttpApiGroup.make("health").add(HttpApiEndpoint.get("get", "/health", { success: Health })))
   .add(
     HttpApiGroup.make("viewer")
-      .add(HttpApiEndpoint.get("get", "/api/viewer", { success: Principal }))
+      .add(HttpApiEndpoint.get("get", "/api/viewer", { success: Viewer }))
       .middleware(RequireUser),
   )
   .add(

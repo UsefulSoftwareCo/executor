@@ -3,7 +3,7 @@ import { HostedAppSessions } from "@executor-js/hosted-server/app-ui";
 import { authObservability } from "../implementation/auth-observability.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { APIError } from "better-auth/api";
-import { OrganizationId } from "@executor-js/hosted-server";
+import { OrganizationId, recordCredential, recordSecurityAudit } from "@executor-js/hosted-server";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { billingLive } from "../implementation/billing.ts";
 import {
@@ -44,10 +44,12 @@ import { HttpBody, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { SendAuthEmail } from "../contracts/email.ts";
 import { cloudSecrets, v1McpForwardSecret, v1SessionHandoffSecret } from "./secrets.ts";
 import { V1HandoffSessionFailed, v1SessionHandoff } from "../implementation/v1-session-handoff.ts";
+import { recordAuthRefusal } from "../implementation/auth-refusals.ts";
 import { cloudAuthRateLimit } from "./stage.ts";
 import { AuthDatabase, appSessionsPerCall, boundAuthAdapter } from "./auth-database.ts";
 import { invocationSql } from "./invocation-database.ts";
 import { mcpAuthentication } from "./mcp-auth.ts";
+import { authAudit } from "../implementation/auth-audit.ts";
 
 /** Bind during initialization; database calls capture the current invocation only. */
 export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Service) =>
@@ -155,7 +157,24 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
     const makeInstance = (secret: string) =>
       betterAuth({
         ...options,
-        plugins: [...options.plugins, observation.plugin],
+        // After the analytics plugin: Better Auth's endpoint middleware does not leave its
+        // session on the after-hook context, and the analytics hook's read of it does. The audit
+        // reads no session itself. Telemetry never fails a request, so a record that cannot be
+        // written is dropped.
+        plugins: [
+          ...options.plugins,
+          authAudit((event, session) =>
+            runCallback(
+              Effect.andThen(
+                session === undefined
+                  ? Effect.void
+                  : recordCredential({ kind: "session", ...session }),
+                recordSecurityAudit(event),
+              ),
+            ).catch(() => undefined),
+          ),
+          observation.plugin,
+        ],
         database: database.options,
         secret,
         // Cookies use hostnames, not ports; cloud dev must not replace self-host sessions.
@@ -291,7 +310,8 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       const web = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
       const [instance, bind] = yield* bound;
       routes ??= routeTemplates(authEndpointTemplates(instance.api));
-      yield* routes.record(new URL(web.url).pathname);
+      const pathname = new URL(web.url).pathname;
+      yield* routes.record(pathname);
       const context = yield* Effect.context<
         RuntimeContext | HttpServerRequest.HttpServerRequest | Scope.Scope
       >();
@@ -299,10 +319,14 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       const response = yield* Effect.promise((signal) =>
         callbacks.run({ context, signal }, () => bind(() => instance.handler(web))),
       );
-      if (response.body === null) return HttpServerResponse.fromWeb(response);
+      if (response.body === null) {
+        yield* recordAuthRefusal(response.status, pathname, new Uint8Array(), web.headers);
+        return HttpServerResponse.fromWeb(response);
+      }
       // Better Auth answers with complete JSON. Sent as a stream, its last byte would wait for
       // the request's cleanup, including Better Auth queries the request left running.
       const body = new Uint8Array(yield* Effect.promise(() => response.arrayBuffer()));
+      yield* recordAuthRefusal(response.status, pathname, body, web.headers);
       return HttpServerResponse.setBody(
         HttpServerResponse.fromWeb(response),
         HttpBody.uint8Array(body, response.headers.get("content-type") ?? undefined),

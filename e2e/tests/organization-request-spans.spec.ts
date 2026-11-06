@@ -2,13 +2,15 @@
  * The hosted management API's request span names the organization it serves and the caller by
  * their opaque IDs, so one organization's failures can be told apart from another's and the users
  * they reach counted. A route names its organization by slug or ID, and any signed-in caller can
- * send one, so the span names both only once the organization is the caller's own: a signed-in
- * session's once its membership there holds, a bearer's once its check authorized it. A request
- * refused after that, such as for an icon the organization does not have, keeps both. A request
- * refused for an organization the caller never joined (only Cloud lets a user hold several) or one
- * it left names neither, so it cannot count against that organization or among its users. A
- * batched dashboard read's span (`dashboard.batch.read`) follows the same rule, and so does a
- * bearer's check (`auth.authenticate`), which names only its own organization and user.
+ * send one, so the span names an organization only once it is the caller's own: a signed-in
+ * session's once its membership there holds, a bearer's once its check knows the grant's or key's
+ * organization. A request refused after that, such as for an icon the organization does not have,
+ * keeps both. A request refused for an organization the caller never joined (only Cloud lets a
+ * user hold several) or one it left never names that organization, so it cannot count against it.
+ * It still names its verified caller, the kind of credential (`auth.credential.kind`) and why it
+ * was refused (`auth.failure.reason`), so refusals can be attributed to who made them. A batched
+ * dashboard read's span (`dashboard.batch.read`) follows the same rules, and a bearer's check
+ * (`auth.authenticate`) names only its own organization and user.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schedule, Schema } from "effect";
@@ -75,6 +77,12 @@ layer(HostedLive, { excludeTestServices: true })("Organization request spans", (
               Effect.tap((spans) => evidence.json(`${label}.json`, spans)),
             );
           const names = (span: Span) => [span.tags[organizationId], span.tags[userId]];
+          /** A request span's organization, user, credential kind and refusal reason. */
+          const requestNames = (span: Span) => [
+            ...names(span),
+            span.tags["auth.credential.kind"],
+            span.tags["auth.failure.reason"],
+          ];
           /**
            * `GET path` (whose route is `route`) as `actor`'s session or with `credential`, the status
            * and the organization and user its delivered request span records, and for a bearer the
@@ -107,7 +115,7 @@ layer(HostedLive, { excludeTestServices: true })("Organization request spans", (
                 status: response.status,
                 spans: spans
                   .filter(served)
-                  .map((span) => [span.tags["http.response.status_code"], ...names(span)]),
+                  .map((span) => [span.tags["http.response.status_code"], ...requestNames(span)]),
                 checks: spans.filter(checked).map((span) => [span.status, ...names(span)]),
               };
             });
@@ -148,7 +156,7 @@ layer(HostedLive, { excludeTestServices: true })("Organization request spans", (
                 status: answer.status,
                 spans: spans
                   .filter(read)
-                  .map((span) => [span.tags["http.response.status_code"], ...names(span)]),
+                  .map((span) => [span.tags["http.response.status_code"], ...requestNames(span)]),
               };
             });
           const created = yield* api.request(actors.member, "POST", "/api/auth/api-key/create", {
@@ -170,26 +178,37 @@ layer(HostedLive, { excludeTestServices: true })("Organization request spans", (
               expect(
                 yield* access("member", actors.member, organization.slug),
                 "The route names the organization by slug; the span names its ID and the session's user",
-              ).toEqual({ status: 200, spans: [["200", organization.id, member.id]], checks: [] });
+              ).toEqual({
+                status: 200,
+                spans: [["200", organization.id, member.id, "session", undefined]],
+                checks: [],
+              });
               expect(
                 yield* access("member-key", actors.member, organization.slug, key.key),
                 "So does a request with the member's API key, and its check names the key's user",
               ).toEqual({
                 status: 200,
-                spans: [["200", organization.id, member.id]],
+                spans: [["200", organization.id, member.id, "api_key", undefined]],
                 checks: [["ok", organization.id, member.id]],
               });
               expect(
                 yield* batched("member-batch", actors.member, organization.slug),
                 "So does a batched dashboard read",
-              ).toEqual({ status: 200, spans: [["200", organization.id, member.id]] });
+              ).toEqual({
+                status: 200,
+                spans: [["200", organization.id, member.id, "session", undefined]],
+              });
               // The organization has no icon under this key, so the request is refused after its
               // membership holds.
               const icon = `/api/organizations/${organization.slug}/icons/${randomBytes(32).toString("hex")}`;
               expect(
                 yield* request("member-icon", actors.member, icon, iconRoute),
                 "A request refused in the caller's own organization names both",
-              ).toEqual({ status: 404, spans: [["404", organization.id, member.id]], checks: [] });
+              ).toEqual({
+                status: 404,
+                spans: [["404", organization.id, member.id, "session", undefined]],
+                checks: [],
+              });
             }),
           );
 
@@ -206,7 +225,7 @@ layer(HostedLive, { excludeTestServices: true })("Organization request spans", (
                 yield* access("owner-grant", actors.owner, organization.slug, grantToken),
               ).toEqual({
                 status: 200,
-                spans: [["200", organization.id, owner.id]],
+                spans: [["200", organization.id, owner.id, "oauth_access_token", undefined]],
                 checks: [["ok", organization.id, owner.id]],
               });
             }),
@@ -214,7 +233,7 @@ layer(HostedLive, { excludeTestServices: true })("Organization request spans", (
 
           if (target.metadata.target === "cloud")
             yield* evidence.step(
-              "A request for an organization the caller never joined names neither",
+              "A request for an organization the caller never joined names its caller, not it",
               Effect.gen(function* () {
                 const response = yield* api.request(
                   actors.owner,
@@ -236,29 +255,48 @@ layer(HostedLive, { excludeTestServices: true })("Organization request spans", (
                 expect(
                   yield* access("owner-other", actors.owner, other.slug),
                   "Its own member's request names it and them",
-                ).toEqual({ status: 200, spans: [["200", other.id, owner.id]], checks: [] });
+                ).toEqual({
+                  status: 200,
+                  spans: [["200", other.id, owner.id, "session", undefined]],
+                  checks: [],
+                });
                 expect(
                   yield* access("member-other", actors.member, other.slug),
-                  "A signed-in session refused for it names neither",
-                ).toEqual({ status: 403, spans: [["403", undefined, undefined]], checks: [] });
-                expect(
-                  yield* access("member-key-other", actors.member, other.slug, key.key),
-                  "Nor does an API key refused for it, or its check",
+                  "A signed-in session refused for it names its user and why, not the organization",
                 ).toEqual({
                   status: 403,
-                  spans: [["403", undefined, undefined]],
+                  spans: [["403", undefined, member.id, "session", "not_member"]],
+                  checks: [],
+                });
+                expect(
+                  yield* access("member-key-other", actors.member, other.slug, key.key),
+                  "So does an API key refused for it; its check names neither",
+                ).toEqual({
+                  status: 403,
+                  spans: [["403", undefined, member.id, "api_key", "not_member"]],
                   checks: [["error", undefined, undefined]],
                 });
                 expect(
                   yield* batched("member-batch-other", actors.member, other.slug),
-                  "Nor does a batched read refused for it",
-                ).toEqual({ status: 403, spans: [["403", undefined, undefined]] });
-                expect(
-                  yield* access("owner-grant-other", actors.owner, other.slug, grantToken),
-                  "A grant used for another organization names neither on the request; its check names only the grant's own",
+                  "So does a batched read refused for it",
                 ).toEqual({
                   status: 403,
-                  spans: [["403", undefined, undefined]],
+                  spans: [["403", undefined, member.id, "session", "not_member"]],
+                });
+                expect(
+                  yield* access("owner-grant-other", actors.owner, other.slug, grantToken),
+                  "A grant used for another organization names only the grant's own, on the request and its check",
+                ).toEqual({
+                  status: 403,
+                  spans: [
+                    [
+                      "403",
+                      organization.id,
+                      owner.id,
+                      "oauth_access_token",
+                      "organization_mismatch",
+                    ],
+                  ],
                   checks: [["error", organization.id, owner.id]],
                 });
               }),
@@ -267,7 +305,7 @@ layer(HostedLive, { excludeTestServices: true })("Organization request spans", (
           // On both products the member then leaves the organization. Its session and its key
           // outlive the membership.
           yield* evidence.step(
-            "A request for an organization the caller left names neither",
+            "A request for an organization the caller left names its caller, not it",
             Effect.gen(function* () {
               const removed = yield* api.request(
                 actors.owner,
@@ -278,20 +316,27 @@ layer(HostedLive, { excludeTestServices: true })("Organization request spans", (
               expect(removed.status, JSON.stringify(removed.body)).toBe(200);
               expect(
                 yield* access("member-left", actors.member, organization.slug),
-                "A signed-in session refused for it names neither",
-              ).toEqual({ status: 403, spans: [["403", undefined, undefined]], checks: [] });
-              expect(
-                yield* access("member-key-left", actors.member, organization.slug, key.key),
-                "Nor does an API key refused for it, or its check",
+                "A signed-in session refused for it names its user and why, not the organization",
               ).toEqual({
                 status: 403,
-                spans: [["403", undefined, undefined]],
+                spans: [["403", undefined, member.id, "session", "not_member"]],
+                checks: [],
+              });
+              expect(
+                yield* access("member-key-left", actors.member, organization.slug, key.key),
+                "So does an API key refused for it; its check names neither",
+              ).toEqual({
+                status: 403,
+                spans: [["403", undefined, member.id, "api_key", "not_member"]],
                 checks: [["error", undefined, undefined]],
               });
               expect(
                 yield* batched("member-batch-left", actors.member, organization.slug),
-                "Nor does a batched read refused for it",
-              ).toEqual({ status: 403, spans: [["403", undefined, undefined]] });
+                "So does a batched read refused for it",
+              ).toEqual({
+                status: 403,
+                spans: [["403", undefined, member.id, "session", "not_member"]],
+              });
             }),
           );
         }).pipe(Effect.provide(McpOAuth.layer)),

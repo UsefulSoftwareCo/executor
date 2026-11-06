@@ -3,6 +3,7 @@ import { CurrentUsage, recordUsage } from "../contracts/product-analytics.ts";
 import { fullAuthority } from "@executor-js/authorization";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { requireAppAccess, requireAppUse } from "./resource-policy.ts";
+import { recordAuthFailure, recordCaller, recordCredential, refuse } from "./auth-telemetry.ts";
 /** Hosted policy around the shared app browser protocol and retained asset renderer. */
 import {
   AccountRequired,
@@ -107,7 +108,7 @@ export const hostedAppUi = <R = never>(
   const requestOrigin = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const host = addresses.fromHost(request.headers.host);
-    if (Option.isNone(host)) return yield* new UiForbidden();
+    if (Option.isNone(host)) return yield* refuse("app_not_found", new UiForbidden());
     const safe = request.method === "GET" || request.method === "HEAD";
     if (
       (!safe && request.headers.origin !== host.value.origin) ||
@@ -115,7 +116,7 @@ export const hostedAppUi = <R = never>(
       (request.headers["sec-fetch-site"] === "cross-site" &&
         !(request.method === "GET" && request.headers["sec-fetch-mode"] === "navigate"))
     )
-      return yield* new UiForbidden();
+      return yield* refuse("origin_mismatch", new UiForbidden());
     return { request, host: host.value };
   });
   const target = Effect.gen(function* () {
@@ -127,7 +128,7 @@ export const hostedAppUi = <R = never>(
       .list({ owner: organizationOwner(organization.id), ...host.find })
       .pipe(Effect.mapError(unavailable));
     const app = matches[0];
-    if (app === undefined) return yield* new UiForbidden();
+    if (app === undefined) return yield* refuse("app_not_found", new UiForbidden());
     return {
       request,
       app,
@@ -181,15 +182,27 @@ export const hostedAppUi = <R = never>(
       const token = Schema.decodeUnknownOption(AppSignInCode)(
         resolved.request.cookies[sessionCookie(resolved.target.origin)],
       );
-      if (Option.isNone(token)) return yield* new UiUnauthorized();
+      if (Option.isNone(token))
+        return yield* Effect.andThen(
+          recordCredential({ kind: "none" }),
+          refuse("missing", new UiUnauthorized()),
+        );
+      yield* recordCredential({ kind: "app_session" });
       const sessions = yield* HostedAppSessions;
       const identity = yield* sessions.current(resolved.target, token.value);
+      yield* recordCredential({
+        kind: "app_session",
+        user: identity.userId,
+        impersonatedBy: identity.impersonatedBy,
+      });
       const app = resolved.app;
       const access = yield* requireAppUse(app, resolved.target.organization, identity.userId).pipe(
         Effect.mapError((error) =>
           Schema.is(OrganizationForbidden)(error) ? new UiForbidden() : unavailable(),
         ),
+        Effect.tapErrorTag("UiForbidden", () => recordAuthFailure("resource_denied")),
       );
+      yield* recordCaller(resolved.target.organization, identity.userId);
       return { ...resolved, access, app };
     });
   const authorize = Effect.flatMap(target, authorizeTarget);
@@ -514,7 +527,10 @@ export const hostedAppUi = <R = never>(
     const request = yield* HttpServerRequest.HttpServerRequest;
     const host = addresses.fromHost(request.headers.host);
     if (Option.isSome(host) && anonymousNonNavigation(request, sessionCookie(host.value.origin)))
-      return yield* new UiForbidden();
+      return yield* Effect.andThen(
+        recordCredential({ kind: "none" }),
+        refuse("missing", new UiForbidden()),
+      );
     const resolved = yield* target;
     const navigation =
       request.method === "GET" &&

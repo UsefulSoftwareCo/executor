@@ -11,9 +11,11 @@
  * key's user), once it knows the organization is theirs. A grant's organization is known when its
  * statement answers, so a refusal after that, such as a grant used at an organization URL that
  * names none, keeps both. An unpinned key's is known only once its membership holds, so a key
- * refused for an organization its user does not belong to names neither, on any span; a pinned key
- * refused for another organization names its own. A refused request never names the organization
- * it asked for, so it cannot count against that organization's failures or among its users.
+ * refused for an organization its user does not belong to names no organization, on any span; a
+ * pinned key refused for another organization names its own while its user is a member there; it
+ * is deleted with that membership, so once the user has left it names none. A refused request never names the
+ * organization it asked for, so it cannot count against that organization's failures. Its request
+ * span still names the key's verified user and why it was refused (`auth.failure.reason`).
  *
  * On Cloud the gateway's forward of a request it authenticated names both even when the session
  * object never answers; a request routed by its session id learns only the organization, from the
@@ -530,11 +532,12 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
           );
 
           yield* evidence.step(
-            "A key refused for an organization its user does not belong to never names that organization or its user",
+            "A key refused for an organization its user does not belong to never names that organization",
             Effect.gen(function* () {
               /**
-               * The bearer check of a request that names `reference`, which refuses it, and every
-               * span of that request that names an organization or a user.
+               * The bearer check of a request that names `reference`, which refuses it, every span
+               * of that request that names an organization, and the caller, credential and reason
+               * its request span names.
                */
               const refusedCheck = (credential: Redacted.Redacted<string>, reference: string) =>
                 Effect.gen(function* () {
@@ -556,17 +559,25 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
                       span.tags[userId],
                     ]),
                     naming: all
-                      .filter(
-                        (span) =>
-                          span.tags[organizationId] !== undefined ||
-                          span.tags[userId] !== undefined,
-                      )
-                      .map((span) => span.operationName),
+                      .filter((span) => span.tags[organizationId] !== undefined)
+                      .map((span) => span.operationName)
+                      .sort(),
+                    request: all
+                      .filter((span) => span.operationName === "http.server POST")
+                      .map((span) => [
+                        span.tags[userId],
+                        span.tags["auth.credential.kind"],
+                        span.tags["auth.failure.reason"],
+                      ]),
                   };
                 });
               const member = yield* identity(actors.member);
               const memberKey = yield* createKey("Organization spans, member", {
                 actor: actors.member,
+              });
+              const memberPinned = yield* createKey("Organization spans, member pinned", {
+                actor: actors.member,
+                pinned: organization,
               });
               if (target.metadata.target === "cloud") {
                 // Only Cloud lets a user hold several organizations, so only there can a key name
@@ -590,10 +601,11 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
                 );
                 expect(
                   yield* refusedCheck(memberKey.key, other.slug),
-                  "An unpinned key names no organization its user never joined, nor its user",
+                  "An unpinned key names no organization its user never joined; the request names its user",
                 ).toEqual({
                   checks: [["error", "McpForbidden", undefined, undefined]],
                   naming: [],
+                  request: [[member.id, "api_key", "not_member"]],
                 });
                 const pinned = yield* createKey("Organization spans, pinned", {
                   pinned: organization,
@@ -603,7 +615,8 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
                   "A pinned key refused for another organization names only its own, with its user",
                 ).toEqual({
                   checks: [["error", "McpForbidden", organization, owner]],
-                  naming: ["auth.authenticate"],
+                  naming: ["auth.authenticate", "http.server POST"],
+                  request: [[owner, "api_key", "organization_mismatch"]],
                 });
               }
               // On both products the member leaves the organization. Its unpinned key outlives
@@ -646,11 +659,39 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
                   Effect.gen(function* () {
                     expect(
                       yield* refusedCheck(memberKey.key, actors.organization.slug),
-                      "An unpinned key names no organization its user left, nor its user",
+                      "An unpinned key names no organization its user left; the request names its user",
                     ).toEqual({
                       checks: [["error", "McpForbidden", undefined, undefined]],
                       naming: [],
+                      request: [[member.id, "api_key", "not_member"]],
                     });
+                    // A pinned key ends with its membership, so the request is refused before
+                    // any check names an organization.
+                    const pinnedLeft = yield* post({
+                      credential: memberPinned.key,
+                      headers: { "x-executor-organization": actors.organization.slug },
+                      message: initialize,
+                    });
+                    expect(
+                      pinnedLeft.status,
+                      "A key pinned to the organization its user left",
+                    ).toBe(401);
+                    const left = yield* spans(
+                      pinnedLeft.traceId,
+                      (all) => named(all, "auth.authenticate").length > 0,
+                    );
+                    expect(
+                      {
+                        naming: left.filter((span) => span.tags[organizationId] !== undefined),
+                        request: left
+                          .filter((span) => span.operationName === "http.server POST")
+                          .map((span) => [
+                            span.tags["auth.credential.kind"],
+                            span.tags["auth.failure.reason"],
+                          ]),
+                      },
+                      "names no organization",
+                    ).toEqual({ naming: [], request: [["api_key", "unknown"]] });
                   }),
                 () => rejoin.pipe(Effect.orDie),
               );

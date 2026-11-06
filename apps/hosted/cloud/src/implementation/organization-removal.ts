@@ -1,5 +1,6 @@
 /** Cloud is the multi-organization product, so only cloud exposes removal. */
 import {
+  audited,
   beginOrganizationRemoval,
   previewOrganizationRemoval,
   OrganizationId,
@@ -66,7 +67,12 @@ export const organizationRemovalHandlers = HttpApiBuilder.group(
             // start any it could not.
             yield* dispatchAcceptedRemoval(start, recover, started.organization, instance);
             return started;
-          }),
+          }).pipe(
+            audited("organization.delete", {
+              kind: "organization",
+              id: (started) => started.organization,
+            }),
+          ),
         );
     }),
 );

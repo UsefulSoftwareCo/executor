@@ -1,4 +1,4 @@
-import type { AppAccountUse, ResourceLifecycle } from "../contracts/executor.ts";
+import { CurrentActor, type AppAccountUse, type ResourceLifecycle } from "../contracts/executor.ts";
 import type { BackgroundWork } from "../contracts/declarations.ts";
 /** Trusted OAuth lifecycle. Provider definitions never contain client secrets or saved grants. */
 import { parseDestination, parseEndpoint, httpsOnlyUrlPolicy } from "@executor-js/utils/url-policy";
@@ -335,6 +335,31 @@ type CredentialUse =
   | { readonly kind: "run"; readonly app: { readonly id: AppId; readonly owner: OwnerId } }
   | { readonly kind: "removal"; readonly app: { readonly id: AppId; readonly owner: OwnerId } }
   | { readonly kind: "check" };
+/**
+ * Why credentials are decrypted: a credential use, or `resolve` for a caller that names none.
+ * `oauth.resolve` records it as `oauth.resolve.purpose`.
+ */
+type CredentialPurpose = CredentialUse["kind"] | "resolve";
+/**
+ * What an `oauth.resolve` span records about the credentials it decrypts: the account, the
+ * organization that owns it, the actor it is decrypted for and why. All opaque IDs or closed
+ * labels, read without I/O; never the credentials.
+ */
+const credentialAccess = (
+  purpose: CredentialPurpose,
+  account: StoredAccount,
+  provider: ProviderDefinition,
+  actor: string | undefined,
+) => ({
+  "oauth.provider.id": account.provider,
+  "oauth.resolve.purpose": purpose,
+  "oauth.resolve.credential_type": provider.auth[account.method]?.type ?? "unknown",
+  "executor.account.id": account.id,
+  ...(account.owner.startsWith("organization:")
+    ? { "executor.organization.id": account.owner.slice("organization:".length) }
+    : {}),
+  ...(actor === undefined ? {} : { "executor.user.id": actor }),
+});
 /**
  * How an evaluation uses one account: whether a user requirement uses it (`user`), and the app
  * requirements it fills (`appUses`). Each use is authorized on its own; see `ResourceLifecycle`.
@@ -2337,13 +2362,16 @@ export const makeOAuth = (
    * it is returned as a value and recorded as the span's outcome, and only failed after the span.
    */
   const resolveCredentials = (
+    purpose: CredentialPurpose,
     account: StoredAccount,
     provider: ProviderDefinition,
     resolution: Resolution,
     rejected?: JsonObject,
   ) =>
     Effect.gen(function* () {
-      yield* Effect.annotateCurrentSpan("oauth.provider.id", account.provider);
+      yield* Effect.annotateCurrentSpan(
+        credentialAccess(purpose, account, provider, yield* CurrentActor),
+      );
       if (rejected !== undefined)
         yield* Effect.annotateCurrentSpan("oauth.renewal.trigger", "credentials_rejected");
       // Secrets the user brought.
@@ -2865,6 +2893,7 @@ export const makeOAuth = (
    * `resolution` records whether it did.
    */
   const resolveAuthorized = (
+    purpose: CredentialPurpose,
     account: StoredAccount,
     provider: ProviderDefinition,
     allowed: ReadonlySet<AccountId> | undefined,
@@ -2877,14 +2906,14 @@ export const makeOAuth = (
   ) =>
     Effect.gen(function* () {
       if (allowed !== undefined && !allowed.has(account.id)) return yield* new AccountUseRefused();
-      const fields = yield* resolveCredentials(account, provider, resolution, rejected);
+      const fields = yield* resolveCredentials(purpose, account, provider, resolution, rejected);
       // A remote token refresh can outlive a permission change, an unlinking or account deletion.
       if (resolution.contested) yield* recheck;
       return fields;
     });
   const resolve = (account: StoredAccount, provider: ProviderDefinition, rejected?: JsonObject) =>
     Effect.flatMap(authorized([account]), (allowed) =>
-      resolveAuthorized(account, provider, allowed, { contested: false }, rejected),
+      resolveAuthorized("resolve", account, provider, allowed, { contested: false }, rejected),
     ).pipe(
       // A refusal is the storage failure callers that do not distinguish it have always seen.
       Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())),
@@ -2976,6 +3005,7 @@ export const makeOAuth = (
       return yield* Effect.forEach(selected, ({ account, provider }) =>
         Effect.gen(function* () {
           const credential = yield* resolveAuthorized(
+            use.kind,
             account,
             provider,
             checked,
@@ -3030,7 +3060,15 @@ export const makeOAuth = (
   ) => {
     const recheck = selectionAuthorized(use, selection);
     return Effect.flatMap(recheck, () =>
-      resolveAuthorized(account, provider, undefined, { contested: false }, rejected, recheck),
+      resolveAuthorized(
+        use.kind,
+        account,
+        provider,
+        undefined,
+        { contested: false },
+        rejected,
+        recheck,
+      ),
     ).pipe(
       // A refusal is the storage failure callers that do not distinguish it have always seen.
       Effect.catchTag("AccountUseRefused", () => Effect.fail(new StorageError())),

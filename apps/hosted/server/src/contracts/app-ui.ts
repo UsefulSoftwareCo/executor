@@ -163,11 +163,17 @@ export class HostedAppSessions extends Context.Service<
       },
       UiUnauthorized | UiForbidden | UiFailed
     >;
-    /** Authenticate the scoped token and live parent session; serving policy checks membership. */
+    /**
+     * Authenticate the scoped token and live parent session; serving policy checks membership.
+     * `impersonatedBy` names the admin whose impersonation created the parent dashboard session.
+     */
     readonly current: (
       target: AppUiTarget,
       token: typeof AppSignInCode.Type,
-    ) => Effect.Effect<{ readonly userId: string }, UiUnauthorized | UiForbidden | UiFailed>;
+    ) => Effect.Effect<
+      { readonly userId: string; readonly impersonatedBy?: string },
+      UiUnauthorized | UiForbidden | UiFailed
+    >;
   }
 >()("hosted/AppSessions") {}
 
