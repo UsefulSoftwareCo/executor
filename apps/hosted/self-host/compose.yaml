@@ -22,6 +22,9 @@ services:
       # JSON array of exact HTTP(S) origins allowed to resolve to private addresses.
       EXECUTOR_URL_ALLOW_HTTP_ORIGINS:
       EXECUTOR_APPS_ALLOW_PRIVATE_FETCH:
+      # Comma-separated addresses or CIDR ranges of reverse proxies in front of the host. Requests
+      # from them take the client's address, which rate limits count, from X-Forwarded-For.
+      EXECUTOR_TRUSTED_PROXIES:
       # Most app and data Workers kept loaded (default 64). Idle ones above it unload and reload
       # on their next call. An app with a database runs its calls in a data Worker, which counts.
       EXECUTOR_APP_WORKERS:

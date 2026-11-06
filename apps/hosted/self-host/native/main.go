@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -640,6 +641,10 @@ func serve(mode string) error {
 	if err != nil || number < 1 || number > 65535 {
 		return errors.New("PORT must be between 1 and 65535")
 	}
+	proxies, err := trustedProxies(os.Getenv("EXECUTOR_TRUSTED_PROXIES"))
+	if err != nil {
+		return err
+	}
 	// The collector listens only on a private Unix socket. The product reaches it through its MOTEL
 	// binding and operators through `executor-host telemetry`; no address an app can fetch reaches it.
 	// The socket lives in this host's own temporary directory, so containers that share TMPDIR and
@@ -719,7 +724,7 @@ func serve(mode string) error {
 	}, time.Second, 30*time.Second, time.After)
 	defer stopMotel()
 
-	proxy := productProxy(filepath.Join(temporary, "product.sock"), workerdIdleTimeout)
+	proxy := productProxy(filepath.Join(temporary, "product.sock"), workerdIdleTimeout, proxies...)
 	publicListener, err := net.Listen("tcp", net.JoinHostPort(setting("HOST", "0.0.0.0"), port))
 	if err != nil {
 		command.Process.Kill()
@@ -783,15 +788,12 @@ const workerdIdleTimeout = 5 * time.Second
 // sends a request on a connection workerd is closing. Go replays only requests
 // that are safe to repeat, so losing that race failed POSTs such as workflow runs.
 
-func productProxy(socket string, upstreamIdleTimeout time.Duration) *httputil.ReverseProxy {
+func productProxy(socket string, upstreamIdleTimeout time.Duration, trusted ...netip.Prefix) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(&url.URL{Scheme: "http", Host: "product.internal"})
 			request.Out.Host = request.In.Host
-			address, _, err := net.SplitHostPort(request.In.RemoteAddr)
-			if err != nil {
-				address = request.In.RemoteAddr
-			}
+			address := clientAddress(request.In.RemoteAddr, request.In.Header.Values("X-Forwarded-For"), trusted)
 			request.Out.Header.Set("x-executor-client-ip", address)
 		},
 		Transport: &http.Transport{

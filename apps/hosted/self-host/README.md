@@ -149,6 +149,14 @@ For remote access, put an HTTPS reverse proxy in front of it and set
 `BETTER_AUTH_URL` to the exact public dashboard origin, such as
 `https://executor.example.com`.
 
+Auth routes are rate-limited per client address, and behind the proxy every
+request comes from the proxy's address. Set `EXECUTOR_TRUSTED_PROXIES` to the
+proxies' comma-separated addresses or CIDR ranges: requests from them take the
+client from `X-Forwarded-For`, read from the right past every trusted address,
+so a client can't pick its own address with that header. The Go host does this
+in `native/client_address.go`. Requests from any other address use the
+connection's address.
+
 Localhost derives app UI addresses automatically. For a public installation,
 set `EXECUTOR_APP_UI_BASE_URL` to a separate HTTPS base such as
 `https://apps.example.com`. Route that base and its wildcard subdomains to the
