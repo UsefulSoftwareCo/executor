@@ -183,7 +183,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
       success: AppAccountLink,
       error: errors,
     })
-      .annotate(RequiredAction, forEveryone ? "manage" : "run")
+      .annotate(RequiredAction, "manage")
       .annotate(
         OpenApi.Description,
         forEveryone
@@ -195,7 +195,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
       success: Schema.Struct({ requirement: Schema.NonEmptyString, account: AccountId }),
       error: errors,
     })
-      .annotate(RequiredAction, forEveryone ? "manage" : "run")
+      .annotate(RequiredAction, "manage")
       .annotate(
         OpenApi.Description,
         forEveryone

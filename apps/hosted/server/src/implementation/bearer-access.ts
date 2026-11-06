@@ -15,7 +15,7 @@
  * with the database clock.
  */
 import { defaultKeyHasher } from "@better-auth/api-key";
-import { fullAuthority, type AuthorizationPolicy } from "@executor-js/authorization";
+import type { AuthorizationPolicy } from "@executor-js/authorization";
 import {
   GrantId,
   GrantPolicy,
@@ -42,7 +42,7 @@ import {
   callerSpanAttributes,
 } from "../contracts/auth.ts";
 import { OrganizationForbidden } from "../contracts/organization.ts";
-import { isApiKey } from "./api-keys.ts";
+import { apiKeyAuthorization, apiKeyScopeMatches, isApiKey } from "./api-keys.ts";
 import { patGrantId, type HostedOAuthOrigins } from "./mcp-oauth.ts";
 
 /**
@@ -529,6 +529,7 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
     const metadata = yield* Schema.decodeUnknownEffect(KeyMetadata)(jsonText(row.metadata)).pipe(
       Effect.mapError(() => unauthorized),
     );
+    if (!apiKeyScopeMatches(token, metadata?.scope)) return yield* unauthorized;
     const pinned = metadata?.organization;
     // A pinned key's organization is its own, so a refusal from here on names that one and the
     // key's user, never another organization the request names.
@@ -557,6 +558,7 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
     return {
       userId: row.userId,
       id,
+      policy: apiKeyAuthorization(metadata?.scope),
       access: { organization, owner: organizationOwner(organization), role },
       organizationSlug: membership?.slug ?? null,
     };
@@ -577,6 +579,7 @@ export const mcpBearerAccess = (
         userId: grant.userId,
         clientId: grant.clientId,
         grant: grant.grant,
+        policy: grantAuthorization(grant.grant.policy),
         access: grant.access,
       });
     }
@@ -585,6 +588,7 @@ export const mcpBearerAccess = (
     return McpAccess.make({
       userId: key.userId,
       clientId: `pat:${key.id}`,
+      policy: key.policy,
       grant: {
         id: patGrantId({ token: key.id, organization: key.access.organization, mode }),
         policy: { kind: "all" },
@@ -615,7 +619,7 @@ export const apiBearerAccess = (origins: HostedOAuthOrigins, request: BearerRequ
           Effect.map((key) => ({
             userId: key.userId,
             key: { id: key.id },
-            policy: fullAuthority,
+            policy: key.policy,
             access: key.access,
             organizationSlug: key.organizationSlug,
           })),

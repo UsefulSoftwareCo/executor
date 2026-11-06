@@ -24,7 +24,7 @@ import {
   organizationOwner,
   type OrganizationReference,
 } from "@executor-js/hosted-server";
-import { ApprovalMode, GrantId, type GrantPolicy } from "@executor-js/mcp-auth";
+import { ApprovalMode, GrantId, grantAuthorization, type GrantPolicy } from "@executor-js/mcp-auth";
 import {
   ConnectionId,
   ConnectionPolicy,
@@ -217,6 +217,7 @@ const grantedAccess = <E>(
     return McpAccess.make({
       userId: input.user,
       clientId: v1ForwardClient,
+      policy: grantAuthorization(policy),
       grant: {
         id: grantId({ user: input.user, organization, mode: input.mode, connection }),
         policy,

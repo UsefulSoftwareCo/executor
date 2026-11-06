@@ -2,11 +2,16 @@ import { Schema } from "effect";
 import { OrganizationId } from "./organization.ts";
 /** Public identifier, never the bearer credential. */
 export const ApiKeyId = Schema.NonEmptyString.pipe(Schema.brand("ApiKeyId"));
+/** Restrict a native key to tool discovery and execution without account administration. */
+export const ApiKeyScope = Schema.Literal("tools");
 /**
  * Stored key scope. A recorded organization pins the key to that organization;
  * a key without one authorizes every organization the user belongs to.
  */
-export const ApiKeyMetadata = Schema.Struct({ organization: Schema.optional(OrganizationId) });
+export const ApiKeyMetadata = Schema.Struct({
+  organization: Schema.optional(OrganizationId),
+  scope: Schema.optional(ApiKeyScope),
+});
 export type ApiKeyMetadata = typeof ApiKeyMetadata.Type;
 /** Native Better Auth key metadata; secret hashes are excluded. */
 export const ApiKeySummary = Schema.Struct({
@@ -24,7 +29,12 @@ export type ApiKeySummary = typeof ApiKeySummary.Type;
 export const CreateApiKey = Schema.Struct({
   name: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(80), Schema.isPattern(/\S/u)),
   expiresIn: Schema.optional(Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))),
-  metadata: Schema.optional(Schema.Struct({ organization: OrganizationId })),
+  metadata: Schema.optional(
+    Schema.Struct({
+      organization: OrganizationId,
+      scope: Schema.optional(ApiKeyScope),
+    }),
+  ),
 });
 /** Only the native creation response contains the secret. */
 export const CreatedApiKey = Schema.Struct({
