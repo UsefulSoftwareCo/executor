@@ -1,6 +1,12 @@
 import { useState, type ComponentType, type ReactNode } from "react";
 import { Exit, Match, Option, Redacted, type Cause } from "effect";
-import type { Account, CredentialCheck, Provider } from "@executor-js/sdk";
+import type {
+  Account,
+  AccountCheckStatus,
+  AppId,
+  CredentialCheck,
+  Provider,
+} from "@executor-js/sdk";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   AlertCircleIcon,
@@ -19,6 +25,7 @@ import {
 } from "../../contracts/credentials.ts";
 import { CredentialFields } from "../components/credential-fields.tsx";
 import { Button } from "../components/button.tsx";
+import { CopyButton } from "./code.tsx";
 import {
   Select,
   SelectContent,
@@ -47,7 +54,10 @@ export function AccountForm<A, E>({
    * Check complete credentials before saving, with the app that will use them. The form shows
    * whether they work; saving stays the user's choice. Null means the app defines no check.
    */
-  readonly check?: (input: AccountSubmission) => Promise<Exit.Exit<CredentialCheck | null, E>>;
+  readonly check?: {
+    readonly app: AppId;
+    readonly run: (input: AccountSubmission) => Promise<Exit.Exit<CredentialCheck | null, E>>;
+  };
   readonly provider: Provider;
   readonly account?: Pick<Account, "method">;
   readonly header?: ReactNode;
@@ -111,7 +121,7 @@ export function AccountForm<A, E>({
         const input = { method, fields: Redacted.make(credentialValues(fields, values)) };
         if (!validates || check === undefined || verdict.state !== "idle") return save(input);
         setVerdict({ state: "checking" });
-        void check(input).then((exit) => {
+        void check.run(input).then((exit) => {
           // An app without a check has nothing to validate, so saving continues.
           if (Exit.isSuccess(exit) && exit.value === null) {
             setVerdict({ state: "idle" });
@@ -180,8 +190,9 @@ export function AccountForm<A, E>({
             onChange={changeValues}
             pending={pending}
           />
-          {validates && auth?.type === "secrets" && (
+          {check !== undefined && auth?.type === "secrets" && (
             <CredentialVerdict
+              app={check.app}
               verdict={verdict}
               label={auth.label}
               provider={provider.definition.name}
@@ -356,15 +367,45 @@ type Verdict =
   | { readonly state: "done"; readonly result: CredentialCheck }
   | { readonly state: "unverified" };
 
+/** What a failed check found, as the form shows it and the fix prompt quotes it. */
+const checkFailure = (
+  status: Exclude<AccountCheckStatus, "healthy">,
+  provider: string,
+  label: string,
+  message: string | undefined,
+) =>
+  Match.value(status).pipe(
+    Match.when("credentials_rejected", () => `${provider} rejected this ${label}`),
+    Match.when("forbidden", () => `This ${label} is missing a permission the app needs`),
+    Match.when("upstream_unavailable", () => `Couldn't reach ${provider} to check it`),
+    Match.when(
+      "check_failed",
+      () => `Couldn't verify this ${label}${message === undefined ? "" : `: ${message}`}`,
+    ),
+    Match.exhaustive,
+  );
+
+/** Hands a check that may be wrong to the user's agent, which fixes and redeploys the app. */
+const checkFixPrompt = (app: AppId, provider: string, label: string, failure: string) =>
+  [
+    `The account check in my Executor app (app ID: ${app}) failed for my ${provider} ${label}, and the check itself may be wrong.`,
+    "",
+    `The check reported: ${failure}`,
+    "",
+    `Start with the Executor app's executor skill. Read the app's source, find the health check for the ${provider} provider, and fix it so it accepts a working ${label} and still rejects a bad one. Deploy the updated app. Don't ask me to paste the ${label} into chat.`,
+  ].join("\n");
+
 /**
  * Whether the entered credentials work, as the app's check found. The line keeps its height while
  * empty, so a short result never moves the form; the app's own explanation of a failure may wrap.
  */
 function CredentialVerdict({
+  app,
   verdict,
   label,
   provider,
 }: {
+  readonly app: AppId;
   readonly verdict: Verdict;
   readonly label: string;
   readonly provider: string;
@@ -376,57 +417,24 @@ function CredentialVerdict({
         ? ({ status: "check_failed", info: null } as const)
         : undefined;
   const name = shown?.info?.displayName ?? shown?.info?.username ?? shown?.info?.email;
-  const [tone, message] =
+  const failure =
+    shown === undefined || shown.status === "healthy"
+      ? undefined
+      : checkFailure(shown.status, provider, label, shown.message);
+  const tone =
     shown === undefined
-      ? (["muted", null] as const)
-      : Match.value(shown.status).pipe(
-          Match.when(
-            "healthy",
-            () =>
-              [
-                "good",
-                name === undefined ? (
-                  <>Valid {label}</>
-                ) : (
-                  <>
-                    Signed in as <span className="font-medium text-foreground">{name}</span>
-                  </>
-                ),
-              ] as const,
-          ),
-          Match.when(
-            "credentials_rejected",
-            () =>
-              [
-                "bad",
-                <>
-                  {provider} rejected this {label}
-                </>,
-              ] as const,
-          ),
-          Match.when(
-            "forbidden",
-            () => ["warn", <>This {label} is missing a permission the app needs</>] as const,
-          ),
-          Match.when(
-            "upstream_unavailable",
-            () => ["warn", <>Couldn't reach {provider} to check it</>] as const,
-          ),
-          Match.when(
-            "check_failed",
-            () =>
-              [
-                "warn",
-                <>
-                  Couldn't verify this {label}
-                  {shown.message !== undefined ? `: ${shown.message}` : null}
-                </>,
-              ] as const,
-          ),
-          Match.exhaustive,
-        );
+      ? "muted"
+      : shown.status === "healthy"
+        ? "good"
+        : shown.status === "credentials_rejected"
+          ? "bad"
+          : "warn";
+  // The app's author wrote its check, so a failure that blames the credentials may be the check's
+  // own bug. An unreachable service says nothing about either.
+  const doubtsCheck =
+    failure !== undefined && shown !== undefined && shown.status !== "upstream_unavailable";
   return (
-    <p
+    <div
       className={`-mt-1 flex min-h-4 items-start gap-1.5 text-xs transition-opacity duration-150 ${
         shown === undefined ? "opacity-0" : "opacity-100"
       } ${tone === "bad" ? "text-destructive" : "text-muted-foreground"}`}
@@ -434,7 +442,7 @@ function CredentialVerdict({
       aria-live="polite"
       {...(shown === undefined ? {} : { "data-credential-check": shown.status })}
     >
-      {message !== null && (
+      {shown !== undefined && (
         <>
           <HugeiconsIcon
             icon={tone === "good" ? CheckmarkCircle02Icon : AlertCircleIcon}
@@ -449,9 +457,37 @@ function CredentialVerdict({
             }
             aria-hidden
           />
-          <span className="line-clamp-3 min-w-0 break-words">{message}</span>
+          <div className="flex min-w-0 flex-col items-start gap-0.5">
+            <span className="line-clamp-3 break-words">
+              {failure ??
+                (name === undefined ? (
+                  <>Valid {label}</>
+                ) : (
+                  <>
+                    Signed in as <span className="font-medium text-foreground">{name}</span>
+                  </>
+                ))}
+            </span>
+            {doubtsCheck && (
+              <>
+                <span className="text-muted-foreground" data-credential-check-advice>
+                  The app's check may be wrong. You can still add this {label} and ask your agent to
+                  fix the check.
+                </span>
+                <div className="mt-1 text-foreground">
+                  <CopyButton
+                    code={checkFixPrompt(app, provider, label, failure)}
+                    label="Copy fix prompt"
+                    text="Copy fix prompt"
+                    variant="outline"
+                    inline
+                  />
+                </div>
+              </>
+            )}
+          </div>
         </>
       )}
-    </p>
+    </div>
   );
 }
