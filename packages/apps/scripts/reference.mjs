@@ -19,11 +19,13 @@ const modules = {
   "./openapi": "integrations.md",
   "./skills": "tools.md",
 };
-/** Subpaths for hosts and Effect libraries. Apps do not import them, so the reference omits them. */
+/** Host and authoring utility subpaths that do not describe the app runtime API. */
 const hostModules = new Set([
   "./contracts",
   "./host",
   "./effect",
+  "./check",
+  "./oxlint",
   "./mcp/effect",
   "./ui/contracts",
   "./ui/auth",

@@ -130,7 +130,71 @@ const cli = Effect.gen(function* () {
         }),
       ),
     );
-  return { run, origin, fs, entry, environment };
+  const runTool = (name: string, command: string, args: readonly string[], cwd: string) =>
+    evidence.step(
+      name,
+      Effect.scoped(
+        Effect.gen(function* () {
+          const child = yield* processes.spawn(
+            ChildProcess.make(command, args, {
+              cwd,
+              extendEnv: false,
+              env: {
+                PATH: process.env.PATH ?? "",
+                HOME: home,
+                DO_NOT_TRACK: "1",
+              },
+              stdout: "pipe",
+              stderr: "pipe",
+              forceKillAfter: "3 seconds",
+            }),
+          );
+          const [code, stdout, stderr] = yield* Effect.all(
+            [
+              child.exitCode,
+              child.stdout.pipe(Stream.decodeText(), Stream.mkString),
+              child.stderr.pipe(Stream.decodeText(), Stream.mkString),
+            ],
+            { concurrency: 3 },
+          ).pipe(Effect.timeout("60 seconds"));
+          return { code: Number(code), stdout, stderr };
+        }),
+      ),
+    );
+  const writeOxlintConfig = (cwd: string) =>
+    runTool(
+      "Load appConfig from the built apps package",
+      "node",
+      [
+        "--input-type=module",
+        "--eval",
+        'import { writeFile } from "node:fs/promises"; import { appConfig } from "apps/oxlint"; await writeFile(".oxlintrc.json", JSON.stringify(appConfig()));',
+      ],
+      cwd,
+    );
+  const oxlint = (name: string, cwd: string) =>
+    runTool(
+      name,
+      path.resolve(process.cwd(), "node_modules/.bin/oxlint"),
+      [
+        "--threads=2",
+        "--config",
+        ".oxlintrc.json",
+        "--no-ignore",
+        "--format",
+        "json",
+        "index.ts",
+        "src/index.ts",
+        "ui/index.ts",
+        "src/commonjs.cjs",
+        "src/shadowed-module.cjs",
+        "ui/commonjs.cjs",
+        "helpers.ts",
+        "operations.ts",
+      ],
+      cwd,
+    );
+  return { run, oxlint, writeOxlintConfig, origin, fs, path, entry, environment };
 });
 
 layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
@@ -376,7 +440,7 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         const target = yield* Target,
           evidence = yield* Evidence,
           api = yield* Api;
-        const { run, origin, fs } = yield* cli;
+        const { run, oxlint, writeOxlintConfig, origin, fs, path } = yield* cli;
         const session = yield* api.session();
         // The host reports the exact apps release; the CLI holds no version of its own.
         const framework = yield* run(["framework", "--host", origin], true);
@@ -398,6 +462,268 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         const hello = yield* fs.makeTempDirectoryScoped({ prefix: "executor-apps-hello-" });
         yield* fs.writeFileString(`${hello}/index.ts`, helloIndex);
         yield* fs.writeFileString(`${hello}/package.json`, `${helloPackage(version)}\n`);
+        const checked = yield* run(["check", "--files", "."], false, hello);
+        expect(checked.code, checked.stderr).toBe(0);
+        expect(JSON.parse(checked.stdout)).toMatchObject({ ok: true, files: 2, issues: [] });
+
+        // An exact pin stays as tested. Offline check does not compare it with this host or rewrite it.
+        const testedPin = "0.0.1-beta.90";
+        yield* fs.writeFileString(`${hello}/package.json`, `${helloPackage(testedPin)}\n`);
+        const preserved = yield* run(["check", "--files", "."], false, hello);
+        expect(preserved.code, preserved.stderr).toBe(0);
+        expect(yield* fs.readFileString(`${hello}/package.json`)).toContain(testedPin);
+
+        const rangePin = `^${testedPin}`;
+        yield* fs.writeFileString(`${hello}/package.json`, `${helloPackage(rangePin)}\n`);
+        const range = yield* run(["check", "--files", "."], false, hello);
+        expect(range.code).toBe(1);
+        expect(range.stderr).toBe("");
+        expect(JSON.parse(range.stdout)).toMatchObject({
+          ok: false,
+          issues: [
+            { code: "framework-pin", message: "dependencies.apps must be an exact version" },
+          ],
+        });
+        expect(yield* fs.readFileString(`${hello}/package.json`)).toContain(rangePin);
+
+        yield* fs.writeFileString(`${hello}/package.json`, `${helloPackage(version)}\n`);
+
+        // The shared config loads the published package by specifier, checks only the root entry,
+        // and permits browser HTTP under ui/.
+        const localRoot = yield* fs.makeTempDirectoryScoped({
+          directory: process.cwd() + "/.local",
+          prefix: "executor-apps-oxlint-",
+        });
+        yield* fs.makeDirectory(`${localRoot}/node_modules`);
+        yield* fs.symlink(
+          path.resolve(process.cwd(), "packages/apps/dist"),
+          `${localRoot}/node_modules/apps`,
+        );
+        yield* fs.writeFileString(`${localRoot}/index.ts`, helloIndex);
+        yield* fs.makeDirectory(`${localRoot}/src`);
+        yield* fs.writeFileString(
+          `${localRoot}/src/index.ts`,
+          `import { object, query } from "apps";
+import defaultHelper from "../helpers.ts";
+import * as helpers from "../helpers.ts";
+const { mutation: dtoMutation, write: dtoWrite } = await import("../helpers.ts");
+const { write: unrelated } = helpers;
+defaultHelper(); dtoMutation({}); dtoWrite({}); unrelated({});
+export const helper = (fetch: (url: string) => unknown) => fetch("https://example.test");
+export const request = (ctx: { fetch: (url: string) => unknown }) => { const { fetch: send } = ctx; return send("https://example.test"); };
+export const readDto = query({ input: object({}) }, (_ctx, dto: { accounts: string[] }) => dto.accounts);
+`,
+        );
+        yield* fs.makeDirectory(`${localRoot}/ui`);
+        yield* fs.writeFileString(
+          `${localRoot}/ui/index.ts`,
+          'void fetch("https://example.test");\n',
+        );
+        yield* fs.writeFileString(
+          `${localRoot}/src/commonjs.cjs`,
+          'const helper = "server";\nvoid helper;\n',
+        );
+        yield* fs.writeFileString(
+          `${localRoot}/src/shadowed-module.cjs`,
+          'function ordinaryHelper(module) { return module.require("ordinary-helper"); }\nvoid ordinaryHelper;\n',
+        );
+        yield* fs.writeFileString(
+          `${localRoot}/ui/commonjs.cjs`,
+          'const helper = "browser";\nvoid helper;\n',
+        );
+        yield* fs.writeFileString(`${localRoot}/package.json`, `${helloPackage(version)}\n`);
+        yield* fs.writeFileString(
+          `${localRoot}/helpers.ts`,
+          `const dto = { mutation: () => null, write: () => null };
+export const { mutation, write } = dto;
+let ordinary;
+ordinary = write;
+export default ordinary;
+`,
+        );
+        yield* fs.writeFileString(
+          `${localRoot}/operations.ts`,
+          `import { mutation as write, decodeJson } from "apps";
+export const approved = write({ approval: undefined }, async (ctx) => {
+  const response = await ctx.fetch("https://example.test");
+  return decodeJson(response, {});
+});
+`,
+        );
+        const config = yield* writeOxlintConfig(localRoot);
+        expect(config.code, config.stderr).toBe(0);
+        const accepted = yield* oxlint("Oxlint accepts app, nested, and browser source", localRoot);
+        yield* evidence.json("oxlint-valid.json", accepted);
+        expect(accepted.code, accepted.stderr).toBe(0);
+
+        // CommonJS loader globals are rejected in server and browser helpers. A local `module`
+        // parameter remains legal, and the ordinary ESM helper controls above stay valid.
+        yield* fs.writeFileString(
+          `${localRoot}/src/commonjs.cjs`,
+          'const direct = require("apps");\nconst loaded = module.require("apps");\nconst alias = module;\nalias.require("apps");\nvoid [direct, loaded];\n',
+        );
+        yield* fs.writeFileString(
+          `${localRoot}/ui/commonjs.cjs`,
+          'module.require("browser-helper");\n',
+        );
+        const commonJsRejected = yield* oxlint(
+          "Oxlint rejects CommonJS server and UI helpers",
+          localRoot,
+        );
+        yield* evidence.json("oxlint-commonjs.json", commonJsRejected);
+        expect(commonJsRejected.code).toBe(1);
+        expect(commonJsRejected.stderr).toBe("");
+        const commonJsDiagnostics = JSON.parse(commonJsRejected.stdout).diagnostics;
+        const serverCommonJs = commonJsDiagnostics.filter(
+          (diagnostic: { filename: string }) => diagnostic.filename === "src/commonjs.cjs",
+        );
+        const uiCommonJs = commonJsDiagnostics.filter(
+          (diagnostic: { filename: string }) => diagnostic.filename === "ui/commonjs.cjs",
+        );
+        expect(serverCommonJs).toHaveLength(3);
+        expect(uiCommonJs).toHaveLength(1);
+        expect(
+          [...serverCommonJs, ...uiCommonJs].every(
+            (diagnostic: { code: string }) => diagnostic.code === "eslint(no-restricted-globals)",
+          ),
+        ).toBe(true);
+        expect(
+          commonJsDiagnostics.some(
+            (diagnostic: { filename: string }) => diagnostic.filename === "src/shadowed-module.cjs",
+          ),
+        ).toBe(false);
+        yield* fs.writeFileString(
+          `${localRoot}/src/commonjs.cjs`,
+          'const helper = "server";\nvoid helper;\n',
+        );
+        yield* fs.writeFileString(
+          `${localRoot}/ui/commonjs.cjs`,
+          'const helper = "browser";\nvoid helper;\n',
+        );
+
+        yield* fs.writeFileString(
+          `${localRoot}/index.ts`,
+          `import { defineApp, mutation, object, router, type QueryContext } from "apps";
+import { Effect } from "effect";
+const direct = mutation({ input: object({}) }, async () => null);
+let requirements;
+requirements = { accounts: {} };
+const legacy = defineApp(requirements, { tools: router({}) });
+const readLegacy = (ctx: QueryContext<{}>) => { let old; old = ctx; return old.accounts; };
+const host = globalThis;
+host.fetch("https://example.test");
+export const app = defineApp({}, { tools: router({ direct }) });
+void [Effect, legacy, readLegacy];
+`,
+        );
+        const rejected = yield* oxlint("Oxlint reports app-authoring violations", localRoot);
+        yield* evidence.json("oxlint-invalid.json", rejected);
+        expect(rejected.code).toBe(1);
+        expect(rejected.stdout).toContain("Use `export default defineApp(...)` directly");
+        expect(rejected.stdout).toContain("Every `mutation` must explicitly declare");
+        const mutationDiagnostics = JSON.parse(rejected.stdout).diagnostics.filter(
+          (diagnostic: { code: string }) => diagnostic.code === "executor-apps(mutation-approval)",
+        );
+        expect(mutationDiagnostics).toHaveLength(1);
+        expect(rejected.stdout).toContain(
+          "Legacy top-level `accounts` requirements are unsupported",
+        );
+        expect(rejected.stdout).toContain(
+          "Read accounts through `ctx.user.accounts` or `ctx.app.accounts`",
+        );
+        expect(rejected.stdout).toContain("this fetch comes from a global object");
+        expect(rejected.stdout).toContain(
+          "CommonJS loaders, Effect and the Executor SDK are unsupported in app source.",
+        );
+
+        const helperBindings = [
+          {
+            name: "default import",
+            helper: 'export { mutation as default } from "apps";\n',
+            consumer: 'import write from "./operations.ts";\n',
+          },
+          {
+            name: "local dynamic import",
+            helper: 'export { mutation as write } from "apps";\n',
+            consumer: 'const { write } = await import("./operations.ts");\n',
+          },
+          {
+            name: "destructured namespace export",
+            helper: 'import * as api from "apps"; export const { mutation: write } = api;\n',
+            consumer: 'import { write } from "./operations.ts";\n',
+          },
+          {
+            name: "late-assigned export",
+            helper:
+              'import { mutation } from "apps"; let write; write = mutation; export { write };\n',
+            consumer: 'import { write } from "./operations.ts";\n',
+          },
+          {
+            name: "multi-declarator export",
+            helper: 'import { mutation } from "apps"; export const marker = 1, write = mutation;\n',
+            consumer: 'import { write } from "./operations.ts";\n',
+          },
+          {
+            name: "local late assignment",
+            helper: 'import { mutation } from "apps"; let write; write = mutation;\n',
+            consumer: 'import { write } from "./operations.ts";\n',
+          },
+        ];
+        for (const { name, helper, consumer } of helperBindings) {
+          yield* fs.writeFileString(`${localRoot}/operations.ts`, helper);
+          for (const approval of ["", "approval: undefined, "]) {
+            yield* fs.writeFileString(
+              `${localRoot}/index.ts`,
+              `import { defineApp, object, router } from "apps";\n${consumer}const change = write({ ${approval}input: object({}) }, async () => null);\nexport default defineApp({}, { tools: router({ change }) });\n`,
+            );
+            const helperRejected = yield* oxlint(
+              `Oxlint rejects ${name} even with ${approval ? "approval" : "no approval"}`,
+              localRoot,
+            );
+            yield* evidence.json(
+              `oxlint-${name.replaceAll(" ", "-")}-${approval ? "approved" : "unapproved"}.json`,
+              helperRejected,
+            );
+            expect(helperRejected.code).toBe(1);
+            expect(helperRejected.stderr).toBe("");
+            const helperDiagnostics = JSON.parse(helperRejected.stdout).diagnostics;
+            expect(helperDiagnostics).toHaveLength(1);
+            expect(helperDiagnostics[0].code).toBe("executor-apps(plain-framework-bindings)");
+            expect(helperDiagnostics[0].filename).toBe("operations.ts");
+            expect(helperDiagnostics[0].message).toContain("Use named imports from `apps`");
+          }
+        }
+        const contextTypeBarrels = [
+          {
+            name: "context type re-export",
+            helper: 'export type { QueryContext } from "apps";\n',
+            consumer: 'import type { QueryContext } from "./operations.ts";\n',
+            use: "const read = (ctx: QueryContext<{}>) => ctx.accounts; void read;",
+          },
+          {
+            name: "context type alias export",
+            helper:
+              'import type { QueryContext as Query, MutationContext as Mutation } from "apps"; export type { Query, Mutation };\n',
+            consumer: 'import type { Query, Mutation } from "./operations.ts";\n',
+            use: "const read = (ctx: Query<{}>) => ctx.accounts; const write = (ctx: Mutation<{}>) => ctx.accounts; void [read, write];",
+          },
+        ];
+        for (const { name, helper, consumer, use } of contextTypeBarrels) {
+          yield* fs.writeFileString(`${localRoot}/operations.ts`, helper);
+          yield* fs.writeFileString(
+            `${localRoot}/index.ts`,
+            `import { defineApp, router } from "apps";\n${consumer}${use}\nexport default defineApp({}, { tools: router({}) });\n`,
+          );
+          const typeBarrelRejected = yield* oxlint(`Oxlint rejects ${name}`, localRoot);
+          yield* evidence.json(`oxlint-${name.replaceAll(" ", "-")}.json`, typeBarrelRejected);
+          expect(typeBarrelRejected.code).toBe(1);
+          expect(typeBarrelRejected.stderr).toBe("");
+          const diagnostics = JSON.parse(typeBarrelRejected.stdout).diagnostics;
+          expect(diagnostics).toHaveLength(1);
+          expect(diagnostics[0].code).toBe("executor-apps(plain-framework-bindings)");
+          expect(diagnostics[0].filename).toBe("operations.ts");
+        }
+
         const created = yield* run(
           ["create", "--host", origin, "--name", "CLI hello", "--files", hello],
           true,
@@ -605,6 +931,14 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         expect(tooLarge.reason).toBe("bytes");
         expect(tooLarge.paths[0]).toBe("large.txt");
         expect(tooLarge.stderr).toContain("Executor accepts at most 16 MiB (16,777,216 bytes)");
+
+        const checkedLarge = yield* run(["check", "--files", large], false, large);
+        yield* evidence.json("check-too-many-bytes.json", checkedLarge);
+        expect(checkedLarge.code).toBe(1);
+        expect(checkedLarge.stderr).toBe("");
+        expect(JSON.parse(checkedLarge.stdout).issues[0].message).toContain(
+          "Executor accepts at most 16 MiB (16,777,216 bytes)",
+        );
 
         const binary = yield* fs.makeTempDirectoryScoped({ prefix: "executor-apps-binary-" });
         yield* fs.makeDirectory(`${binary}/assets`, { recursive: true });

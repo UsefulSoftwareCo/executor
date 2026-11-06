@@ -1,9 +1,28 @@
 /** Durable app source lives in a host-owned revision store, independently of SQL and builds. */
 import { Effect, Result, Schema } from "effect";
 import { Base64 } from "effect/encoding";
+import {
+  checkApp,
+  isPublicSourcePath,
+  publicFits,
+  publicSourcePrefix,
+  sourceFits,
+  sourcePathProblem,
+} from "apps/check";
 import { ApiError } from "@executor-js/utils/api-error";
 import { AppCodeId, type AppId, type OwnerId, type StorageError } from "./shared.ts";
 import type { AppNotFound } from "./apps.ts";
+
+export {
+  checkApp,
+  isPublicSourcePath,
+  publicFileLimits,
+  publicFits,
+  publicSourcePrefix,
+  sourceFits,
+  sourceLimits,
+} from "apps/check";
+export type { AppCheckFile, AppCheckIssue } from "apps/check";
 
 /**
  * Canonical relative POSIX path inside a version: no absolute paths,
@@ -11,28 +30,10 @@ import type { AppNotFound } from "./apps.ts";
  * strings — callers need not brand every path.
  */
 export const SourceFilePath = Schema.String.pipe(
-  Schema.check(
-    Schema.makeFilter((path: string) => {
-      if (path.includes("\0")) return "expected no NUL bytes";
-      if (path.includes("\\")) return "expected POSIX separators";
-      if (path.startsWith("/")) return "expected a relative path";
-      return path.length > 0 && path.split("/").every((s) => s !== "" && s !== "." && s !== "..")
-        ? true
-        : "expected canonical segments (non-empty, no `.` or `..`)";
-    }),
-  ),
+  Schema.check(Schema.makeFilter((path: string) => sourcePathProblem(path) ?? true)),
 );
 
 export type SourceFilePath = typeof SourceFilePath.Type;
-
-/**
- * Browser files served as they are, at the app page's origin. They are the only source that may
- * hold bytes that are not UTF-8 text: the host never compiles, evaluates or reads them, and builds
- * do not load them. Deploys copy them to the host's own store, from which they are served.
- */
-export const publicSourcePrefix = "ui/public/";
-/** Whether a source path is a public file under `ui/public/`. */
-export const isPublicSourcePath = (path: string) => path.startsWith(publicSourcePrefix);
 
 /** A Git blob's object ID: the SHA-1 of `blob <size>\0` and its bytes. */
 export const GitObjectId = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u)).annotate({
@@ -388,43 +389,6 @@ export const Branch = Schema.String.check(
   Schema.isPattern(/^[a-zA-Z0-9_][a-zA-Z0-9/_-]{0,127}$/u),
   Schema.makeFilter((value) => !value.endsWith("/") && !value.includes("//")),
 );
-/**
- * What one source operation holds in memory, identical for complete writes and incremental reads
- * on every host: every code file (outside `ui/public/`) and any public file it carries inline.
- * Saves, builds and deploys hold these in a Worker's 128 MB, so they stay bounded. Public files a
- * read lists by their blob (`SourceStoredFile`) are not held and do not count here.
- */
-export const sourceLimits = { files: 4096, bytes: 16 * 1024 * 1024 } as const;
-/**
- * Public files under `ui/public/`, which builds never load and deploys copy one at a time:
- *
- * - `fileBytes`: Cloudflare Artifacts, which stores hosted app source, refuses a file over 32 MB.
- * - `bytes`: an Artifacts repository holds at most 1 GB, so no commit's files can exceed it.
- * - `files`: each version lists its public files in one object read when they are served, and
- *   each file is a few storage operations at deploy; 10,000 keeps both small.
- */
-export const publicFileLimits = {
-  files: 10_000,
-  fileBytes: 32_000_000,
-  bytes: 1_000_000_000,
-} as const;
-/** Reject invalid counters and stop readers before they accumulate an oversized source tree. */
-export const sourceFits = (files: number, bytes: number): boolean =>
-  Number.isSafeInteger(files) &&
-  files >= 0 &&
-  files <= sourceLimits.files &&
-  Number.isSafeInteger(bytes) &&
-  bytes >= 0 &&
-  bytes <= sourceLimits.bytes;
-/** Whether public files of these counts fit, each at most `fileBytes`. */
-export const publicFits = (files: number, bytes: number, largest: number): boolean =>
-  Number.isSafeInteger(files) &&
-  files >= 0 &&
-  files <= publicFileLimits.files &&
-  Number.isSafeInteger(bytes) &&
-  bytes >= 0 &&
-  bytes <= publicFileLimits.bytes &&
-  largest <= publicFileLimits.fileBytes;
 /** Recent source history is metadata, separate from the files at each immutable revision. */
 export const GitCommit = Schema.Struct({
   commit: SourceCommit,

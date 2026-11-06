@@ -12,6 +12,8 @@
     "./contracts": "./src/contracts/host.ts",
     "./host": "./src/host.ts",
     "./effect": "./src/effect.ts",
+    "./check": "./src/check.ts",
+    "./oxlint": "./src/oxlint.ts",
     "./operations/approval": "./src/approval.ts",
     "./client": "./src/client.ts",
     "./mcp": "./src/mcp.ts",
