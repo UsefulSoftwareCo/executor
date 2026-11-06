@@ -256,6 +256,7 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless hosted connect
         yield* legacyStorage([
           // Step 9 runs again with steps 7 and 8; it creates the link table and converts profiles
           // idempotently, and none are left to convert.
+          { sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 10` },
           { sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 9` },
           // Before step 8 no client had an audience, whose rows name stored clients.
           { sql: `DROP TABLE hosted_oauth_client_groups, hosted_oauth_client_access` },
