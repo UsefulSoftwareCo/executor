@@ -14,7 +14,7 @@ export const mcpSdkVersion: string = appsPackage.devDependencies["@modelcontextp
 /** A `package.json` that declares only the host's `apps` release. */
 export const appsManifest = {
   path: "package.json",
-  content: `${JSON.stringify({ dependencies: { apps: appsVersion } }, null, 2)}\n`,
+  content: `${JSON.stringify({ type: "module", dependencies: { apps: appsVersion } }, null, 2)}\n`,
 };
 
 /** A first migration: deploying it gives an app its database. */
