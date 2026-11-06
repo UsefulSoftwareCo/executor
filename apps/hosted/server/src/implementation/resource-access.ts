@@ -17,7 +17,7 @@ import {
   type AccessRevision,
 } from "../contracts/resource-access.ts";
 import { requireGroupSharing } from "./group-sharing.ts";
-import { callerLinkedAccounts } from "./app-accounts.ts";
+import { appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
 import {
   policyDatabase,
   currentResourceAuthority,
@@ -50,9 +50,20 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
     });
     const usableApps = listedApps.filter(({ access }) => access.canUse).map(({ app }) => app.id);
     const links = yield* callerLinkedAccounts(usableApps);
+    const appLinked = yield* appLinkedAccounts(
+      yield* policyDatabase,
+      listedApps.map(({ app }) => app.id),
+    );
+    const appAccounts = new Map<AppId, Set<string>>();
+    for (const link of appLinked) {
+      const accounts = appAccounts.get(link.app) ?? new Set<string>();
+      accounts.add(link.id);
+      appAccounts.set(link.app, accounts);
+    }
     const appEntries = listedApps.map(({ app, access }) => ({
       app,
       access,
+      appAccountCount: appAccounts.get(app.id)?.size ?? 0,
       linkedAccounts: [
         ...new Set(links.filter((link) => link.app === app.id).map((link) => link.id)),
       ],
