@@ -5,6 +5,7 @@ import { AppWorkflows } from "@executor-js/ui/dashboard/app-workflows";
 import { AppWebhooks, WebhookSourceConfigurations } from "@executor-js/ui/dashboard/webhooks";
 import { Button } from "@executor-js/ui/components/button";
 import { workflowBindings, webhookBindings } from "../../contracts/resources.ts";
+import { versionSourceAtom } from "../../contracts/api.ts";
 import { Failure } from "../components/common.tsx";
 /** Workflow definitions and starts use the app's linked accounts; run history is the app's. */
 export function AppResources({
@@ -19,11 +20,16 @@ export function AppResources({
       app: app.id,
       version: app.activeVersion ?? undefined,
     });
+    // Local has one person, who can always read the source.
+    const source =
+      app.activeVersion === null
+        ? undefined
+        : versionSourceAtom({ app: app.id, version: app.activeVersion });
     return (
       <AppWorkflows
         key={String(app.activeVersion)}
         app={app}
-        bindings={bindings}
+        bindings={{ ...bindings, source }}
         start={(definition, onStarted) => (
           <WorkflowStart
             key={definition.name}

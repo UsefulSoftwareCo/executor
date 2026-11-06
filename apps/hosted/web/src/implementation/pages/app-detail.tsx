@@ -359,7 +359,9 @@ export function AppDetailPage({
             if (selectedView === "tools")
               return gate(<AppTools app={current} requirements={requirements} selected={tool} />);
             if (selectedView === "workflows")
-              return gate(<AppResources app={current} view="workflows" />);
+              return gate(
+                <AppResources app={current} view="workflows" canReadSource={canManage} />,
+              );
             if (selectedView === "webhooks") return <AppResources app={current} view="webhooks" />;
             if (selectedView === "schedules") {
               return userId === undefined ? (

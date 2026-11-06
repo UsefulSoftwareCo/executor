@@ -97,6 +97,16 @@ const sourceQuery = Atom.family((key: SourceKey) =>
     }),
   ).pipe(Atom.setIdleTTL("5 minutes")),
 );
+const versionSourceQuery = Atom.family((key: SourceKey) =>
+  HostedClient.query(
+    "apps",
+    "source",
+    hydrated({
+      params: { organization: key.organization, app: key.app },
+      query: { version: key.version },
+    }),
+  ).pipe(Atom.setIdleTTL("5 minutes")),
+);
 const sourceFileQuery = Atom.family((key: SourceFileKey) =>
   HostedClient.query(
     "apps",
@@ -445,6 +455,12 @@ export const sourceAtom = (key: {
   readonly app: AppId;
   readonly version: VersionId;
 }) => sourceQuery(new SourceKey(key));
+/** A retained version's stored files, unformatted and complete, as workflow diagrams read them. */
+export const versionSourceAtom = (key: {
+  readonly organization: OrganizationReference;
+  readonly app: AppId;
+  readonly version: VersionId;
+}) => versionSourceQuery(new SourceKey(key));
 /** One display file of a retained version, read when the listing did not inline it. */
 export const sourceFileAtom = (key: {
   readonly organization: OrganizationReference;

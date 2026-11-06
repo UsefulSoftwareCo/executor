@@ -1,0 +1,17 @@
+{
+  "name": "@executor-js/workflow-graph",
+  "private": true,
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    "./contracts/*": "./src/contracts/*.ts",
+    "./derive": "./src/implementation/derive.ts",
+    "./layout": "./src/implementation/layout.ts"
+  },
+  "dependencies": {
+    "@babel/parser": "7.29.8"
+  },
+  "devDependencies": {
+    "@babel/types": "7.29.8"
+  }
+}
