@@ -12,6 +12,7 @@
 import * as Cloudflare from "alchemy/Cloudflare";
 import { retain } from "alchemy/RemovalPolicy";
 import { Config, Effect, Option } from "effect";
+import { bucketJurisdiction } from "./jurisdiction.ts";
 import { customDomain, productZone } from "./stage.ts";
 
 /** Where production serves the feed. */
@@ -28,6 +29,7 @@ export const appCatalogBucketName = "executor-app-catalog";
 export const AppCatalog = Effect.gen(function* () {
   const hostname = yield* customDomain(new URL(appCatalogOrigin));
   return yield* Cloudflare.R2.Bucket("AppCatalog", {
+    ...(yield* bucketJurisdiction),
     name: appCatalogBucketName,
     domains: [{ name: hostname, zone: productZone, minTLS: "1.2" }],
     cors: [{ allowedMethods: ["GET", "HEAD"], allowedOrigins: ["*"], maxAgeSeconds: 86400 }],

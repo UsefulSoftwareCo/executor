@@ -9,6 +9,7 @@ import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { ArtifactsCredentials } from "./artifacts-credentials-worker.ts";
 import { cloudEncryptionKey } from "./secrets.ts";
 import { providerFailureCode } from "../implementation/provider-failure.ts";
+import { inJurisdiction } from "./jurisdiction.ts";
 
 export const creation = Schema.Struct({
   repository: AppCodeId,
@@ -218,6 +219,6 @@ export const cloudArtifactsTokens = (
   }).pipe(Effect.orDie);
 
 /** Every source caller binds the single coordinator namespace across scripts. */
-export const cloudArtifactsTokensLive = ArtifactsTokenCoordinator.from(ArtifactsCredentials).pipe(
-  Effect.flatMap(cloudArtifactsTokens),
-);
+export const cloudArtifactsTokensLive = inJurisdiction(
+  ArtifactsTokenCoordinator.from(ArtifactsCredentials),
+).pipe(Effect.flatMap(cloudArtifactsTokens));

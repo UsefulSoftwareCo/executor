@@ -1,5 +1,4 @@
 /** Native Effect MCP protocol sessions; product data and grants stay in Postgres. */
-import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 import { traceHeaders } from "@executor-js/telemetry";
 import {
   McpAuthentication,
@@ -10,7 +9,7 @@ import {
   mcpSessionKey,
 } from "@executor-js/hosted-server";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { HttpServerError } from "effect/http/HttpServerError";
 import {
@@ -29,6 +28,7 @@ import { observeMcpStream } from "../implementation/mcp-stream-observability.ts"
 import type { McpSessionObject } from "./mcp-session.ts";
 import { mcpSessionKeys } from "./mcp-session-keys.ts";
 import { McpServer } from "./mcp-server-worker.ts";
+import { durableNamespace, inJurisdiction } from "./jurisdiction.ts";
 
 /**
  * The gateway selects one private object per authenticated user/client/organization. The MCP
@@ -40,19 +40,6 @@ export class McpSession extends Cloudflare.DurableObject<McpSession, McpSessionO
   "McpSession",
 ) {}
 
-/** The namespace's native binding, for addressing an object by the id it issued. */
-export const SessionNamespace = Schema.declare(
-  (value): value is Pick<DurableObjectNamespace, "get" | "idFromName" | "idFromString"> =>
-    typeof value === "object" &&
-    value !== null &&
-    "get" in value &&
-    typeof value.get === "function" &&
-    "idFromName" in value &&
-    typeof value.idFromName === "function" &&
-    "idFromString" in value &&
-    typeof value.idFromString === "function",
-);
-
 /**
  * Resolve the session binding at startup; return a handler for each request.
  *
@@ -62,8 +49,8 @@ export const SessionNamespace = Schema.declare(
  * database here: the object checks the bearer and that the bearer's key names it before any work.
  */
 export const cloudMcp = Effect.gen(function* () {
-  const sessions = yield* McpSession.from(McpServer);
-  const environment = yield* Cloudflare.WorkerEnvironment;
+  const sessions = yield* inJurisdiction(McpSession.from(McpServer));
+  const sessionNamespace = yield* durableNamespace("McpSession");
   const keys = yield* mcpSessionKeys;
   /**
    * Forward one request to its session object. An authenticated request's forward names its
@@ -153,9 +140,7 @@ export const cloudMcp = Effect.gen(function* () {
         yield* Effect.annotateCurrentSpan("executor.mcp.session_id", "refused");
         return mcpSessionNotFound();
       }
-      const namespace = yield* Schema.decodeUnknownEffect(SessionNamespace)(
-        environment.McpSession,
-      ).pipe(Effect.orDie);
+      const namespace = yield* sessionNamespace;
       // Only ids this namespace generated are signed, so this refuses only an id minted under a
       // namespace the class has since moved from; its sessions are gone with that namespace.
       const id = yield* Effect.try(() => namespace.idFromString(address.value.objectId)).pipe(

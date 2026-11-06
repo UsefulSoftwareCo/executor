@@ -14,13 +14,15 @@ import {
   retainedAssetRefreshHours,
 } from "../contracts/retained-assets.ts";
 import { notFoundDocument } from "../implementation/not-found.ts";
+import { bucketJurisdiction } from "./jurisdiction.ts";
 import { testStage } from "./stage.ts";
 
 /** A copy expires `retainedAssetExpiryDays` after its last upload; nothing else deletes from it. */
 export const SiteAssets = Cloudflare.R2.Bucket(
   "SiteAssets",
-  testStage.pipe(
-    Effect.map((stage) => ({
+  Effect.all([testStage.pipe(Effect.orDie), bucketJurisdiction]).pipe(
+    Effect.map(([stage, jurisdiction]) => ({
+      ...jurisdiction,
       forceDestroy: Option.isSome(stage),
       lifecycleRules: [
         {
@@ -31,7 +33,6 @@ export const SiteAssets = Cloudflare.R2.Bucket(
         },
       ],
     })),
-    Effect.orDie,
   ),
 ).pipe(retain(testStage.pipe(Effect.map(Option.isNone), Effect.orDie)));
 
