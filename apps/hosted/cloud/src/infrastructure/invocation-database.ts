@@ -3,7 +3,6 @@
  * the executor, hosted permission checks and Better Auth. Worker events connect through Hyperdrive
  * (about 4 ms); consumers still share one pool, so sequential work reuses one connection.
  */
-import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Context, Effect, Layer, Option, Scope } from "effect";
 import { SqlClient, type SqlError } from "effect/sql";
 import {
@@ -13,6 +12,7 @@ import {
   cloudDatabasePool,
 } from "./database.ts";
 import { ObjectDatabase, type SqlServices } from "./object-database.ts";
+import { makeBatchExecutionMemo } from "./batch-execution.ts";
 
 /**
  * Connections one Worker event may hold. The pool opens them on demand and reuses an idle one,
@@ -36,7 +36,7 @@ export const cloudInvocationDatabase = Layer.effect(
   InvocationDatabase,
   Effect.gen(function* () {
     const connection = yield* cloudDatabaseConnection;
-    return yield* makeExecutionMemo(
+    return yield* makeBatchExecutionMemo(
       Effect.gen(function* () {
         const object = yield* Effect.serviceOption(ObjectDatabase);
         if (Option.isSome(object)) return yield* object.value.sql;
