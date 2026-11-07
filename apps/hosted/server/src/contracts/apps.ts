@@ -38,6 +38,7 @@ import {
 } from "@executor-js/sdk/core";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
+import { ApiError } from "@executor-js/utils/api-error";
 import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import {
   OrganizationReference,
@@ -66,6 +67,22 @@ const deployErrors = [
   OrganizationForbidden,
 ] as const;
 const prefix = "/api/organizations/:organization/apps";
+/** A catalog source held back for a manager to apply. */
+export const CatalogAppUpdate = Schema.Struct({
+  reconnect: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  reasons: Schema.Array(Schema.Literals(["removed", "provider", "scope", "added", "cardinality"])),
+  touched: Schema.Boolean,
+});
+export type CatalogAppUpdate = typeof CatalogAppUpdate.Type;
+/** No catalog update is offered, the workspace has changes, or the app changed meanwhile. */
+export const CatalogUpdateUnavailable = ApiError.define({
+  tag: "CatalogUpdateUnavailable",
+  status: 409,
+  fields: { reason: Schema.Literals(["none", "edited", "changed"]) },
+  message:
+    "This catalog update can't be applied now: none is offered, the app's workspace has changes that are not deployed, or the app changed meanwhile. Reload the app and try again.",
+});
+export type CatalogUpdateUnavailable = typeof CatalogUpdateUnavailable.Type;
 // Versions were called deployments. The former paths and field names stay accepted, and responses
 // repeat the former field names, so API callers written before the rename keep working.
 const versionsOptions = {
@@ -181,6 +198,37 @@ export const HostedApps = HttpApiGroup.make("apps")
     )
       .annotate(RequiredAction, "read")
       .annotate(OpenApi.Deprecated, true),
+  )
+  .add(
+    HttpApiEndpoint.get("catalogUpdate", `${prefix}/:app/catalog-update`, {
+      params: app,
+      success: Schema.NullOr(CatalogAppUpdate),
+      error: [StorageError, AppNotFound, OrganizationForbidden],
+    })
+      .annotate(RequiredAction, "manage")
+      .annotate(
+        OpenApi.Description,
+        "A newer catalog source held back for this app, or null. Installed catalog apps update by themselves unless someone changed them or the update would leave linked accounts or requirements unusable: reconnect counts the linked accounts that stop working, reasons says why, and touched means applying it replaces a version someone deployed. apps.applyCatalogUpdate applies it.",
+      ),
+  )
+  .add(
+    HttpApiEndpoint.post("applyCatalogUpdate", `${prefix}/:app/catalog-update`, {
+      params: app,
+      success: App,
+      error: [
+        ...deployErrors,
+        AppNotDeployed,
+        VersionNotFound,
+        CatalogImportFailed,
+        CatalogUnavailable,
+        CatalogUpdateUnavailable,
+      ],
+    })
+      .annotate(RequiredAction, "manage")
+      .annotate(
+        OpenApi.Description,
+        "Deploy the catalog source apps.catalogUpdate offers and make it this app's active version. The earlier version stays in the app's versions. Refused while the app's Git workspace has changes that are not deployed, when the app or the catalog source changed since the offer, or when no update is offered.",
+      ),
   )
   .add(
     HttpApiEndpoint.post("activate", `${prefix}/:app/activate`, {

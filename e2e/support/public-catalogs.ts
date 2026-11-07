@@ -5,10 +5,19 @@
  * never depend on either live service. The feed holds synthetic apps: one with an API key, one with
  * OAuth beside a key, and one whose source names a different package than its listing. The
  * registry publishes nothing; registry-failures.spec.ts points a product at its own registry fixture.
+ * A scenario can serve the source of its own unlisted entry with {@link publishScenarioApp} and
+ * replace it later, as the feed changes an app it already lists.
  */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Effect, Layer } from "effect";
-import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { Config, Effect, Layer } from "effect";
+import {
+  HttpClient,
+  HttpClientRequest,
+  HttpRouter,
+  HttpServer,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/http";
 import { createServer } from "node:http";
 import { appsVersion } from "./apps-release.ts";
 
@@ -140,8 +149,37 @@ const catalogSources: Readonly<Record<string, unknown>> = {
   },
 };
 
+/** Scenario-owned entries, which the index never lists; their IDs start with `scenario-`. */
+const scenarioPath = /^apps\/scenario-[a-z0-9-]+\.json$/;
+
+/**
+ * Serve `source` as the run's feed source of the unlisted entry `scenario-<name>`, replacing what
+ * it served before. Installing the entry by its ID reads this source, as for a listed one.
+ */
+export const publishScenarioApp = (
+  name: string,
+  source: {
+    readonly package: string;
+    readonly files: ReadonlyArray<{ readonly path: string; readonly content: string }>;
+  },
+) =>
+  Effect.gen(function* () {
+    const origin = yield* Config.NonEmptyString("E2E_PUBLIC_CATALOGS");
+    const client = yield* HttpClient.HttpClient;
+    const id = `scenario-${name}`;
+    const request = yield* HttpClientRequest.bodyJson(
+      HttpClientRequest.put(`${origin}/catalog/apps/${id}.json`),
+      source,
+    );
+    const response = yield* client.execute(request);
+    if (response.status !== 204)
+      return yield* Effect.die(`The catalog fixture refused ${id}: ${response.status}`);
+    return id;
+  }).pipe(Effect.scoped);
+
 /** Start the catalogs for the scope on loopback and return their origin. */
 export const publicCatalogs = Effect.gen(function* () {
+  const scenarioSources = new Map<string, unknown>();
   const services = yield* Layer.build(
     HttpRouter.serve(
       Layer.mergeAll(
@@ -158,7 +196,7 @@ export const publicCatalogs = Effect.gen(function* () {
           Effect.gen(function* () {
             const request = yield* HttpServerRequest.HttpServerRequest;
             const path = new URL(request.url, "http://catalog").pathname.slice("/catalog/".length);
-            const source = catalogSources[path];
+            const source = catalogSources[path] ?? scenarioSources.get(path);
             if (source !== undefined) return HttpServerResponse.jsonUnsafe(source);
             const svg = path.startsWith("icons/")
               ? catalogIcons[path.slice("icons/".length)]
@@ -167,6 +205,17 @@ export const publicCatalogs = Effect.gen(function* () {
               ? HttpServerResponse.empty({ status: 404 })
               : HttpServerResponse.text(svg, { contentType: "image/svg+xml" });
           }),
+        ),
+        HttpRouter.add(
+          "PUT",
+          "/catalog/*",
+          Effect.gen(function* () {
+            const request = yield* HttpServerRequest.HttpServerRequest;
+            const path = new URL(request.url, "http://catalog").pathname.slice("/catalog/".length);
+            if (!scenarioPath.test(path)) return HttpServerResponse.empty({ status: 404 });
+            scenarioSources.set(path, yield* request.json);
+            return HttpServerResponse.empty({ status: 204 });
+          }).pipe(Effect.orElseSucceed(() => HttpServerResponse.empty({ status: 400 }))),
         ),
         HttpRouter.add(
           "GET",
