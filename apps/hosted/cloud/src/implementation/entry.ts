@@ -1,5 +1,7 @@
 import { browserReturnTo, type BrowserSession } from "@executor-js/hosted-server/browser/contracts";
 import type { AuthenticationUnavailable } from "@executor-js/hosted-server";
+import { unavailablePage } from "@executor-js/dashboard-start/document";
+import { CurrentProductBrand } from "@executor-js/utils/product-brand";
 import { Effect, Schema } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { CloudEntry, CloudEntryPage } from "../contracts/entry.ts";
@@ -112,11 +114,13 @@ export const cloudEntryDocument = <E, R, E2, R2>(
   }).pipe(
     Effect.tapCause(reportCloudFailure),
     Effect.catch(() =>
-      Effect.succeed(
-        HttpServerResponse.html(
-          '<!doctype html><title>Unable to open Executor</title><main><h1>Unable to open Executor</h1><p>Please try again.</p><a href="">Try again</a></main>',
-        ).pipe(HttpServerResponse.setStatus(503), HttpServerResponse.setHeaders(privateHeaders)),
-      ),
+      Effect.gen(function* () {
+        const brand = yield* CurrentProductBrand;
+        return HttpServerResponse.html(unavailablePage(brand.name)).pipe(
+          HttpServerResponse.setStatus(503),
+          HttpServerResponse.setHeaders(privateHeaders),
+        );
+      }),
     ),
   );
 

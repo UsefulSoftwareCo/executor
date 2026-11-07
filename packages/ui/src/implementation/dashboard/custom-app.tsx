@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import type { MutationProps } from "../../contracts/dashboard.ts";
 import { Button } from "../components/button.tsx";
 import { Input } from "../components/input.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 /**
  * Add a remote MCP server by URL. Executor confirms whether it needs no sign-in or supports
@@ -21,6 +22,7 @@ export function CustomAppForm<E>({
 }: MutationProps<CustomAppInput, DeployedApp, E> & {
   readonly onInstalled: (app: DeployedApp) => void | Promise<void>;
 }) {
+  const brand = useProductBrand();
   const result = useAtomValue(mutation);
   const add = useAtomSet(mutation, { mode: "promiseExit" });
   const [name, setName] = useState("");
@@ -88,7 +90,7 @@ export function CustomAppForm<E>({
           />
         </label>
         <span className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5]">
-          Executor checks whether this server needs no sign-in or supports OAuth.
+          {brand.name} checks whether this server needs no sign-in or supports OAuth.
         </span>
       </fieldset>
       {error && (

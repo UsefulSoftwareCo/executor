@@ -23,6 +23,7 @@ import {
   telemetryBindings,
 } from "./infrastructure/telemetry.ts";
 import { workerBuild } from "./infrastructure/worker-build.ts";
+import { productBrandBindings } from "./infrastructure/product-brand.ts";
 
 /** The executor and MCP identity are built once per isolate and shared by its objects. */
 const mcpSession = Effect.gen(function* () {
@@ -69,6 +70,7 @@ export default McpServer.make(
         }),
         ...(yield* telemetryBindings),
         ...(yield* sentryBindings).env,
+        ...(yield* productBrandBindings),
       },
     };
   }),

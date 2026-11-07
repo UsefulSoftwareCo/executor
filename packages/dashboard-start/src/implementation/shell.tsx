@@ -3,6 +3,7 @@
 import { HeadContent, Scripts } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import { DisplayFormatSync } from "@executor-js/ui/hooks/display-format";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 import type {} from "../contracts/build.ts";
 import { documentBuild } from "./document-build.ts";
 import { BuildChangeNotice } from "./build-change-notice.tsx";
@@ -42,6 +43,7 @@ const holdEarlySubmissions = `(() => {
 
 /** Public build metadata read by browser telemetry; it carries no identity or configuration secrets. */
 export function DashboardDocument({ children }: { readonly children: ReactNode }) {
+  const brand = useProductBrand();
   return (
     // `data-dashboard` lets automation tell dashboard documents from authored app pages.
     <html lang="en" data-dashboard="">
@@ -54,7 +56,7 @@ export function DashboardDocument({ children }: { readonly children: ReactNode }
           name="executor-environment"
           content={import.meta.env.VITE_EXECUTOR_ENVIRONMENT_NAME}
         />
-        <link rel="icon" href="/favicon.png" />
+        <link rel="icon" href={brand.logo} />
         <script dangerouslySetInnerHTML={{ __html: holdEarlySubmissions }} />
         <HeadContent />
       </head>

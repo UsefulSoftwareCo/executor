@@ -10,6 +10,8 @@ import {
 } from "./dashboard-frame.tsx";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { SessionMenu } from "./auth.tsx";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+import { productWordmark } from "@executor-js/ui/contracts/product-brand";
 
 /** A shared entry frame before an organization URL is known. */
 export function HostedEntry({
@@ -24,6 +26,7 @@ export function HostedEntry({
   /** Room for a long review, such as an import preview. */
   readonly wide?: boolean;
 }) {
+  const brand = useProductBrand();
   const heading = useId();
   const width = wide ? "max-w-[760px]" : "max-w-[560px]";
   return (
@@ -33,8 +36,8 @@ export function HostedEntry({
         aria-labelledby={heading}
       >
         <div className="mb-8 flex items-center gap-2 font-mono text-[15px]">
-          <img src="/favicon.png" alt="" className="size-5" />
-          <span>executor</span>
+          <img src={brand.logo} alt="" className="size-5" />
+          <span>{productWordmark(brand)}</span>
         </div>
         <h1 id={heading} className="text-2xl font-medium tracking-[-0.04em]">
           {title}
@@ -53,7 +56,7 @@ export function HostedEntry({
 
 /** Neutral entry content does not assume an organization count or a setup outcome. */
 export function HostedEntryLoading({
-  title = "Opening Executor",
+  title,
   description = "Loading your organizations…",
   label = "Loading organizations",
 }: {
@@ -61,8 +64,9 @@ export function HostedEntryLoading({
   readonly description?: string;
   readonly label?: string;
 }) {
+  const brand = useProductBrand();
   return (
-    <HostedEntry title={title} description={description}>
+    <HostedEntry title={title ?? `Opening ${brand.name}`} description={description}>
       <div role="status" aria-label={label} className="space-y-3">
         <Skeleton className="h-12 w-full rounded-md" />
         <Skeleton className="h-3 w-2/3" />

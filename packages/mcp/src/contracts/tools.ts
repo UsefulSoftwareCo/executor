@@ -53,6 +53,8 @@ export const BrowserMcpToolkit = Toolkit.make(
 
 /** Hosts supply authorized operations and documentation I/O. */
 export interface McpOptions {
+  /** The server name clients show for this connection; Executor when unset. */
+  readonly name?: string;
   readonly backend: McpBackend<Error>;
   /** Admit each new program once. Resumes never call this hook. */
   readonly beforeExecute?: Effect.Effect<void, ExecutionRejected>;

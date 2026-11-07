@@ -10,6 +10,7 @@ import {
 } from "../contracts/browser.ts";
 import { Cookies, HttpServerRequest } from "effect/http";
 import type { ResourceOrigins } from "@executor-js/mcp-auth";
+import { CurrentProductBrand } from "@executor-js/utils/product-brand";
 
 /**
  * A missing session produces `null`; a failed lookup fails, so the page reports that it is
@@ -37,5 +38,6 @@ export const hostedDocumentContext = (resourceOrigins: ResourceOrigins) => (api:
       session,
       lastOrganization: readLastOrganization(saved, session),
       resourceOrigins,
+      brand: yield* CurrentProductBrand,
     } satisfies HostedDocumentContext;
   }).pipe(Effect.withSpan("dashboard.session"));

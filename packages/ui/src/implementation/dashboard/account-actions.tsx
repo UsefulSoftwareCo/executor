@@ -21,6 +21,7 @@ import {
 } from "./account-description.tsx";
 import { ProviderIcon } from "./common.tsx";
 import { useDashboard } from "./context.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 /** Account management lives on its list row; products supply the menu items they support. */
 export function AccountActionsMenu({
@@ -194,6 +195,7 @@ export function DisconnectAccountForm<E>({
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly disabledReason?: string | undefined;
 }) {
+  const brand = useProductBrand();
   const { provider, apps } = data;
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Cause.Cause<E>>();
@@ -202,8 +204,8 @@ export function DisconnectAccountForm<E>({
       <AccountDialogIdentity data={data} />
       <p className="text-sm text-muted-foreground">
         {data.revocation === "automatic"
-          ? `This deletes the saved credentials from Executor and asks ${provider.definition.name} to revoke its access.`
-          : `This deletes the saved credentials from Executor but does not revoke access at ${provider.definition.name}. To end access, revoke it there too.`}{" "}
+          ? `This deletes the saved credentials from ${brand.name} and asks ${provider.definition.name} to revoke its access.`
+          : `This deletes the saved credentials from ${brand.name} but does not revoke access at ${provider.definition.name}. To end access, revoke it there too.`}{" "}
         {apps.length === 0 && "No apps use this account."}
       </p>
       {apps.length > 0 && (

@@ -13,7 +13,8 @@
     "./safe-fetch/bun": "./src/safe-fetch-bun.ts",
     "./release-version": "./src/release-version.ts",
     "./legacy-keys": "./src/legacy-keys.ts",
-    "./schema-definitions": "./src/schema-definitions.ts"
+    "./schema-definitions": "./src/schema-definitions.ts",
+    "./product-brand": "./src/product-brand.ts"
   },
   "dependencies": {
     "@effect/platform-node": "4.0.1",

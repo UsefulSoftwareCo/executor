@@ -17,10 +17,11 @@ import {
 import { LocalTime, RelativeTime, shortMoment } from "../components/local-time.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import { QueryView } from "./context.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 const agentName = (agent: ConnectedAgent) => agent.name?.trim() || "Unnamed MCP client";
 
-const accessLabel = (access: ConnectedAgentAccess) => {
+const accessLabel = (access: ConnectedAgentAccess, product: string) => {
   switch (access.kind) {
     case "all":
       return "Every app";
@@ -29,7 +30,7 @@ const accessLabel = (access: ConnectedAgentAccess) => {
     case "connection":
       return `Scoped connection: ${access.name}`;
     case "api":
-      return "Executor API";
+      return `${product} API`;
   }
 };
 
@@ -48,6 +49,7 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
   /** Renders list and revocation failures. */
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
+  const brand = useProductBrand();
   const [revoking, setRevoking] = useState<ConnectedAgent>();
   const submit = useAtomSet(revoke, { mode: "promiseExit" });
   const state = useAtomValue(revoke);
@@ -85,7 +87,7 @@ export function ConnectedAgents<E, EL extends E, ER extends E>({
           <DialogHeader>
             <DialogTitle>Revoke {revoking === undefined ? "" : agentName(revoking)}?</DialogTitle>
             <DialogDescription>
-              This agent loses access immediately. To use Executor again, it must sign in and be
+              This agent loses access immediately. To use {brand.name} again, it must sign in and be
               approved again.
             </DialogDescription>
           </DialogHeader>
@@ -123,12 +125,13 @@ function AgentRow({
   readonly agent: ConnectedAgent;
   readonly onRevoke: (agent: ConnectedAgent) => void;
 }) {
+  const brand = useProductBrand();
   return (
     <li className="flex items-center gap-4 px-1 py-3">
       <div className="min-w-0 flex-1">
         <p className="truncate text-[13px] font-medium">{agentName(agent)}</p>
         <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {accessLabel(agent.access)}
+          {accessLabel(agent.access, brand.name)}
           {agent.lastActiveAt !== null && (
             <>
               {" · Last used "}

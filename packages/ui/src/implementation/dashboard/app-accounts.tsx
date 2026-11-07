@@ -54,6 +54,7 @@ import {
   DialogTitle,
 } from "../components/dialog.tsx";
 import { cn } from "../lib/utils.ts";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 const accountName = (account: AccountSummary) => account.label || "Unnamed account";
 
@@ -194,6 +195,7 @@ function DeleteUnusedAccount<E, A>({
   readonly Failure: ComponentType<FailureProps<E>>;
   readonly onClose: () => void;
 }) {
+  const brand = useProductBrand();
   const run = useAtomSet(remove, { mode: "promiseExit" });
   const result = useAtomValue(remove);
   const pending = AsyncResult.isWaiting(result);
@@ -220,8 +222,8 @@ function DeleteUnusedAccount<E, A>({
         <p className="text-sm text-muted-foreground">
           Delete it if you no longer need it.{" "}
           {data.revocation === "automatic"
-            ? `This removes the saved credentials from Executor and asks ${provider} to revoke its access.`
-            : `This removes the saved credentials from Executor but does not revoke access at ${provider}. To end access, revoke it there too.`}
+            ? `This removes the saved credentials from ${brand.name} and asks ${provider} to revoke its access.`
+            : `This removes the saved credentials from ${brand.name} but does not revoke access at ${provider}. To end access, revoke it there too.`}
         </p>
         {AsyncResult.isFailure(result) && <Failure cause={result.cause} />}
         <DialogFooter>

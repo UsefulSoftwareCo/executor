@@ -13,7 +13,7 @@ import {
 } from "@executor-js/ui/components/card";
 import { LocalTime, shortMoment } from "@executor-js/ui/components/local-time";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import {
   AccountFailed,
   revokeOtherSessionsAtom,
@@ -71,7 +71,7 @@ export const describeClient = (userAgent: string | null | undefined): string => 
  * host shows the signed-in sessions.
  */
 export function SecurityPage({ children }: { readonly children?: ReactNode }) {
-  useDocumentTitle(productTitle(securityTitle));
+  useDocumentTitle(securityTitle);
   return (
     <PageFrame>
       <PageHeader title={securityTitle} description={securityDescription} />

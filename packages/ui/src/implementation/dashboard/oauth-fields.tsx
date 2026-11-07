@@ -23,6 +23,7 @@ import { undeclaredError } from "@executor-js/utils/connection-failure";
 import { ErrorNotice } from "./error-notice.tsx";
 import { OAuthClientOrigin, sharesClientId } from "./oauth-client-origin.tsx";
 import { useQuery } from "./context.tsx";
+import { useProductBrand } from "../hooks/product-brand.ts";
 
 /** Keep forms mounted through cached setup reads, refresh failures, and retries. */
 export function OAuthSetup<E extends UserFacingError>({
@@ -140,6 +141,7 @@ export function OAuthFields<A, E>({
   /** A registered client whose details open prefilled; Connect updates it before signing in. */
   readonly editClient?: OAuthClientId | undefined;
 }) {
+  const brand = useProductBrand();
   const choices = clientChoices(options, account !== undefined);
   const editing =
     editClient === undefined || options === "unresolved"
@@ -180,7 +182,7 @@ export function OAuthFields<A, E>({
   const guidance = machine
     ? `Create an OAuth client in ${providerName}’s developer settings${setup.scopes.length > 0 ? " with the permissions under Advanced" : ""}, then enter its ${details}.`
     : setup !== "unresolved" && setup.mode === "client-required"
-      ? `Executor can’t set up sign-in for ${providerName} automatically. Create an OAuth app there with this redirect URL, then enter its ${details}.`
+      ? `${brand.name} can’t set up sign-in for ${providerName} automatically. Create an OAuth app there with this redirect URL, then enter its ${details}.`
       : `Use an OAuth app in ${providerName} that allows this redirect URL, and enter its ${details}.`;
   const [enteredClientId, setClientId] = useState<string>();
   const clientId = enteredClientId ?? (updating ? editing.clientId : "");
