@@ -741,6 +741,31 @@ does not prove a host deployment overlapped it; retain the provider timestamps
 and version evidence with the report. The runner only forwards the bounded
 hold duration, never deployment credentials, into the test process.
 
+The `EXECUTOR_ENCRYPTED_WORKFLOW_STARTS` activation gate defaults to `false`.
+For an existing deployment, first deploy the marker-aware revision with the gate
+disabled. Confirm that all earlier API, app-page, Workflow and background dispatcher
+invocations have finished before enabling the gate in a second deploy. During that
+first deploy, both revisions keep creating the same unprefixed native ID and the
+same plaintext parameters, so concurrent dispatch cannot create a second instance.
+A fresh install can enable the gate immediately. Never roll back to code without
+format-marker support after activation; disable the gate on marker-aware code to
+stop encrypted starts while existing encrypted instances finish.
+
+For a retained-run proof, start the sleeping instance on the previous Worker
+before the first deploy. Its native parameters have no results-format
+marker, so the candidate keeps its original step names and replays the existing
+plaintext checkpoints until that instance finishes. A fresh app instance created
+after activation carries the marker and uses the `executor-wfr-v1-` native ID
+prefix. Its status reader requires authenticated ciphertext regardless of the
+returned value's type. The public app run ID is unchanged. Removal, import, and
+provisioning instances also carry the format marker for their encrypted journals.
+The adapter rejects overlapping uses of one full native checkpoint name; repeated
+names remain valid after the previous checkpoint finishes. App-side names already
+include their SDK occurrence identity.
+The sleep scenario checks that both runs finish and that each side effect occurs
+once; only the first run proves the markerless transition when it started before
+the candidate deployment.
+
 ## Existing failure
 
 The original 1,000-account run preserved every account and selection but lost later
