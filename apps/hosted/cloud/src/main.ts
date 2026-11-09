@@ -127,7 +127,11 @@ import {
 import { roleHostRoutes } from "./infrastructure/role-hosts.ts";
 import { redirectTo, withRoleHosts } from "./implementation/host-roles.ts";
 import { hasSessionCookie } from "./contracts/browser.ts";
-import { clientMetadataBinding, cloudClientMetadata } from "./infrastructure/client-metadata.ts";
+import {
+  clientMetadataBinding,
+  cloudClientMetadata,
+  deploymentClientMetadata,
+} from "./infrastructure/client-metadata.ts";
 import { appDataSupervisors } from "./infrastructure/app-data.ts";
 import { cloudDevelopment } from "./contracts/development.ts";
 import { recordUnclassifiedRefusals, requestServices } from "@executor-js/hosted-server";
@@ -183,7 +187,7 @@ export default Api.make(
         // Only local e2e Clouds may turn the auth rate limit off; deployed Workers get `false`.
         ...(yield* authRateLimitSwitchBindings),
         // A deployed stage identifies Executor to authorization servers by its own document.
-        ...(origin === undefined ? {} : yield* clientMetadataBinding(origin)),
+        ...(origin === undefined ? {} : yield* clientMetadataBinding.pipe(Effect.orDie)),
         // Every deployed stage lists production's official app feed.
         ...(origin === undefined ? {} : yield* appCatalogBinding),
       },
@@ -437,6 +441,7 @@ export default Api.make(
 
     const egress = yield* cloudEgress;
     const clientMetadata = yield* cloudClientMetadata.pipe(Effect.orDie);
+    const deploymentDocument = yield* deploymentClientMetadata(clientMetadata).pipe(Effect.orDie);
     // The official app feed Add app lists; without it, only the built-in Executor app is listed.
     const catalogFeedUrl = Option.getOrUndefined(
       yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option),
@@ -657,10 +662,11 @@ export default Api.make(
         "/api/oauth/callback",
         cloudAccountCallback(auth.returnsStageAccountCallback),
       ).pipe(HttpRouter.provideRequest(auth.identity)),
+      // The document grants issued before it moved to the edge renew with.
       HttpRouter.add(
         "GET",
         clientMetadataDocumentPath,
-        clientMetadataDocument(clientMetadata),
+        clientMetadataDocument(deploymentDocument),
       ).pipe(HttpRouter.provideRequest(auth.identity)),
       mcpRoutes,
       authorizationServerRoutes,
@@ -717,6 +723,8 @@ export default Api.make(
         "/api/oauth/callback",
         cloudAccountCallback(auth.returnsStageAccountCallback),
       ).pipe(HttpRouter.provideRequest(auth.identity)),
+      // The OAuth client metadata document sign-ins start with; its callback is the edge's.
+      HttpRouter.add("GET", clientMetadataDocumentPath, clientMetadataDocument(clientMetadata)),
       withGitAccess(gitRoutes),
       // The public site. Nobody is signed in to v2 on the edge, so `/` is always the site's.
       HttpRouter.add("GET", "/", staticDocument("/index.html")),

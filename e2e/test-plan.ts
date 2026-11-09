@@ -58,6 +58,11 @@ const httpsCallbackCloud = { status: "scheduled", runtime: "attached" } as const
  * managed local Cloud reads no feed and lists only the built-in Executor app.
  */
 const officialFeedCloud = { status: "scheduled", runtime: "attached" } as const;
+/**
+ * Reads the OAuth client metadata document a deployed stage publishes: managed local Cloud has no
+ * public HTTPS origin, so it publishes none.
+ */
+const publicDocumentCloud = { status: "scheduled", runtime: "attached" } as const;
 /** Runs alone on a managed local Cloud started with Better Auth's per-address limit on. */
 const rateLimitedCloud = { status: "scheduled", runtime: "rate-limited" } as const;
 const rolledBackCloud = { status: "scheduled", runtime: "rolled-back" } as const;
@@ -146,6 +151,17 @@ export const scenarios = plan({
       cloud: managedCloud,
       "self-host": na("Self-host's callback is on its one origin; nothing forwards to it."),
       local: na("Local's callback is on its one origin; nothing forwards to it."),
+    },
+  },
+  cloudClientMetadataEdge: {
+    fixtures: "actors",
+    file: "cloud-client-metadata.spec.ts",
+    title:
+      "Cloud publishes its OAuth client metadata document on the edge with the edge's callback, and the deployment origin keeps the document earlier grants were issued to",
+    targets: {
+      cloud: publicDocumentCloud,
+      "self-host": na("Self-host serves its document on its one origin; nothing forwards to it."),
+      local: na("Local's loopback callback has no public document; it registers dynamically."),
     },
   },
   cloudSiteEdge: {
