@@ -10,6 +10,7 @@
     "/.well-known/oauth-authorization-server/api/auth",
     "/api/auth/callback/<provider>",
     "/api/oauth/callback, when state starts with x2.",
+    "/oauth/client-metadata.json",
     "/git/*",
     "/ (without a v1 session)",
     "/home",
@@ -54,6 +55,11 @@
     {
       "method": "GET",
       "target": "/api/oauth/callback?code=c&state=x2.abc",
+      "forwards": true
+    },
+    {
+      "method": "GET",
+      "target": "/oauth/client-metadata.json",
       "forwards": true
     },
     {
@@ -239,11 +245,6 @@
     {
       "method": "GET",
       "target": "/api/oauth/callback?code=c",
-      "forwards": false
-    },
-    {
-      "method": "GET",
-      "target": "/oauth/client-metadata.json",
       "forwards": false
     },
     {
