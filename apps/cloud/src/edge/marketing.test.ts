@@ -91,6 +91,7 @@ describe("marketingProxyRequest", () => {
 describe("isV2Path", () => {
   const forwarded = [
     "/.well-known/oauth-authorization-server/api/auth",
+    "/oauth/client-metadata.json",
     "/api/auth/callback/google",
     "/api/auth/callback/github",
     "/git/acme/tools/info/refs",
@@ -117,10 +118,9 @@ describe("isV2Path", () => {
     "/.well-known/oauth-authorization-server/api/auth/extra",
     "/.well-known/oauth-protected-resource/mcp",
     "/oauth/client-id-metadata.json",
-    // v2 does not serve OpenID configuration on executor.sh, and its client
-    // metadata document's move to executor.sh is pending.
+    // v2 does not serve OpenID configuration on executor.sh.
     "/api/auth/.well-known/openid-configuration",
-    "/oauth/client-metadata.json",
+    "/oauth/client-metadata.json/extra",
     // Git remotes need a path under /git/.
     "/git",
     "/gitlab/acme/tools/info/refs",

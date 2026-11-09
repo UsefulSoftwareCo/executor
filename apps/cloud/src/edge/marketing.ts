@@ -68,12 +68,14 @@ const matchesPathPattern = (pathname: string, pattern: string): boolean =>
   pattern.endsWith("/*") ? pathname.startsWith(pattern.slice(0, -1)) : pathname === pattern;
 
 /** Path patterns v2 answers on `executor.sh`. `/git/*` never matches
- *  `/gitlab/...`. v2's outbound OAuth client metadata document stays off this
- *  list: its move to `executor.sh` is pending, and v1's own document
+ *  `/gitlab/...`. v1's own client metadata document
  *  (`/oauth/client-id-metadata.json`) stays with v1. */
 const V2_PATHS: ReadonlyArray<string> = [
   // Sign-in issuer metadata for the issuer `https://executor.sh/api/auth`.
   "/.well-known/oauth-authorization-server/api/auth",
+  // v2's outbound OAuth client metadata document: its connected-account
+  // sign-ins name it as their client ID, beside their callback on this origin.
+  "/oauth/client-metadata.json",
   "/git/*",
   "/.well-known/agent-skills/*",
 ];
