@@ -1,4 +1,5 @@
 import { accountOAuthRedirectUri } from "./auth.ts";
+import { audited } from "./security-audit.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { CurrentAuthorization } from "../contracts/authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
@@ -118,11 +119,10 @@ export const checkAccount = Effect.gen(function* () {
   const { owner, account } = yield* AccountGrants.use;
   const executor = yield* Effect.flatten(HostedExecutor);
   const apps = yield* linkedApps(owner, account);
-  const health = yield* executor.accounts.check({
-    owner,
-    account,
-    apps: apps.map((app) => app.id),
-  });
+  // A check decrypts the account's credentials and may renew them, on the caller's request.
+  const health = yield* executor.accounts
+    .check({ owner, account, apps: apps.map((app) => app.id) })
+    .pipe(audited("credential.read", { kind: "account", id: () => account }, { purpose: "check" }));
   return visibleHealth(health, apps);
 });
 /**

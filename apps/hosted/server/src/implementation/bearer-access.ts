@@ -36,11 +36,8 @@ import {
   type OrganizationAccess,
 } from "../contracts/organization.ts";
 import { McpAccess, McpForbidden, McpForbiddenReason, McpUnauthorized } from "../contracts/mcp.ts";
-import {
-  AuthenticationUnavailable,
-  Unauthorized,
-  callerSpanAttributes,
-} from "../contracts/auth.ts";
+import { AuthFailureReason, AuthenticationUnavailable, Unauthorized } from "../contracts/auth.ts";
+import { recordAuthFailure, recordCaller, recordCredential } from "./auth-telemetry.ts";
 import { OrganizationForbidden } from "../contracts/organization.ts";
 import { isApiKey } from "./api-keys.ts";
 import { patGrantId, type HostedOAuthOrigins } from "./mcp-oauth.ts";
@@ -51,11 +48,15 @@ import { patGrantId, type HostedOAuthOrigins } from "./mcp-oauth.ts";
  */
 class BearerRejected extends Schema.TaggedError<BearerRejected>()("BearerRejected", {
   reason: Schema.Union([Schema.Literals(["unauthorized", "unavailable"]), McpForbiddenReason]),
+  /** Why, as the request's span records it. An outage is not a refusal and has none. */
+  failure: Schema.optionalKey(AuthFailureReason),
 }) {}
 
-const unauthorized = new BearerRejected({ reason: "unauthorized" });
+const unauthorized = (failure: AuthFailureReason) =>
+  new BearerRejected({ reason: "unauthorized", failure });
 const unavailable = new BearerRejected({ reason: "unavailable" });
-const forbidden = (reason: McpForbiddenReason) => new BearerRejected({ reason });
+const forbidden = (reason: McpForbiddenReason, failure: AuthFailureReason) =>
+  new BearerRejected({ reason, failure });
 
 /** What the request names: the presented credential and any organization it selects. */
 export interface BearerRequest {
@@ -73,6 +74,16 @@ export interface ApiBearerAccess {
 }
 
 const bearer = (headers: Headers) => headers.get("authorization")?.match(/^Bearer ([^\s]+)$/i)?.[1];
+
+/** A request without a bearer: none at all, or an Authorization header of another form. */
+const noBearer = (headers: Headers) =>
+  headers.has("authorization")
+    ? Effect.fail(unauthorized("malformed"))
+    : Effect.andThen(recordCredential({ kind: "none" }), Effect.fail(unauthorized("missing")));
+
+/** Record why a bearer was refused on the request's span, before translating it. */
+const recordRefusal = (error: BearerRejected) =>
+  error.failure === undefined ? Effect.void : recordAuthFailure(error.failure);
 
 /**
  * Better Auth stores opaque access tokens and API keys as the unpadded base64url SHA-256 of
@@ -135,33 +146,34 @@ const requestedOrganization = (
 ) =>
   Effect.gen(function* () {
     if (header !== null && !Schema.is(OrganizationReference)(header))
-      return yield* forbidden("membership");
+      return yield* forbidden("membership", "malformed");
     const resolve = (matches: string) =>
       Schema.decodeUnknownEffect(Schema.Array(OrganizationId))(jsonText(matches)).pipe(
         Effect.mapError(() => unavailable),
         Effect.flatMap((ids) =>
           ids.length === 1 && ids[0] !== undefined
             ? Effect.succeed(ids[0])
-            : Effect.fail(forbidden("membership")),
+            : Effect.fail(forbidden("membership", "organization_not_found")),
         ),
       );
     const byUrl = request.organization === undefined ? undefined : yield* resolve(fromUrl);
     const byHeader = header === null ? undefined : yield* resolve(fromHeader);
     if (byUrl !== undefined && byHeader !== undefined && byUrl !== byHeader)
-      return yield* forbidden("organization_mismatch");
+      return yield* forbidden("organization_mismatch", "organization_mismatch");
     return byUrl ?? byHeader;
   });
 
-/**
- * Name the caller's own organization and the caller on the caller's span (`auth.authenticate`), by
- * their opaque IDs, once the check knows the organization is theirs, so a refusal after this point
- * still names both: an OAuth grant's organization and user, or a pinned key's organization and its
- * user, from when the statement answers, and the organization an unpinned key names only after its
- * user's membership there holds. Neither is recorded before then, so refused requests for another
- * organization never count against it, nor count their user among its users.
+/*
+ * `recordCaller` names the caller's own organization and the caller on the caller's span
+ * (`auth.authenticate`) and the request's span, by their opaque IDs, once the caller's current
+ * membership there holds, so a refusal after this point still names both: an OAuth grant's
+ * organization once its user's membership there holds, a pinned key's while its user is still a
+ * member there, and the organization an unpinned key names once its user's membership there
+ * holds. No organization is recorded before then, so refused requests for another organization,
+ * or for one the caller has left, never count against it. The request's span names the verified
+ * credential's user earlier (`recordCredential`), so such a refusal is still attributed to its
+ * caller.
  */
-const recordCaller = (organization: string, user: string) =>
-  Effect.annotateCurrentSpan(callerSpanAttributes(organization, user));
 
 /** Organizations matching a reference by ID or slug; two rows prove the reference ambiguous. */
 const matches = (sql: SqlClient.SqlClient, reference: string | null) =>
@@ -288,24 +300,30 @@ const oauthAccess = (
 ) =>
   Effect.gen(function* () {
     const header = request.headers.get("x-executor-organization");
+    yield* recordCredential({ kind: "oauth_access_token" });
     const rows = yield* loadOAuth(
       sql,
       yield* storedHash(token),
       request.organization ?? null,
       header,
     );
-    if (rows[0] === undefined) return yield* unauthorized;
+    if (rows[0] === undefined) return yield* unauthorized("unknown");
     const row = yield* Schema.decodeUnknownEffect(OAuthRow)(rows[0]).pipe(
       Effect.mapError(() => unavailable),
     );
     // Better Auth's opaque token validation: live token, enabled client, live session. It reads
     // the clock after its reads, so a token that expires during the round trip is refused.
     const now = yield* Clock.currentTimeMillis;
-    if (row.expiresAt === null || row.expiresAt < now || row.revoked) return yield* unauthorized;
-    if (!row.clientActive || row.bound) return yield* unauthorized;
+    if (row.revoked) return yield* unauthorized("revoked");
+    if (row.expiresAt === null || row.expiresAt < now) return yield* unauthorized("expired");
+    if (!row.clientActive) return yield* unauthorized("revoked");
+    // A sender-constrained token is not a bearer credential for any resource here.
+    if (row.bound) return yield* unauthorized("wrong_resource");
     if (row.session !== null && (row.sessionExpiresAt === null || row.sessionExpiresAt < now))
-      return yield* unauthorized;
-    if (row.subject === null || row.tokenClient === null) return yield* unauthorized;
+      return yield* unauthorized("expired");
+    if (row.subject === null || row.tokenClient === null) return yield* unauthorized("revoked");
+    // The token is live; its client ID is public, and its subject is the caller.
+    yield* recordCredential({ kind: "oauth_access_token", id: row.tokenClient, user: row.subject });
     // Every audience must still name a stored resource; `openid` adds the userinfo audience.
     const scopes = strings(row.scopes) ?? [];
     const resources = strings(row.resources) ?? [];
@@ -319,7 +337,7 @@ const oauthAccess = (
       resources.length === 0 ||
       resources.some((resource) => resource !== userInfo && !stored.has(resource))
     )
-      return yield* unauthorized;
+      return yield* unauthorized("wrong_resource");
     const audiences =
       scopes.includes("openid") && !resources.includes(userInfo)
         ? [...resources, userInfo]
@@ -336,59 +354,55 @@ const oauthAccess = (
       )
       .at(-1);
     if (claimedGrant !== undefined && Reflect.get(claimedGrant, "grant_id") !== row.grantReference)
-      return yield* unauthorized;
+      return yield* unauthorized("wrong_resource");
     // The grant this token was issued for, held by the same user and client.
     const grantId = yield* Schema.decodeUnknownEffect(GrantId)(row.grantReference).pipe(
-      Effect.mapError(() => unauthorized),
+      Effect.mapError(() => unauthorized("wrong_resource")),
     );
-    if (row.grantId === null || row.grantRevoked !== false) return yield* unauthorized;
+    if (row.grantId === null || row.grantRevoked !== false) return yield* unauthorized("revoked");
     if (
       row.grantUser !== row.subject ||
       row.grantClient !== row.tokenClient ||
       row.grantResource === null ||
       row.grantResource.length === 0
     )
-      return yield* unauthorized;
+      return yield* unauthorized("wrong_resource");
     // The consent's one resource, at any of this deployment's origins, is the token's audience.
     const consented = row.consentResources === null ? [] : (strings(row.consentResources) ?? []);
     const target: GrantTarget | undefined = grantTarget(resourceOrigins, consented);
-    if (target === undefined) return yield* unauthorized;
-    if (
-      audiences.length !== 1 ||
-      audiences[0] !== consented[0] ||
-      target.kind !== kind ||
-      !scopes.includes(kind === "api" ? "executor" : "mcp")
-    )
-      return yield* unauthorized;
+    if (target === undefined) return yield* unauthorized("wrong_resource");
+    if (audiences.length !== 1 || audiences[0] !== consented[0] || target.kind !== kind)
+      return yield* unauthorized("wrong_resource");
+    if (!scopes.includes(kind === "api" ? "executor" : "mcp"))
+      return yield* unauthorized("insufficient_scope");
     // Live membership in the grant's organization.
     const organization = yield* Schema.decodeUnknownEffect(OrganizationId)(row.grantResource).pipe(
-      Effect.mapError(() => forbidden("membership")),
+      Effect.mapError(() => forbidden("membership", "not_member")),
     );
-    // The grant's organization and user are the caller's own, whatever organization the request
-    // names; the grant's user is the token's subject (checked above).
-    yield* recordCaller(organization, row.subject);
     const role = yield* Schema.decodeUnknownEffect(OrganizationRole)(row.role).pipe(
-      Effect.mapError(() => forbidden("membership")),
+      Effect.mapError(() => forbidden("membership", "not_member")),
     );
+    // The grant's organization and user are the caller's own while the membership holds, whatever
+    // organization the request names; the grant's user is the token's subject (checked above).
+    yield* recordCaller(organization, row.subject);
     // A connection grant has no authority of its own; it reads the connection on every use.
     const connection = row.grantConnection ?? undefined;
     if (connection !== (target.kind === "mcp" ? target.connection : undefined))
-      return yield* unauthorized;
+      return yield* unauthorized("wrong_resource");
     const policy =
       connection === undefined
         ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(GrantPolicy))(
             row.grantPolicy,
-          ).pipe(Effect.mapError(() => unauthorized))
-        : row.connectionId === null ||
-            row.connectionRevoked !== false ||
-            row.connectionUser !== row.grantUser ||
-            row.connectionResource !== row.grantResource
-          ? yield* unauthorized
-          : connectionGrantPolicy(
-              yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ConnectionPolicy))(
-                row.connectionPolicy,
-              ).pipe(Effect.mapError(() => unavailable)),
-            );
+          ).pipe(Effect.mapError(() => unauthorized("unknown")))
+        : row.connectionId === null || row.connectionRevoked !== false
+          ? yield* unauthorized("revoked")
+          : row.connectionUser !== row.grantUser || row.connectionResource !== row.grantResource
+            ? yield* unauthorized("wrong_resource")
+            : connectionGrantPolicy(
+                yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ConnectionPolicy))(
+                  row.connectionPolicy,
+                ).pipe(Effect.mapError(() => unavailable)),
+              );
     const requested = yield* requestedOrganization(
       request,
       header,
@@ -396,7 +410,7 @@ const oauthAccess = (
       row.headerOrganizations,
     );
     if (requested !== undefined && requested !== organization)
-      return yield* forbidden("organization_mismatch");
+      return yield* forbidden("organization_mismatch", "organization_mismatch");
     return {
       userId: row.subject,
       clientId: row.tokenClient,
@@ -495,9 +509,20 @@ const loadPat = (
 
 const KeyMetadata = Schema.NullOr(ApiKeyMetadata);
 
+/** Whether the statement's memberships give the key's user a role in `organization`. */
+const holdsRole = (memberships: string, organization: string) =>
+  Option.match(Schema.decodeUnknownOption(Memberships)(jsonText(memberships)), {
+    onNone: () => false,
+    onSome: (items) =>
+      items.some(
+        (item) => item.organization === organization && Schema.is(OrganizationRole)(item.role),
+      ),
+  });
+
 const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerRequest) =>
   Effect.gen(function* () {
     const header = request.headers.get("x-executor-organization");
+    yield* recordCredential({ kind: "api_key" });
     const hash = yield* storedHash(token);
     const load = Effect.gen(function* () {
       const rows = yield* loadPat(
@@ -507,7 +532,7 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
         request.organization ?? null,
         header,
       );
-      if (rows[0] === undefined) return yield* unauthorized;
+      if (rows[0] === undefined) return yield* unauthorized("unknown");
       return yield* Schema.decodeUnknownEffect(PatRow)(rows[0]).pipe(
         Effect.mapError(() => unavailable),
       );
@@ -520,19 +545,24 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
     if (row.contended) return yield* unavailable;
     // Disabled, expired and deleted-user keys are refused.
     const now = yield* Clock.currentTimeMillis;
-    if (!row.usable || (row.expiresAt !== null && now > row.expiresAt) || !row.userExists)
-      return yield* unauthorized;
+    // The key's ID is not a secret; a refused key still names which one was presented.
+    yield* recordCredential({ kind: "api_key", id: row.id });
+    if (row.expiresAt !== null && now > row.expiresAt) return yield* unauthorized("expired");
+    if (!row.usable || !row.userExists) return yield* unauthorized("revoked");
     const id = yield* Schema.decodeUnknownEffect(ApiKeyId)(row.id).pipe(
       Effect.mapError(() => unavailable),
     );
+    yield* recordCredential({ kind: "api_key", id, user: row.userId });
     // Unreadable metadata fails closed: it cannot prove the key is an unpinned PAT.
     const metadata = yield* Schema.decodeUnknownEffect(KeyMetadata)(jsonText(row.metadata)).pipe(
-      Effect.mapError(() => unauthorized),
+      Effect.mapError(() => unauthorized("unknown")),
     );
     const pinned = metadata?.organization;
-    // A pinned key's organization is its own, so a refusal from here on names that one and the
-    // key's user, never another organization the request names.
-    if (pinned !== undefined) yield* recordCaller(pinned, row.userId);
+    // A pinned key's organization is its own while its user is still a member there, so a refusal
+    // from here on names that one and the key's user, never another organization the request
+    // names. The refusals keep their order; this only reads the statement's memberships.
+    if (pinned !== undefined && holdsRole(row.memberships, pinned))
+      yield* recordCaller(pinned, row.userId);
     // The named organization, else the one the key is pinned to.
     const organization =
       (yield* requestedOrganization(
@@ -541,16 +571,17 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
         row.urlOrganizations,
         row.headerOrganizations,
       )) ?? pinned;
-    if (organization === undefined) return yield* forbidden("organization_required");
+    if (organization === undefined)
+      return yield* forbidden("organization_required", "organization_required");
     // A pinned key never authorizes another organization.
     if (pinned !== undefined && pinned !== organization)
-      return yield* forbidden("organization_mismatch");
+      return yield* forbidden("organization_mismatch", "organization_mismatch");
     const memberships = yield* Schema.decodeUnknownEffect(Memberships)(
       jsonText(row.memberships),
     ).pipe(Effect.mapError(() => unavailable));
     const membership = memberships.find((item) => item.organization === organization);
     const role = yield* Schema.decodeUnknownEffect(OrganizationRole)(membership?.role).pipe(
-      Effect.mapError(() => forbidden("membership")),
+      Effect.mapError(() => forbidden("membership", "not_member")),
     );
     // An unpinned key can name any organization; it is the caller's own once membership holds.
     if (pinned === undefined) yield* recordCaller(organization, row.userId);
@@ -570,7 +601,7 @@ export const mcpBearerAccess = (
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const token = bearer(request.headers);
-    if (token === undefined) return yield* unauthorized;
+    if (token === undefined) return yield* noBearer(request.headers);
     if (!isApiKey(token)) {
       const grant = yield* oauthAccess(sql, origins, "mcp", token, request);
       return McpAccess.make({
@@ -593,6 +624,7 @@ export const mcpBearerAccess = (
       access: key.access,
     });
   }).pipe(
+    Effect.tapError(recordRefusal),
     Effect.mapError(({ reason }) =>
       reason === "unauthorized"
         ? new McpUnauthorized()
@@ -607,7 +639,7 @@ export const apiBearerAccess = (origins: HostedOAuthOrigins, request: BearerRequ
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const token = bearer(request.headers);
-    if (token === undefined) return yield* unauthorized;
+    if (token === undefined) return yield* noBearer(request.headers);
     const access: Omit<ApiBearerAccess, "organizationSlug"> & {
       readonly organizationSlug: string | null;
     } = isApiKey(token)
@@ -630,9 +662,10 @@ export const apiBearerAccess = (origins: HostedOAuthOrigins, request: BearerRequ
         );
     const organizationSlug = access.organizationSlug;
     if (organizationSlug === null || organizationSlug.length === 0)
-      return yield* forbidden("membership");
+      return yield* forbidden("membership", "not_member");
     return { ...access, organizationSlug } satisfies ApiBearerAccess;
   }).pipe(
+    Effect.tapError(recordRefusal),
     Effect.mapError(({ reason }) =>
       reason === "unauthorized"
         ? new Unauthorized()

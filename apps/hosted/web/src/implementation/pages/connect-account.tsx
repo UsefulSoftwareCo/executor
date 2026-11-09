@@ -243,8 +243,11 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
       {...(app === undefined || app === null
         ? {}
         : {
-            check: (input: AccountSubmission) =>
-              checkCredentials({ organization, app, provider: provider.id, ...input }),
+            check: {
+              app,
+              run: (input: AccountSubmission) =>
+                checkCredentials({ organization, app, provider: provider.id, ...input }),
+            },
           })}
       onSaved={saved}
       {...(onPendingChange ? { onPendingChange } : {})}

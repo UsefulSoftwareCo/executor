@@ -12,10 +12,16 @@ index 8d4f9b29e6d845414e76fc709c0ae26206c17af5..a26e84f0593159d30a8c77625b7cd62d
  export function Action(...args) {
      if (args.length === 0) {
 diff --git a/lib/Apply.js b/lib/Apply.js
-index 22a223eca67c519d34f7ced0f6cb9b2b85f53f14..1f37fdfec7d6c35a242ddea7a0f8d54b5e46025a 100644
+index 22a223eca67c519d34f7ced0f6cb9b2b85f53f14..00224cced63882747b3672837035ede1c217a6b0 100644
 --- a/lib/Apply.js
 +++ b/lib/Apply.js
-@@ -18,7 +18,7 @@ import * as Output from "./Output.js";
+@@ -13,12 +13,12 @@ import { RuntimeContext } from "./RuntimeContext.js";
+ import { Artifacts, ArtifactStore, createArtifactStore, ensureArtifactStore, makeScopedArtifacts, } from "./Artifacts.js";
+ import { Cli, noopSession, } from "./Report.js";
+ import { havePropsChanged, stripUnresolved } from "./Diff.js";
+-import { generateInstanceId, InstanceId } from "./InstanceId.js";
++import { generateInstanceId, InstanceId, newInstanceId } from "./InstanceId.js";
+ import * as Output from "./Output.js";
  import {} from "./Plan.js";
  import { findProviderByType, missingProviderError, tryFindProviderByType, } from "./Provider.js";
  import { stampedMode } from "./ProviderMode.js";
@@ -24,6 +30,15 @@ index 22a223eca67c519d34f7ced0f6cb9b2b85f53f14..1f37fdfec7d6c35a242ddea7a0f8d54b
  import { Stage } from "./Stage.js";
  import { State, StateStoreError, } from "./State/index.js";
  import { recordResourceOp } from "./Telemetry/Metrics.js";
+@@ -411,7 +411,7 @@ const executeNode = (fqn, node, tracker, ready, readyStable, terminalStatuses, s
+     // ── instance ID ──
+     const instanceId = yield* Effect.gen(function* () {
+         if (node.action === "create" && !node.state?.instanceId) {
+-            const id = yield* generateInstanceId();
++            const id = yield* newInstanceId(fqn);
+             yield* commit({
+                 status: "creating",
+                 fqn,
 diff --git a/lib/Cloudflare/DNS/Record.d.ts b/lib/Cloudflare/DNS/Record.d.ts
 index 0479f3dd9e3c81946f3fe93e3a2dc141dde36cad..85c4aee7c16417940a699962bd81378a943082e8 100644
 --- a/lib/Cloudflare/DNS/Record.d.ts
@@ -575,9 +590,18 @@ index 6e6ed7d006b5ed9d4189e51d7ba0968c04baeff9..c5d2a026b7384500c9a0bf484f95cfef
  /**
   * An Action is a node in the dependency graph that runs an Effect with its
 diff --git a/src/Apply.ts b/src/Apply.ts
-index 473a9e7ebe81897693fbd09e70f77e4dd2f7a628..9b593060dfc2a45fedbe5c46c545ac3f74c24684 100644
+index 473a9e7ebe81897693fbd09e70f77e4dd2f7a628..959ba2d21277c6b31d75971c2241dcaa7c7e495e 100644
 --- a/src/Apply.ts
 +++ b/src/Apply.ts
+@@ -36,7 +36,7 @@ import {
+ import type { ApplyStatus } from "./Report.ts";
+ import { havePropsChanged, stripUnresolved } from "./Diff.ts";
+ import type { Input } from "./Input.ts";
+-import { generateInstanceId, InstanceId } from "./InstanceId.ts";
++import { generateInstanceId, InstanceId, newInstanceId } from "./InstanceId.ts";
+ import * as Output from "./Output.ts";
+ import {
+   type ActionApply,
 @@ -51,7 +51,7 @@ import {
  } from "./Provider.ts";
  import { stampedMode, type ProviderMode } from "./ProviderMode.ts";
@@ -587,6 +611,15 @@ index 473a9e7ebe81897693fbd09e70f77e4dd2f7a628..9b593060dfc2a45fedbe5c46c545ac3f
  import { Stage } from "./Stage.ts";
  import {
    type ActionState,
+@@ -769,7 +769,7 @@ const executeNode = (
+ 
+     const instanceId = yield* Effect.gen(function* () {
+       if (node.action === "create" && !node.state?.instanceId) {
+-        const id = yield* generateInstanceId();
++        const id = yield* newInstanceId(fqn);
+         yield* commit<CreatingResourceState>({
+           status: "creating",
+           fqn,
 diff --git a/src/Cloudflare/DNS/Record.ts b/src/Cloudflare/DNS/Record.ts
 index ea4c14420be9d549f937dde03059c329ef2eed42..57979ebbf8afc43351bee0efd66751877be49880 100644
 --- a/src/Cloudflare/DNS/Record.ts
@@ -2033,3 +2066,200 @@ diff --git a/src/Bundle/Bundle.ts b/src/Bundle/Bundle.ts
    ).pipe(
      Stream.mapEffect((event) =>
        Effect.gen(function* () {
+diff --git a/lib/Cloudflare/StateStore/State.js b/lib/Cloudflare/StateStore/State.js
+index eedcce0da9510202685455fb8fa4735f670173a6..7c1a2fb160bf7163a7c032a08719c9a4a7abce60 100644
+--- a/lib/Cloudflare/StateStore/State.js
++++ b/lib/Cloudflare/StateStore/State.js
+@@ -611,7 +611,7 @@ const isStateStoreAvailable = (scriptName = "alchemy-state-store") => Effect.gen
+ const isStateStoreServing = (accountId) => Effect.gen(function* () {
+     const url = yield* workers.getSubdomain({ accountId }).pipe(Effect.map(({ subdomain }) => subdomain
+         ? `https://${STATE_STORE_SCRIPT_NAME}.${subdomain}.workers.dev`
+-        : undefined), Effect.catch(() => Effect.succeed(undefined)));
++        : undefined));
+     if (url === undefined)
+         return false;
+     const { observed } = yield* checkStateStoreVersion(url);
+@@ -664,9 +664,9 @@ const checkStateStoreVersion = (url) => Effect.gen(function* () {
+     // The /version route may 404 transiently after a fresh deploy
+     // while Cloudflare propagates the new script to the edge, and may
+     // also surface transport-level blips on cold workers.dev hosts.
+-    // Retry the probe itself for ~10s before giving up — only after
+-    // exhausting that budget do we collapse to `undefined` and let
+-    // the caller treat it as a version mismatch.
++    // Retry the probe itself for ~10s before giving up. `observed` is
++    // `undefined` only when the worker is confirmed absent; a probe that
++    // still fails after that budget fails the check.
+     const result = yield* client.version.getVersion().pipe(Effect.catchTag("HttpClientError", (e) => 
+     // if we get a 404 here, it means we assumed the worker shoudl exist, but it does not
+     // we should do a check to see if it does
+@@ -680,7 +680,7 @@ const checkStateStoreVersion = (url) => Effect.gen(function* () {
+             Schedule.spaced("250 millis"),
+             Schedule.recurs(40),
+         ]),
+-    }), Effect.catch(() => Effect.succeed(undefined)));
++    }));
+     const matches = result?.version === STATE_STORE_VERSION;
+     yield* Effect.annotateCurrentSpan({
+         "alchemy.state_store.expected_version": STATE_STORE_VERSION,
+diff --git a/src/Cloudflare/StateStore/State.ts b/src/Cloudflare/StateStore/State.ts
+index 195e301897bdcb118592206f57043045269d61c3..20fc3b04120a131aeb710b390e4d5284c8f74b3b 100644
+--- a/src/Cloudflare/StateStore/State.ts
++++ b/src/Cloudflare/StateStore/State.ts
+@@ -906,7 +906,8 @@ const isStateStoreServing = (accountId: string) =>
+           ? `https://${STATE_STORE_SCRIPT_NAME}.${subdomain}.workers.dev`
+           : undefined,
+       ),
+-      Effect.catch(() => Effect.succeed(undefined)),
++      // A failed lookup is not proof that no store exists; let it fail the
++      // run instead of bootstrapping over the live store's secrets.
+     );
+     if (url === undefined) return false;
+     const { observed } = yield* checkStateStoreVersion(url);
+@@ -979,9 +980,11 @@ const checkStateStoreVersion = (url: string) =>
+     // The /version route may 404 transiently after a fresh deploy
+     // while Cloudflare propagates the new script to the edge, and may
+     // also surface transport-level blips on cold workers.dev hosts.
+-    // Retry the probe itself for ~10s before giving up — only after
+-    // exhausting that budget do we collapse to `undefined` and let
+-    // the caller treat it as a version mismatch.
++    // Retry the probe itself for ~10s before giving up. `observed` is
++    // `undefined` only when the worker is confirmed absent; a probe that
++    // still fails after that budget fails the check. Treating it as
++    // absent made `--yes` bootstrap a new store over the live one,
++    // replacing the encryption key every stored entry depends on.
+     const result = yield* client.version.getVersion().pipe(
+       Effect.catchTag("HttpClientError", (e) =>
+         // if we get a 404 here, it means we assumed the worker shoudl exist, but it does not
+@@ -1002,7 +1005,6 @@ const checkStateStoreVersion = (url: string) =>
+           Schedule.recurs(40),
+         ]),
+       }),
+-      Effect.catch(() => Effect.succeed(undefined)),
+     );
+     const matches = result?.version === STATE_STORE_VERSION;
+     yield* Effect.annotateCurrentSpan({
+diff --git a/lib/InstanceId.js b/lib/InstanceId.js
+index 79794dd5816164f84e2a8569501afd64036ce7ae..314dc69439c93af886b8376c9e26060316df1595 100644
+--- a/lib/InstanceId.js
++++ b/lib/InstanceId.js
+@@ -1,5 +1,7 @@
+ import * as Context from "effect/Context";
+ import * as Effect from "effect/Effect";
++import { StackContext } from "./StackContext.js";
++import { Stage } from "./Stage.js";
+ /** A 16-byte (128-bit) random hex-encoded string representing an physical instance of a logical resource */
+ export class InstanceId extends Context.Service()("instance-id") {
+ }
+@@ -13,4 +15,25 @@ export const generateInstanceId = () => Effect.sync(() => {
+         .map((b) => b.toString(16).padStart(2, "0"))
+         .join("");
+ });
++/**
++ * Recovery only. `ALCHEMY_RECOVER_INSTANCE_IDS` maps `<stack>/<stage>/<fqn>`
++ * to the instance ID of a resource that already exists.
++ */
++export const newInstanceId = (fqn) => Effect.gen(function* () {
++    const raw = process.env.ALCHEMY_RECOVER_INSTANCE_IDS;
++    if (raw) {
++        const stack = yield* StackContext;
++        const stage = yield* Stage;
++        const key = `${stack.name}/${stage}/${fqn}`;
++        const id = JSON.parse(raw)[key];
++        if (id !== undefined) {
++            if (!/^[0-9a-f]{32}$/.test(id)) {
++                return yield* Effect.die(new Error(`Recovered instance ID for ${key} is not 32 hex characters`));
++            }
++            yield* Effect.logInfo(`Recovered instance ID for ${key}`);
++            return id;
++        }
++    }
++    return yield* generateInstanceId();
++});
+ //# sourceMappingURL=InstanceId.js.map
+\ No newline at end of file
+diff --git a/lib/Plan.js b/lib/Plan.js
+index 4a644acc71843c7e66d6cf93a82732ff16f24f43..cf74a0e550d32732bc330f49e0cc7c94b732fd61 100644
+--- a/lib/Plan.js
++++ b/lib/Plan.js
+@@ -17,7 +17,7 @@ import { Artifacts, ArtifactStore, createArtifactStore, ensureArtifactStore, mak
+ import { dedupeBindings, diffBindings, havePropsChanged, isResolved, } from "./Diff.js";
+ import { capturedEnvKeys } from "./RuntimeContext.js";
+ import { parseFqn } from "./FQN.js";
+-import { generateInstanceId, InstanceId } from "./InstanceId.js";
++import { InstanceId, newInstanceId } from "./InstanceId.js";
+ import * as Output from "./Output.js";
+ import { tryFindProviderRegistrationByType, missingProviderError, Provider, providerForMode, tryFindProviderByType, } from "./Provider.js";
+ import { defaultProviderMode, stampedMode, } from "./ProviderMode.js";
+@@ -960,7 +960,7 @@ Effect.gen(function* () {
+             provider.read &&
+             isResolved(news) &&
+             !reusesMigratedFqn) {
+-            const adoptInstanceId = yield* generateInstanceId();
++            const adoptInstanceId = yield* newInstanceId(fqn);
+             const readResult = yield* provider
+                 .read({
+                 id,
+diff --git a/src/InstanceId.ts b/src/InstanceId.ts
+index 231a88e748c9c76cbb8bbf2a7ee82dbfd66bb0ed..a1b33ac646c6e8017f91dba838b840c9e8f48747 100644
+--- a/src/InstanceId.ts
++++ b/src/InstanceId.ts
+@@ -1,5 +1,7 @@
+ import * as Context from "effect/Context";
+ import * as Effect from "effect/Effect";
++import { StackContext } from "./StackContext.ts";
++import { Stage } from "./Stage.ts";
+ 
+ /** A 16-byte (128-bit) random hex-encoded string representing an physical instance of a logical resource */
+ export class InstanceId extends Context.Service<InstanceId, string>()(
+@@ -17,3 +19,29 @@ export const generateInstanceId = () =>
+       .map((b) => b.toString(16).padStart(2, "0"))
+       .join("");
+   });
++
++/**
++ * Recovery only. `ALCHEMY_RECOVER_INSTANCE_IDS` is a JSON object from
++ * `<stack>/<stage>/<fqn>` to the instance ID of a resource that already
++ * exists. A deploy whose state was lost uses it instead of a fresh ID, so it
++ * derives the same physical names and adopts the live resources instead of
++ * creating new ones beside them.
++ */
++export const newInstanceId = (fqn: string) =>
++  Effect.gen(function* () {
++    const raw = process.env.ALCHEMY_RECOVER_INSTANCE_IDS;
++    if (raw) {
++      const stack = yield* StackContext;
++      const stage = yield* Stage;
++      const key = `${stack.name}/${stage}/${fqn}`;
++      const id = (JSON.parse(raw) as Record<string, string>)[key];
++      if (id !== undefined) {
++        if (!/^[0-9a-f]{32}$/.test(id)) {
++          return yield* Effect.die(new Error(`Recovered instance ID for ${key} is not 32 hex characters`));
++        }
++        yield* Effect.logInfo(`Recovered instance ID for ${key}`);
++        return id;
++      }
++    }
++    return yield* generateInstanceId();
++  });
+diff --git a/src/Plan.ts b/src/Plan.ts
+index 0123bbf211dfab8c3668f36efb449c5a0dc76e85..5a58f337ab567f6dc148f4eaf82bae96289ccd82 100644
+--- a/src/Plan.ts
++++ b/src/Plan.ts
+@@ -39,7 +39,7 @@ import {
+ } from "./Diff.ts";
+ import { capturedEnvKeys } from "./RuntimeContext.ts";
+ import { parseFqn } from "./FQN.ts";
+-import { generateInstanceId, InstanceId } from "./InstanceId.ts";
++import { InstanceId, newInstanceId } from "./InstanceId.ts";
+ import * as Output from "./Output.ts";
+ import {
+   tryFindProviderRegistrationByType,
+@@ -1510,7 +1510,7 @@ const makePlan = <A>(
+         isResolved(news) &&
+         !reusesMigratedFqn
+       ) {
+-        const adoptInstanceId = yield* generateInstanceId();
++        const adoptInstanceId = yield* newInstanceId(fqn);
+         const readResult = yield* provider
+           .read({
+             id,

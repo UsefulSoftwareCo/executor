@@ -211,7 +211,8 @@ are generated with this check.
 
 Streamable HTTP and legacy SSE are supported. Every discovery/call owns and
 closes its connection. Session-local workflows do not survive separate tool
-calls. Results retain MCP `content`, `structuredContent`, `isError`, and `_meta`;
+calls. Results retain MCP `content`, `structuredContent`, `isError`, and `_meta`,
+except a text block that only repeats `structuredContent` as JSON, which is dropped;
 remote tool failures are results, while transport failures reject the call.
 A tool's output type describes that whole result, with the server's output schema
 under `structuredContent`, and every result is checked against it. Read typed

@@ -13,6 +13,7 @@
  * and the step's tool listings, released with the step.
  */
 import {
+  recordSecurityAudit,
   HostedExecutor,
   organizationOwner,
   type McpConnectionStore,
@@ -2377,6 +2378,14 @@ const verify = (
     for (const account of accounts)
       if (!(yield* context.executor[OAuthGrantImport].credentialsReadable(AccountId.make(account))))
         unreadable++;
+    // One record for the whole read: it decrypts every imported account's credentials at once.
+    yield* recordSecurityAudit({
+      action: "credential.read",
+      outcome: unreadable === 0 ? "success" : "failure",
+      target: { kind: "organization", id: context.target.id },
+      organization: context.target.id,
+      detail: { purpose: "import_verification", accounts: String(accounts.size) },
+    });
     if (unreadable > 0)
       problems.push(`${unreadable} imported accounts' credentials do not decrypt with v2's key.`);
 

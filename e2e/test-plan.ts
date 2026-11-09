@@ -938,6 +938,16 @@ export const scenarios = plan({
       local: na("Hosted version API scenario"),
     },
   },
+  mcpNestedExecutorResult: {
+    fixtures: "actors",
+    file: "mcp-direct-calls.spec.ts",
+    title: "Executor behind Executor returns each nested result once",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback MCP router; covered on self-host"),
+      local: na("Hosted version API scenario"),
+    },
+  },
   mcpNativeCallApproval: {
     fixtures: "actors",
     file: "mcp-direct-calls.spec.ts",
@@ -6154,6 +6164,17 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: managedCloud,
       local: na("Local has no organizations, so its MCP spans name none."),
+    },
+  },
+  securityObservability: {
+    fixtures: "actors",
+    file: "security-observability.spec.ts",
+    title:
+      "Hosted request spans record the client, the credential and why a request was refused, and security actions leave audit records, never a credential",
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Local has no hosted sign-in, API keys or organizations to refuse."),
     },
   },
   organizationRequestSpans: {

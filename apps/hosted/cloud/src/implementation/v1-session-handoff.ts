@@ -14,7 +14,11 @@
  * organization the v1 organization was imported as, and starts an ordinary Better Auth session.
  * Every refusal opens the v2 sign-in page, returning to the organization. Nothing here reads v1.
  */
-import { AuthenticationUnavailable } from "@executor-js/hosted-server";
+import {
+  AuthenticationUnavailable,
+  auditFailureCodes,
+  recordSecurityAudit,
+} from "@executor-js/hosted-server";
 import { OrganizationSlug } from "@executor-js/hosted-server/organization";
 import type { BetterAuthPlugin } from "better-auth";
 import { APIError, createAuthEndpoint } from "better-auth/api";
@@ -75,6 +79,7 @@ export class V1HandoffRefused extends Schema.TaggedError<V1HandoffRefused>()("V1
 }) {}
 
 const refuse = (reason: V1HandoffRefusal) => new V1HandoffRefused({ reason });
+const refusalCode = auditFailureCodes(V1HandoffRefusal.literals);
 
 /** Better Auth could not start the session. */
 export class V1HandoffSessionFailed extends Schema.TaggedError<V1HandoffSessionFailed>()(
@@ -266,6 +271,14 @@ export const v1SessionHandoff = <R>(services: V1HandoffServices<R>) =>
     }).pipe(
       Effect.catchTag("V1HandoffRefused", (error) =>
         Effect.logInfo("v1 session handoff refused", { reason: error.reason }).pipe(
+          Effect.andThen(
+            recordSecurityAudit({
+              action: "sign_in",
+              outcome: "failure",
+              failure: refusalCode(error.reason),
+              detail: { method: "v1_handoff" },
+            }),
+          ),
           Effect.as(signIn(token)),
         ),
       ),

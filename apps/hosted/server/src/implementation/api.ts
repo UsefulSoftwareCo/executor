@@ -96,7 +96,8 @@ export const hostedHandlers = Layer.mergeAll(
   HttpApiBuilder.group(HostedApi, "viewer", (handlers) =>
     handlers.handle("get", () =>
       Effect.gen(function* () {
-        return yield* CurrentPrincipal;
+        const { userId, sessionId, name } = yield* CurrentPrincipal;
+        return { userId, sessionId, name };
       }),
     ),
   ),

@@ -89,3 +89,5 @@ export const receiveBrowserTelemetry = (signal: "traces" | "logs", build?: strin
       TimeoutError: () => Effect.succeed(HttpServerResponse.empty({ status: 504 })),
     }),
   );
+export { annotateRequestSpan, currentRequestSpan } from "./request-span.ts";
+export { toRequestHttpEffect } from "./request-router.ts";

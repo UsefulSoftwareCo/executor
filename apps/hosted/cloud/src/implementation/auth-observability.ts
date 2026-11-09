@@ -53,6 +53,15 @@ const RegistrationError = Schema.Literals([
   "access_denied",
 ]);
 /**
+ * Every OAuth error code Executor's sign-in returns, token endpoint and registration answer with.
+ * Other records that name an OAuth error accept only these.
+ */
+export const oauthErrorCodes: ReadonlyArray<string> = [
+  ...KnownError.literals,
+  ...TokenError.literals,
+  ...RegistrationError.literals,
+];
+/**
  * Why Better Auth refused a registration, matched against the fixed opening of its own
  * `error_description`. The description itself names client input and is never recorded.
  */

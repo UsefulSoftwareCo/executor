@@ -481,6 +481,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
             ).toMatchObject({
               "oauth.provider.id": provider,
               "oauth.renewal.outcome": "service_unavailable",
+              // Who the credentials were decrypted for, whose account and why; never their values.
+              "oauth.resolve.purpose": "run",
+              "oauth.resolve.credential_type": "oauth2",
+              "executor.account.id": expect.any(String),
+              "executor.organization.id": actors.organization.id,
+              "executor.user.id": expect.any(String),
             });
             expect(
               trace.data.find(({ span }) => span.operationName === "oauth.refresh")?.span.tags,
