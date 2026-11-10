@@ -9862,6 +9862,17 @@ export const scenarios = plan({
       local: na("Local has no hosted organizations."),
     },
   },
+  userRemoval: {
+    fixtures: "actors",
+    file: "user-removal.spec.ts",
+    title:
+      "A person deletes their own user with the organizations only they belong to, leaves the others, and the only owner of a shared organization is refused; the Executor app and API keys can delete neither",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Self-host users are managed by the instance operator."),
+      local: na("Local has no hosted users."),
+    },
+  },
   organizationRemovalWorkflowRefusal: {
     fixtures: "actors",
     file: "organization-removal.spec.ts",

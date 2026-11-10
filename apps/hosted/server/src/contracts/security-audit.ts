@@ -26,6 +26,7 @@ export const SecurityAuditAction = Schema.Literals([
   "mcp_agent.revoke",
   "mcp_connection.revoke",
   "organization.delete",
+  "user.delete",
   "credential.read",
 ]);
 export type SecurityAuditAction = typeof SecurityAuditAction.Type;

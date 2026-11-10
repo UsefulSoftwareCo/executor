@@ -74,6 +74,9 @@ export {
 } from "./implementation/organization-removal.ts";
 export { makeOrganizationRemovals } from "./implementation/organization-removals.ts";
 export { migrateOrganizationRemovals } from "./implementation/organization-removal-schema.ts";
+export * from "./contracts/user-removal.ts";
+export { previewUserRemoval, removeUser } from "./implementation/user-removal.ts";
+export { deleteUserRecords } from "./implementation/user-records.ts";
 
 export { hostedOAuthCallback } from "./implementation/accounts.ts";
 export * from "./contracts/oauth-client-metadata.ts";
