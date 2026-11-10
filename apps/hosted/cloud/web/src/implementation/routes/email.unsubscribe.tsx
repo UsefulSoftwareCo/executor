@@ -1,5 +1,7 @@
 import { createFileRoute, useLocation } from "@tanstack/react-router";
 import { Button } from "@executor-js/ui/components/button";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+import { isDefaultProductBrand } from "@executor-js/ui/contracts/product-brand";
 
 /** Public confirmation: opening a link never saves a preference or requires a session. */
 export const Route = createFileRoute("/email/unsubscribe")({
@@ -13,6 +15,7 @@ export const Route = createFileRoute("/email/unsubscribe")({
 });
 
 function UnsubscribePage() {
+  const brand = useProductBrand();
   const { result } = Route.useSearch();
   const { hash } = useLocation();
   const token = hash.replace(/^#/, "");
@@ -22,7 +25,7 @@ function UnsubscribePage() {
   return (
     <main className="flex min-h-dvh items-center justify-center p-6">
       <section className="w-full max-w-md space-y-5">
-        <p className="text-sm font-medium text-muted-foreground">Executor</p>
+        <p className="text-sm font-medium text-muted-foreground">{brand.name}</p>
         <h1 className="text-2xl font-semibold tracking-tight">
           {complete
             ? "You’re unsubscribed"
@@ -32,9 +35,11 @@ function UnsubscribePage() {
         </h1>
         <p className="text-sm leading-6 text-muted-foreground">
           {complete
-            ? "You won’t receive optional emails from Executor. You can still request sign-in codes and receive essential account emails."
+            ? `You won’t receive optional emails from ${brand.name}. You can still request sign-in codes and receive essential account emails.`
             : invalid
-              ? "Use the link in your latest Executor email, or reply to rhys@executor.sh for help."
+              ? isDefaultProductBrand(brand)
+                ? "Use the link in your latest Executor email, or reply to rhys@executor.sh for help."
+                : `Use the link in your latest ${brand.name} email.`
               : "We’ll stop sending optional emails to this account. You can still request sign-in codes and receive essential account emails."}
         </p>
         {result === "error" && (

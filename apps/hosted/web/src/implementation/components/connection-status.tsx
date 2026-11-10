@@ -2,6 +2,8 @@ import { useId, type ReactNode } from "react";
 import { Spinner } from "@executor-js/ui/components/spinner";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AlertCircleIcon, InformationCircleIcon } from "@hugeicons/core-free-icons";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
+import { productWordmark } from "@executor-js/ui/contracts/product-brand";
 
 /** Center connection progress or failure content; callers own recovery actions and navigation. */
 export function ConnectionStatusPage({
@@ -13,6 +15,7 @@ export function ConnectionStatusPage({
   readonly message: string;
   readonly children?: ReactNode;
 }) {
+  const brand = useProductBrand();
   const titleId = useId();
   const title = {
     connecting: "Connecting account…",
@@ -23,8 +26,8 @@ export function ConnectionStatusPage({
     <main className="grid min-h-dvh place-items-center px-4 py-12 sm:px-6">
       <div className="w-full max-w-110">
         <div className="mb-6 flex items-center justify-center gap-2 text-[19px] font-semibold tracking-[-0.04em]">
-          <img src="/favicon.png" alt="" className="size-6" />
-          executor
+          <img src={brand.logo} alt="" className="size-6" />
+          {productWordmark(brand)}
         </div>
         <section
           aria-labelledby={titleId}

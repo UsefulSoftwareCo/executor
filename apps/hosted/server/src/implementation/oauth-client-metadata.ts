@@ -6,9 +6,9 @@ import {
   type ClientMetadataDocument,
   ClientMetadataUrlInvalid,
   clientMetadataDocumentPath,
-  hostedOAuthClientName,
 } from "../contracts/oauth-client-metadata.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
+import { CurrentProductBrand, productLogoUrl } from "@executor-js/utils/product-brand";
 
 /**
  * The operator's document URL, whether this host serves the document at it, and the one callback
@@ -99,16 +99,18 @@ const applicationType = (callback: string) => {
  * this client send as `redirect_uri`. A host that does not serve a document answers 404.
  */
 export const clientMetadataDocument = (setting: Option.Option<ClientMetadataSetting>) =>
-  Effect.sync(() => {
+  Effect.gen(function* () {
     if (Option.isNone(setting) || !setting.value.served)
       return HttpServerResponse.empty({ status: 404 });
+    // Services show the product's name and logo when asking a person to connect an account.
+    const brand = yield* CurrentProductBrand;
     const url = new URL(setting.value.url);
     const callback = setting.value.redirectUri;
     const document: ClientMetadataDocument = {
       client_id: url.href,
-      client_name: hostedOAuthClientName,
+      client_name: brand.name,
       client_uri: url.origin,
-      logo_uri: new URL("/favicon.png", url.origin).href,
+      logo_uri: productLogoUrl(brand, url.origin),
       redirect_uris: [callback],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],

@@ -15,7 +15,7 @@ import {
 } from "@executor-js/ui/components/card";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
 import { AccountFailed, renameUserAtom } from "../../contracts/account.ts";
 import { sessionAtom } from "../../contracts/auth.ts";
 import { organizationsAtom } from "../../contracts/organization.ts";
@@ -27,6 +27,7 @@ import {
   profileTitle,
 } from "../components/account-pending.tsx";
 import { OrganizationAvatar } from "../components/organization.tsx";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 const errorMessage = (cause: Cause.Cause<AccountFailed>) => {
   const error = Cause.squash(cause);
@@ -45,7 +46,7 @@ const suggestedName = (email: string) => email.split("@")[0] ?? "";
  * verify a new address renders its own email setting; otherwise the email is read-only.
  */
 export function ProfilePage({ email }: { readonly email?: (current: string) => ReactNode }) {
-  useDocumentTitle(productTitle(profileTitle));
+  useDocumentTitle(profileTitle);
   const session = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)));
   return (
     <PageFrame>
@@ -169,6 +170,7 @@ function DisplayName({ current, email }: { readonly current: string; readonly em
 
 /** Every organization this person belongs to; each one owns its own apps, accounts and groups. */
 function Memberships() {
+  const brand = useProductBrand();
   const organizations = useAtomValue(organizationsAtom);
   const retry = useAtomRefresh(organizationsAtom);
   return (
@@ -178,7 +180,7 @@ function Memberships() {
           <h2>Organizations</h2>
         </CardTitle>
         <CardDescription>
-          Where you are a member. Everything else in Executor lives inside one of these.
+          Where you are a member. Everything else in {brand.name} lives inside one of these.
         </CardDescription>
       </CardHeader>
       <CardContent className="pb-4!">

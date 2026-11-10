@@ -9,13 +9,14 @@ import { LoginFrame } from "./login-frame.tsx";
 import { AuthFailed, sessionAtom, signInAtom } from "../../contracts/auth.ts";
 import { Button } from "@executor-js/ui/components/button";
 import { Spinner } from "@executor-js/ui/components/spinner";
-import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
-const callbackError = (error: unknown): string | null => {
+const callbackError = (error: unknown, product: string): string | null => {
   if (typeof error !== "string" || error === "") return null;
   if (error === "access_denied") return "Sign-in was canceled. You can try again.";
   if (error === "account_not_linked")
-    return "An Executor account already uses this email. Sign in with the method you used before.";
+    return `${/^[aeiou]/i.test(product) ? "An" : "A"} ${product} account already uses this email. Sign in with the method you used before.`;
   if (error === "unable_to_link_account")
     return "This email is not linked to this sign-in method. Contact an administrator.";
   return "Sign-in could not be completed. Please try again.";
@@ -99,8 +100,8 @@ export function LoginPage({
   readonly cardFooter?: ReactNode;
   readonly footer?: ReactNode;
 }) {
-  useDocumentTitle(productTitle(title));
-  const callbackFailure = callbackError(callbackCode);
+  useDocumentTitle(title);
+  const callbackFailure = callbackError(callbackCode, useProductBrand().name);
   const session = useAtomValue(sessionAtom);
   const refreshSession = useAtomRefresh(sessionAtom);
   const signIn = useAtomSet(signInAtom, { mode: "promiseExit" });

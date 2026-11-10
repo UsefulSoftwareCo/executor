@@ -19,7 +19,7 @@ import type { AppLinkProps } from "../../contracts/dashboard.ts";
 import type { AppView } from "../../contracts/dashboard.ts";
 import { AppIcon } from "./common.tsx";
 import { useDashboard } from "./context.tsx";
-import { productTitle, useDocumentTitle } from "../hooks/document-title.ts";
+import { useDocumentTitle } from "../hooks/document-title.ts";
 import { cn } from "../lib/utils.ts";
 
 const sections = [
@@ -95,7 +95,7 @@ export function AppDetailLayout({
   readonly actions?: ReactNode;
   readonly children: ReactNode;
 }) {
-  useDocumentTitle(productTitle(app?.name ?? "App"));
+  useDocumentTitle(app?.name ?? "App");
   return (
     <div className="flex min-h-0 flex-1 flex-col [--app-tools-list-width:260px]">
       <header className="shrink-0 px-7 pb-7 pt-5 max-[740px]:flex max-[740px]:items-center max-[740px]:py-1.5 max-[740px]:pl-1 max-[740px]:pr-4">

@@ -9,7 +9,7 @@ import type { BrowserEntryValues } from "../router.tsx";
 import { localPageTitle } from "../../contracts/navigation.ts";
 import { NotFoundPage } from "../components/not-found.tsx";
 import { useLocation } from "@tanstack/react-router";
-import { DocumentTitleProvider, productTitle } from "@executor-js/ui/hooks/document-title";
+import { DocumentTitleProvider } from "@executor-js/ui/hooks/document-title";
 import { DashboardDocument } from "@executor-js/dashboard-start/shell";
 import styles from "../styles/globals.css?url";
 import { fontPreloads } from "@executor-js/ui/lib/fonts";
@@ -30,7 +30,7 @@ export const Route = createRootRouteWithContext<{
 function Root() {
   const { pathname } = useLocation();
   return (
-    <DocumentTitleProvider fallbackTitle={productTitle(localPageTitle(pathname))}>
+    <DocumentTitleProvider fallbackTitle={localPageTitle(pathname)}>
       <BrowserEntry />
       <Outlet />
       {/* A development overlay; it reads the browser origin and has no server markup. */}

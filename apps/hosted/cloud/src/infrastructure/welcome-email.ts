@@ -6,8 +6,9 @@ import { deliverWelcomeEmails } from "../implementation/welcome-emails.ts";
 import type { SendWelcomeEmail } from "../contracts/email.ts";
 import { cloudHosts } from "./stage.ts";
 import { cloudSecrets } from "./secrets.ts";
-import { jobFailed } from "../contracts/job-outcome.ts";
+import { jobCompleted, jobFailed } from "../contracts/job-outcome.ts";
 import { unsubscribeHandler, unsubscribeLinks } from "../implementation/email-preferences.ts";
+import { CurrentProductBrand, isDefaultProductBrand } from "@executor-js/utils/product-brand";
 
 /** The cron invocation owns its database connection and closes it after the batch. */
 export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
@@ -23,18 +24,23 @@ export const cloudWelcomeEmails = (send: SendWelcomeEmail) =>
         Effect.map((url) => PgClient.layer({ url, maxConnections: 1, prepare: false })),
       ),
     );
+    // The welcome is a personal note from Executor's founder, so another brand sends none.
+    const welcomes = isDefaultProductBrand(yield* CurrentProductBrand);
     const deliverUser = (user?: string) =>
-      Effect.scoped(
-        deliverWelcomeEmails(
-          send,
-          (id, email) =>
-            secrets.authSecret.pipe(
-              Effect.flatMap((secret) => unsubscribeLinks(origin, secret, id, email)),
-            ),
-          { site: hosts.site, resourceOrigin },
-          user,
-        ).pipe(Effect.provide(database)),
-      );
+      Effect.gen(function* () {
+        if (!welcomes) return jobCompleted;
+        return yield* Effect.scoped(
+          deliverWelcomeEmails(
+            send,
+            (id, email) =>
+              secrets.authSecret.pipe(
+                Effect.flatMap((secret) => unsubscribeLinks(origin, secret, id, email)),
+              ),
+            { site: hosts.site, resourceOrigin },
+            user,
+          ).pipe(Effect.provide(database)),
+        );
+      });
     return {
       deliver: deliverUser().pipe(
         Effect.catch((error) =>

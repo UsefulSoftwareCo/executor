@@ -147,6 +147,8 @@ import { Api } from "./infrastructure/api-worker.ts";
 import { Dashboard } from "./infrastructure/dashboard-worker.ts";
 import { cloudSourceFormatter } from "./infrastructure/source-formatter.ts";
 import { cloudAuthoringReference } from "./infrastructure/authoring-reference.ts";
+import { productBrandBindings } from "./infrastructure/product-brand.ts";
+import { CurrentProductBrand, productBrandConfig } from "@executor-js/utils/product-brand";
 export { Api } from "./infrastructure/api-worker.ts";
 
 export default Api.make(
@@ -190,6 +192,7 @@ export default Api.make(
         ...(origin === undefined ? {} : yield* clientMetadataBinding.pipe(Effect.orDie)),
         // Every deployed stage lists production's official app feed.
         ...(origin === undefined ? {} : yield* appCatalogBinding),
+        ...(yield* productBrandBindings),
       },
       build: workerBuild("api"),
       // Auth callbacks and the dashboard share the configured canonical origin.
@@ -232,6 +235,7 @@ export default Api.make(
     };
   }),
   Effect.gen(function* () {
+    const brand = yield* CurrentProductBrand;
     const lifetime = yield* previewLifetime;
     const analytics = yield* cloudAnalytics;
     const reportErrors = yield* cloudSentry;
@@ -764,9 +768,12 @@ export default Api.make(
         // Server-rendered pages read the API through this complete pipeline, in-process.
         withHostPipeline,
         lifetime.http,
+        Effect.provideService(CurrentProductBrand, brand),
       ),
     };
   }).pipe(
+    // Read once per isolate: setup such as sign-in and email senders presents it too.
+    Effect.provideServiceEffect(CurrentProductBrand, productBrandConfig.pipe(Effect.orDie)),
     Effect.provide(
       Layer.mergeAll(
         // The coordinator calls the retired one once, at handover.

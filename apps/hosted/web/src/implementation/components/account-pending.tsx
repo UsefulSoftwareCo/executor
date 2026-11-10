@@ -11,6 +11,7 @@ import {
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { organizationSettingClass } from "./organization-settings-pending.tsx";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 /** The page headings and copy are the same on every visit. */
 export const profileTitle = "Profile";
@@ -72,6 +73,7 @@ export function AccountSettingPending({
 
 /** Lazy route loading keeps the profile page identity and its static controls. */
 export function ProfilePending() {
+  const brand = useProductBrand();
   return (
     <PageFrame>
       <PageHeader title={profileTitle} description={profileDescription} />
@@ -85,7 +87,7 @@ export function ProfilePending() {
         <AccountSettingPending title="Email" description="Used for sign-in and invitations." />
         <AccountSettingPending
           title="Organizations"
-          description="Where you are a member. Everything else in Executor lives inside one of these."
+          description={`Where you are a member. Everything else in ${brand.name} lives inside one of these.`}
         >
           <Skeleton className="h-9 w-full" aria-label="Loading organizations" />
         </AccountSettingPending>

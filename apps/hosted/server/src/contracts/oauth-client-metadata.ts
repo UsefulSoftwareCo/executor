@@ -8,9 +8,6 @@ import { Schema } from "effect";
 /** Where a hosted install serves its document. The URL is the client's identity, so keep it. */
 export const clientMetadataDocumentPath = "/oauth/client-metadata.json";
 
-/** The name hosted installs give their OAuth client, in registrations and in the document. */
-export const hostedOAuthClientName = "Executor";
-
 /** The document a hosted install serves. Values follow the RFC 7591 client metadata registry. */
 export interface ClientMetadataDocument {
   /** The document's own URL, compared as a plain string by the authorization server. */

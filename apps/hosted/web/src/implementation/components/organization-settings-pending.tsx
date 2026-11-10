@@ -13,6 +13,7 @@ import {
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { organizationSlugMaxLength } from "@executor-js/hosted-server/organization";
+import { useProductBrand } from "@executor-js/ui/hooks/product-brand";
 
 /** Keep form geometry identical before and after the organization values arrive. */
 export const organizationSettingClass =
@@ -20,6 +21,7 @@ export const organizationSettingClass =
 
 /** Render known settings copy and controls, with placeholders only for server values. */
 export function OrganizationSettingsPending({ children }: { readonly children?: ReactNode }) {
+  const brand = useProductBrand();
   const page = usePageUrl();
   return (
     <PageFrame>
@@ -36,7 +38,7 @@ export function OrganizationSettingsPending({ children }: { readonly children?: 
             <CardTitle>
               <h2>Organization name</h2>
             </CardTitle>
-            <CardDescription>Shown across Executor.</CardDescription>
+            <CardDescription>Shown across {brand.name}.</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="flex h-9 w-[min(100%,_520px)] items-center rounded-[6px] border border-input px-3 max-[740px]:min-h-11 max-[640px]:h-10">

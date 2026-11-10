@@ -29,6 +29,8 @@ These settings override the defaults:
 | `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH`  | no       | Let app code reach your private network. See below.                      |
 | `EXECUTOR_APP_WORKERS` | no | Most app and data Workers kept loaded at once. The default is `64`. See below. |
 | `EXECUTOR_APP_WORKER_IDLE_SECONDS` | no | Unload an app or data Worker not called for this long; `0` keeps idle Workers loaded up to the limit. The default is `300`. See below. |
+| `EXECUTOR_PRODUCT_NAME`              | no       | Name the dashboard, sign-in, MCP consent, OAuth client and MCP server present instead of Executor. See below. |
+| `EXECUTOR_PRODUCT_LOGO_URL`          | no       | Square logo URL, absolute or a path on this origin, shown with that name and as the favicon. |
 | `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
 | `EXECUTOR_CATALOG_URL`               | no       | `index.json` of the official app feed that **Add app** lists. Without it, Add app lists only the built-in Executor app. |
 | `EXECUTOR_REGISTRY_URL`              | no       | Origin of the public app registry. The default is `https://api.executor.sh`. |
@@ -90,6 +92,16 @@ already registered or entered stay in use when you turn this on.
 
 The bundled Motel collector records traces by default. You can export to your own collector instead. See
 [Tracing](/run/tracing).
+
+### Your own name and logo
+
+`EXECUTOR_PRODUCT_NAME` replaces Executor in page titles, sign-in, setup guides, MCP consent,
+OAuth resource and client metadata, and the MCP server name clients list. Setup commands name
+the MCP server after it in lowercase, such as `acme-tools` for `Acme Tools`.
+`EXECUTOR_PRODUCT_LOGO_URL` replaces the logo and favicon; serve a square image of at least 64
+pixels. With another name, setup guides leave out Executor's own plugins and screenshots, and
+the dashboard leaves out Executor's feedback and GitHub links. The built-in app keeps the name
+Executor and shows your logo.
 
 ## Run it
 
