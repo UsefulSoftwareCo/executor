@@ -129,14 +129,14 @@ const attempt = <E, R>(
     Effect.withSpan("hosted.provision"),
   );
 
-/** Owners and admins whose managed key member setup links; read live. */
+/** Members whose managed key member setup links; read live. */
 const managers = (organization: OrganizationId, requireVerifiedEmail: boolean, user?: string) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     return yield* sql`select "user".id as "userId", "user".name from member join "user" on "user".id = member."userId"
       where member."organizationId" = ${organization}
       and (${user ?? null}::text is null or member."userId" = ${user ?? null}::text)
-      and member.role in ('owner', 'admin') and (${requireVerifiedEmail} = false or "user"."emailVerified" = true)`.pipe(
+      and (${requireVerifiedEmail} = false or "user"."emailVerified" = true)`.pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Manager))),
     );
   });
