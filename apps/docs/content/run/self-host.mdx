@@ -27,6 +27,7 @@ These settings override the defaults:
 | `EXECUTOR_ENVIRONMENT`               | no       | Label for this deployment. The default is `self-host`.                   |
 | `EXECUTOR_APP_UI_BASE_URL`           | no       | HTTPS origin that serves app web pages. See below.                       |
 | `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH`  | no       | Let app code reach your private network. See below.                      |
+| `EXECUTOR_TRUSTED_PROXIES`           | no       | Comma-separated addresses of your reverse proxies, so rate limits count each client behind them. List only proxies. See below. |
 | `EXECUTOR_APP_WORKERS` | no | Most app and data Workers kept loaded at once. The default is `64`. See below. |
 | `EXECUTOR_APP_WORKER_IDLE_SECONDS` | no | Unload an app or data Worker not called for this long; `0` keeps idle Workers loaded up to the limit. The default is `300`. See below. |
 | `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
@@ -109,6 +110,33 @@ The container publishes port `4400` on loopback only, as
 `127.0.0.1:4400`. Put your own TLS terminator in front of it and forward to that
 port. Startup initializes the embedded database before it opens HTTP, so the
 first boot takes a moment.
+
+Sign-in and the other auth routes are rate-limited per client address. Behind a
+reverse proxy every request comes from the proxy, so all clients share its
+limits. Set `EXECUTOR_TRUSTED_PROXIES` to the addresses your proxies connect
+from; the Docker image and the Compose build read it. A request from a listed
+address takes its client from `X-Forwarded-For`, read from the right past every
+listed address. Each proxy must append the address it received the request from,
+as Caddy, Traefik and nginx's `$proxy_add_x_forwarded_for` do. When every listed
+address is such a proxy and no client connects from one, a client can't pick its
+own address by sending that header. Requests from any other address, or with the
+setting empty, use the connection's address.
+
+List each proxy's exact address, or a range that holds only your proxies. Anything
+that connects from a listed address can choose the address it is limited and
+recorded under, so do not list a Docker subnet other containers share, and never
+list `0.0.0.0/0` or `::/0`.
+
+- A proxy on the host connects from the gateway of the container's Docker
+  network, often `172.17.0.1` for `docker run` and different under Compose.
+  `docker inspect` on the container shows it as each network's `Gateway`. The
+  loopback-only port keeps remote clients off, but every process on the host
+  arrives from that same gateway, so listing it trusts all of them.
+- A proxy container connects from its own address. Give it a fixed address and
+  list that.
+- For Cloudflare Tunnel, list the address `cloudflared` connects from, by the same
+  rules: Cloudflare appends each visitor's address to `X-Forwarded-For` and
+  `cloudflared` passes it on.
 
 Stop it with:
 

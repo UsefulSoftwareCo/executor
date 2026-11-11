@@ -160,6 +160,49 @@ For remote access, put an HTTPS reverse proxy in front of it and set
 `BETTER_AUTH_URL` to the exact public dashboard origin, such as
 `https://executor.example.com`.
 
+### Rate limits behind a proxy
+
+Sign-in and the other auth routes are rate-limited per client address. Behind a
+proxy every connection comes from the proxy, so by default all users share one
+limit, and three failed sign-ins from one person lock everyone out for about
+ten seconds. Set `EXECUTOR_TRUSTED_PROXIES` to the addresses your proxies
+connect to the container from, separated by commas. The Docker image and the
+Compose build read it; running `src/main.ts` from source, as `bun run hosted:dev`
+does, does not.
+
+A request from a listed address takes its client from `X-Forwarded-For`, read
+from the right past every listed address. Each proxy must append the address it
+received the request from, as Caddy, Traefik, Cloudflare and nginx's
+`$proxy_add_x_forwarded_for` do. When every listed address is such a proxy and
+no client can connect from one, the entry used was written by your proxy, so
+what a client puts in the header itself is never used. Requests from any other
+address use the connection's address, and with the setting empty nothing
+changes. Startup fails on an entry that is neither an address nor a CIDR range.
+
+List each proxy's exact address. A CIDR range is safe only when it holds your
+proxies and nothing else. Any machine or container that connects from a listed
+address can put any address in `X-Forwarded-For`, directly or through your proxy,
+and is limited, and recorded in sessions and audit records, under that address.
+So do not list a Docker network's subnet that other containers share, and never
+list `0.0.0.0/0` or `::/0`, which trusts every client.
+
+- A proxy on the host, such as Caddy or nginx forwarding to `127.0.0.1:4400`,
+  connects from the gateway of the container's Docker network. Find it with
+  `docker inspect <container> --format '{{range .NetworkSettings.Networks}}{{.Gateway}} {{end}}'`;
+  under Compose, use `$(docker compose -f apps/hosted/self-host/compose.yaml ps -q server)`
+  as the container. It is often `172.17.0.1` for `docker run`, and a different
+  address for each Compose network. Publishing the port on loopback, as the
+  supplied command and Compose file do, keeps remote clients off it, but every
+  process on the host reaches the container from that same gateway address.
+  Listing the gateway trusts all of them, so do it only on a host where the
+  people who can run processes are ones you trust.
+- A proxy in another container on the same Docker network connects from that
+  container's address. Give the proxy a fixed address and list only that, or
+  put it and Executor on a network of their own.
+- Cloudflare Tunnel: list the address `cloudflared` connects from, by the same
+  rules. Cloudflare appends each visitor's address to `X-Forwarded-For` and
+  `cloudflared` passes it on, so no other setting is needed.
+
 Localhost derives app UI addresses automatically. For a public installation,
 set `EXECUTOR_APP_UI_BASE_URL` to a separate HTTPS base such as
 `https://apps.example.com`. Route that base and its wildcard subdomains to the

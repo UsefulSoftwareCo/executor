@@ -22,6 +22,11 @@ services:
       # JSON array of exact HTTP(S) origins allowed to resolve to private addresses.
       EXECUTOR_URL_ALLOW_HTTP_ORIGINS:
       EXECUTOR_APPS_ALLOW_PRIVATE_FETCH:
+      # Comma-separated addresses of reverse proxies in front of the host; a CIDR range only if it
+      # holds proxies and nothing else. Requests from them take the client's address, which rate
+      # limits count, from X-Forwarded-For, so anything at a listed address can choose its own.
+      # A proxy on this host connects from this network's gateway (`docker inspect`, Gateway).
+      EXECUTOR_TRUSTED_PROXIES:
       # Most app and data Workers kept loaded (default 64). Idle ones above it unload and reload
       # on their next call. An app with a database runs its calls in a data Worker, which counts.
       EXECUTOR_APP_WORKERS:
