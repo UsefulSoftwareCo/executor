@@ -23,7 +23,9 @@ docker run --detach --name executor-v2 --init --restart unless-stopped \
 
 Open `http://localhost:4400` and create the first administrator. The container
 includes the dashboard, API, MCP server, database, and app runtime. For a pinned
-release, use `beta-<full Git commit SHA>` instead of the moving `beta` tag.
+release, use a published version such as `2.0.0-beta.N` instead of the moving
+`beta` tag. The `beta` tag moves only once a release is public, so it always
+exists; a version tag exists once its GitHub release is published.
 Before updating, stop the container and back up its volume. Pull the new image,
 remove only the stopped container, and repeat the run command with the same
 volume and secrets.
