@@ -105,7 +105,9 @@ export const isV2Path = (pathname: string): boolean =>
  *  `/apps/*` and `/experiments/*` are v2's; v2 publishes nothing at a bare
  *  `/experiments`, which stays with v1. `/demo` is a valid, unreserved v1
  *  organization slug, so it and everything below it stay with v1. The
- *  favicons stay with v1 too: v1's dashboard serves identical files. */
+ *  favicons stay with v1 too: v1's dashboard serves identical files. v1 has
+ *  no `/favicon.png`, which v2's OAuth client metadata document names as its
+ *  logo, so that one is v2's. */
 const V2_MARKETING_PATHS: ReadonlyArray<string> = [
   "/home",
   "/pricing",
@@ -126,6 +128,7 @@ const V2_MARKETING_PATHS: ReadonlyArray<string> = [
   "/authors/*",
   "/og-image.png",
   "/pattern-graph-paper.svg",
+  "/favicon.png",
 ];
 
 /** Whether a pathname belongs to v2's marketing site on `executor.sh`. `/`
