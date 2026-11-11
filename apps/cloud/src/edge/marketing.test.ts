@@ -648,6 +648,8 @@ describe("isV2MarketingPath", () => {
     "/authors/author.png",
     "/og-image.png",
     "/pattern-graph-paper.svg",
+    // The logo v2's OAuth client metadata document names; v1 has no such file.
+    "/favicon.png",
     "/docs",
     "/docs/",
     "/docs/quickstart",
