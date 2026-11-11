@@ -13,6 +13,7 @@ export {
   filterCatalog,
   PreparedApp,
   officialCatalogUrl,
+  catalogFeedSetting,
 } from "./catalog.ts";
 export { customSetupRecovery, unknownEntryRecovery } from "./setup.ts";
 export type { Catalog, CatalogHost, CatalogSource } from "./catalog.ts";

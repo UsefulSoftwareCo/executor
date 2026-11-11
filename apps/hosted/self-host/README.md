@@ -142,6 +142,17 @@ To stop the server while retaining its data:
 docker compose -f apps/hosted/self-host/compose.yaml down
 ```
 
+## App catalog
+
+Onboarding and **Add app** list Executor's official apps from the published
+feed at `https://catalog.executor.sh/index.json`. The server fetches the feed's
+index when the list opens, and each app's source when it is added; the browser
+loads app icons from the same host. To read another copy of the feed, set
+`EXECUTOR_CATALOG_URL` to its `index.json`. On an instance without outbound
+internet access, set `EXECUTOR_CATALOG_URL=off`: the lists then show only the
+built-in Executor app, and you can still add apps by URL or build your own. A
+feed that cannot be reached shows an error with a retry in both places.
+
 ## Serve other users
 
 The supplied Compose file binds port 4400 to the host's loopback interface.

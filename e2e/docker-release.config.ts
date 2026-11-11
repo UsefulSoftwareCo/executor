@@ -3,6 +3,7 @@ export default defineConfig({
   test: {
     include: [
       "e2e/tests/docker-release.spec.ts",
+      "e2e/tests/docker-release-catalog.spec.ts",
       "e2e/tests/docker-release-app-memory.spec.ts",
       "e2e/tests/docker-release-credential-handles.spec.ts",
       "e2e/tests/docker-release-executor-api.spec.ts",
