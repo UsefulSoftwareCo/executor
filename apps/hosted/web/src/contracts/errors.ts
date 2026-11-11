@@ -22,8 +22,6 @@ const errorMessage = Match.type<HostedError>().pipe(
           "One of the selected groups is no longer available. Choose the current groups.",
         creator_unavailable:
           "Only me is available for apps with a current creator. Choose groups or everyone instead.",
-        personal_account:
-          "Personal accounts stay private. Connect a shared account to give your team access.",
       })[reason],
     ScheduleNotFound: () => "This schedule or run is no longer available.",
     ConnectionNotFound: () => "This connection was revoked or no longer exists.",

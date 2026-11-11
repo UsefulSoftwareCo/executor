@@ -35,14 +35,13 @@ layer(HostedLive, { excludeTestServices: true })("App account link role lock", (
             .pipe(Effect.map((links) => links.map((link) => [link.requirement, link.account.id])));
         const first = yield* fixture.connect(actors.owner, "app", "service", "synthetic-role-one", {
           kind: "shared",
-          audience: { kind: "everyone" },
         });
         const second = yield* fixture.connect(
           actors.owner,
           "app",
           "service",
           "synthetic-role-two",
-          { kind: "shared", audience: { kind: "everyone" } },
+          { kind: "shared" },
         );
         // Connecting the second account replaced the first's link.
         expect(yield* linked()).toEqual([["service", second]]);

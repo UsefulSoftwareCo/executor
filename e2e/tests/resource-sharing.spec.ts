@@ -154,7 +154,7 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
                 actors.owner,
                 "POST",
                 connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-                { destination: { kind: "shared", audience: { kind: "everyone" } } },
+                { destination: { kind: "shared" } },
               ),
             );
             yield* browser.use("Open the shared connection handoff", (page) =>

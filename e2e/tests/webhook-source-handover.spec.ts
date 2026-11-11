@@ -25,10 +25,7 @@ import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
 const Viewer = Schema.Struct({ userId: Schema.String });
-const Group = Schema.Struct({ id: Schema.String, revision: Schema.String });
-const Directory = Schema.Struct({
-  members: Schema.Array(Schema.Struct({ id: Schema.String, userId: Schema.String })),
-});
+const SessionIdentity = Schema.Struct({ user: Schema.Struct({ email: Schema.String }) });
 const source = `import {defineApp,defineProvider,secrets,query,object,string,router} from "apps";
 const service=defineProvider({name:"Handover fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
 const incoming={account:{ user: "service" },config:object({}),state:object({}),
@@ -87,12 +84,12 @@ const handoverFixture = Effect.gen(function* () {
   if (owner === undefined || admin === undefined || member === undefined)
     return yield* Effect.die(new Error("Missing viewers"));
   /** Connect a shared account from the app, which links it for the connecting member. */
-  const connectShared = (actor: Session, audience: unknown) =>
+  const connectShared = (actor: Session) =>
     Effect.gen(function* () {
       const connection = yield* body(
         Resource,
         yield* api.request(actor, "POST", connectionsPath(path, "user", "service"), {
-          destination: { kind: "shared", audience },
+          destination: { kind: "shared" },
         }),
       );
       const saved = yield* api.request(
@@ -164,7 +161,7 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source handover", (it)
       Effect.gen(function* () {
         const { actors, path, ids, connectShared, sourceRunsAs, subscriptionRunsAs, deliver } =
           yield* handoverFixture;
-        const account = yield* connectShared(actors.owner, { kind: "everyone" });
+        const account = yield* connectShared(actors.owner);
         // The first member to link an account runs its webhook source.
         yield* sourceRunsAs(actors.owner, account, ids.owner);
         yield* linkAccount(actors.member, path, "service", account);
@@ -195,7 +192,7 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source handover", (it)
       Effect.gen(function* () {
         const { actors, path, ids, connectShared, sourceRunsAs, subscriptionRunsAs, deliver } =
           yield* handoverFixture;
-        const account = yield* connectShared(actors.member, { kind: "everyone" });
+        const account = yield* connectShared(actors.member);
         yield* sourceRunsAs(actors.member, account, ids.member);
         const first = yield* subscriptionRunsAs(actors.member, account, ids.member);
         // Unlinking stops the subscription; its stopped row stays as history.
@@ -236,98 +233,60 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source handover", (it)
       }),
     ),
   );
-  it.effect(scenarios.webhookSourceGroupHandover.title, (context) =>
+  it.effect(scenarios.webhookSourceMemberHandover.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const {
-          api,
-          actors,
-          prefix,
-          path,
-          ids,
-          connectShared,
-          sourceRunsAs,
-          subscriptionRunsAs,
-          deliver,
-        } = yield* handoverFixture;
-        const directory = yield* body(
-          Directory,
-          yield* api.request(actors.owner, "GET", `${prefix}/groups`),
-        );
-        const memberOf = (userId: string) => {
-          const found = directory.members.find((item) => item.userId === userId);
-          if (found === undefined) throw new Error("Missing synthetic group member");
-          return found.id;
-        };
-        const name = `Handover ${randomUUID().slice(0, 8)}`;
-        const group = yield* body(
-          Group,
-          yield* api.request(actors.owner, "POST", `${prefix}/groups`, {
-            name,
-            description: "",
-            memberIds: [memberOf(ids.member), memberOf(ids.admin)],
-          }),
-        );
+        const { api, actors, path, ids, connectShared, sourceRunsAs, subscriptionRunsAs, deliver } =
+          yield* handoverFixture;
         const shared: { account?: string } = {};
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             // The registration ran as the member, who can no longer use the account, so removing
             // it waits for a person to confirm it was removed at the provider.
-            if (shared.account !== undefined) {
-              const account = shared.account;
-              for (const actor of [actors.admin, actors.member])
-                yield* api.request(
-                  actor,
-                  "DELETE",
-                  `${requirementPath(path, "user", "service")}/${account}`,
-                );
-              const waiting = yield* settleWebhookSubscriptions(actors.admin, path, (hooks) =>
-                hooks.every(
-                  (hook) =>
-                    hook.sourceAccount !== account ||
-                    hook.status === "disabled" ||
-                    hook.status === "stopped",
-                ),
-              );
-              for (const hook of waiting)
-                if (hook.sourceAccount === account && hook.status === "disabled")
-                  yield* api.request(
-                    actors.admin,
-                    "POST",
-                    `${path}/webhooks/${hook.id}/confirm-removal`,
-                  );
-              yield* removeAppWhenStopped(actors.owner, path);
-            }
-            const current = yield* body(
-              Group,
-              yield* api.request(actors.owner, "GET", `${prefix}/groups/${group.id}`),
+            if (shared.account === undefined) return;
+            const account = shared.account;
+            yield* api.request(
+              actors.admin,
+              "DELETE",
+              `${requirementPath(path, "user", "service")}/${account}`,
             );
-            yield* api.request(actors.owner, "DELETE", `${prefix}/groups/${group.id}`, {
-              revision: current.revision,
-            });
+            const waiting = yield* settleWebhookSubscriptions(actors.admin, path, (hooks) =>
+              hooks.every(
+                (hook) =>
+                  hook.sourceAccount !== account ||
+                  hook.status === "disabled" ||
+                  hook.status === "stopped",
+              ),
+            );
+            for (const hook of waiting)
+              if (hook.sourceAccount === account && hook.status === "disabled")
+                yield* api.request(
+                  actors.admin,
+                  "POST",
+                  `${path}/webhooks/${hook.id}/confirm-removal`,
+                );
+            yield* removeAppWhenStopped(actors.owner, path);
           }).pipe(Effect.orDie),
         );
-        // The member shares an account with the group, so the member runs its source.
-        const account = yield* connectShared(actors.member, {
-          kind: "groups",
-          groups: [group.id],
-        });
+        // The member connects a shared account, so the member runs its source.
+        const account = yield* connectShared(actors.member);
         shared.account = account;
         yield* linkAccount(actors.admin, path, "service", account);
         yield* sourceRunsAs(actors.admin, account, ids.member);
         const first = yield* subscriptionRunsAs(actors.admin, account, ids.member);
         yield* deliver(first.callbackUrl, account);
-        // Leaving the group keeps the member's link but they can no longer use the account.
+        // Leaving the organization keeps the member's link but they can no longer use the account.
+        const { user } = yield* body(
+          SessionIdentity,
+          yield* api.request(actors.member, "GET", "/api/auth/get-session"),
+        );
         expect(
-          (yield* api.request(actors.owner, "PATCH", `${prefix}/groups/${group.id}`, {
-            name,
-            description: "",
-            memberIds: [memberOf(ids.admin)],
-            revision: group.revision,
+          (yield* api.request(actors.owner, "POST", "/api/auth/organization/remove-member", {
+            organizationId: actors.organization.id,
+            memberIdOrEmail: user.email,
           })).status,
         ).toBe(200);
-        expect(yield* linkedAccountIds(actors.member, path)).toEqual([]);
         // The next delivery resolves the source's accounts and hands it to the admin, who links
         // the account and can still use it. That delivery never runs as the member who lost
         // access: it is refused as retryable, and the provider's redelivery runs as the admin.
@@ -365,7 +324,7 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source handover", (it)
             expect(changed.status, JSON.stringify(changed.body)).toBe(200);
           });
         // The member connects a shared account from the app, so the member runs its source.
-        const account = yield* connectShared(actors.member, { kind: "everyone" });
+        const account = yield* connectShared(actors.member);
         yield* sourceRunsAs(actors.member, account, ids.member);
         const hook = yield* subscriptionRunsAs(actors.member, account, ids.member);
         yield* deliver(hook.callbackUrl, account);
@@ -392,7 +351,7 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source handover", (it)
       context,
       Effect.gen(function* () {
         const { actors, path, ids, connectShared, sourceRunsAs } = yield* handoverFixture;
-        const account = yield* connectShared(actors.owner, { kind: "everyone" });
+        const account = yield* connectShared(actors.owner);
         yield* sourceRunsAs(actors.owner, account, ids.owner);
         // Each round, the only linking member unlinks while another member links, concurrently.
         // Whichever commits first, the account stays linked, so its source must stay.
@@ -545,24 +504,6 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
         );
         if (member === undefined || admin === undefined)
           return yield* Effect.die(new Error("Missing viewers"));
-        const directory = yield* body(
-          Directory,
-          yield* api.request(actors.owner, "GET", `${prefix}/groups`),
-        );
-        const memberId = (userId: string) => {
-          const found = directory.members.find((item) => item.userId === userId);
-          if (found === undefined) throw new Error("Missing synthetic group member");
-          return found.id;
-        };
-        const name = `Registration ${randomUUID().slice(0, 8)}`;
-        const group = yield* body(
-          Group,
-          yield* api.request(actors.owner, "POST", `${prefix}/groups`, {
-            name,
-            description: "",
-            memberIds: [memberId(member), memberId(admin)],
-          }),
-        );
         const owned: { actor: Session; requirement: string; account: string }[] = [];
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -574,15 +515,10 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
                   `${requirementPath(path, "user", item.requirement)}/${item.account}`,
                 );
             yield* removeAppWhenStopped(actors.owner, path);
+            // The member has left by now; the owner removes the shared accounts they connected.
             for (const item of owned)
-              yield* api.request(item.actor, "DELETE", `${prefix}/accounts/${item.account}`);
-            const current = yield* body(
-              Group,
-              yield* api.request(actors.owner, "GET", `${prefix}/groups/${group.id}`),
-            );
-            yield* api.request(actors.owner, "DELETE", `${prefix}/groups/${group.id}`, {
-              revision: current.revision,
-            });
+              for (const actor of [item.actor, actors.owner])
+                yield* api.request(actor, "DELETE", `${prefix}/accounts/${item.account}`);
           }).pipe(Effect.orDie),
         );
         const connect = (
@@ -631,13 +567,12 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
           settleWebhookSubscriptions(actors.admin, path, (hooks) =>
             hooks.some((hook) => hook.id === id && hook.status === "stopped"),
           );
-        // Each member links a personal account for the other requirement; the member also shares
-        // an account with the group, so the source registers as the member with their account.
+        // Each member links a personal account for the other requirement; the member also connects
+        // a shared account, so the source registers as the member with their account.
         yield* connect(actors.member, "other", "member-other", { kind: "personal" });
         yield* connect(actors.admin, "other", "admin-other", { kind: "personal" });
         const shared = yield* connect(actors.member, "service", "shared-service", {
           kind: "shared",
-          audience: { kind: "groups", groups: [group.id] },
         });
         yield* linkAccount(actors.admin, path, "service", shared);
         const first = yield* subscription(
@@ -655,27 +590,35 @@ export default defineApp({user: { accounts:{service,other} }},{tools: router({
           sources.every((source) => source.account !== shared),
         );
 
-        // Another shared account registers as the member and moves to the admin once the member
-        // leaves the group. Removal cannot run as the member any more: the subscription waits,
-        // disabled, until a person confirms it was removed at the provider.
+        // Another shared account registers as the member. The member then leaves the organization,
+        // and the next delivery, refused, moves the source to the admin. Removal cannot run as the
+        // member any more: the subscription waits, disabled, until a person confirms it was
+        // removed at the provider.
         const second = yield* connect(actors.member, "service", "shared-service-2", {
           kind: "shared",
-          audience: { kind: "groups", groups: [group.id] },
         });
         yield* linkAccount(actors.admin, path, "service", second);
         const registered = yield* subscription(
           second,
           (hook) => hook.actor === member && hook.status === "active",
         );
+        const { user } = yield* body(
+          SessionIdentity,
+          yield* api.request(actors.member, "GET", "/api/auth/get-session"),
+        );
         expect(
-          (yield* api.request(actors.owner, "PATCH", `${prefix}/groups/${group.id}`, {
-            name,
-            description: "",
-            memberIds: [memberId(admin)],
-            revision: group.revision,
+          (yield* api.request(actors.owner, "POST", "/api/auth/organization/remove-member", {
+            organizationId: actors.organization.id,
+            memberIdOrEmail: user.email,
           })).status,
         ).toBe(200);
-        yield* unlinkAccount(actors.member, path, "service", second);
+        const refused = yield* api.request(
+          yield* api.session(),
+          "POST",
+          new URL(registered.callbackUrl).pathname,
+          {},
+        );
+        expect(refused.status, JSON.stringify(refused.body)).toBe(503);
         yield* subscription(second, (hook) => hook.id === registered.id && hook.actor === admin);
         yield* unlinkAccount(actors.admin, path, "service", second);
         yield* subscription(

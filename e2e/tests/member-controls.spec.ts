@@ -73,7 +73,7 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
               actors.owner,
               "POST",
               connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-              { destination: { kind: "shared", audience: { kind: "everyone" } } },
+              { destination: { kind: "shared" } },
             ),
           );
           const account = yield* body(
@@ -396,18 +396,6 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
                   .isDisabled(),
               ),
             ).toBe(true);
-            yield* closeAccountAction;
-            yield* openAccountAction("Manage access");
-            for (const label of ["Save access", "Reset changes"])
-              expect(
-                yield* browser.use(`Account ${label} is disabled`, (page) =>
-                  page
-                    .getByRole("dialog")
-                    .getByRole("button", { name: label, exact: true })
-                    .isDisabled(),
-                ),
-              ).toBe(true);
-            yield* browser.checkpoint(`${width} member account access`);
             yield* closeAccountAction;
             yield* openAccountAction("Delete account");
             expect(

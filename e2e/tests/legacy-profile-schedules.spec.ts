@@ -312,7 +312,7 @@ const upgradeFixture = (
       return [
         { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
         ...beforeAppAccounts(),
-        { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 9" },
+        { sql: "DELETE FROM private_hosted_migrations WHERE migration_id >= 9" },
         { sql: "DROP TABLE hosted_app_account_links" },
         ...beforeProfileRemoval(),
         ...profileAppCopiesPending("private_hosted"),

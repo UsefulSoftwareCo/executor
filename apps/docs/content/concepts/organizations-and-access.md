@@ -25,8 +25,10 @@ calling its tools through MCP, follows the app's audience:
 - **Groups**: the members of the groups it is shared with. A member can share
   only with groups they belong to; admins and owners can pick any group.
 
-Shared accounts follow the same rule. A personal account is used and managed
-only by the person who connected it.
+Accounts are not shared with groups. A personal account is used and managed
+only by the person who connected it. To give a team one account, such as a
+service key, link it to the app as one of the app's own accounts, described
+below.
 
 Managing does not grant use. An admin or owner can see, edit, deploy, share and
 delete another person's private app, but cannot call its tools unless it is

@@ -139,7 +139,7 @@ export const discoveryBenchmark = Effect.gen(function* () {
         const connection = yield* body(
           Resource,
           yield* api.request(actors.owner, "POST", connectionsPath(appPath, "user", "service"), {
-            destination: { kind: "shared", audience: { kind: "everyone" } },
+            destination: { kind: "shared" },
           }),
         );
         const saved = yield* body(

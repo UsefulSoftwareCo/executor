@@ -520,7 +520,7 @@ export const scenarios = plan({
   workflowReplayAccess: {
     fixtures: "actors",
     file: "workflow-replay-access.spec.ts",
-    title: "workflow replay checks retained account access after the caller's links change",
+    title: "workflow replay keeps a run with its actor and key after the caller's links change",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -7636,12 +7636,13 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
-  webhookSourceGroupHandover: {
+  webhookSourceMemberHandover: {
     fixtures: "actors",
     file: "webhook-source-handover.spec.ts",
-    title: "a webhook source moves to another linking member when its actor loses group access",
+    title:
+      "a webhook source moves to another linking member when its actor leaves the organization",
     targets: {
-      local: na("Local has no organization groups."),
+      local: na("Local has no organization members."),
       "self-host": scheduled,
       cloud: sourceStorageCloud,
     },
@@ -7907,10 +7908,10 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "app-account-app-links.spec.ts",
     title:
-      "a hosted connection for an app requirement links for everyone only an account its manager can use, and completes only in the scope it started in",
+      "a hosted app requirement links for everyone only an account its manager can use, and a connection for one completes only in the scope it started in",
     targets: {
       local: na(
-        "Hosted managers and account audiences; Local connections have their own scenario.",
+        "Hosted managers and personal accounts; Local connections have their own scenario.",
       ),
       "self-host": scheduled,
       cloud: scheduled,
@@ -7920,22 +7921,22 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "app-account-app-links.spec.ts",
     title:
-      "a hosted OAuth connection for an app requirement records a refused completion, reports one retargeted to another scope, and links after a new sign-in",
+      "a hosted OAuth connection reports a completion retargeted to another scope, and links after a new sign-in once the requirement is back in its scope",
     targets: {
-      local: na("Hosted managers and account audiences."),
+      local: na("Hosted managers and members."),
       "self-host": scheduled,
-      cloud: na("Uses a scoped loopback OAuth issuer to count token exchanges."),
+      cloud: na("Uses a scoped loopback OAuth issuer."),
     },
   },
   hostedAppLinkHeldAccess: {
     fixtures: "actors",
     file: "app-account-link-held-access.spec.ts",
     title:
-      "an app link or unlink waiting for the app's lock is refused when the admin is demoted or the account stops being shared meanwhile, and goes through when nothing changed",
+      "an app link or unlink waiting for the app's lock is refused when the admin is demoted meanwhile, and goes through when nothing changed",
     targets: {
       "self-host": scheduled,
       cloud: na("The statement hold is mounted by the self-host test entry point."),
-      local: na("Local has no organization roles or account audiences."),
+      local: na("Local has no organization roles."),
     },
   },
   hostedDepartedMemberAppLink: {
@@ -7966,11 +7967,11 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "app-account-link-held-access.spec.ts",
     title:
-      "an MCP connection that links its account target while waiting for the app's lock is refused when the app or the account stops being shared meanwhile, and links when nothing changed",
+      "an MCP connection that links its account target while waiting for the app's lock is refused when the app stops being shared meanwhile, and links when nothing changed",
     targets: {
       "self-host": scheduled,
       cloud: na("The statement hold is mounted by the self-host test entry point."),
-      local: na("Local has no app or account audiences."),
+      local: na("Local has no app audiences."),
     },
   },
   hostedAppAccountWebhooks: {
@@ -8191,7 +8192,7 @@ export const scenarios = plan({
     title:
       "a retained workflow run is read by the scope each captured account had on its version: an app account by its app link, a user account by the caller's use",
     targets: {
-      local: na("Hosted account audiences and app links."),
+      local: na("Hosted shared accounts and app links."),
       "self-host": scheduled,
       cloud: scheduled,
     },
@@ -8294,7 +8295,7 @@ export const scenarios = plan({
   hostedAppAccountRevocation: {
     fixtures: "actors",
     file: "hosted-app-accounts.spec.ts",
-    title: "hosted app account links recheck shared accounts after deletion and revocation",
+    title: "hosted app account links drop a deleted account and stop when the app becomes private",
     targets: {
       local: na("Hosted membership only."),
       "self-host": scheduled,
@@ -9492,6 +9493,20 @@ export const scenarios = plan({
         "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
       ),
       local: na("Local has no organization access rows; the local scenario covers its storage."),
+    },
+  },
+  legacyGroupAccounts: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "legacy-group-accounts.spec.ts",
+    title:
+      "upgrading a hosted database leaves an account shared with a group used by nobody and refuses its pending sign-in",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+      local: na("Local has no organization, groups or shared accounts."),
     },
   },
   legacyProfileSchedules: {

@@ -1620,7 +1620,7 @@ export const importFixedAccount = (
                   label: `${label} fixed credentials`,
                   fields: fixed.values,
                 })
-                .pipe(accountDestination({ kind: "shared", audience: { kind: "everyone" } }));
+                .pipe(accountDestination({ kind: "shared" }));
               yield* record(imported("account", added.id));
               return added.id;
             }),
@@ -2061,7 +2061,7 @@ const saveAccount = (
   Effect.gen(function* () {
     const creation =
       plan.row.owner === "org"
-        ? accountDestination({ kind: "shared", audience: { kind: "everyone" } })
+        ? accountDestination({ kind: "shared" })
         : personalAccountCreation(actor);
     const write = yield* accountWrite(
       context,

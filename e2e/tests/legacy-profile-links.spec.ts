@@ -58,6 +58,7 @@ const ledger = [
   "require_connection_targets",
   "oauth_client_access",
   "app_account_links",
+  "group_account_connections",
 ].map((name, index) => ({ migration_id: index + 1, name }));
 
 const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
@@ -142,9 +143,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
           actor: Session,
           app: string,
           token: string,
-          destination:
-            | { readonly kind: "personal" }
-            | { readonly kind: "shared"; audience: { kind: "everyone" } },
+          destination: { readonly kind: "personal" } | { readonly kind: "shared" },
         ) =>
           Effect.gen(function* () {
             const connection = yield* api.request(
@@ -195,7 +194,6 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
               removed = yield* connect(actors.owner, app, "removed-token", personal),
               shared = yield* connect(actors.admin, app, "shared-token", {
                 kind: "shared",
-                audience: { kind: "everyone" },
               });
             expect(
               (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${removed}`)).status,
@@ -229,7 +227,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
         const [recorded, rolledBack] = yield* legacyStorage([
           { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
           {
-            sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 9 RETURNING migration_id",
+            sql: "DELETE FROM private_hosted_migrations WHERE migration_id >= 9 RETURNING migration_id",
           },
           { sql: "DROP TABLE hosted_app_account_links" },
           profile({
@@ -327,7 +325,10 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
         ]);
         // The fixture is an upgrade while step 9 is the latest hosted step.
         expect(recorded, "current hosted ledger").toEqual(ledger);
-        expect(rolledBack, "step 9 is pending again").toEqual([{ migration_id: 9 }]);
+        expect(rolledBack, "steps 9 and 10 are pending again").toEqual([
+          { migration_id: 9 },
+          { migration_id: 10 },
+        ]);
         yield* serverControl("start");
 
         const converted = Effect.gen(function* () {

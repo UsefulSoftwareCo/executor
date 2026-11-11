@@ -364,7 +364,6 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
         // registers.
         const team = yield* connect(actors.owner, "app", "first", "team-key", {
           kind: "shared",
-          audience: { kind: "everyone" },
         });
         yield* settleWebhookSources(
           actors.owner,
@@ -407,7 +406,6 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
         // the member's webhook stops and the app requirement's registers without an actor.
         const personal = yield* connect(actors.member, "user", "personal", "member-key", {
           kind: "shared",
-          audience: { kind: "everyone" },
         });
         const own = yield* live("personalHook", personal, (hook) => hook.status === "active");
         expect(own.actor).toBe(ids.member);
@@ -519,7 +517,6 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
         // A shared account stays usable after it is unlinked, so its registration is removed too.
         const shared = yield* connect(actors.owner, "app", "team", "shared-team", {
           kind: "shared",
-          audience: { kind: "everyone" },
         });
         yield* subscription(shared, "active");
         yield* ok(yield* unlink(actors.owner, "team", shared));

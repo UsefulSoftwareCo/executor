@@ -344,7 +344,7 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
           actors.owner,
           "POST",
           connectionsPath(otherPath, "user", "other"),
-          { destination: { kind: "shared", audience: { kind: "everyone" } } },
+          { destination: { kind: "shared" } },
         );
         expect(pending.status, JSON.stringify(pending.body)).toBe(200);
         const submitted = yield* api.request(
@@ -370,23 +370,9 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
           ["service", shared],
         ]);
 
-        // A member cannot link an account they cannot use: Bob's personal account, or a shared
-        // account whose audience excludes them.
+        // A member cannot link an account they cannot use: Bob's personal account.
         const personal = yield* linkAccountResponse(actors.member, path, "service", mailB);
         expect(personal.status, JSON.stringify(personal.body)).toBe(403);
-        const sharedAccess = `${prefix}/accounts/${shared}/access`;
-        const current = yield* body(Access, yield* api.request(actors.admin, "GET", sharedAccess));
-        expect(
-          (yield* api.request(actors.admin, "PATCH", sharedAccess, {
-            revision: current.revision,
-            audience: { kind: "groups", groups: [] },
-          })).status,
-        ).toBe(200);
-        yield* unlinkAccount(actors.member, path, "extra", shared);
-        yield* unlinkAccount(actors.member, path, "service", shared);
-        const revoked = yield* linkAccountResponse(actors.member, path, "extra", shared);
-        expect(revoked.status, JSON.stringify(revoked.body)).toBe(403);
-        expect(yield* accountLinks(actors.member, path)).toEqual([["extra", mailA]]);
       }),
     ),
   );
@@ -510,44 +496,6 @@ export default defineApp({ user: { accounts: { other } } }, {});`,
           extra: [shared],
         });
         expect(yield* linkedAccountIds(actors.admin, path)).toEqual([mailB, shared]);
-        // Revoking Alice's access to the shared account removes it from her calls at use time.
-        const sharedAccess = yield* body(
-          Access,
-          yield* api.request(actors.admin, "GET", `${prefix}/accounts/${shared}/access`),
-        );
-        expect(
-          (yield* api.request(actors.admin, "PATCH", `${prefix}/accounts/${shared}/access`, {
-            revision: sharedAccess.revision,
-            audience: { kind: "groups", groups: [] },
-          })).status,
-        ).toBe(200);
-        expect(yield* linkedAccountIds(actors.member, path)).toEqual([]);
-        expect(yield* inventoryLinks(actors.member)).toEqual([]);
-        const revoked = yield* call(actors.member);
-        expect(revoked.status, JSON.stringify(revoked.body)).toBe(409);
-        expect((yield* body(Failure, revoked))._tag).toBe("AccountRequired");
-        const revokedSkill = yield* api.request(
-          actors.member,
-          "GET",
-          `${path}/skills/selected-account`,
-        );
-        expect(revokedSkill.status, JSON.stringify(revokedSkill.body)).toBe(409);
-        expect((yield* body(Failure, revokedSkill))._tag).toBe("AccountRequired");
-        expect((yield* linkAccountResponse(actors.member, path, "service", shared)).status).toBe(
-          403,
-        );
-        // No group remains in the audience, so the account drops out of Bob's links as well.
-        // Nothing is substituted for his plain requirement: his personal account, still linked to
-        // `extra`, serves `service` only once he links it there again.
-        expect(yield* accountLinks(actors.admin, path)).toEqual([["extra", mailB]]);
-        const bobRevoked = yield* call(actors.admin);
-        expect(bobRevoked.status, JSON.stringify(bobRevoked.body)).toBe(409);
-        expect((yield* body(Failure, bobRevoked))._tag).toBe("AccountRequired");
-        yield* linkAccount(actors.admin, path, "service", mailB);
-        expect(yield* who(yield* call(actors.admin))).toMatchObject({
-          account: mailB,
-          extra: [mailB],
-        });
         // Making the app private stops Alice's calls and removes it from her inventory.
         const appAccess = yield* body(
           Access,

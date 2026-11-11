@@ -289,18 +289,12 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source status", (it) =
             audience: { kind: "everyone" },
           })).status,
         ).toBe(200);
-        const everyone = { kind: "shared", audience: { kind: "everyone" } };
-        const ownerAccount = yield* connect(actors.owner, prefix, path, "Owner shared", everyone);
+        const shared = { kind: "shared" };
+        const ownerAccount = yield* connect(actors.owner, prefix, path, "Owner shared", shared);
         accounts.push(ownerAccount);
         // The member also links the owner's account, but its source keeps running as the owner.
         yield* linkAccount(actors.member, path, "service", ownerAccount);
-        const memberAccount = yield* connect(
-          actors.member,
-          prefix,
-          path,
-          "Member shared",
-          everyone,
-        );
+        const memberAccount = yield* connect(actors.member, prefix, path, "Member shared", shared);
         accounts.push(memberAccount);
         const [owner, member] = yield* Effect.forEach([actors.owner, actors.member], (actor) =>
           api

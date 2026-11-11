@@ -122,7 +122,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
                     actor,
                     "POST",
                     connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-                    { destination: { kind: "shared", audience: { kind: "everyone" } } },
+                    { destination: { kind: "shared" } },
                   );
                   expect(connection.status).toBe(200);
                   const { id } = yield* body(Resource, connection);

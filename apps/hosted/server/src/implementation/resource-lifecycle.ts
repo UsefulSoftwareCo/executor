@@ -140,9 +140,7 @@ const accountAccess = (sql: SqlClient.SqlClient, accounts: readonly AccountOwner
         and exists(select 1 from member m
           where m."organizationId" = p.organization_id and m."userId" = ${user}
           and ((p.kind = 'personal' and p.personal_user_id = m."userId")
-            or (p.kind = 'shared' and (p.audience = 'everyone' or exists(
-              select 1 from hosted_account_groups g join hosted_group_members gm on gm.group_id = g.group_id
-              where g.account_id = p.account_id and gm.member_id = m.id)))))`;
+            or (p.kind = 'shared' and p.audience = 'everyone')))`;
 const AllowedAccount = Schema.Struct({ id: AccountId, owner: Schema.String });
 type AllowedAccount = typeof AllowedAccount.Type;
 const AllowedUse = Schema.Struct({ requirement: Schema.String, id: AccountId });
@@ -399,13 +397,6 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
             ),
           )(rows))[0];
           if (intent === undefined) return yield* refused;
-          if (intent.destination.kind === "shared" && intent.destination.audience.kind === "groups")
-            yield* requireGroupSharing(
-              sql,
-              intent.organization,
-              user,
-              intent.destination.audience.groups,
-            ).pipe(Effect.catchTag("OrganizationForbidden", () => refused));
         }).pipe(
           Effect.catchTags({
             SqlError: () => new StorageError(),
@@ -446,19 +437,9 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           values (${account.id}, ${organization}, ${user}, 'personal', ${user})`;
             return;
           }
-          const groups = destination.audience.kind === "groups" ? destination.audience.groups : [];
-          yield* requireGroupSharing(sql, organization, user, groups);
           yield* sql`insert into hosted_account_access (account_id, organization_id, creator_id, kind, audience)
-        values (${account.id}, ${organization}, ${user}, 'shared', ${destination.audience.kind})`;
-          for (const group of groups)
-            yield* sql`insert into hosted_account_groups (organization_id, account_id, group_id) values (${organization}, ${account.id}, ${group})`;
-        }).pipe(
-          Effect.catchTags({
-            SqlError: () => new StorageError(),
-            SchemaError: () => new StorageError(),
-            OrganizationForbidden: () => new StorageError(),
-          }),
-        ),
+        values (${account.id}, ${organization}, ${user}, 'shared', 'everyone')`;
+        }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
       oauthClientCreated: (client) =>
         Effect.gen(function* () {
           const organization = yield* organizationOf(client.owner);

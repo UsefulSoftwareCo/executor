@@ -25,7 +25,6 @@ import {
   AppAccess,
   AccountAccess,
   type AppAudience,
-  type SharedAudience,
 } from "../contracts/resource-access.ts";
 
 /** A concrete client remains owned by this invocation (Cloud) or host process (self-host). */
@@ -201,7 +200,7 @@ export const resourceAuthorityForApp = (
  * The user links a subject has to these apps whose accounts the subject may use now, as the `from`
  * and `where` of a read over `l` (the link) and `a` (the account): the account belongs to the app's
  * organization, the subject is a member, and the account is their personal account or shared with
- * everyone or one of their groups.
+ * everyone.
  *
  * The links are read first, with their app's owner, and `offset 0` keeps Postgres from merging that
  * read into the joins after it. Merged, Postgres can reach the apps through the account's owner
@@ -222,10 +221,7 @@ export const usableLinks = (
         and a.owner = 'organization:' || p.organization_id
       join member m on m."organizationId" = p.organization_id and m."userId" = l.subject
       where ((p.kind = 'personal' and p.personal_user_id = m."userId")
-          or (p.kind = 'shared' and (p.audience = 'everyone' or exists(
-            select 1 from hosted_account_groups g
-            join hosted_group_members gm on gm.group_id = g.group_id
-            where g.account_id = p.account_id and gm.member_id = m.id))))`;
+          or (p.kind = 'shared' and p.audience = 'everyone'))`;
 
 /**
  * The app links of these apps whose accounts their app requirements may use now, as the `from` and
@@ -336,10 +332,9 @@ const AccountPolicy = Schema.Struct({
   creator: Schema.NullOr(Principal.fields.userId),
   kind: Schema.Literals(["personal", "shared"]),
   personalUser: Schema.NullOr(Principal.fields.userId),
+  /** `groups` is a grant older servers wrote. It is honored for nobody. */
   audience: Schema.NullOr(Schema.Literals(["groups", "everyone"])),
   revision: AccessRevision,
-  groups: Schema.Array(GroupId),
-  granted: Schema.Boolean,
 });
 const accountAccessOf = (found: typeof AccountPolicy.Type, actor: ResourceAuthority) =>
   Effect.gen(function* () {
@@ -356,15 +351,13 @@ const accountAccessOf = (found: typeof AccountPolicy.Type, actor: ResourceAuthor
       } satisfies typeof AccountAccess.Type;
     }
     if (found.audience === null) return yield* new StorageError();
-    const audience: typeof SharedAudience.Type =
-      found.audience === "groups" ? { kind: "groups", groups: found.groups } : { kind: "everyone" };
     return {
       account,
       creator: found.creator,
       revision: found.revision,
-      ownership: { kind: "shared", audience },
+      ownership: { kind: "shared" },
       canManage: actor.role !== "member" || found.creator === actor.user,
-      canUse: found.audience === "everyone" || found.granted,
+      canUse: found.audience === "everyone",
     } satisfies typeof AccountAccess.Type;
   });
 /** Read account policies together; personal accounts remain private even from administrators. */
@@ -373,10 +366,7 @@ export const accountAccesses = (accounts: readonly AccountId[], actor: ResourceA
     if (accounts.length === 0) return [];
     const sql = yield* policyDatabase;
     const rows = yield* sql`select p.account_id as account, p.creator_id as creator, p.kind,
-    p.personal_user_id as "personalUser", p.audience, p.revision,
-    array(select g.group_id from hosted_account_groups g where g.account_id = p.account_id order by g.group_id) as groups,
-    exists(select 1 from hosted_account_groups g join hosted_group_members m on m.group_id = g.group_id
-      where g.account_id = p.account_id and m.member_id = ${actor.member}) as granted
+    p.personal_user_id as "personalUser", p.audience, p.revision
     from hosted_account_access p
     where ${sql.in("p.account_id", accounts)} and p.organization_id = ${actor.organization}`;
     const policies = yield* Schema.decodeUnknownEffect(Schema.Array(AccountPolicy))(rows);

@@ -7,7 +7,6 @@ import { OrganizationForbidden } from "../contracts/organization.ts";
 import {
   recordConnection,
   checkConnection,
-  checkDestination,
   createdConnectionOrganization,
 } from "./connection-policy.ts";
 import { accountDestination } from "./resource-lifecycle.ts";
@@ -241,10 +240,7 @@ export const connectAccount = (
     const destination =
       reconnect === undefined
         ? (input.destination ?? ({ kind: "personal" } as const))
-        : reconnect.access.ownership.kind === "personal"
-          ? ({ kind: "personal" } as const)
-          : reconnect.access.ownership;
-    yield* checkDestination(destination);
+        : ({ kind: reconnect.access.ownership.kind } as const);
     return yield* executor.accountConnections
       .create({
         owner,

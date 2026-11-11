@@ -221,9 +221,7 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
               actors.owner,
               "POST",
               connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-              authMethod === "client_secret_post"
-                ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
-                : {},
+              authMethod === "client_secret_post" ? { destination: { kind: "shared" } } : {},
             ),
           );
           const path = `${prefix}/connections/${connection.id}/oauth/start`;
@@ -429,9 +427,7 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
                 actors.owner,
                 "POST",
                 connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-                authMethod === "client_secret_post"
-                  ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
-                  : {},
+                authMethod === "client_secret_post" ? { destination: { kind: "shared" } } : {},
               ),
             );
             const named = yield* body(

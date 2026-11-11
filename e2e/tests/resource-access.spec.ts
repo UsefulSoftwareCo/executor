@@ -4,7 +4,7 @@ import {
   linkAccountResponse,
   linkedAccountIds,
 } from "../support/app-accounts.ts";
-/** Real hosted group checks cover linked accounts and current app authoring routes. */
+/** Real hosted access checks cover app groups, linked accounts and current app authoring routes. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -189,60 +189,54 @@ const arrayFixture = Effect.gen(function* () {
       actors.owner,
       "POST",
       connectionsPath(`${prefix}/apps/${array.id}`, "user", "service"),
-      { destination: { kind: "shared", audience: { kind: "groups", groups: [sales.id] } } },
+      { destination: { kind: "shared" } },
     ),
   );
   const team = yield* body(
     Resource,
     yield* api.request(actors.owner, "POST", `${prefix}/connections/${teamConnection.id}/submit`, {
       method: "key",
-      label: "Sales fixture",
+      label: "Shared fixture",
       fields: { token: "team" },
     }),
   );
   created.accounts.push(team.id);
-  expect((yield* api.request(actors.member, "GET", `${prefix}/accounts/${team.id}`)).status).toBe(
-    403,
-  );
   expect(
     (yield* api.request(actors.admin, "GET", `${prefix}/accounts/${personal.id}`)).status,
   ).toBe(403);
-  // Both connections linked their account for the owner, who cannot use the Sales account yet.
+  // A shared account is the organization's: every member can read it, and nobody narrows it.
+  expect((yield* api.request(actors.member, "GET", `${prefix}/accounts/${team.id}`)).status).toBe(
+    200,
+  );
+  const teamAccess = yield* api.request(
+    actors.member,
+    "GET",
+    `${prefix}/accounts/${team.id}/access`,
+  );
+  expect(teamAccess.status, JSON.stringify(teamAccess.body)).toBe(200);
+  expect(teamAccess.body).toMatchObject({ ownership: { kind: "shared" }, canUse: true });
+  // The route that shared an account with groups is gone; each host answers a missing route
+  // its own way (404 on self-host, 405 on Cloud).
+  expect([404, 405]).toContain(
+    (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${team.id}/access`, {
+      revision: (yield* body(Access, teamAccess)).revision,
+      audience: { kind: "groups", groups: [sales.id] },
+    })).status,
+  );
+  // Both connections linked their account for the owner.
   const arrayPath = `${prefix}/apps/${array.id}`;
-  expect(yield* linkedAccountIds(actors.owner, arrayPath)).toEqual([personal.id]);
-  // An account the caller cannot use drops out of the linked set: it is never revealed or
-  // used, and nothing replaces it.
-  const narrowed = yield* api.request(actors.owner, "POST", `${arrayPath}/tools/call`, call);
-  expect(narrowed.status, JSON.stringify(narrowed.body)).toBe(200);
-  expect(narrowed.body).toEqual(["personal"]);
+  expect(yield* linkedAccountIds(actors.owner, arrayPath)).toEqual([personal.id, team.id]);
+  const allowed = yield* api.request(actors.owner, "POST", `${arrayPath}/tools/call`, call);
+  expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
+  expect(allowed.body).toEqual(["personal", "team"]);
   // Another member can neither link the owner's personal account nor run with it.
   yield* refusedForeignAccounts(api, actors.admin, arrayPath, [personal.id], call);
-  const teamAccess = yield* body(
-    Access,
-    yield* api.request(actors.owner, "GET", `${prefix}/accounts/${team.id}/access`),
-  );
-  expect(
-    (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${team.id}/access`, {
-      revision: teamAccess.revision,
-      audience: { kind: "everyone" },
-    })).status,
-  ).toBe(200);
-  const allowed = yield* api.request(
-    actors.owner,
-    "POST",
-    `${prefix}/apps/${array.id}/tools/call`,
-    call,
-  );
-  expect(allowed.status).toBe(200);
-  expect(allowed.body).toEqual(["personal", "team"]);
-  expect(yield* linkedAccountIds(actors.owner, arrayPath)).toEqual([personal.id, team.id]);
   return {
     api,
     actors,
     prefix,
     suffix,
     created,
-    sales,
     array,
     personal,
     team,
@@ -371,7 +365,7 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, prefix, sales, array, personal, team, call } = yield* arrayFixture;
+        const { api, actors, prefix, array, personal, call } = yield* arrayFixture;
         const browser = yield* Browser;
         const appUrl = new URL(yield* waitForAppUrl(actors.owner, `${prefix}/apps/${array.id}/ui`));
         yield* browser.login(actors.owner);
@@ -379,56 +373,6 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
         yield* browser.use("Every linked account permits the UI", (page) =>
           page.getByRole("heading", { name: "Account protected UI" }).waitFor(),
         );
-        const assetUrl = yield* browser.use("Locate the account-protected asset", (page) =>
-          page.evaluate(() => document.querySelector("img")?.src ?? ""),
-        );
-        const validator = yield* browser.use("Warm the account-protected asset", (page) =>
-          page
-            .context()
-            .request.get(assetUrl)
-            .then((response) => {
-              expect(response.status()).toBe(200);
-              return response.headers()["etag"];
-            }),
-        );
-        if (validator === undefined)
-          return yield* Effect.die("Account-protected asset has no ETag");
-        const currentTeamAccess = yield* body(
-          Access,
-          yield* api.request(actors.owner, "GET", `${prefix}/accounts/${team.id}/access`),
-        );
-        const restrictedTeam = yield* body(
-          Access,
-          yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${team.id}/access`, {
-            revision: currentTeamAccess.revision,
-            audience: { kind: "groups", groups: [sales.id] },
-          }),
-        );
-        expect(
-          (yield* browser.use(
-            "Revoking one linked account leaves the page the accounts still allowed",
-            (page) => page.context().request.get(appUrl.href),
-          )).status(),
-        ).toBe(200);
-        const narrowed = yield* api.request(
-          actors.owner,
-          "POST",
-          `${prefix}/apps/${array.id}/tools/call`,
-          call,
-        );
-        expect(narrowed.status, JSON.stringify(narrowed.body)).toBe(200);
-        expect(narrowed.body).toEqual(["personal"]);
-        expect(
-          (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${team.id}/access`, {
-            revision: restrictedTeam.revision,
-            audience: { kind: "everyone" },
-          })).status,
-        ).toBe(200);
-        expect(
-          (yield* browser.use("Restored account permission revalidates the same asset", (page) =>
-            page.context().request.get(assetUrl, { headers: { "if-none-match": validator } }),
-          )).status(),
-        ).toBe(304);
         // An administrator opens the app with only the administrator's own links, and cannot link
         // another person's personal account.
         yield* browser.login(actors.admin);

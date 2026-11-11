@@ -15,7 +15,6 @@ import {
   RequireAccountInspect,
   RequireAccountReconnect,
   RequireAccountRename,
-  RequireAccountShare,
   RequireAccountUse,
   type AccountAction,
   type AccountProof,
@@ -35,7 +34,6 @@ const policy = {
   use: "use",
   reconnect: "manage",
   rename: "manage",
-  share: "manage",
   delete: "manage",
 } as const satisfies Record<AccountAction, "read" | "use" | "manage">;
 
@@ -73,7 +71,6 @@ export const AccountGrants = {
   use: grant("use"),
   reconnect: grant("reconnect"),
   rename: grant("rename"),
-  share: grant("share"),
   delete: grant("delete"),
 };
 
@@ -95,6 +92,5 @@ export const requireAccountTargetLive = Layer.mergeAll(
   Layer.succeed(RequireAccountUse, target("use")),
   Layer.succeed(RequireAccountReconnect, target("reconnect")),
   Layer.succeed(RequireAccountRename, target("rename")),
-  Layer.succeed(RequireAccountShare, target("share")),
   Layer.succeed(RequireAccountDelete, target("delete")),
 );

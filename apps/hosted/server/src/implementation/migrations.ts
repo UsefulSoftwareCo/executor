@@ -8,7 +8,7 @@ import { SqlClient } from "effect/sql";
 import * as Migrator from "effect/sql/Migrator";
 import { migrateProvisioning } from "./provisioning-schema.ts";
 import { migrateGroups } from "./group-schema.ts";
-import { migrateResourceAccess } from "./resource-schema.ts";
+import { migrateResourceAccess, removeGroupAccountConnections } from "./resource-schema.ts";
 import { migrateOAuthClientAccess } from "./oauth-client-schema.ts";
 import { migrateOrganizationRemovals } from "./organization-removal-schema.ts";
 import { migrateApiKeyMemberships } from "./api-key-membership-schema.ts";
@@ -119,6 +119,9 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
   // App and user account links; profiles become user links. Runs after SDK 4.0.13, which keeps
   // the profiles.
   "9_app_account_links": migrateAppAccountLinks,
+  // Accounts are no longer shared with groups; pending sign-ins for one are refused. The running
+  // server already refuses a connection without an access record.
+  "10_group_account_connections": removeGroupAccountConnections,
 });
 
 /**
