@@ -328,7 +328,7 @@ function Members({
     </div>
   ) : (
     <EmptyState size="compact" title="No members yet" action={action}>
-      Members of this group can use the apps and accounts shared with it.
+      Members of this group can use the apps shared with it.
     </EmptyState>
   );
 }

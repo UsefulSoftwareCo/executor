@@ -139,7 +139,6 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         const own = yield* connect(actors.owner, "app", "team", "team-own");
         const shared = yield* connect(actors.owner, "app", "extra", "team-shared", {
           kind: "shared",
-          audience: { kind: "everyone" },
         });
         const linked = yield* pairs();
         expect(linked).toHaveLength(2);
@@ -279,59 +278,38 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         const fixture = yield* appLinksFixture([
           { path: "index.ts", content: scopedKeyApp("app") },
         ]);
-        const { api, actors, prefix, ids, start, submit, link, links } = fixture;
-        // The admin manages the app but is outside the only group that may use a shared account.
-        const group = yield* fixture.group([ids.member]);
-        const inGroup = { kind: "shared", audience: { kind: "groups", groups: [group.id] } };
-        // Account labels the actor's inventory lists. Cloud sets up each manager's own Executor key
-        // account in the background, so the inventory may gain that account at any time; the
-        // refused account is recognised by the label it was submitted with.
-        const inventoryLabels = (actor: typeof actors.admin) =>
-          api.request(actor, "GET", `${prefix}/inventory`).pipe(
-            Effect.flatMap((response) =>
-              body(
-                Schema.Struct({ accounts: Schema.Array(Schema.Struct({ label: Schema.String })) }),
-                response,
-              ),
-            ),
-            Effect.map((read) => read.accounts.map((account) => account.label)),
-          );
-        expect(yield* inventoryLabels(actors.admin)).not.toContain("synthetic-group-key");
-        const started = yield* start(actors.admin, "app", "service", inGroup);
-        expect(started.status, JSON.stringify(started.body)).toBe(200);
-        const connection = (yield* body(Resource, started)).id;
-        const denied = yield* submit(actors.admin, connection, "synthetic-group-key");
-        yield* refused(denied, 403, "AccountConnectionRefused");
-        // The refusal rolls the account save back: nothing is linked or saved.
-        expect(yield* links()).toEqual([]);
-        expect(yield* inventoryLabels(actors.admin)).not.toContain("synthetic-group-key");
-
-        // The admin may link for everyone only an account they can use; a member of the group
-        // may connect it only for their own links, and the admin still cannot link that shared
-        // account for everyone by its ID.
+        const { api, actors, start, submit, link, links } = fixture;
+        // A member connects an account from another app for their own links. It is theirs alone,
+        // so the admin, who manages this app but cannot use it, cannot link it for everyone by
+        // its ID.
         const memberPath = yield* fixture.another(scopedKeyApp("user"));
-        const memberStarted = yield* start(actors.member, "user", "service", inGroup, memberPath);
+        const memberStarted = yield* start(
+          actors.member,
+          "user",
+          "service",
+          { kind: "personal" },
+          memberPath,
+        );
         expect(memberStarted.status, JSON.stringify(memberStarted.body)).toBe(200);
-        const groupAccount = yield* submit(
+        const memberAccount = yield* submit(
           actors.member,
           (yield* body(Resource, memberStarted)).id,
-          "synthetic-member-group-key",
+          "synthetic-member-key",
         ).pipe(
           Effect.tap(ok),
           Effect.flatMap((response) => body(Resource, response)),
           Effect.map((account) => account.id),
         );
-        yield* fixture.saved(actors.member, groupAccount);
+        yield* fixture.saved(actors.member, memberAccount);
+        expect(yield* accountLinks(actors.member, memberPath, "user")).toEqual([
+          ["service", memberAccount],
+        ]);
         yield* refused(
-          yield* link(actors.admin, "service", groupAccount),
+          yield* link(actors.admin, "service", memberAccount),
           403,
           "OrganizationForbidden",
         );
         expect(yield* links()).toEqual([]);
-        // Once the admin joins the group, the same account links.
-        yield* group.set([ids.member, ids.admin]);
-        yield* ok(yield* link(actors.admin, "service", groupAccount));
-        expect((yield* links()).map((item) => item.account.id)).toEqual([groupAccount]);
 
         // A connection completes only in the scope it started in: a redeploy that moves the
         // requirement to the other scope refuses it, both ways.
@@ -371,9 +349,9 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         const http = yield* HttpClient.HttpClient;
         const issuer = yield* oauthSetupIssuer;
         const fixture = yield* appLinksFixture([
-          { path: "index.ts", content: scopedOAuthApp(issuer.origin, "app") },
+          { path: "index.ts", content: scopedOAuthApp(issuer.origin, "user") },
         ]);
-        const { api, actors, prefix, ids, start, links } = fixture;
+        const { api, actors, prefix, path, start } = fixture;
         const signIn = (actor: Session, connection: string) =>
           Effect.gen(function* () {
             const started = yield* api.request(
@@ -403,71 +381,46 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
             Effect.flatMap((response) => body(Schema.Struct({ state: Schema.Unknown }), response)),
             Effect.map((read) => read.state),
           );
-        const group = yield* fixture.group([ids.member]);
-        const inGroup = { kind: "shared", audience: { kind: "groups", groups: [group.id] } };
-        // The admin signs in for a group-shared account they cannot use: the code is exchanged,
-        // then the link is refused and the refusal is recorded on the connection.
-        const started = yield* start(actors.admin, "app", "service", inGroup);
-        expect(started.status, JSON.stringify(started.body)).toBe(200);
-        const connection = (yield* body(Resource, started)).id;
-        const callback = yield* signIn(actors.admin, connection);
-        const exchanges = (yield* issuer.metrics).tokenExchanges;
-        yield* refused(
-          yield* complete(actors.admin, connection, callback),
-          403,
-          "AccountConnectionRefused",
-        );
-        expect((yield* issuer.metrics).tokenExchanges).toBe(exchanges + 1);
-        expect(yield* state(actors.admin, connection)).toMatchObject({
-          status: "pending",
-          failure: { error: { _tag: "AccountConnectionRefused", requirement: "service" } },
-        });
-        expect(yield* links()).toEqual([]);
-        // Once the admin joins the group, a new sign-in clears the failure and links the account.
-        yield* group.set([ids.member, ids.admin]);
-        const retry = yield* signIn(actors.admin, connection);
-        expect(yield* state(actors.admin, connection)).toEqual({ status: "pending" });
-        yield* ok(yield* complete(actors.admin, connection, retry));
-        expect(yield* state(actors.admin, connection)).toMatchObject({ status: "completed" });
-        const linked = yield* links();
-        expect(linked.map((item) => item.requirement)).toEqual(["service"]);
-        yield* fixture.saved(actors.admin, linked[0]?.account.id ?? "missing");
-
         // A requirement that changes scope between sign-in and its callback refuses the
         // completion, and reading the connection names the change, as it does for a changed
         // provider.
-        const driftPath = yield* fixture.another(scopedOAuthApp(issuer.origin, "user"));
-        const pending = yield* start(
-          actors.member,
-          "user",
-          "service",
-          { kind: "personal" },
-          driftPath,
-        );
+        const pending = yield* start(actors.member, "user", "service", { kind: "personal" });
         expect(pending.status, JSON.stringify(pending.body)).toBe(200);
-        const drift = (yield* body(Resource, pending)).id;
-        const driftCallback = yield* signIn(actors.member, drift);
-        expect(
-          (yield* api.request(actors.owner, "POST", `${driftPath}/deploy`, {
-            files: [
-              { path: "index.ts", content: scopedOAuthApp(issuer.origin, "app") },
-              appsManifest,
-            ],
-          })).status,
-        ).toBe(200);
+        const connection = (yield* body(Resource, pending)).id;
+        const callback = yield* signIn(actors.member, connection);
+        const deploy = (scope: "app" | "user") =>
+          api
+            .request(actors.owner, "POST", `${path}/deploy`, {
+              files: [
+                { path: "index.ts", content: scopedOAuthApp(issuer.origin, scope) },
+                appsManifest,
+              ],
+            })
+            .pipe(Effect.tap(ok));
+        yield* deploy("app");
         yield* refused(
-          yield* complete(actors.member, drift, driftCallback),
+          yield* complete(actors.member, connection, callback),
           409,
           "AccountConnectionTargetChanged",
         );
         expect(
           yield* refused(
-            yield* api.request(actors.member, "GET", `${prefix}/connections/${drift}`),
+            yield* api.request(actors.member, "GET", `${prefix}/connections/${connection}`),
             409,
             "AccountConnectionTargetChanged",
           ),
         ).toMatchObject({ requirement: "service" });
-        expect(yield* linkedAccountIds(actors.member, driftPath)).toEqual([]);
+        expect(yield* linkedAccountIds(actors.member, path)).toEqual([]);
+        // Once the requirement is the member's again, a new sign-in clears the failure and links
+        // the account for them.
+        yield* deploy("user");
+        const retry = yield* signIn(actors.member, connection);
+        expect(yield* state(actors.member, connection)).toEqual({ status: "pending" });
+        yield* ok(yield* complete(actors.member, connection, retry));
+        expect(yield* state(actors.member, connection)).toMatchObject({ status: "completed" });
+        const linked = yield* linkedAccountIds(actors.member, path);
+        expect(linked).toHaveLength(1);
+        yield* fixture.saved(actors.member, linked[0] ?? "missing");
       }),
     ),
   );

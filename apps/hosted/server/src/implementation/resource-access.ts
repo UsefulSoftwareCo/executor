@@ -13,7 +13,6 @@ import { CurrentOrganization } from "../contracts/organization.ts";
 import {
   AccessConflict,
   type AppAudience,
-  type SharedAudience,
   type AccessRevision,
 } from "../contracts/resource-access.ts";
 import { requireGroupSharing } from "./group-sharing.ts";
@@ -25,7 +24,6 @@ import {
   applicationAccesses,
   accountAccesses,
   requireAppAccess,
-  requireAccountAccess,
 } from "./resource-policy.ts";
 
 /** Shared resource listing for the normal app/account lists and an explicit management view. */
@@ -135,39 +133,6 @@ export const shareApp = (
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
-/**
- * Personal account ownership cannot be changed by editing shared-account grants. The share grant
- * checks management up front; it is checked again under the transaction's lock.
- */
-export const shareAccount = (
-  audience: typeof SharedAudience.Type,
-  revision: typeof AccessRevision.Type,
-) =>
-  Effect.gen(function* () {
-    const { account } = yield* AccountGrants.share;
-    const sql = yield* policyDatabase;
-    yield* sql.withTransaction(
-      Effect.gen(function* () {
-        const actor = yield* lockActor;
-        const access = yield* requireAccountAccess(account, "manage");
-        if (access.ownership.kind === "personal")
-          return yield* new AccessConflict({ reason: "personal_account" });
-        if (audience.kind === "groups")
-          yield* requireGroupSharing(sql, actor.organization, actor.user, audience.groups);
-        const changed =
-          yield* sql`update hosted_account_access set audience = ${audience.kind}, revision = gen_random_uuid()::text
-      where account_id = ${account} and organization_id = ${actor.organization} and revision = ${revision} returning account_id`;
-        if (changed.length !== 1) return yield* new AccessConflict({ reason: "changed" });
-        yield* sql`delete from hosted_account_groups where account_id = ${account}`;
-        if (audience.kind === "groups")
-          for (const group of audience.groups)
-            yield* sql`insert into hosted_account_groups (organization_id, account_id, group_id) values (${actor.organization}, ${account}, ${group})`;
-      }),
-    );
-    return yield* requireAccountAccess(account, "read");
-  }).pipe(
-    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
-  );
 /** Both hosted products register the same authenticated policy handlers. */
 export const hostedResourceAccessHandlers = HttpApiBuilder.group(
   HostedApi,
@@ -180,7 +145,6 @@ export const hostedResourceAccessHandlers = HttpApiBuilder.group(
         .handle("shareApp", ({ params, payload }) =>
           shareApp(params.app, payload.audience, payload.revision),
         )
-        .handle("account", () => Effect.map(AccountGrants.inspect, (grant) => grant.access))
-        .handle("shareAccount", ({ payload }) => shareAccount(payload.audience, payload.revision));
+        .handle("account", () => Effect.map(AccountGrants.inspect, (grant) => grant.access));
     }),
 );

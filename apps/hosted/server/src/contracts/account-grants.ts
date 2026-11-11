@@ -22,7 +22,7 @@ import type { AccountAccess } from "./resource-access.ts";
  * Account actions from #752. "inspect" covers metadata and health. "rename" is not in #752 yet;
  * it covers the label and description.
  */
-export type AccountAction = "inspect" | "use" | "reconnect" | "rename" | "share" | "delete";
+export type AccountAction = "inspect" | "use" | "reconnect" | "rename" | "delete";
 
 /** Type-only key: it has no runtime value, so no other module can construct a proof. */
 declare const evidence: unique symbol;
@@ -59,7 +59,6 @@ export const AccountTargets: {
   use: target("use"),
   reconnect: target("reconnect"),
   rename: target("rename"),
-  share: target("share"),
   delete: target("delete"),
 };
 
@@ -91,12 +90,6 @@ export class RequireAccountRename extends HttpApiMiddleware.Service<
   { provides: AccountTarget<"rename"> }
 >()("hosted/RequireAccountRename", { error: OrganizationForbidden }) {}
 
-/** Change who the account is shared with. */
-export class RequireAccountShare extends HttpApiMiddleware.Service<
-  RequireAccountShare,
-  { provides: AccountTarget<"share"> }
->()("hosted/RequireAccountShare", { error: OrganizationForbidden }) {}
-
 /** Delete the account and its saved credentials. */
 export class RequireAccountDelete extends HttpApiMiddleware.Service<
   RequireAccountDelete,
@@ -119,7 +112,6 @@ const AccountActions = {
   use: { middleware: RequireAccountUse, tokenAction: "run" },
   reconnect: { middleware: RequireAccountReconnect, tokenAction: "manage" },
   rename: { middleware: RequireAccountRename, tokenAction: "manage" },
-  share: { middleware: RequireAccountShare, tokenAction: "manage" },
   delete: { middleware: RequireAccountDelete, tokenAction: "manage" },
 } as const satisfies Record<AccountAction, AccountActionDeclaration>;
 
@@ -128,7 +120,6 @@ type AccountMiddleware =
   | RequireAccountUse
   | RequireAccountReconnect
   | RequireAccountRename
-  | RequireAccountShare
   | RequireAccountDelete;
 
 /**
@@ -181,6 +172,5 @@ export const requireAccount = {
   use: attach(AccountActions.use),
   reconnect: attach(AccountActions.reconnect),
   rename: attach(AccountActions.rename),
-  share: attach(AccountActions.share),
   delete: attach(AccountActions.delete),
 };

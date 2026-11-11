@@ -459,7 +459,7 @@ See [OAuth notes](../../../notes/oauth.md) for the protocol library and limits.
 
 **Apps → Add app** lists Executor's official apps from the feed at
 `EXECUTOR_CATALOG_URL` (the feed's `index.json`; the default is the published feed at
-`https://catalog.executor.sh/index.json`).
+`https://catalog.executor.sh/index.json`, and `off` lists no feed apps).
 Choosing one installs the app's own source as a copy, the way a published app is
 installed, and then asks for an account through the app's own providers. Choose
 an unused app name; this flow never replaces an existing app. See

@@ -30,7 +30,7 @@ These settings override the defaults:
 | `EXECUTOR_APP_WORKERS` | no | Most app and data Workers kept loaded at once. The default is `64`. See below. |
 | `EXECUTOR_APP_WORKER_IDLE_SECONDS` | no | Unload an app or data Worker not called for this long; `0` keeps idle Workers loaded up to the limit. The default is `300`. See below. |
 | `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
-| `EXECUTOR_CATALOG_URL`               | no       | `index.json` of the official app feed that **Add app** lists. Without it, Add app lists only the built-in Executor app. |
+| `EXECUTOR_CATALOG_URL`               | no       | `index.json` of the official app feed that onboarding and **Add app** list. The default is `https://catalog.executor.sh/index.json`; `off` lists only the built-in Executor app, for an instance without outbound internet access. |
 | `EXECUTOR_REGISTRY_URL`              | no       | Origin of the public app registry. The default is `https://api.executor.sh`. |
 | `EXECUTOR_TOOL_LISTING_FRESH_SECONDS` | no     | Reuse an app's evaluated tool list this long before refreshing it in the background. The default is `30`. |
 | `EXECUTOR_TOOL_LISTING_RENEW_SECONDS` | no     | Renew the tool lists search serves in the background once they are this old. The default is `86400`. |

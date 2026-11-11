@@ -108,7 +108,6 @@ layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies",
         // registration runs with both.
         const token = yield* connect(actors.owner, "app", "token", "api-token", {
           kind: "shared",
-          audience: { kind: "everyone" },
         });
         const own = yield* connect(actors.owner, "app", "source", "owner-source");
         const registered = yield* subscription("incoming", own, "active");
@@ -162,7 +161,6 @@ layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies",
         // the provider. That needs none of its accounts, so it does not hold the token it ran with.
         const second = yield* connect(actors.owner, "app", "token", "second-token", {
           kind: "shared",
-          audience: { kind: "everyone" },
         });
         const departed = yield* connect(actors.admin, "app", "source", "admin-source");
         const stranded = yield* subscription("incoming", departed, "active");
@@ -238,7 +236,6 @@ layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies",
         // source account each: both registrations run with the token.
         const token = yield* connect(actors.member, "user", "seed", "member-token", {
           kind: "shared",
-          audience: { kind: "everyone" },
         });
         yield* ok(yield* link(actors.owner, "token", token));
         const ownerSource = yield* connect(actors.owner, "user", "source", "owner-source");

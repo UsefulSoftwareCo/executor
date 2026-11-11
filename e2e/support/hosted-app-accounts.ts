@@ -108,9 +108,7 @@ export const appAccountsFixture = Effect.gen(function* () {
         "POST",
         connectionsPath(path, "user", options.requirement ?? "service"),
         {
-          destination: options.shared
-            ? { kind: "shared", audience: { kind: "everyone" } }
-            : { kind: "personal" },
+          destination: options.shared ? { kind: "shared" } : { kind: "personal" },
         },
       );
       expect(connection.status, JSON.stringify(connection.body)).toBe(200);

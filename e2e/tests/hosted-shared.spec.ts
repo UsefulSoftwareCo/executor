@@ -206,7 +206,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
               actors.owner,
               "POST",
               connectionsPath(`${prefix}/apps/${created.app}`, "user", "service"),
-              { destination: { kind: "shared", audience: { kind: "everyone" } } },
+              { destination: { kind: "shared" } },
             );
             expect(connection.status).toBe(200);
             const { id } = yield* body(Resource, connection);
@@ -338,7 +338,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
         const connection = yield* body(
           Resource,
           yield* api.request(actors.admin, "POST", connectionsPath(path, "user", "service"), {
-            destination: { kind: "shared", audience: { kind: "everyone" } },
+            destination: { kind: "shared" },
           }),
         );
         const saved = yield* api.request(

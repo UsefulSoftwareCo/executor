@@ -5,7 +5,6 @@ import {
   type AccountConnectionId,
   type AccountScope,
 } from "@executor-js/sdk/core";
-import { requireGroupSharing } from "./group-sharing.ts";
 import { Effect, Schema } from "effect";
 import { OrganizationForbidden, OrganizationId } from "../contracts/organization.ts";
 import { ConnectionAccess, type ConnectionDestination } from "../contracts/resource-access.ts";
@@ -15,19 +14,6 @@ import {
   requireAppAccess,
   requireAccountAccess,
 } from "./resource-policy.ts";
-
-/** Reject an inaccessible destination before creating or resuming a connection. */
-export const checkDestination = (destination: typeof ConnectionDestination.Type) =>
-  Effect.gen(function* () {
-    if (destination.kind !== "shared" || destination.audience.kind !== "groups") return;
-    const actor = yield* currentResourceAuthority;
-    const sql = yield* policyDatabase;
-    yield* sql.withTransaction(
-      requireGroupSharing(sql, actor.organization, actor.user, destination.audience.groups),
-    );
-  }).pipe(
-    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
-  );
 
 /** Save the reviewed destination before exposing the connection URL. */
 export const recordConnection = (
@@ -45,13 +31,8 @@ export const recordConnection = (
         scope,
       }),
     );
-    yield* sql.withTransaction(
-      Effect.gen(function* () {
-        yield* checkDestination(destination);
-        yield* sql`insert into hosted_connection_access (connection_id, organization_id, creator_id, destination, target)
+    yield* sql`insert into hosted_connection_access (connection_id, organization_id, creator_id, destination, target)
       values (${connection.id}, ${actor.organization}, ${actor.user}, ${JSON.stringify(destination)}::jsonb, ${target}::jsonb)`;
-      }),
-    );
     return connection;
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
@@ -71,7 +52,6 @@ export const connectionAccess = (connection: AccountConnectionId) =>
     const access = (yield* Schema.decodeUnknownEffect(Schema.Array(ConnectionAccess))(rows))[0];
     if (access === undefined) return yield* new OrganizationForbidden();
     yield* requireAppAccess(access.target.app, access.target.scope === "app" ? "manage" : "use");
-    yield* checkDestination(access.destination);
     return access;
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),

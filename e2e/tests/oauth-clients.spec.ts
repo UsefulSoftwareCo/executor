@@ -570,7 +570,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             "POST",
             connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
             {
-              destination: { kind: "shared", audience: { kind: "everyone" } },
+              destination: { kind: "shared" },
             },
           ),
         );

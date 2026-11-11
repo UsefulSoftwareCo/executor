@@ -46,7 +46,7 @@ import {
   requestRejections,
 } from "@executor-js/sdk/core";
 import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
-import { officialCatalogUrl } from "@executor-js/catalog";
+import { catalogFeedSetting } from "@executor-js/catalog";
 import {
   Config,
   Effect,
@@ -444,9 +444,7 @@ export const localApi = (
         auth,
         egress,
         {
-          catalogFeedUrl: yield* Config.String("EXECUTOR_CATALOG_URL").pipe(
-            Config.withDefault(officialCatalogUrl),
-          ),
+          catalogFeedUrl: yield* catalogFeedSetting,
           managedApp: managed.app,
           managedAccount: managed.account,
           ownerMigration: Ref.get(ownerMigration),

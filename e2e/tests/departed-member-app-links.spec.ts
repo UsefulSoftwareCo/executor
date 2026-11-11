@@ -40,7 +40,6 @@ layer(HostedLive, { excludeTestServices: true })("Departed member app links", (i
         const personal = yield* connect(actors.admin, "app", "team", "departed-admin-team");
         const shared = yield* connect(actors.owner, "app", "team", "departed-shared-team", {
           kind: "shared",
-          audience: { kind: "everyone" },
         });
         expect(yield* used).toEqual([personal, shared]);
         expect(yield* listed).toEqual([personal, shared]);

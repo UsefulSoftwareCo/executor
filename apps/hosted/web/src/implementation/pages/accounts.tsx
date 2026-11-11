@@ -72,18 +72,12 @@ export function AccountsPage({
           </EmptyState>
         }
         highlight={highlight}
-        accountActions={(account) => {
-          const entry = Option.isSome(directory.data)
-            ? directory.data.value.accounts.find((item) => item.account.id === account.id)
-            : undefined;
-          return (
-            <HostedAccountActions
-              account={account}
-              access={entry?.access}
-              open={(kind) => setDialog({ account: account.id, kind })}
-            />
-          );
-        }}
+        accountActions={(account) => (
+          <HostedAccountActions
+            account={account}
+            open={(kind) => setDialog({ account: account.id, kind })}
+          />
+        )}
         accountMeta={(account) => {
           const access = Option.isSome(directory.data)
             ? directory.data.value.accounts.find((item) => item.account.id === account.id)?.access

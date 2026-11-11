@@ -138,9 +138,7 @@ const keyApp = (options: { readonly database: boolean; readonly resource: string
           actors.owner,
           "POST",
           connectionsPath(path, "user", "service"),
-          options.shared === true
-            ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
-            : {},
+          options.shared === true ? { destination: { kind: "shared" } } : {},
         );
         expect(pending.status, JSON.stringify(pending.body)).toBe(200);
         const account = (yield* submit((yield* body(Resource, pending)).id, token)).id;

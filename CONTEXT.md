@@ -102,7 +102,7 @@ configured app's accounts and the service's current capabilities.
 ## Hosted access
 
 **Group**:
-A named set of current members of one organization, used to share apps and accounts.
+A named set of current members of one organization, used to share apps. Accounts are never shared with a group.
 
 **App access**:
 Who can use a hosted app: its creator only, selected groups, or everyone in the organization.
@@ -111,7 +111,7 @@ Who can use a hosted app: its creator only, selected groups, or everyone in the 
 A saved provider account whose metadata and use are private to one organization member.
 
 **Shared account**:
-An organization account with its own group or Everyone access, independent of app access.
+An organization account every member can use, independent of app access.
 
 **Account offer**:
 A saved account made available for an app requirement, with a default for members who have access.
