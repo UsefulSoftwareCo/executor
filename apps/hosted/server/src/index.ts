@@ -47,9 +47,11 @@ export * from "./contracts/organization.ts";
 export {
   CallStateCache,
   ConcurrentStatements,
+  HostedBackground,
   HostedExecutor,
   StatementBatch,
   type CallState,
+  type HostedBackgroundWork,
   type StatementGroups,
 } from "./contracts/executor.ts";
 export { OrganizationDefaults } from "./contracts/organization-defaults.ts";
@@ -136,3 +138,5 @@ export { resolveOrganizationReference } from "./implementation/organization-refe
 
 export * from "./contracts/schedules.ts";
 export { makeScheduledAuthority } from "./implementation/schedules.ts";
+export * from "./contracts/tool-call-log.ts";
+export { pruneToolCallLog, toolCallRetentionDays } from "./implementation/tool-call-log.ts";

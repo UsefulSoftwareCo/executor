@@ -134,6 +134,15 @@ export const InvocationSelection = Context.Reference<
   | undefined
 >("executor/InvocationSelection", { defaultValue: () => undefined });
 /**
+ * Host-only: told the kind `tools.call` dispatches the call with, once it is known: the caller's,
+ * or for a call that named none, the one the app's catalog gives the tool. A call that fails
+ * before then reports none. Never supplied by authored code.
+ */
+export const ToolCallKindObserved = Context.Reference<((kind: ToolKind) => void) | undefined>(
+  "executor/ToolCallKindObserved",
+  { defaultValue: () => undefined },
+);
+/**
  * Host-only: the reads `tools.call` would make for a selection, made by the host beside its own
  * checks in one batch (see {@link PrefetchHost}). `value` is opaque to the host. `tools.call` uses
  * it only for the app, owner and accounts of its {@link InvocationSelection}, and only once: a

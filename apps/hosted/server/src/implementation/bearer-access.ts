@@ -71,6 +71,7 @@ export interface ApiBearerAccess {
   readonly organizationSlug: string;
   readonly policy: AuthorizationPolicy;
   readonly key?: { readonly id: typeof ApiKeyId.Type };
+  readonly grant?: { readonly id: GrantId };
 }
 
 const bearer = (headers: Headers) => headers.get("authorization")?.match(/^Bearer ([^\s]+)$/i)?.[1];
@@ -655,6 +656,7 @@ export const apiBearerAccess = (origins: HostedOAuthOrigins, request: BearerRequ
       : yield* oauthAccess(sql, origins, "api", token, request).pipe(
           Effect.map((grant) => ({
             userId: grant.userId,
+            grant: { id: grant.grant.id },
             access: grant.access,
             policy: grantAuthorization(grant.grant.policy),
             organizationSlug: grant.organizationSlug,

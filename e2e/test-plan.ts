@@ -9813,6 +9813,199 @@ export const scenarios = plan({
       local: na("Local has no organization members or hosted OAuth consent."),
     },
   },
+  toolCallLogReference: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "A failed API tool call returns its log reference beside the error, and an admin finds that call without its arguments or result, or the name of a tool the app does not have",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogMcp: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "MCP call and execute return each failed call's log reference beside the unchanged error, and a program's calls share a run and a session",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogScopedAgent: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "An OAuth agent's calls through a scoped connection are logged with its grant and connection, and both filters find them",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogApprovals: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "A call that waits for approval is one log row, read as waiting and then as approved or denied with who answered",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogAuthorization: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "Members read only their own logged calls and find nothing of another member's; owners and admins read all, and API keys cannot read the log",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogExpiry: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "tool-call-log.spec.ts",
+    title:
+      "A lapsed approval reads as expired, the prune marks it, and logged calls older than 30 days are not found before the prune deletes them",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Advances the wall clock of a runner-owned product process."),
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogApprovedAtDeadline: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "tool-call-log.spec.ts",
+    title:
+      "An approval answered in time replaces the expiry the prune marked on its call while the call was still running",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Writes to a runner-owned product database."),
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogWriteFailure: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "tool-call-log.spec.ts",
+    title: "Tool calls end normally, without a reference, when the tool call log cannot be written",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Installs a storage fault in a runner-owned product database."),
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogPersonalAccounts: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "Owners and admins see a member's personal account on their calls only as a personal account and cannot search by its name; the member sees and finds it",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogWithheldApp: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "A member who can no longer use an app reads their calls to it without its name, while admins still see it",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogErrorContract: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "Every error tools/call and tools/run declare keeps its status and body, adding only the optional reference",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogSlowWrite: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "tool-call-log.spec.ts",
+    title:
+      "A slow tool call log write does not hold up a successful call, whose row appears after it, and a failed call's reference leads to its row",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Installs a storage fault in a runner-owned product database; toolCallLogSlowWriteCloud covers Cloud.",
+      ),
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogSlowWriteCloud: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "On Cloud a slow tool call log write does not hold up a successful call, and a failed call waits at most its bound and returns no reference",
+    targets: {
+      "self-host": na(
+        "Self-host's database cannot be slowed without stopping it; toolCallLogSlowWrite covers self-host.",
+      ),
+      cloud: managedCloud,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogPage: {
+    fixtures: "actors",
+    file: "tool-call-log-page.spec.ts",
+    title:
+      "Admins filter the Activity page by status and member from the address, open a call by its pasted reference and narrow to its run",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogPageRefreshFailure: {
+    fixtures: "actors",
+    file: "tool-call-log-page.spec.ts",
+    title:
+      "When reading the Activity page's calls again fails, the calls already read stay under the failure, and trying again reads them",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogPageMember: {
+    fixtures: "actors",
+    file: "tool-call-log-page.spec.ts",
+    title:
+      "Members see only their own calls on the Activity page, with no member filter and no other member's reference",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogRunner: {
+    fixtures: "actors",
+    file: "tool-call-log-page.spec.ts",
+    title: "The tool runner shows a failed run's call reference, which opens the call in Activity",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local's tool runner has no call log."),
+    },
+  },
   mcpStaleRefresh: {
     fixtures: "actors",
     file: "mcp-oauth-refresh.spec.ts",

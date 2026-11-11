@@ -39,13 +39,15 @@ import {
 import { nearest } from "./suggestions.ts";
 import { withOperationSpan } from "./telemetry.ts";
 import type { McpAppAccounts } from "../contracts/targets.ts";
-import type { McpBackend } from "../contracts/backend.ts";
+import { ToolCallRecorded, type McpBackend } from "../contracts/backend.ts";
 import { accountSummary, accountsKey, discoveryAccounts } from "./accounts.ts";
 import {
   AppAccountRequired,
   CallInput,
+  callLogNote,
   CallRequest,
   CatalogUnavailable,
+  type CallLog,
   type CallOutcome,
   type ExecuteResult,
   AppDiscoveryTimedOut,
@@ -948,37 +950,53 @@ function catalog(
     const call =
       (entry: Entry) =>
       (input: unknown): Effect.Effect<Json, ToolError> =>
-        Schema.decodeUnknownEffect(Json)(input).pipe(
-          Effect.mapError(() => toolError("Tool arguments must be JSON")),
-          Effect.flatMap((input) =>
-            Effect.gen(function* () {
-              if (Schema.is(JsonObject)(input) && Object.hasOwn(input, accountsKey)) {
-                const schemas = yield* renderSchemas(entry.tool);
-                if (schemas.input.properties?.[accountsKey] === undefined)
-                  return yield* new AccountChoiceUnsupported({ app: entry.target.id });
-              }
-              const accounts = yield* resolveLinkedAccounts({
-                app: entry.target.id,
-                version: entry.target.version,
-                // The host fills app requirements from the app links.
-                appLinks: {},
-                userLinks: entry.target.linked,
-              });
-              const result = yield* backend.callTool({
-                app: entry.target.id,
-                accounts,
-                tool: entry.tool.name,
-                kind: entry.tool.readOnly === true ? "query" : "mutation",
-                input,
-              });
-              if (result.status !== "completed") return yield* approvalRequired(result);
-              // The tool's result says it failed, as an MCP server's `isError` does. The program
-              // still gets the whole result; the call is reported as a failure.
-              if (result.toolError === true) yield* toolReportedError(progress);
-              return result.value;
-            }).pipe(Effect.mapError((error) => toolError(diagnostic(error, site("call"))))),
-          ),
-        );
+        Effect.gen(function* () {
+          // The host's reference for this call, once it recorded it, for the call's own report
+          // and for the error the program catches; the error's message is unchanged.
+          const recorded = yield* callRecorder(progress);
+          return yield* Schema.decodeUnknownEffect(Json)(input).pipe(
+            Effect.mapError(() => toolError("Tool arguments must be JSON")),
+            Effect.flatMap((input) =>
+              Effect.gen(function* () {
+                if (Schema.is(JsonObject)(input) && Object.hasOwn(input, accountsKey)) {
+                  const schemas = yield* renderSchemas(entry.tool);
+                  if (schemas.input.properties?.[accountsKey] === undefined)
+                    return yield* new AccountChoiceUnsupported({ app: entry.target.id });
+                }
+                const accounts = yield* resolveLinkedAccounts({
+                  app: entry.target.id,
+                  version: entry.target.version,
+                  // The host fills app requirements from the app links.
+                  appLinks: {},
+                  userLinks: entry.target.linked,
+                });
+                const result = yield* backend
+                  .callTool({
+                    app: entry.target.id,
+                    accounts,
+                    tool: entry.tool.name,
+                    kind: entry.tool.readOnly === true ? "query" : "mutation",
+                    input,
+                  })
+                  .pipe(Effect.provideService(ToolCallRecorded, recorded.record));
+                if (result.status !== "completed") return yield* approvalRequired(result);
+                // The tool's result says it failed, as an MCP server's `isError` does. The program
+                // still gets the whole result; the call is reported as a failure.
+                if (result.toolError === true) yield* toolReportedError(progress);
+                return result.value;
+              }).pipe(
+                Effect.mapError((error) => {
+                  const reference = recorded.reference();
+                  return toolError(
+                    diagnostic(error, site("call")),
+                    undefined,
+                    reference === undefined ? undefined : { reference },
+                  );
+                }),
+              ),
+            ),
+          );
+        });
     /** The program's own tool for an entry, built when the program's catalog takes its app. */
     const program = (entry: Entry) =>
       renderSchemas(entry.tool).pipe(
@@ -1436,6 +1454,8 @@ export type ExecutionProgress = {
     durationMs?: number;
     /** The call returned a result that says the tool failed (`toolError`), so it did not succeed. */
     toolError?: true;
+    /** The host's reference for the call, once it recorded it. */
+    reference?: string;
   }>;
   /** The call index each running tool fiber serves, so the driver can mark its approval wait. */
   readonly callFibers: Map<number, number>;
@@ -1466,6 +1486,26 @@ const recordFailure = (progress: ExecutionProgress, error: Error) =>
   Effect.sync(() => {
     progress.failures.push(error);
   });
+/**
+ * Collect the host's reference for the call this fiber makes. The host reports it from whichever
+ * fiber makes the call, so the call's index is read here, where the program's call runs.
+ */
+const callRecorder = (progress: ExecutionProgress) =>
+  Effect.map(Effect.fiberId, (fiber) => {
+    const index = progress.callFibers.get(fiber);
+    let reference: string | undefined;
+    return {
+      record: (recorded: string) => {
+        reference = recorded;
+        const call = index === undefined ? undefined : progress.calls[index];
+        if (call !== undefined) call.reference = recorded;
+      },
+      reference: () => reference,
+    };
+  });
+/** A call's reference as its failure reports it, beside the error. */
+export const callLog = (reference: string | undefined): { callLog: CallLog } | {} =>
+  reference === undefined ? {} : { callLog: { reference, note: callLogNote } };
 /** Mark the call this fiber makes as one whose result says its tool failed. */
 const toolReportedError = (progress: ExecutionProgress) =>
   Effect.map(Effect.fiberId, (fiber) => {
@@ -1538,22 +1578,26 @@ const unavailableMessage = (unavailable: typeof UnavailableApp.Type) =>
  * lists only calls whose start was recorded.
  */
 export const reportedCalls = (progress: ExecutionProgress): Array<McpToolCall> =>
-  progress.calls.flatMap((call) =>
-    call === undefined
-      ? []
-      : [
-          {
-            name: call.name,
-            outcome:
-              call.outcome === "running"
-                ? "interrupted"
-                : call.outcome === "success" && call.toolError === true
-                  ? "failure"
-                  : call.outcome,
-            ...(call.durationMs === undefined ? {} : { durationMs: call.durationMs }),
-          },
-        ],
-  );
+  progress.calls.flatMap((call) => {
+    if (call === undefined) return [];
+    const outcome =
+      call.outcome === "running"
+        ? "interrupted"
+        : call.outcome === "success" && call.toolError === true
+          ? "failure"
+          : call.outcome;
+    return [
+      {
+        name: call.name,
+        outcome,
+        ...(call.durationMs === undefined ? {} : { durationMs: call.durationMs }),
+        // Successful calls need no reference.
+        ...(call.reference === undefined || outcome === "success"
+          ? {}
+          : { reference: call.reference }),
+      },
+    ];
+  });
 
 /** The phase a timed-out execution was in, so callers can tell slow discovery from a slow program. */
 export const timeoutMessage = (timeoutMs: number, phase: "discovery" | "program") =>
@@ -1741,9 +1785,10 @@ function runProgram(
       if (unknown !== undefined && !result.ok) yield* prepared.recheck(result.error);
       const execution = executionDiagnostic({
         ...result,
+        ...(result.ok ? {} : { error: programFailure(result.error) }),
         ...(unknown === undefined || result.ok
           ? {}
-          : { error: { ...result.error, suggestions: [unknown] } }),
+          : { error: { ...programFailure(result.error), suggestions: [unknown] } }),
         ...(unavailable === undefined
           ? {}
           : {
@@ -1785,17 +1830,28 @@ function runProgram(
   });
 }
 
+/**
+ * The program's uncaught failure as agents read it: a failed tool's properties are not passed on
+ * whole; its reference becomes the failure's `callLog`, beside the unchanged message.
+ */
+const programFailure = ({ properties, ...error }: CodeMode.Diagnostic) => ({
+  ...error,
+  ...(error.kind === "ToolFailure" ? callLog(properties?.["reference"]) : {}),
+});
+
 /** A failed direct call, in the shape every outcome of a batch shares. */
 const callFailure = (
   path: string,
   kind: CodeMode.DiagnosticKind,
   message: string,
   matches?: ReadonlyArray<string>,
+  reference?: string,
 ): CallOutcome => ({
   path,
   ok: false,
   error: failureDetail({ kind, message }),
   ...(matches === undefined ? {} : { matches }),
+  ...callLog(reference),
 });
 
 /**
@@ -1882,10 +1938,28 @@ export function callTools(input: typeof CallInput.Type): Program {
               .pipe(
                 Effect.matchEffect({
                   onSuccess: (value) =>
-                    finish("success").pipe(Effect.as<CallOutcome>({ path: name, ok: true, value })),
+                    finish("success").pipe(
+                      Effect.as<CallOutcome>({
+                        path: name,
+                        ok: true,
+                        value,
+                        // A value that says the tool failed is a failure the host recorded.
+                        ...(progress.calls[index]?.toolError === true
+                          ? callLog(progress.calls[index]?.reference)
+                          : {}),
+                      }),
+                    ),
                   onFailure: (error) =>
                     finish("failure").pipe(
-                      Effect.as(callFailure(name, "ToolFailure", error.message)),
+                      Effect.as(
+                        callFailure(
+                          name,
+                          "ToolFailure",
+                          error.message,
+                          undefined,
+                          progress.calls[index]?.reference,
+                        ),
+                      ),
                     ),
                 }),
                 Effect.ensuring(Effect.sync(() => progress.callFibers.delete(fiber))),

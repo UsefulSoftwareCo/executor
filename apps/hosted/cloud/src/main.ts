@@ -29,7 +29,11 @@ import {
   localRemovalStalls,
   removalStallBindings,
 } from "./infrastructure/organization-removal-stalls.ts";
-import { HostedExecutor, lazyHostedApiDocument } from "@executor-js/hosted-server";
+import {
+  HostedExecutor,
+  lazyHostedApiDocument,
+  pruneToolCallLog,
+} from "@executor-js/hosted-server";
 import { BillingMeter } from "./contracts/billing-meter.ts";
 import { billingBindings } from "./infrastructure/billing.ts";
 import { frameworkDocumentation, registryRoutes, gitRoutes } from "@executor-js/app-management";
@@ -408,6 +412,17 @@ export default Api.make(
       Effect.as(jobCompleted),
       handledJob(Effect.logWarning("Idle agent grant expiry failed")),
     );
+    // Marks approvals that lapsed unanswered and deletes calls past the retention.
+    const toolCallLog = Effect.gen(function* () {
+      const sql = yield* Effect.flatten(GroupDatabase);
+      yield* pruneToolCallLog.pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    }).pipe(
+      Effect.provide(executor),
+      reportErrors,
+      Effect.scoped,
+      Effect.as(jobCompleted),
+      handledJob(Effect.logWarning("Tool call log pruning failed")),
+    );
     const jobs = yield* cloudBackgroundJobs;
     yield* jobs.schedule(
       "* * * * *",
@@ -423,6 +438,7 @@ export default Api.make(
       "welcome-emails",
       "workflow-reconcile",
       "app-domain-heartbeat",
+      "tool-call-log",
     );
     yield* jobs.schedule("17 4 * * *", "billing-reconcile", "agent-grant-expiry");
     const backgroundJobs = {
@@ -437,6 +453,7 @@ export default Api.make(
       "workflow-reconcile": workflowReconcile,
       "billing-reconcile": billingReconcile,
       "agent-grant-expiry": agentGrantExpiry,
+      "tool-call-log": toolCallLog,
     } satisfies Record<BackgroundJob, unknown>;
 
     const egress = yield* cloudEgress;

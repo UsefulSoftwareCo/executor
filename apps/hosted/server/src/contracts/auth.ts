@@ -1,6 +1,6 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import type { ApiKeyId } from "./api-keys.ts";
-import type { ResourceOrigins } from "@executor-js/mcp-auth";
+import type { GrantId, ResourceOrigins } from "@executor-js/mcp-auth";
 import type { AuthorizationPolicy } from "@executor-js/authorization";
 import type { OrganizationAccess, OrganizationReference } from "./organization.ts";
 import { CurrentActor } from "@executor-js/sdk/core";
@@ -88,6 +88,10 @@ export interface ApiAccess {
   readonly policy: AuthorizationPolicy;
   readonly key?: {
     readonly id: typeof ApiKeyId.Type;
+  };
+  /** The OAuth grant an agent's API token carries; absent for an API key. */
+  readonly grant?: {
+    readonly id: GrantId;
   };
 }
 

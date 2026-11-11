@@ -42,6 +42,47 @@ export function GroupsLoading() {
   );
 }
 
+export const activityTitle = "Activity";
+export const activityDescription =
+  "Which tools were called, by whom, and how each call ended. Calls are kept for 30 days.";
+
+/** The Activity page's heading, the same while the page or its list loads. */
+export function ActivityFrame({ children }: { readonly children: ReactNode }) {
+  return (
+    <PageFrame>
+      <PageHeader title={activityTitle} description={activityDescription} />
+      {children}
+    </PageFrame>
+  );
+}
+
+/** The search field and Filter button, at their loaded sizes, before the page can use them. */
+export function ActivityToolbarPending() {
+  return (
+    <div className="mb-2.5 flex items-center gap-2">
+      <Skeleton className="h-8.75 w-[min(100%,340px)] rounded-md max-[740px]:h-11 max-[740px]:w-full" />
+      <Skeleton className="h-8 w-21 shrink-0 rounded-md max-[740px]:h-11" />
+    </div>
+  );
+}
+
+/**
+ * The list before its first page arrives. Whether it holds calls is unknown, so it shows no rows:
+ * only the count line and the space the list starts in.
+ */
+export function ActivityListPending() {
+  return (
+    <>
+      <div className="mb-3 flex min-h-6 items-center">
+        <Skeleton className="h-3.5 w-48" />
+      </div>
+      <div className="min-h-64 border-t">
+        <LoadingAnnouncement>Loading tool calls…</LoadingAnnouncement>
+      </div>
+    </>
+  );
+}
+
 /** A scheduled run's review: the way back to the list above the request's card. */
 export function ScheduledApprovalFrame({
   organizationSlug,
@@ -160,6 +201,13 @@ export function PagePending({
       <GroupsFrame>
         <GroupsLoading />
       </GroupsFrame>
+    );
+  if (page === "activity")
+    return (
+      <ActivityFrame>
+        <ActivityToolbarPending />
+        <ActivityListPending />
+      </ActivityFrame>
     );
   if (page === "webhooks")
     return (

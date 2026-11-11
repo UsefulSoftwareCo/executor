@@ -1,4 +1,5 @@
 import type { AuthContext } from "@better-auth/core";
+import { CurrentApiCaller } from "../contracts/tool-call-log.ts";
 import type { Principal } from "../contracts/auth.ts";
 import { requestAuthentication, requestTombstones } from "./batch-authentication.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
@@ -163,6 +164,12 @@ export const withOrganizationRequest = <E, R>(
         Effect.provideService(CurrentOrganizationNamespace, scope),
         Effect.provideService(CurrentUserId, grant.userId),
         Effect.provideService(CurrentUsage, { source: "api" }),
+        Effect.provideService(
+          CurrentApiCaller,
+          grant.key !== undefined
+            ? { source: "api-key", sourceId: grant.key.id }
+            : { source: "agent", sourceId: grant.grant?.id },
+        ),
       )).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
     }
     if (
@@ -203,6 +210,7 @@ export const withOrganizationRequest = <E, R>(
       Effect.provideService(CurrentOrganizationNamespace, scope),
       Effect.provideService(CurrentUserId, principal.userId),
       Effect.provideService(CurrentUsage, { source: "dashboard" }),
+      Effect.provideService(CurrentApiCaller, { source: "dashboard" }),
       Effect.provideService(CurrentPrincipal, principal),
       Effect.provideService(CurrentAuthorization, fullAuthority),
     )).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));

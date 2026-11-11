@@ -1,6 +1,7 @@
 import { Link, useLocation } from "@tanstack/react-router";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
+  Activity01Icon,
   BoxesIcon,
   FingerPrintIcon,
   Key01Icon,
@@ -25,6 +26,7 @@ const items = [
   { to: "/org/$organizationSlug/accounts", label: "Accounts", icon: UserCircleIcon },
   { to: "/org/$organizationSlug/approvals", label: "Approvals", icon: Shield01Icon },
   { to: "/org/$organizationSlug/groups", label: "Groups", icon: UserGroupIcon },
+  { to: "/org/$organizationSlug/activity", label: "Activity", icon: Activity01Icon },
 ] as const;
 const settings = {
   to: "/org/$organizationSlug/organization",

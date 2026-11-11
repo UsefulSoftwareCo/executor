@@ -1,5 +1,6 @@
 /** The executor and the services every cloud Worker shares, including app pages. */
 import {
+  HostedBackground,
   HostedExecutor,
   withDeploySetupWake,
   withExecutorAnalytics,
@@ -30,7 +31,7 @@ export const cloudProductServices = Effect.fn(function* (
 ) {
   const origin = yield* cloudOrigin.pipe(Effect.orDie);
   const blobs = yield* cloudBlobs;
-  const { executor, database } = yield* cloudExecutor(databases, sources);
+  const { executor, database, background } = yield* cloudExecutor(databases, sources);
   const assets = yield* makeExecutionMemo(
     cachedBuildAssets(
       origin,
@@ -55,6 +56,10 @@ export const cloudProductServices = Effect.fn(function* (
     Layer.succeed(
       HostedExecutor,
       sdk.pipe(Effect.map((executor) => withDeploySetupWake(withExecutorAnalytics(executor)))),
+    ),
+    // Tool call log writes a call does not wait for run in this event's background work.
+    Layer.succeed(HostedBackground, (work) =>
+      background(work).pipe(Effect.provide(RuntimeContext.phantom)),
     ),
     Layer.succeed(GroupDatabase, sql.pipe(Effect.mapError(() => new GroupsUnavailable()))),
     Layer.succeed(HostedAppRuntime, {

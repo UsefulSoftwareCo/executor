@@ -182,6 +182,8 @@ const errorMessage = Match.type<HostedError>().pipe(
     WebhookFailed: () =>
       "The webhook could not run. Check its definition, settings, and connected accounts.",
     StorageError: () => "Your data could not load. Try again.",
+    ToolCallLogBusy: () =>
+      "Tool calls took too long to read. Try again, or narrow the time range, filters or search.",
     AccountNotFound: () => "This account is no longer available in this organization.",
     CatalogUnavailable: () => "The app catalog could not be reached. Try again.",
     FeedbackUnavailable: () => "Feedback could not be sent. Try again.",

@@ -7,7 +7,8 @@
  * call. A batch that cannot finish, because its connection was lost or one of its statements
  * failed, is discarded, and the call reads again on its own, in order. A batch that cannot get a
  * connection at all leaves the call to its token recheck, which fails it as unavailable (503), as
- * without batches.
+ * without batches. When the call ends, the tool call log records it in one more statement outside
+ * the batch, counted on its own.
  *
  * The scenario holds a table lock in the Cloud database to stop a batch partway through, so it
  * runs on its own local Cloud (`cloud-batch` in e2e/ci-selection.ts).
@@ -58,7 +59,10 @@ const Owner = Schema.Array(Schema.Struct({ owner: Schema.String }));
 /** One MCP tool call of a trace: its batches and the statements made outside them. */
 interface CallBatches {
   readonly batches: ReadonlyArray<{ readonly statements: number; readonly writes: number }>;
+  /** Statements other than the tool call log's write. */
   readonly statements: number;
+  /** The tool call log's write once the call ended. */
+  readonly logWrites: number;
   readonly discarded: boolean;
   readonly texts: ReadonlyArray<string>;
 }
@@ -66,6 +70,19 @@ interface CallBatches {
 /** Each MCP tool call in the trace, with the `sql.pipeline` spans and statements under it. */
 const callsOf = (spans: Spans): ReadonlyArray<CallBatches> => {
   const byId = new Map(spans.map(({ span }) => [span.spanId, span]));
+  /** Whether a span runs inside the tool call log's write. */
+  const logged = (spanId: string | null) => {
+    const visited = new Set<string>();
+    let current = spanId;
+    while (current !== null && !visited.has(current)) {
+      visited.add(current);
+      const span = byId.get(current);
+      if (span === undefined || span.operationName === "mcp.tool.call") return false;
+      if (span.operationName === "product.tool_call_log.write") return true;
+      current = span.parentSpanId;
+    }
+    return false;
+  };
   const callOf = (spanId: string | null) => {
     const visited = new Set<string>();
     let current = spanId;
@@ -90,7 +107,12 @@ const callsOf = (spans: Spans): ReadonlyArray<CallBatches> => {
             statements: Number(span.tags["db.pipeline.statements"]),
             writes: Number(span.tags["db.pipeline.writes"]),
           })),
-        statements: under.filter(({ span }) => span.operationName === "sql.execute").length,
+        statements: under.filter(
+          ({ span }) => span.operationName === "sql.execute" && !logged(span.parentSpanId),
+        ).length,
+        logWrites: under.filter(
+          ({ span }) => span.operationName === "sql.execute" && logged(span.parentSpanId),
+        ).length,
         discarded: String(call.tags["executor.mcp.call.batch_discarded"]) === "true",
         texts: under
           .filter(({ span }) => span.operationName === "sql.execute")
@@ -195,7 +217,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
                   const found = callsOf(trace.data);
                   return complete &&
                     found.length === calls &&
-                    found.every((call) => call.statements > 0)
+                    // A call that succeeded writes its log row after it ends.
+                    found.every((call) => call.statements > 0 && call.logWrites > 0)
                     ? Effect.succeed({
                         found,
                         objectId: trace.data
@@ -241,6 +264,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
               // Recheck, BEGIN, app, access check with the links, accounts, app recheck, COMMIT.
               expect(alone?.batches).toEqual([{ statements: 7, writes: 1 }]);
               expect(alone?.statements, "Every statement of the call was in its batch").toBe(5);
+              expect(alone?.logWrites, "The tool call log's one insert").toBe(1);
               const parallel = yield* run(
                 "Five calls in parallel",
                 `return await Promise.all([0, 1, 2, 3, 4].map(() => ${tool("token")}({})))`,
@@ -254,6 +278,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
               for (const call of parallel.calls) {
                 expect(call.batches).toEqual([{ statements: 7, writes: 1 }]);
                 expect(call.statements).toBe(5);
+                expect(call.logWrites).toBe(1);
               }
             }),
           );
