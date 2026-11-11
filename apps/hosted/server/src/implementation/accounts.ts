@@ -165,23 +165,32 @@ export const oauthSetup = (
  * Delete saved credentials and remove their user links through the transactional lifecycle hook.
  * An account linked to an app for everyone is refused until it is unlinked: the app uses it for
  * every caller. One a webhook subscription holds is refused naming only the holders the caller
- * may see.
+ * may see. The caller must already hold the authority to delete it; the lifecycle hook rechecks
+ * that authority in the deleting transaction.
  */
-export const disconnectAccount = Effect.gen(function* () {
-  const { owner, account } = yield* AccountGrants.delete;
-  const executor = yield* Effect.flatten(HostedExecutor);
-  yield* executor.accounts.get({ owner, account });
-  const [first, ...rest] = yield* appLinkApps(yield* policyDatabase, account);
-  if (first !== undefined)
-    return yield* new AccountLinkedToApp({ account, apps: [first, ...rest] });
-  return yield* executor.accounts
-    .remove({ owner, account })
-    .pipe(
-      Effect.catchTag("AccountWebhooksActive", (refusal) =>
-        Effect.flatMap(visibleAccountRefusal(executor, refusal), Effect.fail),
-      ),
-    );
-});
+export const removeAccount = ({
+  owner,
+  account,
+}: {
+  readonly owner: OwnerId;
+  readonly account: AccountId;
+}) =>
+  Effect.gen(function* () {
+    const executor = yield* Effect.flatten(HostedExecutor);
+    yield* executor.accounts.get({ owner, account });
+    const [first, ...rest] = yield* appLinkApps(yield* policyDatabase, account);
+    if (first !== undefined)
+      return yield* new AccountLinkedToApp({ account, apps: [first, ...rest] });
+    return yield* executor.accounts
+      .remove({ owner, account })
+      .pipe(
+        Effect.catchTag("AccountWebhooksActive", (refusal) =>
+          Effect.flatMap(visibleAccountRefusal(executor, refusal), Effect.fail),
+        ),
+      );
+  });
+/** Delete an account the route's grant proves the caller may delete. */
+export const disconnectAccount = Effect.flatMap(AccountGrants.delete, removeAccount);
 /** Update the label or description using the owner-filtered SDK primitive. */
 export const updateAccount = (metadata: {
   readonly label?: string | undefined;

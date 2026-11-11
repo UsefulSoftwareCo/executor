@@ -105,7 +105,8 @@ export const authOptions = (
     ],
     hooks: { before: apiKeyManagement },
     // Session age gates nothing: the account Security page lists sessions however long ago this
-    // browser signed in. Account deletion is disabled; enabling it needs its own confirmation.
+    // browser signed in. Better Auth's user deletion stays disabled: Cloud's `DELETE /api/user`
+    // also removes the product records a user owns.
     session: { cookieCache: { enabled: false }, freshAge: 0 },
     rateLimit: {
       enabled: true,

@@ -25,6 +25,7 @@ import {
   sessionPrincipal,
   lookupMembership,
   deleteOrganizationRecords,
+  deleteUserRecords,
   lookupOrganizationSlug,
   resolveOrganizationReference,
   ApiAuthentication,
@@ -270,6 +271,10 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
             adapter
               .pipe(Effect.flatMap((adapter) => deleteOrganizationRecords(adapter, organizationId)))
               .pipe(Effect.withSpan("auth.removeOrganization")),
+          removeUser: (user) =>
+            adapter
+              .pipe(Effect.flatMap((adapter) => deleteUserRecords(adapter, user)))
+              .pipe(Effect.withSpan("auth.removeUser")),
         });
       }),
     );

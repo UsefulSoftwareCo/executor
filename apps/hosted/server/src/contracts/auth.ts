@@ -146,6 +146,11 @@ export class Authentication extends Context.Service<
       { readonly logo: string | null },
       AuthenticationUnavailable | OrganizationForbidden
     >;
+    /**
+     * Remove a user with their credentials, sessions, sign-in methods and memberships. Their
+     * product data is removed first; a user who is already gone is not an error.
+     */
+    readonly removeUser: (user: Viewer["userId"]) => Effect.Effect<void, AuthenticationUnavailable>;
   }
 >()("hosted/Authentication") {}
 
