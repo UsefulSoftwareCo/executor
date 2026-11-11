@@ -254,6 +254,8 @@ export const startCloudEnvironment = (input: {
       BETTER_AUTH_URL: input.origin,
       BETTER_AUTH_SECRET: randomBytes(32).toString("hex"),
       EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
+      // This managed stage is fresh and has no previous-version dispatchers.
+      EXECUTOR_ENCRYPTED_WORKFLOW_STARTS: "true",
       EXECUTOR_BUILD_VERSION: input.commit,
       POSTHOG_LOCAL_TEST_PORT: String(analyticsPort),
       SENTRY_LOCAL_TEST_PORT: String(analyticsPort),
