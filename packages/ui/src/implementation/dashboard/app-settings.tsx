@@ -51,7 +51,7 @@ export function AppSettings({
               )}
             </p>
             <p className="mt-3 text-xs text-muted-foreground">
-              This app is an independent copy. Changes to the original do not update it.
+              This app is an independent copy; edits here never change the original.
             </p>
           </section>
         )}

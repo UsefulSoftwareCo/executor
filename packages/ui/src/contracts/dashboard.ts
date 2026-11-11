@@ -85,6 +85,8 @@ export interface AppVersionsProps<E> {
   readonly file: (version: VersionId, path: string) => Query<SourceDisplayFile, E>;
   readonly Failure: ComponentType<FailureProps<NoInfer<E>>>;
   readonly actions?: ReactNode;
+  /** A host's status line above the versions, such as an available update. */
+  readonly notice?: ReactNode;
 }
 /** Common command input; a host adapter supplies its own API route parameters. */
 export interface InstallApp extends CatalogImport {
