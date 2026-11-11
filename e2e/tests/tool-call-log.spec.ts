@@ -328,6 +328,11 @@ const slowWrite = <E, R>(
         return { response, ms: performance.now() - started };
       });
 
+    // The app's first use starts its Worker, which can take longer than the bound on a busy
+    // runner. Listing its tools, which writes no row, starts it before the calls are timed.
+    const warmed = yield* api.request(agent, "GET", `${path}/tools`, undefined, key.bearer);
+    expect(warmed.status, JSON.stringify(warmed.body)).toBe(200);
+
     // The call that succeeded answered before its row was written; the row follows.
     const succeeded = yield* call("echo");
     expect(succeeded.response.status).toBe(200);

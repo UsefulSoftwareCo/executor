@@ -44,7 +44,8 @@ layer(TestLive, { excludeTestServices: true })("Legacy group accounts", (it) => 
         const pending = (yield* body(Resource, started)).id;
 
         // The rows an older server wrote: the account shared with the member's group only, and
-        // the member's sign-in waiting to create another one, before step 10 ran.
+        // the member's sign-in waiting to create another one, before step 10 ran. The migrator runs
+        // only steps after the latest one recorded, so every later step is pending again too.
         yield* legacyStorage([
           {
             sql: `UPDATE hosted_account_access SET audience = 'groups' WHERE account_id = $1`,
@@ -66,7 +67,7 @@ layer(TestLive, { excludeTestServices: true })("Legacy group accounts", (it) => 
               }),
             ],
           },
-          { sql: `DELETE FROM private_hosted_migrations WHERE migration_id = 10` },
+          { sql: `DELETE FROM private_hosted_migrations WHERE migration_id >= 10` },
         ]);
         yield* serverControl("start");
 

@@ -75,6 +75,7 @@ export type ReferencedError<S extends Schema.Top> = Schema.Codec<
 interface DeclaredErrorClass {
   readonly identifier: string;
   readonly ast: SchemaAST.AST;
+  readonly fields: Schema.Struct.Fields;
   readonly extend: (
     identifier: string,
   ) => (
@@ -140,10 +141,17 @@ export const referencedErrors = <
     // An error that already carries a reference keeps it.
     const kept = Schema.is(pair.referenced)(error) && reference === undefined;
     if (kept) return error;
+    // The error's own fields, read by name: a spread would drop `cause`, which an error instance
+    // holds as a non-enumerable property, as `Error` does.
+    const fields = Object.fromEntries(
+      Object.keys(pair.error.fields).flatMap((field) =>
+        Object.hasOwn(error, field) ? [[field, Reflect.get(error, field)]] : [],
+      ),
+    );
     // SAFETY: the subclass's instances are instances of the error's own class, `E`. The fields
     // come from an instance of that class, so they are not checked again.
     return pair.referenced.make(
-      { ...error, ...(reference === undefined ? {} : { reference }) },
+      { ...fields, ...(reference === undefined ? {} : { reference }) },
       { disableChecks: true },
     ) as E;
   };

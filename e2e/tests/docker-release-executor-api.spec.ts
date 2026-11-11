@@ -7,6 +7,10 @@
  * it: the upgrade keeps edited source, so its build stays the same and only the API's revision can
  * start its listing afresh.
  *
+ * The Executor app calls the API with the agent's grant, so it lists only operations a bearer
+ * credential may call. An operation the document secures with the browser session alone, such as
+ * the dashboard's tool call log, is never listed, new or not.
+ *
  * `EXECUTOR_E2E_DOCKER_UPGRADE_FROM_IMAGE` names the published image the server starts on, which
  * must serve a different API from `EXECUTOR_E2E_DOCKER_IMAGE`: without that difference the scenario
  * proves nothing, so it fails rather than replacing an image with itself.
@@ -24,7 +28,22 @@ import { driver } from "../support/platform.ts";
 const Document = Schema.Struct({
   paths: Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Unknown)),
 });
-const Operation = Schema.Struct({ operationId: Schema.String });
+const Operation = Schema.Struct({
+  operationId: Schema.String,
+  security: Schema.optional(
+    Schema.Array(Schema.Record(Schema.String, Schema.Array(Schema.String))),
+  ),
+});
+/**
+ * An operation whose only security is the browser session refuses every bearer credential, so the
+ * Executor app, which calls with the agent's grant, must not list it.
+ */
+const browserSessionOnly = (operation: typeof Operation.Type) =>
+  operation.security !== undefined &&
+  operation.security.length > 0 &&
+  operation.security.every((requirement) =>
+    Object.keys(requirement).every((scheme) => scheme === "browserSession"),
+  );
 const SearchInput = Schema.Record(Schema.String, Schema.Json);
 const SearchPage = Schema.Struct({
   items: Schema.Array(Schema.Struct({ path: Schema.String })),
@@ -111,16 +130,21 @@ const upgrade = (database: boolean) =>
         ),
         Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 240 }),
       );
-      /** The operations of the API document the running image serves, which the Executor app reads. */
+      /**
+       * The operations of the API document the running image serves, which the Executor app reads,
+       * each with whether only a browser session may call it.
+       */
       const operations = request("/openapi.json").pipe(
         Effect.flatMap((response) => driver("API document", () => response.json())),
         Effect.flatMap(Schema.decodeUnknownEffect(Document)),
         Effect.map(
           (document) =>
-            new Set(
+            new Map(
               Object.values(document.paths).flatMap((methods) =>
                 Object.values(methods).flatMap((operation) =>
-                  Schema.is(Operation)(operation) ? [operation.operationId] : [],
+                  Schema.is(Operation)(operation)
+                    ? [[operation.operationId, browserSessionOnly(operation)] as const]
+                    : [],
                 ),
               ),
             ),
@@ -239,8 +263,8 @@ const upgrade = (database: boolean) =>
       const after = yield* operations;
       // The upgrade must change the API, or the listing checks below hold for a stale listing too.
       expect(
-        [...before].filter((operation) => !after.has(operation)).length +
-          [...after].filter((operation) => !before.has(operation)).length,
+        [...before.keys()].filter((operation) => !after.has(operation)).length +
+          [...after.keys()].filter((operation) => !before.has(operation)).length,
         `${previous} and ${image} serve the same API`,
       ).toBeGreaterThan(0);
       const listed = yield* Effect.scoped(
@@ -266,9 +290,14 @@ const upgrade = (database: boolean) =>
       expect(tools.size).toBeGreaterThan(0);
       // Every listed tool is an operation of the API now served, so none of them is a removed one.
       expect([...tools].filter((tool) => !after.has(tool))).toEqual([]);
-      // Every operation the replacement added is listed.
+      // No operation that refuses the agent's credential is listed.
+      expect([...tools].filter((tool) => after.get(tool) === true)).toEqual([]);
+      // Every operation the replacement added that the agent's credential can call is listed.
       expect(
-        [...after].filter((operation) => !before.has(operation) && !tools.has(operation)),
+        [...after]
+          .filter(([operation, browserOnly]) => !browserOnly && !before.has(operation))
+          .map(([operation]) => operation)
+          .filter((operation) => !tools.has(operation)),
       ).toEqual([]);
     }),
   ).pipe(Effect.provide(NodeServices.layer));

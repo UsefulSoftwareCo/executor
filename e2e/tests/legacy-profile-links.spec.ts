@@ -59,6 +59,7 @@ const ledger = [
   "oauth_client_access",
   "app_account_links",
   "group_account_connections",
+  "tool_call_log",
 ].map((name, index) => ({ migration_id: index + 1, name }));
 
 const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
@@ -323,11 +324,12 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
             createdAt: "2026-01-08 00:00:00",
           }),
         ]);
-        // The fixture is an upgrade while step 9 is the latest hosted step.
+        // The current ledger, rolled back to before step 9: steps 9 and later run again on start.
         expect(recorded, "current hosted ledger").toEqual(ledger);
-        expect(rolledBack, "steps 9 and 10 are pending again").toEqual([
+        expect(rolledBack, "step 9 and every later step are pending again").toEqual([
           { migration_id: 9 },
           { migration_id: 10 },
+          { migration_id: 11 },
         ]);
         yield* serverControl("start");
 

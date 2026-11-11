@@ -65,12 +65,20 @@ const viewer = Effect.gen(function* () {
  * Run a read in one transaction whose statements may each run at most `readTimeout`. A statement
  * the database stops is `ToolCallLogBusy`; any other database or decoding failure is a
  * `StorageError`.
+ *
+ * The transaction is repeatable read, so its statements see one snapshot: a page's rows and its
+ * count agree. Under read committed each statement sees the calls committed when it starts, so a
+ * call written between them was counted but not listed. It only reads, so it never fails to
+ * serialize.
  */
 const bounded = <A, R>(read: Effect.Effect<A, SqlError.SqlError | Schema.SchemaError, R>) =>
   Effect.gen(function* () {
     const sql = yield* policyDatabase;
     return yield* sql.withTransaction(
-      sql`set local statement_timeout = '${sql.literal(readTimeout)}'`.pipe(Effect.andThen(read)),
+      sql`set transaction isolation level repeatable read`.pipe(
+        Effect.andThen(sql`set local statement_timeout = '${sql.literal(readTimeout)}'`),
+        Effect.andThen(read),
+      ),
     );
   }).pipe(
     Effect.mapError((error) =>
