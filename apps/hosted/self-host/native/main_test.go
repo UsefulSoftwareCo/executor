@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -24,9 +25,28 @@ type fakeWorkerd struct {
 	idleTimeout time.Duration
 	// dropFirst closes a fresh connection after reading its request, without a response.
 	dropFirst bool
-	received  atomic.Int32
-	handled   atomic.Int32
+	// unreadPath is answered 403 before the request's body is read. The connection then closes
+	// without Connection: close, as workerd's does once a body has crossed into the product's
+	// Durable Object. workerd closes it right after the answer; the fake takes the rest of the body
+	// and waits unreadLinger first, so a proxy that reuses the connection always loses the race
+	// and the refused request itself never does.
+	unreadPath string
+	// closePath is answered 403 at once, and the connection then closes with the body unread, as
+	// workerd's does within about 50 µs of such an answer.
+	closePath string
+	// stopPath stops reading at the request's headers and is answered 403 stopLinger later, so a
+	// body write the proxy makes meanwhile fails before there is an answer to read. That is the
+	// order in which a busy host sees workerd's close. Writes fail this way on Linux, where the
+	// image runs; on macOS they succeed.
+	stopPath string
+	received atomic.Int32
+	handled  atomic.Int32
 }
+
+const (
+	unreadLinger = 200 * time.Millisecond
+	stopLinger   = 50 * time.Millisecond
+)
 
 func (f *fakeWorkerd) serve(t *testing.T, socket string) {
 	listener, err := net.Listen("unix", socket)
@@ -60,6 +80,29 @@ func (f *fakeWorkerd) connection(conn net.Conn) {
 		if err != nil {
 			return
 		}
+		if request.URL.Path == f.closePath || request.URL.Path == f.stopPath {
+			f.received.Add(1)
+			if request.URL.Path == f.stopPath {
+				conn.(*net.UnixConn).CloseRead()
+				time.Sleep(stopLinger)
+			}
+			f.handled.Add(1)
+			io.WriteString(conn, "HTTP/1.1 403 Forbidden\r\nContent-Length: 7\r\n\r\nrefused")
+			return
+		}
+		if request.URL.Path == f.unreadPath {
+			f.received.Add(1)
+			f.handled.Add(1)
+			if request.Close {
+				io.WriteString(conn, "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 7\r\n\r\nrefused")
+				io.Copy(io.Discard, request.Body)
+				return
+			}
+			io.WriteString(conn, "HTTP/1.1 403 Forbidden\r\nContent-Length: 7\r\n\r\nrefused")
+			io.Copy(io.Discard, request.Body)
+			time.Sleep(unreadLinger)
+			return
+		}
 		if _, err = io.Copy(io.Discard, request.Body); err != nil {
 			return
 		}
@@ -68,6 +111,10 @@ func (f *fakeWorkerd) connection(conn net.Conn) {
 			return
 		}
 		f.handled.Add(1)
+		if request.Close {
+			io.WriteString(conn, "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 2\r\n\r\nok")
+			return
+		}
 		if _, err = io.WriteString(conn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"); err != nil {
 			return
 		}
@@ -86,30 +133,39 @@ func socketPath(t *testing.T) string {
 
 func post(t *testing.T, address string) (int, string) {
 	t.Helper()
-	response, err := http.Post(address+"/api/workflow-runs", "application/json", strings.NewReader(`{"key":"k"}`))
+	return postTo(t, http.DefaultClient, address+"/api/workflow-runs", `{"key":"k"}`)
+}
+
+// postTo POSTs body to target, with no body when it is empty.
+func postTo(t *testing.T, client *http.Client, target, body string) (int, string) {
+	t.Helper()
+	response, err := client.Post(target, "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
+	answer, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return response.StatusCode, strings.TrimSpace(string(body))
+	return response.StatusCode, strings.TrimSpace(string(answer))
 }
 
+// Only requests without a body reuse pooled connections, so these POSTs send none. Go does not
+// replay a POST that loses the race.
 func TestProxyDoesNotReuseConnectionsWorkerdHasTimedOut(t *testing.T) {
 	socket := socketPath(t)
 	upstream := &fakeWorkerd{idleTimeout: 300 * time.Millisecond}
 	upstream.serve(t, socket)
 	front := httptest.NewServer(productProxy(socket, upstream.idleTimeout))
 	defer front.Close()
+	target := front.URL + "/api/workflow-runs"
 
-	if status, body := post(t, front.URL); status != 200 {
+	if status, body := postTo(t, http.DefaultClient, target, ""); status != 200 {
 		t.Fatalf("first POST: %d %s", status, body)
 	}
 	time.Sleep(upstream.idleTimeout + 100*time.Millisecond)
-	if status, body := post(t, front.URL); status != 200 {
+	if status, body := postTo(t, http.DefaultClient, target, ""); status != 200 {
 		t.Fatalf("POST after workerd's idle timeout: %d %s", status, body)
 	}
 	if handled := upstream.handled.Load(); handled != 2 {
@@ -130,6 +186,189 @@ func TestProxyDoesNotRetryPostWorkerdMayHaveReceived(t *testing.T) {
 	}
 	if received := upstream.received.Load(); received != 1 {
 		t.Fatalf("workerd received the POST %d times, want 1", received)
+	}
+}
+
+// workerd closes a connection after an answer that left the request's body unread. The proxy
+// sends any client's next request on a different connection, and the client keeps its own.
+func TestProxyDoesNotReuseAConnectionThatCarriedABody(t *testing.T) {
+	socket := socketPath(t)
+	upstream := &fakeWorkerd{idleTimeout: time.Minute, unreadPath: "/api/refused"}
+	upstream.serve(t, socket)
+	front := httptest.NewUnstartedServer(productProxy(socket, upstream.idleTimeout))
+	var clientConnections atomic.Int32
+	front.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			clientConnections.Add(1)
+		}
+	}
+	front.Start()
+	defer front.Close()
+	client := &http.Client{Transport: &http.Transport{}}
+	defer client.CloseIdleConnections()
+
+	for round := range 3 {
+		if status, body := postTo(t, client, front.URL+"/api/refused", `{"name":"refused"}`); status != http.StatusForbidden {
+			t.Fatalf("round %d, POST answered without reading its body: %d %s", round, status, body)
+		}
+		if status, body := postTo(t, client, front.URL+"/api/workflow-runs", `{"key":"k"}`); status != 200 {
+			t.Fatalf("round %d, the next POST: %d %s", round, status, body)
+		}
+	}
+	if handled := upstream.handled.Load(); handled != 6 {
+		t.Fatalf("workerd handled %d POSTs, want 6", handled)
+	}
+	if connections := clientConnections.Load(); connections != 1 {
+		t.Fatalf("the client opened %d connections to the host, want 1", connections)
+	}
+}
+
+// workerd can answer while the client is still sending the body. The host then serves the
+// client's next request on the same connection. Built with Go 1.26, whose ReverseProxy returned
+// before its transport finished reading the body, it panicked reading that request instead.
+func TestHostServesTheNextRequestAfterAnAnswerBeforeTheBody(t *testing.T) {
+	socket := socketPath(t)
+	upstream := &fakeWorkerd{idleTimeout: time.Minute, unreadPath: "/api/refused"}
+	upstream.serve(t, socket)
+	front := httptest.NewServer(publicHandler(productProxy(socket, upstream.idleTimeout)))
+	defer front.Close()
+	conn, err := net.Dial("tcp", front.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+	status := func(step string) int {
+		t.Helper()
+		response, err := http.ReadResponse(reader, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		defer response.Body.Close()
+		if _, err := io.Copy(io.Discard, response.Body); err != nil {
+			t.Fatalf("%s: %v", step, err)
+		}
+		return response.StatusCode
+	}
+
+	body := `{"name":"refused"}`
+	half := len(body) / 2
+	fmt.Fprintf(conn, "POST /api/refused HTTP/1.1\r\nHost: executor.test\r\nContent-Length: %d\r\n\r\n%s", len(body), body[:half])
+	if refused := status("POST answered before its body arrived"); refused != http.StatusForbidden {
+		t.Fatalf("POST answered before its body arrived: %d, want 403", refused)
+	}
+	time.Sleep(300 * time.Millisecond)
+	fmt.Fprintf(conn, "%sPOST /api/workflow-runs HTTP/1.1\r\nHost: executor.test\r\nContent-Length: 11\r\n\r\n{\"key\":\"k\"}", body[half:])
+	if next := status("the next POST on the connection"); next != 200 {
+		t.Fatalf("the next POST on the connection: %d, want 200", next)
+	}
+}
+
+// twoParts is a request body that sends its first part at once and the rest after pause.
+type twoParts struct {
+	first, rest []byte
+	pause       time.Duration
+}
+
+func (b *twoParts) Read(data []byte) (int, error) {
+	if len(b.first) > 0 {
+		n := copy(data, b.first)
+		b.first = b.first[n:]
+		return n, nil
+	}
+	time.Sleep(b.pause)
+	b.pause = 0
+	if len(b.rest) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(data, b.rest)
+	b.rest = b.rest[n:]
+	return n, nil
+}
+
+// refused POSTs body, of length bytes, to the fake's refused path through the proxy.
+func refused(t *testing.T, proxy http.Handler, body io.Reader, length int) {
+	t.Helper()
+	request := httptest.NewRequest("POST", "/api/refused", body)
+	request.ContentLength = int64(length)
+	recorder := httptest.NewRecorder()
+	proxy.ServeHTTP(recorder, request)
+	if answer := strings.TrimSpace(recorder.Body.String()); recorder.Code != http.StatusForbidden || answer != "refused" {
+		t.Fatalf("POST refused before its body was read: %d %s, want workerd's 403", recorder.Code, answer)
+	}
+}
+
+// workerd answers a POST it refuses before reading the body, then closes the connection with the
+// body unread. The proxy is still writing this body, which is larger than the socket's buffer,
+// and the write fails when workerd closes. The client gets workerd's answer, not a 502.
+func TestProxyReturnsTheAnswerWorkerdSentBeforeClosing(t *testing.T) {
+	socket := socketPath(t)
+	upstream := &fakeWorkerd{idleTimeout: time.Minute, closePath: "/api/refused"}
+	upstream.serve(t, socket)
+	body := strings.Repeat("x", 1<<20)
+	refused(t, productProxy(socket, upstream.idleTimeout), strings.NewReader(body), len(body))
+}
+
+// A busy host may not read workerd's answer before its next body write fails. Here the write
+// always fails first: the body's second part arrives after workerd stopped reading and before it
+// answers. The client still gets workerd's answer.
+func TestProxyWaitsForWorkerdsAnswerAfterABodyWriteFails(t *testing.T) {
+	socket := socketPath(t)
+	upstream := &fakeWorkerd{idleTimeout: time.Minute, stopPath: "/api/refused"}
+	upstream.serve(t, socket)
+	body := []byte(`{"name":"refused"}`)
+	half := len(body) / 2
+	parts := &twoParts{first: body[:half], rest: body[half:], pause: 10 * time.Millisecond}
+	refused(t, productProxy(socket, upstream.idleTimeout), parts, len(body))
+}
+
+// A client that half-closes an upgraded connection, as the ws library does after a WebSocket's
+// close handshake, still gets what workerd sends once it sees that half-close.
+func TestProxyPassesAClientsHalfCloseOnAnUpgradedConnectionToWorkerd(t *testing.T) {
+	socket := socketPath(t)
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		if _, err := http.ReadRequest(reader); err != nil {
+			return
+		}
+		io.WriteString(conn, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+		io.Copy(io.Discard, reader)
+		io.WriteString(conn, "closing")
+	}()
+	front := httptest.NewServer(publicHandler(productProxy(socket, workerdIdleTimeout)))
+	defer front.Close()
+
+	conn, err := net.Dial("tcp", front.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	io.WriteString(conn, "GET /api/live HTTP/1.1\r\nHost: executor\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("upgrade answered %d, want 101", response.StatusCode)
+	}
+	if err := conn.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	after, err := io.ReadAll(reader)
+	if string(after) != "closing" {
+		t.Fatalf("after the client's half-close got %q (%v), want workerd's %q", after, err, "closing")
 	}
 }
 

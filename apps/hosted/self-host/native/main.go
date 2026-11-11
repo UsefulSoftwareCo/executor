@@ -760,6 +760,11 @@ func publicHandler(proxy http.Handler) http.Handler {
 // fullDuplex lets a response start before its request body is read. A Git push streams its
 // pack through to git http-backend, which answers with headers first; without this, Go stops
 // reading an HTTP/1 request body once the response starts and the push is cut short.
+//
+// It needs Go 1.27. In Go 1.26 the proxy could return while its transport still read the body,
+// for example when workerd answered before the body arrived. The server then panicked reading
+// the client's next request on the connection, and when the transport's own read panicked
+// instead, the whole host process exited.
 func fullDuplex(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NewResponseController(w).EnableFullDuplex()
@@ -781,13 +786,64 @@ const workerdIdleTimeout = 5 * time.Second
 
 // The proxy closes pooled connections at half workerd's idle timeout, so it never
 // sends a request on a connection workerd is closing. Go replays only requests
-// that are safe to repeat, so losing that race failed POSTs such as workflow runs.
+// that are safe to repeat, so losing that race failed a POST.
+//
+// For the same reason the proxy never reuses a connection that carried a request
+// body. workerd closes a connection after an answer that left the body unread,
+// without Connection: close. Every request crosses into the product's Durable
+// Object, and past that hop workerd does not first read the rest of the body as
+// it otherwise would. The next request the pool sent on that connection, from any
+// client, failed with 502. See notes/self-host-workerd.md.
+
+// workerdConn is the proxy's connection to workerd. workerd can answer a request before it
+// reads the body, and it closes the connection within about 50 µs with the body unread. A body
+// write after that fails. Go's transport returns that failure, which the proxy answers 502,
+// unless it has already read the answer; it does not wait for one. So a write that failed
+// because workerd stopped reading returns only once the connection's reads have ended or the
+// transport has closed it. By then the transport has read workerd's answer, or found there is
+// none.
+//
+// It embeds the *net.UnixConn rather than a net.Conn to keep its CloseWrite. After a protocol
+// upgrade such as a WebSocket's, the proxy passes the client's half-close to workerd through it;
+// without it, the proxy closes both connections and drops what workerd sends afterwards.
+type workerdConn struct {
+	*net.UnixConn
+	readsEnded chan struct{}
+	endReads   sync.Once
+}
+
+func (c *workerdConn) Write(data []byte) (int, error) {
+	n, err := c.UnixConn.Write(data)
+	// Linux reports workerd's close as EPIPE or ECONNRESET, macOS also as ENOTCONN.
+	if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ENOTCONN) {
+		<-c.readsEnded
+	}
+	return n, err
+}
+
+// Read's first error ends the reads. After a protocol upgrade the transport hands the connection
+// to the proxy, which reads it and closes it later; its reader then sees workerd close.
+func (c *workerdConn) Read(data []byte) (int, error) {
+	n, err := c.UnixConn.Read(data)
+	if err != nil {
+		c.endReads.Do(func() { close(c.readsEnded) })
+	}
+	return n, err
+}
+
+func (c *workerdConn) Close() error {
+	c.endReads.Do(func() { close(c.readsEnded) })
+	return c.UnixConn.Close()
+}
 
 func productProxy(socket string, upstreamIdleTimeout time.Duration) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(&url.URL{Scheme: "http", Host: "product.internal"})
 			request.Out.Host = request.In.Host
+			// A body may be left unread, so its connection closes after the answer. Only the
+			// connection to workerd closes; the client keeps its own.
+			request.Out.Close = request.In.ContentLength != 0
 			address, _, err := net.SplitHostPort(request.In.RemoteAddr)
 			if err != nil {
 				address = request.In.RemoteAddr
@@ -796,7 +852,11 @@ func productProxy(socket string, upstreamIdleTimeout time.Duration) *httputil.Re
 		},
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+				conn, err := (&net.Dialer{}).DialUnix(ctx, "unix", nil, &net.UnixAddr{Name: socket, Net: "unix"})
+				if err != nil {
+					return nil, err
+				}
+				return &workerdConn{UnixConn: conn, readsEnded: make(chan struct{})}, nil
 			},
 			IdleConnTimeout: upstreamIdleTimeout / 2,
 		},

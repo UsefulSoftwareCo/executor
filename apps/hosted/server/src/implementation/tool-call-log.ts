@@ -59,8 +59,15 @@ export const toolCallRetentionDays = 30;
  * at most half a second to a call that has already failed.
  */
 const awaitedWriteTimeout = "500 millis";
-/** How long a statement may take inside the host's background work, waited for or not. */
-const backgroundWriteTimeout = "5 seconds";
+/**
+ * How long a statement may take inside the host's background work, waited for or not: as long as
+ * Cloud lets an event's background work run after the event closes. Most of that time is spent
+ * waiting for a connection, not in the database. A program that makes many calls at once keeps its
+ * session's few connections busy until it ends, and a write issued early in it waits that long:
+ * in Cloud production in November 2026 up to 12.7 s, when a 5-second bound dropped about one row
+ * in 1,500.
+ */
+const backgroundWriteTimeout = "20 seconds";
 /** The most rows one delete removes, so no statement holds its locks for long. */
 const pruneBatch = 5000;
 /**

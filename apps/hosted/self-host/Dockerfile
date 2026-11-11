@@ -19,7 +19,7 @@ RUN bun run --cwd apps/hosted/self-host/web build
 RUN bun run --cwd packages/apps build
 RUN bun run --cwd apps/hosted/self-host package:runtime
 
-FROM golang:1.26.4-bookworm AS native
+FROM golang:1.27.2-bookworm AS native
 WORKDIR /build
 COPY apps/hosted/self-host/native/go.mod apps/hosted/self-host/native/go.sum ./
 RUN go mod download
