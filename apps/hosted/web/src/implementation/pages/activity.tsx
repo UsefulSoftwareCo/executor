@@ -15,7 +15,6 @@ import {
   Clock01Icon,
   ComputerIcon,
   ConnectIcon,
-  FilterIcon,
   FlowIcon,
   HourglassOffIcon,
   Key01Icon,
@@ -41,9 +40,13 @@ import {
   DropdownMenuContent,
   DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuPortal,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@executor-js/ui/components/dropdown-menu";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
@@ -52,9 +55,14 @@ import { AppIcon, SearchInput } from "@executor-js/ui/dashboard/common";
 import { usePreload } from "@executor-js/ui/dashboard/context";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { productTitle, useDocumentTitle } from "@executor-js/ui/hooks/document-title";
+import { useMediaQuery } from "@executor-js/ui/hooks/media-query";
 import {
+  activeFilters,
   anyToolCallAtom,
+  appliedFilterCount,
   defaultToolCallRange,
+  type FilterName,
+  noFilters,
   searchedReference,
   toolCallFiltersAtom,
   ToolCallFiltersKey,
@@ -66,7 +74,13 @@ import {
 } from "../../contracts/tool-calls.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
-import { ActivityFrame, ActivityListPending, activityTitle } from "../components/page-pending.tsx";
+import {
+  ActivityFilterButton,
+  ActivityFrame,
+  ActivityListPending,
+  activitySearchPlaceholder,
+  activityTitle,
+} from "../components/page-pending.tsx";
 
 /** The list the address names and the Filter menu's choices for its range, read together. */
 export const activityPageReads: OrganizationPageReads = (organization, _params, search = {}) => {
@@ -107,7 +121,7 @@ export function ActivityPage({
 }
 
 const all = "*all";
-type Icon = typeof FilterIcon;
+type Icon = typeof Clock01Icon;
 
 const ranges: ReadonlyArray<readonly [ToolCallRange, string]> = [
   ["24h", "Last 24 hours"],
@@ -277,22 +291,6 @@ const duration = (ms: number | null) =>
   ms === null ? "–" : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(1)} s`;
 const exactMoment: Intl.DateTimeFormatOptions = { dateStyle: "medium", timeStyle: "long" };
 
-/** Which filters the address sets, for the Filter button's count. A reference ignores them all. */
-const filterNames = ["member", "app", "status", "agent", "connection", "session", "run"] as const;
-type FilterName = (typeof filterNames)[number];
-const noFilters: Pick<ToolCallSearch, FilterName> = {
-  member: undefined,
-  app: undefined,
-  status: undefined,
-  agent: undefined,
-  connection: undefined,
-  session: undefined,
-  run: undefined,
-};
-const activeFilters = (search: ToolCallSearch) =>
-  filterNames.filter((name) => search[name] !== undefined);
-
-/** Debounce for writing typed search text to the address, and so for reading its list. */
 const typingDelayMs = 250;
 
 /**
@@ -346,14 +344,14 @@ function ToolCalls({
     onChange({ ...(reference === undefined ? {} : { ...noFilters, q: undefined }), ...next });
     toolbar.current?.scrollIntoView({ block: "nearest" });
   };
-  const count = reference === undefined ? activeFilters(search).length : 0;
+  const count = appliedFilterCount(search);
   return (
     <>
       <div ref={toolbar} className="mb-2.5 flex scroll-mt-4 items-center gap-2">
         <SearchInput
           value={field.text}
           onChange={field.setText}
-          placeholder="Search or paste a reference"
+          placeholder={activitySearchPlaceholder}
         />
         <FilterMenu search={search} onChange={onChange} count={count} />
       </div>
@@ -533,8 +531,9 @@ function useFacetSource(search: ToolCallSearch) {
 }
 
 /**
- * One menu for every filter and the time range. Choosing a filter replaces the list with its
- * choices in place, so nothing flies out to the side on a narrow screen.
+ * One menu for every filter and the time range. Where the page is wide enough, a filter's choices
+ * open beside it when the pointer rests on it. On a narrow screen nothing fits beside the menu, so
+ * the choices replace the list of filters in place.
  */
 function FilterMenu({
   search,
@@ -549,27 +548,15 @@ function FilterMenu({
   return (
     <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          aria-label={count === 0 ? "Filter" : `Filter, ${count} applied`}
-        >
-          <HugeiconsIcon icon={FilterIcon} strokeWidth={2} aria-hidden />
-          Filter
-          {count > 0 && (
-            <span
-              aria-hidden
-              className="rounded-full bg-foreground px-1.5 text-[11px] leading-4.5 text-background"
-            >
-              {count}
-            </span>
-          )}
-        </Button>
+        <ActivityFilterButton count={count} />
       </DropdownMenuTrigger>
       {open && <FilterMenuContent search={search} onChange={onChange} count={count} />}
     </DropdownMenu>
   );
 }
+
+/** Wide enough for a filter's choices to open beside the menu; narrower pages use touch sizes. */
+const roomBeside = "(min-width: 741px)";
 
 function FilterMenuContent({
   search,
@@ -581,6 +568,7 @@ function FilterMenuContent({
   readonly count: number;
 }) {
   const source = useFacetSource(search);
+  const beside = useMediaQuery(roomBeside);
   const [picking, setPicking] = useState<Facet["name"]>();
   const content = useRef<HTMLDivElement>(null);
   const range = search.range ?? defaultToolCallRange;
@@ -599,7 +587,8 @@ function FilterMenuContent({
       fallback: rangeLabel(range),
     },
   ];
-  const facet = facets.find((candidate) => candidate.name === picking);
+  /** In place, the filter whose choices replaced the list of filters. */
+  const facet = beside ? undefined : facets.find((candidate) => candidate.name === picking);
   /** The filter the reader stepped back from, whose row takes the focus again. */
   const [left, setLeft] = useState<Facet["name"]>();
   /** The pressed row leaves the menu, so the menu takes the focus to keep arrow keys working. */
@@ -623,6 +612,18 @@ function FilterMenuContent({
       onChange({ app: source.filters?.apps.find((app) => app.id === value)?.id });
     } else onChange({ [facet.name]: value === all ? undefined : value });
   };
+  const choices = (facet: Facet) => (
+    <Choices facet={facet} loading={source.loading} onChoose={(value) => choose(facet, value)} />
+  );
+  const row = (facet: Facet) => (
+    <>
+      <HugeiconsIcon icon={facet.icon} strokeWidth={2} aria-hidden />
+      {facet.label}
+      <span className="min-w-0 flex-1 truncate pl-3 text-right text-xs text-muted-foreground">
+        {chosen(facet)}
+      </span>
+    </>
+  );
   return (
     <DropdownMenuContent
       ref={content}
@@ -633,20 +634,30 @@ function FilterMenuContent({
       {facet === undefined ? (
         <>
           <DropdownMenuGroup aria-label="Filters">
-            {facets.map((each) => (
-              <DropdownMenuItem
-                key={each.name}
-                data-facet={each.name}
-                onSelect={(event) => step(event, each.name)}
-              >
-                <HugeiconsIcon icon={each.icon} strokeWidth={2} aria-hidden />
-                {each.label}
-                <span className="ml-auto truncate pl-3 text-xs text-muted-foreground">
-                  {chosen(each)}
-                </span>
-                <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} aria-hidden />
-              </DropdownMenuItem>
-            ))}
+            {facets.map((each) =>
+              beside ? (
+                <DropdownMenuSub key={each.name}>
+                  <DropdownMenuSubTrigger>{row(each)}</DropdownMenuSubTrigger>
+                  <DropdownMenuPortal>
+                    <DropdownMenuSubContent
+                      collisionPadding={16}
+                      className="max-h-[min(360px,60dvh)] w-60 overflow-y-auto"
+                    >
+                      {choices(each)}
+                    </DropdownMenuSubContent>
+                  </DropdownMenuPortal>
+                </DropdownMenuSub>
+              ) : (
+                <DropdownMenuItem
+                  key={each.name}
+                  data-facet={each.name}
+                  onSelect={(event) => step(event, each.name)}
+                >
+                  {row(each)}
+                  <HugeiconsIcon icon={ArrowRight01Icon} strokeWidth={2} aria-hidden />
+                </DropdownMenuItem>
+              ),
+            )}
           </DropdownMenuGroup>
           {count > 0 && (
             <>
@@ -668,45 +679,59 @@ function FilterMenuContent({
             {facet.label}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <div className="max-h-[min(360px,60dvh)] overflow-y-auto">
-            <DropdownMenuRadioGroup
-              aria-label={facet.label}
-              value={facet.value ?? all}
-              onValueChange={(value) => choose(facet, value)}
-            >
-              {facet.none !== undefined && (
-                <DropdownMenuRadioItem value={all}>
-                  <ChoiceMark>
-                    <HugeiconsIcon icon={facet.icon} strokeWidth={2} aria-hidden />
-                  </ChoiceMark>
-                  {facet.none}
-                </DropdownMenuRadioItem>
-              )}
-              {facet.value !== undefined &&
-                !facet.choices.some((choice) => choice.value === facet.value) && (
-                  <DropdownMenuRadioItem value={facet.value}>
-                    <ChoiceMark>
-                      <HugeiconsIcon icon={facet.icon} strokeWidth={2} aria-hidden />
-                    </ChoiceMark>
-                    {facet.fallback}
-                  </DropdownMenuRadioItem>
-                )}
-              {facet.choices.map((choice) => (
-                <DropdownMenuRadioItem key={choice.value} value={choice.value}>
-                  <ChoiceMark>{choice.mark}</ChoiceMark>
-                  <span className="min-w-0 truncate">{choice.label}</span>
-                </DropdownMenuRadioItem>
-              ))}
-              {source.loading && facet.name !== "status" && facet.name !== "range" && (
-                <div role="status" className="px-2 py-1.5 text-xs text-muted-foreground">
-                  Loading choices…
-                </div>
-              )}
-            </DropdownMenuRadioGroup>
-          </div>
+          <div className="max-h-[min(360px,60dvh)] overflow-y-auto">{choices(facet)}</div>
         </>
       )}
     </DropdownMenuContent>
+  );
+}
+
+/** One filter's choices; the one in use is checked. */
+function Choices({
+  facet,
+  loading,
+  onChoose,
+}: {
+  readonly facet: Facet;
+  /** The range's members, apps, agents and connections are still on the way. */
+  readonly loading: boolean;
+  readonly onChoose: (value: string) => void;
+}) {
+  return (
+    <DropdownMenuRadioGroup
+      aria-label={facet.label}
+      value={facet.value ?? all}
+      onValueChange={onChoose}
+    >
+      {facet.none !== undefined && (
+        <DropdownMenuRadioItem value={all}>
+          <ChoiceMark>
+            <HugeiconsIcon icon={facet.icon} strokeWidth={2} aria-hidden />
+          </ChoiceMark>
+          {facet.none}
+        </DropdownMenuRadioItem>
+      )}
+      {facet.value !== undefined &&
+        !facet.choices.some((choice) => choice.value === facet.value) && (
+          <DropdownMenuRadioItem value={facet.value}>
+            <ChoiceMark>
+              <HugeiconsIcon icon={facet.icon} strokeWidth={2} aria-hidden />
+            </ChoiceMark>
+            {facet.fallback}
+          </DropdownMenuRadioItem>
+        )}
+      {facet.choices.map((choice) => (
+        <DropdownMenuRadioItem key={choice.value} value={choice.value}>
+          <ChoiceMark>{choice.mark}</ChoiceMark>
+          <span className="min-w-0 truncate">{choice.label}</span>
+        </DropdownMenuRadioItem>
+      ))}
+      {loading && facet.name !== "status" && facet.name !== "range" && (
+        <div role="status" className="px-2 py-1.5 text-xs text-muted-foreground">
+          Loading choices…
+        </div>
+      )}
+    </DropdownMenuRadioGroup>
   );
 }
 

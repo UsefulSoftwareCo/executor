@@ -66,6 +66,25 @@ export function parseToolCallSearch(search: Record<string, unknown>): ToolCallSe
 export const searchedReference = (search: ToolCallSearch): ToolCallId | undefined =>
   optional(ToolCallId, search.q?.trim());
 
+/** What the list can be narrowed by, besides its search text and time range. */
+const filterNames = ["member", "app", "status", "agent", "connection", "session", "run"] as const;
+export type FilterName = (typeof filterNames)[number];
+export const noFilters: Pick<ToolCallSearch, FilterName> = {
+  member: undefined,
+  app: undefined,
+  status: undefined,
+  agent: undefined,
+  connection: undefined,
+  session: undefined,
+  run: undefined,
+};
+/** The filters the address sets. */
+export const activeFilters = (search: ToolCallSearch) =>
+  filterNames.filter((name) => search[name] !== undefined);
+/** How many filters narrow the list, for the Filter button. A reference ignores them all. */
+export const appliedFilterCount = (search: ToolCallSearch) =>
+  searchedReference(search) === undefined ? activeFilters(search).length : 0;
+
 /** One page of one list. Equal keys share a read, so a page opened again reuses its value. */
 export class ToolCallPageKey extends Data.Class<{
   readonly organization: OrganizationReference;

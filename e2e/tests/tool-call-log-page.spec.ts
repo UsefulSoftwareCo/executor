@@ -222,23 +222,29 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
         ).toBe(`/org/${slug}/activity`);
         yield* browser.checkpoint("Every call in the organization");
 
-        // The Filter menu narrows by status, then by member; chips and the count follow. A
-        // filter's choices step back to the list of filters by an item that says so.
-        const back = yield* browser.use("Step back from a filter", (page) =>
-          openFilter(page, "Status").then(() =>
-            page
-              .getByRole("menuitem", { name: "Status, back to filters", exact: true })
-              .innerText()
-              .then((text) =>
-                page
-                  .getByRole("menuitem", { name: "Status, back to filters", exact: true })
-                  .click()
-                  .then(() => page.getByRole("group", { name: "Filters" }).waitFor())
-                  .then(() => text),
-              ),
-          ),
-        );
-        expect(back).toBe("Status");
+        // The Filter menu narrows by status, then by member; chips and the count follow. Resting
+        // the pointer on a filter opens its choices beside the filters, which stay; resting it on
+        // another filter replaces them with that filter's.
+        const beside = yield* browser.use("Rest the pointer on a filter, then another", (page) => {
+          const filters = page.getByRole("group", { name: "Filters" });
+          const failed = page.getByRole("menuitemradio", { name: "Failed", exact: true });
+          return page
+            .getByRole("button", { name: "Filter", exact: true })
+            .click()
+            .then(() => filters.getByRole("menuitem", { name: /^Status/u }).hover())
+            .then(() => failed.waitFor())
+            .then(() => filters.isVisible())
+            .then((stayed) =>
+              // App is above Status, so the pointer does not cross the way to Status's choices.
+              filters
+                .getByRole("menuitem", { name: /^App/u })
+                .hover()
+                .then(() => page.getByRole("group", { name: "App", exact: true }).waitFor())
+                .then(() => failed.waitFor({ state: "detached" }))
+                .then(() => stayed),
+            );
+        });
+        expect(beside).toBe(true);
         yield* browser.use("Close the menu", (page) => page.keyboard.press("Escape"));
         // While the failed calls load, the previous list stays, but not its count.
         let release = () => {};
@@ -438,6 +444,24 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
           ["Duration", offsets[2]],
         ] as const)
           expect(offset, `${label} lines up with its label`).toBeLessThanOrEqual(3);
+        // A phone has no room beside the menu, so a filter's choices replace the filters, and
+        // step back to them by an item that says so.
+        const back = yield* browser.use("Step back from a filter", (page) =>
+          openFilter(page, "Status").then(() =>
+            page
+              .getByRole("menuitem", { name: "Status, back to filters", exact: true })
+              .innerText()
+              .then((text) =>
+                page
+                  .getByRole("menuitem", { name: "Status, back to filters", exact: true })
+                  .click()
+                  .then(() => page.getByRole("group", { name: "Filters" }).waitFor())
+                  .then(() => text),
+              ),
+          ),
+        );
+        expect(back).toBe("Status");
+        yield* browser.use("Close the menu", (page) => page.keyboard.press("Escape"));
         yield* browser.checkpoint("A program's call on a phone");
         yield* browser.use("Open the member's 403 by its address", (page) =>
           page.goto(`/org/${slug}/activity?q=${seeded.memberForbidden}&status=succeeded`),

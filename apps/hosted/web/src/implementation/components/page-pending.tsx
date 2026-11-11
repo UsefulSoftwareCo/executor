@@ -1,11 +1,20 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { FilterIcon } from "@hugeicons/core-free-icons";
 import { useHydrated } from "@executor-js/ui/hooks/hydrated";
 import { OrganizationSettingsPending } from "./organization-settings-pending.tsx";
 import { AddAppBack } from "./add-app.tsx";
+import { Button } from "@executor-js/ui/components/button";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
+import { SearchInput } from "@executor-js/ui/dashboard/common";
 import { AppDetailPending } from "@executor-js/ui/dashboard/app-loading";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { parseAppSearch } from "../../contracts/navigation.ts";
+import {
+  appliedFilterCount,
+  parseToolCallSearch,
+  type ToolCallSearch,
+} from "../../contracts/tool-calls.ts";
 import { Link, useLocation } from "@tanstack/react-router";
 import {
   ApprovalCardPending,
@@ -56,12 +65,48 @@ export function ActivityFrame({ children }: { readonly children: ReactNode }) {
   );
 }
 
-/** The search field and Filter button, at their loaded sizes, before the page can use them. */
-export function ActivityToolbarPending() {
+export const activitySearchPlaceholder = "Search or paste a reference";
+
+/** The button that opens the Filter menu, with how many filters are applied. */
+export function ActivityFilterButton({
+  count,
+  ...props
+}: { readonly count: number } & Omit<ComponentProps<typeof Button>, "children">) {
   return (
-    <div className="mb-2.5 flex items-center gap-2">
-      <Skeleton className="h-8.75 w-[min(100%,340px)] rounded-md max-[740px]:h-11 max-[740px]:w-full" />
-      <Skeleton className="h-8 w-21 shrink-0 rounded-md max-[740px]:h-11" />
+    <Button
+      variant="outline"
+      size="sm"
+      aria-label={count === 0 ? "Filter" : `Filter, ${count} applied`}
+      {...props}
+    >
+      <HugeiconsIcon icon={FilterIcon} strokeWidth={2} aria-hidden />
+      Filter
+      {count > 0 && (
+        <span
+          aria-hidden
+          className="rounded-full bg-foreground px-1.5 text-[11px] leading-4.5 text-background"
+        >
+          {count}
+        </span>
+      )}
+    </Button>
+  );
+}
+
+/**
+ * The search field and Filter button as the page shows them for this address, before the page can
+ * use them. They look the same as the page's own, so the toolbar does not change when it arrives;
+ * until then they take no input, which would be lost.
+ */
+export function ActivityToolbarPending({ search }: { readonly search: ToolCallSearch }) {
+  return (
+    <div inert className="mb-2.5 flex items-center gap-2">
+      <SearchInput
+        value={search.q ?? ""}
+        onChange={() => {}}
+        placeholder={activitySearchPlaceholder}
+      />
+      <ActivityFilterButton count={appliedFilterCount(search)} />
     </div>
   );
 }
@@ -205,7 +250,7 @@ export function PagePending({
   if (page === "activity")
     return (
       <ActivityFrame>
-        <ActivityToolbarPending />
+        <ActivityToolbarPending search={parseToolCallSearch(search)} />
         <ActivityListPending />
       </ActivityFrame>
     );
