@@ -73,6 +73,11 @@ too, so a call of such an app can keep two Workers loaded.
 does not, browser sign-in is rejected as an invalid origin. Railway detection uses `RAILWAY_PUBLIC_DOMAIN`. Origins are never inferred
 from a request header. Set `BETTER_AUTH_URL` when you use a custom domain.
 
+On a home or office network without TLS, set `BETTER_AUTH_URL` to the plain HTTP
+address you open, such as `http://192.168.1.20:4400`. Browsers give such a page no
+secure context, and the dashboard does not need one. App web pages still need an
+HTTPS origin; see [Serving app web pages](#serving-app-web-pages).
+
 Keep `<BETTER_AUTH_URL>/api/oauth/callback` reachable; connecting a provider
 account by OAuth uses it. The SSO callback is
 `<BETTER_AUTH_URL>/api/auth/callback/sso`.

@@ -8615,6 +8615,16 @@ export const scenarios = plan({
       cloud: na("Cloud requires a verified recipient instead of password registration."),
     },
   },
+  lanHttpDashboard: {
+    file: "lan-http-dashboard.spec.ts",
+    title:
+      "a self-host dashboard served over plain HTTP at a LAN address sets up, copies, adds apps, starts workflows and connects without a secure context",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud is served only over HTTPS."),
+      local: na("Local is served only on loopback, which browsers treat as a secure context."),
+    },
+  },
   appUiWithoutAppDomain: {
     file: "app-ui-without-app-domain.spec.ts",
     title: "a self-host with no app domain says an app UI has no address because of the domain",

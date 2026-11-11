@@ -12,6 +12,7 @@ import {
   DialogTrigger,
 } from "@executor-js/ui/components/dialog";
 import { Input } from "@executor-js/ui/components/input";
+import { copyText } from "@executor-js/ui/lib/clipboard";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import {
   Select,
@@ -786,7 +787,7 @@ function InvitationSent({
             className="shrink-0"
             onClick={async () => {
               try {
-                await navigator.clipboard.writeText(sent.link);
+                await copyText(sent.link);
                 setCopied(true);
                 setCopyError(null);
               } catch {

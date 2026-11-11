@@ -17,6 +17,8 @@ import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import type { AccountId, App, AppId, ToolName } from "@executor-js/sdk";
 import { ConnectionId, type ConnectionView } from "@executor-js/mcp-auth/connections";
+import { randomUuid } from "@executor-js/utils/random-uuid";
+import { copyText } from "../lib/clipboard.ts";
 import type { AccountSummary, FailureProps, Inventory, Query } from "../../contracts/dashboard.ts";
 import {
   type ConnectionApp,
@@ -371,7 +373,7 @@ export function ScopedConnectionPage<E, EL extends E, ES extends E, ER extends E
     readonly connectionId: string;
   }) {
   // Chosen once, so a retried create returns the same connection.
-  const [created] = useState(() => ConnectionId.make(crypto.randomUUID()));
+  const [created] = useState(() => ConnectionId.make(randomUuid()));
   return (
     <PageFrame>
       <ConnectionReads
@@ -473,7 +475,7 @@ function ConnectionForm<E, EL extends E, ES extends E, ER extends E>({
   const [expanded, setExpanded] = useState<AppId>();
   const [connecting, setConnecting] = useState(false);
   const [revoking, setRevoking] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copy, setCopy] = useState<"idle" | "copied" | "failed">("idle");
   const [search, setSearch] = useState("");
   const [needsSetupOnly, setNeedsSetupOnly] = useState(false);
   const query = useDeferredValue(search.trim().toLowerCase());
@@ -567,7 +569,7 @@ function ConnectionForm<E, EL extends E, ES extends E, ER extends E>({
                 <HugeiconsIcon icon={ConnectIcon} strokeWidth={2} aria-hidden />
                 Connect
               </Button>
-              <DropdownMenu onOpenChange={(open) => !open && setCopied(false)}>
+              <DropdownMenu onOpenChange={(open) => !open && setCopy("idle")}>
                 <DropdownMenuTrigger asChild>
                   <Button type="button" variant="outline" size="icon" aria-label="More actions">
                     <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} />
@@ -583,11 +585,21 @@ function ConnectionForm<E, EL extends E, ES extends E, ER extends E>({
                     className="gap-2.5 py-2"
                     onSelect={(event) => {
                       event.preventDefault();
-                      void navigator.clipboard.writeText(stored.url).then(() => setCopied(true));
+                      void copyText(stored.url).then(
+                        () => setCopy("copied"),
+                        () => setCopy("failed"),
+                      );
                     }}
                   >
-                    <HugeiconsIcon icon={copied ? Tick02Icon : Copy01Icon} strokeWidth={2} />
-                    {copied ? "Copied" : "Copy MCP URL"}
+                    <HugeiconsIcon
+                      icon={copy === "copied" ? Tick02Icon : Copy01Icon}
+                      strokeWidth={2}
+                    />
+                    {copy === "copied"
+                      ? "Copied"
+                      : copy === "failed"
+                        ? "Copy failed"
+                        : "Copy MCP URL"}
                   </DropdownMenuItem>
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
