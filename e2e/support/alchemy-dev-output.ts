@@ -1,4 +1,4 @@
-import { Stream } from "effect";
+import { Deferred, Effect, Fiber, Ref, Stream } from "effect";
 import type { ChildProcessSpawner } from "effect/process";
 
 /**
@@ -48,3 +48,52 @@ export const unboundPort = (reason: string) => {
   const match = /^Could not bind to port (\d+) /.exec(reason);
   return match === null ? undefined : Number(match[1]);
 };
+
+/** The most lines of alchemy's report a start failure quotes; cloud.log keeps all of them. */
+const reportLines = 40;
+
+/**
+ * Follow `alchemy dev`'s output, passing each line to `onLine`. `failed` completes when alchemy
+ * reports giving up. The report, the cause alchemy prints right after that line, arrives in the
+ * same write, but the line that says it gave up is read first: a start that failed on that line
+ * alone stopped reading before the report and lost it. `report` stops alchemy, which would only
+ * wait for a file change, reads its output to the end, so `onLine` has seen every line, and
+ * returns the report.
+ */
+export const followAlchemyDev = (
+  child: ChildProcessSpawner.ChildProcessHandle,
+  onLine: (line: string) => Effect.Effect<void>,
+) =>
+  Effect.gen(function* () {
+    const failed = yield* Deferred.make<void>();
+    const report = yield* Ref.make<ReadonlyArray<string>>([]);
+    const reading = yield* outputLines(child).pipe(
+      Stream.runForEach((line) =>
+        onLine(line).pipe(
+          Effect.andThen(
+            Effect.gen(function* () {
+              if (yield* Deferred.isDone(failed)) {
+                yield* Ref.update(report, (lines) =>
+                  lines.length < reportLines ? [...lines, line] : lines,
+                );
+              } else if (isAlchemyDevFailure(line)) {
+                yield* Ref.set(report, [line]);
+                yield* Deferred.succeed(failed, undefined);
+              }
+            }),
+          ),
+        ),
+      ),
+      Effect.forkScoped,
+    );
+    return {
+      failed: Deferred.await(failed),
+      report: child.kill({ forceKillAfter: "15 seconds" }).pipe(
+        Effect.ignore,
+        Effect.andThen(Fiber.join(reading)),
+        Effect.ignore,
+        Effect.andThen(Ref.get(report)),
+        Effect.map((lines) => lines.join("\n")),
+      ),
+    };
+  });

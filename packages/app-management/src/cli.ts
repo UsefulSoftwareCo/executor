@@ -25,13 +25,8 @@ import { isPlatformError } from "effect/PlatformError";
 import {
   AppId,
   AppName,
-  AppSkillCatalog,
-  AppSkillDocument,
-  AppSkillName,
   CommittedSource,
-  ExecutorApi,
   SourceCommit,
-  SourceFilePath,
   SourceError,
   inlineBytes,
   PackageName,
@@ -40,7 +35,6 @@ import {
   sourceLimits,
   wireRevision,
   wireRevisionHeader,
-  type App,
 } from "@executor-js/sdk/core";
 import { GitPushRefused, readCommitBlobs } from "@executor-js/app-source/git-client";
 import {
@@ -60,8 +54,14 @@ import {
   HostRecovery,
   HostRequestFailed,
   LoginFailed,
+  SignInStateInvalid,
   SourceRejected,
+  ToolCallRefused,
+  ToolInputInvalid,
+  ToolsSignInRequired,
+  WhoamiUnavailable,
 } from "./client-error.ts";
+import { hostFlag, namedHost, type LocalServer } from "./implementation/hosts.ts";
 import {
   AppAccess,
   AppAccessDenied,
@@ -78,24 +78,13 @@ import {
   sessionRefreshMarginMs,
 } from "./implementation/node-auth.ts";
 
-/** Skill lookups report the host's failure tag or the missing option; never a response body. */
-class SkillLookupFailed extends Schema.TaggedError<SkillLookupFailed>()("SkillLookupFailed", {
-  reason: Schema.String,
-}) {}
-const host = Flag.String("host").pipe(
-  Flag.withDescription(
-    `Executor origin. Defaults to EXECUTOR_HOST, then the local background Executor, which starts if needed; use ${hostedExecutorOrigin} for hosted Executor`,
-  ),
-  Flag.withFallbackConfig(Config.String("EXECUTOR_HOST")),
-  Flag.optional,
-);
 const organization = Flag.String("organization").pipe(
   Flag.withDescription(
     "Hosted organization. Required with EXECUTOR_ACCESS_TOKEN; after executor apps login it defaults to the signed-in organization",
   ),
   Flag.optional,
 );
-const connection = { host, organization };
+const connection = { host: hostFlag, organization };
 const app = Flag.String("app").pipe(
   Flag.withSchema(AppId),
   Flag.withDescription("App ID, such as app_…; executor apps list prints each app's id"),
@@ -121,22 +110,17 @@ const publication = {
   ),
   commit: commit("of the published version to install"),
 };
-/** The local Executor that commands use when neither --host nor EXECUTOR_HOST names a host. */
-export interface LocalServer {
-  readonly url: string;
-  /** Sent as the local API key. */
-  readonly token: Redacted.Redacted<string>;
-}
+export type { LocalServer } from "./implementation/hosts.ts";
 /**
- * The local Executor could not be started or reached for a command without --host or
- * EXECUTOR_HOST. `message` is the local server's own explanation and what to do about it.
+ * The local Executor could not be started or reached for a command without a named or
+ * remembered host. `message` is the local server's own explanation and what to do about it.
  */
 export class LocalServerUnavailable extends Schema.TaggedError<LocalServerUnavailable>()(
   "LocalServerUnavailable",
   { message: Schema.String },
 ) {}
 /**
- * The host one command talks to: the --host or EXECUTOR_HOST origin, or the local server with the
+ * The host one command talks to: the named or remembered origin, or the local server with the
  * token its resolver supplied. A named host resolves its credential for each request, as a hosted
  * session can refresh during a long command.
  */
@@ -250,11 +234,7 @@ const hostedFrameworkApi = frameworkApi("/api/organizations/:organization", AppA
 /** Both hosts serve one app management contract; hosted routes add the organization. */
 type Management = HttpApiClient.ForApi<typeof localManagementApi>["appManagement"];
 type Framework = HttpApiClient.ForApi<typeof localFrameworkApi>["framework"];
-/**
- * Typed clients for one host. App management uses its shared contract. Skill reads use the SDK
- * routes: local serves them under /v1, and hosted serves the same endpoints and
- * schemas under its organization prefix.
- */
+/** Typed clients for one host. Both hosts serve the shared contracts; hosted adds the organization. */
 const connect = (host: Host, organization: Option.Option<string>) =>
   Effect.gen(function* () {
     const target = yield* access(host, organization);
@@ -265,27 +245,13 @@ const connect = (host: Host, organization: Option.Option<string>) =>
       const framework: Framework = (yield* HttpApiClient.makeWith(localFrameworkApi, {
         httpClient,
       })).framework;
-      return {
-        management,
-        framework,
-        tenant: {},
-        skills: yield* HttpApiClient.group(ExecutorApi, { group: "skills", httpClient }),
-      };
+      return { management, framework, tenant: {} };
     }
-    const prefix = `/api/organizations/${encodeURIComponent(target.organization)}`;
-    const sdkClient = yield* transport(host.origin, target.token, (url) =>
-      url.replace(/^\/v1\//, `${prefix}/`),
-    );
     const client = yield* HttpApiClient.makeWith(hostedManagementApi, { httpClient });
     const management: Management = client.appManagement;
     const framework: Framework = (yield* HttpApiClient.makeWith(hostedFrameworkApi, { httpClient }))
       .framework;
-    return {
-      management,
-      framework,
-      tenant: { organization: target.organization },
-      skills: yield* HttpApiClient.group(ExecutorApi, { group: "skills", httpClient: sdkClient }),
-    };
+    return { management, framework, tenant: { organization: target.organization } };
   });
 /** Run one app management operation; contract errors stay typed for command diagnostics. */
 const manage = <A, E>(
@@ -318,9 +284,14 @@ const workingSource = (host: Host, organization: Option.Option<string>, app: App
 const gitAuthorization = (host: Host, organization: Option.Option<string>) =>
   access(host, organization).pipe(Effect.map(({ token }) => `Bearer ${Redacted.value(token)}`));
 
+/** An app's working source as the host returned it. */
+type WorkingSource = Effect.Success<ReturnType<typeof workingSource>>;
+
 /**
  * Save a local source as the commit after `expected`. A source that fits one request is sent as
  * files; a larger one is pushed with Git, sending only the files the app does not already hold.
+ * A caller that already read the working source passes it as `read`: reading a source with many
+ * public files lists and sizes each of them, so a second read is not free.
  */
 const saveSource = (input: {
   readonly host: Host;
@@ -329,6 +300,7 @@ const saveSource = (input: {
   readonly expected: typeof SourceCommit.Type;
   readonly files: ReadonlyArray<LocalFile>;
   readonly message: string;
+  readonly read?: WorkingSource;
 }) =>
   Effect.gen(function* () {
     if (fitsRequest(input.files)) {
@@ -340,7 +312,7 @@ const saveSource = (input: {
         }),
       );
     }
-    const source = yield* workingSource(input.host, input.organization, input.app);
+    const source = input.read ?? (yield* workingSource(input.host, input.organization, input.app));
     if (source.revision.commit !== input.expected)
       return yield* new GitPushRefused({
         reason: "conflict",
@@ -360,81 +332,27 @@ const saveSource = (input: {
     });
   });
 
-/** Skill lookups print the host's result for all deployed apps, one catalog, or one document. */
-const SkillListing = Schema.Struct({
-  catalogs: Schema.Array(AppSkillCatalog),
-  unavailable: Schema.Array(Schema.String),
-});
-/** A skill read the host rejects keeps the host's typed error; other answers keep their status. */
-const skillRead = <A, E>(
-  effect: Effect.Effect<A, E | HttpClientError.HttpClientError | Schema.SchemaError>,
-) => effect.pipe(Effect.catchIf(isTransportFailure, hostFailure));
-/** Skills come from each app's version on the host; the CLI bundles no guidance. */
-const readSkills = (args: {
-  readonly host: Host;
-  readonly organization: Option.Option<string>;
-  readonly app: Option.Option<string>;
-  readonly name: Option.Option<typeof AppSkillName.Type>;
-  readonly file: Option.Option<typeof SourceFilePath.Type>;
-}) =>
-  Effect.gen(function* () {
-    if (Option.isNone(args.name) && Option.isSome(args.file))
-      return yield* new SkillLookupFailed({ reason: "Pass --name with --file." });
-    if (Option.isNone(args.app) && Option.isSome(args.name))
-      return yield* new SkillLookupFailed({ reason: "Pass --app with --name." });
-    const { management, tenant, skills } = yield* connect(args.host, args.organization);
-    const apps = yield* management
-      .list({ params: tenant })
-      .pipe(Effect.catchIf(isTransportFailure, hostFailure));
-    // The host resolves the accounts you linked to each app, as the MCP skills tool does.
-    const catalog = (app: App) => skillRead(skills.list({ params: { app: app.id }, query: {} }));
-    if (Option.isNone(args.app)) {
-      const results = yield* Effect.forEach(
-        apps.filter((app) => app.activeVersion !== null),
-        (app) =>
-          catalog(app).pipe(
-            Effect.map((found) => ({ app: app.slug, catalogs: [found] })),
-            Effect.catch(() => Effect.succeed({ app: app.slug, catalogs: undefined })),
-          ),
-        { concurrency: 4 },
-      );
-      return yield* print(SkillListing)({
-        catalogs: results.flatMap((entry) => entry.catalogs ?? []),
-        unavailable: results.flatMap((entry) => (entry.catalogs === undefined ? [entry.app] : [])),
-      });
-    }
-    const slug = args.app.value;
-    const selected = apps.find((app) => app.slug === slug || app.id === slug);
-    if (selected === undefined)
-      return yield* new SkillLookupFailed({
-        reason: `No visible app has slug or ID ${slug}. Run executor apps list to see apps.`,
-      });
-    if (Option.isNone(args.name))
-      return yield* catalog(selected).pipe(Effect.flatMap(print(AppSkillCatalog)));
-    return yield* skillRead(
-      skills.read({
-        params: { app: selected.id, name: args.name.value },
-        query: { file: Option.getOrUndefined(args.file) },
-      }),
-    ).pipe(Effect.flatMap(print(AppSkillDocument)));
-  });
-
-const notSignedIn = `Not signed in to this host. For hosted Executor, run executor apps login --host ${hostedExecutorOrigin} and pass the same --host to each command, or set EXECUTOR_HOST. Without --host or EXECUTOR_HOST, commands use the local background Executor; for a local server at --host, set EXECUTOR_API_KEY to its API key.`;
-/** What each sign-in failure means and what to do next. */
-const loginFailure: Record<LoginFailed["reason"], string> = {
-  host: `Could not read this host's sign-in settings. Check --host, for example --host ${hostedExecutorOrigin}, and your network connection.`,
-  unsupported:
-    "This host does not support signing in from the CLI. Update it to a release with device sign-in.",
-  registration: "The host did not start a sign-in for the CLI. Try again in a moment.",
-  denied: "Sign-in was cancelled or denied in the browser. Run executor apps login to try again.",
-  expired:
-    "Sign-in was not approved in time. Run executor apps login again and approve it within 10 minutes.",
-  token: "The host did not complete the approved sign-in. Run executor apps login to try again.",
-  context:
-    "Signed in, but the host did not return your organization. Check that your account belongs to an organization, then sign in again.",
-  storage:
-    "Signed in, but the session could not be saved in the system credential store or in ~/.local/state/executor/auth. Check that this directory is writable.",
-};
+const notSignedIn = `Not signed in to this host for app commands. Run executor apps login, which signs in to hosted Executor and makes later commands use it, or executor apps login --host <origin> for another host. Commands use --host, then EXECUTOR_HOST, then the host you signed in to last, then the local background Executor; for a local server at --host, set EXECUTOR_API_KEY to its API key.`;
+/** No credential for a tool command's host. */
+const toolsNotSignedIn = (host: string | undefined) =>
+  host === undefined
+    ? "No Executor host is named or signed in to. Run executor login to sign in to hosted Executor, or pass --host."
+    : `Not signed in to ${host} for tools. Run executor login --host ${host}. For a local server at --host, set EXECUTOR_API_KEY to its API key; EXECUTOR_ACCESS_TOKEN sends a pasted access token instead.`;
+/** What each sign-in failure means and what to do next; `command` is the sign-in to repeat. */
+const loginFailure = (reason: LoginFailed["reason"], command: string): string =>
+  ({
+    host: `Could not read this host's sign-in settings. Check --host, for example --host ${hostedExecutorOrigin}, and your network connection.`,
+    unsupported:
+      "This host does not support signing in from the CLI. Update it to a release with device sign-in.",
+    registration: "The host did not start a sign-in for the CLI. Try again in a moment.",
+    denied: `Sign-in was cancelled or denied in the browser. Run ${command} to try again.`,
+    expired: `Sign-in was not approved in time. Run ${command} again and approve it within 10 minutes.`,
+    token: `The host did not complete the approved sign-in. Run ${command} to try again.`,
+    context:
+      "Signed in, but the host did not return your organization. Check that your account belongs to an organization, then sign in again.",
+    storage:
+      "Signed in, but the session could not be saved in the system credential store or in ~/.local/state/executor/auth. Check that this directory is writable.",
+  })[reason];
 
 /**
  * A failed command, as agents read it: the error code, the HTTP status when the host answered, the
@@ -579,13 +497,38 @@ export const describeAppFailure = (error: unknown): AppCommandFailure | undefine
           message: `Pushing the source with Git failed: ${error.detail}. The app's working source is unchanged.`,
           details: { reason: error.reason },
         };
-  if (Schema.is(SkillLookupFailed)(error))
-    return { code: "SkillLookupFailed", message: error.reason };
   if (Schema.is(LoginFailed)(error))
     return {
       code: "LoginFailed",
-      message: loginFailure[error.reason],
+      message: loginFailure(
+        error.reason,
+        error.signIn === "api" ? "executor apps login" : "executor login",
+      ),
       details: { reason: error.reason },
+    };
+  if (Schema.is(ToolsSignInRequired)(error))
+    return {
+      code: "NotSignedIn",
+      ...(error.host === undefined ? {} : { status: 401 }),
+      message: toolsNotSignedIn(error.host),
+    };
+  if (Schema.is(ToolCallRefused)(error))
+    return {
+      code: error.reason === "tool" ? "ToolFailed" : "ToolRequestRefused",
+      message: error.message === "" ? `The host's ${error.tool} tool failed.` : error.message,
+      details: { tool: error.tool, ...(error.code === undefined ? {} : { code: error.code }) },
+    };
+  if (Schema.is(ToolInputInvalid)(error)) return { code: "InputInvalid", message: error.message };
+  if (Schema.is(WhoamiUnavailable)(error))
+    return {
+      code: "WhoamiUnavailable",
+      status: 404,
+      message: `${error.host} does not report what its tools sign-in reaches; it runs a release from before executor whoami. Tool commands still work with this sign-in.`,
+    };
+  if (Schema.is(SignInStateInvalid)(error))
+    return {
+      code: "SignInStateInvalid",
+      message: `${error.file} is not a record this CLI wrote. Run executor logout to clear it, or remove the file.`,
     };
   if (isPlatformError(error)) return { code: "LocalFileError", message: error.message };
   const wire = encodeOperationError(error);
@@ -642,12 +585,13 @@ export const appsCommand = <E = never, R = never>(
   platform: string,
   localServer?: Effect.Effect<LocalServer, E, R>,
 ) => {
-  /** Run with --host or EXECUTOR_HOST, or else the local server, resolved once per command. */
+  /** Run with the named or remembered host, or else the local server, resolved once per command. */
   const withHost = <A, E2, R2>(
-    named: Option.Option<string>,
+    flag: Option.Option<string>,
     run: (host: Host) => Effect.Effect<A, E2, R2>,
   ) =>
     Effect.gen(function* () {
+      const named = yield* namedHost(flag);
       if (Option.isSome(named)) return yield* run({ origin: named.value });
       if (localServer === undefined) return yield* new AppClientError({ reason: "authentication" });
       const { url, token } = yield* localServer;
@@ -655,19 +599,19 @@ export const appsCommand = <E = never, R = never>(
     });
   return Command.make("apps").pipe(
     Command.withDescription(
-      `Create, edit, deploy, share, and install apps. Output is JSON on stdout. A failure exits 1 and prints the error's message, code, HTTP status and recovery on stderr; when stdout is not a terminal it also prints them as {"error": {"code", "status", "message", "recovery", "details", "update"}} on stdout; "update" says when a newer CLI release exists. Set EXECUTOR_HOST to skip --host; --organization defaults to the one you signed in to`,
+      `Create, edit, deploy, share, and install apps. Output is JSON on stdout. A failure exits 1 and prints the error's message, code, HTTP status and recovery on stderr; when stdout is not a terminal it also prints them as {"error": {"code", "status", "message", "recovery", "details", "update"}} on stdout; "update" says when a newer CLI release exists. Commands use --host, then EXECUTOR_HOST, then the host you signed in to last, then the local background Executor; --organization defaults to the one you signed in to`,
     ),
     Command.withExamples([
       {
-        command: `executor apps login --host ${hostedExecutorOrigin}`,
+        command: "executor apps login",
         description: "Sign in to hosted Executor once",
       },
       {
-        command: `EXECUTOR_HOST=${hostedExecutorOrigin} executor apps list`,
+        command: "executor apps list",
         description: "List apps on the host you signed in to",
       },
       {
-        command: "executor apps skills --app executor --name app-authoring --file deploy.md",
+        command: "executor skills --app executor --name app-authoring --file deploy.md",
         description: "Read how to write and deploy an app",
       },
     ]),
@@ -675,17 +619,18 @@ export const appsCommand = <E = never, R = never>(
       Command.make("login", {
         host: Flag.String("host").pipe(
           Flag.withDescription(
-            `Hosted Executor origin, such as ${hostedExecutorOrigin}. Defaults to EXECUTOR_HOST`,
+            `Executor origin to sign in to. Defaults to EXECUTOR_HOST, then hosted Executor, ${hostedExecutorOrigin}`,
           ),
           Flag.withFallbackConfig(Config.String("EXECUTOR_HOST")),
+          Flag.withDefault(hostedExecutorOrigin),
         ),
       }).pipe(
         Command.withDescription(
-          `Sign in to a hosted Executor with a code approved in any browser, for example --host ${hostedExecutorOrigin}`,
+          "Sign in to a hosted Executor for app commands with a code approved in any browser. Later commands use this host by default",
         ),
         Command.withExamples([
           {
-            command: `executor apps login --host ${hostedExecutorOrigin}`,
+            command: "executor apps login",
             description: "Print a link and a code, and wait until it is approved in a browser",
           },
         ]),
@@ -974,6 +919,7 @@ export const appsCommand = <E = never, R = never>(
                       expected: head.revision.commit,
                       files: local,
                       message: args.message,
+                      read: head,
                     });
                     return saved.revision.commit;
                   });
@@ -1084,30 +1030,6 @@ export const appsCommand = <E = never, R = never>(
             ),
           ),
         ),
-      ),
-      Command.make("skills", {
-        ...connection,
-        app: Flag.String("app").pipe(
-          Flag.withDescription("App slug or ID. Omit to list skills from every deployed app"),
-          Flag.optional,
-        ),
-        name: Flag.String("name").pipe(
-          Flag.withSchema(AppSkillName),
-          Flag.withDescription("Skill name to read, for example executor. Requires --app"),
-          Flag.optional,
-        ),
-        file: Flag.String("file").pipe(
-          Flag.withSchema(SourceFilePath),
-          Flag.withDescription(
-            "File within the skill to read instead of SKILL.md. Requires --name",
-          ),
-          Flag.optional,
-        ),
-      }).pipe(
-        Command.withDescription(
-          "List or read app skills served by the host. Start with --app executor --name executor, then read its app-authoring skill before writing an app",
-        ),
-        Command.withHandler((args) => withHost(args.host, (host) => readSkills({ ...args, host }))),
       ),
       Command.make("credential", {
         action: Argument.Literals("action", ["get", "store", "erase"]).pipe(

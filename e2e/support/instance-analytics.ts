@@ -1,8 +1,9 @@
 /** Events a local or self-host product process delivered to its own loopback collector. */
-import { Config, Effect, FileSystem, Option, Path, Redacted, Schedule, Schema } from "effect";
+import { Config, Effect, FileSystem, Option, Path, Schedule, Schema } from "effect";
 import { Api, type Session } from "./api.ts";
 import { collectorLinesWholeEnvironment } from "./collector-events.ts";
 import { Target } from "./platform.ts";
+import { reveal } from "./failure-text.ts";
 
 /** One event as PostHog's `/batch/` endpoint receives it. */
 export const DeliveredEvent = Schema.Struct({
@@ -79,7 +80,7 @@ export const localAgent = Effect.gen(function* () {
       const { origin: _origin, ...agentHeaders } = headers;
       return session.send(method, path, data, {
         ...agentHeaders,
-        authorization: `Bearer ${Redacted.value(target.apiKey)}`,
+        authorization: `Bearer ${reveal(target.apiKey)}`,
       });
     },
   };

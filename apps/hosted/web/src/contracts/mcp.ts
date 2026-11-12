@@ -2,7 +2,7 @@ import { hydratedResult, requestKey } from "@executor-js/ui/contracts/http";
 import { BrowserAtoms } from "./telemetry.ts";
 import { Effect, Schema } from "effect";
 import { Atom } from "effect/reactivity";
-import type { ResourceOrigins } from "@executor-js/mcp-auth/grants";
+import type { GrantSettings, ResourceOrigins } from "@executor-js/mcp-auth/grants";
 import { DeviceDecision, DeviceRequestView } from "@executor-js/mcp-auth/device";
 import { authCallOptions, mcpAuthorization, type AuthCallOptions } from "./auth.ts";
 
@@ -84,10 +84,14 @@ export const mcpClientAtom = Atom.family((clientId: string) =>
   ),
 );
 
-/** The chosen organization belongs to this consent POST, not a shared browser preference. */
+/** The organization and settings chosen belong to this consent POST, not a shared browser preference. */
 export const mcpConsentAtom = BrowserAtoms.fn(
-  (input: { accept: boolean; organization: string | undefined; query: string }) =>
-    request("consent", (options) => mcpAuthorization(options).consent(input)),
+  (input: {
+    accept: boolean;
+    organization: string | undefined;
+    settings: GrantSettings | undefined;
+    query: string;
+  }) => request("consent", (options) => mcpAuthorization(options).consent(input)),
 );
 
 /**
@@ -151,7 +155,12 @@ export const deviceRequestAtom = Atom.family((userCode: string) =>
 
 /** The organization chosen on the page belongs to this decision only. */
 export const deviceDecisionAtom = BrowserAtoms.fn(
-  (input: { userCode: string; accept: boolean; organization: string | undefined }) =>
+  (input: {
+    userCode: string;
+    accept: boolean;
+    organization: string | undefined;
+    settings: GrantSettings | undefined;
+  }) =>
     deviceCall(
       "decide",
       (options) => mcpAuthorization(options).decideDevice(input),

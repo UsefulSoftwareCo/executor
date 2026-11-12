@@ -1,4 +1,5 @@
 import { localSourceFormatter } from "@executor-js/app-management/source-format";
+import { mcpWhoamiPath } from "@executor-js/mcp-auth";
 import {
   publishedSkillRoutes,
   readExecutorSkills,
@@ -484,6 +485,7 @@ export const localApi = (
         HttpRouter.add("POST", "/dashboard/api/telemetry/logs", browserTelemetry(config, "logs")),
         programmatic,
         HttpRouter.add("*", "/mcp", mcp.http),
+        HttpRouter.add("GET", mcpWhoamiPath, mcp.whoami),
         HttpRouter.add("*", "/api/auth/*", oauth.handler),
         HttpRouter.add("GET", "/.well-known/oauth-protected-resource", oauth.protectedResource),
         HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", oauth.protectedResource),

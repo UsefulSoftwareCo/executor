@@ -1,4 +1,5 @@
 import { Schema } from "effect";
+import { heldValue } from "../support/failure-text.ts";
 
 /** Collision-free scenario identity; safe for paths, slugs and synthetic email addresses. */
 export const ScenarioId = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u));
@@ -39,7 +40,7 @@ export const FixtureControl = Schema.Struct({
       );
     }),
   ),
-  token: Schema.RedactedFromValue(Schema.NonEmptyString),
+  token: heldValue(Schema.RedactedFromValue(Schema.NonEmptyString)),
 });
 /** A synthetic identity and its private, expiring browser session. */
 export const FixtureActor = Schema.Struct({

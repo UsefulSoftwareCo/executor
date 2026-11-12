@@ -6,6 +6,7 @@ import { LastOrganization } from "@executor-js/hosted-server/browser/contracts";
 import { BrowserAtoms } from "./telemetry.ts";
 import { traceHeaders } from "@executor-js/telemetry";
 import type { OrganizationId } from "@executor-js/hosted-server/organization";
+import { grantSettingsHeader, type GrantSettings } from "@executor-js/mcp-auth/grants";
 import { oauthProviderClient } from "@better-auth/oauth-provider/client";
 import { createAuthClient } from "better-auth/client";
 import { organizationClient } from "better-auth/client/plugins";
@@ -232,27 +233,41 @@ export const organizationOperations = (options: AuthCallOptions) => ({
     authClient.organization.acceptInvitation({ invitationId }, options),
 });
 
+/** The organization and grant settings an approval carries. A denial carries neither. */
+const decisionHeaders = (
+  options: AuthCallOptions,
+  input: {
+    readonly accept: boolean;
+    readonly organization: string | undefined;
+    readonly settings: GrantSettings | undefined;
+  },
+) => ({
+  ...options.headers,
+  ...(!input.accept || input.organization === undefined
+    ? {}
+    : { "x-executor-organization": input.organization }),
+  ...(!input.accept || input.settings === undefined
+    ? {}
+    : { [grantSettingsHeader]: JSON.stringify(input.settings) }),
+});
+
 /** Consent uses its explicit selected organization, never a shared session field. */
 export const mcpAuthorization = (options: AuthCallOptions) => ({
   client: (clientId: string) =>
     authClient.oauth2.publicClient({ query: { client_id: clientId } }, options),
-  /** A scoped connection already names its organization, so its consent omits the choice. */
+  /**
+   * Approve with the organization, access and approval mode the page shows, or decline. A
+   * connection names its organization, so a page that has not found it yet omits the choice.
+   */
   consent: (input: {
     readonly accept: boolean;
     readonly organization: string | undefined;
+    readonly settings: GrantSettings | undefined;
     readonly query: string;
   }) =>
     authClient.oauth2.consent(
       { accept: input.accept, oauth_query: input.query },
-      {
-        ...options,
-        headers: {
-          ...options.headers,
-          ...(input.organization === undefined
-            ? {}
-            : { "x-executor-organization": input.organization }),
-        },
-      },
+      { ...options, headers: decisionHeaders(options, input) },
     ),
   /** The pending device sign-in a user code names. */
   deviceRequest: (userCode: string) =>
@@ -261,22 +276,18 @@ export const mcpAuthorization = (options: AuthCallOptions) => ({
       method: "GET",
       query: { user_code: userCode },
     }),
-  /** Approve a device sign-in for the chosen organization, or deny it. */
+  /** Approve a device sign-in with what the page shows, as consent does, or deny it. */
   decideDevice: (input: {
     readonly userCode: string;
     readonly accept: boolean;
     readonly organization: string | undefined;
+    readonly settings: GrantSettings | undefined;
   }) =>
     authClient.$fetch<unknown>("/device/decide", {
       ...options,
       method: "POST",
       body: { user_code: input.userCode, accept: input.accept },
-      headers: {
-        ...options.headers,
-        ...(input.organization === undefined
-          ? {}
-          : { "x-executor-organization": input.organization }),
-      },
+      headers: decisionHeaders(options, input),
     }),
 });
 

@@ -1,4 +1,4 @@
-/** Approval delivery is selected by the MCP endpoint, independently of tool policy. */
+/** Approval delivery: the host supplies each request's mode, independently of tool policy. */
 import { Match, Schema } from "effect";
 import { RecordedMessage } from "@executor-js/utils/recorded-message";
 
@@ -18,7 +18,7 @@ export class NativeElicitationFailed extends Schema.TaggedError<NativeElicitatio
       Match.when(
         "unsupported",
         () =>
-          "Native elicitation requires an MCP client and protocol with form elicitation support. Reconnect with a compatible client or use elicitation_mode=model.",
+          "Native elicitation requires an MCP client and protocol with form elicitation support. Reconnect with a compatible client, or connect again and choose model approval.",
       ),
       Match.when(
         "transport",

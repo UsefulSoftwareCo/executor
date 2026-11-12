@@ -1,17 +1,8 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import {
-  Config,
-  Context,
-  Effect,
-  FileSystem,
-  Layer,
-  Redacted,
-  Ref,
-  Schedule,
-  Schema,
-} from "effect";
+import { Config, Context, Effect, FileSystem, Layer, Ref, Schedule, Schema } from "effect";
 import { Base64Url } from "effect/encoding";
 import { Cookies, FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import { reveal, secretConfig } from "./failure-text.ts";
 
 class WelcomeTestFailed extends Schema.TaggedError<WelcomeTestFailed>()("WelcomeTestFailed", {
   operation: Schema.String,
@@ -23,7 +14,7 @@ const make = Effect.gen(function* () {
   const log = yield* Config.String("WELCOME_TEST_MAIL_LOG");
   // The local mail capture records no headers, so the test signs the List-Unsubscribe
   // token itself, in the same versioned format the Worker verifies, with the stage's secret.
-  const authSecret = yield* Config.Redacted("WELCOME_TEST_AUTH_SECRET");
+  const authSecret = yield* secretConfig("WELCOME_TEST_AUTH_SECRET");
   if (!/^https:\/\/127\.0\.0\.1:\d+$/.test(origin) || !/^http:\/\/127\.0\.0\.1:\d+$/.test(worker))
     return yield* new WelcomeTestFailed({ operation: "Require an isolated loopback cloud host" });
   const fs = yield* FileSystem.FileSystem;
@@ -84,7 +75,7 @@ const make = Effect.gen(function* () {
         const key = yield* Effect.promise(() =>
           crypto.subtle.importKey(
             "raw",
-            new TextEncoder().encode(Redacted.value(authSecret)),
+            new TextEncoder().encode(reveal(authSecret)),
             { name: "HMAC", hash: "SHA-256" },
             false,
             ["sign"],

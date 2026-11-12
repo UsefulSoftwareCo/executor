@@ -15,6 +15,7 @@ import {
   BearerAuthentication,
   apiBearerAccess,
   callerSpanAttributes,
+  describeMcpAccess,
   mcpBearerAccess,
   SessionAuthentication,
   AuthenticationUnavailable,
@@ -105,6 +106,8 @@ export const selfHostAuth = Effect.gen(function* () {
         try: () => auth.api.getMcpBrowserAccess({ headers, body: { id } }),
         catch: mcpBrowserGrantError,
       }),
+    describe: (access) =>
+      describeMcpAccess(access).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
     metadata: Effect.tryPromise({
       try: () => auth.api.getOAuthServerConfig(),
       catch: () => new AuthenticationUnavailable(),

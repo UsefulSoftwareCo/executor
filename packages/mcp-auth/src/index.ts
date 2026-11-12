@@ -15,15 +15,25 @@ export {
   grantTarget,
   mcpResourceMetadataUrl,
   GrantPolicy,
+  Grant,
+  AppPermission,
+  GrantAccessChoice,
+  GrantSettings,
+  grantSettingsHeader,
+  WhoamiAccess,
+  McpWhoami,
+  mcpWhoamiPath,
+  recordedTarget,
+} from "./contracts/grant.ts";
+export {
   grantAuthorization,
   targetedLinks,
   untargetedLinkRefusal,
   grantEventAccess,
-  Grant,
-  AppPermission,
   GrantForbidden,
   GrantRefusal,
-  deliveryRefusal,
+  grantRefusal,
+  unrecordedRefusal,
   permitsBrowserApproval,
-} from "./contracts/grant.ts";
+} from "./contracts/grant-enforcement.ts";
 export { restrictMcpBackend } from "./implementation/backend.ts";

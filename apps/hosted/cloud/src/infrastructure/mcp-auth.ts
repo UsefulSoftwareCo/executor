@@ -6,6 +6,7 @@ import {
   recordCaller,
   type HostedOAuthOrigins,
   mcpBrowserGrantError,
+  describeMcpAccess,
   mcpBearerAccess,
   mcpConnectionStore,
 } from "@executor-js/hosted-server";
@@ -127,6 +128,7 @@ export const mcpAuthentication = (
                   }),
                 ),
               ),
+        describe: (access) => withSql(describeMcpAccess(access)),
         metadata: bound.pipe(
           Effect.flatMap(([instance, bind]) =>
             Effect.tryPromise({

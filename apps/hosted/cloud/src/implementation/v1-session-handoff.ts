@@ -12,20 +12,27 @@
  * an `exp` at most a minute later and a random `jti`. v2 accepts each `jti` once, maps the WorkOS
  * user to a v2 user only through the import map, requires that user's membership of the
  * organization the v1 organization was imported as, and starts an ordinary Better Auth session.
- * Every refusal opens the v2 sign-in page, returning to the organization. Nothing here reads v1.
+ * It opens the organization this browser last used in v2 when that user is still its member, and
+ * the token's organization otherwise: v1 names the organization of its own session, not the one
+ * the member chose last. Every refusal opens the v2 sign-in page, returning to the token's
+ * organization. Nothing here reads v1.
  */
 import {
   AuthenticationUnavailable,
   auditFailureCodes,
   recordSecurityAudit,
 } from "@executor-js/hosted-server";
+import {
+  LastOrganization,
+  lastOrganizationCookie,
+} from "@executor-js/hosted-server/browser/contracts";
 import { OrganizationSlug } from "@executor-js/hosted-server/organization";
 import type { BetterAuthPlugin } from "better-auth";
 import { APIError, createAuthEndpoint } from "better-auth/api";
 import { setSessionCookie } from "better-auth/cookies";
 import { Clock, Effect, Option, Redacted, Result, Schema } from "effect";
 import { Base64Url } from "effect/encoding";
-import { HttpServerRequest, HttpServerResponse } from "effect/http";
+import { Cookies, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { SqlClient } from "effect/sql";
 
 /** The route v1's dashboard redirects to. */
@@ -207,6 +214,31 @@ const target = (sql: SqlClient.SqlClient, claims: Claims) =>
     return { user: row.userId, organization: row.organization };
   });
 
+/** The organization this browser last opened, when the memory belongs to `user`. */
+const rememberedOrganization = (request: HttpServerRequest.HttpServerRequest, user: string) => {
+  const value = Cookies.parseHeader(request.headers.cookie ?? "")[
+    lastOrganizationCookie(request.headers.host ?? "")
+  ];
+  if (value === undefined) return undefined;
+  const saved = Schema.decodeUnknownOption(Schema.fromJsonString(LastOrganization))(value);
+  return Option.isSome(saved) && saved.value.user === user ? saved.value.organization : undefined;
+};
+
+const Remembered = Schema.Struct({ id: Schema.String, slug: OrganizationSlug });
+
+/**
+ * The remembered organization's current slug, only while `user` is a member: the cookie is
+ * navigation memory, so a removed membership or deleted organization falls back to the token's.
+ */
+const rememberedDestination = (sql: SqlClient.SqlClient, user: string, organization: string) =>
+  Effect.gen(function* () {
+    const rows = yield* sql`
+      select o.id, o.slug from organization o
+      join member m on m."organizationId" = o.id and m."userId" = ${user}
+      where o.id = ${organization}`;
+    return rows.length === 0 ? undefined : yield* Schema.decodeUnknownEffect(Remembered)(rows[0]);
+  });
+
 /** Where every response sends the browser: never back to a URL that carries the token. */
 const redirect = (location: string, cookies: ReadonlyArray<string> = []) => {
   const headers = new Headers({
@@ -254,11 +286,20 @@ export const v1SessionHandoff = <R>(services: V1HandoffServices<R>) =>
     return yield* Effect.gen(function* () {
       if (Option.isNone(services.secret)) return yield* refuse("disabled");
       const claims = yield* verify(services.secret.value, token);
-      const { user, organization } = yield* services.withSql(
+      const { user, destination } = yield* services.withSql(
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
           yield* consume(sql, claims);
-          return yield* target(sql, claims);
+          const found = yield* target(sql, claims);
+          const remembered = rememberedOrganization(request, found.user);
+          const resumed =
+            remembered === undefined || remembered === found.organization
+              ? undefined
+              : yield* rememberedDestination(sql, found.user, remembered);
+          return {
+            ...found,
+            destination: resumed ?? { id: found.organization, slug: claims.slug },
+          };
         }),
       );
       const current = yield* services.currentUser(headers);
@@ -266,8 +307,8 @@ export const v1SessionHandoff = <R>(services: V1HandoffServices<R>) =>
       // another user's session is never replaced by a handoff.
       if (current !== undefined && current !== user) return yield* refuse("other_session");
       const cookies =
-        current === user ? [] : yield* services.startSession(headers, user, organization);
-      return redirect(`/org/${claims.slug}`, cookies);
+        current === user ? [] : yield* services.startSession(headers, user, destination.id);
+      return redirect(`/org/${destination.slug}`, cookies);
     }).pipe(
       Effect.catchTag("V1HandoffRefused", (error) =>
         Effect.logInfo("v1 session handoff refused", { reason: error.reason }).pipe(

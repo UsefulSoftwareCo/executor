@@ -11,6 +11,8 @@ import { Browser } from "./browser.ts";
 import { Evidence } from "./evidence.ts";
 import { Target, driver } from "./platform.ts";
 import { targetHosts } from "./role-hosts.ts";
+import { chooseConsentOrganization, consentValue } from "./consent-page.ts";
+import { heldValue, reveal, secret } from "./failure-text.ts";
 
 const Tokens = Schema.Struct({
   access_token: Schema.NonEmptyString,
@@ -93,7 +95,7 @@ export const oauthCallback = (state: string) =>
               : "<h1>Authorization was not completed</h1>",
           );
           // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- node:http request handlers are plain callbacks
-          if (valid) Effect.runSync(Deferred.succeed(received, Redacted.make(code)));
+          if (valid) Effect.runSync(Deferred.succeed(received, secret(code)));
         }),
       ),
       (server) =>
@@ -197,7 +199,7 @@ export const authorizeBrowserMcp = (
         body: new URLSearchParams({
           grant_type: "authorization_code",
           client_id,
-          code: Redacted.value(code),
+          code: reveal(code),
           code_verifier: verifier,
           redirect_uri: receiver.url,
           resource,
@@ -210,7 +212,7 @@ export const authorizeBrowserMcp = (
       Effect.flatMap(
         Schema.decodeUnknownEffect(
           Schema.Struct({
-            access_token: Schema.RedactedFromValue(Schema.NonEmptyString),
+            access_token: heldValue(Schema.RedactedFromValue(Schema.NonEmptyString)),
           }),
         ),
       ),
@@ -259,7 +261,7 @@ const make = Effect.gen(function* () {
       {
         grant_type: "refresh_token",
         client_id: grant.clientId,
-        refresh_token: Redacted.value(grant.tokens).refresh_token,
+        refresh_token: reveal(grant.tokens).refresh_token,
         resource: grant.resource,
       },
       tokenOrigin,
@@ -285,12 +287,14 @@ const make = Effect.gen(function* () {
    * the resource names the issuer, and the issuer's own origin serves its metadata. Sign-in and
    * consent stay on the browser origin.
    */
-  const authorizeClient = (
+  const authorizeClient = <E = never, R = never>(
     kind: "mcp" | "api",
     connection?: string,
     resourceParameter: "sent" | "omitted" = "sent",
     client: ClientOptions = e2eClient,
     resourceOrigin: string = origin,
+    /** Replaces the default review of the consent page; it runs just before Connect. */
+    review?: Effect.Effect<void, E, R>,
   ) =>
     Effect.gen(function* () {
       // A scoped connection has its own MCP URL, OAuth resource and discovery document.
@@ -413,26 +417,34 @@ const make = Effect.gen(function* () {
           operation: "find intended organization",
           status: organizations.status,
         });
-      if (connection === undefined) {
-        yield* browser.use("Select the intended organization", (page) =>
-          page.getByRole("combobox").click(),
+      if (review !== undefined) yield* review;
+      else if (connection === undefined) {
+        yield* browser.use("Approve for the intended organization", (page) =>
+          chooseConsentOrganization(page, organization.name),
         );
-        yield* browser.use("Confirm the organization selection", (page) =>
-          page.getByRole("option", { name: organization.name, exact: true }).click(),
-        );
+        expect(
+          yield* browser.use("Consent states the requested access", (page) =>
+            consentValue(page, "Access"),
+          ),
+        ).toBe(kind === "api" ? "Executor API" : "All apps");
       } else {
-        // The connection fixes its organization; consent names the scoped access instead.
-        yield* browser.use("Consent describes the scoped connection", (page) =>
-          page
-            .getByRole("heading", { name: "Access to one of your connections", exact: true })
-            .waitFor({ state: "visible" }),
+        // The connection's URL preselects it, in the organization that holds it.
+        const listed = yield* api.request(
+          actors.owner,
+          "GET",
+          `/api/organizations/${actors.organization.id}/mcp-connections`,
         );
-        if (
-          (yield* browser.use("No organization choice", (page) =>
-            page.getByRole("combobox").count(),
-          )) !== 0
-        )
-          return yield* new OAuthFailed({ operation: "connection organization choice", status: 0 });
+        yield* ok("read connections", listed.status);
+        const named = (yield* body(
+          Schema.Array(Schema.Struct({ id: Schema.String, name: Schema.String })),
+          listed,
+        )).find((item) => item.id === connection);
+        if (named === undefined)
+          return yield* new OAuthFailed({ operation: "find the named connection", status: 0 });
+        const shown = yield* browser.use("Consent preselects the URL's connection", (page) =>
+          Promise.all([consentValue(page, "Organization"), consentValue(page, "Access")]),
+        );
+        expect(shown).toEqual([organization.name, named.name]);
       }
       yield* browser.checkpoint("OAuth consent before approval");
       yield* browser.use("Approve the client connection", (page) =>
@@ -452,7 +464,7 @@ const make = Effect.gen(function* () {
       const exchanged = yield* exchange({
         grant_type: "authorization_code",
         client_id: clientId,
-        code: Redacted.value(code),
+        code: reveal(code),
         code_verifier: verifier,
         redirect_uri: receiver.url,
         ...resourceField,
@@ -464,8 +476,11 @@ const make = Effect.gen(function* () {
       const listed = yield* api.request(actors.owner, "GET", "/api/auth/mcp/grants");
       yield* ok("read grants", listed.status);
       const grants = yield* body(Grants, listed);
+      // A review may choose another organization; the default review chooses the scenario's.
       const grant = grants.find(
-        (item) => item.clientId === clientId && item.resource === actors.organization.id,
+        (item) =>
+          item.clientId === clientId &&
+          (review !== undefined || item.resource === actors.organization.id),
       );
       const consent = consentRows.find(
         (item) => item.clientId === clientId && item.referenceId === grant?.grant.id,
@@ -498,19 +513,20 @@ const make = Effect.gen(function* () {
     exchanged: Parameters<typeof body>[1],
   ) =>
     body(schema, exchanged).pipe(
-      Effect.map(Redacted.make),
+      Effect.map(secret),
       Effect.mapError(
         () => new OAuthFailed({ operation: "token response", status: exchanged.status }),
       ),
     );
-  const authorize = (
+  const authorize = <E = never, R = never>(
     kind: "mcp" | "api",
     connection?: string,
     resourceParameter: "sent" | "omitted" = "sent",
     client: ClientOptions = e2eClient,
     resourceOrigin: string = origin,
+    review?: Effect.Effect<void, E, R>,
   ) =>
-    authorizeClient(kind, connection, resourceParameter, client, resourceOrigin).pipe(
+    authorizeClient(kind, connection, resourceParameter, client, resourceOrigin, review).pipe(
       Effect.flatMap(({ authorized, exchanged }) =>
         tokensOf(Tokens, exchanged).pipe(
           Effect.map((tokens): Grant => ({ ...authorized, tokens })),
@@ -524,6 +540,12 @@ const make = Effect.gen(function* () {
     authorizeWithoutResource: authorize("mcp", undefined, "omitted"),
     /** Authorize a scoped connection's own MCP URL through the same browser consent. */
     authorizeConnection: (connection: string) => authorize("mcp", connection),
+    /**
+     * Authorize the plain MCP URL, or a connection's, with `review` making the person's choices
+     * on the consent page before Connect.
+     */
+    authorizeReviewing: <E, R>(review: Effect.Effect<void, E, R>, connection?: string) =>
+      authorize("mcp", connection, "sent", e2eClient, origin, review),
     /** Authorize the MCP or API resource a client discovered at another origin. */
     authorizeAt: (kind: "mcp" | "api", resourceOrigin: string) =>
       authorize(kind, undefined, "sent", e2eClient, resourceOrigin),
@@ -552,7 +574,7 @@ const make = Effect.gen(function* () {
         const response = yield* refreshResponse(grant, tokenOrigin);
         yield* ok("refresh grant", response.status);
         const tokens = yield* body(Tokens, response).pipe(
-          Effect.map(Redacted.make),
+          Effect.map(secret),
           Effect.mapError(
             () => new OAuthFailed({ operation: "refresh response", status: response.status }),
           ),

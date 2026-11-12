@@ -1,7 +1,6 @@
 import {
   Clock,
   Console,
-  Deferred,
   Effect,
   FileSystem,
   Path,
@@ -27,7 +26,7 @@ import { v1McpForwardFile } from "./v1-mcp-forward.ts";
 import { v1SessionHandoffFile } from "./v1-session-handoff.ts";
 import {
   alchemyResourceFailure,
-  isAlchemyDevFailure,
+  followAlchemyDev,
   outputLines,
   unboundPort,
 } from "./alchemy-dev-output.ts";
@@ -40,6 +39,7 @@ import {
   v1FirstPartyClients,
   v1FirstPartyCredentials,
 } from "./operator-oauth.ts";
+import { reveal, secret } from "./failure-text.ts";
 
 /** v1's client ID for the test client, which is not v2's: its v1 grants cannot move. */
 export const v1SyntheticCloudMailClientId = "synthetic-v1-cloud-mail-client";
@@ -165,7 +165,7 @@ export const startCloudEnvironment = (input: {
     const fixture =
       input.signInThrough === undefined
         ? yield* createEmulatorFixture(input.origin)
-        : Redacted.make(
+        : secret(
             EmulatorFixture.make({
               version: 4,
               origin: input.origin,
@@ -174,11 +174,11 @@ export const startCloudEnvironment = (input: {
           );
     const oauthProxy = {
       productionUrl: input.signInThrough?.productionUrl ?? roleHost(input.origin, "edge"),
-      secret: input.signInThrough?.secret ?? Redacted.make(randomBytes(32).toString("hex")),
+      secret: input.signInThrough?.secret ?? secret(randomBytes(32).toString("hex")),
     };
     yield* Effect.addFinalizer(() =>
       Effect.forEach(
-        Object.values(Redacted.value(fixture).services),
+        Object.values(reveal(fixture).services),
         (service) =>
           emulatorRequest(service.baseUrl, "/_emulate/reset", {}).pipe(
             Effect.catch(() => Console.error("Could not reset one external test emulator.")),
@@ -187,7 +187,7 @@ export const startCloudEnvironment = (input: {
       ),
     );
     const emulators = `${directory}/emulators.json`;
-    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(fixture)), { mode: 0o600 });
+    yield* fs.writeFileString(emulators, JSON.stringify(reveal(fixture)), { mode: 0o600 });
     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
     const analyticsPort = yield* startAnalyticsCollector(directory);
     // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
@@ -290,7 +290,7 @@ export const startCloudEnvironment = (input: {
       CLOUD_DEV_DATABASE_PORT: String(input.databasePort),
       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
       CLOUD_DEV_EXTERNAL_DATABASE: "true",
-      EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
+      EXECUTOR_EMULATORS: JSON.stringify(reveal(fixture).services),
       // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
       V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
       V1_DATABASE_URL: `postgresql://${v1DatabaseReader}:${v1ReaderPassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
@@ -303,7 +303,7 @@ export const startCloudEnvironment = (input: {
       EXECUTOR_ROLE_HOSTS_DOMAIN: new URL(input.origin).hostname,
       CLOUD_BROWSER_ORIGIN: input.browserOrigin,
       EXECUTOR_EMULATED_OAUTH_PROXY_PRODUCTION_URL: oauthProxy.productionUrl,
-      EXECUTOR_EMULATED_OAUTH_PROXY_SECRET: Redacted.value(oauthProxy.secret),
+      EXECUTOR_EMULATED_OAUTH_PROXY_SECRET: reveal(oauthProxy.secret),
       ...operatorOAuthClients(operatorOAuth),
     };
     yield* fs.makeDirectory(env.ALCHEMY_HOME, { recursive: true, mode: 0o700 });
@@ -471,15 +471,20 @@ export const startCloudEnvironment = (input: {
     );
     // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
     // run nothing will edit the sources it waits on, so the Worker that failed never starts.
-    const applyFailed = yield* Deferred.make<void>();
     const resourceFailures = yield* Ref.make<ReadonlyArray<{ resource: string; reason: string }>>(
       [],
     );
-    yield* capture(server, "cloud.log", (line) => {
-      const failure = alchemyResourceFailure(line);
-      if (failure !== undefined) return Ref.update(resourceFailures, (all) => [...all, failure]);
-      return isAlchemyDevFailure(line) ? Deferred.succeed(applyFailed, undefined) : Effect.void;
-    });
+    const dev = yield* followAlchemyDev(server, (line) =>
+      fs.writeFileString(`${directory}/cloud.log`, `${line}\n`, { flag: "a", mode: 0o600 }).pipe(
+        Effect.orDie,
+        Effect.andThen(() => {
+          const failure = alchemyResourceFailure(line);
+          return failure === undefined
+            ? Effect.void
+            : Ref.update(resourceFailures, (all) => [...all, failure]);
+        }),
+      ),
+    );
     // Each failed resource and why, and for a port another socket holds, that socket and its
     // process while `alchemy dev` still runs: the error is in the job log even when the evidence
     // artifact is not kept.
@@ -531,13 +536,18 @@ export const startCloudEnvironment = (input: {
             ),
           ),
         ),
-        Deferred.await(applyFailed).pipe(
+        dev.failed.pipe(
+          // While alchemy still runs, so a port's holder can still be named.
           Effect.andThen(describeResourceFailures),
           Effect.flatMap((failures) =>
-            Effect.fail(
-              new CloudStartFailed({
-                operation: `Alchemy could not start every Cloud resource${failures === "" ? "" : ` (${failures})`}; see cloud.log`,
-              }),
+            dev.report.pipe(
+              Effect.flatMap((report) =>
+                Effect.fail(
+                  new CloudStartFailed({
+                    operation: `Alchemy could not start every Cloud resource${failures === "" ? "" : ` (${failures})`}; see cloud.log. Alchemy reported:\n${report}`,
+                  }),
+                ),
+              ),
             ),
           ),
         ),
@@ -556,6 +566,6 @@ export const startCloudEnvironment = (input: {
       emulators,
       fixtures,
       origin: input.origin,
-      oauthProxy: { ...oauthProxy, services: Redacted.value(fixture).services },
+      oauthProxy: { ...oauthProxy, services: reveal(fixture).services },
     };
   });

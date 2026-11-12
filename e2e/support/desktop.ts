@@ -11,7 +11,6 @@ import {
   Path,
   type PlatformError,
   Queue,
-  Redacted,
   Schedule,
   Schema,
   Stream,
@@ -25,6 +24,7 @@ import {
   ServiceRegistration,
 } from "./background-service.ts";
 import { driver } from "./platform.ts";
+import { reveal } from "./failure-text.ts";
 
 /**
  * What a desktop scenario's own environment keeps of the runner's: its display and session bus,
@@ -588,7 +588,7 @@ export const stopBackgroundServers = (
       if (!(yield* answersAsServer(server))) continue;
       yield* http
         .post(`${server.url}/api/service/stop`, {
-          headers: { authorization: `Bearer ${Redacted.value(server.password)}` },
+          headers: { authorization: `Bearer ${reveal(server.password)}` },
         })
         .pipe(Effect.timeout("5 seconds"), Effect.ignore);
       // It proved itself just before, so a pid still running is still that server.

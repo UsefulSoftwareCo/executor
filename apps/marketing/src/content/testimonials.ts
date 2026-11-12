@@ -86,6 +86,12 @@ export const testimonials: readonly Testimonial[] = [
     text: "Really like what Rhys is working on with executor. I think it or something like it is probably the future",
   },
   {
+    handle: "wesbos",
+    name: "Wes Bos",
+    id: "2120573665301668168",
+    text: "I'm sick of having to setup + auth MCP servers across multiple machines and harnesses. Giving Rhys's Executor a shot - connect apps once and then access everything over a single (or multiple) MCP connection",
+  },
+  {
     handle: "hegargarcia",
     name: "Hegar",
     id: "2100634018836292051",
@@ -192,6 +198,12 @@ export const testimonials: readonly Testimonial[] = [
     name: "Corey Haines",
     id: "2090133127243190284",
     text: "Really liking executor.sh to make it easy to port agent integrations across platforms.",
+  },
+  {
+    handle: "jcurtis",
+    name: "John Curtis",
+    id: "2120604107912176019",
+    text: "executor.sh has been the best unlock for multi device multi harness use … one edge case for me is for testing our new/ occasional stacks… you get to bring your toolbelt with you.",
   },
   {
     handle: "shuv1337",

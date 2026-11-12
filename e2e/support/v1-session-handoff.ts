@@ -1,8 +1,9 @@
 import { createHmac, randomBytes } from "node:crypto";
 import { Schema } from "effect";
+import { heldValue } from "./failure-text.ts";
 
 /** The secret a managed Cloud run shares with its synthetic v1 for session handoffs. */
-export const V1SessionHandoffSecret = Schema.Struct({ secret: Schema.String });
+export const V1SessionHandoffSecret = Schema.Struct({ secret: heldValue(Schema.String) });
 /** Where a managed Cloud run records the secret it verifies v1 session handoffs with. */
 export const v1SessionHandoffFile = "v1-session-handoff.json";
 

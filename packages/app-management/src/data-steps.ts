@@ -20,6 +20,10 @@ export {
   idleAgentGrantsStep,
   idleAgentGrantsStepName,
 } from "./implementation/idle-agent-grants.ts";
+export {
+  agentGrantModesStep,
+  agentGrantModesStepName,
+} from "./implementation/agent-grant-modes.ts";
 export { executorAppRedeployStep } from "./implementation/executor-app-redeploy.ts";
 export type { ExecutorAppRedeployHost } from "./implementation/executor-app-redeploy.ts";
 export { localOwnersStepName, localOwnersStorage } from "./implementation/local-owners.ts";

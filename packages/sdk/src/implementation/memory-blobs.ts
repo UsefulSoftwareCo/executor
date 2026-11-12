@@ -16,6 +16,10 @@ export const memoryBlobStore = (): BlobStorage => {
       Effect.sync(() => {
         objects.delete(key);
       }),
+    removeAll: (keys) =>
+      Effect.sync(() => {
+        for (const key of keys) objects.delete(key);
+      }),
     list: (folder, options) =>
       Effect.sync(() =>
         pageOf(

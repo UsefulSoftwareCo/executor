@@ -1,7 +1,8 @@
 /** Read delivered Cloud traces through Axiom's public query API; never log credentials or raw failures. */
-import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
+import { Clock, Config, Effect, Option, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { SpanQuery } from "./contracts.ts";
+import { reveal, secretConfig } from "./failure-text.ts";
 
 const Tabular = Schema.Struct({
   status: Schema.Struct({ isPartial: Schema.Boolean }),
@@ -121,7 +122,7 @@ export const axiomSpans = Effect.gen(function* () {
   const start = yield* Clock.currentTimeMillis;
   const query = (filter: string) =>
     Effect.gen(function* () {
-      const token = yield* Config.Redacted("E2E_AXIOM_TOKEN");
+      const token = yield* secretConfig("E2E_AXIOM_TOKEN");
       const organization = yield* Config.option(Config.NonEmptyString("E2E_AXIOM_ORG_ID"));
       const dataset = yield* Config.String("E2E_AXIOM_DATASET").pipe(
         Effect.flatMap(
@@ -132,7 +133,7 @@ export const axiomSpans = Effect.gen(function* () {
       const request = yield* HttpClientRequest.post(
         "https://api.axiom.co/v1/datasets/_apl?format=tabular",
       ).pipe(
-        HttpClientRequest.setHeader("authorization", `Bearer ${Redacted.value(token)}`),
+        HttpClientRequest.setHeader("authorization", `Bearer ${reveal(token)}`),
         HttpClientRequest.setHeaders(
           Option.isSome(organization) ? { "x-axiom-org-id": organization.value } : {},
         ),

@@ -49,6 +49,8 @@ import {
   catalogLive,
   hostedMiddlewareLive,
   mcpProtectedResource,
+  mcpWhoami,
+  mcpWhoamiPath,
   mcpAuthorizationServer,
   apiChallenge,
   apiProtectedResource,
@@ -538,6 +540,7 @@ export default Api.make(
     const mcpRoutes = Layer.mergeAll(
       HttpRouter.add("*", "/mcp", mcp.http),
       HttpRouter.add("*", "/org/:organization/mcp", mcp.http),
+      HttpRouter.add("GET", mcpWhoamiPath, mcpWhoami),
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource", mcpProtectedResource),
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", mcpProtectedResource),
     ).pipe(HttpRouter.provideRequest(auth.mcpIdentity));
@@ -715,6 +718,11 @@ export default Api.make(
     const apiHost = yield* Layer.mergeAll(
       apiRoutes,
       apiDiscoveryRoutes,
+      // The host people sign in to says where its MCP endpoint is: this names the canonical MCP
+      // resource, on `mcp.`, since `api.` is not an MCP origin. `executor login` reads it.
+      HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", mcpProtectedResource).pipe(
+        HttpRouter.provideRequest(auth.mcpIdentity),
+      ),
       authorizationServerRoutes,
       appWebhookRoutes,
       // The Executor app reads its skills beside the API it calls.

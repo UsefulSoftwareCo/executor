@@ -516,14 +516,6 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source retry backoff",
           if (subscription === undefined)
             return yield* Effect.die(new Error("The manual webhook is missing"));
           const setupPath = `${prefix}/webhook-setup/${app.id}/${subscription.id}`;
-          // A finished setup stays active until a manager removes it by hand, which the app's
-          // removal waits for.
-          yield* Effect.addFinalizer(() =>
-            Effect.gen(function* () {
-              yield* api.request(actors.owner, "DELETE", setupPath);
-              yield* api.request(actors.owner, "POST", `${setupPath}/confirm-removal`);
-            }).pipe(Effect.orDie),
-          );
 
           const stored = storedRow(legacyStorage([sourceRow(app.id, account)]));
           /** Delivered spans of the source's attempts. */

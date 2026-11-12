@@ -14,6 +14,7 @@ import { writeRows } from "../support/cloud-rows.ts";
 import { Emulators } from "../support/emulators.ts";
 import { Onboarding } from "../support/onboarding.ts";
 import { driver, Target } from "../support/platform.ts";
+import { waitForLastOrganization } from "../support/organization-entry.ts";
 import { targetHosts } from "../support/role-hosts.ts";
 import { allowV1Import, v1ImportOperator, v1RunId } from "../support/v1-import.ts";
 import {
@@ -26,6 +27,8 @@ import {
 import { scenarios } from "../test-plan.ts";
 
 const services = Layer.mergeAll(Onboarding.layer, Emulators.layer);
+
+const Created = Schema.Struct({ id: Schema.String, slug: Schema.String });
 
 const Session = Schema.NullOr(Schema.Struct({ user: Schema.Struct({ email: Schema.String }) }));
 
@@ -188,6 +191,60 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 session handoff", (it) 
 
         // Signed in as the same user, a new handoff only redirects.
         expect(yield* fromBrowser("Hand off the same user again", moved.sign())).toEqual({
+          status: 302,
+          location: `/org/${moved.slug}`,
+          cookies: 0,
+        });
+
+        // v1 names its own session's organization; v2 opens the one this browser used last.
+        const secondSlug = `${moved.slug}-second`;
+        const created = yield* browser.use("Create a second organization", (page) =>
+          page
+            .context()
+            .request.post("/api/auth/organization/create", {
+              headers: { origin: new URL(page.url()).origin },
+              data: {
+                name: "Second organization",
+                slug: secondSlug,
+                keepCurrentActiveOrganization: true,
+              },
+            })
+            .then((response) =>
+              response.json().then((body) => ({ status: response.status(), body })),
+            ),
+        );
+        expect(created.status).toBe(200);
+        const second = yield* Schema.decodeUnknownEffect(Created)(created.body);
+        yield* browser.use("Work in the second organization", (page) =>
+          page.goto(`/org/${second.slug}/apps`),
+        );
+        yield* waitForLastOrganization(second.id);
+        expect(
+          yield* fromBrowser("Hand off after working in the second organization", moved.sign()),
+        ).toEqual({ status: 302, location: `/org/${second.slug}`, cookies: 0 });
+
+        // A remembered organization the user no longer belongs to falls back to the token's.
+        yield* browser.use("Remember an organization the user is not a member of", (page) =>
+          page
+            .context()
+            .cookies()
+            .then((cookies) => {
+              const cookie = cookies.find((value) => value.name.startsWith("executor-org"));
+              if (cookie === undefined) throw new Error("The organization memory is missing");
+              return page.context().addCookies([
+                {
+                  ...cookie,
+                  value: encodeURIComponent(
+                    JSON.stringify({
+                      ...JSON.parse(decodeURIComponent(cookie.value)),
+                      organization: "missing-handoff-test-organization",
+                    }),
+                  ),
+                },
+              ]);
+            }),
+        );
+        expect(yield* fromBrowser("Hand off with a stale memory", moved.sign())).toEqual({
           status: 302,
           location: `/org/${moved.slug}`,
           cookies: 0,

@@ -6,6 +6,7 @@ import { Clock, Context, Effect, Layer, Redacted, Schema } from "effect";
 import { randomBytes } from "node:crypto";
 import { Evidence } from "./evidence.ts";
 import { Target, driver } from "./platform.ts";
+import { reveal } from "./failure-text.ts";
 
 const Rpc = Schema.Struct({ method: Schema.optional(Schema.String) });
 const make = Effect.gen(function* () {
@@ -20,7 +21,7 @@ const make = Effect.gen(function* () {
         /** X-Executor-Organization, read for every request so a client can follow a renamed slug. */
         readonly organization?: string | (() => string);
         readonly mode?: "model" | "native" | "browser";
-        /** A scoped connection's URL; its grants are only valid at that URL. */
+        /** A scoped connection's URL. A grant is served per its record wherever it connects. */
         readonly connection?: string;
         /** Runs while a native client holds an approval request, before it accepts. */
         readonly whileApproving?: Effect.Effect<void, unknown>;
@@ -64,7 +65,7 @@ const make = Effect.gen(function* () {
                   typeof organization === "string" ? organization : organization(),
                 );
               if (typeof accessToken === "function")
-                request.headers.set("authorization", `Bearer ${Redacted.value(accessToken())}`);
+                request.headers.set("authorization", `Bearer ${reveal(accessToken())}`);
               const started = yield* Clock.currentTimeMillis;
               const traceId = randomBytes(16).toString("hex"),
                 spanId = randomBytes(8).toString("hex");
@@ -116,7 +117,7 @@ const make = Effect.gen(function* () {
         const transport = new StreamableHTTPClientTransport(endpoint, {
           requestInit: {
             headers: {
-              authorization: `Bearer ${Redacted.value(typeof accessToken === "function" ? accessToken() : accessToken)}`,
+              authorization: `Bearer ${reveal(typeof accessToken === "function" ? accessToken() : accessToken)}`,
             },
           },
           fetch: observedFetch,

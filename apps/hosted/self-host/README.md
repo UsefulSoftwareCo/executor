@@ -190,13 +190,23 @@ docker compose -f apps/hosted/self-host/compose.yaml down
 ## App catalog
 
 Onboarding and **Add app** list Executor's official apps from the published
-feed at `https://catalog.executor.sh/index.json`. The server fetches the feed's
-index when the list opens, and each app's source when it is added; the browser
-loads app icons from the same host. To read another copy of the feed, set
-`EXECUTOR_CATALOG_URL` to its `index.json`. On an instance without outbound
-internet access, set `EXECUTOR_CATALOG_URL=off`: the lists then show only the
-built-in Executor app, and you can still add apps by URL or build your own. A
-feed that cannot be reached shows an error with a retry in both places.
+feed at `https://catalog.executor.sh/index.json`. The server reads the feed's
+index whenever the catalog is listed, which is more often than those two pages
+open: each dashboard page load lists it once to show app icons, and each catalog
+query from an agent lists it again. Reads that overlap share one request. When
+the feed sends an `ETag`, as the published feed does, the server asks whether
+the index changed since its last read and downloads it again only when it has;
+a feed that sends no `ETag` is downloaded and decoded on every read, and so is
+the first read after the server restarts. Adding an app fetches that app's source, and the
+browser loads app icons from the same host.
+
+To read another copy of the feed, set `EXECUTOR_CATALOG_URL` to its
+`index.json`. On an instance without outbound internet access, set
+`EXECUTOR_CATALOG_URL=off`: onboarding and Add app then say the catalog is off
+and list only the built-in Executor app, and you can still add apps by URL or
+build your own. When the feed cannot be reached or read, both pages say so with
+a retry, and the built-in Executor app stays listed. An agent's catalog query
+fails with the same explanation, as it failed before.
 
 ## Serve other users
 

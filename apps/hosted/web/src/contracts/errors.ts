@@ -1,3 +1,4 @@
+import { CatalogFeedUnavailable } from "@executor-js/catalog/contracts";
 import { registryErrorMessage } from "@executor-js/ui/contracts/registry-error";
 import { mayHaveWrittenFailure } from "@executor-js/sdk";
 import type { HostedApi } from "@executor-js/hosted-server/contracts";
@@ -186,7 +187,11 @@ const errorMessage = Match.type<HostedError>().pipe(
     ToolCallLogBusy: () =>
       "Tool calls took too long to read. Try again, or narrow the time range, filters or search.",
     AccountNotFound: () => "This account is no longer available in this organization.",
-    CatalogUnavailable: () => "The app catalog could not be reached. Try again.",
+    // The wire form carries an agent's next step; people get the dashboards' wording of it.
+    CatalogUnavailable: () => {
+      const { description, recovery } = new CatalogFeedUnavailable();
+      return `${description} ${recovery.action}`;
+    },
     FeedbackUnavailable: () => "Feedback could not be sent. Try again.",
     FeedbackDisabled: ({ message }) => message,
     HttpClientError: () =>

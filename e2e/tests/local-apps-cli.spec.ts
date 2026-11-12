@@ -15,19 +15,6 @@ import { appsVersion, declaredApps } from "../support/apps-release.ts";
 import { localEntryCommand } from "../support/local-entry.ts";
 import { throughPipe } from "../support/pipe-readers.ts";
 
-const Catalogs = Schema.fromJsonString(
-  Schema.Struct({
-    catalogs: Schema.Array(
-      Schema.Struct({
-        app: Schema.Struct({ slug: Schema.String }),
-        skills: Schema.Array(Schema.Struct({ name: Schema.String })),
-      }),
-    ),
-  }),
-);
-const Document = Schema.fromJsonString(
-  Schema.Struct({ content: Schema.String, files: Schema.Array(Schema.String) }),
-);
 const Created = Schema.fromJsonString(Schema.Struct({ id: Schema.String }));
 const Release = Schema.fromJsonString(Schema.Struct({ version: Schema.String }));
 /** A failed command's stdout when a program reads it: the error as the CLI describes it. */
@@ -147,73 +134,11 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         yield* evidence.json("signed-out.json", signedOut);
         expect(signedOut.code).toBe(1);
         expect(signedOut.stderr).toContain(
-          "run executor apps login --host https://api.executor.sh and pass the same --host",
+          "Run executor apps login, which signs in to hosted Executor and makes later commands use it, or executor apps login --host <origin> for another host.",
         );
         expect(signedOut.stderr).toContain(
-          "Without --host or EXECUTOR_HOST, commands use the local background Executor; for a local server at --host, set EXECUTOR_API_KEY to its API key.",
+          "Commands use --host, then EXECUTOR_HOST, then the host you signed in to last, then the local background Executor; for a local server at --host, set EXECUTOR_API_KEY to its API key.",
         );
-
-        const listed = yield* run(["skills", "--host", origin], true);
-        yield* evidence.json("skills-list.json", listed);
-        expect(listed.code, listed.stderr).toBe(0);
-        const catalogs = yield* Schema.decodeUnknownEffect(Catalogs)(listed.stdout);
-        // The list includes the two skills read below; which others the app ships is not this
-        // scenario's subject (deferred-server-paths holds the full published list).
-        expect(
-          catalogs.catalogs
-            .find((catalog) => catalog.app.slug === "executor")
-            ?.skills.map((skill) => skill.name),
-        ).toEqual(expect.arrayContaining(["app-authoring", "executor"]));
-
-        // Agents read the entry skill first; it links to the authoring guide.
-        const entry = yield* run(
-          ["skills", "--host", origin, "--app", "executor", "--name", "executor"],
-          true,
-        );
-        expect(entry.code, entry.stderr).toBe(0);
-        const entryDocument = yield* Schema.decodeUnknownEffect(Document)(entry.stdout);
-        expect(entryDocument.content).toContain("# Executor");
-        expect(entryDocument.content).toContain("`app-authoring`");
-        expect(entryDocument.files).toContain("feedback.md");
-
-        const guide = yield* run(
-          ["skills", "--host", origin, "--app", "executor", "--name", "app-authoring"],
-          true,
-        );
-        expect(guide.code, guide.stderr).toBe(0);
-        const document = yield* Schema.decodeUnknownEffect(Document)(guide.stdout);
-        expect(document.content).toContain("# Build an Executor app");
-        expect(document.files).toContain("ui.md");
-
-        const topic = yield* run(
-          [
-            "skills",
-            "--host",
-            origin,
-            "--app",
-            "executor",
-            "--name",
-            "app-authoring",
-            "--file",
-            "ui.md",
-          ],
-          true,
-        );
-        expect(topic.code, topic.stderr).toBe(0);
-        expect((yield* Schema.decodeUnknownEffect(Document)(topic.stdout)).content).toContain(
-          "withOptimisticUpdate",
-        );
-
-        const missingName = yield* run(["skills", "--host", origin, "--file", "ui.md"], true);
-        expect(missingName.code).toBe(1);
-        expect(missingName.stderr).toContain("Pass --name with --file.");
-
-        const unknownApp = yield* run(
-          ["skills", "--host", origin, "--app", "missing-app-slug"],
-          true,
-        );
-        expect(unknownApp.code).toBe(1);
-        expect(unknownApp.stderr).toContain("No visible app has slug or ID missing-app-slug.");
 
         // A source directory is read recursively, without dependency or Git folders.
         const source = yield* fs.makeTempDirectoryScoped({ prefix: "executor-apps-source-" });

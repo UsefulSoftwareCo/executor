@@ -10,7 +10,11 @@ import { Actors } from "./actors.ts";
 import { App, Resource } from "./contracts.ts";
 import type { Response } from "./platform.ts";
 import { appsManifest } from "./apps-release.ts";
-import { removeAppWhenStopped } from "./webhook-sources.ts";
+import {
+  removeAppWhenStopped,
+  settleWebhookSubscriptions,
+  webhookSubscriptions,
+} from "./webhook-sources.ts";
 import { connectionsPath, requirementPath, type LinkScope } from "./app-accounts.ts";
 
 /**
@@ -52,6 +56,8 @@ export const Failure = Schema.Struct({
   reason: Schema.optional(Schema.String),
 });
 const Access = Schema.Struct({ revision: Schema.String });
+const Subscription = Schema.Struct({ id: Schema.String, status: Schema.String });
+const Listed = Schema.Struct({ id: Schema.String });
 const Viewer = Schema.Struct({ userId: Schema.String });
 const Directory = Schema.Struct({
   members: Schema.Array(Schema.Struct({ id: Schema.String, userId: Schema.String })),
@@ -83,8 +89,8 @@ export const refused = (response: Response, status: number, tag: string) =>
   });
 
 /**
- * Deploy `files` as a new app everyone in the organization may use. Removing it on cleanup waits
- * for its webhooks to stop and deletes the app's links, so the accounts saved through
+ * Deploy `files` as a new app everyone in the organization may use. Removing it on cleanup unlinks
+ * its accounts, removes its webhooks and waits for them to stop, so the accounts saved through
  * `connect` can be deleted after it.
  */
 export const appLinksFixture = (files: ReadonlyArray<{ path: string; content: string }>) =>
@@ -102,9 +108,104 @@ export const appLinksFixture = (files: ReadonlyArray<{ path: string; content: st
     const saved: { actor: Session; id: string }[] = [];
     const groups: string[] = [];
     const others: string[] = [];
+    /** User links `connect` made to the fixture's app, unlinked on cleanup. */
+    const userLinks: { actor: Session; requirement: string; account: string }[] = [];
+    /** Each actor's session by user ID, filled in once the fixture has read them. */
+    const sessions = new Map<string, Session>();
+    /**
+     * Release the app's webhooks the way a person does: unlink its accounts, see each webhook
+     * marked disabled or stopped, and confirm the removal of the disabled ones.
+     *
+     * The order is deterministic; do not reorder or shorten it. Unlinking the last link of an
+     * account makes its webhook source `removing`, and only that source's removal pass changes
+     * its subscriptions from then on: no pass sets up a webhook again, as one does after a person
+     * removes a webhook of a source that is still linked. That pass removes each live subscription
+     * once, in one transaction for a manual one, which it leaves `disabled`; one Executor
+     * registers is unregistered and `stopped`, or `disabled` when its removal is refused. The pass
+     * then waits out its retry delay, at least 30 seconds, before it touches them again. So once
+     * every subscription is `disabled` or `stopped`, confirming the disabled ones cannot race the
+     * pass. Removing or confirming while the pass is still running can: the product then answers
+     * `WebhookConflict`, and the subscription stays disabled and keeps the app.
+     *
+     * An account linked more than once is unlinked in several requests; one landing while the pass
+     * runs makes it run again at once, which can touch a disabled subscription again.
+     */
+    const releaseWebhooks = (appPath: string) =>
+      Effect.gen(function* () {
+        // A scenario may have removed the app itself; then nothing of it is left to release.
+        const apps = yield* api.request(actors.owner, "GET", `${prefix}/apps`);
+        expect(apps.status, JSON.stringify(apps.body)).toBe(200);
+        const id = appPath.slice(appPath.lastIndexOf("/") + 1);
+        if (!(yield* body(Schema.Array(Listed), apps)).some((item) => item.id === id)) return;
+        const listed = yield* api.request(actors.owner, "GET", `${appPath}/accounts/app`);
+        expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+        for (const item of yield* body(Schema.Array(AppLink), listed)) {
+          const unlinked = yield* api.request(
+            actors.owner,
+            "DELETE",
+            `${requirementPath(appPath, "app", item.requirement)}/${encodeURIComponent(item.account.id)}`,
+          );
+          expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
+        }
+        // A scenario may have unlinked one already, or deleted its account.
+        if (appPath === path)
+          for (const item of userLinks) {
+            const unlinked = yield* api.request(
+              item.actor,
+              "DELETE",
+              `${requirementPath(appPath, "user", item.requirement)}/${encodeURIComponent(item.account)}`,
+            );
+            if (unlinked.status !== 200) {
+              expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(404);
+              expect((yield* body(Failure, unlinked))._tag).toBe("AccountNotFound");
+            }
+          }
+        // Each actor lists the webhooks they may see: a member's own are theirs to confirm, an
+        // app-account webhook a manager's. One who has left the organization is refused, and one
+        // whose user a scenario deleted has no session.
+        const confirmed = new Set<string>();
+        const visible: Session[] = [];
+        for (const actor of [actors.owner, actors.admin, actors.member]) {
+          const read = yield* api.request(actor, "GET", `${appPath}/webhooks`);
+          if (read.status === 403 || read.status === 401) {
+            expect((yield* body(Failure, read))._tag, JSON.stringify(read.body)).toBe(
+              read.status === 403 ? "OrganizationForbidden" : "Unauthorized",
+            );
+            continue;
+          }
+          expect(read.status, JSON.stringify(read.body)).toBe(200);
+          visible.push(actor);
+          // Unlinking removes each webhook: a manual one is disabled until a person confirms that
+          // it was removed at the provider, one Executor registers stops, or is disabled when its
+          // removal is refused. Any other state fails the scenario once the wait's bound passes.
+          const settled = yield* settleWebhookSubscriptions(actor, appPath, (rows) =>
+            rows.every((row) => row.status === "disabled" || row.status === "stopped"),
+          );
+          for (const row of settled) {
+            if (row.status !== "disabled" || confirmed.has(row.id)) continue;
+            confirmed.add(row.id);
+            const as = (row.actor === null ? undefined : sessions.get(row.actor)) ?? actor;
+            const removal = yield* api.request(
+              as,
+              "POST",
+              `${appPath}/webhooks/${row.id}/confirm-removal`,
+            );
+            expect(removal.status, JSON.stringify(removal.body)).toBe(200);
+            expect(yield* body(Subscription, removal)).toEqual({ id: row.id, status: "stopped" });
+          }
+        }
+        // Every webhook the app had has now stopped.
+        for (const actor of visible)
+          expect(
+            (yield* webhookSubscriptions(actor, appPath)).filter((row) => row.status !== "stopped"),
+          ).toEqual([]);
+      });
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
-        for (const other of [path, ...others]) yield* removeAppWhenStopped(actors.owner, other);
+        for (const other of [path, ...others]) {
+          yield* releaseWebhooks(other);
+          yield* removeAppWhenStopped(actors.owner, other);
+        }
         for (const item of saved)
           yield* api.request(item.actor, "DELETE", `${prefix}/accounts/${item.id}`);
         for (const group of groups) {
@@ -169,6 +270,7 @@ export const appLinksFixture = (files: ReadonlyArray<{ path: string; content: st
         expect(response.status, JSON.stringify(response.body)).toBe(200);
         const account = (yield* body(Resource, response)).id;
         saved.push({ actor, id: account });
+        if (scope === "user") userLinks.push({ actor, requirement, account });
         return account;
       });
     const appLinkPath = (requirement: string, account: string) =>
@@ -203,6 +305,7 @@ export const appLinksFixture = (files: ReadonlyArray<{ path: string; content: st
     const [owner, admin, member] = userIds;
     if (owner === undefined || admin === undefined || member === undefined)
       return yield* Effect.die(new Error("Missing viewers"));
+    sessions.set(owner, actors.owner).set(admin, actors.admin).set(member, actors.member);
     /** Create a group of these members, removed on cleanup. */
     const group = (members: ReadonlyArray<string>) =>
       Effect.gen(function* () {

@@ -1,5 +1,5 @@
 /** Network adapter for the official app feed: an index of vetted apps and each app's source. */
-import { Effect, Option, Schema } from "effect";
+import { Effect, Exit, Option, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { isTextFile } from "@executor-js/sdk";
 import {
@@ -43,9 +43,16 @@ const resolveIcons = (icons: readonly CatalogIcon[], base: string) =>
     return src === undefined ? [] : [{ ...icon, src }];
   });
 
+/** The index's apps as last read, with the validator that lets the feed confirm them unchanged. */
+interface KeptIndex {
+  readonly etag: string;
+  readonly entries: readonly CatalogEntry[];
+}
+
 /**
  * Read the feed at `feedUrl`, its `index.json`. Redirects are not followed. Listing reads only the
- * index. Preparing reads only the chosen app's source document, `apps/<id>.json` beside the index:
+ * index, and asks the feed whether the index changed since the last read: an unchanged index is
+ * not downloaded or decoded again. Listings that start while one is reading share its read. Preparing reads only the chosen app's source document, `apps/<id>.json` beside the index:
  * the publisher writes every listed app there and deletes the documents of apps it delists, so the
  * document exists exactly when the entry is listed. Reading the whole index to find one entry cost
  * seconds on every install.
@@ -65,16 +72,61 @@ export const catalogSource = (client: HttpClient.HttpClient, feedUrl: string): C
       Effect.timeout("30 seconds"),
       Effect.mapError(() => new CatalogUnavailable()),
     );
-  return {
-    list: read(feedUrl, CatalogFeed).pipe(
-      Effect.flatMap(Effect.fromOption),
-      Effect.mapError(() => new CatalogUnavailable()),
-      Effect.map((feed) =>
-        feed.apps.map(({ source: _source, ...entry }) =>
-          CatalogEntry.make({ ...entry, icons: resolveIcons(entry.icons, feedUrl) }),
-        ),
+  let kept: KeptIndex | undefined;
+  const readIndex = Effect.gen(function* () {
+    const previous = kept;
+    // Blocked egress usually never answers, and a person waits on this in onboarding, so the feed
+    // has 10 seconds to start answering. The transfer and decoding share the 30 seconds below.
+    const response = yield* client
+      .get(
+        feedUrl,
+        previous === undefined ? undefined : { headers: { "if-none-match": previous.etag } },
+      )
+      .pipe(Effect.timeout("10 seconds"));
+    if (response.status === 304 && previous !== undefined) return previous.entries;
+    if (response.status !== 200) return yield* new CatalogUnavailable();
+    const feed = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(CatalogFeed))(
+      yield* response.text,
+    );
+    const entries = feed.apps.map(({ source: _source, ...entry }) =>
+      CatalogEntry.make({ ...entry, icons: resolveIcons(entry.icons, feedUrl) }),
+    );
+    const etag = response.headers["etag"];
+    kept = etag === undefined ? undefined : { etag, entries };
+    return entries;
+  }).pipe(
+    Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+    Effect.timeout("30 seconds"),
+    Effect.mapError(() => new CatalogUnavailable()),
+  );
+  // Settled through a native promise, so on Workers each waiting request resumes in its own I/O
+  // context (see the SDK's Handoff). An interrupted read settles with nothing, and its waiters read.
+  let reading:
+    | Promise<Exit.Exit<readonly CatalogEntry[], CatalogUnavailable> | undefined>
+    | undefined;
+  const list: Effect.Effect<readonly CatalogEntry[], CatalogUnavailable> = Effect.suspend(() => {
+    const shared = reading;
+    if (shared !== undefined)
+      return Effect.promise(() => shared).pipe(
+        Effect.flatMap((exit) => (exit === undefined ? list : exit)),
+      );
+    let settle: (
+      exit: Exit.Exit<readonly CatalogEntry[], CatalogUnavailable> | undefined,
+    ) => void = () => undefined;
+    reading = new Promise((resolve) => {
+      settle = resolve;
+    });
+    return readIndex.pipe(
+      Effect.onExit((exit) =>
+        Effect.sync(() => {
+          reading = undefined;
+          settle(Exit.hasInterrupts(exit) ? undefined : exit);
+        }),
       ),
-    ),
+    );
+  });
+  return {
+    list,
     prepare: (id) =>
       Effect.gen(function* () {
         // Feed entry ids are never URLs, so one is refused without reading the feed.
@@ -104,8 +156,5 @@ export const catalogSource = (client: HttpClient.HttpClient, feedUrl: string): C
   };
 };
 
-/** A host without a feed lists no feed apps. */
-export const emptySource: CatalogSource = {
-  list: Effect.succeed([]),
-  prepare: (id) => Effect.fail(entryMissing(id)),
-};
+/** Refuse an install when the catalog is off: no entry is listed, so none can be prepared. */
+export const turnedOffPrepare = (id: string) => Effect.fail(entryMissing(id));

@@ -24,6 +24,7 @@ import {
   WebhookNotFound,
   WebhookConflict,
   WebhookFailed,
+  type UnremovableWebhooks,
 } from "../contracts/webhooks.ts";
 import {
   AppId,
@@ -1014,8 +1015,75 @@ export const makeWebhooks = (
         Effect.withSpan("sdk.webhooks.deliver"),
       ),
   };
+  /** A registration saved with accounts that do not include its source; see `UnremovableWebhooks`. */
+  const lacksSource = (row: typeof StoredWebhook.Type) =>
+    row.registeredAccounts !== null &&
+    !selectedIds(row.registeredAccounts).includes(row.sourceAccount);
+  const unremovable: UnremovableWebhooks = {
+    list: query(() =>
+      db.findMany("webhooks", {
+        where: (b) =>
+          b.and(
+            b("status", "in", ["pending", "stopping"]),
+            b("registeredAccounts", "is not", null),
+          ),
+        orderBy: ["id", "asc"],
+      }),
+    ).pipe(
+      Effect.flatMap((rows) =>
+        Effect.forEach(rows, (row) =>
+          Schema.decodeUnknownEffect(StoredWebhook)(row).pipe(
+            Effect.mapError(() => new StorageError()),
+          ),
+        ),
+      ),
+      Effect.map((rows) =>
+        rows.filter(lacksSource).map((row) => ({ id: row.id, owner: row.owner })),
+      ),
+    ),
+    disable: (subscription, apply) =>
+      transaction(db, () =>
+        Effect.gen(function* () {
+          const found = yield* query(() =>
+            db.findFirst("webhooks", { where: (b) => b("id", "=", subscription) }),
+          );
+          if (found === null) return "absent" as const;
+          const row = yield* Schema.decodeUnknownEffect(StoredWebhook)(found).pipe(
+            Effect.mapError(() => new StorageError()),
+          );
+          if (!lacksSource(row)) return "unchanged" as const;
+          if (row.status === "pending") return "registering" as const;
+          if (row.status !== "stopping") return "unchanged" as const;
+          if (row.leaseUntil.getTime() > (yield* Clock.currentTimeMillis)) return "busy" as const;
+          if (!apply) return "would_disable" as const;
+          // As removal does when the product refuses the registration's accounts: the subscription
+          // waits for a person to remove it at the provider, keeping its registration and the
+          // accounts it depends on until they confirm (`confirmRemoval`).
+          const revision = yield* next;
+          yield* query(() =>
+            db.updateMany("webhooks", {
+              where: (b) =>
+                b.and(
+                  b("id", "=", row.id),
+                  b("revision", "=", row.revision),
+                  b("status", "=", "stopping"),
+                ),
+              set: { status: "disabled", failure: null, revision, leaseUntil: new Date(0) },
+            }),
+          );
+          // Removing its app or owner meanwhile deletes it.
+          return yield* read({ app: row.app, subscription: row.id }).pipe(
+            Effect.map((current) =>
+              current.revision === revision ? ("disabled" as const) : ("conflict" as const),
+            ),
+            Effect.catchTag("WebhookNotFound", () => Effect.succeed("absent" as const)),
+          );
+        }),
+      ),
+  };
   return {
     webhooks,
+    unremovable,
     /** Reconciliation creates and removes upstream registrations from the current definitions. */
     liveDefinitions: (state: InvocationSnapshot) => definitions(state, true),
     /** Create a source's managed subscription for the activation it claimed; see `create`. */

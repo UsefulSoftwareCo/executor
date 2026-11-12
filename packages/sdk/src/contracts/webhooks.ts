@@ -267,14 +267,57 @@ export const UnlinkWebhookSource = Schema.Struct({ ...app, account: AccountId })
 export const WebhookSourceHost = Symbol.for("executor/WebhookSourceHost");
 export interface WebhookSourceDispatcher {
   /**
-   * Reconcile up to `limit` webhook sources, `concurrency` at a time: saved intent first, oldest
-   * source first, then due retries. Succeeds with `true` when the batch was full of saved intent,
-   * so more may be waiting and the host should run another pass now instead of at its next wake.
+   * Reconcile up to `limit` webhook sources: saved intent first, then due retries. Succeeds with
+   * `true` when the batch was full of saved intent, so more may be waiting and the host should run
+   * another pass now instead of at its next wake.
    */
-  readonly tick: (options: {
-    readonly limit: number;
-    readonly concurrency: number;
-  }) => Effect.Effect<boolean, StorageError>;
+  readonly tick: (limit: number) => Effect.Effect<boolean, StorageError>;
+}
+
+/**
+ * Host-only, for data step `11_unremovable_webhook_registrations`: subscriptions whose saved
+ * registration lacks their own source account. Every apps framework refuses a webhook command whose
+ * source is not among its accounts, before any of the app's code runs, so such a registration was
+ * never made at the provider by the attempt that saved it, and removing it with those accounts is
+ * refused on every attempt. Before #3915 a registration could save them when the source lost its
+ * link while it registered.
+ */
+export const UnremovableWebhooksHost = Symbol.for("executor/UnremovableWebhooksHost");
+/**
+ * What the step did with one subscription, or would do in a report:
+ * - `disabled` / `would_disable`: a stopping subscription with such a registration now waits, or
+ *   would wait, as `disabled` for a person to remove it at the provider and confirm.
+ * - `registering`: a pending subscription with such a registration. It is left as it is: the next
+ *   registration replaces it once the source is linked again.
+ * - `unchanged`: the subscription no longer has such a registration or is no longer stopping.
+ * - `busy`: an attempt holds its lease; a later pass looks again.
+ * - `conflict`: it changed while the step wrote; a later pass looks again.
+ * - `absent`: it was removed with its app or owner.
+ */
+export const UnremovableWebhookOutcome = Schema.Literals([
+  "disabled",
+  "would_disable",
+  "registering",
+  "unchanged",
+  "busy",
+  "conflict",
+  "absent",
+]);
+export type UnremovableWebhookOutcome = typeof UnremovableWebhookOutcome.Type;
+export interface UnremovableWebhooks {
+  /** Every pending or stopping subscription whose saved registration lacks its source, in ID order. */
+  readonly list: Effect.Effect<
+    ReadonlyArray<{ readonly id: WebhookId; readonly owner: OwnerId }>,
+    StorageError
+  >;
+  /**
+   * Read the subscription again and, when it is still stopping with such a registration and no
+   * attempt holds it, disable it if `apply` is set. Writes nothing otherwise.
+   */
+  readonly disable: (
+    subscription: WebhookId,
+    apply: boolean,
+  ) => Effect.Effect<UnremovableWebhookOutcome, StorageError>;
 }
 /** Host-created delivery envelope; public callback senders supply only the enclosed request. */
 export const DeliverWebhook = Schema.Struct({ ...subscription, request: WebhookRequestData });

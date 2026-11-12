@@ -39,7 +39,7 @@ const health = HttpApiBuilder.group(HostedApi, "health", (handlers) =>
 const catalog = HttpApiBuilder.group(HostedApi, "catalog", (handlers) =>
   handlers.handle("list", ({ query }) =>
     Effect.flatMap(HostedCatalog, (catalog) => catalog.list).pipe(
-      Effect.map((entries) => filterCatalog(entries, query)),
+      Effect.map((listing) => ({ ...listing, apps: filterCatalog(listing.apps, query) })),
     ),
   ),
 );

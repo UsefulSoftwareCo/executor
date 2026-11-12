@@ -22,6 +22,7 @@ import { Collector, SpanQuery } from "./contracts.ts";
 import { RecordingFocus } from "./recording-focus.ts";
 import { axiomSpans } from "./axiom.ts";
 import { scopeOf, type Scope } from "./scope.ts";
+import { stepFailureText } from "./failure-text.ts";
 
 /** Public request measurements contain no request bodies, cookies or credentials. */
 export interface RequestEvidence {
@@ -401,7 +402,7 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
       const started = yield* Clock.currentTimeMillis;
       const attachments: (typeof EvidenceEntries.Type)[number]["attachments"][number][] = [];
       const annotations: { type: string; description: string }[] = [];
-      const steps: { name: string; durationMs: number; status: string }[] = [];
+      const steps: { name: string; durationMs: number; status: string; error?: string }[] = [];
       const requests = yield* Ref.make<ReadonlyArray<RequestEvidence>>([]);
       const spans = yield* Ref.make<ReadonlyArray<ClientSpan>>([]);
       const browserTraces = new Set<string>();
@@ -768,11 +769,18 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
               Effect.onExit((exit) =>
                 Effect.gen(function* () {
                   const end = yield* Clock.currentTimeMillis;
-                  steps.push({
-                    name,
-                    durationMs: end - start,
-                    status: Exit.isSuccess(exit) ? "passed" : "failed",
-                  });
+                  steps.push(
+                    Exit.isSuccess(exit)
+                      ? { name, durationMs: end - start, status: "passed" }
+                      : Cause.hasInterruptsOnly(exit.cause)
+                        ? { name, durationMs: end - start, status: "interrupted" }
+                        : {
+                            name,
+                            durationMs: end - start,
+                            status: "failed",
+                            error: stepFailureText(exit.cause),
+                          },
+                  );
                 }),
               ),
               Effect.withSpan(name),

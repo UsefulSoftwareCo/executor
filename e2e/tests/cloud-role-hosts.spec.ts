@@ -1,6 +1,6 @@
 /**
  * Cloud's role hosts (`notes/cloud-domains.md`): `app.` serves the dashboard and sign-in, `mcp.`
- * MCP and its discovery, `api.` the API, its discovery and app webhooks, and the edge (standing in
+ * MCP and its discovery, `api.` the API, its discovery, MCP discovery naming `mcp.` and app webhooks, and the edge (standing in
  * for `executor.sh`) the issuer's metadata and provider returns. The deployment origin keeps
  * everything but browser pages. Each grant is for one resource and works at every origin of that
  * resource's kind. Every request's server span names the host it arrived at and that host's role.
@@ -89,6 +89,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud role hosts", (it) => {
           [origin, "/.well-known/oauth-protected-resource/mcp", `${origin}/mcp`],
           [apiHost, "/.well-known/oauth-protected-resource/api", `${apiHost}/api`],
           [origin, "/.well-known/oauth-protected-resource/api", `${origin}/api`],
+          // `api.` is not an MCP origin, so its MCP discovery names the canonical one on `mcp.`:
+          // the host the CLI signs in to says where its MCP endpoint is.
+          [apiHost, "/.well-known/oauth-protected-resource/mcp", `${mcp}/mcp`],
         ] as const) {
           const response = yield* rawRequest(`${at}${path}`);
           expect(response.status, `${at}${path}`).toBe(200);
@@ -146,7 +149,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud role hosts", (it) => {
           [mcp, hook, { method: "POST", body: "{}" }],
           [apiHost, "/mcp", mcpPost(key)],
           [apiHost, `/org/${actors.organization.slug}/mcp`, mcpPost(key)],
-          [apiHost, "/.well-known/oauth-protected-resource/mcp"],
+          [apiHost, "/.well-known/oauth-protected-resource"],
           [apiHost, "/api/auth/get-session"],
           [apiHost, "/api/entry"],
           [apiHost, "/api/oauth/callback"],

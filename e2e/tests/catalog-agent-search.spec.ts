@@ -21,6 +21,11 @@ import { officialApps } from "../support/public-catalogs.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Catalog = Schema.Array(Schema.Struct({ id: Schema.String, package: Schema.String }));
+/** The dashboards' session listing: the same entries, with the feed's state beside them. */
+const SessionCatalog = Schema.Struct({
+  apps: Catalog,
+  feed: Schema.Struct({ status: Schema.Literal("listed") }),
+});
 const Recovery = Schema.Struct({ action: Schema.String, instructions: Schema.String });
 const Rejected = Schema.Struct({
   _tag: Schema.Literal("CatalogImportFailed"),
@@ -98,9 +103,9 @@ layer(HostedLive, { excludeTestServices: true })("Catalog agent search", (it) =>
         // The session catalog the dashboard reads takes the same filters.
         expect(
           (yield* body(
-            Catalog,
+            SessionCatalog,
             yield* api.request(actors.owner, "GET", "/api/catalog?search=tracker"),
-          )).map((entry) => entry.id),
+          )).apps.map((entry) => entry.id),
         ).toEqual([officialApps.tracker.id]);
 
         // A server URL is not a catalog entry: install says so and names the custom MCP import,

@@ -1,5 +1,6 @@
 /** Scenario lifetimes are shared by committed tests and interactive CLI sessions. */
-import { Effect, FileSystem, Redacted, Schema } from "effect";
+import { Effect, FileSystem, Schema } from "effect";
+import { secret } from "../support/failure-text.ts";
 import { randomBytes } from "node:crypto";
 import { Target } from "../support/platform.ts";
 import { startManagedServer } from "../support/managed-server.ts";
@@ -39,7 +40,7 @@ export const prepareScenario = (
       directory,
       evidenceDirectory: base.evidenceDirectory ?? base.directory,
       metadata: { ...base.metadata, origin: "http://127.0.0.1:0" },
-      apiKey: Redacted.make(randomBytes(32).toString("hex")),
+      apiKey: secret(randomBytes(32).toString("hex")),
       scenarioId: id,
       scenarioLabel: label,
     });

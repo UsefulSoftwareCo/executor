@@ -1,17 +1,22 @@
 import {
   GrantId,
   GrantForbidden,
-  deliveryRefusal,
+  McpWhoami,
   grantAuthorization,
+  grantRefusal,
   restrictMcpBackend,
   requestedMcpAddress,
   targetedLinks,
+  unrecordedRefusal,
   untargetedLinkRefusal,
+  type ApprovalMode,
   type Grant,
+  type McpAddress,
 } from "@executor-js/mcp-auth";
+import { Connection } from "@executor-js/mcp-auth/connections";
 import { localBearer, localRequest } from "./auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";
-import { LocalMcpUnauthorized, type LocalMcpOAuth } from "./mcp-oauth.ts";
+import { LocalMcpAuthUnavailable, LocalMcpUnauthorized, type LocalMcpOAuth } from "./mcp-oauth.ts";
 /** Local access and documentation I/O for the shared MCP implementation. */
 import { makeMcp, refusedMcpRequest, type McpBackend, type McpLimits } from "@executor-js/mcp";
 import { annotateSkillRead, executorIntro } from "@executor-js/app-templates/executor";
@@ -25,7 +30,8 @@ import {
 } from "@executor-js/sdk/core";
 import { appVersion, versionRequirementAccounts } from "./app-accounts.ts";
 import type { SqlClient } from "effect/sql";
-import { Context, Effect } from "effect";
+import { Context, Effect, Schema } from "effect";
+import { HttpServerResponse } from "effect/http";
 
 /**
  * Operations as the grant checked them: they run with exactly the accounts their input names.
@@ -157,6 +163,14 @@ export const localMcp = (
         ? Effect.die("MCP request has no authenticated grant")
         : Effect.succeed(grant),
     );
+    const Mode = Context.Reference<ApprovalMode | undefined>("local/McpMode", {
+      defaultValue: () => undefined,
+    });
+    const mode = Effect.flatMap(Mode, (mode) =>
+      mode === undefined
+        ? Effect.die("MCP request has no authenticated approval mode")
+        : Effect.succeed(mode),
+    );
     const host = yield* makeMcp({
       browser: {
         url: (address) =>
@@ -193,42 +207,93 @@ export const localMcp = (
           Effect.flatMap(RequestBackend, (b) => b.unsubscribeEvent(input)),
       },
       caller,
+      mode,
       instructions: executorIntro,
       limits,
       annotateSkillRead,
     });
+    /**
+     * The request's current grant. An OAuth grant serves the approval mode and connection its
+     * record holds, whatever the URL names. The administrative key has no record: it has full
+     * access in the URL's mode and never enters a connection.
+     */
+    const authorized = (authorization: string | undefined, headers: Headers, address: McpAddress) =>
+      Effect.gen(function* () {
+        if (localBearer(config, authorization)) {
+          const refusal = unrecordedRefusal(address);
+          if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
+          return {
+            id: GrantId.make("local-administrator"),
+            policy: { kind: "all" as const },
+            target: { kind: "mcp" as const, mode: address.mode },
+          } satisfies Grant;
+        }
+        const grant = (yield* oauth.authenticate(headers)).grant;
+        const refusal = grantRefusal(grant);
+        if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
+        return grant;
+      });
+    const refusals = {
+      // Clients print a refusal's body after their own prefix, so typed refusals keep their cause.
+      AuthForbidden: refusedMcpRequest,
+      GrantForbidden: refusedMcpRequest,
+      LocalMcpUnauthorized: () => oauth.challenge,
+      LocalMcpAuthUnavailable: refusedMcpRequest,
+    } as const;
     const http = Effect.gen(function* () {
       const request = yield* localRequest(config.port, config.browserOrigin);
       const address = requestedMcpAddress(new URL(request.url, oauth.origin));
       // A malformed URL names no MCP address, so no credential is checked against it.
       if (address === undefined) return oauth.invalidAddress;
-      const current = Effect.gen(function* () {
-        // The administrative key is full access on the plain URL only; it never enters a connection.
-        const grant = localBearer(config, request.headers.authorization)
-          ? {
-              id: GrantId.make("local-administrator"),
-              policy: { kind: "all" as const },
-              target: { kind: "mcp" as const, mode: address.mode },
-            }
-          : (yield* oauth.authenticate(new Headers(request.headers))).grant;
-        const refusal = deliveryRefusal(grant, address);
-        if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
-        return grant;
-      });
+      const current = authorized(
+        request.headers.authorization,
+        new Headers(request.headers),
+        address,
+      );
       const grant = yield* current;
       const backend = localMcpBackend(sql, executor, grant.id, current);
       return yield* host.http.pipe(
         Effect.provideService(RequestBackend, backend),
         Effect.provideService(Caller, grant.id),
+        Effect.provideService(Mode, grant.target.kind === "mcp" ? grant.target.mode : undefined),
       );
-    }).pipe(
-      Effect.catchTags({
-        // Clients print a refusal's body after their own prefix, so typed refusals keep their cause.
-        AuthForbidden: refusedMcpRequest,
-        GrantForbidden: refusedMcpRequest,
-        LocalMcpUnauthorized: () => oauth.challenge,
-        LocalMcpAuthUnavailable: refusedMcpRequest,
-      }),
-    );
-    return { http, approvals: host.approvals };
+    }).pipe(Effect.catchTags(refusals));
+    /** `GET /mcp/whoami`: what the credential reaches, authenticated exactly as `/mcp` is. */
+    const whoami = Effect.gen(function* () {
+      const request = yield* localRequest(config.port, config.browserOrigin);
+      const address = requestedMcpAddress(new URL(request.url, oauth.origin));
+      if (address === undefined) return oauth.invalidAddress;
+      const grant = yield* authorized(
+        request.headers.authorization,
+        new Headers(request.headers),
+        address,
+      );
+      if (grant.target.kind !== "mcp") return yield* new LocalMcpUnauthorized();
+      const target = grant.target;
+      const apps = grant.policy.kind === "tools" ? grant.policy.apps.length : 0;
+      const connection =
+        target.connection === undefined
+          ? undefined
+          : (yield* oauth.connections.list.pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Connection))),
+              Effect.mapError(() => new LocalMcpAuthUnavailable()),
+            )).find((item) => item.id === target.connection);
+      // A connection revoked since authentication grants nothing.
+      if (target.connection !== undefined && connection === undefined)
+        return yield* new LocalMcpUnauthorized();
+      return HttpServerResponse.jsonUnsafe(
+        Schema.encodeSync(McpWhoami)({
+          organization: null,
+          access:
+            connection !== undefined
+              ? { kind: "connection", id: connection.id, name: connection.name, apps }
+              : grant.policy.kind === "tools"
+                ? { kind: "tools", apps }
+                : { kind: "all" },
+          mode: target.mode,
+        }),
+        { headers: { "cache-control": "no-store" } },
+      );
+    }).pipe(Effect.catchTags(refusals));
+    return { http, whoami, approvals: host.approvals };
   });

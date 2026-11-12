@@ -1,6 +1,7 @@
 /** Catalog and onboarding projections, independent of any integration runtime. */
 import { Config, Schema, SchemaGetter, type Effect } from "effect";
 import { ApiError } from "@executor-js/utils/api-error";
+import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { TemplateErrorCode } from "@executor-js/app-templates/contracts";
 import { AppCopyOrigin, SourceFiles } from "@executor-js/sdk";
 import type { HostEgress } from "@executor-js/utils/url-policy";
@@ -157,13 +158,78 @@ Object.defineProperty(CatalogImportFailed.prototype, "message", {
     return `${this.reason} [${this.code}]`;
   },
 });
-/** Remote catalog availability is separate from the local app inventory. */
+/**
+ * What happened, true both for a listing that could not read the feed's index and for an install
+ * that could not read one app's source, in words people and agents share.
+ */
+const unavailableDescription =
+  "This Executor server could not read its app catalog feed just now, so this request to list or add Executor’s official apps did not complete.";
+/**
+ * The next step for an agent, which may read nothing but the error's message: one retry, then the
+ * routes that do not need the feed. Through the Executor app the client appends its own advice to
+ * wait before a bounded retry, which this agrees with. It is raised only while reading the feed,
+ * before anything is installed, so it can say that nothing was added: an install's client cannot
+ * confirm that itself and otherwise advises against repeating the call.
+ */
+const unavailableNextStep =
+  "Nothing was added, and the apps still exist. Try again shortly; if it still fails, add the app from its MCP server URL or build it.";
+/** Who can repair it. The message is the same on every host, so it names both kinds of host. */
+const unavailableRepair =
+  "If it keeps failing on Executor Cloud, contact Executor support; on a self-hosted or local server, whoever runs it should check its EXECUTOR_CATALOG_URL setting, its outbound internet access, and that the feed returns valid catalog data.";
+
+/**
+ * The server could not read its app feed: the request failed, timed out, or the feed answered with
+ * something other than a feed. Executor's own host code observes this, never an app. On the wire it
+ * is `_tag` and `message` only, as it has been since the feed was introduced, so clients holding an
+ * older API document still decode it; an agent may see nothing but the message, so the message
+ * carries the next step. The dashboards read the same failure, with its recovery, as
+ * `CatalogFeedUnavailable`.
+ */
 export const CatalogUnavailable = ApiError.define({
   tag: "CatalogUnavailable",
   status: 502,
-  message: "Executor could not read the app catalog. Try again.",
+  message: `${unavailableDescription} ${unavailableNextStep} ${unavailableRepair}`,
 });
 export type CatalogUnavailable = typeof CatalogUnavailable.Type;
+
+/**
+ * `CatalogUnavailable` as the dashboards' listing carries it in `feed.error`: the same description,
+ * with a title and Try again for the person and the next step in the fix prompt for their agent.
+ */
+export const CatalogFeedUnavailable = UserFacingError.define({
+  tag: "CatalogFeedUnavailable",
+  status: 502,
+  title: "App catalog unavailable",
+  description: unavailableDescription,
+  recovery: {
+    action: `Try again. ${unavailableRepair}`,
+    instructions: `${unavailableNextStep} ${unavailableRepair} Add a remote MCP server through the Executor app's apps.importCustom where you have it, or from the dashboard's Add app, Make your own, From an MCP server. A self-hosted or local server without internet access can set EXECUTOR_CATALOG_URL=off.`,
+  },
+  retryable: true,
+});
+export type CatalogFeedUnavailable = typeof CatalogFeedUnavailable.Type;
+
+/** Why an instance whose operator turned the catalog off lists none of the official apps. */
+export const catalogTurnedOff =
+  "This Executor instance has its app catalog turned off (EXECUTOR_CATALOG_URL=off), so Executor's official apps are not listed. Add a remote MCP server by URL, or build an app.";
+
+/**
+ * The app feed's state in a listing. A feed that is off or could not be read still lists a host's
+ * built-in apps, and says why the official apps are missing.
+ */
+export const CatalogFeedState = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("listed") }),
+  Schema.Struct({ status: Schema.Literal("off"), message: Schema.String }),
+  Schema.Struct({ status: Schema.Literal("unavailable"), error: CatalogFeedUnavailable }),
+]);
+export type CatalogFeedState = typeof CatalogFeedState.Type;
+
+/** A catalog listing: its apps in order, and whether the official app feed contributed to them. */
+export const CatalogListing = Schema.Struct({
+  apps: Schema.Array(CatalogEntry),
+  feed: CatalogFeedState,
+});
+export type CatalogListing = typeof CatalogListing.Type;
 
 /**
  * What the importing host supplies. An import reads URLs a user chose, so it fetches with the
@@ -191,7 +257,8 @@ export interface CatalogSource {
 
 /** Read a catalog and prepare source. The caller owns access checks and installation. */
 export interface Catalog {
-  readonly list: Effect.Effect<readonly CatalogEntry[], CatalogUnavailable>;
+  /** The feed's apps, or why there are none; a feed that cannot be read does not fail it. */
+  readonly list: Effect.Effect<CatalogListing>;
   readonly prepare: (
     input: CatalogImport,
   ) => Effect.Effect<PreparedApp, CatalogImportFailed | CatalogUnavailable>;

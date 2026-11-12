@@ -7,7 +7,8 @@
  * - `app.` (the browser origin) serves the dashboard, sign-in and the dashboard API. MCP and its
  *   resource discovery are not there: `mcp.` serves them.
  * - `mcp.` and `api.` answer only from their own routers, so any other path there is the
- *   router's 404, as for an unknown path anywhere.
+ *   router's 404, as for an unknown path anywhere. `api.` also answers MCP resource discovery,
+ *   naming the canonical MCP resource on `mcp.`, so the host the CLI signs in to names it.
  * - The edge (`executor.sh`) answers only the requests v1 forwards (`servedOnEdge`), from its
  *   own router.
  * - The deployment origin (`v2.executor.sh`) and any other host keep the full product, except

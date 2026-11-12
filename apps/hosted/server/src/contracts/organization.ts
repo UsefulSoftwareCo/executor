@@ -222,7 +222,7 @@ export const HostedOrganization = HttpApiGroup.make("organization")
       .annotate(RequiredAction, "read")
       .annotate(
         OpenApi.Description,
-        "List the app catalog: Executor's official apps, each installed directly with apps.install, which then asks for an account through the app's own providers. The whole catalog has over a thousand entries, so pass search, and limit, to keep the result small. To add a remote MCP server the catalog does not list, use apps.importCustom; for any other service, write an app with the Executor app's app-authoring skill.",
+        "List the app catalog: Executor's official apps, each installed with apps.install. On a self-hosted instance, an unfiltered result holding only the Executor app can mean the catalog is turned off. apps.install then asks for an account through the app's own providers. The whole catalog has over a thousand entries, so pass search, and limit, to keep the result small. To add a remote MCP server the catalog does not list, use apps.importCustom; for any other service, write an app with the Executor app's app-authoring skill.",
       ),
   )
   .add(

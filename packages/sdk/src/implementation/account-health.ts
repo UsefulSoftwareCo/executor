@@ -287,10 +287,14 @@ export const makeAccountHealth = (
         }),
       );
       if (existing !== null && existing.checkedAt.getTime() > startedAt) return;
+      // Matched on its ID, the one row per account and app, so the database arbitrates two first
+      // checks that write at once (`INSERT … ON CONFLICT (id) DO UPDATE`). Matching on the account
+      // and app columns reads first and then inserts, and the second insert fails.
+      const id = `${account.id}:${app.id}`;
       yield* query(() =>
         db.upsert("accountChecks", {
-          where: (b) => b.and(b("account", "=", account.id), b("app", "=", app.id)),
-          create: { id: `${account.id}:${app.id}`, account: account.id, app: app.id, ...state },
+          where: (b) => b("id", "=", id),
+          create: { id, account: account.id, app: app.id, ...state },
           update: state,
         }),
       );

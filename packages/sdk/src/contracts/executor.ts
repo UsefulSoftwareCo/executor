@@ -1,5 +1,10 @@
 import { WorkflowHost, type WorkflowRuntime } from "./workflow-runtime.ts";
-import { WebhookSourceHost, type WebhookSourceDispatcher } from "./webhooks.ts";
+import {
+  UnremovableWebhooksHost,
+  WebhookSourceHost,
+  type UnremovableWebhooks,
+  type WebhookSourceDispatcher,
+} from "./webhooks.ts";
 /** The shared Executor interface and remote client options; projected from ExecutorApi. */
 import { Context, type Effect, type Redacted, type Stream, Schema } from "effect";
 import type { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -450,6 +455,8 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
   readonly [PrefetchHost]: PrefetchHost;
   readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
   readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
+  /** Host-only: data step 11's repair of registrations no removal can finish. */
+  readonly [UnremovableWebhooksHost]: UnremovableWebhooks;
   /** Host-only: the v1 importer's grant import (`notes/v1-import.md`). */
   readonly [OAuthGrantImport]: OAuthGrantImport;
   readonly scheduler: import("./scheduler.ts").ScheduleDispatcher;
@@ -477,6 +484,7 @@ export type PromiseExecutor = Promisify<
     | typeof PrefetchHost
     | typeof SavedOAuthClientsHost
     | typeof OwnerMovesHost
+    | typeof UnremovableWebhooksHost
     | typeof OAuthGrantImport
     | "scheduler"
     | "events"

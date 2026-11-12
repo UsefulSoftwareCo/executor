@@ -59,6 +59,16 @@ and the Bun TypeScript entry points (`src/`). It carries:
   time it peaks at 4-4.7 GB and starts as fast. Rebuilds after an edit and
   deploy builds (`Bundle.build`) do not wait. Drop this part when alchemy
   bounds concurrent first builds itself.
+- **Startup time on upload.** Every Worker script upload (`putWorkerScript`, which covers the
+  pre-create placeholder too, and both `createScriptVersion` calls) logs the startup time
+  Cloudflare measured, `startup_time_ms` from the upload response, with the bundle size, how many
+  uploads this process had in flight and how long the upload took:
+  `Cloudflare Worker startup: <script> startup_time_ms=223 (3.33 MB, 13 uploads in flight, ...)`.
+  A refusal for startup CPU (`ScriptStartupError`, error 10021) keeps its tag and code, and its
+  message names the script, its size and the uploads in flight; Cloudflare's refusal carries no
+  reading of its own. beta.80 decoded `startup_time_ms` and dropped it. Uploads of one bundle
+  were refused at random while about 13 uploaded at once (`notes/cloud-latency.md`), so each
+  reading is kept beside the concurrency. Drop this part when Alchemy reports the startup time.
 - **State store probe.** A `/version` probe of the Cloudflare state store
   that still fails after its retries, or a failed workers.dev subdomain
   lookup, fails the run. beta.80 read either as "no store", and with `--yes`

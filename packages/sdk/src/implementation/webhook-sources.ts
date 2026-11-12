@@ -601,19 +601,15 @@ export const makeWebhookSources = (
           return yield* view({ ...existing, ...fields });
         }),
       ),
-    tick: ({ limit, concurrency }: { readonly limit: number; readonly concurrency: number }) =>
+    tick: (limit: number) =>
       Effect.gen(function* () {
         const time = new Date(yield* now);
         // New saved intent runs immediately, ahead of retries: a backlog of failed or waiting
-        // sources never delays one someone just changed. Every new source has the same
-        // `leaseUntil`, so creation orders them: under a backlog, the oldest runs first.
+        // sources never delays one someone just changed.
         const intent = yield* query(() =>
           db.findMany("webhookSources", {
             where: (b) => b.and(b("status", "=", "pending"), b("lease", "is", null)),
-            orderBy: [
-              ["leaseUntil", "asc"],
-              ["createdAt", "asc"],
-            ],
+            orderBy: ["leaseUntil", "asc"],
             limit,
           }),
         ).pipe(
@@ -682,7 +678,7 @@ export const makeWebhookSources = (
                 Effect.logError("Webhook source reconciliation failed").pipe(Effect.as(false)),
               ),
             ),
-          { concurrency },
+          { concurrency: 4 },
         );
         // A full batch of saved intent may have left more behind. Continue while it makes
         // progress; a batch whose intent all failed waits for the host's next wake.

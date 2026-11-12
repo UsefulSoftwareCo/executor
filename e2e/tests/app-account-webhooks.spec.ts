@@ -897,8 +897,7 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
           },
         ]);
         const { api, actors, path, connect } = fixture;
-        const { setupPath, deploy, pinnedTo, post, deliver, removeAll } = carriedWebhook(fixture);
-        yield* Effect.addFinalizer(() => removeAll.pipe(Effect.orDie));
+        const { setupPath, deploy, pinnedTo, post, deliver } = carriedWebhook(fixture);
         yield* connect(actors.owner, "app", "team", "team-key");
         const [first] = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
           hooks.some((hook) => hook.status === "setup-required"),
@@ -957,8 +956,7 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
           },
         ]);
         const { api, actors, path, connect } = fixture;
-        const { setupPath, deploy, pinnedTo, deliver, removeAll } = carriedWebhook(fixture);
-        yield* Effect.addFinalizer(() => removeAll.pipe(Effect.orDie));
+        const { setupPath, deploy, pinnedTo, deliver } = carriedWebhook(fixture);
         yield* connect(actors.owner, "app", "team", "team-key");
         const [first] = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
           hooks.some((hook) => hook.status === "setup-required"),
@@ -1070,9 +1068,7 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
           { path: "index.ts", content: carriedSource("first", "executor", nested(30)) },
         ]);
         const { api, actors, path, connect } = fixture;
-        const { setupPath, deploy, pinnedTo, deliver, removeAll, redeployReplaces } =
-          carriedWebhook(fixture);
-        yield* Effect.addFinalizer(() => removeAll.pipe(Effect.orDie));
+        const { setupPath, deploy, pinnedTo, deliver, redeployReplaces } = carriedWebhook(fixture);
         yield* connect(actors.owner, "app", "team", "team-key");
         const [first] = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
           hooks.some((hook) => hook.status === "setup-required"),
@@ -1119,9 +1115,7 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
           },
         ]);
         const { api, actors, path, connect } = fixture;
-        const { setupPath, deploy, pinnedTo, deliver, removeAll, redeployReplaces } =
-          carriedWebhook(fixture);
-        yield* Effect.addFinalizer(() => removeAll.pipe(Effect.orDie));
+        const { setupPath, deploy, pinnedTo, deliver, redeployReplaces } = carriedWebhook(fixture);
         yield* connect(actors.owner, "app", "team", "team-key");
         const [first] = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
           hooks.some((hook) => hook.status === "setup-required"),
@@ -1179,9 +1173,7 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
           },
         ]);
         const { api, actors, path, connect } = fixture;
-        const { setupPath, deploy, pinnedTo, deliver, removeAll, redeployReplaces } =
-          carriedWebhook(fixture);
-        yield* Effect.addFinalizer(() => removeAll.pipe(Effect.orDie));
+        const { setupPath, deploy, pinnedTo, deliver, redeployReplaces } = carriedWebhook(fixture);
         yield* connect(actors.owner, "app", "team", "team-key");
         const [first] = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
           hooks.some((hook) => hook.status === "setup-required"),
@@ -1216,8 +1208,7 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
           { path: "index.ts", content: carriedSource("first", "executor") },
         ]);
         const { actors, path, connect } = fixture;
-        const { removeAll, redeployReplaces } = carriedWebhook(fixture);
-        yield* Effect.addFinalizer(() => removeAll.pipe(Effect.orDie));
+        const { redeployReplaces } = carriedWebhook(fixture);
         yield* connect(actors.owner, "app", "team", "team-key");
         yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
           hooks.some((hook) => hook.status === "setup-required"),
@@ -1254,21 +1245,15 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
         const { api, actors, path, connect } = fixture;
         const { setupPath, subscriptions, deploy, post, deliver, activate } =
           carriedWebhook(fixture);
-        // Registered subscriptions stop on removal and manual ones once it is confirmed, which
-        // the app's removal waits for.
+        // The providers answer again before the fixture's cleanup unlinks the account and removes
+        // the webhooks.
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             for (const provider of [before, after]) {
               yield* provider.recover;
               yield* provider.fail;
             }
-            for (const row of yield* subscriptions)
-              if (row.status !== "disabled")
-                yield* api.request(actors.owner, "DELETE", `${path}/webhooks/${row.id}`);
-            for (const row of yield* subscriptions)
-              if (row.status === "disabled")
-                yield* api.request(actors.owner, "POST", `${setupPath(row.id)}/confirm-removal`);
-          }).pipe(Effect.orDie),
+          }),
         );
         yield* connect(actors.owner, "app", "team", "team-key");
         const [first] = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>

@@ -1,4 +1,10 @@
-import { Grant, GrantId, type ApprovalMode, type ResourceOrigins } from "@executor-js/mcp-auth";
+import {
+  Grant,
+  GrantId,
+  type ApprovalMode,
+  type McpWhoami,
+  type ResourceOrigins,
+} from "@executor-js/mcp-auth";
 import type {
   Connection,
   ConnectionId,
@@ -171,6 +177,13 @@ export class McpAuthentication extends Context.Service<
       McpAccess,
       McpUnauthorized | McpApprovalForbidden | AuthenticationUnavailable
     >;
+    /**
+     * What authenticated access reaches, for `/mcp/whoami`: its organization, apps and approval
+     * mode. A connection that is gone since authentication is unauthorized.
+     */
+    readonly describe: (
+      access: McpAccess,
+    ) => Effect.Effect<McpWhoami, McpUnauthorized | AuthenticationUnavailable>;
     readonly metadata: Effect.Effect<unknown, AuthenticationUnavailable>;
     readonly connections: McpConnectionStore;
   }
