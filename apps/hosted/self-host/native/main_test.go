@@ -467,3 +467,190 @@ func TestMemoryPressureIsSixtyPercentOfTheCgroupLimit(t *testing.T) {
 		}
 	}
 }
+
+// syncBuffer collects the announcer's log while the test reads it.
+type syncBuffer struct {
+	mutex sync.Mutex
+	text  strings.Builder
+}
+
+func (b *syncBuffer) Write(data []byte) (int, error) {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	return b.text.Write(data)
+}
+
+func (b *syncBuffer) String() string {
+	b.mutex.Lock()
+	defer b.mutex.Unlock()
+	return b.text.String()
+}
+
+// The product opens at boot without a visitor. Its socket appears only once workerd listens, and
+// /health fails while the database initializes; the log says it is starting, that it is still
+// starting while it waits, and then where it is ready.
+func TestAnnounceReadyOpensTheProductAtBootAndSaysWhenItIsReady(t *testing.T) {
+	socket := socketPath(t)
+	var probes atomic.Int32
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		listener, err := net.Listen("unix", socket)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		t.Cleanup(func() { listener.Close() })
+		http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/health" {
+				t.Errorf("announcer requested %s", r.URL.Path)
+			}
+			time.Sleep(40 * time.Millisecond)
+			if probes.Add(1) < 3 {
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}))
+	}()
+
+	var log syncBuffer
+	opened := make(chan struct{})
+	returned := make(chan struct{})
+	go func() {
+		announceReady(socket, "https://executor.example.test:4443", 30*time.Millisecond, 5*time.Millisecond, &log, opened, make(chan struct{}))
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("announcer did not see the product ready; log:\n%s", log.String())
+	}
+
+	text := log.String()
+	for _, want := range []string{"Executor is starting.", "Executor is still starting (", "Executor is ready at https://executor.example.test:4443 (started in "} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("log lacks %q:\n%s", want, text)
+		}
+	}
+	if probes.Load() != 3 {
+		t.Fatalf("announcer asked /health %d times, want 3", probes.Load())
+	}
+	if strings.Index(text, "ready at") < strings.LastIndex(text, "still starting") {
+		t.Fatalf("log reports progress after ready:\n%s", text)
+	}
+	select {
+	case <-opened:
+	default:
+		t.Fatal("the product answered, but opened stayed open")
+	}
+}
+
+// The first answer opens the gate even when it is an error: a product that cannot open its
+// database must show that failure, not report starting forever.
+func TestAnnounceReadyOpensTheGateOnTheFirstAnswerEvenWhenItFails(t *testing.T) {
+	socket := socketPath(t)
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+
+	opened := make(chan struct{})
+	done := make(chan struct{})
+	defer close(done)
+	go announceReady(socket, "http://localhost:4400", time.Hour, time.Hour, io.Discard, opened, done)
+	select {
+	case <-opened:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a failed open did not open the gate")
+	}
+}
+
+// Until the product first answers, every public request gets an immediate 503 instead of waiting
+// for the database to open; afterwards requests reach the product.
+func TestStartingGateAnswersAtOnceUntilTheProductOpens(t *testing.T) {
+	opened := make(chan struct{})
+	var reached atomic.Int32
+	front := httptest.NewServer(startingGate(opened, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached.Add(1)
+		io.WriteString(w, "product")
+	})))
+	defer front.Close()
+
+	client := http.Client{Timeout: time.Second}
+	response, err := client.Get(front.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusServiceUnavailable || strings.TrimSpace(string(body)) != "Executor is starting" || response.Header.Get("Retry-After") != "5" {
+		t.Fatalf("before the product opened: %d %q Retry-After %q", response.StatusCode, body, response.Header.Get("Retry-After"))
+	}
+	if reached.Load() != 0 {
+		t.Fatal("a request reached the product before it opened")
+	}
+
+	close(opened)
+	response, err = client.Get(front.URL + "/health")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ = io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || string(body) != "product" {
+		t.Fatalf("after the product opened: %d %q", response.StatusCode, body)
+	}
+}
+
+// A host that stops while the product is still opening ends the announcer and its waiting request.
+func TestAnnounceReadyStopsWithTheHost(t *testing.T) {
+	socket := socketPath(t)
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	requested := make(chan struct{}, 1)
+	released := make(chan struct{})
+	go http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requested <- struct{}{}
+		select {
+		case <-r.Context().Done():
+			close(released)
+		case <-time.After(5 * time.Second):
+		}
+	}))
+
+	var log syncBuffer
+	opened := make(chan struct{})
+	done := make(chan struct{})
+	returned := make(chan struct{})
+	go func() {
+		announceReady(socket, "http://localhost:4400", time.Hour, time.Millisecond, &log, opened, done)
+		close(returned)
+	}()
+	<-requested
+	close(done)
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("announcer kept running after the host stopped")
+	}
+	select {
+	case <-released:
+	case <-time.After(time.Second):
+		t.Fatal("the waiting /health request was not cancelled")
+	}
+	if strings.Contains(log.String(), "ready at") {
+		t.Fatalf("announcer reported ready for a product that never opened:\n%s", log.String())
+	}
+	select {
+	case <-opened:
+		t.Fatal("the gate opened although the product never answered")
+	default:
+	}
+}

@@ -110,8 +110,15 @@ The container publishes port `4400` on loopback only, as
 `127.0.0.1:4400`. Put your own TLS terminator in front of it and forward to that
 port, and add `-e BETTER_AUTH_URL=<origin>` to the run command with the exact
 origin people will open. [Private access with Tailscale](#private-access-with-tailscale)
-shows one way. Startup initializes the embedded database before it opens HTTP, so the
-first boot takes a moment.
+shows one way.
+
+The server opens its embedded database as soon as it starts. Until that
+finishes, every request, including the health check at `/health`, gets an
+immediate `503` with `Executor is starting`. The first boot creates the database, which can take a
+minute or more on slower hardware such as a NAS. Watch its progress with
+`docker logs -f executor-v2`: the log says `Executor is still starting` every
+15 seconds, then `Executor is ready at <BETTER_AUTH_URL>` once it serves
+requests. Docker reports the container healthy after that line.
 
 Sign-in and the other auth routes are rate-limited per client address. Behind a
 reverse proxy every request comes from the proxy, so all clients share its

@@ -50,5 +50,5 @@ VOLUME /app/data
 COPY --chmod=755 apps/hosted/self-host/entrypoint.sh /usr/local/bin/executor-entrypoint
 ENTRYPOINT ["executor-entrypoint"]
 EXPOSE 4400
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD ["executor-host", "health"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 CMD ["executor-host", "health"]
 CMD ["executor-host", "serve"]

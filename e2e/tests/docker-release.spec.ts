@@ -1346,10 +1346,18 @@ it.live("released images that share a temporary directory keep separate collecto
         );
         return id;
       });
+      // Each command's exit code is its answer; output alone would accept an instance still starting.
+      const succeeds = (args: readonly string[]) =>
+        processes.exitCode(ChildProcess.make("docker", args)).pipe(
+          Effect.filterOrFail(
+            (code) => code === 0,
+            () => `docker ${args.join(" ")} failed`,
+          ),
+        );
       const ready = (id: string) =>
         Effect.gen(function* () {
-          yield* run(["exec", id, "executor-host", "health"]);
-          yield* run(["exec", id, "executor-host", "telemetry", "/api/health"]);
+          yield* succeeds(["exec", id, "executor-host", "health"]);
+          yield* succeeds(["exec", id, "executor-host", "telemetry", "/api/health"]);
         }).pipe(Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 240 }));
       // Each request carries a new trace id; the instance's own collector must store its spans.
       const traced = Effect.fn("traced request")(function* (id: string) {

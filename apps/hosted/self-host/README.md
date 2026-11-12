@@ -238,6 +238,13 @@ docker compose -f apps/hosted/self-host/compose.yaml ps
 docker compose -f apps/hosted/self-host/compose.yaml logs --tail 100 server
 ```
 
+The server opens its database as soon as it starts and logs
+`Executor is still starting` every 15 seconds until it can serve requests, then
+`Executor is ready at <BETTER_AUTH_URL>`. Until then every request, including
+`/health`, gets an immediate `503` with `Executor is starting`. The first boot creates the database,
+which can take a minute or more on slower hardware. The image's health check
+allows two minutes for that before failures count.
+
 The first source build downloads its dependencies. Later builds reuse Docker's
 cache. The Compose commands above build from source and do not depend on the
 published container image. For the published installation, use

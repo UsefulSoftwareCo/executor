@@ -731,9 +731,13 @@ func serve(mode string) error {
 		<-stopped
 		return err
 	}
-	public := &http.Server{Handler: publicHandler(proxy), ReadHeaderTimeout: 10 * time.Second}
+	opened := make(chan struct{})
+	public := &http.Server{Handler: startingGate(opened, publicHandler(proxy)), ReadHeaderTimeout: 10 * time.Second}
 	defer public.Close()
 	go func() { serverError <- public.Serve(publicListener) }()
+	stopAnnouncing := make(chan struct{})
+	defer close(stopAnnouncing)
+	go announceReady(filepath.Join(temporary, "product.sock"), values["BETTER_AUTH_URL"], startupProgressInterval, time.Second, os.Stderr, opened, stopAnnouncing)
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
@@ -754,6 +758,92 @@ func serve(mode string) error {
 		command.Process.Kill()
 		return <-stopped
 	}
+}
+
+// startupProgressInterval is how often the log says the product is still opening.
+const startupProgressInterval = 15 * time.Second
+
+// announceReady opens the product as soon as workerd starts and reports when it can serve.
+// workerd creates the product only when something calls it, so on a fresh volume the database
+// would otherwise initialize only once the first visitor or health probe arrived. It asks the
+// product's /health until one answers 200, waiting retry after the first failure and doubling up
+// to 30 seconds, and logs every progress interval while it waits. It closes opened when the
+// product first answers, ready or not, and returns once the product is ready or done closes.
+func announceReady(socket, origin string, progress, retry time.Duration, log io.Writer, opened chan<- struct{}, done <-chan struct{}) {
+	started := time.Now()
+	fmt.Fprintln(log, "Executor is starting. The first start initializes the database, which can take a minute or more on slower hardware.")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	// A fresh connection each time: a pooled one could reach workerd as it closes it.
+	client := &http.Client{Transport: &http.Transport{
+		DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+		},
+	}}
+	ticker := time.NewTicker(progress)
+	defer ticker.Stop()
+	var answered sync.Once
+	ready := func() <-chan bool {
+		result := make(chan bool, 1)
+		go func() {
+			request, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://product.internal/health", nil)
+			request.Header.Set("x-executor-client-ip", "127.0.0.1")
+			response, err := client.Do(request)
+			if err != nil {
+				result <- false
+				return
+			}
+			response.Body.Close()
+			answered.Do(func() { close(opened) })
+			result <- response.StatusCode == http.StatusOK
+		}()
+		return result
+	}
+	answer := ready()
+	var again <-chan time.Time
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			fmt.Fprintf(log, "Executor is still starting (%s)\n", time.Since(started).Round(time.Second))
+		case ok := <-answer:
+			answer = nil
+			if ok {
+				fmt.Fprintf(log, "Executor is ready at %s (started in %s)\n", origin, time.Since(started).Round(time.Second))
+				return
+			}
+			again = time.After(retry)
+			retry = min(retry*2, 30*time.Second)
+		case <-again:
+			again = nil
+			answer = ready()
+		}
+	}
+}
+
+// startingGate answers 503 at once until opened closes, instead of holding every request while
+// the product opens its database, which can take a minute on slow hardware. opened closes when
+// the product first answers; a product that failed to open then answers for itself, so its error
+// reaches the operator instead of a permanent "starting".
+func startingGate(opened <-chan struct{}, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-opened:
+			next.ServeHTTP(w, r)
+		default:
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "Executor is starting", http.StatusServiceUnavailable)
+		}
+	})
 }
 
 // publicHandler serves the public listener. fullDuplex sits outside the compressor so it reaches

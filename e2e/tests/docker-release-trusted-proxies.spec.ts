@@ -148,13 +148,24 @@ it.live(
           client("direct"),
         ]);
         const throughTrusting = `http://${proxyName}:8081`;
-        yield* run([
-          "exec",
-          `${id}-first`,
-          "node",
-          "-e",
-          `fetch("${throughTrusting}/health").then(r => process.exit(r.status === 200 ? 0 : 1), () => process.exit(1))`,
-        ]).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 240 }));
+        // The exit code is the health answer; output alone would accept a server still starting.
+        yield* processes
+          .exitCode(
+            ChildProcess.make("docker", [
+              "exec",
+              `${id}-first`,
+              "node",
+              "-e",
+              `fetch("${throughTrusting}/health").then(r => process.exit(r.status === 200 ? 0 : 1), () => process.exit(1))`,
+            ]),
+          )
+          .pipe(
+            Effect.filterOrFail(
+              (code) => code === 0,
+              () => "the server is not ready through the proxy",
+            ),
+            Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 240 }),
+          );
 
         // Each client behind the trusted proxy has its own limit.
         expect(yield* first(throughTrusting, 3)).toEqual([401, 401, 401]);
