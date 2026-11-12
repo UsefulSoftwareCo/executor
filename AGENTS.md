@@ -124,7 +124,8 @@ do not use that package to typecheck.
 
 `.github/workflows/ci.yml` runs on pull requests, pushes to `main` and manual
 dispatch. Its local checks use no secrets and include the emulated Cloud target.
-An earlier PR run on the same ref is cancelled. Each push to `main` has its own
+A PR run on an earlier head is cancelled by the new head's run; two runs on the
+same head both run, one after the other. Each push to `main` has its own
 concurrency group, so every push finishes a run and gives each merge a baseline,
 even when merges come in a burst. A stack that lands in one push gets one run, at
 its top commit. Overlapping `main` runs share no deployed stage, database or

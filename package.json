@@ -105,6 +105,7 @@
     "e2e:dashboard-file-names": "vitest run --config e2e/dashboard-file-names.config.ts",
     "e2e:apps-published": "vitest run --config e2e/apps-published.config.ts",
     "e2e:ci-selection": "vitest run --config e2e/ci-selection.config.ts",
+    "e2e:ci-supersede": "vitest run --config e2e/ci-supersede.config.ts",
     "e2e:release-archives": "vitest run --config e2e/release-archives.config.ts",
     "e2e:emulator-failures": "vitest run --config e2e/emulator-failures.config.ts",
     "e2e:typecheck-runner": "vitest run --config e2e/typecheck-runner.config.ts",
