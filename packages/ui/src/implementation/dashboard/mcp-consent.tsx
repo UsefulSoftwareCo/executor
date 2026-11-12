@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useRef, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import type { ApprovalMode, GrantAccessChoice, GrantTarget } from "@executor-js/mcp-auth/grants";
@@ -392,7 +392,19 @@ export function McpConsentDestination({ origin }: { readonly origin: string }) {
   );
 }
 
-/** The decision: two equal buttons, declining first. */
+const declineDecision = "decline",
+  connectDecision = "connect";
+
+/**
+ * The decision: two equal buttons, declining first. They submit one form rather than handle
+ * clicks, so a decision made before the page hydrates is held by the document's early-submission
+ * guard and replayed with the same button once React owns the form, instead of being dropped.
+ *
+ * Only the button pressed decides, and one page sends at most one decision: a replayed submission
+ * from a button that is now disabled is ignored (the replay submits it regardless), and so is any
+ * submission while a decision is being sent or after one succeeded. A decision that fails can be
+ * made again. Each callback resolves `true` once its decision was delivered.
+ */
 export function McpConsentActions({
   decline = "Cancel",
   onDecline,
@@ -401,22 +413,60 @@ export function McpConsentActions({
   connectDisabled = false,
 }: {
   readonly decline?: string;
-  readonly onDecline: () => void;
+  readonly onDecline: () => Promise<boolean>;
   /** Omitted when there is nothing the person could connect. */
-  readonly onConnect?: (() => void) | undefined;
+  readonly onConnect?: (() => Promise<boolean>) | undefined;
   readonly waiting: boolean;
   readonly connectDisabled?: boolean;
 }) {
+  const deciding = useRef(false);
   return (
-    <div className="mcp-consent-actions grid grid-cols-2 gap-2.5">
-      <Button variant="outline" disabled={waiting} onClick={onDecline}>
+    <form
+      className="mcp-consent-actions grid grid-cols-2 gap-2.5"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const submitter =
+          event.nativeEvent instanceof SubmitEvent ? event.nativeEvent.submitter : null;
+        if (!(submitter instanceof HTMLButtonElement) || submitter.disabled || deciding.current)
+          return;
+        const decide =
+          submitter.value === connectDecision
+            ? onConnect
+            : submitter.value === declineDecision
+              ? onDecline
+              : undefined;
+        if (decide === undefined) return;
+        deciding.current = true;
+        void decide().then(
+          (delivered) => {
+            if (!delivered) deciding.current = false;
+          },
+          () => {
+            deciding.current = false;
+          },
+        );
+      }}
+    >
+      <Button
+        type="submit"
+        name="decision"
+        value={declineDecision}
+        variant="outline"
+        disabled={waiting}
+      >
         {decline}
       </Button>
       {onConnect !== undefined && (
-        <Button disabled={connectDisabled || waiting} loading={waiting} onClick={onConnect}>
+        <Button
+          type="submit"
+          name="decision"
+          value={connectDecision}
+          disabled={connectDisabled || waiting}
+          loading={waiting}
+        >
           Connect
         </Button>
       )}
-    </div>
+    </form>
   );
 }

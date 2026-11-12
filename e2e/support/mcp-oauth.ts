@@ -139,6 +139,7 @@ export const authorizeBrowserMcp = (
     resource = `${origin}/mcp`,
     client = "Release verification",
     scope = "mcp offline_access",
+    beforeHydration = false,
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -181,14 +182,114 @@ export const authorizeBrowserMcp = (
       resource,
       state,
     }).toString();
-    yield* driver("open release MCP consent", () => page.goto(authorization.href));
-    yield* driver("verify the requesting MCP client", () =>
-      page.getByText(client, { exact: true }).waitFor({ state: "visible" }),
-    );
-    yield* driver("approve release MCP connection", () =>
-      page.getByRole("button", { name: "Connect", exact: true }).click(),
-    );
+    // Main-frame addresses and consent requests, read after the code arrives: a native submission
+    // would navigate with the decision in the address, and one page must send one decision.
+    const addresses: string[] = [];
+    let consents = 0;
+    const consentPath = /\/api\/auth\/oauth2\/consent$/u;
+    if (beforeHydration) {
+      page.on("framenavigated", (frame) => {
+        if (frame === page.mainFrame()) addresses.push(frame.url());
+      });
+      // The page's scripts are held, so Connect is pressed on the server's markup, as a person on
+      // a slow connection would. The decision must survive until the page hydrates.
+      let releaseScripts = () => {};
+      const scriptsHeld = new Promise<void>((resolve) => {
+        releaseScripts = resolve;
+      });
+      // The first consent request is held until a second decision has been attempted.
+      let releaseConsent = () => {};
+      const consentHeld = new Promise<void>((resolve) => {
+        releaseConsent = resolve;
+      });
+      let consentArrived = () => {};
+      const consentSent = new Promise<void>((resolve) => {
+        consentArrived = resolve;
+      });
+      const scripts = /\/assets\/[^/]+\.js$/u;
+      yield* driver("hold the consent page's scripts and decisions", () =>
+        Promise.all([
+          page.route(scripts, (route) => scriptsHeld.then(() => route.fallback())),
+          page.route(consentPath, (route) => {
+            consents += 1;
+            consentArrived();
+            return consentHeld.then(() => route.fallback());
+          }),
+        ]),
+      );
+      const early = yield* driver("approve on the consent page before it is interactive", () =>
+        page
+          // A person presses Connect on the tab they are looking at; a hidden tab runs no frames.
+          .bringToFront()
+          .then(() => page.goto(authorization.href, { waitUntil: "commit" }))
+          .then(() =>
+            page.getByRole("button", { name: "Connect", exact: true }).waitFor({ timeout: 15000 }),
+          )
+          .then(() => page.locator("strong").filter({ hasText: client }).waitFor({ timeout: 5000 }))
+          .then(() => page.getByRole("button", { name: "Connect", exact: true }).click())
+          .then(() => page.evaluate(() => document.documentElement.hasAttribute("data-hydrated")))
+          // A failure lets the held requests go, so the tab can close and report it.
+          .catch((error: unknown) => {
+            releaseScripts();
+            releaseConsent();
+            throw error;
+          }),
+      );
+      if (early)
+        return yield* new OAuthFailed({ operation: "approve before hydration", status: 0 });
+      if (addresses.some((address) => new URL(address).searchParams.has("decision")))
+        return yield* new OAuthFailed({ operation: "early approval was sent natively", status: 0 });
+      yield* driver("let the consent page hydrate", () => {
+        releaseScripts();
+        return page
+          .unroute(scripts)
+          .then(() =>
+            Promise.race([
+              consentSent,
+              new Promise<never>((_, reject) =>
+                setTimeout(
+                  () => reject(new Error("The held decision sent no consent request in 15 s")),
+                  15000,
+                ),
+              ),
+            ]),
+          );
+      });
+      // While the approval is in flight, a second decision is submitted the way the document's
+      // early-submission guard replays one, from the now disabled Cancel. The page must not send it.
+      yield* driver("submit Cancel while the approval is in flight", () =>
+        page.evaluate(() => {
+          const cancel = document.querySelector<HTMLButtonElement>(
+            "form.mcp-consent-actions button[value='decline']",
+          );
+          if (cancel === null || cancel.form === null) throw new Error("Missing Cancel");
+          cancel.form.requestSubmit(cancel);
+        }),
+      );
+      yield* driver("send the approval", () => {
+        releaseConsent();
+        return Promise.resolve();
+      });
+    } else {
+      yield* driver("open release MCP consent", () => page.goto(authorization.href));
+      yield* driver("verify the requesting MCP client", () =>
+        page.getByText(client, { exact: true }).waitFor({ state: "visible" }),
+      );
+      yield* driver("approve release MCP connection", () =>
+        page.getByRole("button", { name: "Connect", exact: true }).click(),
+      );
+    }
     const code = yield* receiver.code;
+    if (beforeHydration) {
+      yield* driver("stop holding consent requests", () => page.unroute(consentPath));
+      if (consents !== 1)
+        return yield* new OAuthFailed({
+          operation: `one consent request, not ${consents}`,
+          status: 0,
+        });
+      if (addresses.some((address) => new URL(address).searchParams.has("decision")))
+        return yield* new OAuthFailed({ operation: "a decision was sent natively", status: 0 });
+    }
     yield* driver("OAuth returns to the MCP client", () =>
       page.getByRole("heading", { name: "Connected to Executor" }).waitFor({ state: "visible" }),
     );

@@ -192,15 +192,17 @@ function DeviceDecision({
       action,
       outcome: Exit.isSuccess(result) ? "success" : "failure",
     });
-    if (Exit.isSuccess(result)) onDecided(result.value.status);
-    else {
-      const failure = Cause.squash(result.cause);
-      setError(
-        failure instanceof McpConnectionFailed
-          ? failure.message
-          : "Unable to complete this request. Try again.",
-      );
+    if (Exit.isSuccess(result)) {
+      onDecided(result.value.status);
+      return true;
     }
+    const failure = Cause.squash(result.cause);
+    setError(
+      failure instanceof McpConnectionFailed
+        ? failure.message
+        : "Unable to complete this request. Try again.",
+    );
+    return false;
   };
   return (
     <McpConsentLayout

@@ -33,9 +33,12 @@ export function LocalMcpAuthorizePage() {
   const decide = async (accept: boolean) => {
     setError(null);
     const result = await submit({ accept, query });
-    if (Exit.isFailure(result))
+    if (Exit.isFailure(result)) {
       setError("This connection could not be completed. Start again from your MCP client.");
-    else window.location.assign(result.value.url);
+      return false;
+    }
+    window.location.assign(result.value.url);
+    return true;
   };
   if (id === "" || target?.kind !== "mcp" || AsyncResult.isFailure(client))
     return (

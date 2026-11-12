@@ -5503,6 +5503,32 @@ export const scenarios = plan({
       local: na("Local has no hosted organization membership."),
     },
   },
+  earlyConsentDecision: {
+    fixtures: "actors",
+    file: "early-form-submission.spec.ts",
+    title:
+      "Connect pressed on the MCP consent page before it is interactive is held and approves the client after hydration",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "The consent actions and the early-submission guard are shared and run on self-host.",
+      ),
+      local: na(
+        "Local's server sends its consent page with Connect enabled, but Connect pressed before it hydrates still sends no decision after hydration; that is a separate open defect.",
+      ),
+    },
+  },
+  earlyDeviceDecision: {
+    fixtures: "actors",
+    file: "early-form-submission.spec.ts",
+    title:
+      "Deny pressed on the device sign-in page before it is interactive is held and denies the request after hydration",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The device page and the early-submission guard are shared and run on self-host."),
+      local: na("Local signs the CLI in with an API key, not a device sign-in."),
+    },
+  },
   earlyFormSubmission: {
     fixtures: "actors",
     file: "early-form-submission.spec.ts",
