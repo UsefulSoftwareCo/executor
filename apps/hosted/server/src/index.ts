@@ -113,8 +113,17 @@ export {
 } from "./implementation/mcp-oauth.ts";
 export { authEndpointTemplates, grantExpiry, type GrantExpiry } from "@executor-js/mcp-auth/oauth";
 export type { OriginList, ResourceOrigins } from "@executor-js/mcp-auth";
-export { ConnectionId, mcpOAuthResources, singleResourceOrigin } from "@executor-js/mcp-auth";
-export { apiBearerAccess, mcpBearerAccess } from "./implementation/bearer-access.ts";
+export {
+  ConnectionId,
+  mcpOAuthResources,
+  mcpWhoamiPath,
+  singleResourceOrigin,
+} from "@executor-js/mcp-auth";
+export {
+  apiBearerAccess,
+  describeMcpAccess,
+  mcpBearerAccess,
+} from "./implementation/bearer-access.ts";
 export {
   makeHostedMcp,
   mcpSessionKey,
@@ -123,6 +132,7 @@ export {
   mcpChallenge,
   mcpProtectedResource,
   mcpAuthorizationServer,
+  mcpWhoami,
 } from "./implementation/mcp-http.ts";
 
 export { apiChallenge, apiProtectedResource } from "./implementation/api-oauth.ts";

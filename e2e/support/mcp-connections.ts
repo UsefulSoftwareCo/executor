@@ -3,6 +3,7 @@ import { expect } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { createHash, randomBytes } from "node:crypto";
+import { Actors } from "./actors.ts";
 import { Api, body, type Session } from "./api.ts";
 import { Evidence } from "./evidence.ts";
 import { Target } from "./platform.ts";
@@ -74,6 +75,7 @@ export const consentTo = (
   session: Session,
   resource: string | undefined,
   headers: Record<string, string> = {},
+  scope = "mcp offline_access",
 ) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -108,7 +110,7 @@ export const consentTo = (
       redirect_uri: redirect,
       code_challenge: createHash("sha256").update(verifier).digest("base64url"),
       code_challenge_method: "S256",
-      scope: "mcp offline_access",
+      scope,
       ...resourceField,
       state: randomBytes(16).toString("hex"),
     });
@@ -214,3 +216,19 @@ export default defineApp({}, async () => ({
   },
   appsManifest,
 ];
+
+const Organizations = Schema.Array(
+  Schema.Struct({ id: Schema.String, slug: Schema.String, name: Schema.String }),
+);
+/** The scenario organization as `/mcp/whoami` names it. */
+export const scenarioOrganization = Effect.gen(function* () {
+  const api = yield* Api,
+    actors = yield* Actors;
+  const listed = yield* body(
+    Organizations,
+    yield* api.request(actors.owner, "GET", "/api/auth/organization/list"),
+  );
+  const found = listed.find((item) => item.id === actors.organization.id);
+  if (found === undefined) return yield* Effect.die("The scenario organization is not listed");
+  return { id: found.id, slug: found.slug, name: found.name };
+});

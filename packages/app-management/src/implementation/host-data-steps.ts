@@ -35,6 +35,7 @@ import {
   unremovableWebhooksStepName,
   type UnremovableWebhooksHostServices,
 } from "./unremovable-webhooks.ts";
+import { agentGrantModesStep, agentGrantModesStepName } from "./agent-grant-modes.ts";
 import type { SqlClient } from "effect/sql";
 import type { DataStep } from "../contracts/data-steps.ts";
 
@@ -101,6 +102,9 @@ const listedSteps: ReadonlyArray<ListedStep> = [
   // One-off: hand webhook registrations saved without their source, which no removal can finish,
   // to a person to remove at the provider.
   { name: unremovableWebhooksStepName, step: unremovableWebhooksStep },
+  // One-off: store on each MCP grant the approval mode its consent's resource named, now that the
+  // grant record, not the URL, holds it.
+  { name: agentGrantModesStepName, step: agentGrantModesStep },
 ];
 
 export const hostDataSteps = (host: DataStepHost): ReadonlyArray<DataStep<SqlClient.SqlClient>> =>

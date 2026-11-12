@@ -9,7 +9,7 @@ running, and open the dashboard. The background Executor keeps running until
 daily for a newer release and suggests `executor upgrade`; set
 `EXECUTOR_NO_UPDATE_CHECK=1` to skip it. Use `executor service start` to start it
 without a browser, `executor serve` to run it in the foreground, and
-`executor pair` to get a new browser connection link.
+`executor service pair` to get a new browser connection link.
 `executor upgrade` installs the newest release on your channel the way Executor
 was installed: an install-script copy downloads and checks the release and keeps
 the previous version for `executor upgrade --rollback`; an npm, pnpm, Bun or

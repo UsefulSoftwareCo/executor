@@ -20,7 +20,7 @@ const make = Effect.gen(function* () {
         /** X-Executor-Organization, read for every request so a client can follow a renamed slug. */
         readonly organization?: string | (() => string);
         readonly mode?: "model" | "native" | "browser";
-        /** A scoped connection's URL; its grants are only valid at that URL. */
+        /** A scoped connection's URL. A grant is served per its record wherever it connects. */
         readonly connection?: string;
         /** Runs while a native client holds an approval request, before it accepts. */
         readonly whileApproving?: Effect.Effect<void, unknown>;

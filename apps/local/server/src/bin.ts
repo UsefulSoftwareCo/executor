@@ -8,6 +8,7 @@ import {
   LocalServerUnavailable,
   renderAppFailure,
 } from "@executor-js/app-management/cli";
+import { toolCommands } from "@executor-js/app-management/tools-cli";
 /** CLI composition root. Platform dependencies and raw process arguments stop here. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -18,7 +19,9 @@ import {
   ServiceSettingInvalid,
   serviceCommand,
   serviceGetCommand,
+  servicePairCommand,
   serviceRestartCommand,
+  serviceRotateKeyCommand,
   serviceSetCommand,
   serviceStartCommand,
   serviceStatusCommand,
@@ -26,13 +29,8 @@ import {
   serviceUnsetCommand,
 } from "./contracts/service.ts";
 import {
-  LegacyCommand,
   PairFailed,
   executorCommand,
-  legacyCommands,
-  legacyServiceCommands,
-  pairCommand,
-  rotateKeyCommand,
   serveCommand,
   UpgradeFailed,
   upgradeCommand,
@@ -69,7 +67,6 @@ const explained = Schema.is(
   Schema.Union([
     LocalConfigurationError,
     PairFailed,
-    LegacyCommand,
     UpgradeFailed,
     ServiceFailed,
     ServiceSettingInvalid,
@@ -77,7 +74,7 @@ const explained = Schema.is(
 );
 
 /**
- * App commands without --host or EXECUTOR_HOST use the background server, started if needed, or
+ * Client commands without a named or remembered host use the background server, started if needed, or
  * a private server for the command when the service is disabled. They send its password, or
  * EXECUTOR_API_KEY when that is set. A local server that cannot start fails the command the way
  * its other failures do, with the reason as JSON on stdout for programs.
@@ -100,6 +97,7 @@ const cli = executorCommand.pipe(
   Command.withHandler((options) => processOutput.serve(launch(options, process.platform, entry))),
   Command.withSubcommands([
     appsCommand(process.platform, localServer),
+    ...toolCommands(process.platform, localServer),
     serveCommand.pipe(
       Command.withHandler(({ service, stdio }) =>
         Effect.gen(function* () {
@@ -126,16 +124,20 @@ const cli = executorCommand.pipe(
         serviceUnsetCommand.pipe(
           Command.withHandler((input) => serviceUnset(process.platform, input)),
         ),
-        ...legacyServiceCommands.map((legacy) =>
-          legacy.pipe(
-            Command.withHandler(() =>
-              Effect.fail(new LegacyCommand({ command: `service ${legacy.name}` })),
+        servicePairCommand.pipe(Command.withHandler(() => pair)),
+        serviceRotateKeyCommand.pipe(
+          Command.withHandler(() =>
+            rotateApiKey(process.platform).pipe(
+              Effect.andThen(
+                Console.log(
+                  "Rotated the local API key. Run `executor service restart` to use it, then update clients that used the previous key.",
+                ),
+              ),
             ),
           ),
         ),
       ]),
     ),
-    pairCommand.pipe(Command.withHandler(() => pair)),
     upgradeCommand.pipe(
       Command.withHandler((options) =>
         upgrade(options, {
@@ -145,22 +147,6 @@ const cli = executorCommand.pipe(
           platform: process.platform,
           arch: process.arch,
         }),
-      ),
-    ),
-    rotateKeyCommand.pipe(
-      Command.withHandler(() =>
-        rotateApiKey(process.platform).pipe(
-          Effect.andThen(
-            Console.log(
-              "Rotated the local API key. Run `executor service restart` to use it, then update clients that used the previous key.",
-            ),
-          ),
-        ),
-      ),
-    ),
-    ...legacyCommands.map((legacy) =>
-      legacy.pipe(
-        Command.withHandler(() => Effect.fail(new LegacyCommand({ command: legacy.name }))),
       ),
     ),
   ]),
@@ -173,7 +159,7 @@ NodeRuntime.runMain(
     // serving.
     Effect.raceFirst(processOutput.closed),
     // Effect CLI renders argument errors and supplies the exit status for help.
-    // Operational failures retain the launcher's sanitized message. An apps command failure
+    // Operational failures retain the launcher's sanitized message. A failed apps or tool command
     // states the host's code, status, message and recovery, and also prints them as JSON on
     // stdout when a program, not a terminal, reads it.
     Effect.catch((error) => {

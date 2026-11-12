@@ -130,9 +130,9 @@ export const DashboardUnauthorized = UserFacingError.define({
   title: "Browser pairing required",
   description: "This browser is not paired with this Executor instance.",
   recovery: {
-    action: "Run executor pair and open the new link, then return to account setup.",
+    action: "Run executor service pair and open the new link, then return to account setup.",
     instructions:
-      "Restore local browser pairing with executor pair and guide the user through the new pairing link. Then reopen the intended app’s account setup. Keep pairing credentials private and preserve pairing authorization.",
+      "Restore local browser pairing with executor service pair and guide the user through the new pairing link. Then reopen the intended app’s account setup. Keep pairing credentials private and preserve pairing authorization.",
   },
 });
 /** Parsed DashboardUnauthorized failure. */

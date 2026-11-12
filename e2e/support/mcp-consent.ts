@@ -6,6 +6,7 @@ import { Context, Effect, Layer, Redacted, Schema } from "effect";
 import { Api, body } from "./api.ts";
 import { Actors, password } from "./actors.ts";
 import { Browser } from "./browser.ts";
+import { chooseConsentOrganization } from "./consent-page.ts";
 import { Evidence } from "./evidence.ts";
 import { Target } from "./platform.ts";
 
@@ -105,11 +106,8 @@ const make = Effect.gen(function* () {
         );
         if (!organization)
           return yield* new ConsentFailed({ operation: "Test organization is unavailable" });
-        yield* browser.use("Choose the authorized organization", (page) =>
-          page.getByRole("combobox").click(),
-        );
-        yield* browser.use("Select the synthetic organization", (page) =>
-          page.getByRole("option", { name: organization.name, exact: true }).click(),
+        yield* browser.use("Approve for the synthetic organization", (page) =>
+          chooseConsentOrganization(page, organization.name),
         );
         yield* browser.checkpoint(`Approve ${request.client}'s connection`);
         // A client can close its callback listener after accepting the code, before

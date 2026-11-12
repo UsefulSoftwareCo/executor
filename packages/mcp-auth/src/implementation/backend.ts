@@ -30,13 +30,13 @@ import {
   requiresToolMetadata,
   type AuthorizationPolicy,
 } from "@executor-js/authorization";
+import type { Grant } from "../contracts/grant.ts";
 import {
   GrantForbidden,
   grantAuthorization,
   targetedLinks,
-  type Grant,
   type GrantRefusal,
-} from "../contracts/grant.ts";
+} from "../contracts/grant-enforcement.ts";
 
 /** The exact tool an operation would run, before its live read-only flag is known. */
 interface Invocation {

@@ -242,8 +242,8 @@ const packagedCli = (options: {
     return {
       start,
       refuse,
-      rotate: finish(["rotate-key"]),
-      pair: finish(["pair"]),
+      rotate: finish(["service", "rotate-key"]),
+      pair: finish(["service", "pair"]),
       client,
       readRecord,
     };
@@ -830,7 +830,7 @@ it.live(scenarios.localBootstrapPair.title, () =>
             const before = yield* saved(ready);
             const origin = `http://127.0.0.1:${port}`;
             const link = new RegExp(`^http://127\\.0\\.0\\.1:${port}/#pair=[a-f0-9]{64}$`, "u");
-            // `executor pair` sends the password the running server registered and reads no
+            // `executor service pair` sends the password the running server registered and reads no
             // keys, so a store that denies access or cannot be found does not stop it.
             for (const mode of ["granted", "denied", "absent"]) {
               const paired = yield* cli.pair(ready, as(mode), port);

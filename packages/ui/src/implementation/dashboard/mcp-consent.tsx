@@ -1,7 +1,23 @@
 import type { ReactNode } from "react";
-import { Match } from "effect";
-import type { GrantTarget } from "@executor-js/mcp-auth/grants";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+import type { ApprovalMode, GrantAccessChoice, GrantTarget } from "@executor-js/mcp-auth/grants";
+import { Button } from "../components/button.tsx";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from "../components/select.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
+import type { ConsentConnection } from "../../contracts/scoped-connections.ts";
+
+/** A summary line: the term on the left, its value against the right edge. */
+const row = "grid min-h-12 grid-cols-[7.5rem_1fr] items-center gap-x-4 py-1 max-[740px]:min-h-13";
+/** Hairlines between the lines, and above and below them, instead of a boxed card. */
+const list = "mcp-consent-summary m-0 divide-y divide-foreground/10 border-y border-foreground/10";
 
 /** Stable consent shell shared by local and hosted connections, including their loading state. */
 export function McpConsentLayout({
@@ -13,7 +29,7 @@ export function McpConsentLayout({
 }) {
   return (
     <main className="mcp-consent-page min-h-dvh py-[48px] px-[20px] max-[480px]:py-[28px] max-[480px]:px-[16px]">
-      <section className="mcp-consent-form w-full max-w-150 my-0 mx-auto flex flex-col gap-7 [&_h1]:text-[28px] [&_h1]:leading-[1.2] [&_h1]:[margin:0_0_10px] max-[480px]:gap-5.5 max-[480px]:[&_h1]:text-[24px]">
+      <section className="mcp-consent-form w-full max-w-sm my-0 mx-auto flex flex-col gap-7 [&_h1]:text-[28px] [&_h1]:leading-[1.2] [&_h1]:[margin:0_0_10px] max-[480px]:gap-5.5 max-[480px]:[&_h1]:text-[24px]">
         <div className="mcp-consent-brand flex items-center gap-2.25 text-[19px] [font-weight:550] tracking-[-0.04em] mb-2 [&_img]:w-6.25 [&_img]:h-6.25">
           <img src="/favicon.png" alt="" />
           executor
@@ -37,19 +53,23 @@ export function McpConsentLoading() {
       <div
         role="status"
         aria-label="Loading connection"
-        className="mcp-consent-loading flex flex-col gap-3 [&_.mcp-consent-summary]:mt-3 [&_.mcp-consent-summary]:min-h-37 [&_.mcp-consent-actions]:mt-4"
+        className="mcp-consent-loading flex flex-col gap-7 max-[480px]:gap-5.5"
       >
         <span className="sr-only">Loading connection…</span>
-        <Skeleton className="h-4 w-24" />
-        <Skeleton className="h-10 w-full" />
-        <div className="mcp-consent-summary flex flex-col gap-5 p-[22px] border border-border rounded-[10px] [&_h2]:[margin:0_0_6px] [&_h2]:text-[14px] [&_h2]:[font-weight:550] [&_p]:m-0 [&_p]:text-[13px] [&_p]:leading-[1.6] [&_p]:text-muted-foreground">
-          <Skeleton className="h-4 w-32" />
-          <Skeleton className="h-4 w-full" />
-          <Skeleton className="h-4 w-2/3" />
+        <div className="flex flex-col gap-3.5">
+          <div className={list}>
+            {["w-20", "w-16", "w-32"].map((width) => (
+              <div key={width} className={row}>
+                <Skeleton className="h-4 w-20" />
+                <Skeleton className={`h-4 justify-self-end ${width}`} />
+              </div>
+            ))}
+          </div>
+          <Skeleton className="h-4 w-3/4" />
         </div>
-        <div className="mcp-consent-actions flex items-center justify-end gap-2.5 border-t border-t-border pt-5 [&_>_p]:mr-auto [&_>_p]:text-muted-foreground [&_>_p]:text-[12px] max-[480px]:flex-wrap">
-          <Skeleton className="h-9 w-20" />
-          <Skeleton className="h-9 w-24" />
+        <div className="mcp-consent-actions grid grid-cols-2 gap-2.5">
+          <Skeleton className="h-9 w-full" />
+          <Skeleton className="h-9 w-full" />
         </div>
       </div>
     </McpConsentLayout>
@@ -69,67 +89,333 @@ export const consentDestination = (redirectUri: string | null): string | undefin
   return target.origin === "null" ? `${target.protocol}//` : target.origin;
 };
 
-/** OAuth's requested resource determines this read-only approval summary. */
-export function McpConsentSummary({
-  target,
-  destination,
+/** One line of the consent summary: what is granted, then its value or the control that sets it. */
+export function McpConsentRow({
+  label,
+  htmlFor,
+  children,
 }: {
-  readonly target: GrantTarget;
-  readonly destination?: string | undefined;
+  readonly label: string;
+  /** The control this row labels, when its value can be changed. */
+  readonly htmlFor?: string | undefined;
+  readonly children: ReactNode;
 }) {
-  const approval =
-    target.kind === "api"
-      ? undefined
-      : Match.value(target.mode).pipe(
-          Match.when("browser", () => ({
-            title: "Approvals in Executor",
-            detail: "Calls that need approval wait for you to review them in your browser.",
-          })),
-          Match.when("native", () => ({
-            title: "Approvals in your client",
-            detail: "Your connected client handles approval prompts.",
-          })),
-          Match.when("model", () => ({
-            title: "Approvals through your agent",
-            detail: "Your agent collects responses and resumes calls that need approval.",
-          })),
-          Match.exhaustive,
-        );
   return (
-    <div className="mcp-consent-summary flex flex-col gap-5 p-[22px] border border-border rounded-[10px] [&_h2]:[margin:0_0_6px] [&_h2]:text-[14px] [&_h2]:[font-weight:550] [&_p]:m-0 [&_p]:text-[13px] [&_p]:leading-[1.6] [&_p]:text-muted-foreground">
-      <div>
-        <h2>
-          {target.kind === "api"
-            ? "Connect to the Executor API"
-            : target.connection === undefined
-              ? "Access to your apps"
-              : "Access to one of your connections"}
-        </h2>
-        <p>
-          {target.kind === "api"
-            ? "This app can use the API with your account’s permissions."
-            : target.connection === undefined
-              ? "This connection can use all apps available to you. Your account’s permissions still apply."
-              : "This connection can use only the apps and tools you chose for it in Executor. Changes you make there apply immediately."}
-        </p>
-      </div>
-      {approval !== undefined && (
-        <div>
-          <h2>{approval.title}</h2>
-          <p>{approval.detail}</p>
-        </div>
+    <div className={row}>
+      <dt className="text-[14px] font-medium">
+        {htmlFor === undefined ? label : <label htmlFor={htmlFor}>{label}</label>}
+      </dt>
+      {htmlFor === undefined ? (
+        <dd className="m-0 min-w-0 truncate text-right text-[14px] text-muted-foreground">
+          {children}
+        </dd>
+      ) : (
+        <dd className="m-0 flex min-w-0 justify-end">{children}</dd>
       )}
-      {destination !== undefined && (
-        <div className="mcp-consent-destination">
-          <h2>Where access is sent</h2>
-          <p>
-            Approving sends this connection’s access to{" "}
-            <span className="mcp-consent-destination-origin break-all text-foreground [font-weight:550]">
-              {destination}
+    </div>
+  );
+}
+
+/** A row whose value is still being read; the line keeps its loaded height. */
+export function McpConsentRowPending({ label }: { readonly label: string }) {
+  return (
+    <McpConsentRow label={label}>
+      <span
+        role="status"
+        aria-label={`Loading ${label.toLowerCase()}`}
+        className="flex justify-end"
+      >
+        <Skeleton className="h-4 w-24" />
+      </span>
+    </McpConsentRow>
+  );
+}
+
+/** A row whose value could not be read: the failure and its retry take the value's place. */
+export function McpConsentRowFailure({
+  label,
+  message,
+  retry,
+  retrying,
+}: {
+  readonly label: string;
+  readonly message: string;
+  readonly retry: () => void;
+  readonly retrying: boolean;
+}) {
+  return (
+    <div className={row}>
+      <dt className="text-[14px] font-medium">{label}</dt>
+      <dd role="alert" className="m-0 flex min-w-0 items-center justify-end gap-1">
+        <span className="min-w-0 truncate text-[13px] text-destructive">{message}</span>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="-mr-2 h-8 shrink-0 px-2 text-[14px]"
+          loading={retrying}
+          disabled={retrying}
+          onClick={retry}
+        >
+          Retry
+        </Button>
+      </dd>
+    </div>
+  );
+}
+
+export interface ConsentOption {
+  readonly value: string;
+  readonly label: string;
+  readonly detail?: string | undefined;
+}
+
+/** A row's value as a menu. It reads as the value until it is opened. */
+export function McpConsentSelect({
+  id,
+  value,
+  options,
+  onChange,
+  disabled = false,
+  children,
+}: {
+  readonly id: string;
+  readonly value: string;
+  readonly options: readonly ConsentOption[];
+  readonly onChange: (value: string) => void;
+  readonly disabled?: boolean | undefined;
+  /** Further menu entries, after the options. */
+  readonly children?: ReactNode;
+}) {
+  return (
+    <Select value={value} onValueChange={onChange} disabled={disabled}>
+      <SelectTrigger
+        id={id}
+        className="-mr-2 h-8 gap-1.5 border-0 bg-transparent px-2 text-[14px] font-normal shadow-none hover:bg-muted data-[state=open]:bg-muted max-[740px]:text-[14px] dark:bg-transparent"
+      >
+        <SelectValue>{options.find((option) => option.value === value)?.label}</SelectValue>
+      </SelectTrigger>
+      <SelectContent align="end" className="min-w-64">
+        {options.map((option) => (
+          <SelectItem key={option.value} value={option.value} className="items-start py-2">
+            <span className="flex flex-col gap-0.5 text-left">
+              <span className="font-medium">{option.label}</span>
+              {option.detail !== undefined && (
+                <span className="text-[13px] text-muted-foreground">{option.detail}</span>
+              )}
             </span>
-            . Only continue if you recognize it.
-          </p>
-        </div>
+          </SelectItem>
+        ))}
+        {children}
+      </SelectContent>
+    </Select>
+  );
+}
+
+const approvalOptions: readonly (ConsentOption & { readonly value: ApprovalMode })[] = [
+  {
+    value: "model",
+    label: "Through your agent",
+    detail: "Your agent shows you the request and resumes the call.",
+  },
+  { value: "browser", label: "In Executor", detail: "You review the call in your browser." },
+  // Last, because the page cannot know whether this client supports MCP prompts.
+  {
+    value: "native",
+    label: "In your client",
+    detail: "Your client prompts you, if it supports MCP prompts.",
+  },
+];
+
+/** Where approvals are answered: a menu when the person may change it, otherwise its name. */
+export function McpConsentApprovals({
+  mode,
+  onMode,
+  disabled,
+}: {
+  readonly mode: ApprovalMode;
+  readonly onMode?: ((mode: ApprovalMode) => void) | undefined;
+  readonly disabled?: boolean | undefined;
+}) {
+  if (onMode === undefined)
+    return (
+      <McpConsentRow label="Approvals">
+        {approvalOptions.find((option) => option.value === mode)?.label}
+      </McpConsentRow>
+    );
+  return (
+    <McpConsentRow label="Approvals" htmlFor="mcp-consent-approvals">
+      <McpConsentSelect
+        id="mcp-consent-approvals"
+        value={mode}
+        disabled={disabled}
+        options={approvalOptions}
+        onChange={(value) => {
+          const chosen = approvalOptions.find((option) => option.value === value);
+          if (chosen !== undefined) onMode(chosen.value);
+        }}
+      />
+    </McpConsentRow>
+  );
+}
+
+/** What the request's resource names, for a page that offers no choice. */
+export function McpConsentTargetRows({ target }: { readonly target: GrantTarget }) {
+  return (
+    <>
+      <McpConsentRow label="Access">
+        {target.kind === "api"
+          ? "Executor API"
+          : target.connection === undefined
+            ? "All apps"
+            : "One of your connections"}
+      </McpConsentRow>
+      {target.kind === "mcp" && <McpConsentApprovals mode={target.mode} />}
+    </>
+  );
+}
+
+/** Menu values that no connection ID can equal. */
+const everyApp = "*";
+const newConnection = "+";
+const appsLabel = (apps: readonly string[]) => {
+  const shown = apps.slice(0, 3).join(", ");
+  return apps.length > 3 ? `${shown} and ${apps.length - 3} more` : shown;
+};
+
+/**
+ * Which apps the grant reaches, chosen from the person's connections. A chosen connection missing
+ * from the list, such as one revoked since, stays chosen and says so; the server refuses it.
+ */
+export function McpConsentAccess({
+  connections,
+  value,
+  onChange,
+  onNewConnection,
+  disabled,
+}: {
+  readonly connections: readonly ConsentConnection[];
+  readonly value: GrantAccessChoice;
+  readonly onChange: (value: GrantAccessChoice) => void;
+  /** Opens the connection editor; the page decides where. */
+  readonly onNewConnection: () => void;
+  readonly disabled?: boolean | undefined;
+}) {
+  const missing =
+    value.kind === "connection" && !connections.some((item) => item.id === value.id)
+      ? value.id
+      : undefined;
+  return (
+    <McpConsentRow label="Access" htmlFor="mcp-consent-access">
+      <McpConsentSelect
+        id="mcp-consent-access"
+        value={value.kind === "all" ? everyApp : value.id}
+        disabled={disabled}
+        options={[
+          {
+            value: everyApp,
+            label: "All apps",
+            detail: "Every app you can use, including apps you add later.",
+          },
+          ...connections.map((item) => ({
+            value: item.id,
+            label: item.name,
+            detail: appsLabel(item.apps),
+          })),
+          ...(missing === undefined
+            ? []
+            : [
+                {
+                  value: missing,
+                  label: "Unavailable connection",
+                  detail: "This connection no longer exists. Choose another.",
+                },
+              ]),
+        ]}
+        onChange={(chosen) => {
+          if (chosen === newConnection) onNewConnection();
+          else if (chosen === everyApp) onChange({ kind: "all" });
+          else {
+            const found = connections.find((item) => item.id === chosen);
+            if (found !== undefined) onChange({ kind: "connection", id: found.id });
+          }
+        }}
+      >
+        <SelectSeparator />
+        {/* It opens the connection editor elsewhere; the arrow says so before it is chosen. */}
+        <SelectItem value={newConnection}>
+          <span className="flex items-center gap-1.5">
+            New connection
+            <HugeiconsIcon
+              icon={ArrowUpRight01Icon}
+              strokeWidth={2}
+              aria-hidden
+              className="size-4 shrink-0 text-muted-foreground"
+            />
+          </span>
+        </SelectItem>
+      </McpConsentSelect>
+    </McpConsentRow>
+  );
+}
+
+/**
+ * What approving grants, one row each, then one line of guidance. `children` are the rows: the
+ * organization where there is one, then access and approvals.
+ */
+export function McpConsentSummary({
+  note,
+  children,
+}: {
+  readonly note?: ReactNode;
+  readonly children: ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-3.5">
+      <dl className={list}>{children}</dl>
+      {note !== undefined && (
+        <p className="mcp-consent-note m-0 text-[14px] text-pretty text-muted-foreground">{note}</p>
+      )}
+    </div>
+  );
+}
+
+/** Where approving sends access, for the summary's note. */
+export function McpConsentDestination({ origin }: { readonly origin: string }) {
+  return (
+    <span className="mcp-consent-destination">
+      Access is sent to{" "}
+      <span className="mcp-consent-destination-origin break-all font-medium text-foreground">
+        {origin}
+      </span>
+      . Only continue if you recognize it.
+    </span>
+  );
+}
+
+/** The decision: two equal buttons, declining first. */
+export function McpConsentActions({
+  decline = "Cancel",
+  onDecline,
+  onConnect,
+  waiting,
+  connectDisabled = false,
+}: {
+  readonly decline?: string;
+  readonly onDecline: () => void;
+  /** Omitted when there is nothing the person could connect. */
+  readonly onConnect?: (() => void) | undefined;
+  readonly waiting: boolean;
+  readonly connectDisabled?: boolean;
+}) {
+  return (
+    <div className="mcp-consent-actions grid grid-cols-2 gap-2.5">
+      <Button variant="outline" disabled={waiting} onClick={onDecline}>
+        {decline}
+      </Button>
+      {onConnect !== undefined && (
+        <Button disabled={connectDisabled || waiting} loading={waiting} onClick={onConnect}>
+          Connect
+        </Button>
       )}
     </div>
   );

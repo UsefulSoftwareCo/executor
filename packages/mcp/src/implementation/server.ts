@@ -7,14 +7,13 @@ import {
   Exit,
   Layer,
   Match,
-  Schema,
   Stream,
   Tracer,
   type Scope,
 } from "effect";
 import { McpProtocol, McpServer } from "effect/ai";
 import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { ElicitationMode } from "../contracts/elicitation.ts";
+import type { ElicitationMode } from "../contracts/elicitation.ts";
 import {
   McpToolkit,
   NativeMcpToolkit,
@@ -107,7 +106,6 @@ const protocols = [
 /** Native approval needs form elicitation, which 2025-06-18 introduced. */
 const nativeProtocols = [McpProtocol.v2025_11_25, McpProtocol.v2025_06_18] as const;
 
-const query = Schema.Struct({ elicitation_mode: Schema.optionalKey(ElicitationMode) });
 // Model and native programs belong to the authenticated caller, so a client may resume from
 // any of its MCP sessions. Browser approval links address one protocol session.
 const callerIdentity = (product: string, mode: "model" | "native") =>
@@ -369,32 +367,21 @@ export const makeMcp = (options: McpOptions) =>
       browser = yield* onFirstUse("browser");
     const http = Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => {
       const url = new URL(request.url, "http://mcp.internal");
-      return Schema.decodeUnknownEffect(query)(HttpServerRequest.searchParamsFromURL(url)).pipe(
-        Effect.matchEffect({
-          onFailure: () =>
-            Effect.succeed(
-              HttpServerResponse.jsonUnsafe(
-                { error: "Unsupported elicitation_mode. Use model, native or browser." },
-                { status: 400 },
-              ),
-            ),
-          onSuccess: ({ elicitation_mode }) =>
-            Match.value(elicitation_mode ?? "model")
-              .pipe(
-                Match.when("model", () => model),
-                Match.when("native", () => native),
-                Match.when("browser", () => browser),
-                Match.exhaustive,
-              )
-              .pipe(
-                // Hosts may mount the transport under another path, such as an organization
-                // URL; the protocol router itself is fixed at /mcp.
-                Effect.provideService(
-                  HttpServerRequest.HttpServerRequest,
-                  request.modify({ url: `/mcp${url.search}` }),
-                ),
-              ),
-        }),
+      return options.mode.pipe(
+        Effect.flatMap((mode) =>
+          Match.value(mode).pipe(
+            Match.when("model", () => model),
+            Match.when("native", () => native),
+            Match.when("browser", () => browser),
+            Match.exhaustive,
+          ),
+        ),
+        // Hosts may mount the transport under another path, such as an organization URL; the
+        // protocol router itself is fixed at /mcp.
+        Effect.provideService(
+          HttpServerRequest.HttpServerRequest,
+          request.modify({ url: `/mcp${url.search}` }),
+        ),
       );
     }).pipe(Effect.map(withSseHeartbeat));
     const approvals: BrowserApprovals = {

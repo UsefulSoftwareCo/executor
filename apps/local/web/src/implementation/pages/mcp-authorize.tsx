@@ -5,15 +5,20 @@ import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import { grantTarget, singleResourceOrigin } from "@executor-js/mcp-auth/grants";
 import {
+  McpConsentActions,
+  McpConsentDestination,
   McpConsentLayout,
   McpConsentLoading,
   McpConsentSummary,
+  McpConsentTargetRows,
   consentDestination,
 } from "@executor-js/ui/dashboard/mcp-consent";
-import { Button } from "@executor-js/ui/components/button";
 import { localMcpClientAtom, localMcpConsentAtom } from "../../contracts/mcp.ts";
 
-/** Pairing establishes the operator; the MCP URL determines this connection's approval mode. */
+/**
+ * Pairing establishes the operator. The page approves what the MCP URL names, shown as plain
+ * values: the access and where approvals are answered.
+ */
 export function LocalMcpAuthorizePage() {
   const page = usePageUrl();
   const query = page.search.slice(1),
@@ -48,20 +53,23 @@ export function LocalMcpAuthorizePage() {
         </p>
       }
     >
-      <McpConsentSummary target={target} destination={destination} />
+      <McpConsentSummary
+        note={
+          destination === undefined ? undefined : <McpConsentDestination origin={destination} />
+        }
+      >
+        <McpConsentTargetRows target={target} />
+      </McpConsentSummary>
       {error && (
         <p role="alert" className="auth-error text-destructive text-[13px]">
           {error}
         </p>
       )}
-      <div className="mcp-consent-actions flex items-center justify-end gap-2.5 border-t border-t-border pt-5 [&_>_p]:mr-auto [&_>_p]:text-muted-foreground [&_>_p]:text-[12px] max-[480px]:flex-wrap">
-        <Button variant="outline" disabled={pending.waiting} onClick={() => decide(false)}>
-          Cancel
-        </Button>
-        <Button loading={pending.waiting} disabled={pending.waiting} onClick={() => decide(true)}>
-          Connect
-        </Button>
-      </div>
+      <McpConsentActions
+        onDecline={() => decide(false)}
+        onConnect={() => decide(true)}
+        waiting={pending.waiting}
+      />
     </McpConsentLayout>
   );
 }

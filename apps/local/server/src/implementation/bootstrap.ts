@@ -448,7 +448,7 @@ export const withKeyFileNotice = <A, E, R>(directory: string, start: Effect.Effe
   });
 
 /**
- * Read the API key a client of one directory's running server sends, such as `executor pair`.
+ * Read the API key a client of one directory's running server sends, such as `executor service pair`.
  * Unlike `localConfiguration` it never creates the directory, a record or keys, and takes no
  * lock: every bootstrap write is atomic and saves keys before the record that names them.
  * A supplied EXECUTOR_API_KEY is sent instead of the saved key. Clients never need the

@@ -192,11 +192,28 @@ layer(HostedLive, { excludeTestServices: true })("Scoped MCP connections", (it) 
               ok: true,
               value: { message: "ok", receipt: hidden.receipt },
             });
-            // A connection's token cannot be used at another URL, even the full-access one.
-            const moved = yield* Effect.exit(
-              mcp.connect(Redacted.make(Redacted.value(grant.tokens).access_token), "moved"),
+            // At the full-access URL, a connection's token still reaches only its connection: the
+            // grant's record, not the URL, decides what it serves.
+            const moved = executor(
+              yield* mcp.connect(Redacted.make(Redacted.value(grant.tokens).access_token), "moved"),
             );
-            expect(Exit.isFailure(moved)).toBe(true);
+            const [movedRead, movedWrite, movedOther] = yield* Effect.all(
+              [
+                moved("Read at the full-access URL", `return await ${appPath}.read({})`),
+                moved(
+                  "Write at the full-access URL",
+                  `return await ${appPath}.write({message: "denied"})`,
+                ),
+                moved(
+                  "Another app at the full-access URL",
+                  `return await ${hiddenPath}.echo({message: "denied"})`,
+                ),
+              ],
+              { concurrency: 3 },
+            );
+            expect(movedRead.execution).toEqual({ ok: true, value: { read: receipt } });
+            expect(movedWrite.execution.ok).toBe(false);
+            expect(movedOther.execution.ok).toBe(false);
           }),
         );
         yield* evidence.step(

@@ -22,6 +22,15 @@ import { Api, body } from "./api.ts";
 import { Evidence } from "./evidence.ts";
 import { withStandInPackage } from "./stand-in-package.ts";
 
+/**
+ * What the device approval page sends in `x-executor-grant-settings`: the apps the sign-in reaches
+ * and how its approvals are answered.
+ */
+export interface GrantSettings {
+  readonly access?: { readonly kind: "all" } | { readonly kind: "connection"; readonly id: string };
+  readonly mode?: "model" | "native" | "browser";
+}
+
 /** A finished process: its exit code and complete output. */
 export interface Finished {
   readonly code: number;
@@ -111,6 +120,12 @@ export const appsCli = Effect.gen(function* () {
       "    writeFileSync(file, JSON.stringify({ ...read(), [this.key]: password }));",
       "    return Promise.resolve();",
       "  }",
+      "  deletePassword() {",
+      "    if (unavailable) return absent();",
+      "    const { [this.key]: removed, ...kept } = read();",
+      "    writeFileSync(file, JSON.stringify(kept));",
+      "    return Promise.resolve(removed !== undefined);",
+      "  }",
       "}",
     ].join("\n"),
   );
@@ -179,6 +194,15 @@ export const appsCli = Effect.gen(function* () {
     run(`executor apps ${args.join(" ")}`, launch.command, [...launch.prefix, "apps", ...args], {
       env,
     });
+  /** Run `executor <args>`, with `extra` added to the environment and `input` on stdin. */
+  const executor = (
+    args: ReadonlyArray<string>,
+    options: { readonly extra?: Record<string, string>; readonly input?: string } = {},
+  ) =>
+    run(`executor ${args.join(" ")}`, launch.command, [...launch.prefix, ...args], {
+      env: { ...env, ...options.extra },
+      input: options.input,
+    });
   // Git runs the CLI as its credential helper, configured as the docs configure it.
   const helper = `!${[launch.command, ...launch.prefix].map((part) => `'${part}'`).join(" ")} apps credential`;
   /** Run Git in the working copy with the CLI as its credential helper and no prompts. */
@@ -209,17 +233,21 @@ export const appsCli = Effect.gen(function* () {
    * (`"stays"`), one that finds no browser (`"fails"`), or a working opener over SSH (`"remote"`). Returns where the CLI said to approve and the code, as soon as it prints them,
    * and the fiber that ends with the CLI.
    */
-  const deviceLogin = (host: string, browser: "opens" | "stays" | "fails" | "remote") =>
+  const deviceLogin = (
+    host: string,
+    browser: "opens" | "stays" | "fails" | "remote",
+    command: ReadonlyArray<string> = ["apps", "login"],
+  ) =>
     Effect.gen(function* () {
-      const args = ["login", "--host", host];
+      const args = [...command, "--host", host];
       const shown = yield* Deferred.make<DeviceCode>();
       const running = yield* Effect.forkScoped(
         evidence.step(
-          `executor apps ${args.join(" ")}`,
+          `executor ${args.join(" ")}`,
           Effect.scoped(
             Effect.gen(function* () {
               const child = yield* processes.spawn(
-                ChildProcess.make(launch.command, [...launch.prefix, "apps", ...args], {
+                ChildProcess.make(launch.command, [...launch.prefix, ...args], {
                   cwd: checkout,
                   extendEnv: false,
                   env:
@@ -263,12 +291,17 @@ export const appsCli = Effect.gen(function* () {
       return { ...printed, finished: running };
     });
   /**
-   * `executor apps login --host <host>`, approved for the test organization by the synthetic
-   * owner. The grant is revoked with the caller's scope.
+   * `executor apps login --host <host>`, or the sign-in `command` names, approved for the test
+   * organization by the synthetic owner, with `settings` as the grant settings the approval page
+   * sends, when given. The grant is revoked with the caller's scope.
    */
-  const login = (host: string) =>
+  const login = (
+    host: string,
+    command: ReadonlyArray<string> = ["apps", "login"],
+    settings?: GrantSettings,
+  ) =>
     Effect.gen(function* () {
-      const started = yield* deviceLogin(host, "opens");
+      const started = yield* deviceLogin(host, "opens", command);
       const lookup = yield* api.request(
         actors.owner,
         "GET",
@@ -292,10 +325,15 @@ export const appsCli = Effect.gen(function* () {
         "POST",
         "/api/auth/device/decide",
         { user_code: started.userCode, accept: true },
-        { "x-executor-organization": actors.organization.id },
+        {
+          "x-executor-organization": actors.organization.id,
+          ...(settings === undefined
+            ? {}
+            : { "x-executor-grant-settings": JSON.stringify(settings) }),
+        },
       );
       if (decided.status !== 200) return yield* Effect.die(`device decision ${decided.status}`);
-      return { ...started, finished: yield* Fiber.join(started.finished) };
+      return { ...started, clientId, finished: yield* Fiber.join(started.finished) };
     });
   /** The page the CLI opened in the browser, if any. Read once the CLI has exited. */
   const browserOpened = fs
@@ -319,10 +357,28 @@ export const appsCli = Effect.gen(function* () {
   const withoutOsStore = Effect.sync(() => {
     env.EXECUTOR_E2E_NO_OS_STORE = "1";
   });
+  /** What the OS credential store stand-in holds for `service` and `account`, if anything. */
+  const storedCredential = (service: string, account: string) =>
+    fs.readFileString(path.join(root, "store.json")).pipe(
+      Effect.flatMap(
+        Schema.decodeUnknownEffect(
+          Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
+        ),
+      ),
+      Effect.map((store) => Option.fromUndefinedOr(store[`${service}\n${account}`])),
+    );
+  /** How to start `executor <args>` with this home and credential store, for an MCP client. */
+  const command = (args: ReadonlyArray<string>) => ({
+    command: launch.command,
+    args: [...launch.prefix, ...args],
+    env: { ...env },
+  });
   /** Whether anything reached the OS credential store stand-in. */
   const osStoreUsed = fs.exists(path.join(root, "store.json"));
   return {
     cli,
+    executor,
+    command,
     git,
     login,
     deviceLogin,
@@ -331,6 +387,7 @@ export const appsCli = Effect.gen(function* () {
     openerRunning,
     withoutOsStore,
     osStoreUsed,
+    storedCredential,
     home,
     checkout,
     fs,

@@ -21,18 +21,22 @@ import { Clock, Effect, Option, Schema } from "effect";
 import { authCall, parse, runAuth } from "./auth-call.ts";
 import { deviceAuthorizationPlugin, devicePollsPerRequest } from "./device-authorization.ts";
 import {
+  ApprovalMode,
   ConnectionId,
   Grant,
   GrantId,
   GrantPolicy,
+  GrantSettings,
   GrantTarget,
-  approvalRefusal,
   defaultResource,
+  grantSettingsHeader,
   grantTarget,
   mcpOAuthResources,
   OAuthResourceProvisioningFailed,
+  recordedTarget,
   type ResourceOrigins,
 } from "../contracts/grant.ts";
+import { approvalRefusal } from "../contracts/grant-enforcement.ts";
 import {
   Connection,
   ConnectionName,
@@ -53,6 +57,8 @@ const Record = Schema.Struct({
   policy: Schema.String,
   revoked: Schema.Boolean,
   connection: Schema.optionalKey(Schema.NullOr(ConnectionId)),
+  /** Absent only on MCP grants approved before records stored it, and on API grants. */
+  mode: Schema.optionalKey(Schema.NullOr(ApprovalMode)),
 });
 const ConnectionRecord = Schema.Struct({
   id: ConnectionId,
@@ -207,6 +213,25 @@ export type GrantExpiryOutcome = typeof GrantExpiryOutcome.Type;
 const GrantExpiryResults = Schema.Struct({
   grants: Schema.Array(Schema.Struct({ id: GrantId, outcome: GrantExpiryOutcome })),
 });
+/** What storing a grant's approval mode did, or would do; see `storeModes`. */
+export const GrantModeOutcome = Schema.Literals([
+  /** The mode its consent's resource names is now stored. */
+  "stored",
+  /** A report found no stored mode; applying would store the one its consent names. */
+  "missing",
+  /** It already stores a mode. */
+  "present",
+  /** An API grant, which has no mode. */
+  "api",
+  /** Its consent is missing or unreadable, or disagrees with its record; it stays refused. */
+  "unreadable",
+  /** Missing or already revoked. */
+  "absent",
+]);
+export type GrantModeOutcome = typeof GrantModeOutcome.Type;
+const GrantModeResults = Schema.Struct({
+  grants: Schema.Array(Schema.Struct({ id: GrantId, outcome: GrantModeOutcome })),
+});
 const GrantPage = Schema.Struct({
   grants: Schema.Array(Schema.Struct({ id: GrantId, userId: Schema.NonEmptyString })),
 });
@@ -345,15 +370,9 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       ),
     );
   /** A connection grant has no authority of its own; it reads the connection on every use. */
-  const currentPolicy = (
-    context: GenericEndpointContext,
-    row: typeof Record.Type,
-    target: GrantTarget,
-  ) =>
+  const currentPolicy = (context: GenericEndpointContext, row: typeof Record.Type) =>
     Effect.gen(function* () {
       const connection = row.connection ?? undefined;
-      const requested = target.kind === "mcp" ? target.connection : undefined;
-      if (connection !== requested) return yield* Effect.fail(new APIError("UNAUTHORIZED"));
       if (connection === undefined)
         return yield* parse(Schema.fromJsonString(GrantPolicy), row.policy);
       const current = yield* ownedConnection(
@@ -366,7 +385,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       Effect.mapError((error) => (error.statusCode === 503 ? error : new APIError("UNAUTHORIZED"))),
     );
   const project = (context: GenericEndpointContext, row: typeof Record.Type, target: GrantTarget) =>
-    currentPolicy(context, row, target).pipe(
+    currentPolicy(context, row).pipe(
       Effect.map((policy) =>
         GrantAccess.make({
           userId: row.userId,
@@ -414,16 +433,29 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         ],
       }),
     ).pipe(Effect.flatMap(consentTarget));
+  /**
+   * The consent's resource, which is the token audience, and what the grant serves: MCP or the
+   * API by that resource, with the mode and connection its record holds. A record that agrees with
+   * no target authorizes nothing.
+   */
+  const recordFor = (context: GenericEndpointContext, row: typeof Record.Type) =>
+    consentFor(context, row).pipe(
+      Effect.flatMap(({ target: consented, resource }) => {
+        const target = recordedTarget(row, consented);
+        return target === undefined
+          ? Effect.fail(new APIError("UNAUTHORIZED"))
+          : Effect.succeed({ consented, target, resource });
+      }),
+    );
   const targetFor = (context: GenericEndpointContext, row: typeof Record.Type) =>
-    consentFor(context, row).pipe(Effect.map(({ target }) => target));
-  /** Consent and narrowing refuse a policy that even the grant's own URL could not serve. */
+    recordFor(context, row).pipe(Effect.map(({ target }) => target));
+  /** Consent and narrowing refuse a policy that the grant's own approval mode could not serve. */
   const requireServable = (policy: GrantPolicy, target: GrantTarget) =>
     approvalRefusal(policy, target) === undefined
       ? Effect.void
       : Effect.fail(
           new APIError("FORBIDDEN", {
-            message:
-              "Browser approval needs a grant issued at an MCP URL with elicitation_mode=browser.",
+            message: "Browser approval needs a grant whose approval mode is browser.",
           }),
         );
   const access = (context: GenericEndpointContext, kind: "mcp" | "api") =>
@@ -440,12 +472,12 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       const row = yield* get(context, claims.grant_id);
       if (row.userId !== claims.sub || row.clientId !== claims.client_id)
         return yield* Effect.fail(new APIError("UNAUTHORIZED"));
-      const { target, resource } = yield* consentFor(context, row);
+      const { consented, target, resource } = yield* recordFor(context, row);
       const audiences = typeof claims.aud === "string" ? [claims.aud] : claims.aud;
       if (
         audiences.length !== 1 ||
         audiences[0] !== resource ||
-        target.kind !== kind ||
+        consented.kind !== kind ||
         !claims.scope.split(" ").includes(kind === "api" ? "executor" : "mcp")
       )
         return yield* Effect.fail(new APIError("UNAUTHORIZED"));
@@ -676,6 +708,49 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       );
     });
   /**
+   * Store on each unrevoked MCP grant without a mode the mode its consent's resource names, which
+   * is what it serves until then (`recordedTarget`). Only a grant that still has no mode is
+   * written, so a repeat, or a pass that overlaps another, changes nothing already stored.
+   */
+  const storeModes = (ctx: GenericEndpointContext, ids: readonly GrantId[], apply: boolean) =>
+    Effect.forEach(ids, (id) =>
+      Effect.gen(function* () {
+        const outcome = (value: GrantModeOutcome) => ({ id, outcome: value });
+        const found = yield* authCall(() =>
+          ctx.context.adapter.findOne({ model: "mcpGrant", where: [{ field: "id", value: id }] }),
+        );
+        if (found === null) return outcome("absent");
+        const decoded = Schema.decodeUnknownOption(Record)(found);
+        if (Option.isNone(decoded)) return outcome("unreadable");
+        const row = decoded.value;
+        if (row.revoked) return outcome("absent");
+        if (row.mode != null) return outcome("present");
+        const consent = yield* consentFor(ctx, row).pipe(
+          Effect.map(Option.some),
+          Effect.catchIf(
+            (error) => error.statusCode !== 503,
+            () => Effect.succeed(Option.none()),
+          ),
+        );
+        if (Option.isNone(consent)) return outcome("unreadable");
+        const target = recordedTarget(row, consent.value.target);
+        if (target === undefined) return outcome("unreadable");
+        if (target.kind === "api") return outcome("api");
+        if (!apply) return outcome("missing");
+        const changed = yield* authCall(() =>
+          ctx.context.adapter.update({
+            model: "mcpGrant",
+            where: [
+              { field: "id", value: id },
+              { field: "mode", operator: "eq", value: null },
+            ],
+            update: { mode: target.mode },
+          }),
+        );
+        return outcome(changed === null ? "present" : "stored");
+      }),
+    );
+  /**
    * When a user authorizes a client, revoke their idle grants for the same organization and URL
    * from the same client: the same registration or a re-registration of it. MCP clients that lose
    * their credentials register again under a new client ID, so two registrations match when both
@@ -884,10 +959,11 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
           Effect.gen(function* () {
             if (!usable.has(grant.id) || disabled.has(grant.clientId)) return [];
             const consent = consentOf.get(grant.id);
-            const target =
+            const consented =
               consent === undefined
                 ? undefined
                 : grantTarget(resourceOrigins, consent.resources ?? []);
+            const target = consented === undefined ? undefined : recordedTarget(grant, consented);
             if (consent === undefined || target === undefined) return [];
             const connection =
               grant.connection == null ? undefined : connectionOf.get(grant.connection);
@@ -958,8 +1034,10 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
       return yield* project(ctx, row, yield* targetFor(ctx, row));
     });
   /**
-   * The grant one approval authorizes: its resource, policy and organization. Consent and device
-   * approval both create grants here, so their tokens carry the same authority.
+   * The grant one approval authorizes: its resource, policy, organization, approval mode and
+   * connection. Consent and device approval both create grants here, so their tokens carry the
+   * same authority. The person chooses the mode and connection on the sign-in page and sends them
+   * in the settings header; the resource URL only preselects what an omitted field keeps.
    */
   const createGrant = (
     ctx: GenericEndpointContext,
@@ -968,32 +1046,54 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     resources: readonly string[],
   ) =>
     Effect.gen(function* () {
-      const target = grantTarget(resourceOrigins, resources);
-      if (target === undefined)
+      const named = grantTarget(resourceOrigins, resources);
+      if (named === undefined)
         return yield* Effect.fail(
           new APIError("BAD_REQUEST", {
             message: "Choose one Executor connection URL and try again.",
           }),
         );
-      const policyHeader = ctx.headers?.get("x-executor-grant");
+      const policyHeader = ctx.headers?.get("x-executor-grant") ?? undefined;
+      const settingsHeader = ctx.headers?.get(grantSettingsHeader) ?? undefined;
+      // An API grant has no approval mode or connection to choose.
+      if (named.kind === "api" && settingsHeader !== undefined)
+        return yield* Effect.fail(new APIError("BAD_REQUEST"));
+      const chosen =
+        settingsHeader === undefined
+          ? {}
+          : yield* parse(Schema.fromJsonString(GrantSettings), settingsHeader);
+      const connectionId =
+        named.kind === "api"
+          ? undefined
+          : chosen.access === undefined
+            ? named.connection
+            : chosen.access.kind === "connection"
+              ? chosen.access.id
+              : undefined;
       const connection =
-        target.kind === "mcp" && target.connection !== undefined
-          ? yield* ownedConnection(ctx, { userId }, target.connection).pipe(
+        connectionId === undefined
+          ? undefined
+          : yield* ownedConnection(ctx, { userId }, connectionId).pipe(
               Effect.mapError(
                 (error) =>
                   new APIError(error.statusCode === 503 ? "SERVICE_UNAVAILABLE" : "FORBIDDEN", {
                     message: "This connection is no longer available.",
                   }),
               ),
-            )
-          : undefined;
+            );
       // A connection's access comes from its record; the consent page cannot widen it.
-      if (connection !== undefined && policyHeader !== null && policyHeader !== undefined)
+      if (connection !== undefined && policyHeader !== undefined)
         return yield* Effect.fail(new APIError("BAD_REQUEST"));
+      const target: GrantTarget =
+        named.kind === "api"
+          ? named
+          : connection === undefined
+            ? { kind: "mcp", mode: chosen.mode ?? named.mode }
+            : { kind: "mcp", mode: chosen.mode ?? named.mode, connection: connection.id };
       const policy =
         connection !== undefined
           ? connectionGrantPlaceholder
-          : policyHeader === null || policyHeader === undefined
+          : policyHeader === undefined
             ? GrantPolicy.make({ kind: "all" })
             : yield* parse(Schema.fromJsonString(GrantPolicy), policyHeader);
       yield* requireServable(policy, target);
@@ -1007,6 +1107,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             resource,
             policy: JSON.stringify(policy),
             revoked: false,
+            ...(target.kind === "mcp" ? { mode: target.mode } : {}),
             ...(connection === undefined ? {} : { connection: connection.id }),
           },
         }),
@@ -1075,6 +1176,10 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
           // Nullable and unreferenced so existing grant rows keep their own policy unchanged.
           // Better Auth adds columns before creating tables, so a foreign key could not apply.
           connection: { type: "string", required: false },
+          // The approval mode chosen at sign-in. Nullable so the running server keeps writing
+          // grants while the column is added; data step `12_store_agent_grant_modes` fills it for
+          // grants approved before it existed. API grants have none.
+          mode: { type: "string", required: false },
         },
       },
       mcpConnection: {
@@ -1334,6 +1439,24 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             ),
           ),
       ),
+      storeMcpGrantModes: createAuthEndpoint(
+        "/mcp/grants/store-modes",
+        {
+          ...serverOnly,
+          body: Schema.toStandardSchemaV1(
+            Schema.Struct({
+              ids: Schema.Array(GrantId).check(Schema.isMaxLength(grantBatch)),
+              apply: Schema.Boolean,
+            }),
+          ),
+        },
+        (ctx) =>
+          runAuth(
+            storeModes(ctx, ctx.body.ids, ctx.body.apply).pipe(
+              Effect.map((grants) => ({ grants })),
+            ),
+          ),
+      ),
       listMcpGrants: createAuthEndpoint(
         "/mcp/grants",
         { method: "GET", requireHeaders: true },
@@ -1380,8 +1503,11 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
               const listed = yield* Effect.forEach(rows, (row) =>
                 parse(Record, row).pipe(
                   Effect.flatMap((record) => {
-                    const target = targets.get(record.id);
-                    if (target === undefined) return Effect.fail(new APIError("UNAUTHORIZED"));
+                    const consented = targets.get(record.id);
+                    if (consented === undefined) return Effect.fail(new APIError("UNAUTHORIZED"));
+                    const target = recordedTarget(record, consented);
+                    // A record that agrees with no target authorizes nothing; omit it.
+                    if (target === undefined) return Effect.succeed(Option.none());
                     const current = project(ctx, record, target).pipe(Effect.map(Option.some));
                     // A grant whose connection was just revoked grants nothing; omit it.
                     return (record.connection ?? undefined) === undefined
@@ -1560,7 +1686,10 @@ export class GrantExpiryUnavailable extends Schema.TaggedError<GrantExpiryUnavai
   {},
 ) {}
 
-/** The server-only endpoints that expire idle grants, as a host's own auth instance exposes them. */
+/**
+ * The server-only endpoints that expire idle grants and store their approval modes, as a host's
+ * own auth instance exposes them.
+ */
 export interface GrantExpiryApi {
   readonly listMcpGrantIds: (input: {
     body: { after: string | null; limit: number };
@@ -1568,11 +1697,15 @@ export interface GrantExpiryApi {
   readonly expireIdleMcpGrants: (input: {
     body: { ids: readonly string[]; apply: boolean };
   }) => Promise<unknown>;
+  readonly storeMcpGrantModes: (input: {
+    body: { ids: readonly string[]; apply: boolean };
+  }) => Promise<unknown>;
 }
 
 /**
- * Grant expiry through a host's auth instance: list unrevoked grants in ID order, and check a
- * batch, revoking those idle for 30 days when applying. Results are parsed again at the boundary.
+ * Grant maintenance through a host's auth instance: list unrevoked grants in ID order, check a
+ * batch, revoking those idle for 30 days when applying, and store the approval mode of grants
+ * approved before records held one. Results are parsed again at the boundary.
  */
 export const grantExpiry = (
   call: <A>(run: (api: GrantExpiryApi) => Promise<A>) => Effect.Effect<A, unknown>,
@@ -1587,6 +1720,12 @@ export const grantExpiry = (
   expire: (ids: readonly string[], apply: boolean) =>
     call((api) => api.expireIdleMcpGrants({ body: { ids, apply } })).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(GrantExpiryResults)),
+      Effect.map((result) => result.grants),
+      Effect.mapError(() => new GrantExpiryUnavailable()),
+    ),
+  storeModes: (ids: readonly string[], apply: boolean) =>
+    call((api) => api.storeMcpGrantModes({ body: { ids, apply } })).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(GrantModeResults)),
       Effect.map((result) => result.grants),
       Effect.mapError(() => new GrantExpiryUnavailable()),
     ),

@@ -7,6 +7,7 @@
     ".": "./src/http.ts",
     "./http": "./src/http.ts",
     "./cli": "./src/cli.ts",
+    "./tools-cli": "./src/tools-cli.ts",
     "./contracts": "./src/contracts/api.ts",
     "./data-steps": "./src/data-steps.ts",
     "./source-display": "./src/implementation/source-display.ts",
@@ -17,8 +18,10 @@
   "dependencies": {
     "@executor-js/app-source": "workspace:*",
     "@executor-js/app-templates": "workspace:*",
+    "@executor-js/mcp-auth": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/utils": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.32.1",
     "@napi-rs/keyring": "2.1.0",
     "effect": "4.0.1",
     "jsonc-parser": "3.3.1",

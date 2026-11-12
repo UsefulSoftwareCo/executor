@@ -11,6 +11,7 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { appsCli } from "../support/apps-cli.ts";
 import { Browser } from "../support/browser.ts";
+import { chooseConsentOrganization, consentValue } from "../support/consent-page.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Evidence } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
@@ -66,9 +67,11 @@ const decideInBrowser = (input: {
     yield* browser.use("The page shows the code to compare", (page) =>
       page.getByText(input.userCode, { exact: true }).waitFor({ state: "visible" }),
     );
-    yield* browser.use("The page states the requested access", (page) =>
-      page.getByText("Connect to the Executor API", { exact: true }).waitFor({ state: "visible" }),
-    );
+    expect(
+      yield* browser.use("The page states the requested access", (page) =>
+        consentValue(page, "Access"),
+      ),
+    ).toBe("Executor API");
     if (!input.accept) {
       yield* browser.checkpoint("Review the device request");
       yield* browser.use("Deny the request", (page) =>
@@ -85,14 +88,8 @@ const decideInBrowser = (input: {
     );
     const organization = organizations.find((item) => item.id === actors.organization.id);
     expect(organization, "the owner belongs to the test organization").toBeDefined();
-    yield* browser.use("Choose the organization to connect", (page) =>
-      page.getByRole("combobox").click(),
-    );
-    yield* browser.use("Select the synthetic organization", (page) =>
-      page.getByRole("option", { name: organization?.name ?? "", exact: true }).click(),
-    );
-    yield* browser.use("The organization list closes", (page) =>
-      page.getByRole("listbox").waitFor({ state: "hidden" }),
+    yield* browser.use("Connect the device to the synthetic organization", (page) =>
+      chooseConsentOrganization(page, organization?.name ?? ""),
     );
     yield* browser.checkpoint("Review the device request");
     yield* browser.use("Connect the device", (page) =>

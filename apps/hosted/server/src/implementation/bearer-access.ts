@@ -17,11 +17,14 @@
 import { defaultKeyHasher } from "@better-auth/api-key";
 import { fullAuthority, type AuthorizationPolicy } from "@executor-js/authorization";
 import {
+  ApprovalMode,
+  ConnectionId,
   GrantId,
   GrantPolicy,
   grantAuthorization,
   grantTarget,
-  type ApprovalMode,
+  recordedTarget,
+  McpWhoami,
   type GrantTarget,
 } from "@executor-js/mcp-auth";
 import { ConnectionPolicy, connectionGrantPolicy } from "@executor-js/mcp-auth/connections";
@@ -210,6 +213,7 @@ const OAuthRow = Schema.Struct({
   grantPolicy: Schema.NullOr(Schema.String),
   grantRevoked: Schema.NullOr(Schema.Boolean),
   grantConnection: Schema.NullOr(Schema.String),
+  grantMode: Schema.NullOr(Schema.String),
   consentResources: Schema.NullOr(Schema.String),
   role: Schema.NullOr(Schema.String),
   organizationSlug: Schema.NullOr(Schema.String),
@@ -267,6 +271,7 @@ const loadOAuth = (
     g.policy as "grantPolicy",
     g.revoked as "grantRevoked",
     g.connection as "grantConnection",
+    g.mode as "grantMode",
     consent.resources::text as "consentResources",
     m.role as role,
     o.slug as "organizationSlug",
@@ -370,10 +375,21 @@ const oauthAccess = (
       return yield* unauthorized("wrong_resource");
     // The consent's one resource, at any of this deployment's origins, is the token's audience.
     const consented = row.consentResources === null ? [] : (strings(row.consentResources) ?? []);
-    const target: GrantTarget | undefined = grantTarget(resourceOrigins, consented);
-    if (target === undefined) return yield* unauthorized("wrong_resource");
-    if (audiences.length !== 1 || audiences[0] !== consented[0] || target.kind !== kind)
+    const audience: GrantTarget | undefined = grantTarget(resourceOrigins, consented);
+    if (audience === undefined) return yield* unauthorized("wrong_resource");
+    if (audiences.length !== 1 || audiences[0] !== consented[0] || audience.kind !== kind)
       return yield* unauthorized("wrong_resource");
+    // What the grant serves: the approval mode and connection its record holds, never the URL's.
+    const record = {
+      mode: yield* Schema.decodeUnknownEffect(Schema.NullOr(ApprovalMode))(row.grantMode).pipe(
+        Effect.mapError(() => unauthorized("unknown")),
+      ),
+      connection: yield* Schema.decodeUnknownEffect(Schema.NullOr(ConnectionId))(
+        row.grantConnection,
+      ).pipe(Effect.mapError(() => unauthorized("unknown"))),
+    };
+    const target = recordedTarget(record, audience);
+    if (target === undefined) return yield* unauthorized("wrong_resource");
     if (!scopes.includes(kind === "api" ? "executor" : "mcp"))
       return yield* unauthorized("insufficient_scope");
     // Live membership in the grant's organization.
@@ -387,9 +403,7 @@ const oauthAccess = (
     // organization the request names; the grant's user is the token's subject (checked above).
     yield* recordCaller(organization, row.subject);
     // A connection grant has no authority of its own; it reads the connection on every use.
-    const connection = row.grantConnection ?? undefined;
-    if (connection !== (target.kind === "mcp" ? target.connection : undefined))
-      return yield* unauthorized("wrong_resource");
+    const connection = record.connection ?? undefined;
     const policy =
       connection === undefined
         ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(GrantPolicy))(
@@ -634,6 +648,49 @@ export const mcpBearerAccess = (
           : new McpForbidden({ reason }),
     ),
   );
+
+const WhoamiRow = Schema.Struct({
+  slug: Schema.String,
+  name: Schema.String,
+  connectionName: Schema.NullOr(Schema.String),
+});
+
+/**
+ * What authenticated MCP access reaches, for `/mcp/whoami`: its organization's slug and name, and
+ * its connection's name, read in one statement. A connection revoked or deleted since the access
+ * was authenticated leaves it unauthorized.
+ */
+export const describeMcpAccess = (access: McpAccess) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const target = access.grant.target;
+    if (target.kind !== "mcp") return yield* new McpUnauthorized();
+    const connection = target.connection ?? null;
+    const rows = yield* sql`
+      select o.slug, o.name,
+        (select mc.name from "mcpConnection" mc
+          where mc.id = ${connection} and mc.revoked is false) as "connectionName"
+      from organization o where o.id = ${access.access.organization}`.pipe(
+      Effect.mapError(() => new AuthenticationUnavailable()),
+    );
+    const row = yield* Schema.decodeUnknownEffect(WhoamiRow)(rows[0]).pipe(
+      Effect.mapError(() => new AuthenticationUnavailable()),
+    );
+    const policy = access.grant.policy;
+    const apps = policy.kind === "tools" ? policy.apps.length : 0;
+    if (target.connection !== undefined && row.connectionName === null)
+      return yield* new McpUnauthorized();
+    return McpWhoami.make({
+      organization: { id: access.access.organization, slug: row.slug, name: row.name },
+      access:
+        target.connection !== undefined && row.connectionName !== null
+          ? { kind: "connection", id: target.connection, name: row.connectionName, apps }
+          : policy.kind === "tools"
+            ? { kind: "tools", apps }
+            : { kind: "all" },
+      mode: target.mode,
+    });
+  });
 
 /** Executor API authority for an OAuth grant or a PAT, with the organization's slug. */
 export const apiBearerAccess = (origins: HostedOAuthOrigins, request: BearerRequest) =>
