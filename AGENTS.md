@@ -94,7 +94,7 @@ live in `.oxlintrc.jsonc`, formatter settings in `.oxfmtrc.json`.
 `bun run check` first runs `patches:check` (`scripts/check-patches.ts`): every
 `patchedDependencies` selector must name an installed version, and every
 installed copy must hold the whole patch: `git apply --reverse --check` at the
-exact lines, and no forward apply. Bun skips a stale selector and still exits 0,
+exact lines, the file modes the patch names, and no forward apply. Bun skips a stale selector and still exits 0,
 so move a patch with its dependency's version, or remove both. Git is stricter
 than Bun: after `bun patch --commit`, drop `.bun-tag-*` sections and sections
 whose `b/` path is outside the package, and keep `\ No newline at end of file`

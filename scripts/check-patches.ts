@@ -10,7 +10,7 @@
  * copy missing any hunk, created or deleted file, or rename does not reverse; a patch that changes
  * nothing also applies forward. Patches may change, create, delete and rename text files; anything
  * else (mode changes, copies, binary files) is rejected, as is a copy whose file mode differs from
- * the patch's. So is a patch Git cannot read exactly, such as a missing `\ No newline at end of
+ * the patch's (compared here: Git before 2.45 does not warn about it under --reverse). So is a patch Git cannot read exactly, such as a missing `\ No newline at end of
  * file`, even where Bun is lenient, and a file section Git skips.
  *
  * Before checking this repository it runs the same check on the fixtures in
@@ -20,6 +20,7 @@
 import { execFile } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -98,15 +99,16 @@ const headerPath = (line: string) => {
 };
 
 /**
- * Every file section of a patch, with its line and the path Git names its change by (the new path;
- * the old one for a deletion). A section starts at `diff --git` or at a `---` line followed by
+ * Every file section of a patch, with its line, the path Git names its change by (the new path;
+ * the old one for a deletion) and the mode the patched file has (from its `index` or
+ * `new file mode` line), if the section names one. A section starts at `diff --git` or at a `---` line followed by
  * `+++` outside a hunk, whether or not Git would read it: Git skips a `---`/`+++` pair with no
  * hunk as garbage, which is what this has to catch. Hunks are skipped by their line counts, as Git
  * does, so a hunk line that looks like a header is not one.
  */
 const sections = (patch: string) => {
   const lines = patch.split("\n").map((line) => line.replace(/\r$/, ""));
-  const found: Array<{ line: number; path: string | undefined }> = [];
+  const found: Array<{ line: number; path: string | undefined; mode?: string }> = [];
   let index = 0;
   const hunks = () => {
     for (;;) {
@@ -133,6 +135,7 @@ const sections = (patch: string) => {
       const same = /^diff --git a\/(.+) b\/\1$/.exec(lines[index]!)?.[1];
       let renamed: string | undefined;
       let named: string | undefined;
+      let mode: string | undefined;
       index += 1;
       while (
         index < lines.length &&
@@ -145,9 +148,12 @@ const sections = (patch: string) => {
           break;
         }
         renamed = /^(?:rename|copy) to (.*)$/.exec(lines[index]!)?.[1] ?? renamed;
+        mode =
+          /^(?:index [0-9a-f]+\.\.[0-9a-f]+|new file mode) (\d{6})$/.exec(lines[index]!)?.[1] ??
+          mode;
         index += 1;
       }
-      found.push({ line, path: renamed ?? named ?? same });
+      found.push({ line, path: renamed ?? named ?? same, mode });
       hunks();
     } else if (pair()) {
       found.push({ line, path: headerPath(lines[index + 1]!) ?? headerPath(lines[index]!) });
@@ -191,10 +197,25 @@ const refused = async (cwd: string, patch: string) => {
   return undefined;
 };
 
+/** A file's mode as Git records it: a symlink, or a regular file with or without the owner's x bit. */
+const gitMode = (file: string) => {
+  const stat = lstatSync(file, { throwIfNoEntry: false });
+  if (stat === undefined) return undefined;
+  if (stat.isSymbolicLink()) return "120000";
+  return (stat.mode & 0o100) === 0 ? "100644" : "100755";
+};
+
 /** Why one installed copy does not hold the patch, if it doesn't. */
 const notApplied = async (copy: string, patch: string) => {
   const reverse = await appliesExactly(copy, patch, true);
   if (!reverse.ok) return `not applied: ${reverse.reason}`;
+  // Git 2.45 and later warn about this under --reverse and fail above; older versions say nothing.
+  for (const section of sections(readFileSync(patch, "utf8"))) {
+    if (section.path === undefined || section.mode === undefined) continue;
+    const mode = gitMode(join(copy, section.path));
+    if (mode !== undefined && mode !== section.mode)
+      return `not applied: ${section.path} has type ${mode}, expected ${section.mode}`;
+  }
   if ((await appliesExactly(copy, patch, false)).ok)
     return "applies forward too: it changes nothing";
   return undefined;
