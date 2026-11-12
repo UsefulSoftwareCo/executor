@@ -199,8 +199,9 @@ for free; add the existing files that cover the code layers below it. `main` run
 full suite after merge, so a missed scenario is still caught there. The `select`
 job reads the live description when it runs. If it has no `e2e` block yet, the job
 waits up to 3 minutes for one, so write the block right after opening the PR. After
-changing the block once CI has read it, push or rerun the whole workflow
-(`gh run rerun <run-id>`), not only failed jobs.
+changing the block once CI has read it, push (an empty commit will do) or rerun the whole
+workflow (`gh run rerun <run-id>`), not only failed jobs. Rerunning the whole workflow deletes
+the evidence of every earlier attempt, so push instead when an attempt failed.
 
 A ruleset on `main` requires a pull request whose `checks / check` and
 `checks / e2e` passed. When GitHub refuses a merge as blocked ("the base branch
@@ -220,7 +221,9 @@ touch:
 - Compare with the latest `main` run: `gh run list -w CI -b main -L 3`.
 - If `main` fails the same scenario, it is not yours. Name it in the handoff.
 - Otherwise read the failure evidence before rerunning. Rerun a failed job at
-  most once. A scenario that fails again, or fails on unrelated PRs, is a flake.
+  most once, with `gh run rerun <run-id> --failed`. Each attempt keeps its own evidence
+  artifact, named with its attempt number (`e2e-cloud-evidence-0-attempt-1`). Rerunning
+  all jobs deletes every earlier attempt's artifacts. A scenario that fails again, or fails on unrelated PRs, is a flake.
   Record the scenario, the run link and the error in the handoff and finish the
   task; fixing it is separate work that Rhys schedules.
 
