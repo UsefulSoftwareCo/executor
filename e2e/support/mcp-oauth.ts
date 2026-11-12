@@ -41,6 +41,8 @@ export interface AccessGrant extends Authorized {
 interface ClientOptions {
   readonly name: string;
   readonly offlineAccess: boolean;
+  /** The `logo_uri` it registers, if any. */
+  readonly logoUri?: string;
 }
 const e2eClient: ClientOptions = { name: "Executor E2E client", offlineAccess: true };
 class OAuthFailed extends Schema.TaggedError<OAuthFailed>()("OAuthFailed", {
@@ -340,6 +342,7 @@ const make = Effect.gen(function* () {
       const unregistered = yield* api.session();
       const registered = yield* api.request(unregistered, "POST", "/api/auth/oauth2/register", {
         client_name: client.name,
+        ...(client.logoUri === undefined ? {} : { logo_uri: client.logoUri }),
         redirect_uris: [receiver.url],
         token_endpoint_auth_method: "none",
         grant_types: ["authorization_code", "refresh_token"],
@@ -524,9 +527,13 @@ const make = Effect.gen(function* () {
     /** Authorize the MCP or API resource a client discovered at another origin. */
     authorizeAt: (kind: "mcp" | "api", resourceOrigin: string) =>
       authorize(kind, undefined, "sent", e2eClient, resourceOrigin),
-    /** Authorize the plain MCP URL for a client registered under its own name. */
-    authorizeNamed: (name: string) =>
-      authorize("mcp", undefined, "sent", { name, offlineAccess: true }),
+    /** Authorize the plain MCP URL for a client registered under its own name and logo. */
+    authorizeNamed: (name: string, logoUri?: string) =>
+      authorize("mcp", undefined, "sent", {
+        name,
+        offlineAccess: true,
+        ...(logoUri === undefined ? {} : { logoUri }),
+      }),
     /** Authorize a named client that asks for no refresh token, so its access ends in an hour. */
     authorizeWithoutRefresh: (name: string) =>
       authorizeClient("mcp", undefined, "sent", { name, offlineAccess: false }).pipe(

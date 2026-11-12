@@ -13,7 +13,12 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
-import { clientGrantId, ConnectionView, consentTo } from "../support/mcp-connections.ts";
+import {
+  clientGrantId,
+  ConnectionView,
+  consentTo,
+  scopedClientLogo,
+} from "../support/mcp-connections.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { legacyStorage } from "../support/legacy-storage.ts";
 import { serverControl } from "../support/server-control.ts";
@@ -57,6 +62,7 @@ const Call = Schema.Struct({
     kind: Schema.String,
     id: Schema.NullOr(Schema.String),
     name: Schema.NullOr(Schema.String),
+    icon: Schema.NullOr(Schema.String),
   }),
   connection: Schema.NullOr(
     Schema.Struct({ id: Schema.String, name: Schema.NullOr(Schema.String) }),
@@ -94,7 +100,12 @@ const Filters = Schema.Struct({
   members: Schema.Array(Schema.Struct({ id: Schema.String })),
   apps: Schema.Array(Schema.Struct({ id: Schema.String })),
   agents: Schema.Array(
-    Schema.Struct({ source: Schema.String, id: Schema.String, name: Schema.NullOr(Schema.String) }),
+    Schema.Struct({
+      source: Schema.String,
+      id: Schema.String,
+      name: Schema.NullOr(Schema.String),
+      icon: Schema.NullOr(Schema.String),
+    }),
   ),
   connections: Schema.Array(
     Schema.Struct({ id: Schema.String, name: Schema.NullOr(Schema.String) }),
@@ -411,7 +422,8 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log", (it) => {
         const found = yield* findCall(actors.admin, ref);
         expect(found).toMatchObject({
           member: { id: member.id, name: member.name, email: member.email },
-          source: { kind: "api-key", id: key.id, name: key.name },
+          // Only an agent's client has a logo.
+          source: { kind: "api-key", id: key.id, name: key.name, icon: null },
           connection: null,
           session: null,
           run: null,
@@ -681,7 +693,13 @@ return "done";`,
         for (const item of byAgent.page.items)
           expect(item).toMatchObject({
             member: { id: admin.id },
-            source: { kind: "agent", id: grant, name: "Scoped connection client" },
+            // The logo is the client's registered one, read through the grant.
+            source: {
+              kind: "agent",
+              id: grant,
+              name: "Scoped connection client",
+              icon: scopedClientLogo,
+            },
             connection: { id: connection.id, name },
             run: { calls: 2 },
           });
@@ -694,6 +712,7 @@ return "done";`,
           source: "agent",
           id: grant,
           name: "Scoped connection client",
+          icon: scopedClientLogo,
         });
         expect(filters.connections).toContainEqual({ id: connection.id, name });
       }).pipe(Effect.provide(Layer.mergeAll(McpClient.layer))),

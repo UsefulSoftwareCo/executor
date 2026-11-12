@@ -241,6 +241,11 @@ export const ToolCall = Schema.Struct({
     id: Schema.NullOr(Schema.String),
     /** The agent's client or the key's name when the call was made. */
     name: Schema.NullOr(Schema.String),
+    /**
+     * The logo URL the agent's client registered (`logo_uri`), read through its grant; null for
+     * other sources and once the grant is gone. Self-declared like the name.
+     */
+    icon: Schema.NullOr(Schema.String),
   }),
   connection: Schema.NullOr(
     Schema.Struct({ id: Schema.String, name: Schema.NullOr(Schema.String) }),
@@ -333,6 +338,8 @@ export const ToolCallFilters = Schema.Struct({
       source: ToolCallSource,
       id: Schema.String,
       name: Schema.NullOr(Schema.String),
+      /** As the call's `source.icon`. */
+      icon: Schema.NullOr(Schema.String),
     }),
   ),
   connections: Schema.Array(

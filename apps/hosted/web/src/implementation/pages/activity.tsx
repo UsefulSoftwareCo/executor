@@ -51,6 +51,7 @@ import {
 } from "@executor-js/ui/components/dropdown-menu";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { CopyButton } from "@executor-js/ui/dashboard/code";
+import { AgentIcon } from "@executor-js/ui/dashboard/agent-icon";
 import { AppIcon, SearchInput } from "@executor-js/ui/dashboard/common";
 import { usePreload } from "@executor-js/ui/dashboard/context";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
@@ -149,6 +150,26 @@ const sourceKinds: Record<ToolCallSource, string> = {
 };
 /** What made a call, by name when it has one. */
 const sourceName = (source: ToolCall["source"]) => source.name ?? sourceKinds[source.kind];
+
+/** What made a call: an agent's own mark, or the kind of source. `className` sizes it. */
+function SourceMark({
+  source,
+  className,
+}: {
+  readonly source: Pick<ToolCall["source"], "kind" | "name" | "icon">;
+  readonly className: string;
+}) {
+  return source.kind === "agent" ? (
+    <AgentIcon name={source.name} icon={source.icon} className={className} />
+  ) : (
+    <HugeiconsIcon
+      icon={sourceIcons[source.kind]}
+      strokeWidth={2}
+      className={className}
+      aria-hidden
+    />
+  );
+}
 
 const pills = {
   good: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
@@ -378,21 +399,18 @@ type Facet = {
 /** A member's initials, or the mark of what acted when no member did. */
 function Face({
   name,
-  icon,
+  mark,
   small = false,
 }: {
   readonly name: string | null;
-  readonly icon: Icon;
+  /** Shown when no member acted. */
+  readonly mark?: ReactNode;
   readonly small?: boolean;
 }) {
   return (
     <Avatar size="sm" className={small ? "size-5" : undefined}>
       <AvatarFallback className={`font-medium ${small ? "text-[9px]" : "text-[10px]"}`}>
-        {name === null ? (
-          <HugeiconsIcon icon={icon} size={small ? 11 : 13} strokeWidth={2} aria-hidden />
-        ) : (
-          initials(name)
-        )}
+        {name === null ? mark : initials(name)}
       </AvatarFallback>
     </Avatar>
   );
@@ -440,7 +458,7 @@ const facetsFor = (
       value: search.member,
       choices: members.map((member) => {
         const label = member.name ?? member.email ?? "Unknown member";
-        return { value: member.id, label, mark: <Face name={label} icon={UserIcon} small /> };
+        return { value: member.id, label, mark: <Face name={label} small /> };
       }),
       fallback: Option.match(
         Option.fromNullishOr(calls.find((call) => call.member?.id === search.member)?.member),
@@ -485,7 +503,12 @@ const facetsFor = (
       choices: agents.map((agent) => ({
         value: agent.id,
         label: agent.name ?? sourceKinds[agent.source],
-        mark: <HugeiconsIcon icon={sourceIcons[agent.source]} strokeWidth={2} aria-hidden />,
+        mark: (
+          <SourceMark
+            source={{ kind: agent.source, name: agent.name, icon: agent.icon }}
+            className="size-4"
+          />
+        ),
       })),
       fallback: Option.match(
         Option.fromNullishOr(calls.find((call) => call.source.id === search.agent)?.source),
@@ -1162,16 +1185,18 @@ function Pill({ tone, children }: { readonly tone: string; readonly children: Re
 
 /** Who a call ran as, or what made it when no member did, with what made it beneath. */
 function Actor({ call }: { readonly call: ToolCall }) {
-  const icon = sourceIcons[call.source.kind];
   return (
     <span className="flex min-w-0 items-center gap-2.5">
-      <Face name={call.member === null ? null : personName(call.member)} icon={icon} />
+      <Face
+        name={call.member === null ? null : personName(call.member)}
+        mark={<SourceMark source={call.source} className="size-[13px]" />}
+      />
       <span className="min-w-0">
         <span className="block truncate text-[13px] font-medium">
           {call.member === null ? sourceKinds[call.source.kind] : personName(call.member)}
         </span>
         <span className="flex items-center gap-1 text-xs text-muted-foreground">
-          <HugeiconsIcon icon={icon} size={12} strokeWidth={2} aria-hidden />
+          <SourceMark source={call.source} className="size-3" />
           <span className="truncate">{sourceName(call.source)}</span>
         </span>
       </span>

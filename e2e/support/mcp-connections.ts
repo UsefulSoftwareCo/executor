@@ -67,6 +67,9 @@ const Grants = Schema.Array(
  * goes to a loopback URL that is never contacted; the consent response carries it.
  * An undefined resource sends no RFC 8707 `resource` parameter, as some MCP clients do.
  */
+/** The logo the scoped connection client registers; the tool call log reads it back. */
+export const scopedClientLogo = "https://scoped-client.e2e.invalid/logo.png";
+
 export const consentTo = (
   session: Session,
   resource: string | undefined,
@@ -85,6 +88,7 @@ export const consentTo = (
       "/api/auth/oauth2/register",
       {
         client_name: "Scoped connection client",
+        logo_uri: scopedClientLogo,
         redirect_uris: [redirect],
         token_endpoint_auth_method: "none",
         grant_types: ["authorization_code", "refresh_token"],

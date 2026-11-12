@@ -123,6 +123,7 @@ const CallRow = Schema.Struct({
   source: ToolCallSource,
   source_id: NullableString,
   source_name: NullableString,
+  source_icon: NullableString,
   connection_id: NullableString,
   connection_name: NullableString,
   session_id: NullableString,
@@ -173,7 +174,7 @@ const toCall = (row: CallRow, named: (app: AppId) => boolean): ToolCall => ({
     row.user_id === null && row.user_name === null
       ? null
       : { id: row.user_id, member: row.user_member, name: row.user_name, email: row.user_email },
-  source: { kind: row.source, id: row.source_id, name: row.source_name },
+  source: { kind: row.source, id: row.source_id, name: row.source_name, icon: row.source_icon },
   connection:
     row.connection_id === null ? null : { id: row.connection_id, name: row.connection_name },
   session: row.session_id,
@@ -307,7 +308,10 @@ const listCalls = (query: ToolCallQuery) =>
           to_char(c.started_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as started_text,
           c.user_id, c.user_name, case when um.id is null then null else u.email end as user_email,
           um.id is not null as user_member,
-          c.source, c.source_id, c.source_name, c.connection_id, c.connection_name,
+          c.source, c.source_id, c.source_name,
+          (select oc.icon from "mcpGrant" g join "oauthClient" oc on oc."clientId" = g."clientId"
+            where c.source = 'agent' and g.id = c.source_id) as source_icon,
+          c.connection_id, c.connection_name,
           c.session_id, c.run_id,
           c.app_id, c.app_name, c.version_id, c.tool, c.kind, ${status} as status,
           c.error_type, c.status_code, c.approval_id,
@@ -401,11 +405,17 @@ const listFilters = (range: ToolCallRange | undefined) =>
           (array_agg(c.app_name order by c.started_at desc))[1] as name
         from hosted_tool_calls c where ${visible}
         group by c.app_id order by max(c.started_at) desc limit ${toolCallFilterChoices}`;
-      const agents = yield* sql`select c.source, c.source_id as id,
-          (array_agg(c.source_name order by c.started_at desc))[1] as name
-        from hosted_tool_calls c where ${visible} and c.source_id is not null
-        group by c.source, c.source_id order by max(c.started_at) desc
-        limit ${toolCallFilterChoices}`;
+      // The logo is the client's own, read now: the log copies only its name.
+      const agents = yield* sql`select a.source, a.id, a.name,
+          (select oc.icon from "mcpGrant" g join "oauthClient" oc on oc."clientId" = g."clientId"
+            where a.source = 'agent' and g.id = a.id) as icon
+        from (select c.source, c.source_id as id,
+            (array_agg(c.source_name order by c.started_at desc))[1] as name,
+            max(c.started_at) as latest
+          from hosted_tool_calls c where ${visible} and c.source_id is not null
+          group by c.source, c.source_id order by max(c.started_at) desc
+          limit ${toolCallFilterChoices}) a
+        order by a.latest desc`;
       const connections = yield* sql`select c.connection_id as id,
           (array_agg(c.connection_name order by c.started_at desc))[1] as name
         from hosted_tool_calls c where ${visible} and c.connection_id is not null
@@ -418,7 +428,9 @@ const listFilters = (range: ToolCallRange | undefined) =>
           Schema.Array(Schema.Struct({ id: AppId, name: Schema.String })),
         )(apps),
         agents: yield* Schema.decodeUnknownEffect(
-          Schema.Array(Schema.Struct({ ...Choice.fields, source: ToolCallSource })),
+          Schema.Array(
+            Schema.Struct({ ...Choice.fields, source: ToolCallSource, icon: NullableString }),
+          ),
         )(agents),
         connections: yield* Schema.decodeUnknownEffect(Schema.Array(Choice))(connections),
       };
