@@ -107,6 +107,7 @@
     "e2e:ci-selection": "vitest run --config e2e/ci-selection.config.ts",
     "e2e:ci-supersede": "vitest run --config e2e/ci-supersede.config.ts",
     "e2e:pr-preview-selection": "vitest run --config e2e/pr-preview-selection.config.ts",
+    "e2e:test-stage-unreadable": "vitest run --config e2e/test-stage-unreadable.config.ts",
     "e2e:release-archives": "vitest run --config e2e/release-archives.config.ts",
     "e2e:emulator-failures": "vitest run --config e2e/emulator-failures.config.ts",
     "e2e:typecheck-runner": "vitest run --config e2e/typecheck-runner.config.ts",

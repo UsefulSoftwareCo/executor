@@ -24,6 +24,10 @@ const Page = Schema.Struct({
 export const discoverTestStages = Effect.gen(function* () {
   const account = yield* Config.NonEmptyString("CLOUDFLARE_ACCOUNT_ID");
   const token = yield* Config.Redacted("CLOUDFLARE_API_TOKEN");
+  // A recorded copy of the API can stand in for it (`test-stage-unreadable.spec.ts`).
+  const api = yield* Config.String("TEST_STAGE_CLOUDFLARE_API").pipe(
+    Config.withDefault("https://api.cloudflare.com"),
+  );
   const http = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
   const stages = new Map<string, number>();
   let page = 1;
@@ -31,7 +35,7 @@ export const discoverTestStages = Effect.gen(function* () {
   do {
     const response = yield* http.execute(
       HttpClientRequest.get(
-        `https://api.cloudflare.com/client/v4/accounts/${encodeURIComponent(account)}/workers/scripts?page=${page}&per_page=100`,
+        `${api}/client/v4/accounts/${encodeURIComponent(account)}/workers/scripts?page=${page}&per_page=100`,
       ).pipe(HttpClientRequest.bearerToken(token)),
     );
     const body = yield* HttpClientResponse.schemaBodyJson(Page)(response);
