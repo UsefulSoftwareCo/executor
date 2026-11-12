@@ -45,8 +45,7 @@ export const startScheduleWorker = (
     yield* Effect.gen(function* () {
       yield* Effect.flatten(ScheduleHostReady);
       return yield* Effect.forever(
-        // One server's own sources: half the batch in flight at once.
-        executor[WebhookSourceHost].tick({ limit: config.concurrency, concurrency: 4 }).pipe(
+        executor[WebhookSourceHost].tick(config.concurrency).pipe(
           Effect.withSpan("schedule.dispatch"),
           Effect.catch(() =>
             Effect.logError("Webhook source dispatch failed").pipe(Effect.as(false)),

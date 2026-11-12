@@ -267,14 +267,11 @@ export const UnlinkWebhookSource = Schema.Struct({ ...app, account: AccountId })
 export const WebhookSourceHost = Symbol.for("executor/WebhookSourceHost");
 export interface WebhookSourceDispatcher {
   /**
-   * Reconcile up to `limit` webhook sources, `concurrency` at a time: saved intent first, oldest
-   * source first, then due retries. Succeeds with `true` when the batch was full of saved intent,
-   * so more may be waiting and the host should run another pass now instead of at its next wake.
+   * Reconcile up to `limit` webhook sources: saved intent first, then due retries. Succeeds with
+   * `true` when the batch was full of saved intent, so more may be waiting and the host should run
+   * another pass now instead of at its next wake.
    */
-  readonly tick: (options: {
-    readonly limit: number;
-    readonly concurrency: number;
-  }) => Effect.Effect<boolean, StorageError>;
+  readonly tick: (limit: number) => Effect.Effect<boolean, StorageError>;
 }
 /** Host-created delivery envelope; public callback senders supply only the enclosed request. */
 export const DeliverWebhook = Schema.Struct({ ...subscription, request: WebhookRequestData });
