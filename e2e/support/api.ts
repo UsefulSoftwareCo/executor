@@ -5,6 +5,13 @@ import { randomBytes } from "node:crypto";
 import { Evidence } from "./evidence.ts";
 import { indented, keptCauseText, reveal, secret } from "./failure-text.ts";
 import { Target, withCause, type Response } from "./platform.ts";
+import {
+  CallFailed,
+  decodeFailure,
+  readResponse,
+  RequestFailure,
+  requestFailureText,
+} from "./request-failure.ts";
 import { isMcpPath, targetHosts } from "./role-hosts.ts";
 
 import { BrowserCookies } from "../sdk/contracts.ts";
@@ -42,10 +49,13 @@ export class RequestFailed extends Schema.TaggedError<RequestFailed>()("RequestF
   reason: Schema.Literals(["origin", "timeout", "request", "deployment"]),
   /** The raw cause stays redacted; the message gives its masked text (see `failure-text.ts`). */
   cause: Schema.optional(Schema.Redacted(Schema.Unknown)),
+  /** How far the call went before it failed: see `request-failure.ts`. */
+  failure: Schema.optional(RequestFailure),
 }) {
   override get message() {
     const detail = keptCauseText(this);
-    return `${this.method} ${this.path} ${this.status === undefined ? `failed (${this.reason}) before a JSON response was read` : `returned HTTP ${this.status} without a JSON response`}${this.response ? ` (${this.response.contentType}, ${this.response.characters} characters, final path ${this.response.path})` : ""}${detail === undefined ? "" : `\n  ${indented(detail)}`}`;
+    const failure = this.failure === undefined ? "" : `: ${requestFailureText(this.failure)}`;
+    return `${this.method} ${this.path} ${this.status === undefined ? `failed (${this.reason}) before a JSON response was read` : `returned HTTP ${this.status} without a JSON response`}${this.response ? ` (${this.response.contentType}, ${this.response.characters} characters, final path ${this.response.path})` : ""}${failure}${detail === undefined ? "" : `\n  ${indented(detail)}`}`;
   }
 }
 /** A server response may be decoded only against its public contract. */
@@ -147,8 +157,10 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
                   });
                   if (data !== undefined)
                     request = yield* HttpClientRequest.bodyJson(request, data);
-                  const response = yield* http.execute(request);
-                  const text = yield* response.text;
+                  const { response, text, started } = yield* readResponse(
+                    http.execute(request),
+                    "60 seconds",
+                  );
                   // Alchemy's temporary deployment Worker answers every path with
                   // HTTP 200. Classify that exact response without retaining bodies.
                   const deploying =
@@ -157,19 +169,25 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
                     ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
                         text,
                       ).pipe(
-                        Effect.mapError(
-                          () =>
-                            new RequestFailed({
-                              method,
-                              path: url.pathname,
-                              status: response.status,
-                              response: {
-                                contentType: response.headers["content-type"] ?? "absent",
-                                characters: text.length,
-                                path: new URL(response.url || url.href).pathname,
-                              },
-                              reason: deploying ? "deployment" : "request",
-                            }),
+                        Effect.catch((cause) =>
+                          decodeFailure(response.status, started, cause).pipe(
+                            Effect.flatMap((failure) =>
+                              Effect.fail(
+                                new RequestFailed({
+                                  method,
+                                  path: url.pathname,
+                                  status: response.status,
+                                  response: {
+                                    contentType: response.headers["content-type"] ?? "absent",
+                                    characters: text.length,
+                                    path: new URL(response.url || url.href).pathname,
+                                  },
+                                  reason: deploying ? "deployment" : "request",
+                                  failure,
+                                }),
+                              ),
+                            ),
+                          ),
                         ),
                       )
                     : null;
@@ -177,18 +195,27 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
                 }),
               ).pipe(
                 Effect.provideService(HttpClient.TracerPropagationEnabled, false),
-                Effect.timeout("60 seconds"),
                 Effect.mapError((cause) =>
                   Schema.is(RequestFailed)(cause)
                     ? cause
-                    : withCause(
-                        new RequestFailed({
-                          method,
-                          path: new URL(path, origin).pathname,
-                          reason: Cause.isTimeoutError(cause) ? "timeout" : "request",
-                          cause: Redacted.make(cause),
-                        }),
-                      ),
+                    : cause instanceof CallFailed
+                      ? withCause(
+                          new RequestFailed({
+                            method,
+                            path: new URL(path, origin).pathname,
+                            reason: cause.failure.stage === "timeout" ? "timeout" : "request",
+                            failure: cause.failure,
+                            cause: cause.cause,
+                          }),
+                        )
+                      : withCause(
+                          new RequestFailed({
+                            method,
+                            path: new URL(path, origin).pathname,
+                            reason: Cause.isTimeoutError(cause) ? "timeout" : "request",
+                            cause: Redacted.make(cause),
+                          }),
+                        ),
                 ),
               ),
           } satisfies Session;

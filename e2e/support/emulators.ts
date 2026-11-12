@@ -1,9 +1,26 @@
-import { Config, Context, Effect, FileSystem, Layer, Option, Schedule, Schema } from "effect";
+import {
+  Config,
+  Context,
+  Duration,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Schedule,
+  Schema,
+} from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { createHash, randomUUID } from "node:crypto";
 import { Target } from "./platform.ts";
 import { roleHost } from "./role-hosts.ts";
 import { heldValue, reveal, secret } from "./failure-text.ts";
+import {
+  CallFailed,
+  parseJson,
+  readResponse,
+  RequestFailure,
+  requestFailureText,
+} from "./request-failure.ts";
 
 export const BaseUrl = Schema.String.check(
   Schema.makeFilter((value) => {
@@ -224,11 +241,19 @@ class EmulatorFailed extends Schema.TaggedError<EmulatorFailed>()("EmulatorFaile
   ray: Schema.optional(Schema.String),
   /** emulators.dev's own failure report, reduced to its diagnostic fields. */
   report: Schema.optional(FailureReport),
+  /** How far a call that got no usable response went: see `request-failure.ts`. */
+  failure: Schema.optional(RequestFailure),
 }) {
   get message() {
     const target = this.emulator === undefined ? "" : ` on ${this.emulator}`;
     const detail = [
-      this.status === undefined ? this.reason : `HTTP ${this.status}`,
+      this.failure !== undefined
+        ? this.failure.stage === "timeout"
+          ? requestFailureText(this.failure)
+          : `${this.reason ?? "request"}: ${requestFailureText(this.failure)}`
+        : this.status === undefined
+          ? this.reason
+          : `HTTP ${this.status}`,
       this.ray === undefined ? undefined : `cf-ray ${this.ray}`,
     ].filter((part) => part !== undefined);
     const words = (parts: ReadonlyArray<string | undefined>) =>
@@ -304,6 +329,11 @@ export const withoutEmulatorTracing = <A, E, R>(effect: Effect.Effect<A, E, R>) 
  * body can quote tokens, sign-in codes and addresses. Client tracing is off for these requests,
  * because its span records the full URL as `url.full` and `server.address`.
  */
+/** How long one emulator call may take. Only a spec of the harness itself sets another. */
+export const EmulatorDeadline = Context.Reference<Duration.Input>("e2e/EmulatorDeadline", {
+  defaultValue: () => "30 seconds",
+});
+
 export const emulatorRequest = (
   origin: string,
   path: string,
@@ -313,19 +343,23 @@ export const emulatorRequest = (
   verb?: "PUT" | "DELETE",
 ) => {
   const method = verb ?? (payload === undefined ? "GET" : "POST");
-  const operation = `${method} ${path}`;
+  // The query can name addresses and IDs; the operation keeps the path only.
+  const operation = `${method} ${path.split("?")[0]}`;
   const target = emulatorTarget(origin);
   const emulator = target?.label;
   return Effect.scoped(
     Effect.gen(function* () {
       const http = yield* HttpClient.HttpClient;
+      const deadline = yield* EmulatorDeadline;
       let request = HttpClientRequest.make(method)(`${origin}${path}`);
       if (token !== undefined)
         request = HttpClientRequest.setHeader(request, "authorization", `Bearer ${token}`);
       if (payload !== undefined) request = yield* HttpClientRequest.bodyJson(request, payload);
-      const response = yield* withoutEmulatorTracing(http.execute(request));
-      if (response.status < 200 || response.status >= 300) {
-        const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
+      const { response, text, started } = yield* readResponse(
+        withoutEmulatorTracing(http.execute(request)),
+        deadline,
+      );
+      if (response.status < 200 || response.status >= 300)
         return yield* new EmulatorFailed({
           operation,
           emulator,
@@ -333,18 +367,25 @@ export const emulatorRequest = (
           ray: Option.getOrUndefined(decodeRay(response.headers["cf-ray"])),
           report: reportOf(text, { target, method, path }),
         });
-      }
-      return yield* response.json;
+      return yield* parseJson(text, response.status, started);
     }),
   ).pipe(
-    Effect.timeout("30 seconds"),
-    Effect.catchTag("TimeoutError", () =>
-      Effect.fail(new EmulatorFailed({ operation, emulator, reason: "timeout" })),
-    ),
     Effect.mapError((error) =>
       error instanceof EmulatorFailed
         ? error
-        : new EmulatorFailed({ operation, emulator, reason: "request" }),
+        : error instanceof CallFailed
+          ? new EmulatorFailed({
+              operation,
+              emulator,
+              // A refusal whose body could not be read still answers callers that match on it.
+              ...(error.failure.status !== undefined &&
+                (error.failure.status < 200 || error.failure.status >= 300) && {
+                  status: error.failure.status,
+                }),
+              reason: error.failure.stage === "timeout" ? "timeout" : "request",
+              failure: error.failure,
+            })
+          : new EmulatorFailed({ operation, emulator, reason: "request" }),
     ),
   );
 };

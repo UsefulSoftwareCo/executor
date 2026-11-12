@@ -8,11 +8,12 @@ import { expect } from "@effect/vitest";
 import { Clock, Effect, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes, randomUUID } from "node:crypto";
-import { Api, body } from "./api.ts";
+import { Api, body, RequestFailed } from "./api.ts";
 import { Actors } from "./actors.ts";
 import { connectionsPath, requirementPath } from "./app-accounts.ts";
 import { App, Resource } from "./contracts.ts";
-import { Target } from "./platform.ts";
+import { Target, withCause } from "./platform.ts";
+import { CallFailed, parseJson, readResponse } from "./request-failure.ts";
 import { removeAppWhenStopped, settleWebhookSubscriptions } from "./webhook-sources.ts";
 import { appsManifest } from "./apps-release.ts";
 import { heldValue, reveal } from "./failure-text.ts";
@@ -334,16 +335,35 @@ export const eventFixtures = Effect.gen(function* () {
           "x-executor-organization": actors.organization.id,
         }),
       );
-      const response = yield* http.execute(
-        yield* HttpClientRequest.bodyJson(request, {
-          jsonrpc: "2.0",
-          id: 1,
-          method,
-          params: { ...params, _meta: meta },
-        }),
+      // No deadline, as before: a response whose headers never come fails when the client gives
+      // up (undici's 300 s headers timeout), labelled `before response` with that time-out's code.
+      const { response, text, started } = yield* readResponse(
+        http.execute(
+          yield* HttpClientRequest.bodyJson(request, {
+            jsonrpc: "2.0",
+            id: 1,
+            method,
+            params: { ...params, _meta: meta },
+          }),
+        ),
       );
-      return yield* response.json;
-    }).pipe(Effect.scoped);
+      return yield* parseJson(text, response.status, started);
+    }).pipe(
+      Effect.scoped,
+      Effect.mapError((error) =>
+        error instanceof CallFailed
+          ? withCause(
+              new RequestFailed({
+                method: "POST",
+                path: "/mcp",
+                reason: "request",
+                failure: error.failure,
+                cause: error.cause,
+              }),
+            )
+          : error,
+      ),
+    );
   const ok = <A>(schema: Schema.Decoder<A>, value: unknown) =>
     Schema.decodeUnknownEffect(RpcResult)(value).pipe(
       Effect.flatMap(({ result }) => Schema.decodeUnknownEffect(schema)(result)),

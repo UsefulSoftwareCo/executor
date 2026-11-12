@@ -256,6 +256,35 @@ const bounded = (message: string, lineLength = maxLine) => {
 /** One free text, such as a page error or a console message: masked in full, then bounded. */
 export const safeText = (text: string): string => bounded(mask(text));
 
+// Node and undici codes are short constants, such as ERR_INVALID_PROTOCOL or ECONNREFUSED.
+const codePattern = /^[A-Z][A-Z0-9_]{1,63}$/u;
+const codeDepth = 8;
+
+/** The next level of a cause chain: an Effect `HttpClientError`'s `reason`, else `cause`. */
+export const nextCause = (value: object): unknown => {
+  const { reason, cause } = value as { reason?: unknown; cause?: unknown };
+  return typeof reason === "object" && reason !== null ? reason : cause;
+};
+
+/**
+ * The first Node or undici error code on a cause chain, read from each level's `code` property
+ * and never from message text. It walks the chain by `nextCause`, deeper than `failureParts`
+ * does: fetch's `TypeError` holds the socket error that has the code.
+ */
+export const errorCode = (cause: unknown): string | undefined => {
+  let current = cause;
+  for (
+    let level = 0;
+    level < codeDepth && typeof current === "object" && current !== null;
+    level++
+  ) {
+    const { code } = current as { code?: unknown };
+    if (typeof code === "string" && codePattern.test(code)) return code;
+    current = nextCause(current);
+  }
+  return undefined;
+};
+
 const describeOne = (value: unknown): { readonly text: string; readonly next: unknown } => {
   if (typeof value === "string") return { text: safeText(value), next: undefined };
   if (value === null || typeof value !== "object")
@@ -265,11 +294,8 @@ const describeOne = (value: unknown): { readonly text: string; readonly next: un
     typeof error.name === "string" && /^[A-Za-z][\w$]*$/u.test(error.name)
       ? error.name
       : (value.constructor?.name ?? "Object");
-  // Node and undici codes are short constants, such as ERR_INVALID_PROTOCOL or ECONNREFUSED.
   const code =
-    typeof error.code === "string" && /^[A-Z][A-Z0-9_]{1,63}$/u.test(error.code)
-      ? ` [${error.code}]`
-      : "";
+    typeof error.code === "string" && codePattern.test(error.code) ? ` [${error.code}]` : "";
   const message = typeof error.message === "string" ? error.message : "";
   const nested =
     value instanceof AggregateError && error.cause === undefined

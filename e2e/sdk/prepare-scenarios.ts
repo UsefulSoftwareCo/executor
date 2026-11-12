@@ -5,7 +5,6 @@ import {
   Effect,
   FileSystem,
   Layer,
-  Option,
   Ref,
   Result,
   Schedule,
@@ -17,7 +16,7 @@ import { HttpClient, HttpClientError } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { RequestFailed, SessionClients } from "../support/api.ts";
-import { keptCauseParts } from "../support/failure-text.ts";
+import { errorCode, keptCauseParts } from "../support/failure-text.ts";
 import { Target } from "../support/platform.ts";
 import { PreparedScenarios } from "./contracts.ts";
 import { startScenario } from "./scenario.ts";
@@ -29,31 +28,6 @@ class DomainNotReady extends Schema.TaggedError<DomainNotReady>()("DomainNotRead
   status: Schema.optional(Schema.Number),
   code: Schema.optional(Schema.String),
 }) {}
-const TransportDiagnostic = Schema.Struct({
-  code: Schema.optional(
-    Schema.Literals([
-      "ENOTFOUND",
-      "EAI_AGAIN",
-      "ECONNRESET",
-      "ECONNREFUSED",
-      "ETIMEDOUT",
-      "ERR_TLS_CERT_ALTNAME_INVALID",
-      "CERT_HAS_EXPIRED",
-      "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
-      "ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE",
-      "ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE",
-      "ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR",
-    ]),
-  ),
-  cause: Schema.optional(Schema.Unknown),
-});
-const transportCode = (cause: unknown, depth = 0): string | undefined => {
-  if (depth > 3) return undefined;
-  const parsed = Schema.decodeUnknownOption(TransportDiagnostic)(cause);
-  return Option.isNone(parsed)
-    ? undefined
-    : (parsed.value.code ?? transportCode(parsed.value.cause, depth + 1));
-};
 /**
  * What preparation records about an organization that was not ready: the failing request's method,
  * path, status, reason, response shape and the masked text of each level of its cause (its name,
@@ -69,6 +43,7 @@ export const preparationFailure = (error: unknown) =>
         status: error.status,
         reason: error.reason,
         response: error.response,
+        failure: error.failure,
         causes: keptCauseParts(error),
       }
     : Schema.is(FixtureFailed)(error)
@@ -168,7 +143,7 @@ const waitForDomain = (
           : HttpClientError.isHttpClientError(error)
             ? new DomainNotReady({
                 reason: "transport",
-                code: transportCode(error.reason.cause),
+                code: errorCode(error.reason.cause),
               })
             : new DomainNotReady({ reason: "timeout" }),
       ),
