@@ -274,7 +274,8 @@ The deployed suite remains available for manual dispatch with Neon or PlanetScal
 
 Blacksmith Linux runners run every check job. Local and self-host E2E jobs use
 `blacksmith-16vcpu-ubuntu-2404`. Cloud E2E jobs use `blacksmith-8vcpu-ubuntu-2404`: each runs
-one local Cloud at a time, which kept 16 vCPUs only 8-28% busy. The load job also uses 16 vCPUs: on 4 vCPUs the
+one local Cloud at a time, which kept 16 vCPUs only 8-28% busy. The `cloud` job keeps 16 vCPUs
+with four workers: on 8 its browser scenarios saturated the cores and neared their 60 s limit. The load job also uses 16 vCPUs: on 4 vCPUs the
 product server, PGlite and the test driver contend. Its inventory case has a 120-second
 test limit because its body takes 40-48s on CI. Static checks use 4 vCPUs.
 
