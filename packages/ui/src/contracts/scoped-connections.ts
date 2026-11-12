@@ -43,14 +43,6 @@ export interface ConnectionApp {
   readonly events?: ConnectionEvents;
 }
 
-/** Short summary used in rows, details, and the connection list. */
-export const connectionToolsLabel = (tools: ConnectionTools): string =>
-  tools.kind === "all"
-    ? "All tools"
-    : tools.kind === "readOnly"
-      ? "Read-only tools"
-      : `${tools.names.length.toLocaleString("en-US")} ${tools.names.length === 1 ? "tool" : "tools"}`;
-
 /** Short summary of an event scope, for an app that declares events. */
 export const connectionEventsLabel = (events: ConnectionEvents | undefined): string =>
   events === undefined || events.kind === "all"

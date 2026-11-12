@@ -22,6 +22,7 @@ import { Target } from "../support/platform.ts";
 import { connectLocalAccount } from "../support/app-accounts.ts";
 import { linkLocal, localLinks } from "../support/local-links.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { siteless } from "../support/failure-site.ts";
 
 /**
  * MCP clients print a refused request's body after their own prefix, such as "Error POSTing to
@@ -683,7 +684,7 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
               code: "GrantForbidden",
               status: 403,
             });
-            return refused.execution.error.message;
+            return siteless(refused.execution.error.message);
           });
         yield* evidence.step(
           "A read-only connection names the tool it excludes",

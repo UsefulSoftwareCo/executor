@@ -11,7 +11,7 @@ import {
 /** CLI composition root. Platform dependencies and raw process arguments stop here. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Config, Console, Effect, Option, Schema } from "effect";
+import { Cause, Config, Console, Effect, Option, Runtime, Schema } from "effect";
 import { CliError, Command } from "effect/cli";
 import {
   ServiceFailed,
@@ -41,6 +41,7 @@ import { LocalConfigurationError, rotateApiKey } from "./implementation/bootstra
 import { launch } from "./implementation/launcher.ts";
 import { outdatedCli } from "./implementation/update-notice.ts";
 import { pair } from "./implementation/pair.ts";
+import { processOutput } from "./implementation/process-output.ts";
 import { serveProcess } from "./implementation/server-process.ts";
 import { ensure, standalone } from "./implementation/service-client.ts";
 import { readSettings, serviceDirectory } from "./implementation/service-files.ts";
@@ -96,7 +97,7 @@ const localServer = Effect.gen(function* () {
 );
 
 const cli = executorCommand.pipe(
-  Command.withHandler((options) => launch(options, process.platform, entry)),
+  Command.withHandler((options) => processOutput.serve(launch(options, process.platform, entry))),
   Command.withSubcommands([
     appsCommand(process.platform, localServer),
     serveCommand.pipe(
@@ -104,11 +105,13 @@ const cli = executorCommand.pipe(
         Effect.gen(function* () {
           if (service && stdio)
             return yield* new CliError.UserError({ cause: "Use --service or --stdio, not both." });
-          return yield* serveProcess({
-            mode: service ? "service" : stdio ? "stdio" : "foreground",
-            platform: process.platform,
-            ...(entry === undefined ? {} : { entry }),
-          });
+          return yield* processOutput.serve(
+            serveProcess({
+              mode: service ? "service" : stdio ? "stdio" : "foreground",
+              platform: process.platform,
+              ...(entry === undefined ? {} : { entry }),
+            }),
+          );
         }),
       ),
     ),
@@ -166,6 +169,9 @@ const cli = executorCommand.pipe(
 NodeRuntime.runMain(
   Command.run(cli, { version: process.env.EXECUTOR_BUILD_VERSION ?? "0.0.0-dev" }).pipe(
     Effect.scoped,
+    // A reader that closed the pipe, or output that cannot be written, ends a command that is not
+    // serving.
+    Effect.raceFirst(processOutput.closed),
     // Effect CLI renders argument errors and supplies the exit status for help.
     // Operational failures retain the launcher's sanitized message. An apps command failure
     // states the host's code, status, message and recovery, and also prints them as JSON on
@@ -192,6 +198,14 @@ NodeRuntime.runMain(
         });
       });
     }),
+    // runMain's own report of an unhandled failure, written through the console below.
+    Effect.tapCause((cause) =>
+      Cause.hasInterruptsOnly(cause) || !Runtime.getErrorReported(Cause.squash(cause))
+        ? Effect.void
+        : Effect.logError(cause),
+    ),
+    Effect.provideService(Console.Console, processOutput.console),
     Effect.provide(NodeServices.layer),
   ),
+  { disableErrorReporting: true, teardown: processOutput.teardown },
 );

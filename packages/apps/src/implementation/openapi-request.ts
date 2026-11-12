@@ -1,7 +1,7 @@
 import { owned } from "@executor-js/telemetry";
 import { loadSwaggerClient } from "./swagger-client.ts";
 import { httpProviderError, accountProviderError, providerErrorDetail } from "./provider-error.ts";
-import { bodyUpstreamError } from "./upstream-error.ts";
+import { bodyUpstreamError, statedUpstream } from "./upstream-error.ts";
 import { NetworkRefused } from "../contracts/network.ts";
 import { failOnNetworkRefusal } from "./network.ts";
 import { ProviderError } from "../contracts/provider-error.ts";
@@ -410,16 +410,29 @@ export function createRequest(config: {
         yield* failOnNetworkRefusal(response);
         if (response.status < 200 || response.status >= 300) {
           // Status and header evidence (401, 429, 5xx, rate-limit or scope headers) keeps its
-          // account recovery. A bare 403 proves nothing: a declared error body explains it, or
-          // the error the service stated in its body goes with the rejection.
+          // account recovery, with the error a declared body states as the service's own words:
+          // without it, an API that explains its 5xx, as Executor's own does, reads as a bare
+          // server error. A Bearer challenge's error is the service's words already, and takes
+          // precedence, so the body is not read for it. A bare 403 proves nothing: a declared
+          // error body explains it, or the error the service stated in its body goes with the
+          // rejection.
           const provider = httpProviderError(response.status, response.headers);
-          if (provider !== undefined && provider.reason !== "rejected") return yield* provider;
-          const json =
-            provider !== undefined || errors.some((error) => error.status === response.status)
-              ? yield* errorBody(response)
-              : undefined;
+          const declares = errors.some((error) => error.status === response.status);
+          if (
+            provider !== undefined &&
+            provider.reason !== "rejected" &&
+            (!declares || provider.upstream !== undefined)
+          )
+            return yield* provider;
+          const json = provider !== undefined || declares ? yield* errorBody(response) : undefined;
           const declared =
             json === undefined ? undefined : yield* responseError(response.status, json, errors);
+          if (provider !== undefined && provider.reason !== "rejected")
+            return yield* declared === undefined
+              ? provider
+              : providerErrorDetail(provider, {
+                  upstream: statedUpstream(declared.code, declared.message),
+                });
           const upstream = json === undefined ? undefined : bodyUpstreamError(json);
           return yield* (
             declared ??

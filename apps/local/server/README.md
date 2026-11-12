@@ -51,7 +51,7 @@ Press Ctrl+C to stop `bun run server` or `bun run dev`. Package-level
 `bun run start` reads its existing process environment only. Relative data paths
 are resolved from the process working directory. `bun run with:local …` loads
 1Password values instead; see
-[configuration](../../../README.md#development-configuration).
+[configuration](../../../DEVELOPMENT.md#development-configuration).
 
 ## Configuration
 
@@ -65,7 +65,8 @@ are resolved from the process working directory. `bun run with:local …` loads
 | `EXECUTOR_MCP_TIMEOUT_MS`               | Catalog discovery plus program timeout; defaults to `300000`.                                                                                                                               |
 | `EXECUTOR_MCP_MAX_TOOL_CALLS`           | Admitted calls per execute, including search; defaults to `100`.                                                                                                                            |
 | `EXECUTOR_TOOL_LISTING_FRESH_SECONDS`   | Reuse an app's evaluated tool list this long before refreshing it in the background; defaults to `30`.                                                                                      |
-| `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | Never serve an evaluated tool list older than this; `0` evaluates every list. Defaults to `60`.                                                                                             |
+| `EXECUTOR_TOOL_LISTING_RENEW_SECONDS`   | Renew the tool lists search serves in the background once they are this old; defaults to `86400`.                                                                                           |
+| `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | Never serve an evaluated tool list older than this; `0` evaluates every list. Defaults to `604800`.                                                                                         |
 | `EXECUTOR_TOOL_LISTING_LOAD_SECONDS`    | Stop evaluating an app's tool list after this long when no request is waiting for it; defaults to `45`.                                                                                     |
 | `EXECUTOR_EVALUATION_MEMORY_MB`         | Memory for kept tool lists and app declarations; defaults to `256`.                                                                                                                         |
 | `EXECUTOR_APP_WORKERS`                  | Most app and data Workers kept loaded; defaults to `64`. Idle ones above it unload and reload on their next call. An app with a database runs its calls in a data Worker, which counts too. |
@@ -458,7 +459,7 @@ See [OAuth notes](../../../notes/oauth.md) for the protocol library and limits.
 
 **Apps → Add app** lists Executor's official apps from the feed at
 `EXECUTOR_CATALOG_URL` (the feed's `index.json`; the default is the published feed at
-`https://catalog.executor.sh/index.json`).
+`https://catalog.executor.sh/index.json`, and `off` lists no feed apps).
 Choosing one installs the app's own source as a copy, the way a published app is
 installed, and then asks for an account through the app's own providers. Choose
 an unused app name; this flow never replaces an existing app. See

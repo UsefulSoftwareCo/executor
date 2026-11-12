@@ -13,6 +13,11 @@
  *
  * The dashboard Worker bundles the site, so each stage's site is built first, with the
  * environment the stack's `Site` resource gives that stage's deploy.
+ *
+ * It also fails when a deployed build contains a local test hook (`localTestModules` in
+ * `worker-build.ts`): only `alchemy dev` may bundle one, so no binding or request can turn it on
+ * in a deployed Worker. Each uploaded file is searched for the hook's text, and each Worker's
+ * sources for the hook's file.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -48,7 +53,8 @@ import { previewSlug } from "../src/contracts/pr-preview.ts";
 import { McpServer } from "../src/infrastructure/mcp-server-worker.ts";
 import { Marketing } from "../src/infrastructure/marketing-worker.ts";
 import { productionStage, testStagePrefix } from "../src/infrastructure/stage.ts";
-import { uploadedModulesPlugin } from "../src/infrastructure/worker-build.ts";
+import { interactionFaultMarkers } from "../src/infrastructure/mcp-interaction-faults-local.ts";
+import { localTestModules, uploadedModulesPlugin } from "../src/infrastructure/worker-build.ts";
 import {
   packageOf,
   workerUploadDirectory,
@@ -77,7 +83,17 @@ const {
   WorkerBundle,
 }: {
   readonly WorkerBundle: Effect.Effect<
-    { readonly build: (options: object) => Effect.Effect<unknown, Error> },
+    {
+      readonly build: (options: object) => Effect.Effect<
+        {
+          readonly files: ReadonlyArray<{
+            readonly path: string;
+            readonly content: string | Uint8Array;
+          }>;
+        },
+        Error
+      >;
+    },
     never,
     FileSystem.FileSystem | Path.Path
   >;
@@ -328,10 +344,24 @@ const buildWorkers = (target: Target) =>
               extraOptions: props.build,
             }),
           );
-          if (Exit.isFailure(exit))
+          if (Exit.isFailure(exit)) {
             failures.push(
               `${target.stage} ${resource.LogicalId}: ${Cause.pretty(exit.cause).split("\n")[0]}`,
             );
+            continue;
+          }
+          for (const file of exit.value.files) {
+            const content =
+              typeof file.content === "string"
+                ? file.content
+                : new TextDecoder().decode(file.content);
+            for (const text of interactionFaultMarkers)
+              if (content.includes(text))
+                failures.push(
+                  `${target.stage} ${resource.LogicalId}: ${file.path} contains the local test ` +
+                    `hook text "${text}", which only an \`alchemy dev\` build may bundle`,
+                );
+          }
         }
         return failures;
       }),
@@ -524,7 +554,16 @@ const program = Effect.gen(function* () {
         provideFreshArtifactStore,
         Effect.provide(Layer.mergeAll(layerNonInteractive(), Alchemy.localState())),
       );
-      return { stage: target.stage, uploads: yield* readUploads(directory), failures };
+      const uploads = yield* readUploads(directory);
+      for (const upload of uploads.values())
+        for (const source of Object.keys(upload.sources))
+          for (const [, hook] of localTestModules)
+            if (source.endsWith(`/infrastructure/${hook}`))
+              failures.push(
+                `${target.stage} ${upload.worker}: uploads the local test hook ${source}, ` +
+                  "which only an `alchemy dev` build may bundle",
+              );
+      return { stage: target.stage, uploads, failures };
     });
   const previewBuild =
     previewNumber === undefined ? undefined : yield* measure(preview(Number(previewNumber)));

@@ -1,9 +1,10 @@
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { CurrentUsage } from "../contracts/product-analytics.ts";
 import { requiresToolMetadata } from "@executor-js/authorization";
 import { grantAuthorization } from "@executor-js/mcp-auth";
 import { GroupDatabase } from "../contracts/groups.ts";
-import { CurrentUserId } from "../contracts/auth.ts";
+import { CurrentUserId, callerSpanAttributes } from "../contracts/auth.ts";
+import { recordAuthFailure } from "./auth-telemetry.ts";
 import {
   restrictMcpBackend,
   deliveryRefusal,
@@ -17,6 +18,7 @@ import {
 import {
   defaultMcpLimits,
   makeMcp,
+  McpRequestAttributes,
   refusedMcpRequest,
   type McpBackend,
   type McpOptions,
@@ -35,6 +37,7 @@ import {
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   CurrentMcpGrant,
+  CurrentMcpSession,
   McpAuthentication,
   McpUnauthorized,
   type McpAccess,
@@ -43,6 +46,7 @@ import { CurrentOrganization, OrganizationReference } from "../contracts/organiz
 import {
   CallStateCache,
   ConcurrentStatements,
+  HostedBackground,
   HostedExecutor,
   StatementBatch,
   statementGroup,
@@ -139,11 +143,13 @@ export const makeHostedMcp = (
   beforeExecute?: McpOptions["beforeExecute"],
   limits: McpOptions["limits"] = defaultMcpLimits,
   sessions?: McpOptions["sessions"],
+  interactions?: McpOptions["interactions"],
 ) =>
   makeMcp({
     backend: requestBackend,
     ...(beforeExecute === undefined ? {} : { beforeExecute }),
     ...(sessions === undefined ? {} : { sessions }),
+    ...(interactions === undefined ? {} : { interactions }),
     caller: requestCaller,
     instructions: executorIntro,
     limits,
@@ -181,6 +187,8 @@ export const dispatchHostedMcp = <E, R>(
   Effect.gen(function* () {
     const authentication = yield* McpAuthentication;
     const request = yield* HttpServerRequest.HttpServerRequest;
+    // Effect's protocol server issued it at `initialize` and refuses a request naming any other.
+    const session = request.headers["mcp-session-id"];
     const scoped = (fresh: McpAccess) =>
       Effect.gen(function* () {
         // A grant serves only the MCP URL it was issued for, and says why it cannot serve this one.
@@ -188,9 +196,10 @@ export const dispatchHostedMcp = <E, R>(
         if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
         const backend = yield* hostedMcpBackend.pipe(
           Effect.provideService(CurrentOrganization, fresh.access),
-          Effect.provideService(CurrentAuthorization, grantAuthorization(fresh.grant.policy)),
+          Effect.provideService(CurrentPolicy, grantAuthorization(fresh.grant.policy)),
           Effect.provideService(CurrentUserId, fresh.userId),
           Effect.provideService(CurrentMcpGrant, fresh.grant.id),
+          Effect.provideService(CurrentMcpSession, session),
         );
         return restrictMcpBackend<RequestError, never>(backend, Effect.succeed(fresh.grant));
       });
@@ -200,6 +209,7 @@ export const dispatchHostedMcp = <E, R>(
     const backend = scope.success;
     const services = yield* Effect.context<HostedExecutor | GroupDatabase>().pipe(
       Effect.map(Context.pick(HostedExecutor, GroupDatabase)),
+      Effect.map(Context.add(HostedBackground, yield* HostedBackground)),
     );
     // Discovery uses this HTTP request's authenticated identity. Resource policies
     // are still checked by the hosted backend. Never retain this adapter in the session.
@@ -210,13 +220,19 @@ export const dispatchHostedMcp = <E, R>(
     // move it to another organization. The same bearer keeps its user, client and grant.
     const headers = new Headers(request.headers);
     headers.delete("x-executor-organization");
-    // The organization's opaque ID goes on the request's span and on each operation that rechecks
-    // (`mcp.tool.call`, `mcp.tool.resume`), so their latency can be split by organization.
-    const organization = { "executor.organization.id": access.access.organization };
-    yield* Effect.annotateCurrentSpan(organization);
-    const current = Effect.annotateCurrentSpan(organization).pipe(
+    // The organization's and the caller's opaque IDs go on the request's span, on every MCP
+    // operation's span (`McpRequestAttributes`) and on each operation that rechecks
+    // (`mcp.tool.call`, `mcp.tool.resume`), so their latency and failures can be split by
+    // organization and the users they affect counted.
+    const caller = callerSpanAttributes(access.access.organization, access.userId);
+    yield* Effect.annotateCurrentSpan(caller);
+    const current = Effect.annotateCurrentSpan(caller).pipe(
       Effect.andThen(
-        authentication.authenticate(headers, address.mode, access.access.organization),
+        authentication
+          .authenticate(headers, address.mode, access.access.organization)
+          // A recheck is for this organization and user from its start, so one refused or failed
+          // before its statement answers still names them.
+          .pipe(Effect.annotateSpans(caller)),
       ),
       Effect.flatMap(scoped),
       Effect.provideContext(services),
@@ -309,10 +325,7 @@ export const dispatchHostedMcp = <E, R>(
           !fold.result.value.access.canUse
             ? Effect.succeed(undefined)
             : callerAccounts(read.app.success, fold.result.value.accounts).pipe(
-                Effect.provideService(
-                  CurrentAuthorization,
-                  grantAuthorization(access.grant.policy),
-                ),
+                Effect.provideService(CurrentPolicy, grantAuthorization(access.grant.policy)),
                 Effect.provideService(CurrentUserId, access.userId),
                 Effect.provideContext(services),
                 Effect.option,
@@ -422,6 +435,7 @@ export const dispatchHostedMcp = <E, R>(
         return url.toString();
       }),
       Effect.provideService(RequestCaller, mcpSessionKey(access)),
+      Effect.provideService(McpRequestAttributes, caller),
       Effect.provideService(CurrentUsage, { source: "mcp", client_id: access.clientId }),
     );
   });
@@ -457,7 +471,10 @@ export const authenticatedMcp = <E, R>(
     const request = yield* HttpServerRequest.HttpServerRequest;
     // Programmatic clients have no Origin. Untrusted browser pages cannot call MCP.
     if (request.headers.origin !== undefined && request.headers.origin !== auth.origin)
-      return HttpServerResponse.empty({ status: 403 });
+      return yield* Effect.as(
+        recordAuthFailure("origin_mismatch"),
+        HttpServerResponse.empty({ status: 403 }),
+      );
     const url = new URL(request.url, auth.origin);
     const address = requestedMcpAddress(url);
     if (address === undefined) return invalidAddress;

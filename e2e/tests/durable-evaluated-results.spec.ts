@@ -19,9 +19,13 @@ import { Evidence, Telemetry } from "../support/evidence.ts";
  * A listing over the isolate store's 2 MB entry bound: 1,500 tools with 800-character
  * descriptions. The isolate never keeps it, so every read after the first tests the supervisor.
  * The revision tool is named after a value kept in the app cache, so an invalidation renames it.
+ * Evaluating it first waits `delayMs`.
  */
-const source = `import { defineApp, query, object, router, string } from "apps";
+const listingSource = (
+  delayMs: number,
+) => `import { defineApp, query, object, router, string } from "apps";
 export default defineApp({}, async (ctx) => {
+  await new Promise((resolve) => setTimeout(resolve, ${delayMs}));
   const revision = await ctx.cache.get({
     key: "revision",
     schema: string(),
@@ -137,7 +141,7 @@ export default defineApp({}, {
 const Listing = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
 
 /** Deploy a listing app and read its tool listing with the spans of each request. */
-const listingApp = (files: string = source) =>
+const listingApp = (files: string = listingSource(0)) =>
   Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors,
@@ -200,15 +204,18 @@ const listingApp = (files: string = source) =>
   });
 
 const listed = (names: ReadonlyArray<string>) => names.includes("sdk.tools.listing");
-/** A read that evaluated, and kept its result in the supervisor after responding. */
-const written = (names: ReadonlyArray<string>) =>
-  listed(names) && names.includes("storage.evaluated.write");
 /**
  * A read that evaluated. The evaluation ends after the response, so its spans can reach Motel
  * before the request's own: the read waits for the listing span, which holds the cache outcome.
  */
 const evaluates = (names: ReadonlyArray<string>) =>
   listed(names) && names.includes("sdk.tools.listing.evaluate");
+/**
+ * A read that evaluated, and kept its result in the supervisor after responding. The supervisor
+ * write ends before the evaluation, which then writes search rows, so both are waited for.
+ */
+const written = (names: ReadonlyArray<string>) =>
+  evaluates(names) && names.includes("storage.evaluated.write");
 
 layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (it) => {
   it.effect(scenarios.durableEvaluatedResults.title, (context) =>
@@ -259,7 +266,11 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
       withHostedCase(
         context,
         Effect.gen(function* () {
-          const { read } = yield* listingApp();
+          // A read that misses the isolate waits 100 ms for the supervisor's copy, then evaluates
+          // beside it and serves whichever arrives first; the supervisor read gives up after 2 s.
+          // The supervisor wakes after the wait below, sometimes slower than a fast app evaluates.
+          // An app slower than both is served the copy whenever the supervisor answers.
+          const { read } = yield* listingApp(listingSource(3_000));
           const first = yield* read("first-listing", written);
           expect(first.cache).toBe("miss");
 
@@ -268,10 +279,7 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
           // must still keep its result in the supervisor.
           yield* Effect.sleep("31 seconds");
           // The refresh's spans can arrive before the request's own, which say where it was served.
-          const stale = yield* read(
-            "stale-listing",
-            (names) => evaluates(names) && names.includes("storage.evaluated.write"),
-          );
+          const stale = yield* read("stale-listing", written);
           expect(stale.source).toBe("durable");
           expect(stale.cache).toBe("stale");
           expect(stale.age).toBeGreaterThanOrEqual(30_000);

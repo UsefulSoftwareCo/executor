@@ -2,7 +2,7 @@ import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { ApiError } from "@executor-js/utils/api-error";
 import { AppProviderFailed } from "./tools.ts";
 /** Durable, account-bound webhook subscriptions. Products authorize management; callbacks authenticate in app code. */
-import { Schema, type Effect } from "effect";
+import { Schema, SchemaGetter, type Effect } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { HostedWebhook, WebhookRequestData, WebhookResponseData } from "apps/contracts";
 import {
@@ -102,15 +102,46 @@ const webhookFailures = {
   delivery: "The webhook delivery could not be accepted.",
   inactive: "The webhook subscription is stopped or disabled.",
 } as const;
+/** Which part of an `input` failure did not match the declaration. */
+const webhookMismatches = {
+  "app-account":
+    "This webhook's source is an app account, so a caller cannot create its subscription: Executor creates it when an account is linked to the app for that requirement. List the app's webhooks to find it; one that is setup-required has a setup link.",
+  source:
+    "The source account is not linked to this app for the webhook's account requirement. Link it to the app, or name an account that is linked.",
+  config:
+    "The webhook configuration does not match the definition's configuration schema. Read the app's webhook definitions for the schema.",
+} as const;
+const WebhookMismatch = Schema.optionalKey(Schema.Literals(["app-account", "source", "config"]));
+/**
+ * Declared but not yet sent. Clients and Executor apps that hold an earlier document decode
+ * `WebhookFailed` against a closed object with the five original reasons, so a new reason value or
+ * field would turn this response into a generic failure for them. The specific cause reaches them
+ * through `message` under the existing `input` reason; a later release can send this field once
+ * cached documents have refreshed.
+ */
+const WebhookMismatchField = WebhookMismatch.pipe(
+  Schema.decodeTo(WebhookMismatch, {
+    decode: SchemaGetter.passthrough(),
+    encode: SchemaGetter.omit(),
+  }),
+);
+const webhookFailure = (failure: {
+  readonly reason: keyof typeof webhookFailures;
+  readonly mismatch?: keyof typeof webhookMismatches;
+}) =>
+  failure.reason === "input" && failure.mismatch !== undefined
+    ? webhookMismatches[failure.mismatch]
+    : webhookFailures[failure.reason];
 /** The host cannot run this webhook. Internal provider failures and payloads remain private. */
 export const WebhookFailed = ApiError.define({
   tag: "WebhookFailed",
   status: 422,
   fields: {
     reason: Schema.Literals(["unavailable", "definition", "input", "delivery", "inactive"]),
+    mismatch: WebhookMismatchField,
   },
-  message: ({ reason }) => webhookFailures[reason],
-  recorded: ({ reason }) => webhookFailures[reason],
+  message: webhookFailure,
+  recorded: webhookFailure,
 });
 export type WebhookFailed = typeof WebhookFailed.Type;
 /** Shared operation failures, retained as concrete schema variants at HTTP boundaries. */
@@ -162,7 +193,9 @@ export const WebhookSourceConfig = Schema.Record(Schema.NonEmptyString, Schema.J
 /**
  * One account linked to an app as a webhook source. Executor keeps one managed subscription per
  * definition of the source's scope that the account's provider can serve, on the app's active
- * version, and replaces them when the app activates another version. Several users linking
+ * version. When the app activates another version it registers them again, except that a manual
+ * subscription whose setup the new version still serves moves to it with its callback URL and
+ * secret. Several users linking
  * the same account share it. A source without an actor is an app link: it serves app-account
  * webhooks, whose deliveries run without a caller. An account linked in both scopes is one source,
  * serving as its app link.

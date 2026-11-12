@@ -19,7 +19,7 @@ RUN bun run --cwd apps/hosted/self-host/web build
 RUN bun run --cwd packages/apps build
 RUN bun run --cwd apps/hosted/self-host package:runtime
 
-FROM golang:1.26.4-bookworm AS native
+FROM golang:1.27.2-bookworm AS native
 WORKDIR /build
 COPY apps/hosted/self-host/native/go.mod apps/hosted/self-host/native/go.sum ./
 RUN go mod download
@@ -50,5 +50,5 @@ VOLUME /app/data
 COPY --chmod=755 apps/hosted/self-host/entrypoint.sh /usr/local/bin/executor-entrypoint
 ENTRYPOINT ["executor-entrypoint"]
 EXPOSE 4400
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD ["executor-host", "health"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 CMD ["executor-host", "health"]
 CMD ["executor-host", "serve"]

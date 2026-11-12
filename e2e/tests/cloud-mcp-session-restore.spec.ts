@@ -7,9 +7,14 @@
  * bearer is verified and names the object, and a session the object never stored is still not
  * found. An object keeps its 64 most recently used sessions; concurrent first requests after a
  * wake restore sessions while another opens and prunes, and every answer agrees with the store.
+ * A program waiting for approval through that idle wait keeps its own object in memory, so the
+ * person's answer still continues it (FB-069: idle eviction lost it and resume said not-found).
+ * After a restart, a resume of an answered request says what the object recorded: `answered`
+ * when it stored the answer, and, when that write failed (the local hook in
+ * `mcp-interaction-faults-local.ts`), `lost` copy that does not claim the request went unanswered.
  *
- * Not covered here: the 7-day expiry (managed Cloud has no clock control) and a failing storage
- * call (no public surface can cause one, and Cloud scenarios cannot inject storage faults).
+ * Not covered here: the 7-day expiry (managed Cloud has no clock control) and a failing session
+ * storage call (no public surface can cause one; the hook refuses only request-record writes).
  */
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
@@ -17,8 +22,9 @@ import { Duration, Effect, FileSystem, Redacted, Schedule, Schema } from "effect
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
+import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import type { SpanQuery } from "../support/contracts.ts";
+import { App, type SpanQuery } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
@@ -38,6 +44,39 @@ const native = "?elicitation_mode=native";
  * the wait checks that the object did restart.
  */
 const idle = Duration.seconds(270);
+/** An app whose one tool always asks for approval. */
+const reviewSource = `import { defineApp, mutation, object, string, router } from "apps";
+import { always } from "apps/operations/approval";
+export default defineApp({}, async () => ({ tools: router({
+  review: mutation({ input: object({ note: string() }), approval: always(), description: "Record a reviewed note" },
+    async (_ctx, { note }) => ({ reviewed: note })),
+}) }));`;
+const Paused = Schema.Struct({
+  result: Schema.Struct({
+    structuredContent: Schema.Struct({
+      status: Schema.Literal("approval-required"),
+      requestId: Schema.String,
+      expiresAt: Schema.Number,
+    }),
+  }),
+});
+const Unavailable = Schema.Struct({
+  result: Schema.Struct({
+    structuredContent: Schema.Struct({
+      status: Schema.Literal("unavailable"),
+      reason: Schema.String,
+      message: Schema.String,
+    }),
+  }),
+});
+const Resumed = Schema.Struct({
+  result: Schema.Struct({
+    structuredContent: Schema.Struct({
+      status: Schema.Literal("completed"),
+      execution: Schema.Struct({ ok: Schema.Boolean, value: Schema.Unknown }),
+    }),
+  }),
+});
 /** Sessions an object keeps (`mcp-session-store.ts`). */
 const kept = 64;
 
@@ -87,6 +126,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
             readonly session?: string | undefined;
             readonly protocol?: string | undefined;
             readonly query?: string | undefined;
+            /** Refuse the session object's request-record writes while this request runs. */
+            readonly refuseRecords?: boolean;
             readonly message: Readonly<Record<string, unknown>>;
           }) =>
             Effect.scoped(
@@ -104,6 +145,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
                     ...(input.protocol === undefined
                       ? {}
                       : { "mcp-protocol-version": input.protocol }),
+                    ...(input.refuseRecords === true
+                      ? { "x-executor-test-fault": "interaction-writes" }
+                      : {}),
                   }),
                 );
                 const response = yield* http.execute(
@@ -221,6 +265,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
           const owner = yield* createKey(actors.owner, "Session restore owner");
           const member = yield* createKey(actors.member, "Session restore member");
           const crowded = yield* createKey(actors.owner, "Session restore crowded");
+          const parked = yield* createKey(actors.owner, "Session restore parked");
+          const answering = yield* createKey(actors.owner, "Session restore answered");
           const session = yield* initialize(owner.key, "owner");
           const nativeSession = yield* initialize(owner.key, "owner-native", native);
           const before = yield* evidence.step(
@@ -262,9 +308,168 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
             ),
           );
 
+          const prefix = `/api/organizations/${organization}`;
+          const app = yield* evidence.step(
+            "Deploy an app whose tool always asks for approval",
+            Effect.gen(function* () {
+              const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+                name: `Parked review ${randomUUID().slice(0, 8)}`,
+                files: [{ path: "index.ts", content: reviewSource }, appsManifest],
+              });
+              expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+              const deployedApp = yield* body(App, deployed);
+              yield* Effect.addFinalizer(() =>
+                api
+                  .request(actors.owner, "DELETE", `${prefix}/apps/${deployedApp.id}`)
+                  .pipe(Effect.ignore),
+              );
+              return deployedApp;
+            }),
+          );
+          /** Calls the review tool, which pauses for approval. */
+          const pause = (credential: Redacted.Redacted<string>, mcpSession: string, note: string) =>
+            Effect.gen(function* () {
+              const answer = yield* post({
+                credential,
+                session: mcpSession,
+                protocol: stateful,
+                message: {
+                  id: 4,
+                  method: "tools/call",
+                  params: {
+                    name: "call",
+                    arguments: {
+                      calls: {
+                        path: `tools[${JSON.stringify(app.slug)}].review`,
+                        input: { note },
+                      },
+                    },
+                  },
+                },
+              });
+              expect(answer.status, answer.text).toBe(200);
+              const paused = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Paused))(
+                answer.text,
+              );
+              return {
+                requestId: paused.result.structuredContent.requestId,
+                activation: activation(yield* objectSpans(answer.traceId)),
+              };
+            });
+          const approve = (
+            credential: Redacted.Redacted<string>,
+            mcpSession: string,
+            requestId: string,
+            refuseRecords = false,
+          ) =>
+            post({
+              credential,
+              session: mcpSession,
+              protocol: stateful,
+              refuseRecords,
+              message: {
+                id: 5,
+                method: "tools/call",
+                params: {
+                  name: "resume",
+                  arguments: { requestId, response: { action: "accept" } },
+                },
+              },
+            });
+          const reviewed = (answer: { status: number; text: string }, note: string) =>
+            Effect.gen(function* () {
+              expect(answer.status, answer.text).toBe(200);
+              const resumed = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Resumed))(
+                answer.text,
+              );
+              expect(resumed.result.structuredContent.execution).toMatchObject({
+                ok: true,
+                value: { ok: true, value: { reviewed: note } },
+              });
+            });
+
+          // A third object, of its own API key, holds a program that waits for approval.
+          const review = yield* evidence.step(
+            "Another object pauses a call for approval",
+            Effect.gen(function* () {
+              const parkedSession = yield* open(parked.key, "parked");
+              return {
+                session: parkedSession,
+                ...(yield* pause(parked.key, parkedSession, "parked")),
+              };
+            }),
+          );
+
+          // A fourth object answers two requests. Its write of the first answer is refused, as a
+          // failing storage call would, so after the restart its record holds only the issue.
+          const answered = yield* evidence.step(
+            "Another object answers two requests, the first while it cannot write its record of the answer",
+            Effect.gen(function* () {
+              const answeredSession = yield* open(answering.key, "answered");
+              const unrecorded = yield* pause(answering.key, answeredSession, "unrecorded");
+              yield* reviewed(
+                yield* approve(answering.key, answeredSession, unrecorded.requestId, true),
+                "unrecorded",
+              );
+              const recorded = yield* pause(answering.key, answeredSession, "recorded");
+              yield* reviewed(
+                yield* approve(answering.key, answeredSession, recorded.requestId),
+                "recorded",
+              );
+              return {
+                session: answeredSession,
+                unrecorded: unrecorded.requestId,
+                recorded: recorded.requestId,
+                activation: recorded.activation,
+              };
+            }),
+          );
+
           yield* evidence.step(
             "Leave every session idle until workerd evicts the objects and their memory",
             Effect.sleep(idle),
+          );
+
+          yield* evidence.step(
+            "The paused call's object stayed in memory through the wait, so approving it runs the call",
+            Effect.gen(function* () {
+              const answer = yield* approve(parked.key, review.session, review.requestId);
+              yield* reviewed(answer, "parked");
+              expect(
+                activation(yield* objectSpans(answer.traceId)),
+                "The object that held the program did not restart",
+              ).toBe(review.activation);
+            }),
+          );
+
+          yield* evidence.step(
+            "After its object restarted, a recorded answer reads answered, and an answer whose record failed reads lost without claiming the request went unanswered",
+            Effect.gen(function* () {
+              const unavailable = (requestId: string) =>
+                Effect.gen(function* () {
+                  const answer = yield* approve(answering.key, answered.session, requestId);
+                  expect(answer.status, answer.text).toBe(200);
+                  const result = yield* Schema.decodeUnknownEffect(
+                    Schema.fromJsonString(Unavailable),
+                  )(answer.text);
+                  return { ...result.result.structuredContent, traceId: answer.traceId };
+                });
+              const recorded = yield* unavailable(answered.recorded);
+              expect(recorded.reason, recorded.message).toBe("answered");
+              expect(
+                activation(yield* objectSpans(recorded.traceId)),
+                "The object restarted, so only its storage knows the requests",
+              ).not.toBe(answered.activation);
+              const unrecorded = yield* unavailable(answered.unrecorded);
+              expect(unrecorded.reason, unrecorded.message).toBe("lost");
+              expect(unrecorded.message).toContain(
+                "no retained record of an answer or of how it ended",
+              );
+              expect(unrecorded.message).toContain("the request may have been answered");
+              expect(unrecorded.message).not.toMatch(
+                /had not expired or been answered|expired before it was answered/u,
+              );
+            }),
           );
 
           yield* evidence.step(

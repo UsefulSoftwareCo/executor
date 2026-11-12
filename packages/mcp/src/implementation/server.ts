@@ -29,6 +29,7 @@ import { executeNative } from "./native-elicitation.ts";
 import { callTools, describeCatalog, executeProgram, searchCatalog } from "./execute.ts";
 import { decodeSkillsInput, skills } from "./skills.ts";
 import { eventsHandler } from "./events.ts";
+import { withOperationSpan } from "./telemetry.ts";
 
 // Observe the final protocol value after timeout, admission and resume handling.
 const observeExecution =
@@ -90,7 +91,7 @@ const observeExecution =
           }),
         ),
       );
-    }).pipe(Effect.withSpan(name));
+    }).pipe(withOperationSpan(name));
 
 /**
  * MCP revisions every product serves, newest first. An initialize offering an unlisted revision
@@ -150,7 +151,11 @@ const withLink = (
 /** Build protocol state and its browser accessors together. Hosts authorize browser calls separately from MCP. */
 export const makeMcp = (options: McpOptions) =>
   Effect.gen(function* () {
-    const executions = yield* makeExecutions(options.limits, options.beforeExecute);
+    const executions = yield* makeExecutions(
+      options.limits,
+      options.beforeExecute,
+      options.interactions,
+    );
     const handler = (mode: ElicitationMode) =>
       Effect.gen(function* () {
         const delivery = options.browser;
@@ -182,7 +187,7 @@ export const makeMcp = (options: McpOptions) =>
                 Effect.tap((result) =>
                   "content" in result ? options.annotateSkillRead(result) : Effect.void,
                 ),
-                Effect.withSpan("mcp.skills", {
+                withOperationSpan("mcp.skills", {
                   attributes: {
                     "executor.skill.operation": input.name === undefined ? "list" : "read",
                   },
@@ -192,9 +197,9 @@ export const makeMcp = (options: McpOptions) =>
           );
         // Search and describe read the catalog directly; call runs as an execution so it can pause.
         const search = (input: Parameters<typeof searchCatalog>[1]) =>
-          searchCatalog(options.backend, input).pipe(Effect.withSpan("mcp.search"));
+          searchCatalog(options.backend, input).pipe(withOperationSpan("mcp.search"));
         const describe = (input: Parameters<typeof describeCatalog>[1]) =>
-          describeCatalog(options.backend, input).pipe(Effect.withSpan("mcp.describe"));
+          describeCatalog(options.backend, input).pipe(withOperationSpan("mcp.describe"));
         const toolkit =
           mode === "native"
             ? McpServer.toolkit(NativeMcpToolkit).pipe(
@@ -389,7 +394,7 @@ export const makeMcp = (options: McpOptions) =>
           response,
         ),
     };
-    return { http, approvals };
+    return { http, approvals, programs: executions.live };
   });
 
 /** Mount MCP alone when a host does not need direct browser accessors. */

@@ -4,12 +4,32 @@
 but its physical PostgreSQL connection acquisition has no span. A slow first
 transaction therefore includes an unexplained interval before its first query.
 
-`@effect%2Fsql-pg@4.0.1.patch` adds a client `sql.connect` span around the
-driver's existing network connection and authentication effect. It ends when
+`@effect%2Fsql-pg@4.0.1.patch` adds a client `sql.connect` span around one
+connection attempt: password resolution, the driver's existing network
+connection and authentication effect, and `connectTimeout`. It ends when
 PostgreSQL sends `ReadyForQuery`, or on failure or interruption. It adds no URL,
-credentials, query text, or connection attributes. Password/config resolution
-and later query execution are outside this span. The span records its
+credentials, query text, or connection attributes. Config resolution and later
+query execution are outside this span. The span records its
 `db.connect.attempt`, starting at 1.
+
+A failed attempt fails its span and records why as `db.connect.failure`, one of:
+
+- `timeout`: the attempt reached `connectTimeout`. The timeout runs inside the
+  span, so the attempt fails it; before late October 2026 the timeout
+  interrupted the span from outside and it ended with status OK.
+- `refused`: the connection was not accepted. The transport failed before its
+  socket connected (a refused, unreachable or unresolvable host), or the server
+  answered the startup with an error that is not about authentication, such as
+  too many connections. Classified by when it failed, not by the socket error's
+  text or code: workerd's `node:net` gives a refused connection no code.
+- `auth`: authentication failed: SQLSTATE class 28, no password configured, or
+  an exchange that could not complete.
+- `other`: anything else, such as a password provider that dies, a connected
+  socket that failed or closed during startup, TLS negotiation, or a response
+  the driver could not read.
+
+An attempt its caller interrupts records none and still ends interrupted. The
+attribute changes no error, retry or timeout.
 
 The patch changes both source and distributed JavaScript. It preserves lazy
 pool acquisition, reuse, dead-connection replacement, idle release, and scoped
@@ -35,7 +55,7 @@ caller per connection, `PgPool.held`, settling abandoned and unawaited statement
 The patch also adds a `connectRetries` option (default `0`) to `PgConnection`
 and `PgClient` configuration. A connection attempt that fails with a retryable
 reason, such as a transport error or `connectTimeout`, is made again up to that
-many times. Each attempt has its own `connectTimeout`. Nothing has been sent on
+many times. Each attempt has its own `connectTimeout` and `sql.connect` span. Nothing has been sent on
 a connection before `ReadyForQuery`, so this never repeats a statement; query
 failures are not retried. Authentication failures are not retryable. A retried
 attempt's span also records the previous failure's fixed driver message as

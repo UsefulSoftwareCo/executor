@@ -8,26 +8,50 @@ export { HostedCatalog } from "./contracts/catalog.ts";
 export { hostedHandlers } from "./implementation/api.ts";
 export { catalogLive } from "./implementation/catalog.ts";
 export {
+  hostedApi,
   hostedApiDocumentRoute,
+  hostedApiRevision,
   lazyHostedApiDocument,
   type LazyHostedApiDocument,
 } from "./implementation/api-document.ts";
 export {
+  callerSpanAttributes,
   CurrentUserId,
-  ApiAuthentication,
-  Authentication,
+  BearerAuthentication,
+  SessionAuthentication,
   AuthenticationUnavailable,
-  RequireUser,
+  RequireBrowserSession,
   CurrentPrincipal,
+  AuthCredentialKind,
+  AuthFailureReason,
 } from "./contracts/auth.ts";
+export {
+  recordAuthFailure,
+  recordCaller,
+  recordCredential,
+  recordNoCredential,
+  recordNoSession,
+  recordUnclassifiedRefusals,
+  refuse,
+} from "./implementation/auth-telemetry.ts";
+export {
+  SecurityAuditAction,
+  auditFailureCodes,
+  type SecurityAuditEvent,
+  type SecurityAuditFailure,
+  type SecurityAuditOutcome,
+} from "./contracts/security-audit.ts";
+export { audited, recordSecurityAudit } from "./implementation/security-audit.ts";
 export { authOptions, authSettings, sessionPrincipal } from "./implementation/auth.ts";
 export * from "./contracts/organization.ts";
 export {
   CallStateCache,
   ConcurrentStatements,
+  HostedBackground,
   HostedExecutor,
   StatementBatch,
   type CallState,
+  type HostedBackgroundWork,
   type StatementGroups,
 } from "./contracts/executor.ts";
 export { OrganizationDefaults } from "./contracts/organization-defaults.ts";
@@ -52,6 +76,9 @@ export {
 } from "./implementation/organization-removal.ts";
 export { makeOrganizationRemovals } from "./implementation/organization-removals.ts";
 export { migrateOrganizationRemovals } from "./implementation/organization-removal-schema.ts";
+export * from "./contracts/user-removal.ts";
+export { previewUserRemoval, removeUser } from "./implementation/user-removal.ts";
+export { deleteUserRecords } from "./implementation/user-records.ts";
 
 export { hostedOAuthCallback } from "./implementation/accounts.ts";
 export * from "./contracts/oauth-client-metadata.ts";
@@ -111,3 +138,5 @@ export { resolveOrganizationReference } from "./implementation/organization-refe
 
 export * from "./contracts/schedules.ts";
 export { makeScheduledAuthority } from "./implementation/schedules.ts";
+export * from "./contracts/tool-call-log.ts";
+export { pruneToolCallLog, toolCallRetentionDays } from "./implementation/tool-call-log.ts";

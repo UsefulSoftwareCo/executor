@@ -20,13 +20,7 @@ import {
   OrganizationRole,
   organizationOwner,
 } from "../contracts/organization.ts";
-import {
-  AccessRevision,
-  AppAccess,
-  AccountAccess,
-  type AppAudience,
-  type SharedAudience,
-} from "../contracts/resource-access.ts";
+import { AccessRevision, AppAccess, type AppAudience } from "../contracts/resource-access.ts";
 
 /** A concrete client remains owned by this invocation (Cloud) or host process (self-host). */
 export const policyDatabase = Effect.flatten(GroupDatabase).pipe(
@@ -200,41 +194,47 @@ export const resourceAuthorityForApp = (
 /**
  * The user links a subject has to these apps whose accounts the subject may use now, as the `from`
  * and `where` of a read over `l` (the link) and `a` (the account): the account belongs to the app's
- * organization, the subject is a member, and the account is their personal account or shared with
- * everyone or one of their groups.
+ * organization, the subject is a member, and the account is theirs.
+ *
+ * The links are read first, with their app's owner, and `offset 0` keeps Postgres from merging that
+ * read into the joins after it. Merged, Postgres can reach the apps through the account's owner
+ * instead of the link: it then pairs every account of the organization with every app of it and
+ * looks up a link for each pair, about 18,000 buffers for one discovery read across 40 apps instead
+ * of about 1,000.
  */
 export const usableLinks = (
   sql: SqlClient.SqlClient,
   input: { readonly subject: string; readonly apps: readonly AppId[] },
-) => sql`hosted_app_account_links l
-      join executor_apps app on app.id = l.app
-      join executor_accounts a on a.id = l.account and a.owner = app.owner
+) => sql`(select l.app, l.requirement, l.account, l.subject, l.created_at, app.owner
+        from hosted_app_account_links l
+        join executor_apps app on app.id = l.app
+        where l.subject = ${input.subject} and ${sql.in("l.app", input.apps)}
+        offset 0) l
+      join executor_accounts a on a.id = l.account and a.owner = l.owner
       join hosted_account_access p on p.account_id = a.id
         and a.owner = 'organization:' || p.organization_id
       join member m on m."organizationId" = p.organization_id and m."userId" = l.subject
-      where l.subject = ${input.subject} and ${sql.in("l.app", input.apps)}
-        and ((p.kind = 'personal' and p.personal_user_id = m."userId")
-          or (p.kind = 'shared' and (p.audience = 'everyone' or exists(
-            select 1 from hosted_account_groups g
-            join hosted_group_members gm on gm.group_id = g.group_id
-            where g.account_id = p.account_id and gm.member_id = m.id))))`;
+      where p.personal_user_id = m."userId"`;
 
 /**
  * The app links of these apps whose accounts their app requirements may use now, as the `from` and
  * `where` of a read over `l` (the link) and `a` (the account): the account belongs to the app's
- * organization, which holds its access record, and a personal account's member is still in it. No
- * caller's use of the account is checked: using an app link follows app access.
+ * organization, which holds its access record, and the account's owner is still in it. No
+ * caller's use of the account is checked: using an app link follows app access. The links are read
+ * first, as in {@link usableLinks}.
  */
 export const usableAppLinks = (sql: SqlClient.SqlClient, apps: readonly AppId[]) =>
-  sql`hosted_app_account_links l
-      join executor_apps app on app.id = l.app
-      join executor_accounts a on a.id = l.account and a.owner = app.owner
+  sql`(select l.app, l.requirement, l.account, l.created_at, app.owner
+        from hosted_app_account_links l
+        join executor_apps app on app.id = l.app
+        where l.subject is null and ${sql.in("l.app", apps)}
+        offset 0) l
+      join executor_accounts a on a.id = l.account and a.owner = l.owner
       join hosted_account_access p on p.account_id = a.id
         and a.owner = 'organization:' || p.organization_id
-      where l.subject is null and ${sql.in("l.app", apps)}
-        and (p.kind <> 'personal' or exists(select 1 from member owner_member
+      where exists(select 1 from member owner_member
           where owner_member."organizationId" = p.organization_id
-            and owner_member."userId" = p.personal_user_id))`;
+            and owner_member."userId" = p.personal_user_id)`;
 /** The JSON of one usable link, for a read over {@link usableLinks} or {@link usableAppLinks}. */
 export const linkedAccountJson = `json_build_object('app', l.app, 'requirement', l.requirement,
   'id', a.id, 'provider', a.provider, 'label', a.label, 'description', a.description)`;
@@ -320,56 +320,22 @@ export const resourceAuthorityForLinks = (
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
 
-const AccountPolicy = Schema.Struct({
-  account: AccountId,
-  creator: Schema.NullOr(Principal.fields.userId),
-  kind: Schema.Literals(["personal", "shared"]),
-  personalUser: Schema.NullOr(Principal.fields.userId),
-  audience: Schema.NullOr(Schema.Literals(["groups", "everyone"])),
-  revision: AccessRevision,
-  groups: Schema.Array(GroupId),
-  granted: Schema.Boolean,
-});
-const accountAccessOf = (found: typeof AccountPolicy.Type, actor: ResourceAuthority) =>
+/**
+ * The accounts among `accounts` that `actor` owns, read together. Every account is personal: only
+ * its owner, while still a member, may read, use or manage it; administrators have no bypass.
+ */
+export const ownedAccountIds = (accounts: readonly AccountId[], actor: ResourceAuthority) =>
   Effect.gen(function* () {
-    const account = found.account;
-    if (found.kind === "personal") {
-      if (found.personalUser === null) return yield* new StorageError();
-      return {
-        account,
-        creator: found.creator,
-        revision: found.revision,
-        ownership: { kind: "personal", user: found.personalUser },
-        canManage: found.personalUser === actor.user,
-        canUse: found.personalUser === actor.user,
-      } satisfies typeof AccountAccess.Type;
-    }
-    if (found.audience === null) return yield* new StorageError();
-    const audience: typeof SharedAudience.Type =
-      found.audience === "groups" ? { kind: "groups", groups: found.groups } : { kind: "everyone" };
-    return {
-      account,
-      creator: found.creator,
-      revision: found.revision,
-      ownership: { kind: "shared", audience },
-      canManage: actor.role !== "member" || found.creator === actor.user,
-      canUse: found.audience === "everyone" || found.granted,
-    } satisfies typeof AccountAccess.Type;
-  });
-/** Read account policies together; personal accounts remain private even from administrators. */
-export const accountAccesses = (accounts: readonly AccountId[], actor: ResourceAuthority) =>
-  Effect.gen(function* () {
-    if (accounts.length === 0) return [];
+    if (accounts.length === 0) return new Set<AccountId>();
     const sql = yield* policyDatabase;
-    const rows = yield* sql`select p.account_id as account, p.creator_id as creator, p.kind,
-    p.personal_user_id as "personalUser", p.audience, p.revision,
-    array(select g.group_id from hosted_account_groups g where g.account_id = p.account_id order by g.group_id) as groups,
-    exists(select 1 from hosted_account_groups g join hosted_group_members m on m.group_id = g.group_id
-      where g.account_id = p.account_id and m.member_id = ${actor.member}) as granted
+    const rows = yield* sql`select p.account_id as account
     from hosted_account_access p
-    where ${sql.in("p.account_id", accounts)} and p.organization_id = ${actor.organization}`;
-    const policies = yield* Schema.decodeUnknownEffect(Schema.Array(AccountPolicy))(rows);
-    return yield* Effect.forEach(policies, (found) => accountAccessOf(found, actor));
+    where ${sql.in("p.account_id", accounts)} and p.organization_id = ${actor.organization}
+      and p.personal_user_id = ${actor.user}`;
+    const owned = yield* Schema.decodeUnknownEffect(
+      Schema.Array(Schema.Struct({ account: AccountId })),
+    )(rows);
+    return new Set(owned.map((found) => found.account));
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
@@ -428,17 +394,6 @@ export const requireOAuthClientAccessAs = (
       return yield* new OrganizationForbidden();
     return access;
   });
-
-/** Resolve one account's policy; missing policies deny access. */
-export const accountAccess = (account: AccountId, actor: ResourceAuthority) =>
-  accountAccesses([account], actor).pipe(
-    Effect.flatMap((policies) => {
-      const access = policies[0];
-      return access === undefined
-        ? Effect.fail(new OrganizationForbidden())
-        : Effect.succeed(access);
-    }),
-  );
 
 /** Read access may include management; management never authorizes execution. */
 export const requireAppAccess = (app: AppId, action: "read" | "manage" | "use") =>
@@ -505,27 +460,17 @@ export const requireAppUse = (app: App, organization: OrganizationId, user: stri
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
     Effect.withSpan("app.ui.authorize.resources"),
   );
-/** Account metadata allows shared-account managers; personal metadata has no admin bypass. */
-export const requireAccountAccess = (account: AccountId, action: "read" | "manage" | "use") =>
-  Effect.flatMap(currentResourceAuthority, (actor) =>
-    requireAccountAccessAs(actor, account, action),
-  );
-/** Check account access for an actor already resolved in this operation. */
-export const requireAccountAccessAs = (
-  actor: ResourceAuthority,
-  account: AccountId,
-  action: "read" | "manage" | "use",
-) =>
+/**
+ * Only an account's owner may read, use or manage it; there is no admin bypass. Missing policies
+ * deny access.
+ */
+export const requireAccountOwner = (account: AccountId) =>
+  Effect.flatMap(currentResourceAuthority, (actor) => requireAccountOwnerAs(actor, account));
+/** Check account ownership for an actor already resolved in this operation. */
+export const requireAccountOwnerAs = (actor: ResourceAuthority, account: AccountId) =>
   Effect.gen(function* () {
-    const access = yield* accountAccess(account, actor);
-    const allowed =
-      action === "use"
-        ? access.canUse
-        : action === "manage"
-          ? access.canManage
-          : access.canUse || access.canManage;
-    if (!allowed) return yield* new OrganizationForbidden();
-    return access;
+    if (!(yield* ownedAccountIds([account], actor)).has(account))
+      return yield* new OrganizationForbidden();
   });
 /** Missing or denied policies are omitted; storage failures remain visible rather than empty lists. */
 export const visibleAccounts = (accounts: readonly Account[]) =>
@@ -533,18 +478,26 @@ export const visibleAccounts = (accounts: readonly Account[]) =>
 /** {@link visibleAccounts} for an actor already resolved in this operation. */
 export const visibleAccountsAs = (actor: ResourceAuthority, accounts: readonly Account[]) =>
   Effect.gen(function* () {
-    const policies = yield* accountAccesses(
+    const owned = yield* ownedAccountIds(
       accounts.map((account) => account.id),
       actor,
     );
-    const usable = new Set(
-      policies.filter((access) => access.canUse).map((access) => access.account),
-    );
-    return accounts.filter((account) => usable.has(account.id));
+    return accounts.filter((account) => owned.has(account.id));
   });
-/** Normal app lists contain usable apps, not every app that an admin can manage. */
+/**
+ * Normal app lists contain usable apps, not every app that an admin can manage. Membership and the
+ * policies are read in one statement.
+ */
 export const visibleApps = (apps: readonly App[]) =>
-  Effect.flatMap(currentResourceAuthority, (actor) => visibleAppsAs(actor, apps));
+  Effect.gen(function* () {
+    const { access } = yield* resourceAuthorityForApps(
+      (yield* CurrentOrganization).organization,
+      yield* CurrentUserId,
+      apps.map((app) => app.id),
+    );
+    const usable = new Set(access.filter((policy) => policy.canUse).map((policy) => policy.app));
+    return apps.filter((app) => usable.has(app.id));
+  });
 /** {@link visibleApps} for an actor already resolved in this operation. */
 export const visibleAppsAs = (actor: ResourceAuthority, apps: readonly App[]) =>
   Effect.gen(function* () {

@@ -13,11 +13,7 @@ import { App, Resource } from "../support/contracts.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Browser } from "../support/browser.ts";
 import { Evidence } from "../support/evidence.ts";
-import {
-  Access,
-  appAccountsFixture,
-  sharedAccountFixture,
-} from "../support/hosted-app-accounts.ts";
+import { Access, appAccountsFixture } from "../support/hosted-app-accounts.ts";
 import {
   connectionsPath,
   linkAccount,
@@ -169,9 +165,7 @@ const plainTickApp = Effect.gen(function* () {
         actor,
         "POST",
         connectionsPath(path, "user", "service"),
-        {
-          destination: { kind: "personal" },
-        },
+        {},
       );
       expect(connection.status, JSON.stringify(connection.body)).toBe(200);
       const submitted = yield* api.request(
@@ -214,12 +208,11 @@ layer(HostedLive, { excludeTestServices: true })("Hosted account scheduling", (i
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const fixture = yield* sharedAccountFixture;
-        const { api, actors, path, aliceId, bobId, shared } = fixture;
+        const fixture = yield* appAccountsFixture;
+        const { api, actors, path, aliceId, bobId, mailB } = fixture;
         const { copies, runsWith, ticks, configure, pause, runCopy, remove, saved } =
           tickSchedule(fixture);
-        // Bob connected the shared account for the plain requirement, which replaced his personal
-        // one there. His copy runs as Bob, with that link.
+        // Bob linked his account to the plain requirement. His copy runs as Bob, with that link.
         const bob = yield* saved(yield* configure(actors.admin, { enabled: true }));
         expect(bob).toMatchObject({ actor: bobId, enabled: true });
         expect(bob.accountRequired).toBeUndefined();
@@ -241,14 +234,14 @@ layer(HostedLive, { excludeTestServices: true })("Hosted account scheduling", (i
         const started = yield* runCopy(actors.admin, bob.id);
         expect(started.status, JSON.stringify(started.body)).toBe(200);
         yield* runsWith("succeeded", 1);
-        expect(yield* ticks(actors.admin)).toEqual([shared]);
+        expect(yield* ticks(actors.admin)).toEqual([mailB]);
 
         const run = yield* Effect.acquireRelease(
           api
             .request(actors.admin, "POST", `${path}/workflow-runs`, {
               workflow: "capture",
               input: {},
-              key: "shared-context",
+              key: "actor-context",
             })
             .pipe(
               Effect.tap((response) =>
@@ -269,7 +262,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted account scheduling", (i
               expect(stopped.body).toMatchObject({ id: run.id });
             }).pipe(Effect.orDie),
         );
-        // Alice links the same shared account, yet Bob's run stays Bob's.
+        // Alice uses the same app, yet Bob's run stays Bob's.
         expect(
           (yield* api.request(actors.member, "GET", `${path}/workflow-runs/${run.id}`)).status,
         ).toBe(403);
@@ -740,7 +733,7 @@ export default defineApp({}, async () => ({ tools: router({ tick }),
               actor,
               "POST",
               connectionsPath(path, "user", "service"),
-              { destination: { kind: "personal" } },
+              {},
             );
             expect(connection.status, JSON.stringify(connection.body)).toBe(200);
             const submitted = yield* api.request(

@@ -6,6 +6,7 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, FileSystem, Schema } from "effect";
+import type { Page } from "playwright";
 import { Browser } from "../support/browser.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { startControlledSelfHost } from "../support/managed-server.ts";
@@ -263,7 +264,7 @@ layer(TestLive, { excludeTestServices: true })("Self-host SSO", (it) => {
         yield* expectExplainedRejection(
           origin,
           "Provider verifies a password account's address",
-          "This email already has a password account on this instance. Sign in with your password.",
+          "This email already has a password account on this instance. Sign in with your password, then connect SSO on your account's Security page.",
         );
         yield* idp.configure("member@outside.example.test", "valid");
         yield* expectExplainedRejection(
@@ -271,6 +272,71 @@ layer(TestLive, { excludeTestServices: true })("Self-host SSO", (it) => {
           "Provider verifies an address outside the approved domains",
           "This email is not from a domain approved for SSO on this instance. Use an approved account or contact your administrator.",
         );
+      }),
+    ),
+  );
+
+  it.effect(scenarios.selfHostSsoConnectPasswordAccount.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const browser = yield* Browser;
+        // Setup leaves the password owner signed in.
+        const { idp, origin } = yield* startSsoInstance("valid");
+        const card = (page: Page) =>
+          page.getByRole("heading", { name: "Single sign-on", exact: true });
+        yield* browser.use("Open Security", (page) => page.goto(`${origin}/account/security`));
+        yield* browser.use("Security offers to connect SSO", (page) => card(page).waitFor());
+        yield* browser.checkpoint("Security offers to connect SSO");
+
+        // The provider signs in someone else: the instance refuses to connect it and says why.
+        yield* idp.configure("member@sso.example.test", "valid");
+        yield* browser.use("Connect another person's SSO account", (page) =>
+          page.getByRole("button", { name: "Connect SSO", exact: true }).click(),
+        );
+        const refused = yield* browser.use("Read the refusal", (page) =>
+          page
+            .waitForURL(
+              (url) => url.pathname === "/account/security" && url.searchParams.has("error"),
+            )
+            .then(() => page.getByRole("alert").textContent()),
+        );
+        expect(refused).toBe(
+          "Your identity provider signed you in with a different email address. Connect the SSO account that uses this account's email.",
+        );
+        yield* browser.checkpoint("SSO for another email is refused with a reason");
+
+        // The provider verifies the owner's own address: SSO is connected to the password account.
+        yield* idp.configure("owner@sso.example.test", "valid");
+        yield* browser.use("Connect the owner's SSO account", (page) =>
+          page.getByRole("button", { name: "Connect SSO", exact: true }).click(),
+        );
+        yield* browser.use("Security shows SSO connected", (page) =>
+          page
+            .waitForURL(
+              (url) => url.pathname === "/account/security" && !url.searchParams.has("error"),
+            )
+            .then(() =>
+              page
+                .getByText("Connected. You can sign in with SSO or with your password.")
+                .waitFor(),
+            ),
+        );
+        yield* browser.checkpoint("SSO connected to the password owner");
+
+        // The owner now signs in with SSO as the same account.
+        yield* continueWithSso(origin, "Owner signs in with connected SSO");
+        yield* browser.use("The owner leaves sign-in", (page) =>
+          page.waitForURL(
+            (url) =>
+              url.origin === origin &&
+              !url.pathname.startsWith("/login") &&
+              !url.pathname.startsWith("/api/"),
+          ),
+        );
+        expect(yield* session(origin)).toEqual({
+          user: expect.objectContaining({ email: "owner@sso.example.test", emailVerified: true }),
+        });
       }),
     ),
   );

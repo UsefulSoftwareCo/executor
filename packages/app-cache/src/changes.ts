@@ -9,9 +9,9 @@ import { CacheCommand } from "./contracts/cache.ts";
  * Whether a command asked for retained data to be replaced now: an invalidation, such as the one
  * that follows an MCP server's `notifications/tools/list_changed`, or the claim that starts an
  * explicit refresh, which then publishes before its caller continues. Hosts report these so
- * results evaluated from the earlier data are not reused. A routine refresh or a direct write
- * replaces data a kept result may still reflect until its next stale-while-revalidate refresh,
- * so it is not reported.
+ * results evaluated from the earlier data are not reused. A routine refresh or a direct write is
+ * known to change data only once the store compares it with the retained value, so the store
+ * reports those itself (`SqliteCacheResult.replaced`); rewriting the same value is no change.
  */
 export const discardsEvaluated = (command: unknown) => {
   const operation = Schema.decodeUnknownOption(CacheCommand)(command);

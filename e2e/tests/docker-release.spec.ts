@@ -26,6 +26,9 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { appsManifest, withApps } from "../support/apps-release.ts";
 import { containerNpmRegistry } from "../support/npm-registry.ts";
 import { connectionsPath } from "../support/app-accounts.ts";
+import { currentClient } from "../support/api.ts";
+import { releaseNetwork } from "../support/release-networks.ts";
+import { stalledPageReport } from "../support/stalled-page.ts";
 
 /**
  * `workerd --version` prints the release date of the workerd the checkout pins, which the image
@@ -328,6 +331,7 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
                 );
                 const page = yield* driver("new browser session", () => browser.newPage());
                 page.setDefaultTimeout(15_000);
+                const reportStall = stalledPageReport(page);
                 yield* driver("open image sign-in", () => page.goto(`${origin}/login`));
                 yield* driver("enter the setup user's email", () =>
                   page.getByLabel("Email", { exact: true }).fill("release@example.test"),
@@ -340,10 +344,12 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
                 yield* driver("sign in through the image dashboard", () =>
                   page.getByRole("button", { name: "Sign in", exact: true }).click(),
                 );
-                yield* driver("sign-in reaches the intended organization", () =>
-                  page.waitForURL(
-                    (url) =>
-                      url.origin === origin && url.pathname === `/org/${parsed[0].slug}/apps`,
+                yield* reportStall(
+                  driver("sign-in reaches the intended organization", () =>
+                    page.waitForURL(
+                      (url) =>
+                        url.origin === origin && url.pathname === `/org/${parsed[0].slug}/apps`,
+                    ),
                   ),
                 );
                 yield* driver("the image dashboard is authenticated", () =>
@@ -1345,10 +1351,18 @@ it.live("released images that share a temporary directory keep separate collecto
         );
         return id;
       });
+      // Each command's exit code is its answer; output alone would accept an instance still starting.
+      const succeeds = (args: readonly string[]) =>
+        processes.exitCode(ChildProcess.make("docker", args)).pipe(
+          Effect.filterOrFail(
+            (code) => code === 0,
+            () => `docker ${args.join(" ")} failed`,
+          ),
+        );
       const ready = (id: string) =>
         Effect.gen(function* () {
-          yield* run(["exec", id, "executor-host", "health"]);
-          yield* run(["exec", id, "executor-host", "telemetry", "/api/health"]);
+          yield* succeeds(["exec", id, "executor-host", "health"]);
+          yield* succeeds(["exec", id, "executor-host", "telemetry", "/api/health"]);
         }).pipe(Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 240 }));
       // Each request carries a new trace id; the instance's own collector must store its spans.
       const traced = Effect.fn("traced request")(function* (id: string) {
@@ -1435,9 +1449,9 @@ it.live("released image serves management tools at a tailnet origin with private
         );
       const id = `selfhost-e2e-${randomBytes(6).toString("hex")}`;
       const registry = yield* containerNpmRegistry;
-      // Shared CGNAT space, the same range Tailscale assigns. Vary the subnet per run.
-      const subnet = `100.64.${64 + (randomBytes(1).readUInt8(0) % 190)}`;
-      const address = `${subnet}.10`;
+      // Shared CGNAT space, the same range Tailscale assigns.
+      const network = yield* releaseNetwork("tailnet");
+      const address = `${network.subnet}.10`;
       const containerPort = 8080;
       const hostname = "nexus.example.ts.net";
       const origin = `http://${hostname}:${containerPort}`;
@@ -1462,10 +1476,6 @@ it.live("released image serves management tools at a tailnet origin with private
           return yield* Effect.fail(new Error("Ports 4431-4439 are all in use"));
         }),
       );
-      yield* Effect.acquireRelease(
-        run(["network", "create", "--subnet", `${subnet}.0/24`, id]),
-        () => run(["network", "rm", id]).pipe(Effect.orDie),
-      );
       const environment: Record<string, string> = {
         // Release scenarios never send product analytics, even from an image with a baked key.
         DO_NOT_TRACK: "1",
@@ -1485,7 +1495,7 @@ it.live("released image serves management tools at a tailnet origin with private
             id,
             "--init",
             "--network",
-            id,
+            network.name,
             "--ip",
             address,
             "--add-host",
@@ -1564,11 +1574,19 @@ it.live("released image serves management tools at a tailnet origin with private
             }),
         );
       };
-      const request = (route: string, data?: unknown, cookie?: string) =>
+      // Like the dashboard, each request states the wire revision this release reads, unless it
+      // stands in for a client released before revisions, which sends none.
+      const request = (
+        route: string,
+        data?: unknown,
+        cookie?: string,
+        client: Record<string, string> = currentClient,
+      ) =>
         driver("tailnet image HTTP request", () =>
           hostFetch(`${origin}${route}`, {
             method: data === undefined ? "GET" : "POST",
             headers: {
+              ...client,
               origin,
               "content-type": "application/json",
               ...(cookie === undefined ? {} : { cookie }),
@@ -1598,7 +1616,8 @@ it.live("released image serves management tools at a tailnet origin with private
       )(yield* driver("organization response", () => organizations.json()));
       const prefix = `/api/organizations/${organization.id}`;
       // workerd rejects some fetch redirect modes before sending. Each name selects one registry
-      // response, and the catalog must report it without following a redirect.
+      // response, and the catalog must report it without following a redirect. Like a remote
+      // registry, a lookup by name answers only a listing published under exactly that name.
       const appRegistry = `${id}-registry`;
       yield* Effect.acquireRelease(
         run([
@@ -1614,7 +1633,10 @@ it.live("released image serves management tools at a tailnet origin with private
           `
 const http = require("node:http");
 const paths = [];
-const list = JSON.stringify([{ name: "@fixture/example", commit: "${"a".repeat(40)}", description: "A shared example", publishedAt: "2026-01-01T00:00:00.000Z" }]);
+const listings = [
+  { name: "@fixture/example", commit: "${"a".repeat(40)}", description: "A shared example", publishedAt: "2026-01-01T00:00:00.000Z" },
+  { name: "@scoped.executor.community/notes", commit: "${"b".repeat(40)}", description: "Notes in a publishing scope", publishedAt: "2026-01-02T00:00:00.000Z" },
+];
 http.createServer((request, response) => {
   const url = new URL(request.url, "http://registry.invalid");
   if (url.pathname === "/stats") return response.end(JSON.stringify(paths));
@@ -1623,9 +1645,10 @@ http.createServer((request, response) => {
   if (name === "@fixture/moved") return response.writeHead(302, { location: "/elsewhere" }).end();
   if (name === "@fixture/down") return response.writeHead(503, { "content-type": "text/plain" }).end("unavailable");
   if (name === "@fixture/garbled") return response.writeHead(200, { "content-type": "text/html" }).end("<html></html>");
-  if (name === "@fixture/missing")
+  const found = name === null ? listings : listings.filter((listing) => listing.name === name);
+  if (found.length === 0)
     return response.writeHead(400, { "content-type": "application/json" }).end(JSON.stringify({ _tag: "RegistryError", reason: "not-found" }));
-  response.writeHead(200, { "content-type": "application/json" }).end(list);
+  response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(found));
 }).listen(8093, "127.0.0.1");
 `,
         ]),
@@ -1645,11 +1668,12 @@ http.createServer((request, response) => {
       yield* registryPaths.pipe(
         Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 50 }),
       );
-      const catalog = (name?: string) =>
+      const catalog = (name?: string, client?: Record<string, string>) =>
         request(
           `${prefix}/app-publications${name === undefined ? "" : `?name=${encodeURIComponent(name)}`}`,
           undefined,
           cookie,
+          client,
         ).pipe(
           Effect.flatMap((response) =>
             driver("catalog response", () => response.json()).pipe(
@@ -1657,17 +1681,19 @@ http.createServer((request, response) => {
             ),
           ),
         );
-      expect(yield* catalog()).toEqual({
-        status: 200,
-        body: [
-          {
-            name: "@fixture/example",
-            commit: "a".repeat(40),
-            description: "A shared example",
-            publishedAt: "2026-01-01T00:00:00.000Z",
-          },
-        ],
-      });
+      const example = {
+        name: "@fixture/example",
+        commit: "a".repeat(40),
+        description: "A shared example",
+        publishedAt: "2026-01-01T00:00:00.000Z",
+      };
+      const notes = {
+        name: "@scoped.executor.community/notes",
+        commit: "b".repeat(40),
+        description: "Notes in a publishing scope",
+        publishedAt: "2026-01-02T00:00:00.000Z",
+      };
+      expect(yield* catalog()).toEqual({ status: 200, body: [example, notes] });
       // Each failure states its cause in a message Executor derives from the reason.
       const failures = {
         "@fixture/moved": {
@@ -1700,6 +1726,40 @@ http.createServer((request, response) => {
             `/api/registry/apps${name === undefined ? "" : `?name=${encodeURIComponent(name)}`}`,
         ),
       );
+      // A client released before publisher scopes sends no revision. It is shown a listing in a
+      // publishing scope under its slug, and each name it sends is looked up as itself and as the
+      // scoped name it could stand for, concurrently. A name neither finds is answered as the
+      // registry answers that name.
+      const released = {};
+      const lookups = (...names: ReadonlyArray<string>) =>
+        names.map((name) => `/api/registry/apps?name=${encodeURIComponent(name)}`).toSorted();
+      const lookupsFor = (name: string, client: Record<string, string> = released) =>
+        Effect.gen(function* () {
+          const before = (yield* registryPaths).length;
+          const answer = yield* catalog(name, client);
+          return { answer, lookups: (yield* registryPaths).slice(before).toSorted() };
+        });
+      expect(yield* catalog(undefined, released), "a released client's catalog").toEqual({
+        status: 200,
+        body: [example, { ...notes, name: "@scoped/notes" }],
+      });
+      expect(yield* lookupsFor("@fixture/example"), "a released client's dotless name").toEqual({
+        answer: { status: 200, body: [example] },
+        lookups: lookups("@fixture/example", "@fixture.executor.community/example"),
+      });
+      expect(yield* lookupsFor("@scoped/notes"), "a released client's slug name").toEqual({
+        answer: { status: 200, body: [{ ...notes, name: "@scoped/notes" }] },
+        lookups: lookups("@scoped/notes", "@scoped.executor.community/notes"),
+      });
+      expect(yield* lookupsFor("@fixture/missing"), "a released client's missing name").toEqual({
+        answer: { status: 400, body: { _tag: "RegistryError", ...failures["@fixture/missing"] } },
+        lookups: lookups("@fixture/missing", "@fixture.executor.community/missing"),
+      });
+      // This release's clients mean exactly the name they send, looked up once.
+      expect(yield* lookupsFor("@scoped/notes", currentClient), "a current client").toEqual({
+        answer: { status: 400, body: { _tag: "RegistryError", ...failures["@fixture/missing"] } },
+        lookups: lookups("@scoped/notes"),
+      });
       yield* run(["kill", appRegistry]);
       expect(yield* catalog("@fixture/example"), "an unreachable registry").toEqual({
         status: 400,
@@ -2346,6 +2406,7 @@ it.live(
         );
         const page = yield* driver("new browser session", () => browser.newPage());
         page.setDefaultTimeout(20_000);
+        const reportStall = stalledPageReport(page);
         const scripts: Array<{ url: string; encoding: string | undefined }> = [];
         page.on("response", (response) => {
           if (new URL(response.url()).pathname.endsWith(".js"))
@@ -2362,8 +2423,10 @@ it.live(
         yield* driver("sign in", () =>
           page.getByRole("button", { name: "Sign in", exact: true }).click(),
         );
-        yield* driver("the apps page renders", () =>
-          page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),
+        yield* reportStall(
+          driver("the apps page renders", () =>
+            page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),
+          ),
         );
         expect(scripts.length).toBeGreaterThan(0);
         expect(

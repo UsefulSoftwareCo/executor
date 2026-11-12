@@ -14,8 +14,9 @@
  * Every import freezes its organization in v1 first and cuts it over at the end, so a deployment
  * that writes always holds the moved flag's writer (`flag`).
  */
-import { Data, Effect, Schema } from "effect";
+import { Data, Effect, Option, Schema } from "effect";
 import { V1ImportDatabase, V1ImportUnavailable } from "../../contracts/v1-import.ts";
+import { V1IntoMode } from "../../contracts/v1-import-run.ts";
 import type { V1MovedFlag } from "./moved-flag.ts";
 
 export type V1ImportWrites = Data.TaggedEnum<{
@@ -83,6 +84,62 @@ export const importRefusal = (
         Effect.map((allowed) => refusalGiven(writes, organizations, allowed)),
       )
     : Effect.succeed(refusalGiven(writes, organizations, new Set()));
+
+const Displacements = Schema.Array(
+  Schema.Struct({ displace_v2_org_id: Schema.NullOr(Schema.String) }),
+);
+
+/**
+ * The v2 organization the operator listed in the allow table to give up the slug this v1
+ * organization moves to (`displace_v2_org_id`), if any. A displacement happens only for an
+ * organization listed this way, never on its own (`notes/v1-import.md`, "Slug displacement").
+ * Dry runs read it too, to report the rename. Only reads the table.
+ */
+export const listedDisplacement = (organization: string) =>
+  Effect.gen(function* () {
+    const sql = yield* Effect.flatten(V1ImportDatabase);
+    const rows = yield* sql`
+      select displace_v2_org_id from private_v1_import_allowed where v1_org_id = ${organization}
+    `.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Displacements)),
+      Effect.mapError(() => new V1ImportUnavailable()),
+    );
+    return rows[0]?.displace_v2_org_id ?? undefined;
+  });
+
+const Into = Schema.Array(
+  Schema.Struct({
+    into_v2_org_id: Schema.NullOr(Schema.String),
+    into_mode: Schema.NullOr(Schema.String),
+  }),
+);
+
+/**
+ * The existing v2 organization the operator listed in the allow table for this v1 organization to
+ * move into instead of a new one (`into_v2_org_id`), and how (`into_mode`, `nothing_to_copy` when
+ * unset), if any (`notes/v1-import.md`, decision 32). Only a listed organization moves into an
+ * existing one, and only when the import's checks for its mode allow it; a mode it does not know is
+ * `undefined`, which refuses the move. Dry runs read it too, to report the move. Only reads the
+ * table.
+ */
+export const listedInto = (organization: string) =>
+  Effect.gen(function* () {
+    const sql = yield* Effect.flatten(V1ImportDatabase);
+    const rows = yield* sql`
+      select into_v2_org_id, into_mode from private_v1_import_allowed where v1_org_id = ${organization}
+    `.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Into)),
+      Effect.mapError(() => new V1ImportUnavailable()),
+    );
+    const row = rows[0];
+    if (row === undefined || row.into_v2_org_id === null) return undefined;
+    return {
+      organization: row.into_v2_org_id,
+      mode: Option.getOrUndefined(
+        Schema.decodeUnknownOption(V1IntoMode)(row.into_mode ?? "nothing_to_copy"),
+      ),
+    };
+  });
 
 /** Why imports never write here, or undefined where they may. */
 export const writesRefused = (writes: V1ImportWrites): string | undefined =>

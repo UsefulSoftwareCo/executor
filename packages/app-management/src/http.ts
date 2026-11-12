@@ -3,6 +3,7 @@ import {
   AppAccessDenied,
   AppIdentity,
   appManagementApi,
+  FullListingNameRequired,
   type AppCapabilities,
 } from "./contracts/api.ts";
 export * from "./contracts/api.ts";
@@ -12,7 +13,7 @@ export {
   frameworkRoutes,
 } from "./implementation/framework.ts";
 /** Product-authorized app authoring, release discovery, and ordinary Git access. */
-import { Array as Arr, Context, Effect, Layer, Schema } from "effect";
+import { Array as Arr, Context, Effect, Layer, Option, Schema } from "effect";
 import { HttpMiddleware, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   HttpApi,
@@ -37,6 +38,13 @@ import {
   Publication,
   PublicationSnapshot,
   PackageName,
+  packageNameFromRevision,
+  publicationForRevision,
+  publicationsForRevision,
+  readinessForRevision,
+  registryForRevision,
+  requestWireRevision,
+  scopedNameFor,
   type App,
   type Executor,
 } from "@executor-js/sdk/core";
@@ -75,6 +83,13 @@ const gitRemote = (scope: string, app: App) =>
     const path = `/git/${encodeURIComponent(scope)}/${app.slug}.git`;
     return { path, url: origin + path };
   });
+/**
+ * The wire revision the requesting client reads; see `wire-revision.ts` in the SDK. The span
+ * records it, so the requests still answered in an earlier revision can be counted.
+ */
+const clientRevision = Effect.map(HttpServerRequest.HttpServerRequest, (request) =>
+  requestWireRevision(request.headers),
+).pipe(Effect.tap((revision) => Effect.annotateCurrentSpan("executor.wire_revision", revision)));
 /** Cookies never authorize Git. The host validates the explicit scoped Git credential. */
 export class AppGitAccess extends Context.Service<
   AppGitAccess,
@@ -202,7 +217,8 @@ const workspaceSource = (id: AppId) =>
     return {
       ...source,
       ...fields,
-      publication:
+      publication: readinessForRevision(
+        yield* clientRevision,
         canPublish && metadata.namespace !== null
           ? yield* host.executor.publications.preview({
               owner: app.owner,
@@ -211,6 +227,7 @@ const workspaceSource = (id: AppId) =>
               files: source.files,
             })
           : null,
+      ),
     };
   });
 /** Routes call existing SDK app operations; authoring never creates another project identity. */
@@ -295,7 +312,14 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
           const from =
             "app" in payload.from
               ? (yield* ownedSource(host, identity, payload.from.app)).app.id
-              : payload.from;
+              : {
+                  ...payload.from,
+                  package: yield* packageNameFromRevision(
+                    host.executor.registry,
+                    yield* clientRevision,
+                    payload.from.package,
+                  ),
+                };
           return yield* host.executor.apps
             .copy({
               owner: identity.owner,
@@ -331,6 +355,7 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
           yield* ownedSource(host, identity, params.app, true);
           if (identity.namespace === null)
             return yield* new AppAccessDenied({ reason: "forbidden" });
+          const revision = yield* clientRevision;
           return yield* host.executor.publications
             .publish({
               owner: identity.owner,
@@ -344,26 +369,49 @@ export const appManagementHandlers = <I extends HttpApiMiddleware.AnyId, S, Id e
                   ? new AppAccessDenied({ reason: "forbidden" })
                   : error,
               ),
+              Effect.flatMap((published) =>
+                publicationForRevision(host.executor.registry, revision, published),
+              ),
             );
         }),
       )
       .handle("catalog", ({ query }) =>
         Effect.gen(function* () {
           const host = yield* Effect.flatten(AppManagementHost);
-          return yield* host.executor.registry.list(query);
+          return yield* registryForRevision(host.executor.registry, yield* clientRevision).list(
+            query,
+          );
         }),
       )
       .handle("published", () =>
         Effect.gen(function* () {
           const identity = yield* AppIdentity;
           const host = yield* Effect.flatten(AppManagementHost);
-          return yield* host.executor.publications.owned({ owner: identity.owner });
+          const revision = yield* clientRevision;
+          return yield* host.executor.publications
+            .owned({ owner: identity.owner })
+            .pipe(
+              Effect.flatMap((all) =>
+                publicationsForRevision(host.executor.registry, revision, all),
+              ),
+            );
         }),
       )
       .handle("unpublish", ({ payload }) =>
         Effect.gen(function* () {
           const identity = yield* writeIdentity;
           const host = yield* Effect.flatten(AppManagementHost);
+          // Revision 0 is shown a scoped listing by a short name, `@acme/notes`, and states no
+          // commit. By the time a removal arrives that name can select another listing, so it is
+          // never resolved for one; the client is given the full name. A full name means only
+          // itself. A host that reads a remote registry refuses every removal anyway.
+          const { publishing } = yield* host.executor.publications.status();
+          const fullName = scopedNameFor(payload.package);
+          if (publishing && Option.isSome(fullName) && (yield* clientRevision) < 1)
+            return yield* new FullListingNameRequired({
+              name: payload.package,
+              fullName: fullName.value,
+            });
           return yield* host.executor.publications
             .unpublish({ owner: identity.owner, package: payload.package })
             .pipe(
@@ -406,6 +454,11 @@ export const registryRoutes = (() => {
   );
   const publicRegistry = Effect.flatten(AppManagementHost).pipe(
     Effect.mapError(() => new RegistryError({ reason: "storage" })),
+    Effect.flatMap((host) =>
+      Effect.map(clientRevision, (revision) =>
+        registryForRevision(host.executor.registry, revision),
+      ),
+    ),
   );
   // Public sites read the catalog from another origin (`executor.sh` reads `api.executor.sh`).
   // The reads carry no credentials, so any origin may read them; a preflight gets the same answer.
@@ -416,13 +469,13 @@ export const registryRoutes = (() => {
         HttpApiBuilder.group(api, "registry", (h) =>
           h
             .handle("list", ({ query }) =>
-              Effect.flatMap(publicRegistry, (host) => host.executor.registry.list(query)),
+              Effect.flatMap(publicRegistry, (registry) => registry.list(query)),
             )
             .handle("snapshot", ({ query }) =>
-              Effect.flatMap(publicRegistry, (host) => host.executor.registry.snapshot(query)),
+              Effect.flatMap(publicRegistry, (registry) => registry.snapshot(query)),
             )
             .handle("file", ({ query }) =>
-              Effect.flatMap(publicRegistry, (host) => host.executor.registry.file(query)),
+              Effect.flatMap(publicRegistry, (registry) => registry.file(query)),
             ),
         ),
       ),

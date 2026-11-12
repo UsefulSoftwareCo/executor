@@ -217,7 +217,9 @@ layer(TestLive, { excludeTestServices: true })("Local app launch", (it) => {
         const [rejectedPage, rejectedFix, rejectedApp] = yield* blocked(
           "Open the app with a rejected linked account",
         );
-        expect(rejectedPage).toContain("Rejected (Launch fixture): sign-in rejected at last check");
+        expect(rejectedPage).toContain(
+          "Rejected (Launch fixture): credentials not working at last check",
+        );
         expect(rejectedFix).toContain(`/apps/${app.id}?view=accounts`);
         expect(rejectedApp).toBe(0);
         yield* browser.checkpoint("Blocked accounts explain why the app cannot open");

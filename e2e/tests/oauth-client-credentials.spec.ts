@@ -221,9 +221,7 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
               actors.owner,
               "POST",
               connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-              authMethod === "client_secret_post"
-                ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
-                : {},
+              {},
             ),
           );
           const path = `${prefix}/connections/${connection.id}/oauth/start`;
@@ -243,25 +241,16 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           expect(saved.status).toBe(200);
           const completed = yield* body(Completed, saved);
           expect(completed.account.label).toBe("Reporting");
-          const access = yield* body(
-            Schema.Struct({
-              ownership: Schema.Struct({ kind: Schema.String }),
-              canUse: Schema.Boolean,
-            }),
-            yield* api.request(
-              actors.owner,
-              "GET",
-              `${prefix}/accounts/${completed.account.id}/access`,
-            ),
+          const detail = yield* body(
+            Schema.Struct({ canManage: Schema.Boolean }),
+            yield* api.request(actors.owner, "GET", `${prefix}/accounts/${completed.account.id}`),
           );
-          expect(access.ownership.kind).toBe(
-            authMethod === "client_secret_post" ? "shared" : "personal",
-          );
-          expect(access.canUse).toBe(true);
+          // A machine account is its connector's own, like any other.
+          expect(detail.canManage).toBe(true);
           expect(
             (yield* api.request(actors.member, "GET", `${prefix}/accounts/${completed.account.id}`))
               .status,
-          ).toBe(authMethod === "client_secret_post" ? 200 : 403);
+          ).toBe(403);
           yield* Effect.addFinalizer(() =>
             api
               .request(actors.owner, "DELETE", `${prefix}/accounts/${completed.account.id}`)
@@ -429,9 +418,7 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
                 actors.owner,
                 "POST",
                 connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-                authMethod === "client_secret_post"
-                  ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
-                  : {},
+                {},
               ),
             );
             const named = yield* body(

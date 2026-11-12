@@ -526,7 +526,8 @@ const harness = Effect.gen(function* () {
   /** Call `tool` with the accounts linked to the app: for a plain requirement, the newest. */
   const call = <A>(path: string, output: Schema.Decoder<A>, tool: string) =>
     Effect.gen(function* () {
-      // Every tool here only reads; naming the kind lets a refused call renew and repeat.
+      // Every tool here only reads. Naming the kind, once a kept listing confirms it (`list`),
+      // lets a refused call renew and repeat.
       const response = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
         tool,
         kind: "query",
@@ -544,6 +545,16 @@ const harness = Effect.gen(function* () {
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return yield* body(output, response);
     });
+  /**
+   * List the app's tools, as a caller discovering them does. The listing is kept, and only a kept
+   * listing confirms that a query only reads, so a refused query is repeated after renewal and a
+   * failed renewal is its failure.
+   */
+  const list = (path: string) =>
+    Effect.gen(function* () {
+      const listed = yield* api.request(actors.owner, "GET", `${path}/tools`);
+      expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+    });
   /** The first redirect of an authorization URL: the callback the issuer sends the browser to. */
   const consent = (authorizationUrl: string) =>
     Effect.scoped(
@@ -556,7 +567,7 @@ const harness = Effect.gen(function* () {
         return location;
       }),
     ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
-  return { api, actors, prefix, deploy, connection, submit, call, callWith, consent };
+  return { api, actors, prefix, deploy, connection, submit, call, callWith, list, consent };
 });
 
 layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) => {
@@ -1080,6 +1091,24 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           firstParty: { label: "Executor for Google" },
           scopes: ["openid", "email", "profile"],
         });
+        // Each approved product must offer the shared client and forward its exact scopes.
+        for (const [key, scopes] of [
+          ["youtube", ["youtube", "youtube.force-ssl"]],
+          ["ads", ["adwords"]],
+          ["bigquery", ["bigquery"]],
+          [
+            "apps-script",
+            ["script.projects", "script.deployments", "script.processes", "script.metrics"],
+          ],
+        ] as const) {
+          const requested = scopes.map((scope) => `https://www.googleapis.com/auth/${scope}`);
+          const product = yield* signIn(key, requested);
+          expect(product.setup.firstParty, key).toEqual({ label: "Executor for Google" });
+          expect(product.started.status, key).toBe(200);
+          const url = new URL((yield* body(Redirect, product.started)).authorizationUrl);
+          expect(url.searchParams.get("client_id"), key).toBe(clientId);
+          expect(url.searchParams.get("scope")?.split(" "), key).toEqual(requested);
+        }
         expect(wider.setup.firstParty).toBeUndefined();
         expect(wider.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
       }),
@@ -1423,7 +1452,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, prefix, deploy } = yield* harness;
+        const { api, actors, prefix, deploy, list } = yield* harness;
         const { issuer, store, issuerHost, storeHost } = yield* operatorWith({ revocation: true });
         const hosts = [issuerHost, storeHost];
         yield* issuer.configure({ revocation: "recorded" });
@@ -1523,6 +1552,8 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         });
         const renewing = yield* signIn(scoped);
         expect(renewing.completed.status, JSON.stringify(renewing.completed.body)).toBe(200);
+        // The app's listing confirms `resource` only reads, so the renewal's refusal is the call's.
+        yield* list(scoped);
         yield* issuer.expireAccessTokens;
         const read = yield* api.request(actors.owner, "POST", `${scoped}/tools/call`, {
           tool: "resource",
@@ -1984,7 +2015,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, prefix, deploy, call, consent } = yield* harness;
+        const { api, actors, prefix, deploy, call, list, consent } = yield* harness;
         const issuer = yield* oauthSetupIssuer;
         const store = yield* credentialUpstream;
         const hosts = [new URL(issuer.origin).host, `127.0.0.1:${store.port}`];
@@ -2138,7 +2169,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(health.apps.map((entry) => entry.check?.status)).toEqual(["healthy"]);
 
         // And a retry after the service refused the user's token: the renewal it waited for
-        // returned the operator's credential, which the retry reads sealed and sends placed.
+        // returned the operator's credential, which the retry reads sealed and sends placed. The
+        // app's listing, kept since the restart, confirms `resource` only reads, so it is retried.
+        yield* list(refused.path);
         yield* issuer.expireAccessTokens;
         const retried = yield* interleaved(
           refused,
@@ -2239,7 +2272,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const signIn = yield* startSignIn(first.path);
         const firstSent = yield* sent(signIn.started);
         expectOperatorRequest(firstSent.url);
+        const originalRedirectUri = firstSent.redirect.redirectUri;
         const account = yield* completeSignIn(issuer, signIn.connection, firstSent.redirect);
+        yield* issuer.configure({ requireRefreshRedirectUri: originalRedirectUri });
         // The exchange sent the operator's resource, and the account holds the nested user token:
         // the service accepts only tokens it issued.
         expect((yield* issuer.metrics).exchangeResource).toBe(resource);
@@ -2256,11 +2291,25 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           operatorClients(issuer.origin, hosts, { ...slack, unlisted: true }),
           twoHours,
         );
-        const renewed = yield* call(first.path, Called, "resource");
-        expect(renewed.status).toBe(200);
+        const renewalResponse = yield* api.request(
+          actors.owner,
+          "POST",
+          `${first.path}/tools/call`,
+          { tool: "resource", kind: "query", input: {} },
+        );
         const metrics = yield* issuer.metrics;
+        expect(metrics.refreshRedirectUri, "refresh request redirect_uri").toBe(
+          originalRedirectUri,
+        );
+        expect(renewalResponse.status, "managed account renewal failed").toBe(200);
+        const renewed = yield* body(Called, renewalResponse);
+        expect(renewed.status).toBe(200);
         expect(metrics.refreshesIssued).toBeGreaterThan(refreshed);
-        expect(metrics.refreshChecks).toMatchObject({ issued: true, authSecret: true });
+        expect(metrics.refreshChecks).toMatchObject({
+          issued: true,
+          authSecret: true,
+          redirect: true,
+        });
         expect(metrics.refreshResource).toBe(resource);
         expect(metrics.resourceAuthorizations.at(-1)).toMatch(/^Bearer synthetic-refreshed-token-/);
 

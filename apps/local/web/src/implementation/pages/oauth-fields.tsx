@@ -88,6 +88,7 @@ function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
   onPendingChange,
   access,
   disabled,
+  clientGuide,
   query,
   Failure,
   start,
@@ -105,6 +106,7 @@ function Fields<E, S extends OAuthStartResult = OAuthStartResult>({
       {({ setup, action, refresh }) => (
         <SharedFields<S, E>
           providerName={provider.definition.name}
+          clientGuide={clientGuide}
           {...(account ? { account } : {})}
           Failure={Failure}
           setup={setup}

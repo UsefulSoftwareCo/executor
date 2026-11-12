@@ -78,41 +78,74 @@ export const isolatedWorkflowExecution = (
   };
 };
 
+/**
+ * Why a control call has no answer: Executor did not reply, or this framework could not read the
+ * reply. Either way a start or terminate may have taken effect, so neither is reported as a failure
+ * to repeat.
+ */
+type Operation = "start" | "get" | "list" | "terminate";
+const unanswered = (
+  { operation, key }: { readonly operation: Operation; readonly key?: string | undefined },
+  unread: boolean,
+) => {
+  const cause = unread
+    ? `This app's apps release could not read Executor's reply to ctx.workflows.${operation}; redeploy the app on the current apps release.`
+    : `Executor did not answer ctx.workflows.${operation}.`;
+  switch (operation) {
+    case "start":
+      return new WorkflowFailure({
+        reason: "engine",
+        retryable: false,
+        message:
+          key === undefined
+            ? `${cause} The run may have started. This start had no key, so check ctx.workflows.list before starting again: another start creates another run.`
+            : `${cause} The run may have started. Start it again with the same key and input, which returns the run if it exists, or check ctx.workflows.list before starting another.`,
+      });
+    case "terminate":
+      return new WorkflowFailure({
+        reason: "engine",
+        retryable: false,
+        message: `${cause} The run may have stopped. Read it with ctx.workflows.get before terminating it again.`,
+      });
+    default:
+      return new WorkflowFailure({
+        reason: "engine",
+        retryable: !unread,
+        message: unread ? cause : `${cause} Try again.`,
+      });
+  }
+};
+
 /** Reconstruct app-scoped controls from one invocation-owned RPC function. */
 export const isolatedWorkflowControls = (
   deliver: (input: unknown) => Promise<unknown>,
 ): WorkflowHostControls => {
-  const request = (input: unknown) =>
+  const request = <A>(
+    input: { readonly operation: Operation; readonly key?: string | undefined },
+    schema: Schema.Decoder<A>,
+  ) =>
     // oxlint-disable-next-line executor/authored-code-through-adapter -- the host's workflow RPC
     Effect.tryPromise({
       try: () => deliver(input),
-      catch: () => new WorkflowFailure({ reason: "engine", retryable: true }),
+      catch: () => unanswered(input, false),
     }).pipe(
-      Effect.flatMap(Schema.decodeUnknownEffect(WorkflowRpcResult)),
-      Effect.mapError(() => new WorkflowFailure({ reason: "engine", retryable: true })),
-      Effect.flatMap((result) =>
-        result.ok ? Effect.succeed(result.value) : Effect.fail(result.error),
-      ),
-    );
-  const run = (input: unknown) =>
-    request(input).pipe(
-      Effect.flatMap((value) =>
-        Schema.decodeUnknownEffect(WorkflowRun)(value).pipe(
-          Effect.mapError(() => new WorkflowFailure({ reason: "engine", retryable: true })),
+      Effect.flatMap((reply) =>
+        Schema.decodeUnknownEffect(WorkflowRpcResult)(reply).pipe(
+          Effect.mapError(() => unanswered(input, true)),
         ),
+      ),
+      Effect.flatMap((result) =>
+        result.ok
+          ? Schema.decodeUnknownEffect(schema)(result.value).pipe(
+              Effect.mapError(() => unanswered(input, true)),
+            )
+          : Effect.fail(result.error),
       ),
     );
   return {
-    start: (input) => run({ operation: "start", ...input }),
-    get: (input) => run({ operation: "get", ...input }),
-    terminate: (input) => run({ operation: "terminate", ...input }),
-    list: (input) =>
-      request({ operation: "list", ...input }).pipe(
-        Effect.flatMap((value) =>
-          Schema.decodeUnknownEffect(WorkflowRunPage)(value).pipe(
-            Effect.mapError(() => new WorkflowFailure({ reason: "engine", retryable: true })),
-          ),
-        ),
-      ),
+    start: (input) => request({ operation: "start", ...input }, WorkflowRun),
+    get: (input) => request({ operation: "get", ...input }, WorkflowRun),
+    terminate: (input) => request({ operation: "terminate", ...input }, WorkflowRun),
+    list: (input) => request({ operation: "list", ...input }, WorkflowRunPage),
   };
 };

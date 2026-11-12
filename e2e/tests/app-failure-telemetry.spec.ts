@@ -288,6 +288,10 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             yield* Effect.addFinalizer(() =>
               api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
             );
+            // List its tools, as a caller discovering them does. Only the kept listing confirms
+            // that each query only reads, so its failures keep a read's classification.
+            const listed = yield* api.request(actors.owner, "GET", `${prefix}/${app.id}/tools`);
+            expect(listed.status, JSON.stringify(listed.body)).toBe(200);
             return app;
           });
 
@@ -469,13 +473,21 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
         }
         // A rejected call and a reply that fails decoding: the caller is told no usable result
         // arrived, not that the app's tools could not load.
-        for (const failed of [rejected, malformed]) {
+        // Both runtimes match the rejection's text, which the app wrote, so a match is never
+        // stated as confirmed: a thrown read is unrecognized, a reply that fails decoding only
+        // matches an invalid reply.
+        const lost = "Executor did not receive a usable result from this tool call.";
+        for (const [failed, why] of [
+          [rejected, "The runtime did not recognize why."],
+          [
+            malformed,
+            "The runtime’s error matches this cause, which Executor has not confirmed: The app's reply does not match its host protocol.",
+          ],
+        ] as const) {
           expect(failed.response.status).toBe(502);
-          expect(yield* body(ResultLost, failed.response)).toMatchObject({
-            reason: "Executor did not receive a usable result from this tool call.",
-            message:
-              "Executor did not receive a usable result from this tool call. No further failure detail is available.",
-          });
+          const result = yield* body(ResultLost, failed.response);
+          expect(result.reason).toBe(`${lost} ${why}`);
+          expect(result.message).toBe(`${result.reason} No further failure detail is available.`);
           expect(JSON.stringify(failed.response.body)).not.toContain(marker);
         }
         // A failure after the tool returned, which the app's framework reports like an invalid

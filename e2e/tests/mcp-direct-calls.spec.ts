@@ -1,15 +1,17 @@
 /** Search, describe and call reach app tools through MCP without an execute program. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
-import { App } from "../support/contracts.ts";
+import { App, Resource } from "../support/contracts.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { Target } from "../support/platform.ts";
 
 const source = `import { defineApp, mutation, query, object, string, router } from "apps";
 import { always } from "apps/operations/approval";
@@ -43,6 +45,22 @@ const Pending = Schema.Struct({
   status: Schema.Literal("approval-required"),
   requestId: Schema.String,
 });
+
+// A 1x1 PNG and a few bytes of WAV header, as an MCP tool returns them.
+const png =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQWPX/PwAFgALJpImt0wAAAABJRU5ErkJggg==";
+const wav = "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
+const mediaSource = `import { defineApp, query, object, router } from "apps";
+export default defineApp({}, async () => ({ tools: router({
+  screenshot: query({ input: object({}), description: "Return a screenshot" },
+    async () => ({ content: [{ type: "image", mimeType: "image/png", data: ${JSON.stringify(png)} }] })),
+  recording: query({ input: object({}), description: "Return a recording" },
+    async () => ({ content: [{ type: "audio", mimeType: "audio/wav", data: ${JSON.stringify(wav)} }] })),
+  download: query({ input: object({}), description: "Return the screenshot's bytes as unpadded base64url, as file APIs do" },
+    async () => ({ contentBase64url: ${JSON.stringify(png.replaceAll("/", "_").replaceAll("+", "-").replace(/=+$/u, ""))} })),
+  lookalike: query({ input: object({}), description: "Return image-shaped data that is not base64" },
+    async () => ({ type: "image", mimeType: "image/png", data: "not base64!" })),
+}) }));`;
 
 /** A personal access token and the app above, deployed for one scenario. */
 const fixture = Effect.gen(function* () {
@@ -185,6 +203,92 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
     ),
   );
 
+  it.effect(scenarios.mcpMediaContent.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          mcp = yield* McpClient,
+          evidence = yield* Evidence;
+        const { key, organization } = yield* fixture;
+        const prefix = `/api/organizations/${organization}`;
+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name: `Media ${randomUUID().slice(0, 8)}`,
+          files: [{ path: "index.ts", content: mediaSource }, appsManifest],
+        });
+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+        const app = yield* body(App, deployed);
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+        );
+        const client = yield* mcp.connect(key.key, "media-content", { organization });
+        const tool = (name: string) => `tools[${JSON.stringify(app.slug)}].${name}`;
+        const run = (label: string, name: string, args: Record<string, unknown>) =>
+          Effect.gen(function* () {
+            const result = yield* client.use(label, (client, signal) =>
+              client.callTool({ name, arguments: args }, undefined, { signal }),
+            );
+            yield* evidence.json(
+              `${label.toLowerCase().replaceAll(/[^a-z0-9]+/g, "-")}.json`,
+              result,
+            );
+            const [text, ...media] = result.content as ReadonlyArray<Record<string, unknown>>;
+            const completed = yield* Schema.decodeUnknownEffect(Completed)(
+              result.structuredContent,
+            );
+            // The text block repeats the structured result, which keeps no base64.
+            expect(text).toMatchObject({ type: "text" });
+            expect(JSON.parse(String(text?.text))).toEqual(result.structuredContent);
+            expect(String(text?.text)).not.toContain(png);
+            expect(String(text?.text)).not.toContain(wav);
+            return { completed, media };
+          });
+
+        // A direct call's image reaches the client as an image block; the result keeps its index.
+        const called = yield* run("Call a tool that returns an image", "call", {
+          calls: { path: tool("screenshot"), input: {} },
+        });
+        expect(called.media).toEqual([{ type: "image", mimeType: "image/png", data: png }]);
+        expect(called.completed.execution).toMatchObject({
+          ok: true,
+          value: {
+            path: tool("screenshot"),
+            ok: true,
+            value: { content: [{ type: "image", mimeType: "image/png", contentIndex: 1 }] },
+          },
+        });
+
+        // A program's result sends each distinct image or audio block once, in first-seen order.
+        // A program can wrap bytes a tool returns in another shape, here unpadded base64url, and
+        // they are sent in the standard form: the same screenshot, so the same block. Data that
+        // is not base64 is not media and stays in the result as the tool returned it.
+        const executed = yield* run("Execute a program that returns media", "execute", {
+          code: `const shot = await ${tool("screenshot")}({});
+const audio = await ${tool("recording")}({});
+const file = await ${tool("download")}({});
+return { first: shot.content[0], audio: audio.content[0], again: shot,
+  wrapped: { type: "image", mimeType: "image/png", data: file.contentBase64url },
+  lookalike: await ${tool("lookalike")}({}) };`,
+        });
+        expect(executed.media).toEqual([
+          { type: "image", mimeType: "image/png", data: png },
+          { type: "audio", mimeType: "audio/wav", data: wav },
+        ]);
+        expect(executed.completed.execution).toMatchObject({
+          ok: true,
+          value: {
+            first: { type: "image", mimeType: "image/png", contentIndex: 1 },
+            audio: { type: "audio", mimeType: "audio/wav", contentIndex: 2 },
+            again: { content: [{ type: "image", mimeType: "image/png", contentIndex: 1 }] },
+            wrapped: { type: "image", mimeType: "image/png", contentIndex: 1 },
+            lookalike: { type: "image", mimeType: "image/png", data: "not base64!" },
+          },
+        });
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+
   it.effect(scenarios.mcpNativeCallApproval.title, (context) =>
     withHostedCase(
       context,
@@ -226,6 +330,115 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
         );
         expect(executed.execution).toMatchObject({ ok: true, value: { reviewed: "program" } });
         expect(yield* client.elicitationCount).toBe(1);
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+
+  it.effect(scenarios.mcpNestedExecutorResult.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          mcp = yield* McpClient,
+          evidence = yield* Evidence;
+        const origin = (yield* Target).metadata.origin;
+        const { key, app, organization } = yield* fixture;
+        const prefix = `/api/organizations/${organization}`;
+        // An app that reaches this same Executor through its MCP server, as a remote MCP router.
+        // Its account holds the access token the inner Executor accepts.
+        const name = `Nested executor ${randomUUID().slice(0, 8)}`;
+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name,
+          files: [
+            {
+              path: "index.ts",
+              content: `import { defineApp, defineProvider, object, secrets, string } from "apps";
+import { mcpRouter } from "apps/mcp";
+const service = defineProvider({ name: ${JSON.stringify(name)}, hosts: [${JSON.stringify(new URL(origin).host)}], auth: {
+  key: secrets({ label: "Key", fields: object({ token: string() }) }),
+} });
+export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts }, signal }) => ({
+  tools: await mcpRouter({
+    url: ${JSON.stringify(`${origin}/mcp`)},
+    account: accounts.service,
+    headers: { Authorization: "Bearer " + accounts.service.fields.token, "X-Executor-Organization": ${JSON.stringify(organization)} },
+    signal,
+  }),
+}));`,
+            },
+            appsManifest,
+          ],
+        });
+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+        const outer = yield* body(App, deployed);
+        const outerPath = `${prefix}/apps/${outer.id}`;
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", outerPath).pipe(Effect.orDie),
+        );
+        const connection = yield* body(
+          Resource,
+          yield* api.request(
+            actors.owner,
+            "POST",
+            connectionsPath(outerPath, "user", "service"),
+            {},
+          ),
+        );
+        const saved = yield* api.request(
+          actors.owner,
+          "POST",
+          `${prefix}/connections/${connection.id}/submit`,
+          { method: "key", label: "Inner Executor", fields: { token: Redacted.value(key.key) } },
+        );
+        expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+        const account = (yield* body(Resource, saved)).id;
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
+        );
+
+        const client = yield* mcp.connect(key.key, "nested-executor", { organization });
+        const echo = `tools[${JSON.stringify(app.slug)}].echo`;
+        const nestedCall = `tools[${JSON.stringify(outer.slug)}].call`;
+        const id = randomUUID();
+        const marker = `say "nested" ${id}`;
+        const result = yield* client.use("Call Executor through Executor", (client, signal) =>
+          client.callTool(
+            {
+              name: "call",
+              arguments: {
+                calls: {
+                  path: nestedCall,
+                  input: { calls: { path: echo, input: { text: marker } } },
+                },
+              },
+            },
+            undefined,
+            { signal },
+          ),
+        );
+        yield* evidence.json("nested-executor-result.json", result);
+        const completed = yield* Schema.decodeUnknownEffect(Completed)(result.structuredContent);
+        // The inner Executor's text block only repeats its structured result, so the outer
+        // Executor keeps the structured result alone.
+        expect(completed.execution).toMatchObject({
+          ok: true,
+          value: {
+            path: nestedCall,
+            ok: true,
+            value: {
+              content: [],
+              structuredContent: {
+                status: "completed",
+                execution: { ok: true, value: { path: echo, ok: true, value: { text: marker } } },
+              },
+            },
+          },
+        });
+        // Each hop carries the payload once, so nesting does not multiply the agent's context.
+        const nested = JSON.stringify(completed.execution.value);
+        expect(nested.split(id).length - 1).toBe(1);
+        expect(nested).toContain(JSON.stringify(marker));
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

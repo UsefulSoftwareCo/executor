@@ -44,7 +44,11 @@ export const cloudInvocationDatabase = Layer.effect(
         // Forked before the pool, so it closes after the pool has shut down with the event.
         const reservations = yield* Scope.fork(yield* Effect.scope, "sequential");
         const sql = yield* Layer.build(
-          cloudDatabasePool({ url, maxConnections: invocationConnectionLimit }),
+          cloudDatabasePool({
+            url,
+            route: connection.route,
+            maxConnections: invocationConnectionLimit,
+          }),
         );
         return Context.add(sql, ConnectionReservations, {
           scope: reservations,

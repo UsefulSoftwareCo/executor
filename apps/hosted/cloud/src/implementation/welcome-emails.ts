@@ -1,4 +1,4 @@
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Redacted, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import {
   WelcomeEmailUnavailable,
@@ -6,6 +6,7 @@ import {
   type UnsubscribeLinks,
 } from "../contracts/email.ts";
 import { welcomeEmailMessage, type WelcomeEmailOrigins } from "./email-messages.ts";
+import { jobUnits, type JobError } from "../contracts/job-outcome.ts";
 
 const Recipients = Schema.Array(
   Schema.Struct({
@@ -20,6 +21,7 @@ const Recipients = Schema.Array(
  * verified users are eligible. Concurrent runs cannot claim the same recipient.
  * Cloudflare has no send idempotency key: an ambiguous attempt is held for review,
  * never retried automatically. A crash after claiming can therefore miss a welcome.
+ * The outcome counts each attempt held for review as a failure.
  */
 export const deliverWelcomeEmails = (
   send: SendWelcomeEmail,
@@ -39,6 +41,7 @@ export const deliverWelcomeEmails = (
       });
 
     let sent = 0;
+    const failures: Array<JobError> = [];
     for (let index = 0; index < 20; index++) {
       const recipients = yield* sql`
         with candidate as (
@@ -69,24 +72,22 @@ export const deliverWelcomeEmails = (
           yield* links(recipient.id, Redacted.value(recipient.email)),
           origins,
         ),
-      ).pipe(
-        Effect.timeout("15 seconds"),
-        Effect.as(true),
-        Effect.catch(() => Effect.succeed(false)),
-      );
-      if (accepted) {
+      ).pipe(Effect.timeout("15 seconds"), Effect.result);
+      if (Result.isSuccess(accepted)) {
         yield* sql`update cloud_welcome_email set status = 'sent', sent_at = now()
           where user_id = ${recipient.id} and status = 'attempting'`;
         sent += 1;
       } else {
         yield* sql`update cloud_welcome_email set status = 'uncertain'
           where user_id = ${recipient.id} and status = 'attempting'`;
+        failures.push(accepted.failure);
         yield* Effect.logError("Welcome email attempt needs delivery review", {
           userId: recipient.id,
         });
       }
     }
     if (sent > 0) yield* Effect.logInfo("Welcome emails accepted by provider", { count: sent });
+    return jobUnits(sent + failures.length, failures);
   }).pipe(
     Effect.mapError(() => new WelcomeEmailUnavailable()),
     Effect.withSpan("email.welcome.deliver"),

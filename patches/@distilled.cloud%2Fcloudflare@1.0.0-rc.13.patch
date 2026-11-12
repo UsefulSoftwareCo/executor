@@ -11,7 +11,7 @@ index 5326a8910d221f48faa2abea203049a240854a97..ed8ce831638e77d3e17753247eb1b9ed
      headSamplingRate?: number | null;
      logs?: PutScriptObservabilityLogs | null;
 diff --git a/lib/services/workers.js b/lib/services/workers.js
-index e73a49ba1dfdc68ef0bf3e484d5a1d4045f15cde..d2979e883b4698607a33b89e34143a3860b46dcc 100644
+index e73a49ba1dfdc68ef0bf3e484d5a1d4045f15cde..96819031039645e4d6529a96334bbf867a58476f 100644
 --- a/lib/services/workers.js
 +++ b/lib/services/workers.js
 @@ -4325,6 +4325,7 @@ export const PutScriptObservabilityTraces = /*@__PURE__*/ S.suspend(() => S.Stru
@@ -30,8 +30,23 @@ index e73a49ba1dfdc68ef0bf3e484d5a1d4045f15cde..d2979e883b4698607a33b89e34143a38
          queueName: "queue_name",
          renamedClasses: "renamed_classes",
          resultInfo: "result_info",
+@@ -13354,7 +13356,13 @@ export const listObservabilityDestinations = /*@__PURE__*/ API.makePaginated(()
+     errors: [Forbidden, CloudflareRateLimited, CloudflareError],
+     protocol: CloudflarePaginatedProtocol,
+     retry: Retry.Retry,
+-    pagination: { mode: "single", items: "result" },
++    pagination: {
++        mode: "page",
++        inputToken: "page",
++        outputToken: "resultInfo.page",
++        items: "result",
++        pageSize: "perPage",
++    },
+ }), cloudflarePaginate);
+ /** List saved queries. */
+ export const listObservabilityQueries = /*@__PURE__*/ API.makePaginated(() => ({
 diff --git a/src/services/workers.ts b/src/services/workers.ts
-index 476df346840cc07c836fd0ac517264d76d1b654b..b9d3d3ad0d94aca8a50df477da521af1ea9bf491 100644
+index 476df346840cc07c836fd0ac517264d76d1b654b..5dd4648b7d7934c5f8c8cc3c7d83528ba58e61eb 100644
 --- a/src/services/workers.ts
 +++ b/src/services/workers.ts
 @@ -11280,6 +11280,7 @@ export const PutScriptObservabilityTraces = /*@__PURE__*/ S.suspend(() =>
@@ -58,3 +73,19 @@ index 476df346840cc07c836fd0ac517264d76d1b654b..b9d3d3ad0d94aca8a50df477da521af1
          queueName: "queue_name",
          renamedClasses: "renamed_classes",
          resultInfo: "result_info",
+@@ -37465,7 +37468,14 @@ export const listObservabilityDestinations: API.PaginatedOperationMethod<
+     errors: [Forbidden, CloudflareRateLimited, CloudflareError],
+     protocol: CloudflarePaginatedProtocol,
+     retry: Retry.Retry,
+-    pagination: { mode: "single", items: "result" } as const,
++    // The endpoint returns 20 destinations a page and no result_info; read every page.
++    pagination: {
++      mode: "page",
++      inputToken: "page",
++      outputToken: "resultInfo.page",
++      items: "result",
++      pageSize: "perPage",
++    } as const,
+   }),
+   cloudflarePaginate,
+ ) as any;

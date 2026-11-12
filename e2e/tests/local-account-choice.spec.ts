@@ -323,7 +323,8 @@ layer(TestLive, { excludeTestServices: true })("Local account links", (it) => {
           expect(refused.status, JSON.stringify(refused.body)).toBe(400);
           expect(refused.body).toEqual(called.body);
         }
-        // Another request the routes do not accept, naming no accounts, is invalid input.
+        // Another request the routes do not accept, naming no accounts, is invalid input. It names
+        // where the request did not match and what is expected there, never the submitted value.
         const invalid = yield* agent.send("POST", "/v1/tools/call", {
           app: one.id,
           tool: 42,
@@ -333,8 +334,15 @@ layer(TestLive, { excludeTestServices: true })("Local account links", (it) => {
         expect(invalid.status, JSON.stringify(invalid.body)).toBe(400);
         expect(invalid.body).toEqual({
           _tag: "RequestInvalid",
+          part: "body",
+          issues: [{ path: "$.tool", expected: "Expected string" }],
           message:
-            "Executor could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
+            "Executor rejected this request's body because it does not match the operation's schema: $.tool: Expected string.",
+          recovery: {
+            action: "Correct the input and send the request again.",
+            instructions:
+              "Read each listed path and what the operation's schema expects there, correct those values, and send the corrected request. Read the operation's input schema for the full shape. Sending the same input again fails the same way.",
+          },
         });
 
         // Code mode refuses `$accounts` before running the tool.

@@ -7,6 +7,7 @@ import { Effect, Match, Predicate, Redacted, Schema } from "effect";
 import { McpSchema, type McpServer } from "effect/ai";
 import { EventArguments, type AppEventDefinition } from "@executor-js/sdk/core";
 import type { McpBackend, McpEventError, McpEventKey } from "../contracts/backend.ts";
+import { withOperationSpan } from "./telemetry.ts";
 
 /** Subscription arguments: the filters, every one optional, nothing else. */
 const inputSchema = (
@@ -129,7 +130,7 @@ export const eventsHandler = (backend: McpBackend<Error>): McpServer.EventsHandl
           { concurrency: 8 },
         );
         return { events: pages.flat() };
-      }).pipe(Effect.mapError(projectError), Effect.withSpan("mcp.events.list")),
+      }).pipe(Effect.mapError(projectError), withOperationSpan("mcp.events.list")),
     subscribe: (params) =>
       Effect.gen(function* () {
         if (params.delivery.mode !== "webhook")
@@ -177,7 +178,7 @@ export const eventsHandler = (backend: McpBackend<Error>): McpServer.EventsHandl
         Effect.mapError((error) =>
           Schema.is(McpSchema.McpErrorBase)(error) ? error : projectError(error),
         ),
-        Effect.withSpan("mcp.events.subscribe"),
+        withOperationSpan("mcp.events.subscribe"),
       ),
     unsubscribe: (params) =>
       Effect.gen(function* () {
@@ -190,7 +191,7 @@ export const eventsHandler = (backend: McpBackend<Error>): McpServer.EventsHandl
         Effect.mapError((error) =>
           Schema.is(McpSchema.McpErrorBase)(error) ? error : projectError(error),
         ),
-        Effect.withSpan("mcp.events.unsubscribe"),
+        withOperationSpan("mcp.events.unsubscribe"),
       ),
   };
 };

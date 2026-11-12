@@ -1,5 +1,6 @@
 import {
   Clock,
+  Console,
   Deferred,
   Effect,
   FileSystem,
@@ -174,9 +175,12 @@ export const startCloudEnvironment = (input: {
     yield* Effect.addFinalizer(() =>
       Effect.forEach(
         Object.values(Redacted.value(fixture).services),
-        (service) => emulatorRequest(service.baseUrl, "/_emulate/reset", {}),
-        { concurrency: 5 },
-      ).pipe(Effect.asVoid, Effect.orDie),
+        (service) =>
+          emulatorRequest(service.baseUrl, "/_emulate/reset", {}).pipe(
+            Effect.catch(() => Console.error("Could not reset one external test emulator.")),
+          ),
+        { concurrency: 5, discard: true },
+      ),
     );
     const emulators = `${directory}/emulators.json`;
     yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(fixture)), { mode: 0o600 });

@@ -27,6 +27,15 @@ export const organizationTables = {
 } satisfies BetterAuthPlugin;
 
 /**
+ * The admin plugin's session column naming the admin whose impersonation created a session. An
+ * app page's request span names that admin; the dashboard's plugin owns the column.
+ */
+const impersonationColumn = {
+  id: "admin-impersonation",
+  schema: { session: { fields: { impersonatedBy: { type: "string", required: false } } } },
+} satisfies BetterAuthPlugin;
+
+/**
  * App pages only keep verification records and read sessions, members and
  * organizations. The dashboard's full Better Auth instance writes the same rows:
  * neither configures verification storage, secondary storage, ID generation or
@@ -36,7 +45,9 @@ export const cloudAppSessions = Effect.gen(function* () {
   const database = yield* AuthDatabase;
   const options = {
     database: database.options,
-    plugins: [organizationTables],
+    plugins: [organizationTables, impersonationColumn],
+    // The dashboard cleans expired records during sign-in. App reads check expiry themselves.
+    verification: { disableCleanup: true },
     // As in the dashboard: the deployment migration validates the schema, not requests.
     advanced: { database: { validateSchema: false } },
   } satisfies BetterAuthOptions;

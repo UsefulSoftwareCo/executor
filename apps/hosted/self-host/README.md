@@ -23,7 +23,9 @@ docker run --detach --name executor-v2 --init --restart unless-stopped \
 
 Open `http://localhost:4400` and create the first administrator. The container
 includes the dashboard, API, MCP server, database, and app runtime. For a pinned
-release, use `beta-<full Git commit SHA>` instead of the moving `beta` tag.
+release, use a published version such as `2.0.0-beta.N` instead of the moving
+`beta` tag. The `beta` tag moves only once a release is public, so it always
+exists; a version tag exists once its GitHub release is published.
 Before updating, stop the container and back up its volume. Pull the new image,
 remove only the stopped container, and repeat the run command with the same
 volume and secrets.
@@ -142,12 +144,66 @@ To stop the server while retaining its data:
 docker compose -f apps/hosted/self-host/compose.yaml down
 ```
 
+## App catalog
+
+Onboarding and **Add app** list Executor's official apps from the published
+feed at `https://catalog.executor.sh/index.json`. The server fetches the feed's
+index when the list opens, and each app's source when it is added; the browser
+loads app icons from the same host. To read another copy of the feed, set
+`EXECUTOR_CATALOG_URL` to its `index.json`. On an instance without outbound
+internet access, set `EXECUTOR_CATALOG_URL=off`: the lists then show only the
+built-in Executor app, and you can still add apps by URL or build your own. A
+feed that cannot be reached shows an error with a retry in both places.
+
 ## Serve other users
 
 The supplied Compose file binds port 4400 to the host's loopback interface.
 For remote access, put an HTTPS reverse proxy in front of it and set
 `BETTER_AUTH_URL` to the exact public dashboard origin, such as
 `https://executor.example.com`.
+
+### Rate limits behind a proxy
+
+Sign-in and the other auth routes are rate-limited per client address. Behind a
+proxy every connection comes from the proxy, so by default all users share one
+limit, and three failed sign-ins from one person lock everyone out for about
+ten seconds. Set `EXECUTOR_TRUSTED_PROXIES` to the addresses your proxies
+connect to the container from, separated by commas. The Docker image and the
+Compose build read it; running `src/main.ts` from source, as `bun run hosted:dev`
+does, does not.
+
+A request from a listed address takes its client from `X-Forwarded-For`, read
+from the right past every listed address. Each proxy must append the address it
+received the request from, as Caddy, Traefik, Cloudflare and nginx's
+`$proxy_add_x_forwarded_for` do. When every listed address is such a proxy and
+no client can connect from one, the entry used was written by your proxy, so
+what a client puts in the header itself is never used. Requests from any other
+address use the connection's address, and with the setting empty nothing
+changes. Startup fails on an entry that is neither an address nor a CIDR range.
+
+List each proxy's exact address. A CIDR range is safe only when it holds your
+proxies and nothing else. Any machine or container that connects from a listed
+address can put any address in `X-Forwarded-For`, directly or through your proxy,
+and is limited, and recorded in sessions and audit records, under that address.
+So do not list a Docker network's subnet that other containers share, and never
+list `0.0.0.0/0` or `::/0`, which trusts every client.
+
+- A proxy on the host, such as Caddy or nginx forwarding to `127.0.0.1:4400`,
+  connects from the gateway of the container's Docker network. Find it with
+  `docker inspect <container> --format '{{range .NetworkSettings.Networks}}{{.Gateway}} {{end}}'`;
+  under Compose, use `$(docker compose -f apps/hosted/self-host/compose.yaml ps -q server)`
+  as the container. It is often `172.17.0.1` for `docker run`, and a different
+  address for each Compose network. Publishing the port on loopback, as the
+  supplied command and Compose file do, keeps remote clients off it, but every
+  process on the host reaches the container from that same gateway address.
+  Listing the gateway trusts all of them, so do it only on a host where the
+  people who can run processes are ones you trust.
+- A proxy in another container on the same Docker network connects from that
+  container's address. Give the proxy a fixed address and list only that, or
+  put it and Executor on a network of their own.
+- Cloudflare Tunnel: list the address `cloudflared` connects from, by the same
+  rules. Cloudflare appends each visitor's address to `X-Forwarded-For` and
+  `cloudflared` passes it on, so no other setting is needed.
 
 Localhost derives app UI addresses automatically. For a public installation,
 set `EXECUTOR_APP_UI_BASE_URL` to a separate HTTPS base such as
@@ -181,6 +237,13 @@ Optional OIDC SSO and observability settings are listed in [compose.yaml](compos
 docker compose -f apps/hosted/self-host/compose.yaml ps
 docker compose -f apps/hosted/self-host/compose.yaml logs --tail 100 server
 ```
+
+The server opens its database as soon as it starts and logs
+`Executor is still starting` every 15 seconds until it can serve requests, then
+`Executor is ready at <BETTER_AUTH_URL>`. Until then every request, including
+`/health`, gets an immediate `503` with `Executor is starting`. The first boot creates the database,
+which can take a minute or more on slower hardware. The image's health check
+allows two minutes for that before failures count.
 
 The first source build downloads its dependencies. Later builds reuse Docker's
 cache. The Compose commands above build from source and do not depend on the

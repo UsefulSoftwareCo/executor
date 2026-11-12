@@ -59,9 +59,14 @@ export const releasedServer = Effect.gen(function* () {
     ),
     () => run(["rm", "--force", "--volumes", id]).pipe(Effect.orDie),
   );
+  // The image logs to stderr. Read it with stdout: an unread pipe fills and `docker logs` waits.
   yield* Effect.addFinalizer((exit) =>
     Exit.isFailure(exit)
-      ? run(["logs", id]).pipe(Effect.flatMap(Console.error), Effect.ignore)
+      ? processes
+          .string(ChildProcess.make("docker", ["logs", id], { stderr: "pipe" }), {
+            includeStderr: true,
+          })
+          .pipe(Effect.flatMap(Console.error), Effect.ignore)
       : Effect.void,
   );
   let cookie = "";
@@ -128,5 +133,20 @@ export const releasedServer = Effect.gen(function* () {
       Effect.andThen(run(["start", id])),
       Effect.andThen(ready),
     );
-  return { json, prefix, deploy, exec, restart, restartAfter, encryptionKey };
+  return {
+    json,
+    prefix,
+    deploy,
+    exec,
+    restart,
+    restartAfter,
+    encryptionKey,
+    /** The image's public port on 127.0.0.1, and the origin its pages are served at. */
+    port,
+    origin,
+    /** The owner's session, as a `cookie` header. */
+    session: cookie,
+    /** The owner's organization's ID. */
+    organization: organization.id,
+  };
 });

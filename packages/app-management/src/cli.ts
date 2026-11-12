@@ -38,6 +38,8 @@ import {
   hostedExecutorOrigin,
   publicFileLimits,
   sourceLimits,
+  wireRevision,
+  wireRevisionHeader,
   type App,
 } from "@executor-js/sdk/core";
 import { GitPushRefused, readCommitBlobs } from "@executor-js/app-source/git-client";
@@ -180,6 +182,7 @@ const transport = (host: string, token: Redacted.Redacted<string>, path = (url: 
         request.pipe(
           HttpClientRequest.updateUrl((url) => host + path(url)),
           HttpClientRequest.bearerToken(token),
+          HttpClientRequest.setHeader(wireRevisionHeader, String(wireRevision)),
         ),
       ),
       HttpClient.transform((response) =>

@@ -82,10 +82,6 @@ const Claims = Schema.Struct({
   aud: Schema.Union([Schema.String, Schema.Array(Schema.String)]),
   cnf: Schema.optionalKey(Schema.Unknown),
 });
-const Registration = Schema.Struct({
-  application_type: Schema.optionalKey(Schema.String),
-  redirect_uris: Schema.Array(Schema.String),
-});
 /** Authorization parameters this plugin reads; every other parameter passes through unchanged. */
 const AuthorizeRequest = Schema.StructWithRest(
   Schema.Struct({
@@ -230,6 +226,11 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     allowDynamicClientRegistration: true,
     allowUnauthenticatedClientRegistration: true,
     clientRegistrationRequirePKCE: true,
+    // RFC 7591 has no `application_type`, so MCP clients often omit it. A registration with an
+    // RFC 8252 loopback or private-use callback is a native client, and every callback it names
+    // is checked against the native rules; any other stays a web client. The OpenID default of
+    // `web` refused such registrations, including Cursor's.
+    clientRegistrationDefaultApplicationType: "infer",
     // Hosted MCP clients such as Cursor register from a shared backend address, and Cursor
     // spends two requests per attempt. The default of 5 per minute rejected real sign-ins.
     // Better Auth's count resets only after a whole window without requests, so a device client
@@ -843,6 +844,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
               Schema.Struct({
                 clientId: Schema.String,
                 name: Schema.optionalKey(Schema.NullOr(Schema.String)),
+                icon: Schema.optionalKey(Schema.NullOr(Schema.String)),
                 disabled: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
               }),
             ),
@@ -871,7 +873,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         grants.map((grant) => grant.id),
       ).pipe(Effect.mapError(unavailable));
       const consentOf = new Map(consents.map((consent) => [consent.referenceId, consent]));
-      const nameOf = new Map(clients.map((client) => [client.clientId, client.name ?? null]));
+      const clientOf = new Map(clients.map((client) => [client.clientId, client]));
       const disabled = new Set(
         clients.flatMap((client) => (client.disabled === true ? [client.clientId] : [])),
       );
@@ -927,7 +929,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             return [
               ConnectedAgent.make({
                 id: grant.id,
-                name: nameOf.get(grant.clientId) ?? null,
+                name: clientOf.get(grant.clientId)?.name ?? null,
+                icon: clientOf.get(grant.clientId)?.icon ?? null,
                 connectedAt: consent.createdAt.toISOString(),
                 lastActiveAt: latest[0]?.createdAt.toISOString() ?? null,
                 access,
@@ -1249,7 +1252,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             Effect.gen(function* () {
               const row = yield* ownedConnection(ctx, ctx.body, ctx.body.id);
               yield* revokeConnection(ctx, row);
-              return { revoked: true };
+              // The stored connection's ID, for callers that record which one was revoked.
+              return { revoked: true, id: row.id };
             }),
           ),
       ),
@@ -1275,7 +1279,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
               if (row.userId !== ctx.body.userId || row.resource !== ctx.body.resource)
                 return yield* Effect.fail(new APIError("NOT_FOUND"));
               yield* revoke(ctx, row.id);
-              return { revoked: true };
+              return { revoked: true, id: row.id };
             }),
           ),
       ),
@@ -1460,19 +1464,6 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
     },
     hooks: {
       before: [
-        {
-          matcher: (ctx: { path?: string }) => ctx.path === "/oauth2/register",
-          handler: createAuthMiddleware(async (ctx) => {
-            const input = Schema.decodeUnknownOption(Registration)(ctx.body);
-            if (
-              Option.isSome(input) &&
-              input.value.application_type === undefined &&
-              input.value.redirect_uris.length > 0 &&
-              input.value.redirect_uris.every(loopback)
-            )
-              return { context: { body: { ...ctx.body, application_type: "native" } } };
-          }),
-        },
         {
           // Bind a request without `resource` before Better Auth signs and stores it, so consent,
           // the authorization code and its tokens all carry the same single audience.

@@ -40,11 +40,13 @@ import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
 import { snapshot, resolve, resolveRemoval, type InvocationSnapshot } from "./tools.ts";
 import { storedAccount } from "./accounts.ts";
-import { storedApp, storedVersion } from "./apps.ts";
+import { lockApp, storedApp, storedVersion } from "./apps.ts";
 import { backgroundAccounts } from "./background-accounts.ts";
+import { setupCompleted } from "./webhook-sources.ts";
 import { accountAuthority } from "./selection.ts";
 import type { Declarations } from "./declarations.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
+import { declarationLimits } from "../contracts/declarations.ts";
 
 const StoredWebhook = Schema.Struct({
   ...WebhookSubscriptionFields.fields,
@@ -99,6 +101,198 @@ const PrivateState = Schema.Struct({
   state: Schema.Json,
   setup: Schema.optional(ManualWebhookDescriptor),
 });
+type Json = typeof Schema.Json.Type;
+const isList = (value: Json): value is ReadonlyArray<Json> => Array.isArray(value);
+/**
+ * Where a compared value sits in a JSON Schema, which decides how it is put in one order. `schema`
+ * is a schema; `schemas` a list of schemas; `schemaMap` an object of schemas; `items` a schema, or
+ * before 2020-12 a list of them; `names` a list of property names; `dependencies` an object of
+ * schemas or lists of names (Draft 7); `namesMap` an object of lists of names. `data` is compared
+ * as written.
+ */
+type Position =
+  | "data"
+  | "schema"
+  | "schemas"
+  | "schemaMap"
+  | "items"
+  | "names"
+  | "dependencies"
+  | "namesMap";
+/**
+ * Every JSON Schema keyword whose value holds a schema or a list of property names, from Draft 7
+ * to 2020-12. Other keywords hold data, such as `enum`, `const` and `default`.
+ */
+const keywords = new Map<string, Position>([
+  ["additionalItems", "schema"],
+  ["additionalProperties", "schema"],
+  ["allOf", "schemas"],
+  ["anyOf", "schemas"],
+  ["contains", "schema"],
+  ["contentSchema", "schema"],
+  ["definitions", "schemaMap"],
+  ["dependencies", "dependencies"],
+  ["dependentRequired", "namesMap"],
+  ["dependentSchemas", "schemaMap"],
+  ["else", "schema"],
+  ["if", "schema"],
+  ["items", "items"],
+  ["not", "schema"],
+  ["oneOf", "schemas"],
+  ["patternProperties", "schemaMap"],
+  ["prefixItems", "schemas"],
+  ["properties", "schemaMap"],
+  ["propertyNames", "schema"],
+  ["required", "names"],
+  ["then", "schema"],
+  ["unevaluatedItems", "schema"],
+  ["unevaluatedProperties", "schema"],
+  ["$defs", "schemaMap"],
+]);
+/** Where a member of an object at `position` sits. */
+const memberOf = (position: Position, key: string, member: Json): Position => {
+  switch (position) {
+    case "schema":
+      return keywords.get(key) ?? "data";
+    case "schemaMap":
+      return "schema";
+    case "dependencies":
+      return isList(member) ? "names" : "schema";
+    case "namesMap":
+      return "names";
+    default:
+      return "data";
+  }
+};
+/**
+ * How many objects and lists deep a compared value may nest, as deep as the apps package walks an
+ * imported schema document (`documentKeys`).
+ */
+const comparedLevels = 64;
+/**
+ * How long a setup's compared text may be, in characters: the largest evaluated declaration a
+ * Cloud isolate keeps (`declarationLimits.entryBytes`, which counts two bytes per character). The
+ * webhooks declaration holds the state schema and the configuration's defaults.
+ */
+const comparedLength = declarationLimits.entryBytes / 2;
+/** A list or an object being written, and the index of its next element or member. */
+type Frame = (
+  | { readonly elements: ReadonlyArray<Json> }
+  | {
+      readonly members: { readonly [name: string]: Json };
+      /** The members' names in the order they are written. */
+      readonly names: ReadonlyArray<string>;
+    }
+) & { readonly position: Position; readonly depth: number; next: number };
+/**
+ * The JSON text of `fields`, with every object's members in name order and every list of property
+ * names at a schema position sorted, so values that differ only in those orders give the same
+ * text. A reference such as `#/$defs/choice/anyOf/0` names a branch by its position, so every other
+ * list keeps its order; a list of names holds no schema, so no valid reference resolves into it.
+ *
+ * `undefined` when a value nests deeper than `comparedLevels` or the text would be longer than
+ * `comparedLength`. `length` is never more than the whole text's length: it counts what is written
+ * and, for every open list or object, its brackets, separators and member names and one character
+ * for each value it has not written yet. A list or object reserves all of that before it is opened
+ * and before its names are sorted, and a string is checked before it is stringified. So the walk
+ * visits at most `comparedLength` values and holds one frame per level, whatever the input. Listing
+ * the keys of an object, which is already in memory, is the only step taken before its check.
+ */
+const comparedText = (
+  fields: ReadonlyArray<readonly [name: string, value: Json, position: Position]>,
+) => {
+  const parts: Array<string> = [];
+  let length = 0;
+  const reserve = (characters: number) => (length += characters) <= comparedLength;
+  const frames: Array<Frame> = [];
+  // Writes a scalar, or opens a list or object, whose first character is already reserved.
+  const start = (value: Json, position: Position, depth: number) => {
+    if (typeof value !== "object" || value === null) {
+      // A string's text is its quotes and at least its characters.
+      if (typeof value === "string" && length + value.length + 1 > comparedLength) return false;
+      const text = JSON.stringify(value);
+      parts.push(text);
+      return reserve(text.length - 1);
+    }
+    if (depth === comparedLevels) return false;
+    const at = position === "items" ? (isList(value) ? "schemas" : "schema") : position;
+    if (isList(value)) {
+      // Brackets, and each element's first character and separator.
+      if (!reserve(value.length === 0 ? 1 : 2 * value.length)) return false;
+      let elements = value;
+      if (at === "names" && value.every((name) => typeof name === "string")) {
+        let names = length;
+        for (const name of value) if ((names += name.length + 1) > comparedLength) return false;
+        elements = value.toSorted();
+      }
+      const position = at === "schemas" ? "schema" : "data";
+      frames.push({ elements, position, depth, next: 0 });
+      parts.push("[");
+      return true;
+    }
+    const names = Object.keys(value);
+    // Brackets, and each member's quoted name, colon, first character of its value and separator.
+    if (!reserve(names.length === 0 ? 1 : 5 * names.length)) return false;
+    for (const name of names) if (!reserve(name.length)) return false;
+    frames.push({ members: value, names: names.toSorted(), position: at, depth, next: 0 });
+    parts.push("{");
+    return true;
+  };
+  for (const [index, [name, value, position]] of fields.entries()) {
+    const label = `${index === 0 ? "{" : ","}${JSON.stringify(name)}:`;
+    parts.push(label);
+    if (!reserve(label.length + 1) || !start(value, position, 0)) return undefined;
+    for (let frame = frames.at(-1); frame !== undefined; frame = frames.at(-1)) {
+      const next = frame.next++;
+      const count = "names" in frame ? frame.names.length : frame.elements.length;
+      if (next === count) {
+        parts.push("names" in frame ? "}" : "]");
+        frames.pop();
+        continue;
+      }
+      if (next > 0) parts.push(",");
+      if ("names" in frame) {
+        const key = frame.names[next] ?? "";
+        const member = frame.members[key] ?? null;
+        const text = JSON.stringify(key);
+        parts.push(text, ":");
+        if (
+          !reserve(text.length - key.length - 2) ||
+          !start(member, memberOf(frame.position, key, member), frame.depth + 1)
+        )
+          return undefined;
+      } else if (!start(frame.elements[next] ?? null, frame.position, frame.depth + 1))
+        return undefined;
+    }
+  }
+  parts.push("}");
+  return reserve(1) ? parts.join("") : undefined;
+};
+/** A manual subscription's setup at the provider, and the configuration it serves. */
+type Setup = {
+  readonly setup: typeof ManualWebhookDescriptor.Type;
+  readonly config: Json;
+};
+/**
+ * Whether a person's setup at the provider still serves a version's manual declaration: the
+ * provider holds the callback URL and the secret from the same source, the fields they entered fit
+ * a state schema that accepts the same values, and the configuration is the same. Instructions may
+ * change; they only guide a new setup.
+ *
+ * Every value it compares is in `text`, so each goes through `comparedText`'s bounds. A setup too
+ * deep or too long to compare counts as changed, so the version gets a new setup, as every version
+ * did before setups were carried.
+ */
+const sameSetup = (declared: Setup) => {
+  const text = ({ setup, config }: Setup) =>
+    comparedText([
+      ["config", config, "data"],
+      ["signingSecret", setup.signingSecret, "data"],
+      ["stateSchema", setup.stateSchema, "schema"],
+    ]);
+  const expected = text(declared);
+  return (saved: Setup) => expected !== undefined && text(saved) === expected;
+};
 
 /**
  * The host owns origin and authority. Each subscription pins its code and source account; every
@@ -245,6 +439,7 @@ export const makeWebhooks = (
       .webhook({
         app: row.app,
         build: state.version.build,
+        hostApi: declarations.hostApi(state.version),
         database: ownsDatabase(state.version.requirements),
         ...context,
         ...(workflows === undefined ? {} : { workflowControls: workflows(state) }),
@@ -275,6 +470,7 @@ export const makeWebhooks = (
             .webhook({
               app: state.app.id,
               build: state.version.build,
+              hostApi: declarations.hostApi(state.version),
               database: ownsDatabase(state.version.requirements),
               ...context,
               command: { operation: "webhooks" },
@@ -286,10 +482,72 @@ export const makeWebhooks = (
         Effect.mapError(failed),
       );
     });
+  /**
+   * A source's live manual subscription to a definition, from any version, of the same source scope,
+   * whose setup at the provider and configuration the active version's declaration still serves
+   * (`sameSetup`). `replaced` reports live ones of the same source scope whose setup no longer fits,
+   * which the new subscription replaces.
+   */
+  const carryable = (input: {
+    readonly app: AppId;
+    readonly actor: string | null;
+    readonly name: string;
+    readonly sourceAccount: AccountId;
+    readonly config: typeof Schema.Json.Type;
+    readonly setup: typeof ManualWebhookDescriptor.Type;
+  }) =>
+    Effect.gen(function* () {
+      const serves = sameSetup({ setup: input.setup, config: input.config });
+      const rows = yield* query(() =>
+        db.findMany("webhooks", {
+          where: (b) =>
+            b.and(
+              b("app", "=", input.app),
+              b("sourceAccount", "=", input.sourceAccount),
+              b("name", "=", input.name),
+              b("status", "in", ["active", "setup-required"]),
+            ),
+        }),
+      );
+      let replaced = false;
+      let carried: { row: typeof StoredWebhook.Type; saved: typeof PrivateState.Type } | undefined;
+      for (const value of rows) {
+        const row = yield* Schema.decodeUnknownEffect(StoredWebhook)(value).pipe(
+          Effect.mapError(() => new StorageError()),
+        );
+        // Only a source's own subscriptions, of the definition's scope: an app-account webhook's
+        // has no actor, and a user-account webhook's follows its source's actor.
+        if (!row.key.startsWith("setup-") || (row.actor === null) !== (input.actor === null))
+          continue;
+        const saved = yield* decrypt(row);
+        if (saved.setup === undefined || !serves({ setup: saved.setup, config: saved.config })) {
+          replaced = true;
+          continue;
+        }
+        // The completed setup is the one the provider delivers to; otherwise the newest.
+        if (
+          carried === undefined ||
+          (row.status === "active" && carried.row.status !== "active") ||
+          (row.status === carried.row.status && row.createdAt > carried.row.createdAt)
+        )
+          carried = { row, saved };
+      }
+      if (carried === undefined) return { carried, replaced };
+      // The saved setup follows the version's, whose instructions may have changed.
+      const encrypted = yield* credentials.encrypt(
+        carried.row.id,
+        Redacted.make({ ...carried.saved, setup: input.setup }),
+      );
+      return { carried: { row: carried.row, encrypted }, replaced };
+    });
   const outsideTransaction = storage.reactivity.inTransaction.pipe(
     Effect.flatMap((inside) => (inside ? Effect.fail(new RequestInvalid()) : Effect.void)),
   );
-  const reconcile = (input: typeof WebhookTarget.Type, remove = false) =>
+  /**
+   * Register or remove a subscription. `activation` binds a source's cleanup to the activation its
+   * reconciliation claimed (see `create`): once another supersedes it, nothing is removed.
+   */
+  const reconcile = (input: typeof WebhookTarget.Type, remove = false, activation?: number) =>
     Effect.gen(function* () {
       yield* outsideTransaction;
       const parsed = yield* Schema.decodeUnknownEffect(WebhookTarget)(input).pipe(
@@ -299,6 +557,12 @@ export const makeWebhooks = (
       return yield* Effect.acquireUseRelease(
         transaction(db, () =>
           Effect.gen(function* () {
+            // The app's lock orders this against activation, which takes it too.
+            if (
+              activation !== undefined &&
+              (yield* lockApp(db, { app: parsed.app })).activatedSequence !== activation
+            )
+              return yield* new WebhookConflict();
             const row = yield* read(parsed);
             if (
               row.status === "stopped" ||
@@ -434,11 +698,18 @@ export const makeWebhooks = (
    * Save a subscription and attempt its registration. A caller's repeated key returns its saved
    * subscription, and a stopped key stays stopped. A source's managed keys are derived from what it
    * registers, so once its subscription for a key stopped, registering that key again starts a new
-   * one; the stopped subscription stays as history.
+   * one; the stopped subscription stays as history. One that is disabled or stopping still holds its
+   * key and is returned as it is, never enabled again.
+   *
+   * A source's subscription is created for `activation`, the app's `activatedSequence` when its
+   * reconciliation claimed the source. Every activation advances it, also one back to the same
+   * version, so a reconciliation that another activation superseded writes nothing more, even when
+   * the version it claimed is active again: its definitions and keys are of an earlier activation.
    */
-  const create = (input: typeof ManagedWebhook.Type, managed: boolean) =>
+  const create = (input: typeof ManagedWebhook.Type, activation?: number) =>
     Effect.gen(function* () {
       yield* outsideTransaction;
+      const managed = activation !== undefined;
       // Only a source's managed subscription may have no actor: an app-account webhook.
       const parsed = yield* Schema.decodeUnknownEffect(managed ? ManagedWebhook : CreateWebhook)(
         input,
@@ -458,6 +729,7 @@ export const makeWebhooks = (
       )
         return yield* new WebhookFailed({ reason: "unavailable" });
       const app = yield* storedApp(db, parsed);
+      if (managed && app.activatedSequence !== activation) return yield* new WebhookConflict();
       const version = yield* storedVersion(db, app);
       const sourceAccount = parsed.sourceAccount;
       const state = yield* backgroundAccounts(db, lifecycle, {
@@ -476,6 +748,7 @@ export const makeWebhooks = (
         .webhook({
           app: parsed.app,
           build: state.version.build,
+          hostApi: declarations.hostApi(state.version),
           database: ownsDatabase(state.version.requirements),
           ...context,
           command: { operation: "webhooks" },
@@ -494,8 +767,13 @@ export const makeWebhooks = (
       const required = Object.hasOwn(state.version.requirements.accounts, hook.account)
         ? state.version.requirements.accounts[hook.account]
         : undefined;
-      if (required === undefined || (required.scope === "app") !== (actor === undefined))
-        return yield* new WebhookFailed({ reason: "input" });
+      if (required === undefined) return yield* new WebhookFailed({ reason: "definition" });
+      if ((required.scope === "app") !== (actor === undefined))
+        // A caller names an actor, so only the app's link of an account creates an app-account
+        // webhook's subscription.
+        return yield* new WebhookFailed(
+          actor === undefined ? { reason: "input" } : { reason: "input", mismatch: "app-account" },
+        );
       // The source must serve the definition's requirement.
       const selected = Object.hasOwn(state.accounts, hook.account)
         ? state.accounts[hook.account]
@@ -505,7 +783,7 @@ export const makeWebhooks = (
           ? selected === sourceAccount
           : selected?.includes(sourceAccount))
       )
-        return yield* new WebhookFailed({ reason: "input" });
+        return yield* new WebhookFailed({ reason: "input", mismatch: "source" });
       const id = WebhookId.make(`whk_${yield* next}`);
       const callbackUrl = new URL(`/api/webhooks/${parsed.app}/${id}`, base).href;
       const secret = `${yield* next}${yield* next}`;
@@ -513,6 +791,7 @@ export const makeWebhooks = (
         .webhook({
           app: parsed.app,
           build: state.version.build,
+          hostApi: declarations.hostApi(state.version),
           database: ownsDatabase(state.version.requirements),
           ...context,
           command: {
@@ -525,7 +804,27 @@ export const makeWebhooks = (
             sourceAccount,
           },
         })
-        .pipe(Effect.mapError(() => new WebhookFailed({ reason: "input" })));
+        .pipe(Effect.mapError(() => new WebhookFailed({ reason: "input", mismatch: "config" })));
+      // A source's manual subscription keeps its callback URL, secret and entered fields on a new
+      // version whose setup still serves them: a person copied those into the provider, which keeps
+      // delivering to them. A changed setup needs a new one, and the old one is removed after.
+      const manual =
+        managed && hook.setup !== undefined
+          ? yield* carryable({
+              app: app.id,
+              actor: actor ?? null,
+              name: parsed.name,
+              sourceAccount,
+              config,
+              setup: hook.setup,
+            })
+          : undefined;
+      const carried = manual?.carried;
+      if (manual !== undefined)
+        yield* Effect.annotateCurrentSpan({
+          "executor.webhooks.carried": carried !== undefined,
+          "executor.webhooks.setup_changed": carried === undefined && manual.replaced,
+        });
       const encrypted = yield* credentials.encrypt(
         id,
         Redacted.make({
@@ -539,7 +838,8 @@ export const makeWebhooks = (
       const createdAt = new Date(yield* Clock.currentTimeMillis);
       const target = yield* transaction(db, () =>
         Effect.gen(function* () {
-          // Serializes creation and app deletion without holding a lock across provider I/O.
+          // Serializes creation with app deletion and activation without holding a lock across
+          // provider I/O.
           yield* query(() =>
             db.updateMany("apps", {
               where: (b) => b("id", "=", state.app.id),
@@ -547,9 +847,30 @@ export const makeWebhooks = (
             }),
           );
           const current = yield* storedApp(db, { app: state.app.id });
-          if (current.activeVersion !== state.app.activeVersion)
+          // A source's subscription needs the activation it claimed to be current; a caller's,
+          // the version it was evaluated on to be active.
+          if (
+            managed
+              ? current.activatedSequence !== activation
+              : current.activeVersion !== version.id
+          )
             return yield* new WebhookConflict();
-          // At most one subscription per key is not stopped; stopped ones are history.
+          if (carried !== undefined) {
+            if (carried.row.version === state.version.id) return carried.row.id;
+            // Pinned to this version from now on, unless it changed since it was read. The
+            // revision stays, so a setup page opened before the deploy can still complete it.
+            yield* query(() =>
+              db.updateMany("webhooks", {
+                where: (b) =>
+                  b.and(b("id", "=", carried.row.id), b("revision", "=", carried.row.revision)),
+                set: { deployment: state.version.id, encrypted: carried.encrypted },
+              }),
+            );
+            const saved = yield* read({ app: parsed.app, subscription: carried.row.id });
+            if (saved.revision !== carried.row.revision || saved.version !== state.version.id)
+              return yield* new WebhookConflict();
+            return carried.row.id;
+          }
           const keyed = yield* query(() =>
             db.findMany("webhooks", {
               where: (b) =>
@@ -560,6 +881,7 @@ export const makeWebhooks = (
                 ),
             }),
           );
+          // At most one subscription per key is not stopped; stopped ones are history.
           const existing =
             keyed.find((row) => row.status !== "stopped") ?? (managed ? undefined : keyed[0]);
           if (existing !== undefined) {
@@ -651,7 +973,7 @@ export const makeWebhooks = (
           Effect.mapError(() => new StorageError()),
         );
       }),
-    create: (input: typeof CreateWebhook.Type) => create(input, false),
+    create: (input: typeof CreateWebhook.Type) => create(input),
     reconcile: (input: typeof WebhookTarget.Type) => reconcile(input),
     remove: (input: typeof WebhookTarget.Type) => reconcile(input, true),
     deliver: (input: typeof DeliverWebhook.Type) =>
@@ -690,8 +1012,12 @@ export const makeWebhooks = (
     webhooks,
     /** Reconciliation creates and removes upstream registrations from the current definitions. */
     liveDefinitions: (state: InvocationSnapshot) => definitions(state, true),
-    /** Create a source's managed subscription; see `create`. */
-    createManaged: (input: typeof ManagedWebhook.Type) => create(input, true),
+    /** Create a source's managed subscription for the activation it claimed; see `create`. */
+    createManaged: (input: typeof ManagedWebhook.Type, activation: number) =>
+      create(input, activation),
+    /** Remove a source's managed subscription while the activation it claimed is current. */
+    removeManaged: (input: typeof WebhookTarget.Type, activation: number) =>
+      reconcile(input, true, activation),
     /**
      * Point a subscription at its source's current actor. Callbacks resolve accounts at each
      * delivery, so the upstream registration is unchanged.
@@ -790,6 +1116,8 @@ export const makeWebhooks = (
           const revision = yield* next;
           return yield* transaction(db, () =>
             Effect.gen(function* () {
+              // The app's lock comes first, as in reconciliation, which also changes subscriptions.
+              yield* lockApp(db, { app: row.app });
               yield* query(() =>
                 db.updateMany("webhooks", {
                   where: (b) =>
@@ -803,6 +1131,10 @@ export const makeWebhooks = (
               );
               const current = yield* read(parsed);
               if (current.revision !== revision) return yield* new WebhookConflict();
+              // A managed subscription belongs to its account's webhook source, which may be
+              // waiting for this setup.
+              if (current.key.startsWith("setup-"))
+                yield* setupCompleted(db, { app: current.app, account: current.sourceAccount });
               return yield* metadata(current);
             }),
           );

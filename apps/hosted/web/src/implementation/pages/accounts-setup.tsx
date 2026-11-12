@@ -615,7 +615,6 @@ function AccountsPopover({
               <span className="min-w-0 flex-1 truncate">{account.label || "Unnamed account"}</span>
               <HostedAccountActions
                 account={account}
-                access={undefined}
                 open={(kind) => {
                   setOpen(false);
                   onAccountAction(account.id, kind);

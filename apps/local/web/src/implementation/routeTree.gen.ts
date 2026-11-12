@@ -12,7 +12,6 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as DashboardRouteImport } from './routes/_dashboard'
 import { Route as AppAuthRouteImport } from './routes/app-auth'
 import { Route as DashboardInventoryRouteImport } from './routes/_dashboard._inventory'
-import { Route as DashboardConnectRouteImport } from './routes/_dashboard.connect'
 import { Route as DashboardConnectionsRouteImport } from './routes/_dashboard.connections'
 import { Route as AccountConnectConnectionIdRouteImport } from './routes/account-connect.$connectionId'
 import { Route as McpAuthorizeRouteImport } from './routes/mcp.authorize'
@@ -42,11 +41,6 @@ const AppAuthRoute = AppAuthRouteImport.update({
 } as any)
 const DashboardInventoryRoute = DashboardInventoryRouteImport.update({
   id: '/_inventory',
-  getParentRoute: () => DashboardRoute,
-} as any)
-const DashboardConnectRoute = DashboardConnectRouteImport.update({
-  id: '/connect',
-  path: '/connect',
   getParentRoute: () => DashboardRoute,
 } as any)
 const DashboardConnectionsRoute = DashboardConnectionsRouteImport.update({
@@ -148,7 +142,6 @@ const DashboardInventoryAppsAppIdSetupRoute =
 export interface FileRoutesByFullPath {
   '/': typeof DashboardInventoryIndexRoute
   '/app-auth': typeof AppAuthRoute
-  '/connect': typeof DashboardConnectRoute
   '/connections': typeof DashboardConnectionsRoute
   '/account-connect/$connectionId': typeof AccountConnectConnectionIdRoute
   '/mcp/authorize': typeof McpAuthorizeRoute
@@ -169,7 +162,6 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof DashboardInventoryIndexRoute
   '/app-auth': typeof AppAuthRoute
-  '/connect': typeof DashboardConnectRoute
   '/connections': typeof DashboardConnectionsRoute
   '/account-connect/$connectionId': typeof AccountConnectConnectionIdRoute
   '/mcp/authorize': typeof McpAuthorizeRoute
@@ -192,7 +184,6 @@ export interface FileRoutesById {
   '/_dashboard': typeof DashboardRouteWithChildren
   '/app-auth': typeof AppAuthRoute
   '/_dashboard/_inventory': typeof DashboardInventoryRouteWithChildren
-  '/_dashboard/connect': typeof DashboardConnectRoute
   '/_dashboard/connections': typeof DashboardConnectionsRoute
   '/account-connect/$connectionId': typeof AccountConnectConnectionIdRoute
   '/mcp/authorize': typeof McpAuthorizeRoute
@@ -216,7 +207,6 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/app-auth'
-    | '/connect'
     | '/connections'
     | '/account-connect/$connectionId'
     | '/mcp/authorize'
@@ -237,7 +227,6 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/app-auth'
-    | '/connect'
     | '/connections'
     | '/account-connect/$connectionId'
     | '/mcp/authorize'
@@ -259,7 +248,6 @@ export interface FileRouteTypes {
     | '/_dashboard'
     | '/app-auth'
     | '/_dashboard/_inventory'
-    | '/_dashboard/connect'
     | '/_dashboard/connections'
     | '/account-connect/$connectionId'
     | '/mcp/authorize'
@@ -308,13 +296,6 @@ declare module '@tanstack/react-router' {
       path: ''
       fullPath: '/'
       preLoaderRoute: typeof DashboardInventoryRouteImport
-      parentRoute: typeof DashboardRoute
-    }
-    '/_dashboard/connect': {
-      id: '/_dashboard/connect'
-      path: '/connect'
-      fullPath: '/connect'
-      preLoaderRoute: typeof DashboardConnectRouteImport
       parentRoute: typeof DashboardRoute
     }
     '/_dashboard/connections': {
@@ -470,7 +451,6 @@ const DashboardInventoryRouteWithChildren =
 
 interface DashboardRouteChildren {
   DashboardInventoryRoute: typeof DashboardInventoryRouteWithChildren
-  DashboardConnectRoute: typeof DashboardConnectRoute
   DashboardConnectionsRoute: typeof DashboardConnectionsRoute
   DashboardApprovalsRunIdRoute: typeof DashboardApprovalsRunIdRoute
   DashboardConnectionsConnectionIdRoute: typeof DashboardConnectionsConnectionIdRoute
@@ -480,7 +460,6 @@ interface DashboardRouteChildren {
 
 const DashboardRouteChildren: DashboardRouteChildren = {
   DashboardInventoryRoute: DashboardInventoryRouteWithChildren,
-  DashboardConnectRoute: DashboardConnectRoute,
   DashboardConnectionsRoute: DashboardConnectionsRoute,
   DashboardApprovalsRunIdRoute: DashboardApprovalsRunIdRoute,
   DashboardConnectionsConnectionIdRoute: DashboardConnectionsConnectionIdRoute,

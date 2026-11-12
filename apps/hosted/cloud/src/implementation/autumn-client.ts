@@ -183,6 +183,14 @@ export const autumnLive = (options: AutumnOptions, reads: AutumnReadPolicy) =>
           "read",
           "customer_not_found",
         ),
+        getCustomerPlans: post(
+          "getCustomerPlans",
+          "customers.get",
+          AutumnRequests.getCustomerPlans,
+          AutumnResponses.getCustomerPlans,
+          "read",
+          "customer_not_found",
+        ),
         listPlans: post(
           "listPlans",
           "plans.list",
@@ -204,6 +212,14 @@ export const autumnLive = (options: AutumnOptions, reads: AutumnReadPolicy) =>
           AutumnResponses.attach,
           "write",
         ),
+        // A preview changes nothing, so it is retried like a read.
+        previewAttach: post(
+          "previewAttach",
+          "billing.preview_attach",
+          AutumnRequests.previewAttach,
+          AutumnResponses.previewAttach,
+          "read",
+        ),
         openCustomerPortal: post(
           "openCustomerPortal",
           "billing.open_customer_portal",
@@ -211,12 +227,33 @@ export const autumnLive = (options: AutumnOptions, reads: AutumnReadPolicy) =>
           AutumnResponses.openCustomerPortal,
           "write",
         ),
-        cancelSubscription: post(
-          "cancelSubscription",
+        updateSubscription: post(
+          "updateSubscription",
           "billing.update",
-          AutumnRequests.cancelSubscription,
-          AutumnResponses.cancelSubscription,
+          AutumnRequests.updateSubscription,
+          AutumnResponses.updateSubscription,
           "write",
+        ),
+        renameCustomer: post(
+          "renameCustomer",
+          "customers.update",
+          AutumnRequests.renameCustomer,
+          AutumnResponses.renameCustomer,
+          "write",
+        ),
+        deleteCustomer: post(
+          "deleteCustomer",
+          "customers.delete",
+          AutumnRequests.deleteCustomer,
+          AutumnResponses.deleteCustomer,
+          "write",
+        ),
+        verifyBilling: post(
+          "verifyBilling",
+          "billing.verify",
+          AutumnRequests.verifyBilling,
+          AutumnResponses.verifyBilling,
+          "read",
         ),
       });
     }),

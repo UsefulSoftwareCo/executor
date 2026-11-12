@@ -48,6 +48,9 @@ export const httpSpanAttributeAllowlist: ReadonlySet<string> = new Set([
   "http.response.header.content-length",
   // The server tracer records the user agent a second time under its own name.
   "user_agent.original",
+  // The server tracer's remote address: the peer the host saw, or on Cloud the address
+  // Cloudflare saw (`cf-connecting-ip`, which Cloudflare overwrites on every incoming request).
+  "client.address",
 ]);
 
 /** Record this attribute? HTTP names must be allowlisted; product names pass through. */

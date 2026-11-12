@@ -36,6 +36,8 @@ import {
   v1LiveSettings,
 } from "./v1-import-settings.ts";
 import { autumnServer, billingSettings } from "./billing.ts";
+import type { AutumnOptions } from "../contracts/autumn.ts";
+import type { BillingCatalog } from "../contracts/billing-catalog.ts";
 import { cloudDatabaseConnection, v1DatabaseConnection } from "./database.ts";
 import {
   CheckSince,
@@ -357,6 +359,13 @@ export interface V1ImportSettings {
    * emulated v1 runs no such requests.
    */
   readonly freezeSettleSeconds: number;
+  /**
+   * v2's Autumn and catalog, where a paid organization's v1 subscription carries over: the account
+   * v1 billed in. None for the live source, whose v1 bills in another account than this Cloud.
+   */
+  readonly billing: Option.Option<
+    Effect.Effect<{ readonly options: AutumnOptions; readonly catalog: BillingCatalog }>
+  >;
 }
 
 /**
@@ -426,6 +435,7 @@ export const cloudV1ImportSettings = Effect.gen(function* () {
         ? V1ImportWrites.Listed({ flag: v1MovedFlagPostgres(writer.value) })
         : V1ImportWrites.Refused({ reason: "This deployment has no v1 source that writes." });
   const secrets = yield* cloudSecrets.pipe(Effect.orDie);
+  const billing = yield* billingSettings;
   return Option.some<V1ImportSettings>({
     source: source.value,
     writes,
@@ -435,5 +445,14 @@ export const cloudV1ImportSettings = Effect.gen(function* () {
     slugKey: secrets.authSecret,
     stepRetries: realV1 ? { limit: 5, delaySeconds: 10 } : { limit: 2, delaySeconds: 1 },
     freezeSettleSeconds: realV1 ? 60 : 1,
+    billing:
+      access.source === "live"
+        ? Option.none()
+        : Option.some(
+            Effect.all({
+              options: Effect.all({ serverUrl: billing.serverUrl, secretKey: billing.secretKey }),
+              catalog: billing.catalog,
+            }),
+          ),
   });
 });

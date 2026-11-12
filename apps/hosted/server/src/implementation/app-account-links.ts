@@ -24,18 +24,17 @@ import {
   type AppAccountRequirement,
   type LinkedAccountSignIn,
 } from "../contracts/app-accounts.ts";
-import { ApiAuthentication, Authentication, CurrentUserId } from "../contracts/auth.ts";
+import { BearerAuthentication, SessionAuthentication, CurrentUserId } from "../contracts/auth.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { OrganizationForbidden } from "../contracts/organization.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
-import type { ConnectionDestination } from "../contracts/resource-access.ts";
 import { appManagerOwner, currentOwner, usableApp } from "./access.ts";
 import { connectAccount, connectionUrl } from "./accounts.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import { addLink, callerLinkedAccounts, lockedChange, removeLink } from "./app-accounts.ts";
 import {
   policyDatabase,
-  requireAccountAccess,
+  requireAccountOwner,
   requireCurrentAppAccess,
   visibleAccounts,
 } from "./resource-policy.ts";
@@ -217,15 +216,12 @@ const savedLink = (
 
 const connect = (
   services: {
-    readonly auth: Authentication["Service"];
-    readonly api: ApiAuthentication["Service"];
+    readonly auth: SessionAuthentication["Service"];
+    readonly api: BearerAuthentication["Service"];
   },
   scope: AccountScope,
   params: { readonly app: AppId; readonly requirement: string },
-  payload: {
-    readonly destination?: typeof ConnectionDestination.Type | undefined;
-    readonly account?: AccountId | undefined;
-  },
+  payload: { readonly account?: AccountId | undefined },
 ) =>
   Effect.gen(function* () {
     const owner = yield* currentOwner;
@@ -249,7 +245,7 @@ const connect = (
  */
 export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAccounts", (handlers) =>
   Effect.gen(function* () {
-    const services = { auth: yield* Authentication, api: yield* ApiAuthentication };
+    const services = { auth: yield* SessionAuthentication, api: yield* BearerAuthentication };
     return handlers
       .handle("appList", ({ params }) =>
         Effect.gen(function* () {
@@ -279,7 +275,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           const owner = yield* appManagerOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* executor.apps.get({ owner, app: params.app });
-          yield* requireAccountAccess(params.account, "use");
+          yield* requireAccountOwner(params.account);
           yield* executor.accounts.get({ owner, account: params.account });
           const changed = yield* lockedChange(
             executor,
@@ -352,7 +348,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           const owner = yield* currentOwner;
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* usableApp(executor, owner, params.app);
-          yield* requireAccountAccess(params.account, "use");
+          yield* requireAccountOwner(params.account);
           yield* executor.accounts.get({ owner, account: params.account });
           const changed = yield* lockedChange(
             executor,

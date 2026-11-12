@@ -281,7 +281,7 @@ const upgradeFlow = <E, R>(
       before: { schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore },
       after: { version, step, scopes, nullable, schedulesAfter, sourcesAfter, linksAfter },
     });
-    expect(version).toEqual([{ value: "4.0.15" }]);
+    expect(version).toEqual([{ value: "4.0.16" }]);
     expect(step).toEqual([{ name: "app_account_links" }]);
     // The member's user link as it was, and the app link without a subject.
     expect(linksAfter).toEqual([
@@ -349,7 +349,7 @@ layer(HostedLive, { excludeTestServices: true })("Protocol-12 accounts on hosted
               actor,
               "POST",
               connectionsPath(path, "user", "service"),
-              { destination: { kind: "personal" } },
+              {},
             );
             expect(started.status, JSON.stringify(started.body)).toBe(200);
             const submitted = yield* api.request(
@@ -529,7 +529,7 @@ layer(HostedLive, { excludeTestServices: true })("App accounts storage upgrade o
                   owner,
                   "POST",
                   connectionsPath(path, scope, requirement),
-                  { destination: { kind: "personal" } },
+                  {},
                 );
                 yield* ok(started);
                 const submitted = yield* api.request(

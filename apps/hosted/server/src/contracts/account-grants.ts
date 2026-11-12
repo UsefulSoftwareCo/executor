@@ -16,13 +16,12 @@ import { type HttpApiEndpoint, HttpApiMiddleware } from "effect/http-api";
 import type { Action } from "@executor-js/authorization";
 import { RequiredAction } from "./authorization.ts";
 import { OrganizationForbidden } from "./organization.ts";
-import type { AccountAccess } from "./resource-access.ts";
 
 /**
  * Account actions from #752. "inspect" covers metadata and health. "rename" is not in #752 yet;
  * it covers the label and description.
  */
-export type AccountAction = "inspect" | "use" | "reconnect" | "rename" | "share" | "delete";
+export type AccountAction = "inspect" | "use" | "reconnect" | "rename" | "delete";
 
 /** Type-only key: it has no runtime value, so no other module can construct a proof. */
 declare const evidence: unique symbol;
@@ -35,7 +34,6 @@ export interface AccountProof<A extends AccountAction> {
   readonly [evidence]: A;
   readonly owner: OwnerId;
   readonly account: typeof AccountId.Type;
-  readonly access: typeof AccountAccess.Type;
 }
 
 /** Context identity of the account a request acts on for `A`; unrelated across actions. */
@@ -59,7 +57,6 @@ export const AccountTargets: {
   use: target("use"),
   reconnect: target("reconnect"),
   rename: target("rename"),
-  share: target("share"),
   delete: target("delete"),
 };
 
@@ -67,7 +64,7 @@ export const AccountTargets: {
  * Each middleware provides the route's `:account` as its action's target.
  */
 
-/** Read account metadata, health and policy. */
+/** Read account metadata and health. */
 export class RequireAccountInspect extends HttpApiMiddleware.Service<
   RequireAccountInspect,
   { provides: AccountTarget<"inspect"> }
@@ -91,12 +88,6 @@ export class RequireAccountRename extends HttpApiMiddleware.Service<
   { provides: AccountTarget<"rename"> }
 >()("hosted/RequireAccountRename", { error: OrganizationForbidden }) {}
 
-/** Change who the account is shared with. */
-export class RequireAccountShare extends HttpApiMiddleware.Service<
-  RequireAccountShare,
-  { provides: AccountTarget<"share"> }
->()("hosted/RequireAccountShare", { error: OrganizationForbidden }) {}
-
 /** Delete the account and its saved credentials. */
 export class RequireAccountDelete extends HttpApiMiddleware.Service<
   RequireAccountDelete,
@@ -119,7 +110,6 @@ const AccountActions = {
   use: { middleware: RequireAccountUse, tokenAction: "run" },
   reconnect: { middleware: RequireAccountReconnect, tokenAction: "manage" },
   rename: { middleware: RequireAccountRename, tokenAction: "manage" },
-  share: { middleware: RequireAccountShare, tokenAction: "manage" },
   delete: { middleware: RequireAccountDelete, tokenAction: "manage" },
 } as const satisfies Record<AccountAction, AccountActionDeclaration>;
 
@@ -128,7 +118,6 @@ type AccountMiddleware =
   | RequireAccountUse
   | RequireAccountReconnect
   | RequireAccountRename
-  | RequireAccountShare
   | RequireAccountDelete;
 
 /**
@@ -181,6 +170,5 @@ export const requireAccount = {
   use: attach(AccountActions.use),
   reconnect: attach(AccountActions.reconnect),
   rename: attach(AccountActions.rename),
-  share: attach(AccountActions.share),
   delete: attach(AccountActions.delete),
 };

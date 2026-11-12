@@ -16,9 +16,10 @@ import {
 } from "@executor-js/hosted-server";
 import { PgPool } from "@effect/sql-pg";
 import { runningPrograms } from "@executor-js/mcp";
+import type { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as PgConnection from "@effect/sql-pg/PgConnection";
-import { Effect, Option, type Layer, type Scope } from "effect";
+import { Clock, Effect, Option, type Layer, type Scope } from "effect";
 import { HttpEffect, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { cloudSentry } from "../implementation/error-reporting.ts";
 import {
@@ -33,8 +34,19 @@ import { observeMcpStream } from "../implementation/mcp-stream-observability.ts"
 import { cloudAnalytics } from "../implementation/product-analytics.ts";
 import type { cloudServingProduct } from "./serving-product.ts";
 import { isolateDeclarations } from "./isolate-memory.ts";
+import { cloudDatabaseConnection } from "./database.ts";
 import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
+import { interactionFaults } from "./mcp-interaction-faults.ts";
+import { mcpInteractionStore } from "./mcp-interaction-store.ts";
 import { mcpSessionStore } from "./mcp-session-store.ts";
+
+/**
+ * How often an object holding a program wakes itself. workerd evicts an object 70–140 s after its
+ * last request or event, whatever timers it has pending, and a program waiting for a person
+ * holds no request; an alarm is an event, so it keeps the object, and the program, in memory
+ * until the program ends. Nothing survives a deploy or a crash: their requests read as `lost`.
+ */
+const holdMillis = 30_000;
 
 /**
  * The isolate's executor and MCP identity, built once and shared by every session object in
@@ -57,7 +69,8 @@ export const makeMcpSession = Effect.fn(function* ({
 }: McpSessionServices) {
   const reportErrors = yield* cloudSentry;
   const analytics = yield* cloudAnalytics;
-  const objectDatabase = yield* cloudObjectDatabase;
+  // One object per grant: through Hyperdrive, so active sessions share its PgBouncer clients.
+  const objectDatabase = yield* cloudObjectDatabase(cloudDatabaseConnection);
   return Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
     // Every request and MCP operation of this session shares the object's connections.
@@ -75,10 +88,25 @@ export const makeMcpSession = Effect.fn(function* ({
     });
     // What each caller's last tool call read, by app and named accounts (CallStateCache).
     const callState = new Map<string, CallState>();
-    // Protocol sessions are kept in the object's storage, so they outlive its eviction.
-    const handler = yield* makeHostedMcp(undefined, undefined, mcpSessionStore(state.storage)).pipe(
-      Effect.provide(HttpServer.layerServices),
-    );
+    // Protocol sessions are kept in the object's storage, so they outlive its eviction, and so is
+    // the record of the requests it issued, so a resume after a restart learns what became of one.
+    const clock = yield* Clock.Clock;
+    const faults = interactionFaults(state.storage.kv);
+    const handler = yield* makeHostedMcp(
+      undefined,
+      undefined,
+      mcpSessionStore(state.storage),
+      mcpInteractionStore(faults.kv, () => clock.currentTimeMillisUnsafe()),
+    ).pipe(Effect.provide(HttpServer.layerServices));
+    /** While the object holds a program, an alarm is due within `holdMillis`. */
+    const hold = Effect.gen(function* () {
+      if (handler.programs() === 0) return;
+      const now = yield* Clock.currentTimeMillis;
+      const due = now + holdMillis;
+      const set = yield* state.storage.getAlarm();
+      // An alarm whose retries ran out can stay in the past without ever firing again.
+      if (set === null || set > due || set < now - holdMillis) yield* state.storage.setAlarm(due);
+    });
     const objectId = state.id.toString();
     /**
      * A request may reach this object by a session id alone, so before any work it must carry a
@@ -93,7 +121,9 @@ export const makeMcpSession = Effect.fn(function* ({
         named(mcpSessionKey(access)).equals(state.id)
           ? work.pipe(
               Effect.map(
-                HttpServerResponse.setHeader(sessionOrganizationHeader, access.access.organization),
+                HttpServerResponse.setHeaders({
+                  [sessionOrganizationHeader]: access.access.organization,
+                }),
               ),
             )
           : Effect.annotateCurrentSpan("executor.mcp.session_binding", "refused").pipe(
@@ -177,13 +207,18 @@ export const makeMcpSession = Effect.fn(function* ({
       });
     return {
       fetch: Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
-        addressed(
-          new URL(request.url, "https://mcp.internal").pathname.startsWith("/api/mcp/approvals/")
-            ? browser
-            : http,
+        faults.during(
+          request,
+          addressed(
+            new URL(request.url, "https://mcp.internal").pathname.startsWith("/api/mcp/approvals/")
+              ? browser
+              : http,
+          ),
         ),
       ).pipe(
         Effect.flatMap(observeMcpStream("session")),
+        // A request may leave a program waiting for an answer: keep the object until it ends.
+        Effect.tap(() => hold.pipe(Effect.ignore)),
         Effect.tap((response) =>
           Effect.annotateCurrentSpan("http.response.status_code", response.status),
         ),
@@ -198,6 +233,8 @@ export const makeMcpSession = Effect.fn(function* ({
         reportErrors,
         Effect.provideService(ObjectDatabase, database),
       ),
+      // An alarm only renews the hold. One that wakes a restarted object finds no program and stops.
+      alarm: () => hold.pipe(Effect.ignore),
     } satisfies McpSessionHandler;
   });
 });
@@ -210,8 +247,9 @@ interface McpSessionHandler {
   readonly fetch: Effect.Effect<
     HttpServerResponse.HttpServerResponse,
     unknown,
-    HttpServerRequest.HttpServerRequest | Scope.Scope
+    HttpServerRequest.HttpServerRequest | Scope.Scope | RuntimeContext
   >;
+  readonly alarm: () => Effect.Effect<void, never, RuntimeContext>;
 }
 
 /** What the gateway binds on a session object. */

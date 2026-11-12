@@ -37,11 +37,13 @@ import {
   Effect,
   Cause,
   Context,
+  Deferred,
   Exit,
   Fiber,
   FileSystem,
   Layer,
   Redacted,
+  Schedule,
   Schema,
   type Scope,
 } from "effect";
@@ -141,9 +143,11 @@ const command = Command.make("database-pool-fixture", {
         const applicationName = `e2e pool ${run}`;
         const table = `e2e_pool_${run}`;
         const lockKey = Number.parseInt(run.slice(0, 7), 16);
+        // A second lock of the run's, above every run's first.
+        const gateKey = lockKey + 2 ** 28;
 
         const admin = yield* Effect.acquireRelease(
-          Effect.sync(() => new Pool({ connectionString: target.toString(), max: 2 })),
+          Effect.sync(() => new Pool({ connectionString: target.toString(), max: 3 })),
           (pool) => Effect.promise(() => pool.end()),
         );
         const adminQuery = (text: string, values: ReadonlyArray<unknown> = []) =>
@@ -197,19 +201,20 @@ const command = Command.make("database-pool-fixture", {
               Effect.orDie,
             );
 
-        /** Holds the run's advisory lock on its own connection until the scope closes. */
-        const holdLock = Effect.acquireRelease(
-          Effect.promise(async () => {
-            const client = await admin.connect();
-            await client.query("SELECT pg_advisory_lock($1)", [lockKey]);
-            return client;
-          }),
-          (client) =>
+        /** Holds the advisory lock `key` on its own connection until the scope closes. */
+        const holdLock = (key: number) =>
+          Effect.acquireRelease(
             Effect.promise(async () => {
-              await client.query("SELECT pg_advisory_unlock($1)", [lockKey]);
-              client.release();
+              const client = await admin.connect();
+              await client.query("SELECT pg_advisory_lock($1)", [key]);
+              return client;
             }),
-        );
+            (client) =>
+              Effect.promise(async () => {
+                await client.query("SELECT pg_advisory_unlock($1)", [key]);
+                client.release();
+              }),
+          );
         /** A statement that waits on the run's lock, given up on after `millis`. */
         const lockWait = (pool: PgPool.PgPool, millis: number) =>
           pool
@@ -217,6 +222,18 @@ const command = Command.make("database-pool-fixture", {
               connection.query("SELECT pg_advisory_xact_lock($1)", [lockKey], false),
             )
             .pipe(Effect.timeoutOption(`${millis} millis`), Effect.exit);
+        /** Waits until a statement of the run's pools waits on an advisory lock. */
+        const waitingOnLock = adminQuery(
+          "SELECT count(*)::int AS waiting FROM pg_stat_activity WHERE application_name = $1 AND wait_event = 'advisory'",
+          [applicationName],
+        ).pipe(
+          Effect.filterOrFail(
+            (result) => result.rows[0].waiting > 0,
+            () => new Error("No statement of the run waits on a lock"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 1_000 }),
+          Effect.orDie,
+        );
 
         const since = (start: number) => Date.now() - start;
         const outcome = <A, E>(exit: Exit.Exit<A, E>) =>
@@ -231,11 +248,15 @@ const command = Command.make("database-pool-fixture", {
             case "use-once": {
               yield* adminQuery(`CREATE TABLE ${table} (id serial PRIMARY KEY)`);
               yield* Effect.addFinalizer(() => adminQuery(`DROP TABLE IF EXISTS ${table}`));
-              yield* holdLock;
+              yield* holdLock(lockKey);
               // Cancels never land, so the abandoned lock wait keeps its connection refusing.
               const { pool: shared } = yield* pool({ maxConnections: 4, cancels: "dropped" });
               // One group: a callback inserts, then reads after its sibling on the same connection
-              // has given up on a lock wait. The read is refused unsent; the insert was sent.
+              // has given up on a lock wait. The read is refused unsent; the insert was sent. Each
+              // sibling starts once its callback has the group's connection, so its lock wait goes
+              // out on that connection, behind what the callback sent.
+              const inserted = yield* Deferred.make<void>();
+              const gaveUp = yield* Deferred.make<void>();
               const [twoStatements, sibling] = yield* PgPool.grouped(
                 Effect.all(
                   [
@@ -244,30 +265,40 @@ const command = Command.make("database-pool-fixture", {
                         connection
                           .query(`INSERT INTO ${table} DEFAULT VALUES`, [], false)
                           .pipe(
-                            Effect.andThen(Effect.sleep("150 millis")),
+                            Effect.ensuring(Deferred.succeed(inserted, undefined)),
+                            Effect.andThen(Deferred.await(gaveUp)),
                             Effect.andThen(connection.query("SELECT 1", [], false)),
                           ),
                       )
                       .pipe(Effect.exit),
-                    Effect.sleep("20 millis").pipe(Effect.andThen(lockWait(shared, 40))),
+                    Deferred.await(inserted).pipe(
+                      Effect.andThen(lockWait(shared, 40)),
+                      Effect.tap(() => Deferred.succeed(gaveUp, undefined)),
+                    ),
                   ],
                   { concurrency: "unbounded" },
                 ),
               );
               // Another group: the same, but the callback sends nothing before its read is refused.
+              const leased = yield* Deferred.make<void>();
+              const otherGaveUp = yield* Deferred.make<void>();
               const [firstRead, otherSibling] = yield* PgPool.grouped(
                 Effect.all(
                   [
                     shared
                       .use((connection) =>
-                        Effect.sleep("150 millis").pipe(
+                        Deferred.succeed(leased, undefined).pipe(
+                          Effect.andThen(Deferred.await(otherGaveUp)),
                           Effect.andThen(
                             connection.query("SELECT pg_backend_pid() AS pid", [], false),
                           ),
                         ),
                       )
                       .pipe(Effect.exit),
-                    Effect.sleep("20 millis").pipe(Effect.andThen(lockWait(shared, 40))),
+                    Deferred.await(leased).pipe(
+                      Effect.andThen(lockWait(shared, 40)),
+                      Effect.tap(() => Deferred.succeed(otherGaveUp, undefined)),
+                    ),
                   ],
                   { concurrency: "unbounded" },
                 ),
@@ -377,7 +408,7 @@ const command = Command.make("database-pool-fixture", {
               const arm = (cancels: "dropped" | "delivered") =>
                 Effect.scoped(
                   Effect.gen(function* () {
-                    yield* holdLock;
+                    yield* holdLock(lockKey);
                     const { pool: single, cancels: seen } = yield* pool({
                       maxConnections: 1,
                       cancels,
@@ -508,34 +539,34 @@ const command = Command.make("database-pool-fixture", {
               };
             }
             case "sibling": {
-              yield* holdLock;
+              yield* holdLock(lockKey);
               const { pool: shared } = yield* pool({ maxConnections: 4, cancels: "dropped" });
-              const start = Date.now();
-              // A sibling queued behind the awaited statement gives up on its lock wait; its
-              // cancel never lands, so draining it takes the 5 s bound.
-              const [awaited, abandoned] = yield* PgPool.grouped(
-                Effect.all(
-                  [
-                    shared
-                      .use((connection) => connection.query("SELECT pg_sleep(0.2)", [], false))
-                      .pipe(
-                        Effect.exit,
-                        Effect.map((exit) => ({ exit, at: since(start) })),
-                      ),
-                    Effect.sleep("10 millis").pipe(
-                      Effect.andThen(lockWait(shared, 50)),
-                      Effect.map((exit) => ({ exit, at: since(start) })),
-                    ),
-                  ],
-                  { concurrency: "unbounded" },
-                ),
+              // The awaited statement waits on a second lock, the gate, so a sibling queued behind
+              // it gives up on its lock wait while it still runs. The sibling's cancel never lands,
+              // so draining it takes the 5 s bound. The gate opens once the sibling has given up.
+              return yield* PgPool.grouped(
+                Effect.gen(function* () {
+                  const { awaited, abandoned } = yield* Effect.scoped(
+                    Effect.gen(function* () {
+                      yield* holdLock(gateKey);
+                      const awaited = yield* shared
+                        .use((connection) =>
+                          connection.query("SELECT pg_advisory_xact_lock($1)", [gateKey], false),
+                        )
+                        .pipe(Effect.exit, Effect.forkChild);
+                      yield* waitingOnLock;
+                      return { awaited, abandoned: yield* lockWait(shared, 50) };
+                    }),
+                  );
+                  const opened = Date.now();
+                  const exit = yield* Fiber.join(awaited);
+                  return {
+                    awaited: outcome(exit),
+                    awaitedReturned: since(opened),
+                    gaveUp: Exit.isSuccess(abandoned) && abandoned.value._tag === "None",
+                  };
+                }),
               );
-              return {
-                awaited: outcome(awaited.exit),
-                awaitedReturned: awaited.at,
-                gaveUp: Exit.isSuccess(abandoned.exit) && abandoned.exit.value._tag === "None",
-                abandonedReturned: abandoned.at,
-              };
             }
           }
         });

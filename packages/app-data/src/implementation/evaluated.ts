@@ -41,8 +41,9 @@ const initialize = (storage: EvaluatedSqlStorage) =>
   });
 
 /**
- * One app's store. `changed` records an app cache invalidation: results evaluated no later than
- * then are neither served nor accepted, so every isolate forgets them at once.
+ * One app's store. `changed` records a change of the app's cached data: results evaluated no
+ * later than then are neither served nor accepted. Each isolate also reads when it was (the
+ * `changed` command) to forget the results it keeps in memory from before.
  */
 export const evaluatedStore = (storage: EvaluatedSqlStorage) => {
   let initialized = false;
@@ -75,9 +76,17 @@ export const evaluatedStore = (storage: EvaluatedSqlStorage) => {
       }),
     command: (input: unknown) =>
       Effect.try({
-        try: (): { readonly at: number; readonly body: Uint8Array } | null | boolean => {
+        try: ():
+          | { readonly at: number; readonly body: Uint8Array }
+          | { readonly changed: number | null }
+          | null
+          | boolean => {
           const command = Schema.decodeUnknownSync(EvaluatedCommand)(input);
           ready();
+          if (command.operation === "changed") {
+            const changed = lastChange();
+            return { changed: Number.isFinite(changed) ? changed : null };
+          }
           const now = Date.now();
           return storage.transactionSync(() => {
             storage.sql.exec("DELETE FROM executor_evaluated WHERE until < ?", now);

@@ -206,9 +206,27 @@ export const startCloudPostgres = (input: {
     );
     if (created !== 0)
       return yield* new CloudPostgresFailed({ operation: "Create the Postgres container" });
-    const started = yield* processes.exitCode(docker(["start", container]));
+    // Docker says why a container cannot start, such as its published port being in use.
+    const [started, startErrors] = yield* Effect.scoped(
+      Effect.gen(function* () {
+        const start = yield* processes.spawn(
+          ChildProcess.make("docker", ["start", container], {
+            env: dockerEnv,
+            extendEnv: false,
+            stdout: "ignore",
+            stderr: "pipe",
+          }),
+        );
+        return yield* Effect.all(
+          [start.exitCode, Stream.mkString(Stream.decodeText(start.stderr))],
+          { concurrency: 2 },
+        );
+      }),
+    );
     if (started !== 0)
-      return yield* new CloudPostgresFailed({ operation: "Start the Postgres container" });
+      return yield* new CloudPostgresFailed({
+        operation: `Start the Postgres container: ${startErrors.trim()}`,
+      });
     const logs = yield* processes.spawn(
       ChildProcess.make("docker", ["logs", "--follow", container], {
         env: dockerEnv,

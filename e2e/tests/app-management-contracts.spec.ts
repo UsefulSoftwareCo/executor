@@ -42,6 +42,7 @@ const Tool = Schema.Struct({ path: Schema.String, description: Schema.String });
 const Discovered = Completed(
   Schema.Struct({
     catalog: Schema.String,
+    commit: Schema.String,
     found: Schema.Array(Tool),
     create: Schema.String,
     release: Schema.Struct({ version: Schema.String }),
@@ -112,35 +113,45 @@ const Kept = Completed(
 /** The commit result itself, returned straight from execute. */
 const Committed = Completed(Commit);
 const Located = Completed(Schema.Unknown);
+/** A created app; its other fields are not under test here. */
+const Made = Completed(Schema.Struct({ id: Schema.String }));
 type Connection = Effect.Success<ReturnType<Effect.Success<typeof McpClient>["connect"]>>;
+
+/** Local routes have no organization, and their tools accept no empty path. */
+const routes = (organization?: string) => {
+  const tenant = organization === undefined ? {} : { organization };
+  return { tenant, scope: organization === undefined ? {} : { path: tenant } };
+};
+
+/** One execute program with the Executor app in scope; the result is its structured content. */
+const executeIn = (client: Connection) => (step: string, code: string) =>
+  client
+    .use(step, (client, signal) =>
+      client.callTool(
+        { name: "execute", arguments: { code: `const executor = tools.executor;\n${code}` } },
+        undefined,
+        { signal },
+      ),
+    )
+    .pipe(Effect.map((result) => result.structuredContent));
+
+/** deploy.md's MCP example: index.ts and a package.json pinning the reported version. */
+const documentedFiles = `[
+  { path: "index.ts", content: ${JSON.stringify(helloIndex)} },
+  { path: "package.json", content: JSON.stringify({ name: "hello", private: true, type: "module", dependencies: { apps: version } }) },
+]`;
 
 /**
  * Follow deploy.md: discover the catalog's constraints and the host's apps release, then create
  * the two-file app with files and deploy it. Create without files is refused. Later commit and
- * deploy results stay objects after the source outgrows an execute result. A save that leaves a
- * file out names it in `removed`, and committing it again restores its contents. A save that
- * nests a file under a file, or names a path that is not valid Unicode, is refused and keeps the
- * existing files. Dropping 600 files reports the count and the first 100 paths in an untruncated
- * result, and dropping files with escaped names lists fewer to keep the JSON small. On hosted
- * products the tool-only app's location says it has no UI.
+ * deploy results stay objects after the source outgrows an execute result. On hosted products
+ * the tool-only app's location says it has no UI.
  */
-const authorApp = (client: Connection, organization?: string) =>
+const deployApp = (client: Connection, organization?: string) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence;
-    const executor = "const executor = tools.executor;";
-    // Local routes have no organization, and their tools accept no empty path.
-    const tenant = organization === undefined ? {} : { organization };
-    const scope = organization === undefined ? {} : { path: tenant };
-    const execute = (step: string, code: string) =>
-      client
-        .use(step, (client, signal) =>
-          client.callTool(
-            { name: "execute", arguments: { code: `${executor}\n${code}` } },
-            undefined,
-            { signal },
-          ),
-        )
-        .pipe(Effect.map((result) => result.structuredContent));
+    const execute = executeIn(client);
+    const { tenant, scope } = routes(organization);
 
     const discovered = yield* execute(
       "Discover the catalog, the apps release and create",
@@ -151,14 +162,17 @@ const authorApp = (client: Connection, organization?: string) =>
 const found = await tools.search({ query: "framework.release" });
 const create = await find("appManagement.create", ".appManagement.create");
 const catalog = await find("appManagement.catalog", ".appManagement.catalog");
+const commit = await find("appManagement.commit", ".appManagement.commit");
 const release = await executor.framework.release(${JSON.stringify(scope)});
-return { catalog: catalog?.signature, found: found.items.map(({ path, description }) => ({ path, description })), create: create?.signature, release };`,
+return { catalog: catalog?.signature, commit: commit?.signature, found: found.items.map(({ path, description }) => ({ path, description })), create: create?.signature, release };`,
     );
     yield* evidence.json("discovered.json", discovered);
     const found = (yield* Schema.decodeUnknownEffect(Discovered)(discovered)).execution.value;
     // A plain service name fails the optional name filter's pattern, so its input must show it.
     const [input] = found.catalog.split("): Promise<");
     expect(input).toMatch(/@pattern \^@\[a-z0-9\][^\n]*\n\s*name\?: string \| null/);
+    // An app path parameter takes the app's ID, and its signature says so.
+    expect(found.commit).toContain("App ID, such as app_…, from the app's `id`.");
     // deploy.md names framework.release; searching for it finds it first, saying where it goes.
     expect(found.found[0]?.path).toMatch(/\.framework\.release$/);
     expect(found.found[0]?.description).toContain('{ "dependencies": { "apps": version } }');
@@ -183,14 +197,38 @@ return { catalog: catalog?.signature, found: found.items.map(({ path, descriptio
     expect(failure.message).toContain("input.body.files: Missing key");
     expect(failure.recovery.instructions).toContain("tools.search.describe");
 
-    // deploy.md's MCP example: index.ts and a package.json pinning the reported version.
+    // A request Executor's API rejects against its operation's schema states where and why,
+    // instead of a 400 the document does not declare. The input schema cannot express a root
+    // index.ts, so the call reaches Executor.
+    const unrooted = yield* execute(
+      "Create an app without a root index.ts",
+      `return await executor.appManagement.create({ ...${JSON.stringify(scope)}, body: { name: ${JSON.stringify(name)}, files: [{ path: "src/index.ts", content: "export default {};" }] } });`,
+    );
+    yield* evidence.json("create-without-root-index.json", unrooted);
+    const unrootedFailure = (yield* Schema.decodeUnknownEffect(Refused)(unrooted)).execution.error
+      .response;
+    expect(unrootedFailure).toMatchObject({ code: "RequestInvalid", status: 400 });
+    expect(unrootedFailure.message).toContain(
+      "Executor rejected this request's body because it does not match the operation's schema: $.files: expected a root index.ts.",
+    );
+    // A local CLI agent's guess at the format of `links`, a JSON array of account links.
+    if (organization === undefined) {
+      const health = yield* execute(
+        "List account health with links as a flag",
+        `return await executor.accounts.listHealth({ query: { links: "true" } });`,
+      );
+      yield* evidence.json("account-health-links-flag.json", health);
+      const healthFailure = (yield* Schema.decodeUnknownEffect(Refused)(health)).execution.error
+        .response;
+      expect(healthFailure).toMatchObject({ code: "RequestInvalid", status: 400 });
+      expect(healthFailure.message).toContain("this request's query");
+      expect(healthFailure.message).toContain("$.links");
+    }
+
     const created = yield* execute(
       "Create and deploy the documented two-file app",
       `const { version } = await executor.framework.release(${JSON.stringify(scope)});
-const files = [
-  { path: "index.ts", content: ${JSON.stringify(helloIndex)} },
-  { path: "package.json", content: JSON.stringify({ name: "hello", private: true, type: "module", dependencies: { apps: version } }) },
-];
+const files = ${documentedFiles};
 const app = await executor.appManagement.create({ ...${JSON.stringify(scope)}, body: { name: ${JSON.stringify(name)}, files } });
 const deployed = await executor.appManagement.deploy({ path: { ...${JSON.stringify(tenant)}, app: app.id }, body: { files } });
 const source = await executor.appManagement.source({ path: { ...${JSON.stringify(tenant)}, app: app.id } });
@@ -224,11 +262,53 @@ return { saved, deployed };`,
     expect(large.deployed.app.id).toBe(app.app.id);
     expect(large.deployed.version.id).toBe(large.deployed.app.activeVersion);
 
+    // ui.md: a hosted app without a UI has no address, and the location says why.
+    if (organization !== undefined) {
+      const location = yield* execute(
+        "Get the URL of the tool-only app",
+        `return await executor.appUi.location({ path: ${JSON.stringify({ organization, app: app.app.id })} });`,
+      );
+      yield* evidence.json("location.json", location);
+      expect((yield* Schema.decodeUnknownEffect(Located)(location)).execution.value).toEqual({
+        status: "unavailable",
+        url: null,
+        reason: "no_ui",
+      });
+    }
+    return app.app.id;
+  });
+
+/** The documented two-file app with the large reference the saves below remove, not deployed. */
+const createWithReference = (client: Connection, organization: string) =>
+  Effect.gen(function* () {
+    const { scope } = routes(organization);
+    const created = yield* executeIn(client)(
+      "Create an app with a large reference",
+      `const { version } = await executor.framework.release(${JSON.stringify(scope)});
+const files = [...${documentedFiles}, { path: "reference.md", content: "x".repeat(110000) }];
+return await executor.appManagement.create({ ...${JSON.stringify(scope)}, body: { name: ${JSON.stringify(`Hello ${randomUUID().slice(0, 8)}`)}, files } });`,
+    );
+    return (yield* Schema.decodeUnknownEffect(Made)(created)).execution.value.id;
+  });
+
+/**
+ * Saves of an app whose source has `reference.md`. A save that leaves a file out names it in
+ * `removed`, and committing it again restores its contents. A save that nests a file under a
+ * file, or names a path that is not valid Unicode, is refused and keeps the existing files.
+ * Dropping 600 files reports the count and the first 100 paths in an untruncated result, and
+ * dropping files with escaped names lists fewer to keep the JSON small.
+ */
+const saveSource = (client: Connection, app: string, organization?: string) =>
+  Effect.gen(function* () {
+    const evidence = yield* Evidence;
+    const execute = executeIn(client);
+    const path = JSON.stringify({ ...routes(organization).tenant, app });
+
     // deploy.md: a complete file list deletes what it leaves out, and the result names it before
     // anything is deployed. Committing the file again restores it.
     const removal = yield* execute(
       "Save the source without a file, then restore it",
-      `const path = ${JSON.stringify({ ...tenant, app: app.app.id })};
+      `const path = ${path};
 const source = await executor.appManagement.source({ path });
 const trimmed = await executor.appManagement.commit({ path, body: { expected: source.revision.commit, files: source.files.filter((file) => file.path !== "reference.md"), message: "Drop the reference" } });
 const restored = await executor.appManagement.commit({ path, body: { expected: trimmed.revision.commit, files: source.files, message: "Restore the reference" } });
@@ -249,7 +329,7 @@ return { trimmed, restored, working: working.revision.commit, same: content(work
     // an existing file is refused before anything is written, naming both paths.
     const conflicted = yield* execute(
       "Save a file inside a path that is a file",
-      `const path = ${JSON.stringify({ ...tenant, app: app.app.id })};
+      `const path = ${path};
 const source = await executor.appManagement.source({ path });
 return await executor.appManagement.commit({ path, body: { expected: source.revision.commit, files: [...source.files, { path: "reference.md/part.md", content: "part" }], message: "Nest a file" } });`,
     );
@@ -260,9 +340,24 @@ return await executor.appManagement.commit({ path, body: { expected: source.revi
     expect(conflict.message).toBe(
       "The files use reference.md as both a file and a folder: reference.md/part.md is inside it. Git can store only one of them. Rename or remove one, then save again. Nothing was saved.",
     );
+    // Only public files may be stored entries; an ordinary text file sent as one is rejected,
+    // naming the file.
+    const stored = yield* execute(
+      "Save a text file as a stored entry",
+      `const path = ${path};
+const source = await executor.appManagement.source({ path });
+return await executor.appManagement.commit({ path, body: { expected: source.revision.commit, files: [...source.files, { path: "notes.md", object: "${"a".repeat(40)}", size: 4 }], message: "Store a note" } });`,
+    );
+    yield* evidence.json("stored-text-file.json", stored);
+    const storedFailure = (yield* Schema.decodeUnknownEffect(Refused)(stored)).execution.error
+      .response;
+    expect(storedFailure).toMatchObject({ code: "RequestInvalid", status: 400 });
+    expect(storedFailure.message).toContain(
+      "$.files: expected notes.md to be UTF-8 text: only files under ui/public/ may be binary or stored",
+    );
     const unchanged = yield* execute(
       "Read the working revision after the refused save",
-      `const path = ${JSON.stringify({ ...tenant, app: app.app.id })};
+      `const path = ${path};
 const source = await executor.appManagement.source({ path });
 return { before: ${JSON.stringify(restored.revision.commit)}, after: source.revision.commit };`,
     );
@@ -273,7 +368,7 @@ return { before: ${JSON.stringify(restored.revision.commit)}, after: source.revi
     // `assets\uFFFD` file, so the save is refused and the file and revision survive.
     const kept = yield* execute(
       "Save a file named with U+FFFD",
-      `const path = ${JSON.stringify({ ...tenant, app: app.app.id })};
+      `const path = ${path};
 const source = await executor.appManagement.source({ path });
 return await executor.appManagement.commit({ path, body: { expected: source.revision.commit, files: [...source.files, { path: "assets\\uFFFD", content: "kept" }], message: "Keep a file" } });`,
     );
@@ -281,7 +376,7 @@ return await executor.appManagement.commit({ path, body: { expected: source.revi
       .revision.commit;
     const lone = yield* execute(
       "Save a path with a lone surrogate",
-      `const path = ${JSON.stringify({ ...tenant, app: app.app.id })};
+      `const path = ${path};
 const source = await executor.appManagement.source({ path });
 return await executor.appManagement.commit({ path, body: { expected: source.revision.commit, files: [...source.files, { path: "assets\\uD800/logo.txt", content: "logo" }], message: "Add a logo" } });`,
     );
@@ -293,7 +388,7 @@ return await executor.appManagement.commit({ path, body: { expected: source.revi
     );
     const survived = yield* execute(
       "Read the kept file after the refused save",
-      `const path = ${JSON.stringify({ ...tenant, app: app.app.id })};
+      `const path = ${path};
 const source = await executor.appManagement.source({ path });
 return { before: ${JSON.stringify(keptRevision)}, after: source.revision.commit, kept: source.files.find((file) => file.path === "assets\\uFFFD")?.content ?? null };`,
     );
@@ -304,20 +399,15 @@ return { before: ${JSON.stringify(keptRevision)}, after: source.revision.commit,
     });
 
     // A save that drops many files reports the count and the first paths, so the commit result
-    // returned from execute stays an object instead of a truncated string.
-    yield* execute(
-      "Save 600 notes",
-      `const path = ${JSON.stringify({ ...tenant, app: app.app.id })};
+    // returned from execute stays an object instead of a truncated string. The drop commits the
+    // files read before the notes, as the restore above does, without reading 600 notes back.
+    const dropped = yield* execute(
+      "Save 600 notes, then save the source without them",
+      `const path = ${path};
 const source = await executor.appManagement.source({ path });
 const notes = Array.from({ length: 600 }, (_, n) => ({ path: \`notes/\${String(n).padStart(3, "0")}-${"n".repeat(100)}.md\`, content: String(n) }));
-await executor.appManagement.commit({ path, body: { expected: source.revision.commit, files: [...source.files, ...notes], message: "Add notes" } });
-return {};`,
-    );
-    const dropped = yield* execute(
-      "Save the source without the notes",
-      `const path = ${JSON.stringify({ ...tenant, app: app.app.id })};
-const source = await executor.appManagement.source({ path });
-return await executor.appManagement.commit({ path, body: { expected: source.revision.commit, files: source.files.filter((file) => !file.path.startsWith("notes/")), message: "Drop the notes" } });`,
+const added = await executor.appManagement.commit({ path, body: { expected: source.revision.commit, files: [...source.files, ...notes], message: "Add notes" } });
+return await executor.appManagement.commit({ path, body: { expected: added.revision.commit, files: source.files, message: "Drop the notes" } });`,
     );
     yield* evidence.json("many-removed.json", dropped);
     const many = (yield* Schema.decodeUnknownEffect(Committed)(dropped)).execution.value;
@@ -328,19 +418,13 @@ return await executor.appManagement.commit({ path, body: { expected: source.revi
 
     // JSON escapes a control character as six bytes, so the listed paths are bounded by their
     // encoded size: 100 paths of 150 U+0001 each would be over 90 KB, past an execute result.
-    yield* execute(
-      "Save 100 files named with control characters",
-      `const path = ${JSON.stringify({ ...tenant, app: app.app.id })};
+    const escaped = yield* execute(
+      "Save 100 files named with control characters, then save the source without them",
+      `const path = ${path};
 const source = await executor.appManagement.source({ path });
 const controls = Array.from({ length: 100 }, (_, n) => ({ path: \`controls/\${String(n).padStart(3, "0")}-\${"\\u0001".repeat(150)}.md\`, content: String(n) }));
-await executor.appManagement.commit({ path, body: { expected: source.revision.commit, files: [...source.files, ...controls], message: "Add control files" } });
-return {};`,
-    );
-    const escaped = yield* execute(
-      "Save the source without the control files",
-      `const path = ${JSON.stringify({ ...tenant, app: app.app.id })};
-const source = await executor.appManagement.source({ path });
-return await executor.appManagement.commit({ path, body: { expected: source.revision.commit, files: source.files.filter((file) => !file.path.startsWith("controls/")), message: "Drop the control files" } });`,
+const added = await executor.appManagement.commit({ path, body: { expected: source.revision.commit, files: [...source.files, ...controls], message: "Add control files" } });
+return await executor.appManagement.commit({ path, body: { expected: added.revision.commit, files: source.files, message: "Drop the control files" } });`,
     );
     yield* evidence.json("escaped-removed.json", escaped);
     const controls = (yield* Schema.decodeUnknownEffect(Committed)(escaped)).execution.value;
@@ -352,21 +436,6 @@ return await executor.appManagement.commit({ path, body: { expected: source.revi
     expect(
       new TextEncoder().encode(JSON.stringify(controls.removed.paths)).length,
     ).toBeLessThanOrEqual(16 * 1024);
-
-    // ui.md: a hosted app without a UI has no address, and the location says why.
-    if (organization !== undefined) {
-      const location = yield* execute(
-        "Get the URL of the tool-only app",
-        `return await executor.appUi.location({ path: ${JSON.stringify({ organization, app: app.app.id })} });`,
-      );
-      yield* evidence.json("location.json", location);
-      expect((yield* Schema.decodeUnknownEffect(Located)(location)).execution.value).toEqual({
-        status: "unavailable",
-        url: null,
-        reason: "no_ui",
-      });
-    }
-    return app.app.id;
   });
 
 /** deploy.md's local example deploys through `apps.deploy`; local `apps.commit` saves the same way. */
@@ -399,33 +468,52 @@ return { saved, deployed };`,
     expect(result.version.id).toBe(result.app.activeVersion);
   });
 
+/**
+ * The owner's API key and management app, an MCP session on its organization, and app removal.
+ * Deploys and saves are separate cases: on a deployed Cloud stage, each runs about 30 seconds of
+ * sequential Git and build work, and together they reached the 60-second limit.
+ */
+const hostedAgent = Effect.gen(function* () {
+  const api = yield* Api,
+    actors = yield* Actors,
+    mcp = yield* McpClient;
+  const organization = actors.organization.id;
+  const issued = yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+    name: "App management contracts",
+  });
+  expect(issued.status).toBe(200);
+  const token = yield* body(Token, issued);
+  yield* Effect.addFinalizer(() =>
+    api
+      .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: token.id })
+      .pipe(Effect.orDie),
+  );
+  yield* managementApp(actors.owner);
+  const client = yield* mcp.connect(token.key, "app-management-contracts", { organization });
+  const remove = (app: string) =>
+    api.request(actors.owner, "DELETE", `/api/organizations/${organization}/apps/${app}`);
+  return { client, organization, remove };
+});
+
 layer(HostedLive, { excludeTestServices: true })("Hosted app management contracts", (it) => {
   it.effect(scenarios.appManagementContractsHosted.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const api = yield* Api,
-          actors = yield* Actors,
-          mcp = yield* McpClient;
-        const organization = actors.organization.id;
-        const issued = yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
-          name: "App management contracts",
-        });
-        expect(issued.status).toBe(200);
-        const token = yield* body(Token, issued);
-        yield* Effect.addFinalizer(() =>
-          api
-            .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: token.id })
-            .pipe(Effect.orDie),
-        );
-        yield* managementApp(actors.owner);
-        const client = yield* mcp.connect(token.key, "app-management-contracts", { organization });
-        const app = yield* authorApp(client, organization);
-        yield* api.request(
-          actors.owner,
-          "DELETE",
-          `/api/organizations/${organization}/apps/${app}`,
-        );
+        const { client, organization, remove } = yield* hostedAgent;
+        yield* remove(yield* deployApp(client, organization));
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+
+  it.effect(scenarios.appManagementSavesHosted.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { client, organization, remove } = yield* hostedAgent;
+        const app = yield* createWithReference(client, organization);
+        yield* saveSource(client, app, organization);
+        yield* remove(app);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );
@@ -442,7 +530,8 @@ layer(TestLive, { excludeTestServices: true })("Local app management contracts",
         const session = yield* api.session();
         const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
         const client = yield* mcp.connect(target.apiKey, "app-management-contracts");
-        const app = yield* authorApp(client);
+        const app = yield* deployApp(client);
+        yield* saveSource(client, app);
         yield* deployThroughApps(client, app);
         yield* session.send("DELETE", `/v1/apps/${app}`, undefined, headers);
       }).pipe(Effect.provide(McpClient.layer)),

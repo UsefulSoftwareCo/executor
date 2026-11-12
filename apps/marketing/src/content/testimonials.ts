@@ -230,6 +230,12 @@ export const testimonials: readonly Testimonial[] = [
     text: "Yep it's perfect!",
   },
   {
+    handle: "dakdevs",
+    name: "Dak",
+    id: "2120584844774367403",
+    text: "You won't regret it. I love it.",
+  },
+  {
     handle: "ryan_morr",
     name: "Ryan Morrissey",
     id: "2083702861465362545",

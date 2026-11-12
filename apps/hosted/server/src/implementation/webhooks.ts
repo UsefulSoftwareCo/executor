@@ -1,22 +1,26 @@
 import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
 /** Shared product policy; local does not acquire organizations to reuse webhook execution. */
-import { Authentication, ApiAuthentication, CurrentUserId } from "../contracts/auth.ts";
+import { SessionAuthentication, BearerAuthentication, CurrentUserId } from "../contracts/auth.ts";
 import { HttpServerRequest } from "effect/http";
 import { HttpServerResponse } from "effect/http";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
+import { permitsAction, permitsApp } from "@executor-js/authorization";
 import {
+  AccountWebhooksActive,
   WebhookNotFound,
   webhookCallback,
   type Executor,
   type AccountId,
   type AppId,
   type OwnerId,
+  type StorageError,
   type WebhookSource,
   type WebhookSubscription,
 } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import {
   actorManagerOwner,
@@ -43,6 +47,58 @@ const checkSubscriptionAccounts = (owner: OwnerId, subscription: WebhookSubscrip
   subscription.actor === null
     ? Effect.void
     : checkAccounts(owner, { source: subscription.sourceAccount });
+/** `list` shows a subscription to its actor or an app manager while they can use its accounts. */
+const listed = (owner: OwnerId, app: AppId, subscription: WebhookSubscription) =>
+  Effect.gen(function* () {
+    yield* actorManagerOwner(app, subscription.actor);
+    yield* checkSubscriptionAccounts(owner, subscription);
+  }).pipe(
+    Effect.as(true),
+    Effect.catchTags({
+      OrganizationForbidden: () => Effect.succeed(false),
+      AccountNotFound: () => Effect.succeed(false),
+    }),
+  );
+const failedToRead = <E extends { readonly _tag: string }>(
+  error: E,
+): error is Exclude<E, StorageError> => error._tag !== "StorageError";
+/**
+ * The app's subscriptions `list` shows the caller: none unless their API token and access let
+ * them read the app. A read refused for any reason but storage shows none.
+ */
+const listedIn = (executor: Executor, owner: OwnerId, app: AppId) =>
+  Effect.gen(function* () {
+    const policy = yield* CurrentPolicy;
+    if (!permitsAction(policy, "read") || !permitsApp(policy, app)) return [];
+    yield* appReaderOwner(app);
+    yield* executor.apps.get({ owner, app });
+    const subscriptions = yield* executor.webhooks.list({ app });
+    return yield* Effect.filter(subscriptions, (subscription) => listed(owner, app, subscription));
+  }).pipe(Effect.catchIf(failedToRead, () => Effect.succeed([])));
+/**
+ * Every subscription holding an account refuses its deletion, but the refusal names only those
+ * `list` shows the caller and counts the rest, so it never reveals an app or subscription they
+ * cannot read.
+ */
+export const visibleAccountRefusal = (executor: Executor, refusal: AccountWebhooksActive) =>
+  Effect.gen(function* () {
+    if (refusal.dependents === undefined) return refusal;
+    const owner = yield* currentOwner;
+    const holders = refusal.dependents.visible;
+    const apps = [...new Set(holders.map((holder) => holder.app))];
+    const shown = new Set(
+      (yield* Effect.forEach(apps, (app) =>
+        Effect.map(listedIn(executor, owner, app), (subscriptions) =>
+          subscriptions.map((subscription) => `${app}/${subscription.id}`),
+        ),
+      )).flat(),
+    );
+    const visible = holders.filter((holder) => shown.has(`${holder.app}/${holder.subscription}`));
+    return new AccountWebhooksActive({
+      account: refusal.account,
+      dependents: { visible, hidden: refusal.dependents.hidden + holders.length - visible.length },
+    });
+  });
 /** A subscription's actor, or an app manager, may change it once its accounts pass. */
 const managedSubscription = (
   executor: Executor,
@@ -78,8 +134,8 @@ const managedSource = (executor: Executor, input: { app: AppId; account: Account
 /** Management uses current organization authority before any app code runs. */
 export const hostedWebhookHandlers = HttpApiBuilder.group(HostedApi, "webhooks", (handlers) =>
   Effect.gen(function* () {
-    const auth = yield* Authentication;
-    const api = yield* ApiAuthentication;
+    const auth = yield* SessionAuthentication;
+    const api = yield* BearerAuthentication;
     return (
       handlers
         .handle("get", ({ params }) =>
@@ -128,16 +184,7 @@ export const hostedWebhookHandlers = HttpApiBuilder.group(HostedApi, "webhooks",
             yield* executor.apps.get({ owner, app: params.app });
             const subscriptions = yield* executor.webhooks.list(params);
             return yield* Effect.filter(subscriptions, (subscription) =>
-              Effect.gen(function* () {
-                yield* actorManagerOwner(params.app, subscription.actor);
-                yield* checkSubscriptionAccounts(owner, subscription);
-              }).pipe(
-                Effect.as(true),
-                Effect.catchTags({
-                  OrganizationForbidden: () => Effect.succeed(false),
-                  AccountNotFound: () => Effect.succeed(false),
-                }),
-              ),
+              listed(owner, params.app, subscription),
             );
           }),
         )

@@ -44,8 +44,8 @@ export const refuseTooDeep = <E, R>(
 const RpcMessage = Schema.Struct({
   id: Schema.optional(Schema.Union([Schema.String, Schema.Number])),
 });
-/** A POST body's message, or batch of messages, as JSON. */
-const Requests = Schema.fromJsonString(Schema.Union([RpcMessage, Schema.Array(RpcMessage)]));
+/** A POST body's message, or batch of messages. */
+const Requests = Schema.Union([RpcMessage, Schema.Array(RpcMessage)]);
 
 const memoryLimitMessage =
   "Executor's MCP session ran out of memory while answering this request, so its response was lost: the Durable Object running it, or another in the same isolate, exceeded Cloudflare's 128 MB memory limit and was reset. A very large result is the usual cause. Executor sets no limit on a result, but Cloud holds one several times over while sending it, so a result of a few tens of megabytes can exceed the limit. Return less, such as selected fields, a count or one page. Tool calls made before this may have completed, so check current state before running the same work again";
@@ -54,9 +54,9 @@ const memoryLimitMessage =
  * The errors answering each request in a POST body whose response was lost, one event each on a
  * stream, and as JSON in the shape the body had. Undefined when no message expects a response.
  */
-const memoryLimitAnswer = (body: string) =>
+const memoryLimitAnswer = (body: Option.Option<unknown>) =>
   Option.getOrUndefined(
-    Option.flatMap(Schema.decodeUnknownOption(Requests)(body), (requests) => {
+    Option.flatMap(Option.flatMap(body, Schema.decodeUnknownOption(Requests)), (requests) => {
       const errors = (Array.isArray(requests) ? requests : [requests]).flatMap(({ id }) =>
         id === undefined
           ? []
@@ -73,12 +73,13 @@ const memoryLimitAnswer = (body: string) =>
  * lost: the object's fetch fails, or its event stream ends without the answer. The gateway runs
  * in another isolate and sees that failure, so it answers each request in the POST with an error
  * that names the limit. Without it the client waits for an answer until its own timeout. Apply
- * it outside `observeMcpStream`, which records the failure.
+ * it outside `observeMcpStream`, which records the failure. `body` is the POST body as JSON
+ * (`parseMcpBody`).
  */
 export const answerMemoryLimit =
-  (body: string | undefined) =>
+  (body: Option.Option<unknown>) =>
   <E, R>(forward: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) => {
-    const answer = body === undefined ? undefined : memoryLimitAnswer(body);
+    const answer = memoryLimitAnswer(body);
     if (answer === undefined) return forward;
     const exceeded = (cause: Cause.Cause<unknown>) =>
       !Cause.hasInterruptsOnly(cause) &&

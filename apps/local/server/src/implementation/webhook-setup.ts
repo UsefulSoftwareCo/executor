@@ -13,6 +13,7 @@ export const localWebhookSetupHandlers = (
   executor: Executor,
   config: ServerConfig,
   auth: LocalAuth,
+  wakeWebhookSources: Effect.Effect<void>,
 ) => {
   const access = Layer.succeed(WebhookSetupAccess, (response) =>
     Effect.gen(function* () {
@@ -52,8 +53,11 @@ export const localWebhookSetupHandlers = (
     HttpApiBuilder.group(LocalWebhookSetupApi, "webhookSetup", (handlers) =>
       handlers
         .handle("read", ({ params }) => executor.webhookSetup.read(params))
+        // A finished setup is new intent for the webhook source waiting on it.
         .handle("complete", ({ params, payload }) =>
-          executor.webhookSetup.complete({ ...params, ...payload }),
+          executor.webhookSetup
+            .complete({ ...params, ...payload })
+            .pipe(Effect.tap(() => wakeWebhookSources)),
         )
         .handle("remove", ({ params }) => executor.webhooks.remove(params))
         .handle("confirmRemoval", ({ params }) => executor.webhooks.confirmRemoval(params)),

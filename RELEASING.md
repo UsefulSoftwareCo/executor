@@ -101,26 +101,67 @@ not.
 
 ## Publish beta
 
-Set the version to an unused `2.0.0-beta.N`, merge the reviewed release changes,
-and dispatch **Executor releases** from `main` with channel **beta**.
-The workflow refuses a channel that does not match the committed version.
+The **Beta** workflow (`.github/workflows/beta.yml`) publishes betas. It checks
+every 30 minutes, at minutes 8 and 38, and `scripts/releases/beta-due.ts`
+decides from npm, the release runs and main's history:
+
+- While any **Executor releases** dispatch is queued or running, it waits.
+- When npm lists the committed version, main has commits after that version's
+  `Release 2.0.0-beta.N` commit, and npm published it at least six hours ago,
+  it commits `Release 2.0.0-beta.N+1` to `main` and dispatches **Executor
+  releases** with channel **beta**.
+- When npm lacks the committed version, it publishes it again instead of
+  skipping it. An attempt that failed in its build or test jobs is dispatched
+  again on the next tick. After two failures in a row, the next attempt waits
+  six hours after the last one and for a new commit on `main`, or a day, so a
+  broken `main` costs at most five publishing runs a day. An attempt that failed
+  in its publish job has its failed jobs re-run once from its own artifacts;
+  after that, inspect it as below. Each skipped retry leaves a warning on the
+  Beta run, and the failed release runs stay red.
+- Only publishing runs count as attempts. A dispatch with channel **build**
+  does not publish, so it neither adds to a failure streak nor counts as a
+  success, though it still makes the tick wait while it runs.
+- When the last publishing run for the committed version (its commit contains
+  the `Release` commit) succeeded but npm still lacks the version, every tick
+  fails red instead of dispatching again: another run would succeed the same
+  way without publishing. Inspect that run's publish job and the registry, fix
+  the cause, then dispatch **Executor releases** with channel **beta** by hand.
+
+Dispatching **Beta** by hand publishes new commits at once, skipping the six
+hours and the retry back-off. The bump commit is pushed over SSH with the
+deploy key in the `beta` environment's `BETA_PUSH_KEY` secret, the one actor
+the `main` ruleset lets push without a pull request (see
+[CI configuration](notes/ci.md)). Its message ends in `[skip ci]`, so it starts
+no CI, Deploy, public export or Cloud tests run; the next merge carries it.
+
+To publish a beta by hand instead, set the version to an unused
+`2.0.0-beta.N`, merge the reviewed release changes, and dispatch **Executor
+releases** from `main` with channel **beta**. The workflow refuses a channel
+that does not match the committed version.
 
 1. Build and test every native runtime, desktop installer and Docker architecture.
 2. Export the filtered source snapshot to the public repository's `v2-releases`
    branch. Create `executor@<version>` on that public commit, never a private SHA.
-3. Publish native npm variants, then the launcher with exact optional aliases.
-   Poll each public registry archive and compare its integrity before continuing.
-4. Verify a clean `executor@<version>` installation from npm.
-5. Upload installers, native packages, bundled Git source and SHA256SUMS.
-6. Publish the tested Docker manifest as `:<version>` and `:beta`, then make the
+3. Upload installers, native archives, the npm launcher, bundled Git source and
+   SHA256SUMS to the draft.
+4. Publish the tested Docker manifest as `:<version>` and `:beta`, then make the
    GitHub prerelease public with `latest=false`.
-7. Point the desktop `beta` update channel at the public release assets.
+5. Publish the npm launcher, which downloads the native archives from that public
+   release. It records each archive's SHA-256; publication checks them against
+   the build and the release's SHA256SUMS, then polls the registry archive and
+   compares its integrity.
+6. Verify a clean `executor@<version>` installation from npm, including its first
+   download.
+7. Point the Homebrew formula and the desktop `beta` update channel at the public
+   release assets.
 
 The npm `latest` tag, Docker `latest`, and Executor 1 desktop updater stay
 unchanged. A draft public release blocks accidental repeat publication of the
 same version. After a partial failure, re-run the failed publish job. It resumes
-only its own draft, whose target is this source's unchanged public snapshot, and
-skips npm versions whose registry integrity matches the local archive. Any other
+only its own release, whose target is this source's unchanged public snapshot:
+a draft gets its assets again, and a release already public keeps them, which
+npm publication then checks. It skips an npm launcher whose registry integrity
+matches the local archive. Any other
 existing release or npm version stops publication for inspection. Never
 republish an accepted immutable npm version merely because its registry entry is
 still propagating.
@@ -129,8 +170,11 @@ The homepage resolves desktop downloads in the browser from GitHub's public
 release list, choosing the newest published release with this major version's
 tag prefix. A merged version bump keeps linking to the previous release until
 this one is public; without JavaScript, or when the lookup fails, the buttons
-open the releases page. Verify the public npm install, GitHub assets, Docker
-manifest and rendered site.
+open the releases page. The documentation's install commands name the newest
+release npm's dist-tags list, read when the site builds (`scripts/releases/published.ts`),
+so they too keep the previous version until publication moves the tag and the
+next deploy from `main` rebuilds the site. Verify the public npm install, GitHub
+assets, Docker manifest and rendered site.
 A successful upload alone does not establish public availability.
 
 ## Stable cutover

@@ -1,5 +1,5 @@
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
-/** Sharing uses group grants; personal ownership is not a named-person assignment. */
+/** App and OAuth client sharing uses group grants. Accounts are never shared. */
 import { useForm, useStore } from "@tanstack/react-form";
 import { Exit } from "effect";
 import { useEffect, useId, useRef, useState } from "react";
@@ -16,43 +16,30 @@ import {
   SelectItem,
 } from "@executor-js/ui/components/select";
 import type { Group } from "@executor-js/hosted-server/groups";
-import type {
-  AppAudience,
-  SharedAudience,
-  AccessRevision,
-} from "@executor-js/hosted-server/resource-access";
+import type { AppAudience, AccessRevision } from "@executor-js/hosted-server/resource-access";
 import { appError, type HostedError } from "../../contracts/errors.ts";
 import { Link } from "@tanstack/react-router";
 import { useOrganizationRoute } from "./organization.tsx";
 
 type AudienceInputProps = {
   readonly groups: readonly Group[];
-  /** What the audience may use, when not the app or account itself, such as "this client". */
+  /** What the audience may use, when not the app itself, such as "this client". */
   readonly subject?: string | undefined;
   readonly disabled?: boolean;
   readonly disabledReason?: string | undefined;
   readonly error?: string | undefined;
   readonly onBlur: () => void;
-} & (
-  | {
-      readonly mode: "app";
-      readonly value: typeof AppAudience.Type;
-      readonly allowPrivate: boolean;
-      readonly privateLabel: string;
-      readonly onChange: (value: typeof AppAudience.Type) => void;
-    }
-  | {
-      readonly mode: "account";
-      readonly value: typeof SharedAudience.Type;
-      readonly onChange: (value: typeof SharedAudience.Type) => void;
-    }
-);
+  readonly value: typeof AppAudience.Type;
+  readonly allowPrivate: boolean;
+  readonly privateLabel: string;
+  readonly onChange: (value: typeof AppAudience.Type) => void;
+};
 /** A group audience needs at least one group; the same rule applies when editing and creating. */
 export const audienceError = (value: typeof AppAudience.Type) =>
   value.kind === "groups" && !value.groups.length ? "Choose at least one group." : undefined;
 /**
- * Controlled sharing fields can be used in Settings, before authenticating a new team account,
- * and in forms that create a resource with its audience.
+ * Controlled sharing fields can be used in Settings and in forms that create a resource with its
+ * audience.
  */
 export function AudienceInput(props: AudienceInputProps) {
   const id = useId();
@@ -65,14 +52,13 @@ export function AudienceInput(props: AudienceInputProps) {
       tabIndex={-1}
     >
       <label htmlFor={id} className="block text-sm font-medium">
-        Who can use {props.subject ?? (props.mode === "app" ? "this app" : "this account")}?
+        Who can use {props.subject ?? "this app"}?
       </label>
       <Select
         value={value.kind}
         disabled={props.disabled === true || props.disabledReason !== undefined}
         onValueChange={(kind) => {
-          if (kind === "private" && props.mode === "app" && props.allowPrivate)
-            props.onChange({ kind: "private" });
+          if (kind === "private" && props.allowPrivate) props.onChange({ kind: "private" });
           else if (kind === "groups")
             props.onChange({ kind: "groups", groups: value.kind === "groups" ? value.groups : [] });
           else if (kind === "everyone") props.onChange({ kind: "everyone" });
@@ -84,11 +70,9 @@ export function AudienceInput(props: AudienceInputProps) {
           </SelectTrigger>
         </DisabledTooltip>
         <SelectContent>
-          {props.mode === "app" && (
-            <SelectItem value="private" disabled={!props.allowPrivate}>
-              {props.privateLabel}
-            </SelectItem>
-          )}
+          <SelectItem value="private" disabled={!props.allowPrivate}>
+            {props.privateLabel}
+          </SelectItem>
           <SelectItem value="groups">Selected groups</SelectItem>
           <SelectItem value="everyone">Everyone in the organization</SelectItem>
         </SelectContent>
@@ -212,26 +196,14 @@ type SharingProps = {
   readonly subject?: string | undefined;
   readonly groups: readonly Group[];
   readonly revision: typeof AccessRevision.Type;
-} & (
-  | {
-      readonly mode: "app";
-      readonly value: typeof AppAudience.Type;
-      readonly allowPrivate: boolean;
-      readonly privateLabel: string;
-      readonly save: (
-        value: typeof AppAudience.Type,
-        revision: typeof AccessRevision.Type,
-      ) => Promise<Exit.Exit<{ readonly revision: typeof AccessRevision.Type }, HostedError>>;
-    }
-  | {
-      readonly mode: "account";
-      readonly value: typeof SharedAudience.Type;
-      readonly save: (
-        value: typeof SharedAudience.Type,
-        revision: typeof AccessRevision.Type,
-      ) => Promise<Exit.Exit<{ readonly revision: typeof AccessRevision.Type }, HostedError>>;
-    }
-);
+  readonly value: typeof AppAudience.Type;
+  readonly allowPrivate: boolean;
+  readonly privateLabel: string;
+  readonly save: (
+    value: typeof AppAudience.Type,
+    revision: typeof AccessRevision.Type,
+  ) => Promise<Exit.Exit<{ readonly revision: typeof AccessRevision.Type }, HostedError>>;
+};
 /** The revision belongs to the edited draft, so a refresh cannot silently permit an overwrite. */
 export function SharingEditor(props: SharingProps) {
   const [error, setError] = useState<string>();
@@ -247,14 +219,11 @@ export function SharingEditor(props: SharingProps) {
       if (props.disabledReason !== undefined) return;
       setError(undefined);
       setSaved(false);
-      let result: Exit.Exit<{ readonly revision: typeof AccessRevision.Type }, HostedError>;
-      if (value.audience.kind === "private") {
-        if (props.mode !== "app" || !props.allowPrivate) {
-          setError("Choose selected groups or everyone in the organization.");
-          return;
-        }
-        result = await props.save(value.audience, value.revision);
-      } else result = await props.save(value.audience, value.revision);
+      if (value.audience.kind === "private" && !props.allowPrivate) {
+        setError("Choose selected groups or everyone in the organization.");
+        return;
+      }
+      const result = await props.save(value.audience, value.revision);
       if (Exit.isFailure(result)) setError(appError(result.cause));
       else {
         formApi.reset({ audience: value.audience, revision: result.value.revision });
@@ -281,41 +250,27 @@ export function SharingEditor(props: SharingProps) {
       }}
     >
       <form.Field name="audience" validators={{ onChange: ({ value }) => audienceError(value) }}>
-        {(field) => {
-          const common = {
-            groups: props.groups,
-            subject: props.subject,
-            disabled: pending,
-            disabledReason: props.disabledReason,
-            onBlur: field.handleBlur,
-            error: field.state.meta.isTouched
-              ? field.state.meta.errors.filter((message) => typeof message === "string").join(" ")
-              : undefined,
-          };
-          return props.mode === "app" ? (
-            <AudienceInput
-              {...common}
-              mode="app"
-              allowPrivate={props.allowPrivate}
-              privateLabel={props.privateLabel}
-              value={field.state.value}
-              onChange={(value) => {
-                field.handleChange(value);
-                setSaved(false);
-              }}
-            />
-          ) : field.state.value.kind !== "private" ? (
-            <AudienceInput
-              {...common}
-              mode="account"
-              value={field.state.value}
-              onChange={(value) => {
-                field.handleChange(value);
-                setSaved(false);
-              }}
-            />
-          ) : null;
-        }}
+        {(field) => (
+          <AudienceInput
+            groups={props.groups}
+            subject={props.subject}
+            disabled={pending}
+            disabledReason={props.disabledReason}
+            onBlur={field.handleBlur}
+            error={
+              field.state.meta.isTouched
+                ? field.state.meta.errors.filter((message) => typeof message === "string").join(" ")
+                : undefined
+            }
+            allowPrivate={props.allowPrivate}
+            privateLabel={props.privateLabel}
+            value={field.state.value}
+            onChange={(value) => {
+              field.handleChange(value);
+              setSaved(false);
+            }}
+          />
+        )}
       </form.Field>
       {error && <SharingFailure message={error} />}
       <div className="flex flex-wrap items-center gap-3">

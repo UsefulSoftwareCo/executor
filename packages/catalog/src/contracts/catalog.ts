@@ -1,5 +1,5 @@
 /** Catalog and onboarding projections, independent of any integration runtime. */
-import { Schema, SchemaGetter, type Effect } from "effect";
+import { Config, Schema, SchemaGetter, type Effect } from "effect";
 import { ApiError } from "@executor-js/utils/api-error";
 import { TemplateErrorCode } from "@executor-js/app-templates/contracts";
 import { AppCopyOrigin, SourceFiles } from "@executor-js/sdk";
@@ -88,6 +88,15 @@ export const PreparedApp = Schema.Struct({
 export type PreparedApp = typeof PreparedApp.Type;
 /** The published official app feed. Hosts that list the official apps read it unless configured otherwise. */
 export const officialCatalogUrl = "https://catalog.executor.sh/index.json";
+/**
+ * `EXECUTOR_CATALOG_URL`, as local and self-host read it: the feed's `index.json`, the official
+ * feed when unset or empty, or `off` for no feed, for an instance without outbound internet.
+ * Without a feed the catalog lists only a host's built-in apps.
+ */
+export const catalogFeedSetting = Config.String("EXECUTOR_CATALOG_URL").pipe(
+  Config.withDefault(officialCatalogUrl),
+  Config.map((value) => (value.trim().toLowerCase() === "off" ? undefined : value)),
+);
 /**
  * The feed's index, as `scripts/feed.ts` in the integrations repository writes it. Icon `src` and
  * `source` are relative to the index's own URL; `source` is always `apps/<id>.json`, which installs

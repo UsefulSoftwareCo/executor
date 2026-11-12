@@ -10,6 +10,7 @@
     "/.well-known/oauth-authorization-server/api/auth",
     "/api/auth/callback/<provider>",
     "/api/oauth/callback, when state starts with x2.",
+    "/oauth/client-metadata.json",
     "/git/*",
     "/ (without a v1 session)",
     "/home",
@@ -31,6 +32,7 @@
     "/authors/*",
     "/og-image.png",
     "/pattern-graph-paper.svg",
+    "/favicon.png",
     "/.well-known/agent-skills/*",
     "/api/00e2e1f082a6ef17/*",
     "/api/fd6fab1fbb4883e1/submit"
@@ -54,6 +56,16 @@
     {
       "method": "GET",
       "target": "/api/oauth/callback?code=c&state=x2.abc",
+      "forwards": true
+    },
+    {
+      "method": "GET",
+      "target": "/oauth/client-metadata.json",
+      "forwards": true
+    },
+    {
+      "method": "GET",
+      "target": "/favicon.png",
       "forwards": true
     },
     {
@@ -239,11 +251,6 @@
     {
       "method": "GET",
       "target": "/api/oauth/callback?code=c",
-      "forwards": false
-    },
-    {
-      "method": "GET",
-      "target": "/oauth/client-metadata.json",
       "forwards": false
     },
     {

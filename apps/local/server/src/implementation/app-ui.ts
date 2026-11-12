@@ -22,7 +22,7 @@ import {
   UiUnauthorized,
   type UiOperation,
 } from "apps/ui/contracts";
-import { appDocument, appAsset, appWatchScript, assetPath, storedAppFile } from "apps/ui/serving";
+import { appDocument, appAsset, appFile, assetPath, storedAppFile } from "apps/ui/serving";
 import { receiveBrowserTelemetry } from "@executor-js/telemetry/http";
 import { currentTraceContext, recordRoute } from "@executor-js/telemetry";
 import { Effect, Option, Result, Schema, Stream } from "effect";
@@ -226,6 +226,12 @@ export const appUi = (
     const app = yield* authorize;
     const { target } = yield* appRequest(config.port);
     const version = yield* readVersion(app);
+    // A file needs no accounts.
+    const file = yield* appFile({
+      origin: target.origin,
+      asset: (path) => readAsset(version.build, path),
+    });
+    if (Option.isSome(file)) return file.value;
     const fix = new URL(`/apps/${app.id}`, dashboard);
     fix.searchParams.set("view", "accounts");
     // The page runs with the app's linked accounts and the linked ones; a plain requirement with
@@ -267,7 +273,6 @@ export const appUi = (
       // The page names the user requirements' accounts, as hosted does; the app's stay with it.
       accountIds: resolution.kind === "resolved" ? resolution.accounts.user : undefined,
       accounts: yield* accountNotice,
-      origin: target.origin,
       version: version.id,
       asset: (path) => readAsset(version.build, path),
     });
@@ -281,15 +286,6 @@ export const appUi = (
         // This handler is registered only for the SPA, so APIs and retained assets never start sign-in.
         if (request.method === "GET" && navigation) return yield* beginSignIn;
         return yield* error;
-      }),
-    ),
-    htmlResponse,
-  );
-  const watch = authorize.pipe(
-    Effect.as(
-      HttpServerResponse.text(appWatchScript, {
-        contentType: "text/javascript",
-        headers: privateHeaders,
       }),
     ),
     htmlResponse,
@@ -320,5 +316,5 @@ export const appUi = (
       ),
       htmlResponse,
     );
-  return { api: uiHandlers, page, asset, versions, watch, authenticated, telemetry };
+  return { api: uiHandlers, page, asset, versions, authenticated, telemetry };
 };

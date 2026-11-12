@@ -1,13 +1,13 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ApiError } from "@executor-js/utils/api-error";
 /** Saved reusable accounts. Products decide access; pending setup lives in account-connection.ts. */
-import { type Effect, Schema } from "effect";
+import { type Effect, Schema, SchemaGetter } from "effect";
 import { StorageError, CredentialsError } from "./shared.ts";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { AccountInfo } from "apps/contracts";
 import type { UiAccountProblem } from "apps/ui/contracts";
 import type { App, AppAccounts } from "./apps.ts";
-import { AccountId, AppId, JsonObject, OwnerId, ProviderId } from "./shared.ts";
+import { AccountId, AppId, JsonObject, OwnerId, ProviderId, WebhookId } from "./shared.ts";
 import { AuthMethodInvalid, AuthMethodName, Provider, ProviderNotFound } from "./provider.ts";
 
 /**
@@ -256,12 +256,78 @@ const ownerQuery = { owner: AccountInputs.get.fields.owner };
  * material on the host. Completion derives identity from that attempt, never
  * from callback-supplied owner/provider IDs.
  */
-/** Keep the provider credentials until subscriptions have completed their upstream cleanup. */
+/** A subscription that still uses an account, and how far its lifecycle has got. */
+export const AccountWebhookDependent = Schema.Struct({
+  app: AppId,
+  subscription: WebhookId,
+  status: Schema.Literals(["pending", "setup-required", "active", "stopping", "disabled"]),
+});
+export type AccountWebhookDependent = typeof AccountWebhookDependent.Type;
+/** The most subscriptions a refusal names. */
+const maxNamedWebhookDependents = 10;
+/**
+ * Every subscription that holds the account, oldest ID first. The SDK lists them all as
+ * `visible`; a product that limits who sees apps and subscriptions keeps the ones the caller may
+ * see and counts the rest as `hidden`, so the refusal never names what the caller can't read.
+ */
+const Dependents = Schema.optionalKey(
+  Schema.Struct({
+    visible: Schema.Array(AccountWebhookDependent),
+    hidden: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  }),
+);
+/**
+ * Declared but not yet sent. Clients and Executor apps that hold an earlier document decode
+ * `AccountWebhooksActive` as a closed object of `account` and `message`, so a new field would
+ * turn this refusal into a generic failure for them. The subscriptions reach them through
+ * `message`; a later release can send this field once cached documents have refreshed.
+ */
+const DependentsField = Dependents.pipe(
+  Schema.decodeTo(Dependents, {
+    decode: SchemaGetter.passthrough(),
+    encode: SchemaGetter.omit(),
+  }),
+);
+const accountWebhooksActive = "Remove this account's webhook subscriptions before deleting it.";
+/**
+ * Keep the provider credentials while a subscription still uses them: its source account, and
+ * while it is live, every account its registration ran with, which removing it needs.
+ */
 export const AccountWebhooksActive = ApiError.define({
   tag: "AccountWebhooksActive",
   status: 409,
-  fields: { account: AccountId },
-  message: "Remove this account's webhook subscriptions before deleting it.",
+  fields: { account: AccountId, dependents: DependentsField },
+  message: ({ dependents }) => {
+    if (dependents === undefined) return accountWebhooksActive;
+    const { visible, hidden } = dependents;
+    const named = visible
+      .slice(0, maxNamedWebhookDependents)
+      .map((item) => `${item.app}/${item.subscription} (${item.status})`)
+      .join(", ");
+    const more = visible.length - maxNamedWebhookDependents;
+    const unseen = `${hidden} webhook ${hidden === 1 ? "subscription" : "subscriptions"} you can't see`;
+    // Removal needs its actor or an app manager, who for a member's subscription must use its source.
+    const removers =
+      hidden === 1
+        ? "Ask the person it runs as, or a manager of its app who can use its source account, to remove it."
+        : "Ask the person each runs as, or a manager of its app who can use its source account, to remove them.";
+    const parts =
+      visible.length === 0
+        ? [
+            `${unseen} ${hidden === 1 ? "uses" : "use"} this account, so it can't be deleted.`,
+            removers,
+          ]
+        : [
+            `Webhook subscriptions still use this account, so it can't be deleted: ${named}${more > 0 ? ` and ${more} more` : ""}.`,
+            "A subscription uses its source account and every account its registration ran with, so its source may be another account.",
+            "Remove each live one with webhooks.remove, or unlink its source account from the app. For a disabled one, remove its webhook at the provider, then confirm with webhooks.confirmRemoval.",
+            ...(hidden === 0
+              ? []
+              : [`${unseen} also ${hidden === 1 ? "uses" : "use"} it.`, removers]),
+          ];
+    return [...parts, "Then delete the account again."].join(" ");
+  },
+  recorded: () => accountWebhooksActive,
 });
 export type AccountWebhooksActive = typeof AccountWebhooksActive.Type;
 

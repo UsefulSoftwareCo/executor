@@ -15,6 +15,7 @@ import {
   SearchTool,
   type McpLimits,
   type ExecutionRejected,
+  type InteractionRecords,
 } from "./execute.ts";
 import { SkillsTool, type SkillDocument } from "./skills.ts";
 
@@ -72,4 +73,10 @@ export interface McpOptions {
    * one, a restart forgets every session and clients initialize again.
    */
   readonly sessions?: (mode: ElicitationMode) => McpServer.SessionStore;
+  /**
+   * Keeps a record of the requests the host issued beyond its memory, so a resume after a restart
+   * says whether its request expired, was answered or was lost with its program. Without one, a
+   * restart forgets them and a late resume reads as `not-found`.
+   */
+  readonly interactions?: InteractionRecords;
 }

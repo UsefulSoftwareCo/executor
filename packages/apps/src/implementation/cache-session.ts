@@ -1,7 +1,30 @@
 /** Worker bridge lifetime for SWR tasks. Foreground response and background completion are separate. */
-import { Effect, Schema } from "effect";
+import { Cause, Effect, Option, Schema } from "effect";
 import { CacheCommand, CacheReply, CacheError } from "@executor-js/app-cache/contracts";
 import type { HostCache } from "../contracts/cache.ts";
+
+/** The refresh budget. A refresh still loading past it fails as `timeout`. */
+const refreshLimit = "30 seconds";
+
+/**
+ * What stopped a background refresh, in fixed words: the loader's own error text never enters the
+ * log. `cache` carries the cache's reason, such as `unavailable` for a load whose lease was gone by
+ * the time it published. A refresh cancelled with its session ends without a log.
+ */
+const refreshFailure = (cause: Cause.Cause<unknown>) => {
+  if (Cause.hasDies(cause)) return { "cache.refresh.failure": "defect" };
+  const error = Cause.findErrorOption(cause);
+  if (Option.isNone(error)) return { "cache.refresh.failure": "interrupted" };
+  if (Cause.isTimeoutError(error.value)) return { "cache.refresh.failure": "timeout" };
+  if (Schema.is(CacheError)(error.value))
+    return {
+      "cache.refresh.failure": "cache",
+      "cache.error.reason": error.value.reason,
+      ...(error.value.limit === undefined ? {} : { "cache.error.limit": error.value.limit }),
+    };
+  if (Schema.isSchemaError(error.value)) return { "cache.refresh.failure": "invalid-value" };
+  return { "cache.refresh.failure": "loader" };
+};
 
 /** Own all refresh promises until drained or cancelled. Only generated trusted bridges create sessions. */
 export const isolatedCacheSession = (callback: (input: unknown) => Promise<unknown>) => {
@@ -27,8 +50,12 @@ export const isolatedCacheSession = (callback: (input: unknown) => Promise<unkno
         // oxlint-disable-next-line executor/authored-code-through-adapter -- Executor's background refresh
         const promise = Effect.runPromiseWith(services)(
           task.pipe(
-            Effect.timeout("30 seconds"),
-            Effect.catchCause(() => Effect.logWarning("App cache refresh failed")),
+            Effect.timeout(refreshLimit),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("App cache refresh failed").pipe(
+                Effect.annotateLogs(refreshFailure(cause)),
+              ),
+            ),
           ),
           { signal: controller.signal },
         ).then(

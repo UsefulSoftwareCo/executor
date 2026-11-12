@@ -22,6 +22,7 @@ import { Failure } from "./components/common.tsx";
 import { LocalDashboard } from "./dashboard-bindings.tsx";
 import { DashboardShell } from "@executor-js/ui/dashboard/shell";
 import { publicDocsBaseUrl } from "@executor-js/ui/contracts/documentation";
+import { documentBuild } from "@executor-js/dashboard-start/document-build";
 import { NameAccountDialog } from "./pages/name-account-dialog.tsx";
 import { OwnerMigrationBanner } from "./owner-migration.tsx";
 
@@ -113,6 +114,10 @@ function Connect({
   );
 }
 
+/** A release names its version; a server started without one, such as development, names none. */
+const buildLabel = (build: string | undefined) =>
+  build === undefined || build === "development" ? "Development" : `v${build}`;
+
 function Dashboard() {
   const section = useMatches({ select: (matches) => matches.at(-1)?.staticData.section });
   const result = useAtomValue(overviewAtom);
@@ -181,7 +186,7 @@ function Dashboard() {
       footer={
         <div className="sidebar-build flex items-center justify-between gap-1.5 py-0 px-[10px] max-[740px]:p-0">
           <span className="sidebar-version text-[10px] opacity-75 max-[740px]:hidden">
-            Development
+            {buildLabel(documentBuild())}
           </span>
         </div>
       }

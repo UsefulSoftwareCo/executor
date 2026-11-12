@@ -59,6 +59,29 @@ and the Bun TypeScript entry points (`src/`). It carries:
   time it peaks at 4-4.7 GB and starts as fast. Rebuilds after an edit and
   deploy builds (`Bundle.build`) do not wait. Drop this part when alchemy
   bounds concurrent first builds itself.
+- **State store probe.** A `/version` probe of the Cloudflare state store
+  that still fails after its retries, or a failed workers.dev subdomain
+  lookup, fails the run. beta.80 read either as "no store", and with `--yes`
+  (every deploy and preview job) bootstrapped a new store over the live one.
+  That replaced `AlchemyStateStoreEncryptionKey` and made every stored entry
+  unreadable. The store now counts as missing only when the probe gets a 404
+  and Cloudflare reports no `alchemy-state-store` Worker. Upstream beta.85
+  behaves the same way; drop this part when upgrading to it.
+- **State recovery.** `ALCHEMY_RECOVER_INSTANCE_IDS` is a JSON object from
+  `<stack>/<stage>/<fqn>` to an instance ID. Where Alchemy would mint an ID
+  for a resource that has no state (the cold-start adoption read and the
+  create), it uses that one instead. A generated physical name ends with the
+  first 16 base32 characters of its resource's instance ID, so a deploy whose
+  records were lost can name every resource exactly as before and adopt it.
+  Without the IDs it creates new Workers beside the live ones, and their new
+  Durable Object namespaces are empty. Derive each ID from the live name by
+  decoding those 16 characters (80 bits) and padding with zero bytes; accept
+  it only when recomputing the name from the stack, logical ID, stage and
+  suffix gives the live name exactly. Pass it through the Deploy workflow's
+  `recover_instance_ids` input after deleting the unreadable records, which
+  also adds `--adopt`. Resources Alchemy cannot read back are created again:
+  `Random` values, PlanetScale roles, Axiom API tokens and monitors. Remove
+  this part once no stage needs recovering.
 
 Upstream beta.80 now provides what the beta.79 patch also carried: storing a
 no-op resource before signalling dependents

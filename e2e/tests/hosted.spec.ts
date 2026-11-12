@@ -122,7 +122,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
                     actor,
                     "POST",
                     connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-                    { destination: { kind: "shared", audience: { kind: "everyone" } } },
+                    {},
                   );
                   expect(connection.status).toBe(200);
                   const { id } = yield* body(Resource, connection);
@@ -146,21 +146,33 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
             "Every record and selection survives an independent read",
             Effect.gen(function* () {
               expect(new Set(ids).size).toBe(count);
-              const start = yield* Clock.currentTimeMillis;
-              const response = yield* api.request(actors.member, "GET", `${prefix}/inventory`);
-              expect(response.status).toBe(200);
-              const inventory = yield* body(Inventory, response),
-                saved = inventory.accounts.filter((account) =>
-                  account.label.startsWith("Scale account "),
-                );
-              expect(saved.map((account) => account.id).sort()).toEqual([...ids].sort());
-              expect(saved.map((account) => account.label).sort()).toEqual(
-                Array.from({ length: count }, (_, row) => `Scale account ${row}`).sort(),
-              );
-              expect(
-                (yield* Clock.currentTimeMillis) - start,
-                "inventory read budget",
-              ).toBeLessThan(5000);
+              // Every saved account belongs to the writer who connected it, so each writer's
+              // inventory lists exactly their own accounts.
+              const inventoryOf = (actor: typeof actors.owner, writer: number) =>
+                Effect.gen(function* () {
+                  const start = yield* Clock.currentTimeMillis;
+                  const response = yield* api.request(actor, "GET", `${prefix}/inventory`);
+                  expect(response.status).toBe(200);
+                  const inventory = yield* body(Inventory, response),
+                    saved = inventory.accounts.filter((account) =>
+                      account.label.startsWith("Scale account "),
+                    );
+                  expect(
+                    (yield* Clock.currentTimeMillis) - start,
+                    "inventory read budget",
+                  ).toBeLessThan(5000);
+                  const rows = Array.from({ length: count }, (_, row) => row).filter(
+                    (row) => row % 2 === writer,
+                  );
+                  expect(saved.map((account) => account.id).sort()).toEqual(
+                    ids.filter((_, row) => row % 2 === writer).sort(),
+                  );
+                  expect(saved.map((account) => account.label).sort()).toEqual(
+                    rows.map((row) => `Scale account ${row}`).sort(),
+                  );
+                });
+              yield* inventoryOf(actors.owner, 0);
+              yield* inventoryOf(actors.admin, 1);
               // Connecting from the app links each account to the app for the writer only.
               const [owner, admin] = yield* Effect.all(
                 [actors.owner, actors.admin].map((actor) =>

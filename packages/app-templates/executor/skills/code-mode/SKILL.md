@@ -106,7 +106,8 @@ arguments or source, and never search their files for tokens. The Executor app
   it. Hosted
   management calls need the organization: call `context.get({})` first and pass
   its `organization` as `path.organization`. For an OAuth sign-in,
-  `accounts.oauthSetup` lists the scopes it will request; tell the user.
+  `accounts.oauthSetup` lists the scopes it will request and the resource
+  indicator it will send; tell the user.
 
 Search for these tools and read their input types first; the connect tools
 require `body`, so pass `body: {}` when it has nothing. Give the user the
@@ -201,14 +202,43 @@ Never rerun an entire `execute` program merely to retry one failed tool.
 - `ToolCallLimitExceeded`, `TimeoutExceeded`: split the work into smaller
   executions.
 
-Calls with outcome `success` took effect, and `interrupted` calls may have.
-Effects are never rolled back. When Executor could not confirm a failed write's
+A remote MCP tool returns its whole result. `isError: true` there means the
+tool says it failed: the call does not throw, and its outcome is `failure`.
+Check `isError` before using such a result. Other fields, such as `ok`, mean
+what the tool's description says.
+
+An outcome of `success` means only that the call returned normally, with no
+tool error reported to Executor. It does not show that the intended action
+happened: check the returned value, such as `isError` or the app's own status
+fields, before treating it as done. `failure` and `interrupted` calls may have
+had effects. Effects are never rolled back. When Executor could not confirm a failed write's
 outcome, its recovery says so: do not repeat it automatically.
 Inside a program, a caught tool error's `message` is the same JSON as
 `response`, so a program can handle expected failures itself.
 
 `status: "capacity-exceeded"` means the server is running too many programs.
 Wait briefly, then retry.
+
+## See images and hear audio
+
+You can look at any image and listen to any audio a tool gives you. Wherever
+the value `call` or `execute` returns holds `{ type: "image", mimeType, data }`
+or `{ type: "audio", mimeType, data }`, at any depth, with `data` in standard or
+URL-safe base64, you receive that block as media, and the JSON shows
+`{ type, mimeType, contentIndex }` in its place; the same block repeated is sent
+once. Screenshots from MCP servers already arrive in that shape. Inside the
+program the block is whole, so its data can be passed to another tool.
+
+When a tool returns the bytes some other way, such as an email attachment as
+`{ base64 }`, return them in that shape from `execute`:
+
+```js
+const file = await tools.gmail.attachment({ messageId, attachmentId });
+return { type: "image", mimeType: "image/png", data: file.base64 };
+```
+
+Never return, read, decode or describe base64 as text; return it as media and
+look.
 
 Send feedback with the Executor app's `feedback.submit` tool when Executor gets
 in your way or something works especially well; the `executor` skill says how.

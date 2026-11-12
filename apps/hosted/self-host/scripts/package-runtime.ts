@@ -264,6 +264,9 @@ const packageRuntime = Effect.gen(function* () {
   // code's pages stay resident. Every deploy and every cold app load creates an isolate, so the
   // process grew by about 9 MB for each app installed and never shrank. Keeping the code is bounded
   // by the modules' size.
+  // `enable_request_signal` aborts a request's signal when its client disconnects. The product's
+  // streamed responses end on it; workerd never cancels a Durable Object's response body itself
+  // (see request-lifetime.ts).
   const config = `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
  memory=(${memory}),
@@ -271,7 +274,7 @@ const config :Workerd.Config = (
  extensions=[(modules=[(name="cloudflare-runtime:workflows-wrapped-binding",internal=true,esModule=embed "@@RUNTIME@@/workflow-binding.mjs")])],
  services=[
   (name="product",worker=(
-   compatibilityDate="2026-09-01",compatibilityFlags=["nodejs_compat","no_brotli_content_encoding"],
+   compatibilityDate="2026-09-01",compatibilityFlags=["nodejs_compat","no_brotli_content_encoding","enable_request_signal"],
    modules=[(name="product.mjs",esModule=embed "@@RUNTIME@@/product.mjs"),(name="executor:pglite.wasm",wasm=embed "@@RUNTIME@@/pglite.wasm"),(name="executor:initdb.wasm",wasm=embed "@@RUNTIME@@/initdb.wasm"),(name="executor:pglite.data",data=embed "@@RUNTIME@@/pglite.data")],
    bindings=[(name="PRODUCT",durableObjectNamespace="ExecutorProduct"),(name="NATIVE",service="native"),(name="LEGACY_DATABASE",service="legacy-data"),(name="BLOBS",service="builds"),(name="DASHBOARD",service="dashboard"),(name="PUBLIC_FETCH",service="public"),(name="PRIVATE_FETCH",service="internet"),(name="MOTEL",service="motel"),(name="SELF",service=(name="product",entrypoint="SelfOrigin")),(name="APPS",service="apps"),(name="UNSAFE_EVAL",unsafeEval=void)],
    durableObjectNamespaces=[(className="ExecutorProduct",uniqueKey="executor-product",enableSql=true,preventEviction=true)],durableObjectStorage=(localDisk="product-data")

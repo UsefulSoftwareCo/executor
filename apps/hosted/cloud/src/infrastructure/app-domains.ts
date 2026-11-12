@@ -10,6 +10,7 @@ import { timingSafeEqual } from "node:crypto";
 import { AppDomainController } from "./app-domain-controller-worker.ts";
 import { appDomainControlSecret } from "./app-domain-control.ts";
 import { cloudAppUiBase } from "../contracts/app-ui.ts";
+import { jobCompleted, jobFailedWith } from "../contracts/job-outcome.ts";
 import { readAppDomainRecord } from "../implementation/app-domain-records.ts";
 
 export const Team = Schema.Struct({ id: OrganizationId, slug: OrganizationSlug });
@@ -99,7 +100,10 @@ export const cloudAppDomains = Effect.gen(function* () {
     status,
     control,
     heartbeat: heartbeat.pipe(
-      Effect.catchCause(() => Effect.logError("App domain heartbeat failed")),
+      Effect.as(jobCompleted),
+      Effect.catchCause((cause) =>
+        Effect.logError("App domain heartbeat failed").pipe(Effect.as(jobFailedWith(cause))),
+      ),
     ),
   };
 });

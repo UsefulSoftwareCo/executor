@@ -132,7 +132,7 @@ export const runStartupDataSteps = <Journal extends DataStepJournal>(
 ) =>
   Effect.gen(function* () {
     const mode = yield* startupDataStepMode;
-    const status = yield* runDataSteps(hostDataSteps(host), {
+    const { status } = yield* runDataSteps(hostDataSteps(host), {
       journal,
       mode,
       report: `startup-${yield* Clock.currentTimeMillis}`,

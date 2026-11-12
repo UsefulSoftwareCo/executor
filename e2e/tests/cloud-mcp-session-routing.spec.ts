@@ -7,6 +7,7 @@
  * unknown session gets, a missing or revoked bearer is refused as before, the previous signing key
  * still verifies and an unknown one does not, the stateless protocol and OAuth refresh keep
  * working, and a session the object no longer holds is not found until the client initializes again.
+ * The gateway's spans name each request's JSON-RPC method and Executor tool from closed sets.
  */
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
@@ -77,15 +78,22 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
               return key;
             });
 
-          /** One MCP POST under its own trace; the answer is JSON or one SSE message. */
-          const post = (input: {
-            readonly credential?: Redacted.Redacted<string> | undefined;
-            readonly session?: string | undefined;
-            readonly protocol?: string;
-            readonly message: Readonly<Record<string, unknown>>;
-            readonly headers?: Readonly<Record<string, string>>;
-            readonly query?: string;
-          }) =>
+          /**
+           * One MCP POST under its own trace; the answer is JSON or one SSE message. A `batch`
+           * sends its messages as one array in place of `message`.
+           */
+          const post = (
+            input: {
+              readonly credential?: Redacted.Redacted<string> | undefined;
+              readonly session?: string | undefined;
+              readonly protocol?: string;
+              readonly headers?: Readonly<Record<string, string>>;
+              readonly query?: string;
+            } & (
+              | { readonly message: Readonly<Record<string, unknown>> }
+              | { readonly batch: ReadonlyArray<Readonly<Record<string, unknown>>> }
+            ),
+          ) =>
             Effect.scoped(
               Effect.gen(function* () {
                 const traceId = randomBytes(16).toString("hex");
@@ -107,7 +115,12 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
                   }),
                 );
                 const response = yield* http.execute(
-                  yield* HttpClientRequest.bodyJson(request, { jsonrpc: "2.0", ...input.message }),
+                  yield* HttpClientRequest.bodyJson(
+                    request,
+                    "batch" in input
+                      ? input.batch.map((message) => ({ jsonrpc: "2.0", ...message }))
+                      : { jsonrpc: "2.0", ...input.message },
+                  ),
                 );
                 const text = yield* response.text;
                 const data = text
@@ -228,6 +241,14 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
           const forwardedAndAnswered = (list: ReadonlyArray<Span>) =>
             objectAnswered(list) &&
             list.some((span) => span.operationName === "mcp.session.forward");
+          /** As above, and the gateway's request span, which can end in a later export, arrived. */
+          const forwardedWithRequest = (list: ReadonlyArray<Span>) =>
+            forwardedAndAnswered(list) &&
+            list.some(
+              (span) =>
+                span.operationName === "mcp.session.forward" &&
+                list.some((parent) => parent.spanId === span.parentSpanId),
+            );
 
           /** A key Alchemy minted for this local Cloud, read from its state. */
           const state = yield* fs
@@ -290,6 +311,124 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
                   .named(trace.object, "mcp.session.request")
                   .map((span) => span.tags["executor.mcp.object_id"]),
               ).toEqual([victim.objectId]);
+            }),
+          );
+
+          yield* evidence.step(
+            "The gateway names each request's JSON-RPC method and Executor tool, never a name the caller chose",
+            Effect.gen(function* () {
+              const chosen = `private_${randomUUID().replaceAll("-", "")}`;
+              const inSession = (message: Readonly<Record<string, unknown>>) =>
+                post({
+                  credential: owner.key,
+                  session: ownerSession.session,
+                  protocol: stateful,
+                  message,
+                });
+              const cases = [
+                { label: "initialize", trace: ownerSession.trace, method: "initialize" },
+                {
+                  label: "a tool listing",
+                  trace: (yield* listTools(owner.key, ownerSession.session)).traceId,
+                  method: "tools/list",
+                },
+                {
+                  label: "an Executor tool's call",
+                  trace: (yield* inSession({
+                    id: 3,
+                    method: "tools/call",
+                    params: { name: "describe", arguments: {} },
+                  })).traceId,
+                  method: "tools/call",
+                  tool: "describe",
+                },
+                {
+                  label: "a call naming a tool Executor lacks",
+                  trace: (yield* inSession({
+                    id: 4,
+                    method: "tools/call",
+                    params: { name: chosen, arguments: { [chosen]: chosen } },
+                  })).traceId,
+                  method: "tools/call",
+                  tool: "other",
+                },
+                {
+                  label: "a notification",
+                  trace: (yield* inSession({
+                    method: "notifications/cancelled",
+                    params: { requestId: 99 },
+                  })).traceId,
+                  method: "notifications/cancelled",
+                },
+                {
+                  label: "a method MCP does not define",
+                  trace: (yield* inSession({ id: 5, method: chosen })).traceId,
+                  method: "other",
+                },
+                // MCP defines these, but only a server sends them, so Executor's server never
+                // takes them from a client.
+                {
+                  label: "a notification only a server sends",
+                  trace: (yield* inSession({
+                    method: "notifications/subscriptions/acknowledged",
+                    params: { notifications: {} },
+                  })).traceId,
+                  method: "other",
+                },
+                {
+                  label: "a request only a server sends",
+                  trace: (yield* inSession({
+                    id: 8,
+                    method: "sampling/createMessage",
+                    params: { messages: [], maxTokens: 1 },
+                  })).traceId,
+                  method: "other",
+                },
+                {
+                  label: "a client's answer to a server request",
+                  trace: (yield* inSession({ id: chosen, result: { action: "cancel" } })).traceId,
+                  method: "response",
+                },
+                {
+                  label: "a batch",
+                  trace: (yield* post({
+                    credential: owner.key,
+                    session: ownerSession.session,
+                    protocol: stateful,
+                    batch: [
+                      { id: 6, method: "ping" },
+                      { id: 7, method: chosen },
+                    ],
+                  })).traceId,
+                  method: "batch",
+                },
+              ];
+              for (const { label, trace: traceId, method, tool } of cases) {
+                const trace = yield* spans(traceId, forwardedWithRequest);
+                const forward = trace.named(trace.gateway, "mcp.session.forward");
+                const server = forward.map((span) =>
+                  trace.all.find((parent) => parent.spanId === span.parentSpanId),
+                );
+                const recorded = (span: Span | undefined) => ({
+                  name: span?.operationName,
+                  system: span?.tags["rpc.system.name"],
+                  method: span?.tags["rpc.method"],
+                  tool: span?.tags["executor.mcp.tool"],
+                });
+                const expected = { system: "jsonrpc", method, tool };
+                expect(forward.map(recorded), label).toEqual([
+                  { name: "mcp.session.forward", ...expected },
+                ]);
+                expect(server.map(recorded), `${label}: the gateway's request span`).toEqual([
+                  { name: "http.server POST", ...expected },
+                ]);
+                expect(
+                  trace.gateway.filter((span) =>
+                    JSON.stringify([span.operationName, span.tags]).includes(chosen),
+                  ),
+                  `${label}: no gateway span records the caller's names`,
+                ).toEqual([]);
+              }
             }),
           );
 

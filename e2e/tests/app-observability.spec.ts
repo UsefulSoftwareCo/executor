@@ -344,6 +344,14 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
         );
         const spans = exported.data.map((row) => row.span);
         expect(spans.some((span) => span.operationName === "sdk.apps.source")).toBe(false);
+        // The live query's runtime spans name its app and the signed-in caller's organization, so
+        // one app's failing subscriptions can be told from the runtime's.
+        if (target.metadata.target === "cloud")
+          for (const name of ["runtime.cloud.query", "runtime.cloud.changes.connect"])
+            expect(spans.find((span) => span.operationName === name)?.tags, name).toMatchObject({
+              "executor.app.id": app.id,
+              "executor.organization.id": actors.organization.id,
+            });
         const assetTrace = yield* telemetry.query(assetTraceId).pipe(
           Effect.flatMap((result) =>
             result.data.some((row) => row.span.operationName === "http.server GET")

@@ -2,6 +2,7 @@
 import { Effect, Layer, type Schema } from "effect";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import { wireRevision, wireRevisionHeader } from "@executor-js/sdk";
 
 /**
  * Server-rendered reads have no page location to resolve relative URLs against, so they address
@@ -13,17 +14,21 @@ export const inProcessOrigin = "http://executor.internal";
 const addressHost = HttpClient.mapRequest((request) =>
   request.url.startsWith("/") ? HttpClientRequest.prependUrl(request, inProcessOrigin) : request,
 );
+/** Every dashboard read states the wire revision this build reads. */
+const stateRevision = HttpClient.mapRequest(
+  HttpClientRequest.setHeader(wireRevisionHeader, String(wireRevision)),
+);
 
 /**
  * Effect's Fetch client with the runtime's `Fetch`: the browser's, or on the server the
  * document's in-process fetch supplied by the dashboard atom runtime.
  */
-export const dashboardHttpClient: Layer.Layer<HttpClient.HttpClient> =
-  typeof window === "undefined"
-    ? Layer.effect(HttpClient.HttpClient, Effect.map(HttpClient.HttpClient, addressHost)).pipe(
-        Layer.provide(FetchHttpClient.layer),
-      )
-    : FetchHttpClient.layer;
+export const dashboardHttpClient: Layer.Layer<HttpClient.HttpClient> = Layer.effect(
+  HttpClient.HttpClient,
+  Effect.map(HttpClient.HttpClient, (client) =>
+    stateRevision(typeof window === "undefined" ? addressHost(client) : client),
+  ),
+).pipe(Layer.provide(FetchHttpClient.layer));
 
 /** A deterministic key for a request, independent of property order. */
 export const requestKey = (value: unknown): string => {

@@ -355,8 +355,22 @@ export const toolsFile = (rules: GeneratedToolRules | undefined) => {
     names?.kind === "lower_snake" && Object.keys(names.overrides ?? {}).length > 0
       ? names.overrides
       : undefined;
-  if (names === undefined && omitted.length === 0 && Object.keys(approvals).length === 0)
+  // A fixed map names every tool the app exposes, so only a live list has tools the rules miss.
+  const otherwise = names?.kind === "map" ? undefined : rules.otherwise;
+  if (
+    names === undefined &&
+    omitted.length === 0 &&
+    Object.keys(approvals).length === 0 &&
+    otherwise === undefined
+  )
     return undefined;
+  const known =
+    otherwise === undefined
+      ? ""
+      : `/** The names the rules decide; the server may list others. */
+const known = new Set<string>(${json([...otherwise.known].sort())})
+
+`;
   const exposed =
     names?.kind === "map"
       ? `const names: Record<string, string> = ${json(
@@ -377,7 +391,9 @@ ${
 const overrides: Record<string, string> = ${json(overrides)}
 `
 }
-/** The name each tool is exposed under. Omitted tools are left out. */
+${known}/** The name each tool is exposed under. Omitted tools are left out${
+          otherwise?.rule === "omitted" ? ", and so are tools the rules do not name" : ""
+        }. */
 export const exposedName = (name: string): string | undefined => {
   const exposed = ${
     names?.kind === "lower_snake"
@@ -388,7 +404,7 @@ export const exposedName = (name: string): string | undefined => {
         ? `name.replace(/^(query|mutation)_/, "$1.")`
         : "name"
   }
-  return omitted.has(exposed) ? undefined : exposed
+  return omitted.has(exposed)${otherwise?.rule === "omitted" ? " || !known.has(exposed)" : ""} ? undefined : exposed
 }
 `;
   return `import { always, never } from "apps/operations/approval"
@@ -398,9 +414,13 @@ const approvals: Record<string, "always" | "never"> = ${json(
     Object.fromEntries(Object.entries(approvals).sort(([a], [b]) => (a < b ? -1 : 1))),
   )}
 
-/** A tool's own approval rule, by exposed name, or undefined to use the app's default. */
+/** A tool's own approval rule, by exposed name, or undefined to use the app's default${
+    otherwise?.rule === "always" ? "; a tool the rules do not name asks always" : ""
+  }. */
 export const approval = (name: string) =>
-  approvals[name] === "always" ? always() : approvals[name] === "never" ? never() : undefined
+  approvals[name] === "always" ? always() : approvals[name] === "never" ? never() : ${
+    otherwise?.rule === "always" ? "known.has(name) ? undefined : always()" : "undefined"
+  }
 `;
 };
 
@@ -429,22 +449,22 @@ const appImports = (names: readonly string[]) =>
 /**
  * The account requirements an app with sign-in methods declares, the factory's parameters for
  * them, the accounts its tools take one of, and the expression for one account's credentials:
- * each member's own accounts (`service`), with `sharedAccounts` also those linked for everyone
+ * each member's own accounts (`service`), with `appLinkedAccounts` also those linked for everyone
  * (`workspace`), and with a fixed account the one account linked for everyone that holds the fixed
  * credentials (`fixed`), sent under the selected account's. An account linked in both scopes is
  * offered once.
  */
-const accountScopes = (options: Pick<ProtocolAppOptions, "sharedAccounts" | "fixedAccount">) => {
-  const shared = options.sharedAccounts === true;
+const accountScopes = (options: Pick<ProtocolAppOptions, "appLinkedAccounts" | "fixedAccount">) => {
+  const linked = options.appLinkedAccounts === true;
   const fixed = options.fixedAccount !== undefined;
   const app = [
-    ...(shared ? ["workspace: provider.many()"] : []),
+    ...(linked ? ["workspace: provider.many()"] : []),
     ...(fixed ? ["fixed: fixedProvider"] : []),
   ];
   return {
     requirements: `{ ${app.length === 0 ? "" : `app: { accounts: { ${app.join(", ")} } }, `}user: { accounts: { service: provider.many() } } }`,
     context: app.length === 0 ? "user" : "app, user",
-    accounts: shared
+    accounts: linked
       ? `[...app.accounts.workspace, ...(user?.accounts.service ?? []).filter((account) => !app.accounts.workspace.some((shared) => shared.id === account.id))]`
       : "user?.accounts.service ?? []",
     /** The provider file's names the app's index imports. */

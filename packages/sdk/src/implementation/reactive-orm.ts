@@ -3,6 +3,7 @@ import { Context, Effect, Option } from "effect";
 import { SqlClient } from "effect/sql";
 import { SqlError, UnknownError } from "effect/sql/SqlError";
 import type { ReactiveStore } from "@executor-js/reactivity";
+import { withFailureAttributes } from "@executor-js/telemetry/failed-span";
 import type { Orm, OrmError } from "fumadb-effect";
 import type { AnySchema, AnyTable } from "fumadb-effect/schema";
 import type { UpsertOptions, TableToColumnValues } from "fumadb-effect/query";
@@ -55,6 +56,23 @@ function writes(
   }
   return [...found];
 }
+
+/**
+ * A failed statement names its operation, its table and the database's kind of failure, for the
+ * span that records it once the failure is a `StorageError`. Never its SQL, values or message.
+ */
+const located = <A>(
+  operation: string,
+  table: PropertyKey,
+  effect: Effect.Effect<A, OrmError, SqlClient.SqlClient>,
+) =>
+  Effect.mapError(effect, (error) =>
+    withFailureAttributes(error, {
+      "executor.storage.operation": operation,
+      "executor.storage.table": String(table),
+      "executor.storage.reason": error._tag === "SqlError" ? error.reason._tag : error.reason,
+    }),
+  );
 
 /**
  * Capture the host driver without starting another Effect runtime. Transactions
@@ -137,21 +155,42 @@ export function bindOrm<S extends AnySchema>(
     options: UpsertOptions<S["tables"][T], boolean>,
   ): Effect.Effect<void | TableToColumnValues<S["tables"][T]>, OrmError> {
     return options.returning === true
-      ? write(table, "onUpdate", orm.upsert(table, { ...options, returning: true }))
-      : write(table, "onUpdate", orm.upsert(table, { ...options, returning: false }));
+      ? write(
+          table,
+          "onUpdate",
+          located("upsert", table, orm.upsert(table, { ...options, returning: true })),
+        )
+      : write(
+          table,
+          "onUpdate",
+          located("upsert", table, orm.upsert(table, { ...options, returning: false })),
+        );
   }
   return {
     schema: orm.schema,
     transaction: (effect) => provide(trackedTransaction(effect)),
-    count: (table, options) => read(table, false, orm.count(table, options)),
+    count: (table, options) =>
+      read(table, false, located("count", table, orm.count(table, options))),
     findFirst: (table, options) =>
-      read(table, options?.join !== undefined, orm.findFirst(table, options)),
+      read(
+        table,
+        options?.join !== undefined,
+        located("findFirst", table, orm.findFirst(table, options)),
+      ),
     findMany: (table, options) =>
-      read(table, options?.join !== undefined, orm.findMany(table, options)),
-    create: (table, values) => write(table, "insert", orm.create(table, values)),
-    createMany: (table, values) => write(table, "insert", orm.createMany(table, values)),
-    updateMany: (table, options) => write(table, "onUpdate", orm.updateMany(table, options)),
-    deleteMany: (table, options) => write(table, "onDelete", orm.deleteMany(table, options)),
+      read(
+        table,
+        options?.join !== undefined,
+        located("findMany", table, orm.findMany(table, options)),
+      ),
+    create: (table, values) =>
+      write(table, "insert", located("create", table, orm.create(table, values))),
+    createMany: (table, values) =>
+      write(table, "insert", located("createMany", table, orm.createMany(table, values))),
+    updateMany: (table, options) =>
+      write(table, "onUpdate", located("updateMany", table, orm.updateMany(table, options))),
+    deleteMany: (table, options) =>
+      write(table, "onDelete", located("deleteMany", table, orm.deleteMany(table, options))),
     upsert,
   };
 }

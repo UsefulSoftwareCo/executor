@@ -20,6 +20,7 @@ const AppProvider = Schema.Struct({
 });
 const Setup = Schema.Struct({
   mode: Schema.Literals(["automatic", "client-required"]),
+  resource: Schema.Struct({ value: Schema.NullOr(Schema.String), source: Schema.String }),
   clients: Schema.Array(Schema.Unknown),
 });
 
@@ -63,8 +64,19 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
             expect(response.status).toBe(200);
             expect(
               Object.keys(yield* body(Schema.Record(Schema.String, Schema.Unknown), response)),
-            ).toEqual(["mode", "scopes", "grant", "issuer", "tokenEndpointAuthMethod", "clients"]);
+            ).toEqual([
+              "mode",
+              "scopes",
+              "resource",
+              "grant",
+              "issuer",
+              "tokenEndpointAuthMethod",
+              "clients",
+            ]);
             const setup = yield* body(Setup, response);
+            // The provider declares no `resource`, so sign-in sends the one the server's
+            // protected-resource metadata names.
+            expect(setup.resource).toEqual({ value: `${issuer.origin}/mcp`, source: "metadata" });
             // No one registered a client for its server, so none is offered.
             expect(setup.clients).toEqual([]);
             return setup;

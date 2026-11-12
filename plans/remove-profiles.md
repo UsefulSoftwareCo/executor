@@ -3,7 +3,9 @@
 Status: implemented. [App accounts](../notes/app-accounts.md) describes the result.
 The link redesign in [app and user accounts](app-and-user-accounts.md) then keyed
 links by requirement and kept app and user links in one table; this plan is
-updated to match.
+updated to match. Hosted shared accounts were removed on November 11, 2026; every
+account is now personal, and app links give every caller one credential. See
+[groups and accounts](../notes/groups-and-accounts.md).
 
 Profiles bundle one subject's account selections, enabled state, setup
 reconciliation and resource ownership for an app. They made every call, MCP
@@ -230,8 +232,8 @@ must resolve keys that only the profile column kept apart.
 
 ## Out of scope
 
-- Creating shared accounts from the UI. Today only the hosted API can, which
-  includes agents using the Executor app.
+- Creating shared accounts from the UI. Shared accounts were later removed
+  (November 11, 2026); app links give every caller one credential.
 - Limiting which hosted operations the Executor app exposes.
 - Team references, exclusions and per-group link scopes.
 

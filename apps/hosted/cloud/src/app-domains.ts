@@ -10,7 +10,10 @@ import { Cause, Clock, DateTime, Effect, Layer, Redacted, Schema, Semaphore } fr
 import { SqlClient } from "effect/sql";
 import { cloudAppUiBase } from "./contracts/app-ui.ts";
 import { AppDomainZoneSettings } from "./contracts/app-domains.ts";
-import { appDomainCertificates } from "./implementation/app-domain-inventory.ts";
+import {
+  appDomainCertificates,
+  type HostCertificates,
+} from "./implementation/app-domain-inventory.ts";
 import { writeAppDomainRecords } from "./implementation/app-domain-records.ts";
 import { appDomainHttpClient } from "./implementation/app-domain-http.ts";
 import { appDomainJournal, appDomainState } from "./implementation/app-domain-state.ts";
@@ -57,6 +60,12 @@ const teamsPerPass = 500;
  * deployment can stop this controller and drain its durable journal.
  */
 const stepTimeout = "60 seconds";
+
+/**
+ * The certificate inventory runs without the lock and reads up to 6,000 packs in about the time of
+ * one page. The bound ends a stalled read, so the pass fails and is retried.
+ */
+const inventoryTimeout = "5 minutes";
 
 const makeAppDomainCoordinator = Effect.gen(function* () {
   const base = yield* cloudAppUiBase.pipe(Effect.orDie);
@@ -155,85 +164,82 @@ const makeAppDomainCoordinator = Effect.gen(function* () {
           );
         });
       }).pipe(Effect.tapCause((cause) => observeDomainFailure("dns", cause)));
-    const reconcile = lock.withPermits(1)(
-      Effect.scoped(
-        Effect.gen(function* () {
-          if (yield* state.storage.get<boolean>("stopped")) return;
-          const zone = yield* configuration;
-          if (suffix !== zone.domain && !suffix.endsWith(`.${zone.domain}`))
-            return yield* Effect.die(new Error("App domain suffix is outside the managed zone"));
-          const teams = yield* withDatabase(
-            Effect.flatMap(SqlClient.SqlClient, (sql) =>
-              sql`select id, slug from organization`.pipe(
-                Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Team))),
-              ),
+    const addressable = (team: typeof Team.Type) => `*.${team.slug}.${suffix}`.length <= 64;
+    /**
+     * Read the desired teams and apply their DNS records. Holds the lock, because the passes read
+     * and write the journal; returns nothing once a drain has stopped this object.
+     */
+    const provision = lock.withPermits(1)(
+      Effect.gen(function* () {
+        if (yield* state.storage.get<boolean>("stopped")) return undefined;
+        const zone = yield* configuration;
+        if (suffix !== zone.domain && !suffix.endsWith(`.${zone.domain}`))
+          return yield* Effect.die(new Error("App domain suffix is outside the managed zone"));
+        const teams = yield* withDatabase(
+          Effect.flatMap(SqlClient.SqlClient, (sql) =>
+            sql`select id, slug from organization`.pipe(
+              Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Team))),
             ),
-          ).pipe(Effect.timeout(stepTimeout));
-          const valid = teams.filter((team) => `*.${team.slug}.${suffix}`.length <= 64);
-          yield* Effect.annotateCurrentSpan("app_domains.teams", teams.length);
-          const apiToken = yield* secret;
-          for (const pass of yield* dnsPasses(valid)) {
-            // A drain marks the object stopped, then waits for the lock this pass holds.
-            if (yield* state.storage.get<boolean>("stopped")) return;
-            yield* pass.pipe(Effect.timeout(stepTimeout));
-          }
-          const certificates =
-            valid.length === 0
-              ? []
-              : yield* appDomainCertificates(zone.id).pipe(
-                  Effect.provideService(
-                    Credentials,
-                    Effect.succeed(apiTokenCredentials({ apiToken: Redacted.value(apiToken) })),
-                  ),
-                  Effect.provide(appDomainHttpClient),
-                  Effect.withSpan("app_domains.certificates"),
-                  Effect.tapCause((cause) => observeDomainFailure("certificates", cause)),
-                  Effect.timeout(stepTimeout),
-                );
-          const now = yield* Clock.currentTimeMillis;
-          yield* Effect.annotateCurrentSpan("app_domains.certificates", certificates.length);
-          const records = teams.map((team) => {
-            const hostname = `*.${team.slug}.${suffix}`;
-            const matching = Array.from(certificates).filter((certificate) =>
-              certificate.hosts?.includes(hostname),
+          ),
+        ).pipe(Effect.timeout(stepTimeout));
+        for (const pass of yield* dnsPasses(teams.filter(addressable))) {
+          // A drain marks the object stopped, then waits for the lock this pass holds.
+          if (yield* state.storage.get<boolean>("stopped")) return undefined;
+          yield* pass.pipe(Effect.timeout(stepTimeout));
+        }
+        return teams;
+      }),
+    );
+    const reconcile = Effect.scoped(
+      Effect.gen(function* () {
+        const teams = yield* provision;
+        if (teams === undefined || (yield* state.storage.get<boolean>("stopped"))) return undefined;
+        yield* Effect.annotateCurrentSpan("app_domains.teams", teams.length);
+        // Certificates and records are observations outside the journal, so they run without the
+        // lock: a drain or resume waits only for DNS work, and the inventory, which grows with the
+        // zone, is not held to the bound of a step under the lock.
+        const zone = yield* configuration;
+        const apiToken = yield* secret;
+        const certificates = !teams.some(addressable)
+          ? new Map<string, HostCertificates>()
+          : yield* appDomainCertificates(zone.id).pipe(
+              Effect.provideService(
+                Credentials,
+                Effect.succeed(apiTokenCredentials({ apiToken: Redacted.value(apiToken) })),
+              ),
+              Effect.provide(appDomainHttpClient),
+              Effect.withSpan("app_domains.certificates"),
+              Effect.tapCause((cause) => observeDomainFailure("certificates", cause)),
+              Effect.timeout(inventoryTimeout),
             );
-            const ready = matching.some(
-              (pack) =>
-                pack.status === "active" &&
-                pack.certificates.some(
-                  (certificate) =>
-                    certificate.status === "active" &&
-                    certificate.hosts.includes(hostname) &&
-                    certificate.expiresOn !== undefined &&
-                    certificate.expiresOn !== null &&
-                    Date.parse(certificate.expiresOn) > now,
-                ),
-            );
-            const failed =
-              hostname.length > 64 ||
-              matching.some((certificate) => certificate.status === "validation_timed_out");
-            const status = ready
-              ? ("ready" as const)
-              : failed
-                ? ("failed" as const)
-                : ("pending" as const);
-            return { organization: team.id, slug: team.slug, status };
-          });
-          yield* withDatabase(writeAppDomainRecords(records, DateTime.makeUnsafe(now))).pipe(
-            Effect.timeout(stepTimeout),
-          );
-          // Observations moved to the database; remove the copies this object used to keep.
-          // Remove this cleanup in a later release, once every stage has completed a pass.
-          yield* state.storage.delete("reconcileError");
-          const legacy = Array.from((yield* state.storage.list({ prefix: "team:" })).keys());
-          if (legacy.length > 0) yield* state.storage.delete(legacy);
-          return records.some((record) => record.status === "pending") ? 15_000 : 300_000;
-        }),
-      ).pipe(
-        Effect.withSpan("app_domains.reconcile"),
-        Effect.catchCause((cause) =>
-          observeDomainFailure("reconcile", cause).pipe(Effect.as(30_000)),
-        ),
+        yield* Effect.annotateCurrentSpan("app_domains.certificate_hosts", certificates.size);
+        const records = teams.map((team) => {
+          const hostname = `*.${team.slug}.${suffix}`;
+          const observed = certificates.get(hostname);
+          const status = observed?.ready
+            ? ("ready" as const)
+            : !addressable(team) || observed?.failed
+              ? ("failed" as const)
+              : ("pending" as const);
+          return { organization: team.id, slug: team.slug, status };
+        });
+        // A drain that started during the inventory is tearing the stage down; write nothing more.
+        if (yield* state.storage.get<boolean>("stopped")) return undefined;
+        const now = yield* Clock.currentTimeMillis;
+        yield* withDatabase(writeAppDomainRecords(records, DateTime.makeUnsafe(now))).pipe(
+          Effect.timeout(stepTimeout),
+        );
+        // Observations moved to the database; remove the copies this object used to keep.
+        // Remove this cleanup in a later release, once every stage has completed a pass.
+        yield* state.storage.delete("reconcileError");
+        const legacy = Array.from((yield* state.storage.list({ prefix: "team:" })).keys());
+        if (legacy.length > 0) yield* state.storage.delete(legacy);
+        return records.some((record) => record.status === "pending") ? 15_000 : 300_000;
+      }),
+    ).pipe(
+      Effect.withSpan("app_domains.reconcile"),
+      Effect.catchCause((cause) =>
+        observeDomainFailure("reconcile", cause).pipe(Effect.as(30_000)),
       ),
     );
     return {

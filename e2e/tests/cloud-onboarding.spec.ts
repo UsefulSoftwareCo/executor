@@ -22,7 +22,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
         expect(yield* onboarding.suggestedTeamName).toBe(identity.companyName);
         expect(yield* onboarding.organizations).toEqual([]);
         const name = yield* onboarding.prepareTeam;
-        const team = yield* onboarding.confirmTeam(name, "connect");
+        const team = yield* onboarding.confirmTeam(name);
         const browser = yield* Browser;
         yield* onboarding.signOut;
         const list = yield* holdOrganizationEntry;
@@ -37,6 +37,17 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
         yield* browser.use("Google returns directly to the existing team's Apps", (page) =>
           page.waitForURL(`**/org/${team.slug}/apps`),
         );
+      }).pipe(Effect.provide(Onboarding.layer)),
+    ),
+  );
+
+  it.effect(scenarios.onboardingAssistant.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const onboarding = yield* Onboarding;
+        yield* onboarding.socialSignIn("github");
+        yield* onboarding.confirmTeam(yield* onboarding.prepareTeam, "connect");
       }).pipe(Effect.provide(Onboarding.layer)),
     ),
   );

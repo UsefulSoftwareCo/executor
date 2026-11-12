@@ -102,6 +102,14 @@ export const V1StaleCategory = Schema.Literals([
 ]);
 export type V1StaleCategory = typeof V1StaleCategory.Type;
 
+/**
+ * How a v1 organization moves into an existing v2 organization the operator listed
+ * (`notes/v1-import.md`, decision 32): with nothing to copy (the default), leaving its v1 data in
+ * v1, or copying it into an organization with nothing set up.
+ */
+export const V1IntoMode = Schema.Literals(["nothing_to_copy", "leave_v1_data", "copy_into_empty"]);
+export type V1IntoMode = typeof V1IntoMode.Type;
+
 const EmailMatch = Schema.Struct({
   email: Schema.String,
   match: Schema.Literals(["merge", "conflict"]),
@@ -114,6 +122,17 @@ const Slug = Schema.Struct({
   v1: Schema.String,
   v2: Schema.NullOr(Schema.String),
   changed: Schema.Boolean,
+  /**
+   * The v2 organization the operator listed to give up the slug (`notes/v1-import.md`, "Slug
+   * displacement"), and its new slug; null, with why, when the displacement does not apply.
+   */
+  displaced: Schema.optionalKey(
+    Schema.Struct({
+      organization: Schema.String,
+      slug: Schema.NullOr(Schema.String),
+      reason: Schema.optionalKey(Schema.String),
+    }),
+  ),
 });
 const IntegrationFailure = Schema.Struct({
   id: Schema.String,
@@ -126,6 +145,8 @@ const DroppedTraceTools = Schema.Struct({
 });
 const ConnectionFailure = Schema.Struct({
   reason: Schema.String,
+  /** The connections move without their account, for their owners to connect again in v2. */
+  reconnect: Schema.optional(Schema.Literal(true)),
   connections: Schema.Array(
     Schema.Struct({ id: Schema.String, label: Schema.String, integration: Schema.String }),
   ),
@@ -185,12 +206,43 @@ const Artifact = Schema.Struct({
   id: Schema.String,
   title: Schema.String,
   unmappedRoles: Schema.Array(Schema.Struct({ role: Schema.String, problem: Schema.String })),
+  /** Why it fails, or would: absent when it moves. */
+  error: Schema.optionalKey(Schema.String),
 });
 const VaultFailure = Schema.Struct({
   id: Schema.String,
   label: Schema.String,
   integration: Schema.String,
   reason: Schema.Literals(["missing", "unavailable"]),
+});
+/**
+ * An integration whose connections' v1 rules differ, which moves as an app per connection
+ * (decision 33): each connection's app, by the connection's row id and name, with what it did or
+ * would do and, when it was generated, how many tools its rules leave out, ask before and run
+ * without asking, and what they do with a tool none of them names.
+ */
+const SplitIntegration = Schema.Struct({
+  id: Schema.String,
+  label: Schema.String,
+  apps: Schema.Array(
+    Schema.Struct({
+      connection: Schema.String,
+      label: Schema.String,
+      owner: Schema.Literals(["org", "user"]),
+      name: Schema.String,
+      status: Schema.Literals(["imported", "planned", "failed", "skipped"]),
+      v2Id: Schema.optionalKey(Schema.String),
+      reason: Schema.optionalKey(Schema.String),
+      rules: Schema.optionalKey(
+        Schema.Struct({
+          omitted: Count,
+          always: Count,
+          never: Count,
+          otherwise: Schema.NullOr(Schema.Literals(["omitted", "always"])),
+        }),
+      ),
+    }),
+  ),
 });
 
 /**
@@ -207,6 +259,30 @@ export const V1ImportVerification = Schema.Struct({
   passed: Schema.Boolean,
 });
 export type V1ImportVerification = typeof V1ImportVerification.Type;
+
+/** How a v1 Team subscription charges, and how its carried-over v2 subscription does. */
+const TeamPricing = Schema.Literals(["per_member", "flat"]);
+
+/**
+ * A paid organization's v1 subscription and its carry-over to v2's Team plan
+ * (`notes/v1-import.md`, "Billing"). `subscription` is null when it does not map; `problem` says
+ * why it cannot carry over, from the mapping or Autumn's preview; `carried` is an import's result.
+ */
+export const V1BillingCarryOver = Schema.Struct({
+  subscription: Schema.NullOr(
+    Schema.Struct({
+      plan: Schema.String,
+      version: Count,
+      pricing: TeamPricing,
+      v2Pricing: TeamPricing,
+      trialing: Schema.Boolean,
+      cancelling: Schema.Boolean,
+    }),
+  ),
+  problem: Schema.NullOr(Schema.String),
+  carried: Schema.optionalKey(Schema.Boolean),
+});
+export type V1BillingCarryOver = typeof V1BillingCarryOver.Type;
 
 /**
  * One organization's report. Its fields are the ones `notes/v1-import.md` lists under "Dry run";
@@ -230,6 +306,19 @@ export const V1OrgReport = Schema.Struct({
   skippedMembers: Schema.Array(SkippedMember),
   /** The v2 slug the organization would take; null when every candidate is taken. */
   slug: Schema.NullOr(Slug),
+  /**
+   * The existing v2 organization the operator listed for it to move into instead of a new one, and
+   * how (`notes/v1-import.md`, decision 32), with why it does not when it may not. Absent when none
+   * is listed.
+   */
+  into: Schema.optionalKey(
+    Schema.Struct({
+      organization: Schema.String,
+      /** The listed mode, null when the allow table names one the import does not know. */
+      mode: Schema.NullOr(V1IntoMode),
+      refused: Schema.optionalKey(Schema.String),
+    }),
+  ),
   integrationFailures: Schema.Array(IntegrationFailure),
   /** v1 TRACE operations' tools, which are dropped and not failures (decision 16). */
   droppedTraceTools: Schema.Array(DroppedTraceTools),
@@ -255,6 +344,10 @@ export const V1OrgReport = Schema.Struct({
   }),
   /** Connections whose secret v1's Vault did not return: missing, or unavailable after retries. */
   vaultFailures: Schema.Array(VaultFailure),
+  /** Integrations that move as an app per connection; absent from reports written before. */
+  splitIntegrations: Schema.optionalKey(Schema.Array(SplitIntegration)),
+  /** A paid organization's subscription carry-over. */
+  billing: Schema.optionalKey(V1BillingCarryOver),
   /** The organization an import moved into. */
   v2Organization: Schema.optionalKey(Schema.Struct({ id: Schema.String, slug: Schema.String })),
   /** An import's cutover check, once it got that far. */
@@ -389,6 +482,8 @@ export const V1ImportAggregate = Schema.Struct({
     ),
   }),
   vaultFailures: Listed(VaultFailure),
+  /** Absent from aggregates combined before integrations moved as an app per connection. */
+  splitIntegrations: Schema.optionalKey(Listed(SplitIntegration)),
 });
 export type V1ImportAggregate = typeof V1ImportAggregate.Type;
 

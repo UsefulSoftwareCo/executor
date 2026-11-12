@@ -6,7 +6,9 @@
  * A record holds only what `initialize` negotiated (version, client capabilities and info) and
  * the log level the client set. It grants nothing: every request is authenticated, and its
  * bearer must name this object, before the protocol server reads a record (`mcp-session.ts`).
- * Programs, approvals and held connections stay in memory and are lost as before.
+ * Programs, approvals and held connections stay in memory: an object holding a program keeps
+ * itself in memory until it ends (`mcp-session.ts`), and a restart still loses it, which the
+ * object's record of issued requests reports (`mcp-interaction-store.ts`).
  *
  * Writes happen on `initialize`, on `logging/setLevel` and once per restore, never on other
  * requests. Reads happen only for a session id the object's memory does not hold.

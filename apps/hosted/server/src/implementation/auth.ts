@@ -1,4 +1,6 @@
 import { apiKeys, apiKeyManagement } from "./api-keys.ts";
+import { requestAuthentication } from "./batch-authentication.ts";
+import { recordNoSession, recordSessionCredential, refuse } from "./auth-telemetry.ts";
 import {
   CurrentUsage,
   isReadMethod,
@@ -15,13 +17,13 @@ import { Config, ErrorReporter, Effect, Layer, Schema } from "effect";
 import { HttpUrl } from "@executor-js/sdk/core";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
-  Authentication,
+  SessionAuthentication,
   AuthenticationUnavailable,
   CurrentPrincipal,
   CurrentUserId,
   Forbidden,
   Principal,
-  RequireUser,
+  RequireBrowserSession,
   Unauthorized,
 } from "../contracts/auth.ts";
 
@@ -31,7 +33,7 @@ import {
  * client metadata document list that exact string, whatever form the operator configured.
  */
 export const accountOAuthRedirectUri = (
-  auth: Pick<typeof Authentication.Service, "origin" | "oauthRedirectUri">,
+  auth: Pick<typeof SessionAuthentication.Service, "origin" | "oauthRedirectUri">,
 ) =>
   HttpUrl.make(
     new URL(auth.oauthRedirectUri ?? new URL("/api/oauth/callback", auth.origin).href).href,
@@ -103,7 +105,8 @@ export const authOptions = (
     ],
     hooks: { before: apiKeyManagement },
     // Session age gates nothing: the account Security page lists sessions however long ago this
-    // browser signed in. Account deletion is disabled; enabling it needs its own confirmation.
+    // browser signed in. Better Auth's user deletion stays disabled: Cloud's `DELETE /api/user`
+    // also removes the product records a user owns.
     session: { cookieCache: { enabled: false }, freshAge: 0 },
     rateLimit: {
       enabled: true,
@@ -126,7 +129,7 @@ export const authOptions = (
 export const sessionPrincipal = (
   session: {
     readonly user: { readonly id: string; readonly name: string };
-    readonly session: { readonly id: string };
+    readonly session: { readonly id: string; readonly impersonatedBy?: string | null | undefined };
   } | null,
 ) =>
   session === null
@@ -135,27 +138,35 @@ export const sessionPrincipal = (
         userId: session.user.id,
         sessionId: session.session.id,
         name: session.user.name,
+        ...(typeof session.session.impersonatedBy === "string"
+          ? { impersonatedBy: session.session.impersonatedBy }
+          : {}),
       }).pipe(Effect.mapError(() => new AuthenticationUnavailable()));
 
 /** Authenticate each request and reject foreign-origin cookie writes. */
-export const requireUserLive = Layer.effect(
-  RequireUser,
+export const requireBrowserSessionLive = Layer.effect(
+  RequireBrowserSession,
   Effect.gen(function* () {
-    const auth = yield* Authentication;
+    const auth = yield* SessionAuthentication;
     return (response, { endpoint, group }) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
         // Browser-only endpoints never fall back from a presented grant to a cookie.
-        if (request.headers.authorization !== undefined) return yield* new Unauthorized();
+        if (request.headers.authorization !== undefined)
+          return yield* refuse("bearer_not_allowed", new Unauthorized());
         if (
           request.method !== "GET" &&
           request.method !== "HEAD" &&
           request.headers.origin !== auth.origin
         ) {
-          return yield* Effect.fail(new Forbidden());
+          return yield* refuse("origin_mismatch", new Forbidden());
         }
-        const principal = yield* auth.current(new Headers(request.headers));
-        if (principal === null) return yield* Effect.fail(new Unauthorized());
+        const identity = yield* requestAuthentication(auth);
+        const headers = new Headers(request.headers);
+        const principal = yield* identity.current(headers);
+        if (principal === null)
+          return yield* Effect.andThen(recordNoSession(headers), Effect.fail(new Unauthorized()));
+        yield* recordSessionCredential(principal);
         const operation = {
           area: group.identifier,
           operation: endpoint.identifier,

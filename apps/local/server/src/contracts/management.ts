@@ -1,7 +1,7 @@
 import { DashboardApi } from "./dashboard.ts";
 import { LocalAppManagementApi, LocalFrameworkApi } from "./app-management.ts";
 /** The local agent-facing API, projected from the contracts that serve its requests. */
-import { ExecutorApi } from "@executor-js/sdk/core";
+import { ExecutorApi, RequestRejection } from "@executor-js/sdk/core";
 import { HttpApi, HttpApiGroup, OpenApi } from "effect/http-api";
 import { AccountConnectApi } from "./account-connections.ts";
 import { LocalWebhookSetupApi } from "./webhook-setup.ts";
@@ -80,6 +80,16 @@ const api = HttpApi.make("local-management")
 
 /** Browser secret exchange, raw delivery, subscriptions and approval protocols are not management tools. */
 export const localManagementDocument = (): OpenApi.OpenAPISpec => {
+  // Agents read each operation's declared errors; an undeclared 400 reaches them without its cause.
+  HttpApi.reflect(api, {
+    onGroup: () => {},
+    onEndpoint: ({ endpoint, group, middleware }) => {
+      if (![...middleware].some((service) => service.key === RequestRejection.key))
+        throw new Error(
+          `Management API endpoint ${group.identifier}.${endpoint.identifier} must declare request rejections.`,
+        );
+    },
+  });
   const document = OpenApi.fromApi(api);
   return {
     ...document,

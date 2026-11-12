@@ -76,6 +76,8 @@ const errorMessage = Match.type<DashboardError>().pipe(
     RegistryError: (error) => message("Public app unavailable", registryErrorMessage(error)),
     AppAccessDenied: () =>
       message("Action unavailable", "You do not have permission to change this app."),
+    FullListingNameRequired: (error) =>
+      message(error.title, `${error.description} ${error.recovery.action}`),
     ConnectionLinkRejected: () =>
       message("This connection link is invalid", "Ask your agent for a new connection link."),
     AccountConnectionNotFound: () =>
@@ -298,6 +300,8 @@ const errorMessage = Match.type<DashboardError>().pipe(
           : error.reason,
       ),
     BuildMemoryExceeded: (error) =>
+      message(error.title, `${error.description} ${error.recovery.action}`),
+    MarkdownUnavailable: (error) =>
       message(error.title, `${error.description} ${error.recovery.action}`),
     CatalogImportFailed: (error) => message("App could not be imported", error.reason),
     HttpClientError: unavailable,

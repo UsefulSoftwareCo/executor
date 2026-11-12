@@ -87,6 +87,27 @@ The agent can call several tools, join the results and return only the part it
 needs. That is the point: the whole result set never has to pass through the
 model's context.
 
+A remote MCP tool returns its whole MCP result: `content`, `structuredContent`
+and `isError`. A server that returns `structuredContent` usually repeats it as
+JSON text in `content`; Executor drops that copy, so read `structuredContent`.
+Other content stays as the server sent it. `isError: true` is the tool saying it failed. The call returns
+that result instead of throwing, so programs that read `isError` keep working,
+and the result's `toolCalls` lists the call with outcome `failure`. The server
+may still have made changes. `call` lists it the same way. An outcome of
+`success` only means no tool error was reported; check the result before
+treating its action as done.
+
+Images and audio reach the agent as media. Wherever the value `execute`, `call`
+or `resume` returns holds `{ type: "image", mimeType, data }` or
+`{ type: "audio", mimeType, data }`, with `data` in standard or URL-safe base64,
+the response carries that block as its own MCP content after the JSON text, once
+even if the value repeats it. The JSON keeps `{ type, mimeType, contentIndex }`
+in its place, the block's index in the response's `content`. MCP image and audio
+results, such as screenshots, already have that shape. A program can show bytes
+a tool returns another way, such as an email attachment's base64, by returning
+them in it. Inside a program the block is whole, so its data can be passed on to
+another tool.
+
 The interpreter has no `fetch`, no `process`, no filesystem, no timers and no
 imports. Its only way out is a tool call, which enters the trusted runtime where your
 credentials live. Limits are cooperative, not process isolation. Discovery is

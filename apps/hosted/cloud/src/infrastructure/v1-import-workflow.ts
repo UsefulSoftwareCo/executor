@@ -8,10 +8,10 @@
  * answers 404, as for any unknown path. No user session reaches these routes.
  */
 import { randomUUID, timingSafeEqual } from "node:crypto";
-import { HostedExecutor, McpAuthentication } from "@executor-js/hosted-server";
+import { HostedExecutor, McpAuthentication, OrganizationId } from "@executor-js/hosted-server";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Cause, Clock, Context, Effect, Option, Predicate, Redacted, Schema } from "effect";
+import { Cause, Clock, Context, Effect, Layer, Option, Predicate, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { V1ImportDatabase, V1ImportUnavailable, V1OrganizationId } from "../contracts/v1-import.ts";
 import {
@@ -40,18 +40,38 @@ import {
   type V1ImportReports,
   type V1ImportStep,
 } from "../implementation/v1-import/run.ts";
+import { repairCopiedAccounts } from "../implementation/v1-import/copied-accounts.ts";
+import { AppRestore, repairOrganization, restoreApp } from "../implementation/v1-import/repair.ts";
 import { makeV1Source } from "../implementation/v1-import/source.ts";
 import { V1MovedState } from "../implementation/v1-import/moved-flag.ts";
+import { existingOrganization } from "../implementation/v1-import/identity.ts";
+import { removeImported } from "../implementation/v1-import/rollback.ts";
 import { makeImportStore } from "../implementation/v1-import/store.ts";
 import { importRefusal, movedFlag, writesRefused } from "../implementation/v1-import/writes.ts";
 import { AppBuilds } from "./blobs.ts";
+import { cloudBackgroundJobs } from "./background-jobs.ts";
+import { AutumnClient } from "../contracts/autumn.ts";
+import { BillingMeter } from "../contracts/billing-meter.ts";
+import { autumnLive, autumnReads } from "../implementation/autumn-client.ts";
+import {
+  returnBilling,
+  v1TeamPlan,
+  type V1ImportBilling,
+} from "../implementation/v1-import/billing.ts";
 import type { V1ImportSettings } from "./onboarding.ts";
+
+/** The background jobs the importer asks the placed handler to run. */
+type BackgroundJobs = Effect.Success<typeof cloudBackgroundJobs>;
 
 /** The importer this deployment runs, with where it keeps reports; none where v1 is unreachable. */
 export class V1ImportConfiguration extends Context.Service<
   V1ImportConfiguration,
   Option.Option<{ readonly settings: V1ImportSettings; readonly reports: V1ImportReports }>
 >()("cloud/V1ImportConfiguration") {}
+
+const HoldStates = Schema.Array(
+  Schema.Struct({ state: Schema.Literals(["held", "carried", "returned"]) }),
+);
 
 /** Reports in the private `AppBuilds` bucket. Bind during Worker initialization. */
 export const cloudV1ImportReports = Effect.gen(function* () {
@@ -162,6 +182,55 @@ const runner =
       ),
     );
 
+/**
+ * v2's billing for a carry-over: its Autumn, with the v1 import's patient reads, its catalog, and
+ * its seat sync. None where the settings have none.
+ */
+const importBilling = (settings: V1ImportSettings, meter: BillingMeter["Service"]) =>
+  Option.map(settings.billing, (billing) =>
+    Effect.gen(function* () {
+      const { options, catalog } = yield* billing;
+      const autumn = yield* AutumnClient.pipe(
+        Effect.provide(
+          autumnLive(options, autumnReads.patient).pipe(Layer.provide(FetchHttpClient.layer)),
+        ),
+      );
+      return {
+        autumn,
+        catalog,
+        v1TeamPlan,
+        syncSeats: meter.syncSeats,
+      } satisfies V1ImportBilling;
+    }),
+  );
+
+/** The importer's environment for a run or a repair, from the deployment's settings. */
+const importEnvironment = (
+  settings: V1ImportSettings,
+  reports: V1ImportReports,
+  connections: McpAuthentication["Service"]["connections"],
+  meter: BillingMeter["Service"],
+  jobs: BackgroundJobs,
+) =>
+  V1ImportEnvironment.of({
+    source: settings.source.pipe(
+      Effect.flatMap(makeV1Source),
+      Effect.provide(FetchHttpClient.layer),
+      Effect.mapError(() => new V1ImportUnavailable()),
+    ),
+    connections,
+    reports,
+    writes: settings.writes,
+    freezeSettleSeconds: settings.freezeSettleSeconds,
+    v1FirstPartyClients: settings.v1FirstPartyClients,
+    slugKey: settings.slugKey,
+    billing: importBilling(settings, meter),
+    // A workflow step is not placed: the placed handler dispatches, as the minute job does.
+    startProvisioning: jobs
+      .request("provisioning")
+      .pipe(Effect.mapError(() => new V1ImportUnavailable())),
+  });
+
 export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
   "V1Import",
   // An organization's integrations, toolkits and artifacts each take a step.
@@ -170,33 +239,29 @@ export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
     const reportErrors = yield* cloudSentry;
     // Only these services: the Worker's context also holds its own scope, which a run must not take.
     const services = yield* Effect.context<
-      HostedExecutor | V1ImportDatabase | McpAuthentication | V1ImportConfiguration
+      HostedExecutor | V1ImportDatabase | McpAuthentication | V1ImportConfiguration | BillingMeter
     >().pipe(
       Effect.map(
-        Context.pick(HostedExecutor, V1ImportDatabase, McpAuthentication, V1ImportConfiguration),
+        Context.pick(
+          HostedExecutor,
+          V1ImportDatabase,
+          McpAuthentication,
+          V1ImportConfiguration,
+          BillingMeter,
+        ),
       ),
     );
     const configuration = Context.get(services, V1ImportConfiguration);
     const connections = Context.get(services, McpAuthentication).connections;
+    const meter = Context.get(services, BillingMeter);
+    const jobs = yield* cloudBackgroundJobs;
     return (input: unknown) =>
       Effect.gen(function* () {
         const params = yield* Schema.decodeUnknownEffect(V1ImportParams)(input);
         if (Option.isNone(configuration))
           return yield* Effect.die(new Error("This deployment has no v1 importer."));
         const { settings, reports } = configuration.value;
-        const environment = V1ImportEnvironment.of({
-          source: settings.source.pipe(
-            Effect.flatMap(makeV1Source),
-            Effect.provide(FetchHttpClient.layer),
-            Effect.mapError(() => new V1ImportUnavailable()),
-          ),
-          connections,
-          reports,
-          writes: settings.writes,
-          freezeSettleSeconds: settings.freezeSettleSeconds,
-          v1FirstPartyClients: settings.v1FirstPartyClients,
-          slugKey: settings.slugKey,
-        });
+        const environment = importEnvironment(settings, reports, connections, meter, jobs);
         return yield* runV1Import(params, runner(params, settings.stepRetries), (name, seconds) =>
           Cloudflare.Workflows.sleep(name, seconds * 1000),
         ).pipe(
@@ -216,6 +281,9 @@ export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
 
 type Workflow = Effect.Success<typeof V1ImportWorkflow>;
 
+/** A repair request: whether to apply it, or only plan it (the default). */
+const RepairRequest = Schema.Struct({ apply: Schema.optional(Schema.Boolean) });
+
 /** How long one Workflows call may take before it counts as refused (see organization removal). */
 const callDeadline = "3 seconds";
 
@@ -227,6 +295,15 @@ const notFound = Effect.succeed(HttpServerResponse.empty({ status: 404 }));
 
 /** Instance states that will not write a report without a person restarting them. */
 const stopped = new Set(["errored", "terminated"]);
+
+/** Whether reading an instance failed because Workflows does not know it (`instance.not_found`). */
+const instanceNotFound = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause);
+  const inner = Predicate.hasProperty(error, "cause") ? error.cause : undefined;
+  return [error, inner].some(
+    (candidate) => candidate instanceof Error && candidate.message.includes("instance.not_found"),
+  );
+};
 
 /**
  * How long after its start an instance whose state cannot be read still counts as running. Past
@@ -259,8 +336,17 @@ const aggregationId = /^[0-9a-f]{32}$/u;
  *   The token alone allows no organization.
  * - `GET /api/internal/v1-import/runs/:run/orgs/:organization` returns one organization's report
  *   and its instance's status.
+ * - `POST /api/internal/v1-import/orgs/:organization/return-billing` gives a paid organization's
+ *   subscription back to v1 before its v2 organization is deleted (see `giveBillingBack`).
  * - `POST /api/internal/v1-import/orgs/:organization/rollback` gives an organization back to v1
  *   after its v2 organization was deleted (see `rollback`).
+ * - `POST /api/internal/v1-import/orgs/:organization/repair` deploys a moved organization's MCP
+ *   apps with v1's approval stamps as rules, or with `{"apply": false}` plans it (see `repair`).
+ * - `POST /api/internal/v1-import/orgs/:organization/restore` runs an earlier version of one of its
+ *   imported apps again, while the app still runs the version named (see `restore`).
+ * - `POST /api/internal/v1-import/orgs/:organization/accounts` brings the accounts of an
+ *   organization the opt-in import copied before it moved up to date with v1's final tokens and
+ *   their apps' providers (see `accounts`).
  * - `POST /api/internal/v1-import/runs/:run/aggregate[?cursor=…][&limit=…]` combines a page of a
  *   run's reports (at most 200, or `limit`) into the aggregate so far and returns the cursor of the next page; the last page
  *   writes `v1-import/runs/<run>/aggregate.json` and returns it. `complete` is false while any
@@ -270,6 +356,7 @@ const aggregationId = /^[0-9a-f]{32}$/u;
 export const v1ImportRoutes = (workflow: Workflow) =>
   Effect.gen(function* () {
     const configuration = yield* V1ImportConfiguration;
+    const jobs = yield* cloudBackgroundJobs;
     const authorized = Effect.gen(function* () {
       if (Option.isNone(configuration)) return Option.none();
       const token = configuration.value.settings.operatorToken;
@@ -288,6 +375,30 @@ export const v1ImportRoutes = (workflow: Workflow) =>
         Effect.map((state): string => state.status),
         Effect.timeout(callDeadline),
         Effect.catchCause(() => Effect.succeed("unknown")),
+      );
+
+    /**
+     * Whether an organization's import instance has stopped, for the routes that change an
+     * organization only after its import ended. Workflows forgets an instance some time after it
+     * ends, so one it no longer knows (`instance.not_found`) has stopped too; an organization
+     * imported before that retention could otherwise never be rolled back or repaired. Any other
+     * failure to read it is `unknown` and refuses.
+     */
+    const settled = (instance: string) =>
+      workflow.get(instance).pipe(
+        Effect.flatMap((run) => run.status()),
+        Effect.map((state) => ({
+          state: state.status as string,
+          stopped: stopped.has(state.status) || state.status === "complete",
+        })),
+        Effect.timeout(callDeadline),
+        Effect.catchCause((cause) =>
+          Effect.succeed(
+            instanceNotFound(cause)
+              ? { state: "gone", stopped: true }
+              : { state: "unknown", stopped: false },
+          ),
+        ),
       );
 
     const create = (params: V1ImportParams) => {
@@ -589,9 +700,26 @@ export const v1ImportRoutes = (workflow: Workflow) =>
      * Give a frozen or moved organization back to v1: its moved flag becomes `rolled_back`, so v1
      * serves it as before, its state row `rolled_back`, and its import map rows go, except users,
      * which stay mapped for their other organizations. Refused while its import instance runs, and
-     * while its v2 organization still exists: its imported grants would renew beside v1's, and a
-     * refresh token must be used by only one of them. Delete the v2 organization first.
+     * while a v2 organization the import created still exists: its imported grants would renew
+     * beside v1's, and a refresh token must be used by only one of them. Delete the v2 organization
+     * first. One moved into an existing v2 organization (decision 32) keeps it: the rollback removes
+     * only what the import added to it (`removeImported`), once a carried-over subscription went
+     * back to v1 (`return-billing`).
      */
+    /** The state of the billing hold a v1 organization's import put on a v2 organization, if any. */
+    const billingHoldOf = (target: string, organization: string) =>
+      Effect.gen(function* () {
+        const sql = yield* Effect.flatten(V1ImportDatabase);
+        const rows = yield* sql`
+          select state from private_v1_import_billing
+          where organization_id = ${target} and v1_org_id = ${organization}
+        `.pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(HoldStates)),
+          Effect.mapError(() => new V1ImportUnavailable()),
+        );
+        return rows[0]?.state;
+      });
+
     const rollback = Effect.gen(function* () {
       const found = yield* authorized;
       if (Option.isNone(found)) return yield* notFound;
@@ -605,19 +733,39 @@ export const v1ImportRoutes = (workflow: Workflow) =>
       );
       if (Option.isNone(decoded)) return yield* json(400, { error: "invalid organization" });
       const organization = decoded.value;
-      const state = yield* status(organization);
-      if (state === "unknown" || !(stopped.has(state) || state === "complete"))
+      const { state, stopped: ended } = yield* settled(organization);
+      if (!ended)
         return yield* json(409, {
           error: `Its import instance is ${state}; roll it back once it has stopped.`,
         });
       const sql = yield* Effect.flatten(V1ImportDatabase);
       const store = makeImportStore(sql);
       const recorded = yield* store.find("organization", organization);
-      if (recorded?.status === "imported" && recorded.v2_id !== null) {
+      let into: { readonly organization: string; readonly removed: unknown } | undefined;
+      if (recorded?.v2_kind === existingOrganization && recorded.v2_id !== null) {
+        const hold = yield* billingHoldOf(recorded.v2_id, organization);
+        if (hold === "carried")
+          return yield* json(409, {
+            error:
+              "Its v1 subscription carried over to its v2 organization. Give it back first (return-billing).",
+          });
+        if (hold === "held")
+          return yield* json(409, {
+            error:
+              "Its v2 organization's billing is held for a carry-over that did not finish. Give it back first (return-billing), or delete its private_v1_import_billing row once Autumn shows nothing carried over.",
+          });
+        const removal = yield* removeImported(
+          organization,
+          OrganizationId.make(recorded.v2_id),
+          (yield* McpAuthentication).connections,
+        );
+        if ("refused" in removal) return yield* json(409, { error: removal.refused });
+        into = { organization: recorded.v2_id, removed: removal.removed };
+      } else if (recorded?.status === "imported" && recorded.v2_id !== null) {
         const target = yield* store.target(recorded.v2_id);
         if (target !== undefined)
           return yield* json(409, {
-            error: `Its v2 organization ${target.slug} still exists. Delete it in v2 first, so its imported grants never renew beside v1's.`,
+            error: `Its v2 organization ${target.slug} still exists. Delete it in v2 first, so its imported grants never renew beside v1's. A paid organization's billing goes back first (return-billing), or deleting it cancels the subscription.`,
           });
       }
       yield* flag.set(organization, V1MovedState.RolledBack());
@@ -632,10 +780,21 @@ export const v1ImportRoutes = (workflow: Workflow) =>
               update private_v1_import_org set state = 'rolled_back', updated_at = now()
               where v1_org_id = ${organization}
             `;
+            // A subscription given back is v1's again; the existing organization bills as before.
+            if (into !== undefined)
+              yield* sql`
+                delete from private_v1_import_billing
+                where organization_id = ${into.organization} and v1_org_id = ${organization}
+                  and state = 'returned'
+              `;
           }),
         )
         .pipe(Effect.mapError(() => new V1ImportUnavailable()));
-      return yield* json(200, { organization, state: "rolled_back" });
+      return yield* json(200, {
+        organization,
+        state: "rolled_back",
+        ...(into === undefined ? {} : { removed: into.removed }),
+      });
     }).pipe(
       Effect.catchCause((cause) =>
         Cause.hasInterrupts(cause)
@@ -646,5 +805,190 @@ export const v1ImportRoutes = (workflow: Workflow) =>
       ),
     );
 
-    return { start, report, aggregate, rollback };
+    /**
+     * Give a paid organization's subscription back to v1 (`returnBilling`): v1's Team plan in
+     * place of v2's on the same Stripe subscription, and v1's customer id again. Run it before
+     * the v2 organization is deleted: deleting an organization whose billing carried over cancels
+     * its subscription, while one whose billing was returned cancels nothing. Needs the write
+     * switch, and is refused while the organization's import instance runs. Running it again
+     * after it finished changes nothing.
+     */
+    const giveBillingBack = Effect.gen(function* () {
+      const found = yield* authorized;
+      if (Option.isNone(found)) return yield* notFound;
+      const { settings } = found.value;
+      const refused = writesRefused(settings.writes);
+      if (refused !== undefined) return yield* json(409, { error: refused });
+      if (Option.isNone(settings.billing))
+        return yield* json(409, { error: "This deployment cannot change v1's billing." });
+      const decoded = Schema.decodeUnknownOption(V1OrganizationId)(
+        (yield* HttpRouter.params).organization,
+      );
+      if (Option.isNone(decoded)) return yield* json(400, { error: "invalid organization" });
+      const organization = decoded.value;
+      const { state, stopped: ended } = yield* settled(organization);
+      if (!ended)
+        return yield* json(409, {
+          error: `Its import instance is ${state}; return its billing once it has stopped.`,
+        });
+      const sql = yield* Effect.flatten(V1ImportDatabase);
+      const recorded = yield* makeImportStore(sql).find("organization", organization);
+      if (recorded?.status !== "imported" || recorded.v2_id === null)
+        return yield* json(409, { error: "The import recorded no v2 organization for it." });
+      // An existing organization's billing carried over only from a copy of this organization.
+      if (
+        recorded.v2_kind === existingOrganization &&
+        (yield* billingHoldOf(recorded.v2_id, organization)) === undefined
+      )
+        return yield* json(409, {
+          error: "It moved into an existing v2 organization, and no billing carried over.",
+        });
+      const billing = importBilling(settings, yield* BillingMeter);
+      if (Option.isNone(billing))
+        return yield* json(409, { error: "This deployment cannot change v1's billing." });
+      const outcome = yield* returnBilling({
+        billing: yield* billing.value,
+        sql,
+        organization: OrganizationId.make(recorded.v2_id),
+      }).pipe(
+        Effect.as({ returned: true as const }),
+        Effect.catchTag("CarryOverRefused", (error) =>
+          Effect.succeed({ returned: false as const, reason: error.reason }),
+        ),
+      );
+      return yield* outcome.returned
+        ? json(200, { organization, billing: "returned" })
+        : json(409, { error: outcome.reason });
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logError("v1 import billing return failed", cause).pipe(
+              Effect.andThen(json(503, { error: "unavailable" })),
+            ),
+      ),
+    );
+
+    /**
+     * Repair one moved organization as `repairOrganization` says: deploy its MCP apps with v1's
+     * approval stamps as their own rules.
+     * The body's `apply` defaults to false, which plans the repair and writes nothing. Applying
+     * needs the deployment's write switch, and is refused while the organization's import
+     * instance runs. The answer lists every change, made or planned, and what it left alone.
+     */
+    const repair = Effect.gen(function* () {
+      const found = yield* authorized;
+      if (Option.isNone(found)) return yield* notFound;
+      const { settings, reports } = found.value;
+      const decoded = Schema.decodeUnknownOption(V1OrganizationId)(
+        (yield* HttpRouter.params).organization,
+      );
+      if (Option.isNone(decoded)) return yield* json(400, { error: "invalid organization" });
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const body = yield* request.json.pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(RepairRequest)),
+        Effect.option,
+      );
+      if (Option.isNone(body)) return yield* json(400, { error: "invalid body" });
+      const apply = body.value.apply === true;
+      if (apply) {
+        const refused = writesRefused(settings.writes);
+        if (refused !== undefined) return yield* json(409, { error: refused });
+        const { state, stopped: ended } = yield* settled(decoded.value);
+        if (!ended)
+          return yield* json(409, {
+            error: `Its import instance is ${state}; repair it once it has stopped.`,
+          });
+      }
+      const connections = (yield* McpAuthentication).connections;
+      const result = yield* repairOrganization(decoded.value, apply).pipe(
+        Effect.scoped,
+        Effect.provideService(
+          V1ImportEnvironment,
+          importEnvironment(settings, reports, connections, yield* BillingMeter, jobs),
+        ),
+      );
+      return yield* json(200, result);
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logError("v1 import repair failed", cause).pipe(
+              Effect.andThen(json(503, { error: "unavailable" })),
+            ),
+      ),
+    );
+
+    /**
+     * Run an earlier version of one of the organization's imported apps again as `restoreApp`
+     * says, while the app still runs `expected`. It needs the deployment's write switch. The answer
+     * says whether it did, or why not.
+     */
+    const restore = Effect.gen(function* () {
+      const found = yield* authorized;
+      if (Option.isNone(found)) return yield* notFound;
+      const decoded = Schema.decodeUnknownOption(V1OrganizationId)(
+        (yield* HttpRouter.params).organization,
+      );
+      if (Option.isNone(decoded)) return yield* json(400, { error: "invalid organization" });
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const body = yield* request.json.pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(AppRestore)),
+        Effect.option,
+      );
+      if (Option.isNone(body)) return yield* json(400, { error: "invalid body" });
+      const refused = writesRefused(found.value.settings.writes);
+      if (refused !== undefined) return yield* json(409, { error: refused });
+      const result = yield* restoreApp(decoded.value, body.value);
+      return yield* json(result.status === "restored" ? 200 : 409, result);
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logError("v1 import restore failed", cause).pipe(
+              Effect.andThen(json(503, { error: "unavailable" })),
+            ),
+      ),
+    );
+
+    /**
+     * Repair the copied accounts of one organization that cut over as `repairCopiedAccounts` says.
+     * It needs the deployment's write switch, and is refused while the organization's import
+     * instance runs. The answer lists each copied account and what changed.
+     */
+    const accounts = Effect.gen(function* () {
+      const found = yield* authorized;
+      if (Option.isNone(found)) return yield* notFound;
+      const { settings, reports } = found.value;
+      const decoded = Schema.decodeUnknownOption(V1OrganizationId)(
+        (yield* HttpRouter.params).organization,
+      );
+      if (Option.isNone(decoded)) return yield* json(400, { error: "invalid organization" });
+      const refused = writesRefused(settings.writes);
+      if (refused !== undefined) return yield* json(409, { error: refused });
+      const { state, stopped: ended } = yield* settled(decoded.value);
+      if (!ended)
+        return yield* json(409, {
+          error: `Its import instance is ${state}; repair it once it has stopped.`,
+        });
+      const connections = (yield* McpAuthentication).connections;
+      const result = yield* repairCopiedAccounts(decoded.value).pipe(
+        Effect.scoped,
+        Effect.provideService(
+          V1ImportEnvironment,
+          importEnvironment(settings, reports, connections, yield* BillingMeter, jobs),
+        ),
+      );
+      return yield* json(200, result);
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logError("v1 import account repair failed", cause).pipe(
+              Effect.andThen(json(503, { error: "unavailable" })),
+            ),
+      ),
+    );
+
+    return { start, report, aggregate, rollback, repair, restore, accounts, giveBillingBack };
   });

@@ -72,14 +72,14 @@ export interface UpgradeOptions {
 }
 
 /**
- * Each package manager's global install. npm can skip the optional dependency that carries the
- * native runtime, which leaves a launcher that cannot start, so it must be asked to include it.
+ * Each package manager's global install. It installs only the launcher, which downloads the
+ * release's runtime the first time it starts.
  */
 const installArgs = (method: GlobalInstaller, version: string): ReadonlyArray<string> => {
   const spec = `executor@${version}`;
   switch (method) {
     case "npm":
-      return ["install", "-g", spec, "--include=optional"];
+      return ["install", "-g", spec];
     case "pnpm":
       return ["add", "-g", spec];
     case "bun":
@@ -402,7 +402,7 @@ const rollback = (options: UpgradeOptions, host: UpgradeHost) =>
     if (Option.isNone(install))
       return yield* failed(
         "not-standalone",
-        "Only an install from the Executor install script keeps a previous version to roll back to. Install the version you want with the package manager you used, such as: npm install -g executor@<version> --include=optional. Nothing was changed.",
+        "Only an install from the Executor install script keeps a previous version to roll back to. Install the version you want with the package manager you used, such as: npm install -g executor@<version>. Nothing was changed.",
       );
     const previous = yield* linkedVersion(install.value.root, "previous");
     if (Option.isNone(previous))
@@ -472,7 +472,7 @@ export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
     if (Option.isNone(current))
       return yield* failed(
         "development-build",
-        "This is a development build of Executor without a release version, so it cannot upgrade itself. Install a release with: npm install -g executor@beta --include=optional",
+        "This is a development build of Executor without a release version, so it cannot upgrade itself. Install a release with: npm install -g executor@beta",
       );
 
     const registry = yield* npmRegistry;
@@ -530,7 +530,7 @@ export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
       if (Option.isNone(install))
         return yield* failed(
           "not-standalone",
-          `${host.executable} is not in an install script's versions directory, so executor upgrade cannot replace it. Reinstall with the Executor install script, or with npm: npm install -g executor@${target} --include=optional. Nothing was changed.`,
+          `${host.executable} is not in an install script's versions directory, so executor upgrade cannot replace it. Reinstall with the Executor install script, or with npm: npm install -g executor@${target}. Nothing was changed.`,
         );
       if (compareReleaseVersions(target, current.value) < 0)
         yield* confirm(
@@ -642,10 +642,14 @@ export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
             "verify-failed",
             `${method} installed Executor v${target}, but ${detail} Run \`${host.platform === "win32" ? "where.exe executor" : "type -a executor"}\` to see which executable your shell starts, or reinstall with: ${command}`,
           );
+        // The new launcher's first start downloads and checks its release's runtime.
+        yield* Console.log(
+          `Starting Executor v${target}. Its first start downloads the runtime for this platform.`,
+        );
         const check = yield* runInstalled(
           onPath(host.platform),
           ["--version"],
-          Duration.seconds(60),
+          Duration.minutes(15),
         ).pipe(Effect.result);
         if (Result.isFailure(check))
           return yield* verify("`executor --version` could not be started.");

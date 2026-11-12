@@ -59,6 +59,38 @@ const GoogleProvider = Schema.Struct({ ...Provider.fields, discovery: GoogleDisc
 
 /** The fields of v1 WorkOS listings that seeding reads back. */
 const V1Users = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.String })) });
+
+/** An Autumn customer as `customers.get` returns it with `subscriptions.plan` expanded. */
+const AutumnCustomer = Schema.Struct({
+  id: Schema.String,
+  subscriptions: Schema.Array(
+    Schema.Struct({
+      plan_id: Schema.String,
+      status: Schema.String,
+      current_period_end: Schema.NullOr(Schema.Number),
+      trial_ends_at: Schema.NullOr(Schema.Number),
+      canceled_at: Schema.NullOr(Schema.Number),
+      expires_at: Schema.NullOr(Schema.Number),
+      plan: Schema.optionalKey(
+        Schema.Struct({
+          id: Schema.String,
+          version: Schema.Number,
+          price: Schema.NullOr(Schema.Struct({ amount: Schema.Number, interval: Schema.String })),
+          items: Schema.Array(
+            Schema.Struct({ feature_id: Schema.String, unlimited: Schema.Boolean }),
+          ),
+        }),
+      ),
+    }),
+  ),
+  balances: Schema.Record(
+    Schema.String,
+    Schema.Struct({ usage: Schema.Number, unlimited: Schema.Boolean }),
+  ),
+});
+export type AutumnCustomer = typeof AutumnCustomer.Type;
+
+const DAY_MS = 86_400_000;
 const V1Organization = Schema.Struct({ metadata: Schema.Record(Schema.String, Schema.String) });
 const V1Memberships = Schema.Struct({
   data: Schema.Array(
@@ -658,7 +690,7 @@ const make = Effect.gen(function* () {
         ),
       ),
     /** Bill a v1 organization on a v1 plan, as v1 does: the Autumn customer id is its WorkOS id. */
-    v1Plan: (organizationId: string, planId: "free" | "team" | "enterprise") =>
+    v1Plan: (organizationId: string, planId: "free" | "team" | "enterprise" | "hobby") =>
       request(
         value.services.billing.baseUrl,
         "/_emulate/seed",
@@ -670,13 +702,176 @@ const make = Effect.gen(function* () {
         value.services.billing.token,
       ).pipe(Effect.asVoid),
     /**
-     * Answer the next `times` reads of one Autumn route with `status`, after `delayMs`: v1's plan
-     * reads (`customers.get`) or billing's plan catalog (`plans.list`). Faults match every caller
-     * of the route on this Cloud's Autumn emulator, so only scenarios that run in order on their
-     * own local Cloud arm them. Returns the fault's id.
+     * Bill a v1 organization on v1's Team plan, as v1 does, on its own Stripe subscription.
+     * Version 3 bills USD 15 per member, with `seats` set as v1 sets them; version 1 bills a flat
+     * USD 49 a month with executions metered on top. The period ends `periodDays` from now; a
+     * trial ends with it; a cancelled subscription expires with it, v1's free plan scheduled after.
+     * Returns the Stripe subscription id and the period end.
+     */
+    v1TeamSubscription: (
+      organizationId: string,
+      subscription: {
+        readonly version: 1 | 3;
+        readonly seats?: number;
+        readonly trialing?: boolean;
+        readonly cancelled?: boolean;
+      },
+    ) =>
+      Effect.gen(function* () {
+        const billing = value.services.billing;
+        // Stripe keeps whole seconds.
+        const periodEnd = Math.floor((Date.now() + 20 * DAY_MS) / 1000) * 1000;
+        const stripeSubscription = `sub_v1_${randomUUID().replaceAll("-", "").slice(0, 16)}`;
+        const seat = {
+          feature_id: "members",
+          included: 0,
+          price: { amount: 15, interval: "month", billing_units: 1, billing_method: "usage_based" },
+        };
+        const executions = {
+          feature_id: "executions",
+          included: 250000,
+          reset: { interval: "month" },
+          price: {
+            amount: 0.2,
+            interval: "month",
+            billing_units: 1000,
+            billing_method: "usage_based",
+          },
+        };
+        yield* request(
+          billing.baseUrl,
+          "/_emulate/seed",
+          {
+            features: [
+              { id: "members", name: "Members", type: "metered", consumable: false },
+              { id: "executions", name: "Executions", type: "metered", consumable: true },
+            ],
+            plans: [
+              {
+                id: "team",
+                name: "Team",
+                version: 3,
+                items: [seat],
+                versions: [
+                  { version: 1, price: { amount: 49, interval: "month" }, items: [executions] },
+                ],
+              },
+            ],
+            customers: [
+              {
+                id: organizationId,
+                subscriptions: [
+                  {
+                    plan_id: "team",
+                    status: subscription.trialing === true ? "trialing" : "active",
+                    version: subscription.version,
+                    current_period_start: periodEnd - 30 * DAY_MS,
+                    current_period_end: periodEnd,
+                    trial_ends_at: subscription.trialing === true ? periodEnd : null,
+                    canceled_at: subscription.cancelled === true ? Date.now() : null,
+                    expires_at: subscription.cancelled === true ? periodEnd : null,
+                    stripe_subscription_id: stripeSubscription,
+                  },
+                  ...(subscription.cancelled === true
+                    ? [{ plan_id: "free", status: "scheduled" }]
+                    : []),
+                ],
+              },
+            ],
+          },
+          billing.token,
+        );
+        if (subscription.seats !== undefined)
+          yield* request(
+            billing.baseUrl,
+            "/v1/balances.update",
+            { customer_id: organizationId, feature_id: "members", usage: subscription.seats },
+            billing.token,
+          );
+        return { stripeSubscription, periodEnd };
+      }),
+    /** An Autumn customer with each subscription's plan version, or null when there is none. */
+    autumnCustomer: (customerId: string) =>
+      request(
+        value.services.billing.baseUrl,
+        "/v1/customers.get",
+        { customer_id: customerId, expand: ["subscriptions.plan"] },
+        value.services.billing.token,
+      ).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(AutumnCustomer)),
+        Effect.map((customer): AutumnCustomer | null => customer),
+        Effect.catchTag("EmulatorFailed", (error) =>
+          error.status === 404 ? Effect.succeed(null) : Effect.fail(error),
+        ),
+      ),
+    /** The Stripe subscriptions Autumn bills a customer on (`billing.verify`). */
+    autumnStripeSubscriptions: (customerId: string) =>
+      request(
+        value.services.billing.baseUrl,
+        "/v1/billing.verify",
+        { customer_id: customerId },
+        value.services.billing.token,
+      ).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.Struct({
+              subscriptions: Schema.Array(Schema.Struct({ stripe_subscription_id: Schema.String })),
+            }),
+          ),
+        ),
+        Effect.map(({ subscriptions }) => subscriptions.map((sub) => sub.stripe_subscription_id)),
+      ),
+    /**
+     * A v2 organization's Autumn customer id: `<catalog namespace>:organization:<id>`, with this
+     * Cloud's catalog namespace read from the plans it seeded.
+     */
+    v2BillingCustomer: (organizationId: string) =>
+      request(
+        value.services.billing.baseUrl,
+        "/v1/plans.list",
+        {},
+        value.services.billing.token,
+      ).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.Struct({
+              list: Schema.Array(
+                Schema.Struct({ id: Schema.String, group: Schema.NullOr(Schema.String) }),
+              ),
+            }),
+          ),
+        ),
+        Effect.flatMap(({ list }) => {
+          const namespace = list.find((plan) => plan.id === `${plan.group}-team`)?.group;
+          return namespace === undefined || namespace === null
+            ? Effect.fail(new EmulatorFailed({ operation: "Find the billing catalog" }))
+            : Effect.succeed(`${namespace}:organization:${organizationId}`);
+        }),
+      ),
+    /**
+     * Make a v1 Autumn customer as v1 does when it meters an execution for a customer Autumn does
+     * not have: on v1's free plan, billing nothing.
+     */
+    v1MeteredCustomer: (organizationId: string) =>
+      request(
+        value.services.billing.baseUrl,
+        "/_emulate/seed",
+        {
+          customers: [
+            { id: organizationId, subscriptions: [{ plan_id: "free", status: "active" }] },
+          ],
+        },
+        value.services.billing.token,
+      ).pipe(Effect.asVoid),
+    /**
+     * Answer the next `times` requests to one Autumn route with `status`, after `delayMs`: v1's
+     * plan reads (`customers.get`), billing's plan catalog (`plans.list`) or an attach
+     * (`billing.attach`). Faults match every caller of the route on this Cloud's Autumn emulator,
+     * so only scenarios that run in order on their own local Cloud arm them. Returns the fault's
+     * id.
      */
     failAutumnReads: (
-      route: "customers.get" | "plans.list",
+      route: "customers.get" | "plans.list" | "billing.attach",
       fault: { status: number; times: number; delayMs?: number },
     ) =>
       request(

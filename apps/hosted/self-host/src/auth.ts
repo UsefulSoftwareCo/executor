@@ -12,16 +12,18 @@ import {
   mcpBrowserGrantError,
   mcpConnectionStore,
   provisionHostedOAuthResources,
-  ApiAuthentication,
+  BearerAuthentication,
   apiBearerAccess,
+  callerSpanAttributes,
   mcpBearerAccess,
-  Authentication,
+  SessionAuthentication,
   AuthenticationUnavailable,
   sessionPrincipal,
   lookupMembership,
   lookupOrganizationSlug,
   resolveOrganizationReference,
   deleteOrganizationRecords,
+  deleteUserRecords,
   grantExpiry,
   authEndpointTemplates,
 } from "@executor-js/hosted-server";
@@ -58,7 +60,7 @@ export const selfHostAuth = Effect.gen(function* () {
   yield* provisionHostedOAuthResources(origins, context).pipe(
     Effect.mapError(() => new AuthenticationUnavailable()),
   );
-  const identity = Layer.succeed(Authentication, {
+  const identity = Layer.succeed(SessionAuthentication, {
     ...origins,
     oauthRedirectUri: Option.getOrUndefined(settings.oauthRedirectUri),
     current: (headers) =>
@@ -85,14 +87,16 @@ export const selfHostAuth = Effect.gen(function* () {
       deleteOrganizationRecords(context.adapter, organizationId).pipe(
         Effect.withSpan("auth.removeOrganization"),
       ),
+    removeUser: (user) =>
+      deleteUserRecords(context.adapter, user).pipe(Effect.withSpan("auth.removeUser")),
   });
   const mcpIdentity = Layer.succeed(McpAuthentication, {
     ...origins,
     authenticate: (headers, mode, organization) =>
       mcpBearerAccess(origins, { headers, mode, organization }).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
-        Effect.tap(({ access }) =>
-          Effect.annotateCurrentSpan("executor.organization.id", access.organization),
+        Effect.tap(({ access, userId }) =>
+          Effect.annotateCurrentSpan(callerSpanAttributes(access.organization, userId)),
         ),
         Effect.withSpan("auth.authenticate"),
       ),
@@ -109,13 +113,13 @@ export const selfHostAuth = Effect.gen(function* () {
       Effect.tryPromise({ try: () => run(auth.api), catch: (cause) => cause }),
     ),
   });
-  const apiIdentity = Layer.succeed(ApiAuthentication, {
+  const apiIdentity = Layer.succeed(BearerAuthentication, {
     ...origins,
     authenticate: (headers, organization) =>
       apiBearerAccess(origins, { headers, organization }).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
-        Effect.tap(({ access }) =>
-          Effect.annotateCurrentSpan("executor.organization.id", access.organization),
+        Effect.tap(({ access, userId }) =>
+          Effect.annotateCurrentSpan(callerSpanAttributes(access.organization, userId)),
         ),
         Effect.withSpan("auth.authenticate"),
       ),

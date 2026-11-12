@@ -17,6 +17,12 @@ import { App, Resource } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { localAgent, localLinks } from "../support/local-links.ts";
 import { McpClient } from "../support/mcp-client.ts";
+import { siteless } from "../support/failure-site.ts";
+
+/** A tool result's text content. */
+const TextContent = Schema.Array(
+  Schema.Struct({ type: Schema.Literal("text"), text: Schema.String }),
+);
 
 const source = `import { defineApp, defineProvider, secrets, object, string, query, mutation, router, type QueryContext, type MutationContext } from "apps";
 const service = defineProvider({ name: "Account choice fixture", auth: { key: secrets({ label: "API key", fields: object({ token: string() }) }) } });
@@ -164,7 +170,12 @@ const checkNoAccountChoice = (
     });
     expect(refused.isError, JSON.stringify(refused)).toBe(true);
     // The skills tool's error text carries the code and status, as the uncaught refusal above.
-    expect(refused.content).toEqual([
+    expect(
+      Schema.decodeUnknownSync(TextContent)(refused.content).map((item) => ({
+        ...item,
+        text: siteless(item.text),
+      })),
+    ).toEqual([
       {
         type: "text",
         text: `AccountChoiceUnsupported (HTTP 400): ${unsupported} Recovery: Call again without choosing accounts. Change the app's accounts in its Accounts tab. Retryable (unchanged call): no.`,

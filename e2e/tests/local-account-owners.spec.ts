@@ -139,15 +139,21 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         expect(yield* providers(elsewhere)).toEqual([]);
 
         // Listing never spans owners: a read without one is refused with `RequestInvalid`, as every
-        // SDK route refuses a request its schema rejects, and the Executor app's tools name the
-        // missing owner to the agent.
+        // SDK route refuses a request its schema rejects, naming the missing owner.
         for (const path of ["/v1/accounts", "/v1/providers"])
           expect(yield* agent.send("GET", path)).toEqual({
             status: 400,
             body: {
               _tag: "RequestInvalid",
+              part: "query",
+              issues: [{ path: "$.owner", expected: "Missing key" }],
               message:
-                "Executor could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
+                "Executor rejected this request's query because it does not match the operation's schema: $.owner: Missing key.",
+              recovery: {
+                action: "Correct the input and send the request again.",
+                instructions:
+                  "Read each listed path and what the operation's schema expects there, correct those values, and send the corrected request. Read the operation's input schema for the full shape. Sending the same input again fails the same way.",
+              },
             },
           });
         const client = yield* mcp.connect(target.apiKey, "local-account-owners");

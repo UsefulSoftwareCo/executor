@@ -21,6 +21,10 @@ export const openapiConflictRecovery = {
 };
 /** A declared 403 body; a bare status alone would not explain the refusal. */
 export const openapiDeniedMessage = "This workspace does not allow exports by members.";
+/** A declared 401 body, the service's own explanation of a refused credential. */
+export const openapiSessionMessage = "The session for this workspace has ended.";
+/** A Bearer challenge's stated error, which takes precedence over a declared body. */
+export const openapiChallengeMessage = "The access token expired.";
 /** A reason-specific response from an error schema with no static description. */
 export const openapiOAuthMessage = "We could not register an OAuth client for this connection.";
 /** A declared conflict a bulk write meets after saving part of its records. */
@@ -68,6 +72,10 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
             Schema.TaggedStruct("ExportDenied", { message: Schema.String }).annotate({
               identifier: "ExportDenied",
               httpApiStatus: 403,
+            }),
+            Schema.TaggedStruct("SessionExpired", { message: Schema.String }).annotate({
+              identifier: "SessionExpired",
+              httpApiStatus: 401,
             }),
           ],
         }).annotate(OpenApi.Identifier, "fail"),
@@ -350,6 +358,23 @@ export const openapiErrorUpstream = (memorySchema: unknown, oauthSchema: unknown
                 status: 403,
                 // Rate-limit evidence still wins over a declared body.
                 headers: mode === "declared-limited" ? { "x-ratelimit-remaining": "0" } : {},
+              },
+            );
+          if (mode === "declared-unauthorized")
+            return yield* HttpServerResponse.json(
+              { _tag: "SessionExpired", message: openapiSessionMessage },
+              { status: 401 },
+            );
+          // A Bearer challenge already states the error; its declared body never finishes.
+          if (mode === "challenged-stalled")
+            return HttpServerResponse.stream(
+              Stream.concat(Stream.make(new TextEncoder().encode("{")), Stream.never),
+              {
+                status: 401,
+                contentType: "application/json",
+                headers: {
+                  "www-authenticate": `Bearer error="invalid_token", error_description="${openapiChallengeMessage}"`,
+                },
               },
             );
           if (mode === "missing-message")

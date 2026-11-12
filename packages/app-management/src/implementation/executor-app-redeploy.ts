@@ -238,6 +238,8 @@ export const executorAppRedeployStep = (
 ): DataStep<SqlClient.SqlClient> => ({
   name,
   retry: ["conflict", "failed"],
+  // A concurrent edit is retried on the next pass; it is not a failed item.
+  expected: ["conflict"],
   items: host.executor.apps.list({}).pipe(
     Effect.map((apps) =>
       apps.filter(executorShaped).map((app) => ({

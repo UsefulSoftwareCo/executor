@@ -369,16 +369,16 @@ Access depends on the app as well as the caller's role. Any member can deploy
 a new app; it starts private, with the deployer as its creator. The creator and
 organization owners and administrators manage it: they rename it, activate a
 version, change its audience, remove it, and connect or link its app
-requirements, which also needs use of the account linked. Using an app (calling
+requirements with their own accounts. Using an app (calling
 its tools, opening its UI, `userConnect` and `userLink`) follows its audience: a
 private app only by its creator, even for administrators; a `groups` app by
 members of those groups; an `everyone` app by every member. Managing an app does
-not grant its use. Personal accounts are usable only by their owner; shared
-accounts follow their own audience. An MCP connection limited to selected apps
+not grant its use. Every saved account is personal: only its owner uses or
+manages it, and an app link is how one account serves every caller. An MCP connection limited to selected apps
 can only find and run those apps' tools; deploying and other management calls
 need a connection to all apps. The server rechecks the caller's grant, current
 membership and these rules on every API call.
-The management app's caller credential is never saved as a shared account.
+The management app's caller credential is never saved as an account.
 
 **The remaining management examples use the local product's API**, not
 self-host's.
@@ -495,7 +495,9 @@ Every call follows the active version, so nothing needs updating to pick up
 new code. The next `execute` lists and calls the new tools. Activating a
 version re-registers each webhook source's subscriptions on it in the
 background, usually within seconds, without blocking tool calls; the app's
-Webhooks tab shows their status. It also deletes the saved settings of schedules
+Webhooks tab shows their status. A manual (`setup`) subscription keeps its
+callback URL, secret and setup fields while the activated version keeps the same
+`signingSecret` and accepts the same `state` fields; changing either needs a new setup. It also deletes the saved settings of schedules
 the new version no longer declares.
 
 `apps.versions` lists retained versions. `apps.source` accepts an optional
@@ -558,8 +560,9 @@ types and a local type check do not catch:
 - `integrity` must be empty or omitted.
 
 `ctx.fetch` rejects an unsupported value with `FetchOptionUnsupported`, which
-names the option and the values it accepts. Workers also send no `User-Agent`;
-some APIs, such as GitHub's, answer 403 without one, so set it yourself.
+names the option and the values it accepts. A request without a `User-Agent`
+is sent with `User-Agent: Executor`, because some APIs, such as GitHub's, answer
+403 without one. A `User-Agent` app code sets is sent unchanged.
 
 App code can reach public hosts with no allowlist, so a 403 or 404 from one is
 that service's answer. Executor refuses only requests it must not send:

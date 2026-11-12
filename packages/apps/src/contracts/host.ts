@@ -57,6 +57,7 @@ export { McpClientLimits, defaultMcpClientLimits } from "./mcp.ts";
 export * from "./webhook-protocol.ts";
 export * from "./events.ts";
 export { AppIcon, AppIcons, appIconLimits } from "./icons.ts";
+export { fieldDescriptions, helpTextLimits, withoutHelp } from "./help-text.ts";
 export * from "./placement.ts";
 
 export { AccountId, HttpUrl } from "./schema.ts";
@@ -87,8 +88,9 @@ export { protocol9 } from "./protocols/9.ts";
 export { protocol10 } from "./protocols/10.ts";
 export { protocol11 } from "./protocols/11.ts";
 export { protocol12 } from "./protocols/12.ts";
+export { protocol13 } from "./protocols/13.ts";
 export {
-  current as protocol13,
+  current as protocol14,
   AccountCheckCommand,
   CredentialHost,
   MigrateCommand,

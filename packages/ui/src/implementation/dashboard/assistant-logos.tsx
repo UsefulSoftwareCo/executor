@@ -2,7 +2,7 @@ import { useId, type SVGProps } from "react";
 
 /**
  * Assistant marks for the setup picker. Single-colour marks draw in currentColor so they follow
- * the theme; Claude, Muse and MCP keep their brand colours.
+ * the theme; Claude, Gemini, Muse and MCP keep their brand colours.
  */
 type Logo = (props: SVGProps<SVGSVGElement>) => React.JSX.Element;
 
@@ -30,16 +30,17 @@ export const CodexLogo: Logo = (props) => (
   </svg>
 );
 
-export const CursorLogo: Logo = (props) => (
-  <svg viewBox="0 0 466.73 532.09" fill="currentColor" aria-hidden {...props}>
-    <path d="M457.43,125.94L244.42,2.96c-6.84-3.95-15.28-3.95-22.12,0L9.3,125.94c-5.75,3.32-9.3,9.46-9.3,16.11v247.99c0,6.65,3.55,12.79,9.3,16.11l213.01,122.98c6.84,3.95,15.28,3.95,22.12,0l213.01-122.98c5.75-3.32,9.3-9.46,9.3-16.11v-247.99c0-6.65-3.55-12.79-9.3-16.11h-.01ZM444.05,151.99l-205.63,356.16c-1.39,2.4-5.06,1.42-5.06-1.36v-233.21c0-4.66-2.49-8.97-6.53-11.31L24.87,145.67c-2.4-1.39-1.42-5.06,1.36-5.06h411.26c5.84,0,9.49,6.33,6.57,11.39h-.01Z" />
-  </svg>
-);
-
 export const GrokLogo: Logo = (props) => (
   <svg viewBox="0 0 1024 1024" fill="currentColor" aria-hidden {...props}>
     <path d="M395.479 633.828L735.91 381.105C752.599 368.715 776.454 373.548 784.406 392.792C826.26 494.285 807.561 616.253 724.288 699.996C641.016 783.739 525.151 802.104 419.247 760.277L303.556 814.143C469.49 928.202 670.987 899.995 796.901 773.282C896.776 672.843 927.708 535.937 898.785 412.476L899.047 412.739C857.105 231.37 909.358 158.874 1016.4 10.6326C1018.93 7.11771 1021.47 3.60279 1024 0L883.144 141.651V141.212L395.392 633.916" />
     <path d="M325.226 695.251C206.128 580.84 226.662 403.776 328.285 301.668C403.431 226.097 526.549 195.254 634.026 240.596L749.454 186.994C728.657 171.88 702.007 155.623 671.424 144.2C533.19 86.9942 367.693 115.465 255.323 228.382C147.234 337.081 113.244 504.215 171.613 646.833C215.216 753.423 143.739 828.818 71.7385 904.916C46.2237 931.893 20.6216 958.87 0 987.429L325.139 695.339" />
+  </svg>
+);
+
+export const OpenCodeLogo: Logo = (props) => (
+  <svg viewBox="0 0 16 20" fill="currentColor" aria-hidden {...props}>
+    <path d="M12 16H4V8H12V16Z" opacity={0.4} />
+    <path d="M12 4H4V16H12V4ZM16 20H0V0H16V20Z" />
   </svg>
 );
 
@@ -74,3 +75,74 @@ export const MuseLogo: Logo = (props) => {
     </svg>
   );
 };
+
+/** Gemini's four-colour sparkle: a blue star with green, red and yellow washes over it. */
+const geminiSparkle =
+  "M20.616 10.835a14.147 14.147 0 01-4.45-3.001 14.111 14.111 0 01-3.678-6.452.503.503 0 00-.975 0 14.134 14.134 0 01-3.679 6.452 14.155 14.155 0 01-4.45 3.001c-.65.28-1.318.505-2.002.678a.502.502 0 000 .975c.684.172 1.35.397 2.002.677a14.147 14.147 0 014.45 3.001 14.112 14.112 0 013.679 6.453.502.502 0 00.975 0c.172-.685.397-1.351.677-2.003a14.145 14.145 0 013.001-4.45 14.113 14.113 0 016.453-3.678.503.503 0 000-.975 13.245 13.245 0 01-2.003-.678z";
+
+export const GeminiLogo: Logo = (props) => {
+  const id = useId();
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden {...props}>
+      <defs>
+        <linearGradient
+          id={`${id}g`}
+          x1="7"
+          x2="11"
+          y1="15.5"
+          y2="12"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#08B962" />
+          <stop offset="1" stopColor="#08B962" stopOpacity="0" />
+        </linearGradient>
+        <linearGradient
+          id={`${id}r`}
+          x1="8"
+          x2="11.5"
+          y1="5.5"
+          y2="11"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#F94543" />
+          <stop offset="1" stopColor="#F94543" stopOpacity="0" />
+        </linearGradient>
+        <linearGradient
+          id={`${id}y`}
+          x1="3.5"
+          x2="17.5"
+          y1="13.5"
+          y2="12"
+          gradientUnits="userSpaceOnUse"
+        >
+          <stop stopColor="#FABC12" />
+          <stop offset=".46" stopColor="#FABC12" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path fill="#3186FF" d={geminiSparkle} />
+      <path fill={`url(#${id}g)`} d={geminiSparkle} />
+      <path fill={`url(#${id}r)`} d={geminiSparkle} />
+      <path fill={`url(#${id}y)`} d={geminiSparkle} />
+    </svg>
+  );
+};
+
+export const ZedLogo: Logo = (props) => (
+  <svg viewBox="0 0 31.27 31.27" fill="currentColor" aria-hidden {...props}>
+    <path
+      fillRule="evenodd"
+      clipRule="evenodd"
+      d="M2.93144 1.95429C2.39177 1.95429 1.95429 2.39177 1.95429 2.93144V24.4286H0V2.93144C0 1.31245 1.31245 0 2.93144 0H29.112C30.4178 0 31.0718 1.57879 30.1484 2.50214L14.0237 18.6268H18.5658V16.6115H20.5201V19.1154C20.5201 19.9249 19.8638 20.5811 19.0543 20.5811H12.0694L8.71049 23.9401H23.9401V11.7257H25.8944V23.9401C25.8944 25.0194 25.0194 25.8944 23.9401 25.8944H6.7562L3.33618 29.3144H28.3372C28.8769 29.3144 29.3144 28.8769 29.3144 28.3372V6.84002H31.2687V28.3372C31.2687 29.9562 29.9562 31.2687 28.3372 31.2687H2.15667C0.850848 31.2687 0.196896 29.6899 1.12024 28.7665L17.1839 12.7029H12.7029V14.6572H10.7486V12.2143C10.7486 11.4048 11.4048 10.7486 12.2143 10.7486H19.1382L22.5582 7.32859H7.32859V19.5429H5.3743V7.32859C5.3743 6.24927 6.24927 5.3743 7.32859 5.3743H24.5125L27.9325 1.95429H2.93144Z"
+    />
+  </svg>
+);
+
+export const WindsurfLogo: Logo = (props) => (
+  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden {...props}>
+    <path
+      fillRule="evenodd"
+      clipRule="evenodd"
+      d="M23.78 5.004h-.228a2.187 2.187 0 00-2.18 2.196v4.912c0 .98-.804 1.775-1.76 1.775a1.818 1.818 0 01-1.472-.773L13.168 5.95a2.197 2.197 0 00-1.81-.95c-1.134 0-2.154.972-2.154 2.173v4.94c0 .98-.797 1.775-1.76 1.775-.57 0-1.136-.289-1.472-.773L.408 5.098C.282 4.918 0 5.007 0 5.228v4.284c0 .216.066.426.188.604l5.475 7.889c.324.466.8.812 1.351.938 1.377.316 2.645-.754 2.645-2.117V11.89c0-.98.787-1.775 1.76-1.775h.002c.586 0 1.135.288 1.472.773l4.972 7.163a2.15 2.15 0 001.81.95c1.158 0 2.151-.973 2.151-2.173v-4.939c0-.98.787-1.775 1.76-1.775h.194c.122 0 .22-.1.22-.222V5.225a.221.221 0 00-.22-.222z"
+    />
+  </svg>
+);

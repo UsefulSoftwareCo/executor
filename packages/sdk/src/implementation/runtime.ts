@@ -102,9 +102,10 @@ export const createAppRuntime = (options: {
 }): ResolvedAppRuntime => {
   const runtime = toEffectRuntime(options.runtime, options.blobs);
   const asset = runtime.asset;
+  // Standalone callers serve no host API, so each build's app cache is its own.
   const context = (accounts: ResolvedAccountsInput) =>
     Schema.decodeUnknownEffect(Schema.RedactedFromValue(ResolvedAccounts))(accounts).pipe(
-      Effect.map((accounts) => ({ accounts })),
+      Effect.map((accounts) => ({ accounts, hostApi: undefined })),
       Effect.mapError(() => new HostAccountsInvalid()),
     );
   return {

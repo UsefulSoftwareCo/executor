@@ -243,16 +243,20 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
       {...(app === undefined || app === null
         ? {}
         : {
-            check: (input: AccountSubmission) =>
-              checkCredentials({ organization, app, provider: provider.id, ...input }),
+            check: {
+              app,
+              run: (input: AccountSubmission) =>
+                checkCredentials({ organization, app, provider: provider.id, ...input }),
+            },
           })}
       onSaved={saved}
       {...(onPendingChange ? { onPendingChange } : {})}
-      oauth={({ method, disabled, onPendingChange, access }) => (
+      oauth={({ method, disabled, clientGuide, onPendingChange, access }) => (
         <OAuthSetup query={oauthSetupAtom({ organization, provider: provider.id, method })}>
           {({ setup, action, refresh }) => (
             <OAuthFields
               providerName={provider.definition.name}
+              clientGuide={clientGuide}
               Failure={HostedFailure}
               setup={setup}
               setupAction={action}

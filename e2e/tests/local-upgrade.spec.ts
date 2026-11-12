@@ -376,11 +376,10 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
             return yield* Effect.die("Registry must listen on TCP");
           const registryUrl = `http://127.0.0.1:${registry.address.port}`;
 
-          const platformPackage = `executor-${process.platform}-${process.arch}`;
           /**
            * A launcher at `location` that starts the CLI, as a package manager's install would: the
-           * npm launcher with the release executable's package beside it, or a script that imports
-           * the source entry.
+           * npm launcher, whose runtime for this version is already downloaded (the release
+           * executable's directory), or a script that imports the source entry.
            */
           const installedAt = (location: string) =>
             Effect.gen(function* () {
@@ -401,14 +400,15 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
                   name: "executor",
                   version: "2.0.0-beta.2",
                   type: "module",
-                  optionalDependencies: { [platformPackage]: "*" },
+                  // Never checked: the runtime below is already in place.
+                  runtimes: { [`${process.platform}-${process.arch}`]: "0".repeat(64) },
                 }),
               );
-              yield* fs.makeDirectory(path.join(directory, "node_modules"));
-              yield* fs.symlink(
-                path.dirname(entry),
-                path.join(directory, "node_modules", platformPackage),
-              );
+              const runtime = path.join(root, ".executor", "v2", "launcher", "2.0.0-beta.2");
+              if (!(yield* fs.exists(runtime))) {
+                yield* fs.makeDirectory(path.dirname(runtime), { recursive: true });
+                yield* fs.symlink(path.dirname(entry), runtime);
+              }
               return launcher;
             });
           const data = path.join(root, "data");
@@ -420,6 +420,8 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
                   SystemRoot: process.env.SystemRoot ?? "",
                   ComSpec: process.env.ComSpec ?? "",
                   PATHEXT: process.env.PATHEXT ?? "",
+                  // The npm launcher keeps its runtimes in the home directory, as on macOS and Linux.
+                  USERPROFILE: root,
                 }
               : {}),
             HOME: root,
@@ -474,14 +476,14 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
           published = { beta: "2.999.0-beta.1", latest: "2.999.0" };
           const upgraded = `Upgraded Executor from v${version} to v2.999.0.`;
 
-          // npm installs globally and includes the optional dependency with the native runtime.
+          // npm installs the launcher globally; it downloads the native runtime when it first starts.
           const byNpm = yield* run(npm, ["upgrade"]);
           yield* evidence.json("npm.json", byNpm);
           expect(byNpm.code, byNpm.stderr).toBe(0);
           expect(byNpm.stdout).toContain("installed executor@2.999.0 with fake npm");
           expect(byNpm.stdout).toContain(upgraded);
           expect(yield* calls).toEqual([
-            { name: "npm", args: ["install", "-g", "executor@2.999.0", "--include=optional"] },
+            { name: "npm", args: ["install", "-g", "executor@2.999.0"] },
           ]);
 
           // Each global package manager is detected from where it installs packages.
@@ -525,7 +527,7 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
             "Executor could not tell which package manager installed it",
           );
           for (const command of [
-            "npm install -g executor@2.999.0 --include=optional",
+            "npm install -g executor@2.999.0",
             "pnpm add -g executor@2.999.0",
             "bun add -g executor@2.999.0",
             "yarn global add executor@2.999.0",
@@ -579,7 +581,7 @@ layer(TestLive, { excludeTestServices: true })("Local upgrade", (it) => {
             `Upgraded Executor from v${version} to v2.0.0-beta.1.`,
           );
           expect(yield* calls).toEqual([
-            { name: "npm", args: ["install", "-g", "executor@2.0.0-beta.1", "--include=optional"] },
+            { name: "npm", args: ["install", "-g", "executor@2.0.0-beta.1"] },
           ]);
 
           // A background server for this data directory, which every scenario below stops.

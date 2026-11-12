@@ -19,6 +19,13 @@ export interface Session {
     headers?: Record<string, string>,
   ) => Effect.Effect<Response, RequestFailed>;
 }
+/**
+ * The wire revision this tree's clients state, sent on every request. A scenario acting as a
+ * client released before revisions overrides it with {@link releasedClient}, which reads the same
+ * as stating none.
+ */
+export const currentClient = { "executor-wire-revision": "1" } as const;
+export const releasedClient = { "executor-wire-revision": "0" } as const;
 /** Request failures expose safe context; underlying errors remain redacted. */
 export class RequestFailed extends Schema.TaggedError<RequestFailed>()("RequestFailed", {
   method: Schema.String,
@@ -132,7 +139,9 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
                       path: "cross-origin request rejected",
                       reason: "origin",
                     });
-                  let request = HttpClientRequest.make(method)(url, { headers });
+                  let request = HttpClientRequest.make(method)(url, {
+                    headers: { ...currentClient, ...headers },
+                  });
                   if (data !== undefined)
                     request = yield* HttpClientRequest.bodyJson(request, data);
                   const response = yield* http.execute(request);

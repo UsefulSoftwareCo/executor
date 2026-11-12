@@ -340,6 +340,26 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 sign-in", (it) => {
         yield* switchTo(mixed);
         yield* stopPage;
 
+        // An organization that moved to v2 no longer holds its member on v1, data or not: v1
+        // sends them to v2, which must let them set up a team once that organization is gone.
+        const moved = yield* member();
+        const movedOrganization = yield* emulators.v1Member(moved);
+        yield* v1Data(movedOrganization, "connection");
+        yield* writeRows("v1-database.json", [
+          {
+            sql: "insert into organizations (id, name, slug) values ($1, $2, $3)",
+            params: [movedOrganization, "Moved", `moved-${movedOrganization.toLowerCase()}`],
+          },
+          {
+            sql: `insert into org_moved_to_v2 (org_id, state, v2_org_id, v2_org_slug)
+              values ($1, 'moved', $2, 'removed-team')`,
+            params: [movedOrganization, crypto.randomUUID()],
+          },
+        ]);
+        yield* switchTo(moved);
+        yield* teamSetup;
+        yield* browser.checkpoint("member of a moved v1 organization continues to v2");
+
         // Without an answer from v1's database the check fails closed, then answers on retry.
         const unanswered = yield* member();
         yield* emulators.v1Member(unanswered);

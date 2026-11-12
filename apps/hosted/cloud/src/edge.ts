@@ -15,6 +15,7 @@ import { Marketing } from "./infrastructure/marketing-worker.ts";
 import { Edge } from "./infrastructure/edge-worker.ts";
 import { testStageEdgeRoutes } from "./infrastructure/role-hosts.ts";
 import { workerBuild } from "./infrastructure/worker-build.ts";
+import { platformObservability } from "./infrastructure/telemetry.ts";
 
 /** The stage's telemetry paths (`site-telemetry.ts`), which v1 lists for production. */
 const SiteTelemetry = Schema.fromJsonString(
@@ -42,6 +43,7 @@ export default Edge.make(
         (yield* sentryBindings).errorTunnel,
       ),
       ...(yield* testStageEdgeRoutes),
+      ...(yield* platformObservability),
     };
   }),
   Effect.gen(function* () {

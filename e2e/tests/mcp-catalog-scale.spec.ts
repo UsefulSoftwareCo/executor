@@ -4,7 +4,7 @@ import { Clock, Console, Effect, Schedule, Schema } from "effect";
 import { createServer, type Socket } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { agedRowsMaxAgeSeconds, scenarios } from "../test-plan.ts";
+import { agedRowsRenewSeconds, scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { App, Resource } from "../support/contracts.ts";
@@ -338,12 +338,11 @@ export default defineApp({}, async () => {
 });`;
 /**
  * How long the aged search rows scenario's app takes to evaluate: longer than discovery waits, so
- * evaluating it again before answering times it out, and inside `agedRowsMaxAgeSeconds`, which
- * also caps the load bound.
+ * evaluating it again before answering times it out, and inside `agedRowsRenewSeconds`.
  */
 const agedListingMs = 12_000;
-/** How long Cloud reuses a tool listing: the default `maxStaleMillis`, a day. */
-const listingMaxAgeMs = 86_400_000;
+/** After how long Cloud renews the search rows it serves: the default `renewMillis`, a day. */
+const listingRenewMs = 86_400_000;
 /** Cloud keeps background work this long after the event that started it closes. */
 const cloudBackgroundMs = 20_000;
 /**
@@ -725,9 +724,9 @@ return { items: [...small.items, ...large.items] };`;
             }),
           );
 
-          // Searches never renew the rows they read, so they age past the server's maximum age
+          // Searches never renew the rows they read, so they age past the server's renewal age
           // while the organization is idle, as every app's rows do after a day in production.
-          const aged = began + agedRowsMaxAgeSeconds * 1_000 + 2_000;
+          const aged = began + agedRowsRenewSeconds * 1_000 + 2_000;
           yield* Effect.sleep(Math.max(0, aged - (yield* Clock.currentTimeMillis)));
 
           // The first search after that still answers at once from the aged rows, instead of
@@ -793,20 +792,23 @@ return { items: [...small.items, ...large.items] };`;
               expect(result.completed.unavailableApps, step).toEqual([]);
               expect(yield* paths(result.completed.execution.value), step).toEqual(tools);
             });
-          /** A search that finds none of the app's tools and reports why. */
-          const reported = (step: string) =>
+          /**
+           * A search that still finds the app's tools, from its earlier rows, and reports why they
+           * may be out of date.
+           */
+          const stale = (step: string) =>
             Effect.gen(function* () {
               const result = yield* execute(step, search);
               expect(result.completed.execution.ok, step).toBe(true);
               expect(result.elapsed, step).toBeLessThan(reportedBoundMs);
-              expect(yield* paths(result.completed.execution.value), step).toEqual([]);
+              expect(yield* paths(result.completed.execution.value), step).toEqual(tools);
               expect(
                 result.completed.unavailableApps.map((entry) => entry.app),
                 step,
               ).toEqual([app.id]);
-              expect(result.completed.unavailableApps[0]!.reason, step).toContain(
-                "Catalog upstream answered 503",
-              );
+              const reason = result.completed.unavailableApps[0]!.reason;
+              expect(reason, step).toContain("ToolSearchStale");
+              expect(reason, step).toContain("Catalog upstream answered 503");
             });
 
           // The app's rows are written while its upstream is healthy.
@@ -824,37 +826,50 @@ return { items: [...small.items, ...large.items] };`;
           );
 
           // The upstream now fails at once, faster than any failure a read remembers. Rows kept
-          // before this moment age past the server's maximum age while nothing renews them.
+          // before this moment age past the server's renewal age while nothing renews them.
           catalog.fail();
-          yield* Effect.sleep(agedRowsMaxAgeSeconds * 1_000 + 2_000);
+          yield* Effect.sleep(agedRowsRenewSeconds * 1_000 + 2_000);
 
           // The first search after that cannot know: it serves the aged rows and renews them in
-          // the background. That renewal fails, so later searches no longer serve the old tools
-          // as if the app were healthy. They report the app's failure, every time, while it lasts.
+          // the background. That renewal fails, so later searches still find the app's tools, from
+          // the rows they have, and report the failure beside them while it lasts, without
+          // listing the app again for each search.
           const before = catalog.requests.count;
           yield* found("Search aged rows");
           yield* Effect.gen(function* () {
             const result = yield* execute("Search after the renewal of aged rows", search);
             if (result.completed.unavailableApps.length === 0)
-              return yield* Effect.fail("still served" as const);
+              return yield* Effect.fail("not yet reported" as const);
           }).pipe(
             Effect.retry({
               schedule: Schedule.spaced("1 second"),
-              while: (error) => error === "still served",
+              while: (error) => error === "not yet reported",
               times: 10,
             }),
           );
-          expect(catalog.requests.count).toBeGreaterThan(before);
+          expect(catalog.requests.count).toBe(before + 1);
           for (const attempt of [1, 2])
-            yield* reported(`Search while the upstream fails (${attempt})`);
+            yield* stale(`Search while the upstream fails (${attempt})`);
+          expect(catalog.requests.count).toBe(before + 1);
 
-          // Once the upstream recovers, the next search lists the app again and renews its rows.
+          // Once the upstream recovers, a later renewal lists the app again and replaces the rows.
           catalog.recover();
-          for (const attempt of [1, 2])
-            yield* found(`Search after the upstream recovers (${attempt})`);
+          yield* Effect.gen(function* () {
+            const result = yield* execute("Search after the upstream recovers", search);
+            expect(yield* paths(result.completed.execution.value)).toEqual(tools);
+            if (result.completed.unavailableApps.length > 0)
+              return yield* Effect.fail("still stale" as const);
+          }).pipe(
+            Effect.retry({
+              schedule: Schedule.spaced("2 seconds"),
+              while: (error) => error === "still stale",
+              times: 30,
+            }),
+          );
+          for (const attempt of [1, 2]) yield* found(`Search the renewed rows (${attempt})`);
         }).pipe(Effect.provide(McpClient.layer)),
       ),
-    { timeout: 150_000 },
+    { timeout: 180_000 },
   );
 
   it.effect(
@@ -1076,16 +1091,6 @@ return { items: [...small.items, ...large.items] };`;
               expect(read.unavailable, step).toEqual([]);
               expect(read.paths, step).toEqual(tools);
             });
-          const reported = (step: string) =>
-            Effect.gen(function* () {
-              const read = yield* searched(step);
-              expect(read.paths, step).toEqual([]);
-              expect(
-                read.unavailable.map((entry) => entry.app),
-                step,
-              ).toEqual([app.id]);
-              expect(read.unavailable[0]!.reason, step).toContain(rememberedTimeout);
-            });
           /** Wait until the upstream has been asked `count` times. */
           const asked = (count: number) =>
             Effect.gen(function* () {
@@ -1113,11 +1118,11 @@ return { items: [...small.items, ...large.items] };`;
           );
 
           // A day passes with nothing renewing them: the rows, and the supervisor's copy of the
-          // listing they were written from, age past Cloud's maximum age. Only this app's are
+          // listing they were written from, age past Cloud's renewal age. Only this app's are
           // changed, as the clock would change them.
           const rows = yield* writeRows("sso-database.json", [
             {
-              sql: `update executor_tool_search_listings set at = at - ${listingMaxAgeMs + 60_000}
+              sql: `update executor_tool_search_listings set at = at - ${listingRenewMs + 60_000}
                 where app = $1 returning listing`,
               params: [app.id],
             },
@@ -1141,50 +1146,16 @@ return { items: [...small.items, ...large.items] };`;
           yield* found("Search aged rows");
           yield* asked(before + 1);
 
-          // Searches serve the aged rows while the renewal runs. Cloud stops it when the first
-          // search's background work ends; that stop is remembered as a timeout, so later searches
-          // report the app instead of serving its old tools as healthy and renewing them again.
-          yield* Effect.gen(function* () {
-            const read = yield* searched("Search while the aged rows are renewed");
-            if (read.unavailable.length > 0) return;
-            expect(read.paths).toEqual(tools);
-            expect(
-              (yield* Clock.currentTimeMillis) - renewing,
-              "Cloud should have stopped the renewal and remembered its timeout",
-            ).toBeLessThan(cloudBackgroundMs + 10_000);
-            return yield* Effect.fail("still served" as const);
-          }).pipe(
-            Effect.retry({
-              schedule: Schedule.spaced("1 second"),
-              while: (error) => error === "still served",
-              times: 40,
-            }),
-          );
-          expect((yield* Clock.currentTimeMillis) - renewing).toBeGreaterThanOrEqual(
-            cloudBackgroundMs - 1_000,
-          );
-
-          // Reading the remembered timeout started one background retry, which the upstream holds
-          // too. Further searches report the timeout at once and start no more.
-          yield* asked(before + 2);
+          // Cloud stops the renewal when the first search's background work ends. Running out of
+          // time says nothing about the app's tools, so searches keep serving its rows, as healthy,
+          // before and after the stop, and do not start the renewal again at once.
+          while ((yield* Clock.currentTimeMillis) - renewing < cloudBackgroundMs + 5_000) {
+            yield* found("Search while the aged rows are renewed or after Cloud stops it");
+            yield* Effect.sleep("2 seconds");
+          }
           for (const attempt of [1, 2, 3])
-            yield* reported(`Search beside the remembered timeout (${attempt})`);
-          expect(upstream.requests.count).toBe(before + 2);
-
-          // The upstream recovers and answers the retry, whose rows later searches read.
-          upstream.recover();
-          yield* Effect.gen(function* () {
-            const read = yield* searched("Search after the upstream recovers");
-            if (read.unavailable.length > 0) return yield* Effect.fail("not recovered" as const);
-          }).pipe(
-            Effect.retry({
-              schedule: Schedule.spaced("200 millis"),
-              while: (error) => error === "not recovered",
-              times: 25,
-            }),
-          );
-          for (const attempt of [1, 2]) yield* found(`Search the renewed rows (${attempt})`);
-          expect(upstream.requests.count).toBe(before + 2);
+            yield* found(`Search after the stopped renewal (${attempt})`);
+          expect(upstream.requests.count).toBe(before + 1);
         }).pipe(Effect.provide(McpClient.layer)),
       ),
     { timeout: 150_000 },
@@ -1349,9 +1320,7 @@ return { items: [...small.items, ...large.items] };`;
               actor,
               "POST",
               connectionsPath(path, "user", "service"),
-              {
-                destination: { kind: "personal" },
-              },
+              {},
             );
             expect(response.status).toBe(200);
             const account = yield* submit(actor, (yield* body(Resource, response)).id, token);

@@ -11,12 +11,16 @@ import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
 
 type AccountInfo = NonNullable<AccountHealth["info"]>;
 
-/** What one app's latest check means for the reader; tone matches the other status pills. */
+/**
+ * What one app's latest check means for the reader; tone matches the other status pills.
+ * `credentials_rejected` covers a service refusing the credentials and a sign-in that expired
+ * before any request, so its label claims neither.
+ */
 export const describeAccountCheck = (status: AccountCheckStatus) =>
   Match.value(status).pipe(
     Match.when("healthy", () => ({ label: "Working", tone: "good" as const })),
     Match.when("credentials_rejected", () => ({
-      label: "Sign-in rejected",
+      label: "Credentials not working",
       tone: "bad" as const,
     })),
     Match.when("forbidden", () => ({ label: "Missing permission", tone: "warn" as const })),

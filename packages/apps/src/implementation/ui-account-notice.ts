@@ -25,7 +25,7 @@ export const accountProblemText = (problem: UiAccountProblem) => {
     case "incompatible":
       return `Linked account can't be used as the ${problem.provider} account`;
     case "credentials_rejected":
-      return `${problem.account} (${problem.provider}): sign-in rejected at last check`;
+      return `${problem.account} (${problem.provider}): credentials not working at last check`;
     case "forbidden":
       return `${problem.account} (${problem.provider}): missing permission at last check`;
     case "upstream_unavailable":

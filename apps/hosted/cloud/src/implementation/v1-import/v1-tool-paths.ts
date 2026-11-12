@@ -6,6 +6,8 @@
  * from `extract` (`sdk/extract.ts`): v2's planner names differently, and v1's names must be kept.
  */
 
+import { type Entries, mapEntries, noEntries } from "./stored-document.ts";
+
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -122,12 +124,14 @@ interface Planned {
 
 /**
  * v1's tool name for every operation of the document, by `<method> <document path>`. Collisions are
- * refined over the whole document, as v1 did, so the input must be the full stored document.
+ * refined over the whole document, as v1 did, so the input must be the full stored document; it is
+ * read one path item at a time.
  */
-export const v1ToolPaths = (document: Json): ReadonlyMap<string, string> => {
+export const v1ToolPaths = (document: Entries): ReadonlyMap<string, string> => {
   const planned: Planned[] = [];
-  const paths = isObject(document.paths) ? document.paths : {};
-  for (const [documentPath, item] of Object.entries(paths)) {
+  const paths = mapEntries(document.get("paths")) ?? noEntries;
+  for (const documentPath of paths.keys) {
+    const item = paths.get(documentPath);
     if (!isObject(item)) continue;
     for (const method of methods) {
       const operation = item[method];

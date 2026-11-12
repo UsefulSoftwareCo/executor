@@ -369,6 +369,8 @@ export const readTools = (
     return yield* sql`
       select owner, subject, connection, name,
         annotations::jsonb -> 'mcp' ->> 'toolName' as upstream,
+        coalesce(annotations::jsonb -> 'requiresApproval' = 'true'::jsonb, false)
+          as requires_approval,
         (select listed.tools_synced_at::float8 from connection listed
           where listed.tenant = tool.tenant and listed.integration = tool.integration
             and listed.owner = tool.owner and listed.subject = tool.subject
@@ -682,6 +684,20 @@ export const makeV1Source = (settings: V1SourceSettings) =>
               : customer.subscriptions
                   .filter((subscription) => subscription.status !== "expired")
                   .map((subscription) => subscription.planId),
+          ),
+          unavailable("billing"),
+        ),
+      /**
+       * The organization's Autumn customer with each subscription's dates and the plan version it
+       * bills, for a paid organization whose subscription carries over (`billing.ts`).
+       */
+      customerPlans: (organization: string) =>
+        autumn.pipe(
+          Effect.flatMap((billing) =>
+            billing.getCustomerPlans({
+              customerId: organization,
+              expand: ["subscriptions.plan"],
+            }),
           ),
           unavailable("billing"),
         ),

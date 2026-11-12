@@ -1,5 +1,5 @@
 import { AccountWorkflowsActive } from "../contracts/account.ts";
-import { AccountWebhooksActive } from "../contracts/account.ts";
+import { AccountWebhookDependent, AccountWebhooksActive } from "../contracts/account.ts";
 /** Reusable account operations. Owners remain lookup predicates, not authorization. */
 import { Clock, type Crypto, Effect, Option, Redacted, Schema } from "effect";
 import {
@@ -11,10 +11,16 @@ import {
 import { OAuthGrant } from "../contracts/oauth.ts";
 import type { Executor, ResourceLifecycle } from "../contracts/executor.ts";
 import { Provider, ProviderNotFound } from "../contracts/provider.ts";
-import { AccountId, StorageError, type OwnerId, type ProviderId } from "../contracts/shared.ts";
+import {
+  AccountId,
+  JsonObject,
+  StorageError,
+  type OwnerId,
+  type ProviderId,
+} from "../contracts/shared.ts";
 import { StoredAccount, type Credentials } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
-import { validateFields } from "./provider.ts";
+import { canonical, validateFields } from "./provider.ts";
 
 /** A stable digest of stored ciphertext; any credential write changes it. */
 const fingerprint = (bytes: Uint8Array) =>
@@ -60,6 +66,44 @@ export const resumeWaitingSources = (tx: Query, account: AccountId) =>
       set: { leaseUntil: new Date(0), retries: 0 },
     }),
   );
+
+/**
+ * The subscriptions that still use an account, oldest ID first. A live one uses its source and
+ * every account its registration ran with, which removing it at the provider needs. A disabled
+ * one waits for a person to remove it at the provider, which runs no app code, so it keeps only its
+ * source: confirming the removal in the dashboard needs access to that account. A stopped one uses
+ * none, and neither does a dependency row whose subscription has gone.
+ */
+const webhookDependents = (tx: Query, account: AccountId) =>
+  Effect.gen(function* () {
+    const links = yield* query(() =>
+      tx.findMany("webhookAccounts", {
+        select: ["subscription"],
+        where: (b) => b("account", "=", account),
+      }),
+    );
+    if (links.length === 0) return [];
+    const rows = yield* query(() =>
+      tx.findMany("webhooks", {
+        select: ["id", "app", "status", "sourceAccount"],
+        where: (b) =>
+          b.and(
+            b(
+              "id",
+              "in",
+              links.map((link) => link.subscription),
+            ),
+            b("status", "!=", "stopped"),
+          ),
+        orderBy: ["id", "asc"],
+      }),
+    );
+    return yield* Schema.decodeUnknownEffect(Schema.Array(AccountWebhookDependent))(
+      rows
+        .filter((row) => row.status !== "disabled" || row.sourceAccount === account)
+        .map((row) => ({ app: row.app, subscription: row.id, status: row.status })),
+    ).pipe(Effect.mapError(() => new StorageError()));
+  });
 
 /**
  * An account created without a name starts with the owner's first free "Default" label for its
@@ -222,10 +266,13 @@ export const makeAccounts = (
                 set: { createdAt: row.createdAt },
               }),
             );
-            const linked = yield* query(() =>
-              tx.findFirst("webhookAccounts", { where: (b) => b("account", "=", row.id) }),
-            );
-            if (linked !== null) return yield* new AccountWebhooksActive({ account: row.id });
+            // Every holder refuses the deletion; products narrow only which ones the refusal names.
+            const dependents = yield* webhookDependents(tx, row.id);
+            if (dependents.length > 0)
+              return yield* new AccountWebhooksActive({
+                account: row.id,
+                dependents: { visible: dependents, hidden: 0 },
+              });
             const workflow = yield* query(() =>
               tx.findFirst("workflowAccounts", { where: (b) => b("account", "=", row.id) }),
             );
@@ -236,9 +283,13 @@ export const makeAccounts = (
               );
               yield* lifecycle.accountRemoving(account);
             }
-            // A source whose subscriptions have all stopped goes with its account.
+            // A source whose subscriptions have all stopped goes with its account, as do the
+            // dependency rows of subscriptions that no longer use it.
             yield* query(() =>
               tx.deleteMany("webhookSources", { where: (b) => b("account", "=", input.account) }),
+            );
+            yield* query(() =>
+              tx.deleteMany("webhookAccounts", { where: (b) => b("account", "=", input.account) }),
             );
             const grant = yield* query(() =>
               tx.findFirst("oauthGrants", { where: (b) => b("id", "=", input.account) }),
@@ -386,3 +437,59 @@ export const credentialsReadable = (db: Query, credentials: Credentials) => (acc
     );
     return Option.isSome(decoded);
   }).pipe(Effect.withSpan("sdk.accounts.credentialsReadable"));
+
+/**
+ * Move an imported account to another provider, under `method`, when that method's definition is
+ * the one the account's method has in its own provider, so its credentials fit it unchanged. A
+ * provider is one definition of all its methods, so an app generated again with a method more or
+ * less, or another name, declares a new provider that its accounts no longer fit. Returns whether
+ * the account moved; one changed meanwhile is left as it is.
+ */
+export const moveImportedAccount =
+  (db: Query) =>
+  (input: {
+    readonly account: AccountId;
+    readonly provider: ProviderId;
+    readonly method: string;
+  }) =>
+    Effect.gen(function* () {
+      const stored = yield* storedAccount(db, input.account).pipe(
+        Effect.map(Option.some),
+        Effect.catchTag("AccountNotFound", () => Effect.succeed(Option.none<StoredAccount>())),
+      );
+      if (Option.isNone(stored) || stored.value.provider === input.provider) return false;
+      const account = stored.value;
+      const methodOf = (provider: ProviderId, method: string) =>
+        Effect.gen(function* () {
+          const row = yield* query(() =>
+            db.findFirst("providers", { where: (b) => b("id", "=", provider) }),
+          );
+          if (row === null) return undefined;
+          const { definition } = yield* Schema.decodeUnknownEffect(Provider)(row).pipe(
+            Effect.mapError(() => new StorageError()),
+          );
+          if (!Object.hasOwn(definition.auth, method)) return undefined;
+          const json = yield* Schema.decodeUnknownEffect(JsonObject)(definition.auth[method]).pipe(
+            Effect.mapError(() => new StorageError()),
+          );
+          return canonical(json);
+        });
+      const from = yield* methodOf(account.provider, account.method);
+      const to = yield* methodOf(input.provider, input.method);
+      if (from === undefined || from !== to) return false;
+      yield* query(() =>
+        db.updateMany("accounts", {
+          where: (b) =>
+            b.and(
+              b("id", "=", input.account),
+              b("provider", "=", account.provider),
+              b("method", "=", account.method),
+            ),
+          set: { provider: input.provider, method: input.method },
+        }),
+      );
+      return yield* storedAccount(db, input.account).pipe(
+        Effect.map((moved) => moved.provider === input.provider && moved.method === input.method),
+        Effect.catchTag("AccountNotFound", () => Effect.succeed(false)),
+      );
+    }).pipe(Effect.withSpan("sdk.accounts.moveImportedAccount"));

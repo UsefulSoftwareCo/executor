@@ -774,6 +774,7 @@ return await ${tools}.upstream.answer({})`,
         // Cloud also records the command where it reaches the app's supervisor.
         if (below(spans, warm, "runtime.cloud.call").length > 0) {
           const hop = one(below(spans, warm, "runtime.cloud.cache"), "supervisor command");
+          expect(hop.tags["executor.app.id"]).toBe(app.id);
           expect(hop.tags["cache.operation"]).toBe("acquire");
           expect(hop.tags["cache.reads"]).toBe("1");
           expect(hop.tags["cache.command.index"]).toBe("1");
@@ -878,6 +879,7 @@ export default defineApp({}, {
         const wokeIsolate = wake.tags["executor.supervisor.isolate_cold"] === "true";
         // Every command of that invocation reports the start its wake made, and so does its call.
         for (const command of below(spans, cold!, "runtime.cloud.cache")) {
+          expect(command.tags["executor.app.id"]).toBe(app.id);
           expect(command.tags["cache.supervisor.woke"]).toBe("true");
           expect(command.tags["cache.supervisor.woke_by"]).toBe("wake");
         }
@@ -892,6 +894,7 @@ export default defineApp({}, {
           for (const wake of below(spans, invocation, "runtime.cloud.wake"))
             expect(wake.tags["executor.supervisor.cold"]).toBe("false");
           for (const command of below(spans, invocation, "runtime.cloud.cache")) {
+            expect(command.tags["executor.app.id"]).toBe(app.id);
             expect(command.tags["cache.supervisor.woke"]).toBe("true");
             expect(command.tags["cache.supervisor.woke_by"]).toBe("earlier");
           }

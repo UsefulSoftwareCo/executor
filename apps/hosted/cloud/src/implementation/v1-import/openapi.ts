@@ -9,6 +9,7 @@ import { JSON_SCHEMA, YAMLException, load as loadYaml } from "js-yaml";
 import { isLoopbackHostname } from "@executor-js/utils/url-policy";
 import type { V1StaleCategory } from "../../contracts/v1-import-run.ts";
 import type { OpenApiConfig, OpenApiOperationRow } from "./formats.ts";
+import { Entries, mapEntries, noEntries, parserReason } from "./stored-document.ts";
 
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json =>
@@ -34,12 +35,6 @@ const specificationUrl = (value: unknown) => {
 
 const kindOf = (value: unknown) =>
   value === null ? "null" : Array.isArray(value) ? "a list" : `a ${typeof value}`;
-
-/**
- * The parser's reason up to the first quoted name, tag or value it carries, so a failure names the
- * kind of error and never the specification's text.
- */
-const parserReason = (reason: string) => reason.split(/[:"'`!<]/)[0]?.trim() ?? "";
 
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 const lossyUtf8 = new TextDecoder("utf-8");
@@ -309,20 +304,25 @@ const references = (value: unknown, found: Set<string>) => {
 };
 const unescape = (token: string) => token.replaceAll("~1", "/").replaceAll("~0", "~");
 
-/** Keep only components the rest of the document reaches, directly or through other components. */
+/**
+ * Keep only components the rest of the document reaches, directly or through other components.
+ * The components can be the stored document's, read entry by entry, so that only those the rest
+ * reaches are parsed.
+ */
 const pruneComponents = (document: Json) => {
-  const components = isObject(document.components) ? document.components : undefined;
+  const components = mapEntries(document.components);
   if (components === undefined) return document;
   const reached = new Set<string>();
   const { components: _components, ...rest } = document;
   references(rest, reached);
+  const targets = new Map<string, unknown>();
   const queue = [...reached];
   for (let next = queue.pop(); next !== undefined; next = queue.pop()) {
     const [section, name] = Schema.decodeUnknownSync(Schema.Tuple([Schema.String, Schema.String]))(
       JSON.parse(next),
     );
-    const sectionValue = components[section];
-    const target = isObject(sectionValue) ? sectionValue[name] : undefined;
+    const target = child(components.get(section), name);
+    targets.set(next, target);
     const more = new Set<string>();
     references(target, more);
     for (const reference of more)
@@ -332,24 +332,34 @@ const pruneComponents = (document: Json) => {
       }
   }
   const kept: Json = {};
-  for (const [section, entries] of Object.entries(components)) {
-    if (section === "securitySchemes" || !isObject(entries)) continue;
-    const names = Object.keys(entries).filter((name) =>
-      reached.has(JSON.stringify([section, name])),
-    );
+  for (const section of components.keys) {
+    const entries = mapEntries(components.get(section));
+    if (section === "securitySchemes" || entries === undefined) continue;
+    const names = entries.keys.filter((name) => reached.has(JSON.stringify([section, name])));
     if (names.length > 0)
-      kept[section] = Object.fromEntries(names.map((name) => [name, entries[name]]));
+      kept[section] = Object.fromEntries(
+        names.map((name) => [name, targets.get(JSON.stringify([section, name]))]),
+      );
   }
   return { ...document, components: kept };
 };
+
+/** A map's own value at a key, whether the map is read entry by entry or parsed. */
+const child = (node: unknown, key: string) =>
+  node instanceof Entries
+    ? node.get(key)
+    : isObject(node) && Object.hasOwn(node, key)
+      ? node[key]
+      : undefined;
 
 /**
  * The object a local reference reaches, following references it reaches in turn, or the value
  * itself when it is no reference. An operation can be a reference, which the compiler follows: the
  * cut keeps the operation it reaches, so its security is removed like any other's. A reference
- * that does not resolve, or a cycle, reaches nothing.
+ * that does not resolve, or a cycle, reaches nothing, and neither does one to a whole map the
+ * document is read through entry by entry, such as `#/paths`, which is no operation.
  */
-const localTarget = (document: Json, value: unknown): unknown => {
+const localTarget = (document: Entries, value: unknown): unknown => {
   const seen = new Set<string>();
   let current = value;
   while (isObject(current) && typeof current.$ref === "string") {
@@ -357,11 +367,9 @@ const localTarget = (document: Json, value: unknown): unknown => {
     if (seen.has(ref) || !ref.startsWith("#/")) return undefined;
     seen.add(ref);
     let node: unknown = document;
-    for (const token of ref.slice(2).split("/").map(unescape)) {
-      const key = safeDecode(token);
-      node = isObject(node) && Object.hasOwn(node, key) ? node[key] : undefined;
-    }
-    current = node;
+    for (const token of ref.slice(2).split("/").map(unescape))
+      node = child(node, safeDecode(token));
+    current = node instanceof Entries ? undefined : node;
   }
   return current;
 };
@@ -382,40 +390,56 @@ const safeDecode = (token: string) => {
  * no row matches is kept under the name in `compiled` (by method and document path), for the tools
  * v1 bound by compiling the document because it stored no binding for them. TRACE operations are
  * left out, as v2 sends no TRACE requests, and their v1 tools are returned as `traced` (decision 16).
+ * The stored document is read entry by entry: each path item once, and the components the cut
+ * reaches.
  */
 export const importedDocument = (
-  document: Json,
+  document: Entries,
   operations: readonly OpenApiOperationRow[],
   compiled: ReadonlyMap<string, string>,
 ) => {
   const named = new Map<string, string>();
   const traced = new Set<string>();
   const paths: Record<string, Json> = {};
-  const source = isObject(document.paths) ? document.paths : {};
-  // The tool paths operations name for themselves: a row one of them claims is not another's.
+  const source = mapEntries(document.get("paths")) ?? noEntries;
+  const rows = new Map<string, OpenApiOperationRow[]>();
+  for (const row of operations) {
+    const key = `${row.method.toLowerCase()} ${row.path}`;
+    const same = rows.get(key);
+    if (same === undefined) rows.set(key, [row]);
+    else same.push(row);
+  }
+  const templateOf = (operation: Json, path: string) =>
+    typeof operation["x-executor-pathTemplate"] === "string"
+      ? operation["x-executor-pathTemplate"]
+      : path;
+  // The tool paths operations name for themselves: a row one of them claims is not another's. The
+  // path items with an operation a row or `compiled` names are the only ones the cut keeps from.
   const claimed = new Set<string>();
-  for (const item of Object.values(source))
-    if (isObject(item))
-      for (const method of methods) {
-        const operation = localTarget(document, item[method]);
-        if (isObject(operation) && typeof operation["x-executor-toolPath"] === "string")
-          claimed.add(operation["x-executor-toolPath"]);
-      }
-  for (const [path, item] of Object.entries(source)) {
+  const bound: Array<readonly [string, Json]> = [];
+  for (const path of source.keys) {
+    const item = source.get(path);
     if (!isObject(item)) continue;
+    let wanted = false;
+    for (const method of methods) {
+      const operation = localTarget(document, item[method]);
+      if (!isObject(operation)) continue;
+      if (typeof operation["x-executor-toolPath"] === "string")
+        claimed.add(operation["x-executor-toolPath"]);
+      wanted ||=
+        rows.has(`${method} ${templateOf(operation, path)}`) || compiled.has(`${method} ${path}`);
+    }
+    if (wanted) bound.push([path, item]);
+  }
+  for (const [path, item] of bound) {
     const shared: Json = {};
     for (const [key, value] of Object.entries(item))
       if (!(methods as readonly string[]).includes(key)) shared[key] = value;
     for (const method of methods) {
       const operation = localTarget(document, item[method]);
       if (!isObject(operation)) continue;
-      const template =
-        typeof operation["x-executor-pathTemplate"] === "string"
-          ? operation["x-executor-pathTemplate"]
-          : path;
-      const candidates = operations.filter(
-        (row) => row.method.toLowerCase() === method && row.path === template,
-      );
+      const template = templateOf(operation, path);
+      const candidates = rows.get(`${method} ${template}`) ?? [];
       // The row of the operation's own tool path, or the only row of its method and template
       // unless another operation names that row's tool as its own: v1 merged documents whose
       // operations share a template, such as Calendar's and Drive's `POST /channels/stop`.
@@ -442,6 +466,10 @@ export const importedDocument = (
     }
   }
   // Webhooks are requests the API sends, never tools v1 exposed.
-  const { security: _security, webhooks: _webhooks, ...rest } = document;
+  const rest = Object.fromEntries(
+    document.keys
+      .filter((key) => key !== "security" && key !== "webhooks")
+      .map((key) => [key, document.get(key)]),
+  );
   return { document: pruneComponents({ ...rest, paths }), named, traced: [...traced].sort() };
 };

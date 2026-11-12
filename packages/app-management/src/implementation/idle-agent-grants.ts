@@ -9,19 +9,22 @@ import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import type { DataStep, DataStepJournal, DataStepMode } from "../contracts/data-steps.ts";
 
-/** A host's grant expiry endpoints; see `grantExpiry` in `@executor-js/mcp-auth/oauth`. */
-export interface AgentGrantExpiry {
+/**
+ * A host's grant expiry endpoints, which fail with `E`; see `grantExpiry` in
+ * `@executor-js/mcp-auth/oauth`.
+ */
+export interface AgentGrantExpiry<E = unknown> {
   /** The most grants one call lists or checks. */
   readonly batch: number;
   /** Up to `batch` unrevoked grants after `after`, in ID order. */
   readonly page: (
     after: string | null,
-  ) => Effect.Effect<ReadonlyArray<{ readonly id: string; readonly userId: string }>, unknown>;
+  ) => Effect.Effect<ReadonlyArray<{ readonly id: string; readonly userId: string }>, E>;
   /** Each grant's outcome; idle grants are revoked only when `apply` is set. */
   readonly expire: (
     ids: ReadonlyArray<string>,
     apply: boolean,
-  ) => Effect.Effect<ReadonlyArray<{ readonly id: string; readonly outcome: string }>, unknown>;
+  ) => Effect.Effect<ReadonlyArray<{ readonly id: string; readonly outcome: string }>, E>;
 }
 
 export interface AgentGrantHost {
@@ -31,12 +34,12 @@ export interface AgentGrantHost {
 type GrantPage = ReadonlyArray<{ readonly id: string; readonly userId: string }>;
 
 /** Visit every unrevoked grant, one page at a time, in ID order. */
-const eachPage = <E, R>(
-  grants: AgentGrantExpiry,
+const eachPage = <G, E, R>(
+  grants: AgentGrantExpiry<G>,
   visit: (page: GrantPage) => Effect.Effect<void, E, R>,
-): Effect.Effect<void, unknown, R> =>
+): Effect.Effect<void, G | E, R> =>
   grants.page(null).pipe(
-    Effect.flatMap(function next(page): Effect.Effect<void, unknown, R> {
+    Effect.flatMap(function next(page): Effect.Effect<void, G | E, R> {
       const last = page.at(-1);
       if (last === undefined) return Effect.void;
       return visit(page).pipe(
@@ -85,7 +88,7 @@ const Applied = Schema.Array(Schema.Struct({ completed: Schema.Boolean }));
  * including while Cloud only reports the step, this does nothing, so no grant is revoked without
  * the reviewed step. Logs one summary line with counts per outcome.
  */
-export const expireIdleAgentGrants = (grants: AgentGrantExpiry, journal: DataStepJournal) =>
+export const expireIdleAgentGrants = <E>(grants: AgentGrantExpiry<E>, journal: DataStepJournal) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const applied = yield* sql`select completed_at is not null as completed

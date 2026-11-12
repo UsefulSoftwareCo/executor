@@ -1,6 +1,6 @@
 import { ApiKeyId } from "../contracts/api-keys.ts";
 import { browserPersonalTokenAccess, apiKeyAccess, requirePinnedOrganization } from "./api-keys.ts";
-import { ApprovalMode, type ConnectionId, GrantId, mcpOAuthResources } from "@executor-js/mcp-auth";
+import { ApprovalMode, ConnectionId, GrantId, mcpOAuthResources } from "@executor-js/mcp-auth";
 
 /** Hosted membership composes with the shared OAuth grant lifecycle. */
 import type { BetterAuthPlugin, GenericEndpointContext } from "@better-auth/core";
@@ -306,12 +306,15 @@ export const mcpConnectionStore = (
             : new AuthenticationUnavailable(),
         ),
       ),
+    // A revocation's steps run in Better Auth, which a cancelled request does not stop, so the
+    // call is awaited for its stored outcome.
     revoke: (owner, id) =>
       request(
         (api) => api.revokeMcpConnection({ body: { ...owner, id } }),
-        Schema.Struct({ revoked: Schema.Literal(true) }),
+        Schema.Struct({ revoked: Schema.Literal(true), id: ConnectionId }),
       ).pipe(
-        Effect.asVoid,
+        Effect.map((revoked) => revoked.id),
+        Effect.uninterruptible,
         Effect.mapError((status) =>
           status === 404
             ? new ConnectionNotFound({ connection: id })
@@ -325,9 +328,10 @@ export const mcpConnectionStore = (
     revokeAgent: (owner, id) =>
       request(
         (api) => api.revokeMcpAgent({ body: { ...owner, id } }),
-        Schema.Struct({ revoked: Schema.Literal(true) }),
+        Schema.Struct({ revoked: Schema.Literal(true), id: GrantId }),
       ).pipe(
-        Effect.asVoid,
+        Effect.map((revoked) => revoked.id),
+        Effect.uninterruptible,
         Effect.mapError((status) =>
           status === 404
             ? new ConnectedAgentNotFound({ agent: id })

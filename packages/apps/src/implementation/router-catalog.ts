@@ -12,7 +12,7 @@ import {
   type HostRouterError,
 } from "../contracts/host.ts";
 import type { AppOperation } from "../contracts/operations.ts";
-import type { AppRouter, DynamicRouter, RouterMeta } from "../contracts/router.ts";
+import type { AppNode, AppRouter, DynamicRouter, RouterMeta } from "../contracts/router.ts";
 import { skillFormatLimits, type AppSkillSource } from "../contracts/skills.ts";
 import {
   failureDetail,
@@ -20,6 +20,7 @@ import {
   parseMcpError,
   parseSkillLoadFailed,
 } from "./failure-detail.ts";
+import { PartialListing } from "./account-router.ts";
 import { parseProviderError } from "./provider-error.ts";
 import { joinPath, mergeMeta } from "./router.ts";
 import { skillFromFiles } from "./skill-files.ts";
@@ -227,6 +228,12 @@ const jsonTools = (
   );
 const DescribedTools = Schema.Array(ListedTool).pipe(Schema.refine(jsonTools));
 
+/** Tools and routers of a catalog, or of part of one, in router order. */
+interface Catalog {
+  readonly tools: ReadonlyArray<HostedTool | HostedToolSummary>;
+  readonly routers: ReadonlyArray<HostedRouter>;
+}
+
 export interface CatalogOptions {
   /** Omit schemas. */
   readonly summary: boolean;
@@ -255,19 +262,35 @@ const within = (wanted: ReadonlySet<string>, path: string) =>
  */
 export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options: CatalogOptions) =>
   Effect.gen(function* () {
-    const tools: Array<HostedTool | HostedToolSummary> = [];
-    const routers: HostedRouter[] = [];
     const { wanted, secrets } = options;
-    /** One source's metadata and tools, named under `path`. `relative` limits a filtered read. */
+    /**
+     * A source's listing and, when it listed only some of its accounts' tools (`PartialListing`),
+     * the safe error of the accounts it could not list.
+     */
+    const listing = (read: () => Effect.Effect<readonly unknown[], unknown>) =>
+      sourced(
+        () =>
+          read().pipe(
+            Effect.map((tools) => ({ tools, error: undefined })),
+            Effect.catchIf(Schema.is(PartialListing), ({ tools, error }) =>
+              Effect.succeed({ tools, error: safeFailure(error, secrets) }),
+            ),
+          ),
+        secrets,
+      );
+    /**
+     * One source's metadata and tools, named under `path`, and the error of any of its accounts
+     * that could not list. `relative` limits a filtered read.
+     */
     const readSource = (source: DynamicRouter, path: string, relative?: readonly string[]) =>
       Effect.gen(function* () {
         const describe = source.describe;
         // Read together, so a source that keeps both in one cached manifest reads it once.
-        const [meta, listed] = yield* Effect.all(
+        const [meta, { tools: listed, error }] = yield* Effect.all(
           [
             routerMeta(source, secrets),
             options.summary && source.summaries !== undefined
-              ? sourced(source.summaries, secrets)
+              ? listing(source.summaries)
               : relative !== undefined && describe !== undefined
                 ? sourced(
                     () =>
@@ -275,8 +298,13 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
                         concurrency: "unbounded",
                       }),
                     secrets,
-                  ).pipe(Effect.map((tools) => tools.filter((tool) => tool !== undefined)))
-                : sourced(source.list, secrets),
+                  ).pipe(
+                    Effect.map((tools) => ({
+                      tools: tools.filter((tool) => tool !== undefined),
+                      error: undefined,
+                    })),
+                  )
+                : listing(source.list),
           ],
           { concurrency: "unbounded" },
         );
@@ -300,62 +328,88 @@ export const readCatalog = (root: AppRouter | DynamicRouter | undefined, options
             annotations: { ...tool.annotations, readOnlyHint: readOnly },
           });
         }
-        return { meta, found };
+        return { meta, found, error };
       });
     /**
      * Read a source into this catalog. The root is the whole app, so its failure fails the read,
      * as a single-source app did before routers. Elsewhere the failure is returned for the entry.
+     * A source that listed only some accounts keeps their tools and returns the others' error,
+     * at the root too.
      */
     const include = (source: DynamicRouter, path: string, relative?: readonly string[]) =>
       Effect.gen(function* () {
-        if (path === "") {
-          const { meta, found } = yield* readSource(source, path, relative);
-          tools.push(...found);
-          return { meta, error: undefined };
-        }
+        if (path === "") return yield* readSource(source, path, relative);
         const result = yield* Effect.result(readSource(source, path, relative));
-        if (Result.isFailure(result)) return { meta: source.overrides, error: result.failure };
-        tools.push(...result.success.found);
-        return { meta: result.success.meta, error: undefined };
+        if (Result.isFailure(result))
+          return { meta: source.overrides, found: [], error: result.failure };
+        return result.success;
       });
-    const visit = (node: AppRouter, path: string): Effect.Effect<void, HostRouterError> =>
+    const none: Catalog = { tools: [], routers: [] };
+    /** One child's tools and routers, named under its router's `path`. */
+    const child = (
+      node: AppNode,
+      name: string,
+      path: string,
+    ): Effect.Effect<Catalog, HostRouterError> =>
       Effect.gen(function* () {
-        if (path !== "" || (wanted === undefined && node.meta !== undefined))
-          routers.push(yield* entry(path, node.meta));
-        for (const [key, child] of Object.entries(node.children)) {
-          const name = joinPath(path, key);
-          switch (child.kind) {
-            case "query":
-            case "mutation":
-              if (options.scheduled === true && options.schedules(name).length === 0) break;
-              if (wanted === undefined || wanted.has(name))
-                tools.push(
-                  options.summary
-                    ? yield* operationSummary(name, path, child, options.schedules(name))
-                    : yield* operationDescription(name, path, child, options.schedules(name)),
-                );
-              break;
-            case "router":
-              if (wanted === undefined || within(wanted, name).length > 0)
-                yield* visit(child, name);
-              break;
-            case "dynamic": {
-              if (options.scheduled === true) break;
-              const relative = wanted === undefined ? undefined : within(wanted, name);
-              if (relative !== undefined && relative.length === 0) break;
-              const read = yield* include(child, name, relative);
-              routers.push(yield* entry(name, read.meta, read.error));
-            }
+        switch (node.kind) {
+          case "query":
+          case "mutation":
+            if (options.scheduled === true && options.schedules(name).length === 0) return none;
+            if (wanted !== undefined && !wanted.has(name)) return none;
+            return {
+              tools: [
+                options.summary
+                  ? yield* operationSummary(name, path, node, options.schedules(name))
+                  : yield* operationDescription(name, path, node, options.schedules(name)),
+              ],
+              routers: [],
+            };
+          case "router":
+            return wanted === undefined || within(wanted, name).length > 0
+              ? yield* visit(node, name)
+              : none;
+          case "dynamic": {
+            if (options.scheduled === true) return none;
+            const relative = wanted === undefined ? undefined : within(wanted, name);
+            if (relative !== undefined && relative.length === 0) return none;
+            const read = yield* include(node, name, relative);
+            return { tools: read.found, routers: [yield* entry(name, read.meta, read.error)] };
           }
         }
       });
-    if (root?.kind === "router") yield* visit(root, "");
-    else if (root?.kind === "dynamic" && options.scheduled !== true) {
+    /**
+     * A router's tools and routers. Its children are read together, so sibling sources load their
+     * catalogs at once; their entries still follow the router's key order.
+     */
+    const visit = (node: AppRouter, path: string): Effect.Effect<Catalog, HostRouterError> =>
+      Effect.gen(function* () {
+        const own =
+          path !== "" || (wanted === undefined && node.meta !== undefined)
+            ? [yield* entry(path, node.meta)]
+            : [];
+        const children = yield* Effect.forEach(
+          Object.entries(node.children),
+          ([key, value]) => child(value, joinPath(path, key), path),
+          { concurrency: "unbounded" },
+        );
+        return {
+          tools: children.flatMap((read) => read.tools),
+          routers: [...own, ...children.flatMap((read) => read.routers)],
+        };
+      });
+    if (root?.kind === "router") return yield* visit(root, "");
+    if (root?.kind === "dynamic" && options.scheduled !== true) {
       const read = yield* include(root, "", wanted === undefined ? undefined : [...wanted]);
-      if (wanted === undefined && read.meta !== undefined)
-        routers.push(yield* entry("", read.meta));
+      return {
+        tools: read.found,
+        routers:
+          wanted === undefined && (read.meta !== undefined || read.error !== undefined)
+            ? [yield* entry("", read.meta, read.error)]
+            : [],
+      };
     }
-    return { tools, routers };
+    return none;
   });
 
 /**

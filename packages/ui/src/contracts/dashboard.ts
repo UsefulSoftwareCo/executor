@@ -127,7 +127,7 @@ export const AppViewFromUrl = Schema.Union([
 export const AssistantId = Schema.Literals([
   "claude",
   "chatgpt",
-  "cursor",
+  "opencode",
   "claude-code",
   "codex",
   "devin",

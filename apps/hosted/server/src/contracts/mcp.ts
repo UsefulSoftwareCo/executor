@@ -30,6 +30,27 @@ export const CurrentMcpGrant = Context.Reference<GrantId | undefined>("hosted/Cu
   defaultValue: () => undefined,
 });
 
+/**
+ * The MCP session the request named in `Mcp-Session-Id`: the ID the server issued at `initialize`
+ * on revisions that have sessions. The protocol server refuses a request naming one it did not
+ * issue (404) before any tool runs. Unset for sessionless revisions and outside MCP requests.
+ */
+export const CurrentMcpSession = Context.Reference<string | undefined>("hosted/CurrentMcpSession", {
+  defaultValue: () => undefined,
+});
+
+/**
+ * An MCP session ID in the form this server issues: Effect's protocol server names a session with
+ * a random UUID, and Cloud's session objects prefix it with their object ID and its signature
+ * (`<objectId>.<mac>.<sessionId>`, see Cloud's `mcp-session-id.ts`). Anything else is not one of
+ * ours, whatever header carried it.
+ */
+export const IssuedMcpSessionId = Schema.String.check(
+  Schema.isPattern(
+    /^(?:[0-9a-f]{64}\.[A-Za-z0-9_-]{43}\.)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u,
+  ),
+);
+
 /** Invalid/revoked bearer grants need a fresh OAuth connection. */
 export class McpUnauthorized extends Schema.TaggedError<McpUnauthorized>()("McpUnauthorized", {}) {}
 /** Why a valid credential may not make an MCP request. Each reason needs a different fix. */
@@ -106,20 +127,26 @@ export interface McpConnectionStore {
     owner: ConnectionOwner,
     input: { readonly id: ConnectionId; readonly name: string; readonly policy: ConnectionPolicy },
   ) => Effect.Effect<Connection, ConnectionNotFound | AuthenticationUnavailable>;
-  /** Revoke the connection, every grant issued through it, and their tokens. */
+  /**
+   * Revoke the connection, every grant issued through it, and their tokens. Succeeds with the
+   * stored connection's ID once every step is stored.
+   */
   readonly revoke: (
     owner: ConnectionOwner,
     id: ConnectionId,
-  ) => Effect.Effect<void, ConnectionNotFound | AuthenticationUnavailable>;
+  ) => Effect.Effect<ConnectionId, ConnectionNotFound | AuthenticationUnavailable>;
   /** The owner's authorized MCP and API clients, one per live grant. */
   readonly agents: (
     owner: ConnectionOwner,
   ) => Effect.Effect<readonly ConnectedAgent[], AuthenticationUnavailable>;
-  /** Revoke one of the owner's grants and delete its access and refresh tokens. */
+  /**
+   * Revoke one of the owner's grants and delete its access and refresh tokens. Succeeds with the
+   * stored grant's ID once every step is stored.
+   */
   readonly revokeAgent: (
     owner: ConnectionOwner,
     id: GrantId,
-  ) => Effect.Effect<void, ConnectedAgentNotFound | AuthenticationUnavailable>;
+  ) => Effect.Effect<GrantId, ConnectedAgentNotFound | AuthenticationUnavailable>;
 }
 
 /** Better Auth owns grant validation; each host supplies its native request lifetime. */

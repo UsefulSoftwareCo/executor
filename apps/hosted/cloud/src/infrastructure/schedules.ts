@@ -7,12 +7,16 @@ import { ScheduleObservation } from "@executor-js/sdk/scheduling";
 import { previewLifetime } from "./test-stage-expiry.ts";
 import { EventCleanup } from "./event-cleanup.ts";
 import { WebhookSourceHost } from "@executor-js/sdk/core";
-import { scheduleRecoveryMilliseconds } from "../contracts/schedules.ts";
+import {
+  cloudScheduleConcurrency,
+  heldAlarmMilliseconds,
+  scheduleRecoveryMilliseconds,
+} from "../contracts/schedules.ts";
 /** Native alarms wake one coordinator; authoritative schedule/run state remains in Postgres. */
 import * as Cloudflare from "alchemy/Cloudflare";
 import { RuntimeContext } from "alchemy";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
-import { Config, Clock, Duration, Effect, Exit, Layer, Schema, Semaphore } from "effect";
+import { Clock, Duration, Effect, Exit, Layer, Semaphore } from "effect";
 import { HostedExecutor, ScheduledAuthority, ScheduleWakeup } from "@executor-js/hosted-server";
 import { defaultScheduleWorkerOptions } from "@executor-js/sdk/scheduling";
 import { cloudProduct } from "./product.ts";
@@ -20,6 +24,7 @@ import { lookupColo } from "./colo.ts";
 import { appDataSupervisors } from "./app-data.ts";
 import { cloudAuthDatabase } from "./auth-database.ts";
 import { cloudBackgroundJobs } from "./background-jobs.ts";
+import { cloudDirectDatabaseConnection } from "./database.ts";
 import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
 
 /**
@@ -52,12 +57,8 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
   const analytics = yield* cloudAnalytics;
   const report = yield* cloudSentry;
   const resources = yield* cloudProduct(yield* appDataSupervisors, yield* cloudArtifactsTokensLive);
-  const concurrency = yield* Config.Number("EXECUTOR_SCHEDULE_CONCURRENCY").pipe(
-    Config.withDefault(defaultScheduleWorkerOptions.concurrency),
-    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Int.check(Schema.isGreaterThan(0)))),
-    Effect.orDie,
-  );
-  const objectDatabase = yield* cloudObjectDatabase;
+  // The one coordinator connects directly: its few connections stay beside the database.
+  const objectDatabase = yield* cloudObjectDatabase(cloudDirectDatabaseConnection);
   const retired = yield* ScheduleCoordinator;
   return Effect.gen(function* () {
     const state = yield* Cloudflare.DurableObjectState;
@@ -66,7 +67,7 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
     // overlap. The connections close when the last one ends: an open socket or idle timer would
     // keep the object from hibernating between its minute wakes.
     const database = yield* objectDatabase("schedules", Duration.zero);
-    const pool = yield* Semaphore.make(concurrency);
+    const pool = yield* Semaphore.make(cloudScheduleConcurrency);
     const lifecycle = yield* Semaphore.make(1);
     const alarms = yield* Semaphore.make(1);
     const restoring = yield* Semaphore.make(1);
@@ -76,6 +77,9 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
     // Whether this instance has armed the retired coordinator's heartbeat since background work
     // last stopped, which deletes it.
     let heartbeat = false;
+    // Alarm events in progress, their dispatch included. The runtime delivers one alarm at a time,
+    // so an alarm that falls due meanwhile waits for them without being held.
+    let alarmEvents = 0;
     const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(Effect.provide(resources), Effect.provideService(ObjectDatabase, database));
     const retire = Effect.suspend(() => retired.getByName(retiredName).retire()).pipe(
@@ -128,6 +132,20 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
         if (due === undefined || (yield* Clock.currentTimeMillis) >= due) yield* attempt;
       }),
     );
+    /**
+     * Writes a new time over a stored alarm well past its time while no alarm event runs. Such an
+     * alarm is held: the runtime can schedule a later time than the one it stores and reports
+     * (cloudflare/workerd#7330), and only writing a different time schedules it again. Before this,
+     * a held alarm left every wake waiting for the later time, up to the minute recovery alarm.
+     */
+    const rearm = (now: number, pending: number) =>
+      state.storage
+        .setAlarm(now)
+        .pipe(
+          Effect.andThen(
+            Effect.logWarning("Schedule alarm held past its time", { lateMs: now - pending }),
+          ),
+        );
     /** A stopped background deletes both objects' alarms, as before the handover. */
     const stop = alarms.withPermits(1)(
       Effect.gen(function* () {
@@ -141,10 +159,10 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
         Effect.gen(function* () {
           const executor = yield* Effect.flatten(HostedExecutor);
           // Event deliveries due for a retry wake this coordinator too.
-          const [schedule, delivery] = yield* Effect.all([
-            executor.scheduler.nextWake,
-            executor.events.nextWake,
-          ]);
+          const [schedule, delivery] = yield* Effect.all(
+            [executor.scheduler.nextWake, executor.events.nextWake],
+            { concurrency: "unbounded" },
+          );
           const next =
             schedule === null || delivery === null
               ? (schedule ?? delivery)
@@ -178,27 +196,35 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
           Effect.gen(function* () {
             const executor = yield* Effect.flatten(HostedExecutor);
             const authorize = yield* ScheduledAuthority;
-            yield* Effect.annotateCurrentSpan({
-              "executor.schedule.runner": "cloud",
-              "cloudflare.colo": yield* colo,
-            });
-            yield* lifecycle.withPermits(1)(
-              Effect.gen(function* () {
-                if (initialized) return;
-                // One bounded attempt at most, unless a wake's attempt failed and its retry is not
-                // due. Dispatch then proceeds: Postgres claims keep each occurrence to one run
-                // even if old code still answers, and the stored retry hands over later.
-                yield* restore;
-                yield* executor.scheduler.recover("cloud");
-                initialized = true;
-              }),
+            yield* Effect.annotateCurrentSpan("executor.schedule.runner", "cloud");
+            // A fresh object's colo lookup and its first-pass recovery both wait on the network;
+            // neither needs the other.
+            yield* Effect.all(
+              [
+                colo.pipe(
+                  Effect.flatMap((code) => Effect.annotateCurrentSpan("cloudflare.colo", code)),
+                ),
+                lifecycle.withPermits(1)(
+                  Effect.gen(function* () {
+                    if (initialized) return;
+                    // One bounded attempt at most, unless a wake's attempt failed and its retry is
+                    // not due. Dispatch then proceeds: Postgres claims keep each occurrence to one
+                    // run even if old code still answers, and the stored retry hands over later.
+                    yield* restore;
+                    yield* executor.scheduler.recover("cloud");
+                    initialized = true;
+                  }),
+                ),
+              ],
+              { concurrency: "unbounded", discard: true },
             );
             // Alarm callbacks own this work through waitUntil; new wakes can discover other due apps meanwhile.
             yield* dispatch.run(
-              executor[WebhookSourceHost].tick(concurrency),
+              // Webhook source maintenance keeps the Node hosts' width; only scheduled runs widen.
+              executor[WebhookSourceHost].tick(defaultScheduleWorkerOptions.concurrency),
               executor.scheduler.tick({
                 runner: "cloud",
-                maxCandidates: concurrency,
+                maxCandidates: cloudScheduleConcurrency,
                 authorize,
                 execute: (operation) =>
                   pool.withPermitsIfAvailable(1)(operation).pipe(Effect.asVoid),
@@ -254,16 +280,28 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
               // A wake only brings the alarm in. Wakes arrive from every write in every
               // organization; when each one moved the alarm a second out, wakes under a second
               // apart kept it from ever firing, and due runs waited up to a minute for a lull.
-              const due =
-                (yield* Clock.currentTimeMillis) + defaultScheduleWorkerOptions.pollMilliseconds;
+              const now = yield* Clock.currentTimeMillis;
+              const due = now + defaultScheduleWorkerOptions.pollMilliseconds;
               const pending = yield* state.storage.getAlarm();
               if (pending === null || pending > due) yield* state.storage.setAlarm(due);
+              else if (alarmEvents === 0 && pending < now - heldAlarmMilliseconds)
+                yield* rearm(now, pending);
             }),
           );
         }),
       alarm: () =>
         Effect.gen(function* () {
           if (yield* lifetime.isBackgroundStopped) return yield* stop;
+          // Released when the event's scope closes, after its background dispatch.
+          yield* Effect.acquireRelease(
+            Effect.sync(() => {
+              alarmEvents += 1;
+            }),
+            () =>
+              Effect.sync(() => {
+                alarmEvents -= 1;
+              }),
+          );
           // A durable recovery wake remains if storage is temporarily unavailable or this event crashes.
           yield* alarms.withPermits(1)(
             Effect.gen(function* () {
@@ -317,12 +355,18 @@ const makeRetiredScheduleCoordinator = Effect.gen(function* () {
     });
     // Keeps the next alarm at most a minute away. It never moves an earlier one later, so frequent
     // wakes cannot postpone it, and brings a later one in, such as old code's alarm for an hourly
-    // schedule, so a revert never waits for it.
+    // schedule, so a revert never waits for it. One well past its time is held by the runtime
+    // (cloudflare/workerd#7330); writing it again for now schedules it.
     const keep = Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
       const due = now + scheduleRecoveryMilliseconds;
       const pending = yield* state.storage.getAlarm();
-      const armed = pending === null || pending > due ? due : pending;
+      const armed =
+        pending === null || pending > due
+          ? due
+          : pending < now - heldAlarmMilliseconds
+            ? now
+            : pending;
       if (armed !== pending) yield* state.storage.setAlarm(armed);
       yield* Effect.annotateCurrentSpan({
         "executor.schedule.heartbeat.at": now,

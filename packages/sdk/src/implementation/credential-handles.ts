@@ -57,7 +57,12 @@ import {
   type ResolvedAccounts,
 } from "apps/contracts";
 import { isLoopbackHostname, isPrivateHostname } from "@executor-js/utils/url-policy";
+import type { HostApiCheck } from "../contracts/host-api.ts";
+import { executorUserAgent } from "./user-agent.ts";
 import {
+  hostApiChangingHeader,
+  hostApiChangingResponse,
+  hostApiChangingStatus,
   NetworkUnreachable,
   networkUnreachableHeader,
   networkUnreachableResponse,
@@ -699,6 +704,8 @@ export interface CredentialOutbound {
   readonly egress: AppEgress;
   /** Send the rewritten request on the host's network. It rejects when that network fails. */
   readonly send: (request: Request) => Promise<Response>;
+  /** The host API revision the invocation's cache belongs to; see `hostApiDocument`. */
+  readonly hostApi?: HostApiCheck;
 }
 
 /**
@@ -710,10 +717,47 @@ export interface CredentialOutbound {
  * send. Any other failure is Executor's own and rejects.
  */
 export const credentialFetch = (request: Request, outbound: CredentialOutbound) =>
-  forward(request, outbound).catch((error: unknown) => {
-    if (Schema.is(NetworkUnreachable)(error)) return networkUnreachableResponse(error);
-    throw error;
-  });
+  forward(request, outbound)
+    .then((response) => hostApiDocument(request, response, outbound.hostApi))
+    .catch((error: unknown) => {
+      if (Schema.is(NetworkUnreachable)(error)) return networkUnreachableResponse(error);
+      throw error;
+    });
+
+/**
+ * The host's API document, when its SHA-256 is the revision the invocation's cache belongs to. A
+ * host that deploys its API apart from the Workers that call apps serves the previous API to a
+ * caller of the next one, or the next API to a caller of the previous one, while either rolls
+ * out. That document must not fill a cache named for the other revision. The app's `fetch`
+ * rejects with `hostApiChangingCode` (see `hostApiChangingResponse`), so the app keeps nothing, its
+ * caller is told to retry shortly, and a later read fetches the document again.
+ */
+const hostApiDocument = async (
+  request: Request,
+  response: Response,
+  hostApi: HostApiCheck | undefined,
+) => {
+  const url = new URL(request.url);
+  if (
+    hostApi === undefined ||
+    request.method !== "GET" ||
+    !response.ok ||
+    !hostApi.documents.some((document) => {
+      const served = new URL(document);
+      return served.origin === url.origin && served.pathname === url.pathname;
+    })
+  )
+    return response;
+  const body = await response.arrayBuffer();
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", body));
+  if (Hex.encode(digest) === hostApi.revision)
+    return new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+  return hostApiChangingResponse();
+};
 
 /**
  * The host's network failed to send. The app's own cancellation keeps its error, so the app's
@@ -756,23 +800,30 @@ const forward = async (request: Request, outbound: CredentialOutbound): Promise<
   const send = (sent: Request) => outbound.send(sent).catch(sendFailed(request.signal));
   const blocked = egressRefusal(url, outbound.egress);
   if (blocked !== undefined) return networkRefusalResponse(blocked);
-  const kind = request.body === null ? undefined : rewritable(request.headers.get("content-type"));
+  // Every app request names its sender, as app code's own User-Agent or as Executor.
+  const requestHeaders = new Headers(request.headers);
+  if (!requestHeaders.has("user-agent")) requestHeaders.set("user-agent", executorUserAgent);
+  const kind = request.body === null ? undefined : rewritable(requestHeaders.get("content-type"));
   const body =
     kind === undefined || request.body === null ? undefined : await readBody(request.body);
   const found = new Set([
     ...handlesIn(url.href),
     ...[...url.searchParams.values()].flatMap(handlesWithin),
-    ...[...request.headers].flatMap(([, value]) => handlesWithin(value)),
+    ...[...requestHeaders].flatMap(([, value]) => handlesWithin(value)),
     ...(body?.complete === true ? handlesIn(body.text) : []),
   ]);
   if (found.size === 0)
     return send(
-      body === undefined
-        ? request
-        : new Request(request, {
-            body: body.complete ? body.text : body.stream,
-            ...(body.complete ? {} : { duplex: "half" }),
-          }),
+      new Request(
+        request,
+        body === undefined
+          ? { headers: requestHeaders }
+          : {
+              headers: requestHeaders,
+              body: body.complete ? body.text : body.stream,
+              ...(body.complete ? {} : { duplex: "half" }),
+            },
+      ),
     ).then(unmarked);
   // TRACE asks the service to send the request back, credentials included.
   if (request.method.toUpperCase() === "TRACE")
@@ -823,12 +874,10 @@ const forward = async (request: Request, outbound: CredentialOutbound): Promise<
     // Managed handles go only in the operator's header, placed handles only where a placement
     // matches, and every other handle anywhere.
     const searched = body?.complete === true ? body.text : undefined;
-    const placed = Result.flatMap(
-      placeManaged(url, request.headers, searched, opened),
-      (headers) =>
-        [...opened.values()].some((sealed) => sealed.request !== undefined)
-          ? placeCredentials(url, headers, searched, opened)
-          : Result.succeed({ href: url.href, headers }),
+    const placed = Result.flatMap(placeManaged(url, requestHeaders, searched, opened), (headers) =>
+      [...opened.values()].some((sealed) => sealed.request !== undefined)
+        ? placeCredentials(url, headers, searched, opened)
+        : Result.succeed({ href: url.href, headers }),
     );
     if (Result.isFailure(placed))
       return networkRefusalResponse(
@@ -877,6 +926,7 @@ const forward = async (request: Request, outbound: CredentialOutbound): Promise<
 const marks = [
   [networkRefusalStatus, networkRefusalHeader],
   [networkUnreachableStatus, networkUnreachableHeader],
+  [hostApiChangingStatus, hostApiChangingHeader],
 ] as const;
 const forged = (response: Response) =>
   marks.find(([status, header]) => response.status === status && response.headers.has(header))?.[1];

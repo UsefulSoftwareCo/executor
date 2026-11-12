@@ -1,5 +1,6 @@
 /** A Node host delivers due events in its own scope, waking every few seconds. */
 import { Effect, Schedule } from "effect";
+import { traceFailure } from "@executor-js/telemetry/failed-span";
 import type { Executor } from "../contracts/executor.ts";
 import { ScheduleHostReady } from "../contracts/schedule-worker.ts";
 
@@ -12,7 +13,10 @@ export const deliverEvents = (executor: Executor) =>
     yield* Effect.flatten(ScheduleHostReady);
     yield* executor.events.deliver({ maxDeliveries: batch }).pipe(
       Effect.repeat({ while: (more) => more }),
-      Effect.withSpan("events.dispatch"),
+      // A pass runs every two seconds; one that finds nothing to deliver records nothing. One
+      // that fails is still a trace of its own.
+      Effect.withTracerEnabled(false),
+      traceFailure("events.dispatch"),
       Effect.catch(() => Effect.logError("Event delivery failed")),
       Effect.repeat(Schedule.spaced("2 seconds")),
     );

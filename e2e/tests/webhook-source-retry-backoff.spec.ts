@@ -3,8 +3,12 @@
  * in a row doubles its wait from 30 seconds, so the token endpoint is not asked again every tick.
  * New intent, such as configuring the source, runs at once and starts the count again.
  *
- * A source whose account must reconnect waits the same way: each check that finds the account
- * still waiting doubles the next wait. Reconnecting the account ends the wait at once.
+ * A source whose account must reconnect waits the same way: the attempt that finds it waiting and
+ * each check that finds the account still waiting double the next wait. Reconnecting the account
+ * ends the wait at once.
+ *
+ * A source waiting for a person to finish a manual setup waits the same way, since another attempt
+ * cannot finish it. Completing the setup runs it at once.
  */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Schedule, Schema } from "effect";
@@ -22,6 +26,8 @@ import { serverControl } from "../support/server-control.ts";
 import { settleWebhookSources, sourcesAre } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { appLinksFixture, keyProvider, okBody } from "../support/app-links.ts";
+import { webhookSubscriptions } from "../support/webhook-sources.ts";
 
 const AppProvider = Schema.Struct({ id: Schema.String });
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
@@ -37,6 +43,24 @@ const SourceRow = Schema.Struct({
 const tick = 5_000;
 /** Real time to wait for a tick the product's clock has made due. */
 const quiet = tick + 1_500;
+
+/**
+ * The running product's wall clock: the runner's, plus every advance this scenario made. Both
+ * processes read the same system clock.
+ */
+const productClock = Effect.sync(() => {
+  let offset = 0;
+  const productNow = Clock.currentTimeMillis.pipe(Effect.map((now) => now + offset));
+  /** Move the running product's clock forward to `at`, in its time. */
+  const advanceTo = (at: number) =>
+    Effect.gen(function* () {
+      const milliseconds = Math.ceil(at - (yield* productNow));
+      expect(milliseconds, "The scenario moves the clock forward only").toBeGreaterThan(0);
+      yield* serverControl("clock/advance", 200, { milliseconds });
+      offset += milliseconds;
+    });
+  return { productNow, advanceTo };
+});
 
 /**
  * Deploy an app with a user-account webhook and connect the owner's account from it, which makes
@@ -128,20 +152,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({
     sourcesAre({ [account]: { status: "ready", failure: null } }),
   );
 
-  /**
-   * The product's wall clock: the runner's, plus every advance this scenario made. Both processes
-   * read the same system clock.
-   */
-  let offset = 0;
-  const productNow = Clock.currentTimeMillis.pipe(Effect.map((now) => now + offset));
-  /** Move the running product's clock forward to `at`, in its time. */
-  const advanceTo = (at: number) =>
-    Effect.gen(function* () {
-      const milliseconds = Math.ceil(at - (yield* productNow));
-      expect(milliseconds, "The scenario moves the clock forward only").toBeGreaterThan(0);
-      yield* serverControl("clock/advance", 200, { milliseconds });
-      offset += milliseconds;
-    });
+  const { productNow, advanceTo } = yield* productClock;
   /** Save new configuration for the source, which is new intent. */
   const configure = (channel: string) =>
     api
@@ -155,6 +166,17 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({
       );
   return { app, path, account, issuer, signIn, productNow, advanceTo, configure };
 });
+
+/** An app-account webhook a person sets up at the provider by hand. */
+const manualSetupSource = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
+const team = ${keyProvider("Manual setup wait fixture")};
+const inbound = { account: { app: "team" }, config: object({}), state: object({}),
+  setup: { instructions: "Paste the callback URL into the provider's webhook settings.", signingSecret: "executor" },
+  handle: async () => Response.json({ received: true }) };
+export default defineApp({ app: { accounts: { team } } },
+  async () => ({ tools: router({ ping: query({ input: object({}) }, async () => "pong") }), webhooks: { inbound } }));`;
+const SetupStep = Schema.Struct({ step: Schema.Literal("configure"), revision: Schema.String });
+const SetupResult = Schema.Struct({ id: Schema.String, status: Schema.String });
 
 /** The legacy storage statement that reads a source's stored row. */
 const sourceRow = (app: string, account: string) => ({
@@ -371,7 +393,10 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source retry backoff",
               expect(yield* checks, "The due tick checked the accounts once").toHaveLength(count);
               return { from, to };
             });
-          /** The stored row after `retries` checks found the account still waiting. */
+          /**
+           * The stored row after the attempt that found the account waiting and `retries - 1`
+           * checks that found it still waiting.
+           */
           const waits = (
             window: { readonly from: number; readonly to: number },
             retries: number,
@@ -385,11 +410,11 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source retry backoff",
                 retries,
                 lease: null,
               });
-              // The check completed inside the window, so its wait is exactly `delay`.
+              // The attempt or check completed inside the window, so its wait is exactly `delay`.
               expect(row.lease_until).toBeGreaterThanOrEqual(window.from + delay);
               expect(row.lease_until).toBeLessThanOrEqual(window.to + delay);
               yield* evidence.step(
-                `${retries} checks found the account waiting; the next is ${delay / 1000}s later`,
+                `The account was found waiting ${retries} times; the next check is ${delay / 1000}s later`,
                 Effect.void,
               );
               return row;
@@ -406,31 +431,32 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source retry backoff",
             });
 
           // The service ends the grant. Once the access token expires, the next attempt's renewal
-          // marks the account for reconnecting, and the source waits on it.
+          // marks the account for reconnecting, and the source waits on it: that attempt is the
+          // first wait.
           yield* issuer.configure({
             tokenError: { status: 400, body: { error: "invalid_grant" } },
           });
           yield* advanceTo((yield* productNow) + 60_000);
+          const ended = yield* productNow;
           yield* configure("ended");
           yield* settleWebhookSources(
             actors.owner,
             path,
             sourcesAre({ [account]: { status: "needs-setup", failure: "accounts" } }),
           );
+          const one = yield* waits({ from: ended, to: yield* productNow }, 1, 30_000);
           yield* issuer.configure({ tokenError: null });
           const refreshes = (yield* issuer.metrics).refreshes;
           // A stopping product delivers every span it recorded, so the count starts from here.
-          const waiting = yield* stored;
-          expect(waiting).toMatchObject({ status: "needs-setup", failure: "accounts", retries: 0 });
           const initial = (yield* checks).length;
 
           // Each check that finds the account still waiting doubles the next wait.
-          const one = yield* waits(yield* check(initial + 1, waiting.lease_until), 1, 30_000);
-          const two = yield* waits(yield* check(initial + 2, one.lease_until), 2, 60_000);
+          const two = yield* waits(yield* check(initial + 1, one.lease_until), 2, 60_000);
           // Past the 30 seconds an earlier wait lasted, the source still waits.
-          yield* holdsAt(two.lease_until - 15_000, initial + 2);
-          const three = yield* waits(yield* check(initial + 3, two.lease_until), 3, 120_000);
-          yield* holdsAt(three.lease_until - 50_000, initial + 3);
+          yield* holdsAt(two.lease_until - 15_000, initial + 1);
+          const three = yield* waits(yield* check(initial + 2, two.lease_until), 3, 120_000);
+          // Past the 60 seconds an earlier wait lasted, the source still waits.
+          yield* holdsAt(three.lease_until - 50_000, initial + 2);
           expect(
             (yield* issuer.metrics).refreshes,
             "A waiting source asks the token endpoint nothing",
@@ -448,6 +474,129 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source retry backoff",
             yield* productNow,
             "The source resumed before its next check was due",
           ).toBeLessThan(three.lease_until);
+          expect(yield* stored).toMatchObject({
+            status: "ready",
+            failure: null,
+            retries: 0,
+            lease: null,
+          });
+        }),
+      ),
+    { timeout: 240_000 },
+  );
+
+  it.effect(
+    scenarios.webhookSourceSetupWait.title,
+    (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const api = yield* Api,
+            actors = yield* Actors,
+            evidence = yield* Evidence,
+            telemetry = yield* Telemetry;
+          const { prefix, app, path, connect } = yield* appLinksFixture([
+            { path: "index.ts", content: manualSetupSource },
+          ]);
+          const { productNow, advanceTo } = yield* productClock;
+
+          // Linking an account makes it the app's webhook source, whose webhook waits for a person
+          // to set it up at the provider.
+          const linked = yield* productNow;
+          const account = yield* connect(actors.owner, "app", "team", "manual-setup-key");
+          yield* settleWebhookSources(
+            actors.owner,
+            path,
+            sourcesAre({ [account]: { status: "needs-setup", failure: "configuration" } }),
+          );
+          const [subscription] = (yield* webhookSubscriptions(actors.owner, path)).filter(
+            (row) => row.sourceAccount === account && row.status === "setup-required",
+          );
+          if (subscription === undefined)
+            return yield* Effect.die(new Error("The manual webhook is missing"));
+          const setupPath = `${prefix}/webhook-setup/${app.id}/${subscription.id}`;
+          // A finished setup stays active until a manager removes it by hand, which the app's
+          // removal waits for.
+          yield* Effect.addFinalizer(() =>
+            Effect.gen(function* () {
+              yield* api.request(actors.owner, "DELETE", setupPath);
+              yield* api.request(actors.owner, "POST", `${setupPath}/confirm-removal`);
+            }).pipe(Effect.orDie),
+          );
+
+          const stored = storedRow(legacyStorage([sourceRow(app.id, account)]));
+          /** Delivered spans of the source's attempts. */
+          const attempts = telemetry
+            .spans("sdk.webhooks.reconcileSource", {
+              "executor.app.id": app.id,
+              "executor.account.id": account,
+            })
+            .pipe(Effect.orDie);
+          /** The stored row after `retries` attempts in a row found the setup unfinished. */
+          const waits = (
+            window: { readonly from: number; readonly to: number },
+            retries: number,
+            delay: number,
+          ) =>
+            Effect.gen(function* () {
+              const row = yield* stored;
+              expect(row).toMatchObject({
+                status: "needs-setup",
+                failure: "configuration",
+                retries,
+                lease: null,
+              });
+              // The attempt completed inside the window, so its wait is exactly `delay`.
+              expect(row.lease_until).toBeGreaterThanOrEqual(window.from + delay);
+              expect(row.lease_until).toBeLessThanOrEqual(window.to + delay);
+              yield* evidence.step(
+                `${retries} attempts found the setup unfinished; the next is ${delay / 1000}s later`,
+                Effect.void,
+              );
+              return row;
+            });
+
+          // The attempt that found the setup unfinished waits 30 seconds.
+          const one = yield* waits({ from: linked, to: yield* productNow }, 1, 30_000);
+          // A stopping product delivers every span it recorded, so the count starts from here.
+          const initial = yield* spansReach(attempts, 1);
+
+          // Once they pass, the next tick tries again, still finds it unfinished and waits twice
+          // as long.
+          const from = yield* productNow;
+          yield* advanceTo(one.lease_until + 1);
+          yield* spansReach(attempts, initial + 1);
+          const two = yield* waits({ from, to: yield* productNow }, 2, 60_000);
+          // Past the 30 seconds the first wait lasted, it still waits.
+          yield* advanceTo(two.lease_until - 15_000);
+          yield* Effect.sleep(quiet);
+          expect(yield* attempts, "No attempt ran before the next was due").toHaveLength(
+            initial + 1,
+          );
+
+          // A manager finishes the setup. That runs the source at once, well before its next
+          // attempt was due, and it is ready.
+          const opened = yield* okBody(
+            SetupStep,
+            yield* api.request(actors.owner, "GET", setupPath),
+          );
+          expect(
+            yield* okBody(
+              SetupResult,
+              yield* api.request(actors.owner, "POST", setupPath, {
+                revision: opened.revision,
+                state: {},
+              }),
+            ),
+          ).toMatchObject({ id: subscription.id, status: "active" });
+          yield* settleWebhookSources(
+            actors.owner,
+            path,
+            sourcesAre({ [account]: { status: "ready", failure: null } }),
+          );
+          expect(yield* productNow, "The source ran before its next attempt was due").toBeLessThan(
+            two.lease_until,
+          );
           expect(yield* stored).toMatchObject({
             status: "ready",
             failure: null,

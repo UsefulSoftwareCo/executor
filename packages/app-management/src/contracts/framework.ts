@@ -2,6 +2,7 @@
 import { Context, Schema, type Effect } from "effect";
 import type { HttpApiMiddleware } from "effect/http-api";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
+import { RequestRejection } from "@executor-js/sdk/core";
 
 const Entry = Schema.Struct({
   symbol: Schema.String,
@@ -91,7 +92,7 @@ export const frameworkApi = <I extends HttpApiMiddleware.AnyId, S>(
 ) => {
   const params =
     prefix === "/api" ? Schema.Struct({}) : Schema.Struct({ organization: Schema.NonEmptyString });
-  return HttpApi.make("framework").add(
+  const api = HttpApi.make("framework").add(
     HttpApiGroup.make("framework")
       .add(
         HttpApiEndpoint.get("release", "/framework/release", {
@@ -133,4 +134,5 @@ export const frameworkApi = <I extends HttpApiMiddleware.AnyId, S>(
       .prefix(prefix)
       .middleware(access),
   );
+  return api.middleware(RequestRejection);
 };

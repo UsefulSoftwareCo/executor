@@ -40,6 +40,7 @@ export const emptyAggregate = (runId: string): V1ImportAggregate => ({
   artifacts: [],
   flags: { sso: [], ssoUnread: [], overFreeMemberLimit: [], paid: [] },
   vaultFailures: [],
+  splitIntegrations: [],
 });
 
 const sum = (
@@ -119,7 +120,7 @@ export const addReports = (
     slugChanges: [
       ...aggregate.slugChanges,
       ...reports.flatMap((report) =>
-        report.slug?.changed === true
+        report.slug?.changed === true || report.slug?.displaced !== undefined
           ? [{ organization: report.organization, ...report.slug }]
           : [],
       ),
@@ -192,6 +193,10 @@ export const addReports = (
     vaultFailures: [
       ...aggregate.vaultFailures,
       ...listed(reports, (report) => report.vaultFailures),
+    ],
+    splitIntegrations: [
+      ...(aggregate.splitIntegrations ?? []),
+      ...listed(reports, (report) => report.splitIntegrations ?? []),
     ],
   };
 };

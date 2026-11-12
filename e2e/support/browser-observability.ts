@@ -83,7 +83,7 @@ export const injectDashboardResponse = (slug: string, body: string, status: numb
     // Pages render on the server with their data, so the browser reads resources only when it
     // navigates to them itself.
     yield* browser.use("Open a page that does not read resources", (page) =>
-      page.goto(`/org/${slug}/connect`),
+      page.goto(`/org/${slug}/organization`),
     );
     yield* browser.use("Navigate to Apps in the browser", (page) =>
       page.getByRole("navigation").getByRole("link", { name: /^Apps/ }).click(),

@@ -2,6 +2,7 @@ import { Match, Option, Predicate, Redacted, Schema } from "effect";
 import { CacheError, cacheLimits } from "@executor-js/app-cache/contracts";
 import { OpenapiError } from "../contracts/openapi.ts";
 import { OpenapiCompileError } from "../contracts/openapi-compile.ts";
+import { defaultOpenapiErrorLimits } from "../contracts/api-response-error.ts";
 import { FetchOptionUnsupported, NetworkRefused } from "../contracts/network.ts";
 import {
   McpError as HostMcpError,
@@ -11,8 +12,13 @@ import {
 import { McpCredentialsUnverified, McpError } from "../contracts/mcp.ts";
 import { SkillLoadFailed } from "../contracts/skills.ts";
 import type { ProviderError } from "../contracts/provider-error.ts";
+import {
+  GraphqlError,
+  maxGraphqlStatedFieldLength,
+  type GraphqlStatedError,
+} from "../contracts/graphql.ts";
 import { providerError } from "./provider-error.ts";
-import { isShortenedUpstream } from "./upstream-error.ts";
+import { isShortenedStated } from "./upstream-error.ts";
 import {
   FailureCode,
   FailureFieldName,
@@ -131,10 +137,26 @@ export const accountFieldSecrets = (accounts: unknown) => {
 export const accountSecrets = (accounts: Redacted.Redacted<ResolvedAccounts>) =>
   accountFieldSecrets(Redacted.value(accounts));
 
-/** Replace every whole account secret in the text. */
+/**
+ * The spellings a secret can have in text: as is, inside a JSON string, and URL-encoded, longest
+ * first. A text with a lone surrogate has no URL encoding.
+ */
+const secretSpellings = (secrets: readonly string[]) =>
+  [
+    ...new Set(
+      secrets.flatMap((secret) => [
+        secret,
+        JSON.stringify(secret).slice(1, -1),
+        ...(/\p{Cs}/u.test(secret) ? [] : [encodeURIComponent(secret)]),
+      ]),
+    ),
+  ].sort((a, b) => b.length - a.length);
+
+/** Replace every whole account secret in the text, in each of its spellings. */
 const replaceSecrets = (text: string, secrets: readonly string[]) => {
   let redacted = text;
-  for (const secret of secrets) redacted = redacted.split(secret).join("[redacted]");
+  for (const secret of secretSpellings(secrets))
+    redacted = redacted.split(secret).join("[redacted]");
   return redacted;
 };
 
@@ -174,11 +196,18 @@ export const redactUpstream = (
   secrets: readonly string[],
 ): UpstreamError | undefined => {
   if (upstream?.message === undefined) return upstream;
-  const message = isShortenedUpstream(upstream.message)
-    ? `${replaceSecretStart(replaceSecrets(upstream.message.slice(0, -1), secrets), secrets)}…`
-    : replaceSecrets(upstream.message, secrets);
+  const message = redactStated(upstream.message, secrets, maxUpstreamMessageLength);
   return { code: upstream.code, message: bound(message, maxUpstreamMessageLength) };
 };
+
+/**
+ * Replace account secrets in text a service stated, bounded to `maximum` where it was read. Text
+ * that bound shortened can end partway through a secret; that part is replaced too.
+ */
+const redactStated = (text: string, secrets: readonly string[], maximum: number) =>
+  isShortenedStated(text, maximum)
+    ? `${replaceSecretStart(replaceSecrets(text.slice(0, -1), secrets), secrets)}…`
+    : replaceSecrets(text, secrets);
 
 /**
  * A provider failure as it leaves the bundle: in the phase it happened, unless its raiser named a
@@ -237,6 +266,14 @@ const ownCode = (error: Error, secrets: readonly string[]) =>
   Predicate.hasProperty(error, "code") && Schema.is(FailureCode)(error.code) && error.code !== ""
     ? boundText(error.code, secrets, 128)
     : undefined;
+
+/**
+ * The `code` of the error the thrown one wraps. `ctx.fetch` rejects with an `HttpClientError` whose
+ * cause is the platform's rejection, which carries the code, as when Executor's network refuses its
+ * host's API document of another revision.
+ */
+const causeCode = (error: Error, secrets: readonly string[]) =>
+  error.cause instanceof Error ? ownCode(error.cause, secrets) : undefined;
 
 /** Properties that are the error itself, or that it already carries in its own slot. */
 const reservedFields = new Set(["name", "message", "stack", "cause", "_tag"]);
@@ -304,9 +341,102 @@ const openapiFailureMessage = (error: OpenapiError) => {
     : `${response}, which matches no error with a message in the API's OpenAPI document.`;
 };
 
+/** What the client was doing when a GraphQL server failed. */
+const graphqlStages = {
+  discover: "while Executor read its schema",
+  call: "to this tool call",
+} satisfies Record<GraphqlError["phase"], string>;
+
+/**
+ * A response path such as `projectCreate.input.items[0]`, bounded; unusual names are quoted.
+ * Secrets are replaced in each segment the server stated before it is quoted.
+ */
+const graphqlPathText = (
+  path: NonNullable<GraphqlStatedError["path"]>,
+  secrets: readonly string[],
+) =>
+  bound(
+    path
+      .map((segment, index) => {
+        if (typeof segment === "number") return `[${segment}]`;
+        const name = redactStated(segment, secrets, maxGraphqlStatedFieldLength);
+        return /^[_A-Za-z][_0-9A-Za-z]*$/u.test(name)
+          ? index === 0
+            ? name
+            : `.${name}`
+          : `[${JSON.stringify(name)}]`;
+      })
+      .join(""),
+    maxGraphqlStatedFieldLength,
+  );
+
+/**
+ * One error a GraphQL server stated: its quoted message, path and scalar `extensions`. Secrets are
+ * replaced in the text the server stated before it is quoted.
+ */
+const graphqlStatedText = (
+  { message, path, extensions }: GraphqlStatedError,
+  secrets: readonly string[],
+) => {
+  const field = (text: string) => redactStated(text, secrets, maxGraphqlStatedFieldLength);
+  const entries = Object.entries(extensions ?? {}).map(
+    ([name, value]) =>
+      `${name}: ${JSON.stringify(typeof value === "string" ? field(value) : value)}`,
+  );
+  return `${JSON.stringify(redactStated(message, secrets, maxUpstreamMessageLength))}${
+    path === undefined ? "" : ` at ${graphqlPathText(path, secrets)}`
+  }${entries.length === 0 ? "" : ` (${entries.join(", ")})`}`;
+};
+
+/** Why Executor did not read a refused request's body. */
+const unreadBodies = {
+  too_large: `Executor did not read its response body, which was larger than ${defaultOpenapiErrorLimits.maxBodyBytes / 1024} KiB.`,
+  incomplete: "Executor did not read its response body, which did not arrive in time.",
+} satisfies Record<NonNullable<GraphqlError["unreadBody"]>, string>;
+
+/**
+ * Fixed text from the safe fields, then the errors the server stated in its response's `errors`
+ * list, quoted as its statement. Server URLs, headers and other response content never enter the
+ * message.
+ */
+const graphqlFailureMessage = (error: GraphqlError, secrets: readonly string[]) => {
+  const stage = graphqlStages[error.phase];
+  const answered = error.status === undefined ? "answered" : `answered HTTP ${error.status}`;
+  const explanation = Match.value(error.reason).pipe(
+    Match.when("timeout", () => `The GraphQL server did not respond in time ${stage}.`),
+    Match.when("unauthorized", () => `The GraphQL server rejected the credentials ${stage}.`),
+    Match.when(
+      "invalid_response",
+      () => `The GraphQL server returned a response Executor could not use ${stage}.`,
+    ),
+    Match.when("invalid_input", () =>
+      error.phase === "call"
+        ? "The input could not be encoded as a GraphQL request for this tool."
+        : "The GraphQL endpoint URL or connection settings are invalid.",
+    ),
+    Match.when("request", () =>
+      error.status === undefined
+        ? `The request to the GraphQL server failed ${stage}.`
+        : `The GraphQL server ${answered} ${stage}.`,
+    ),
+    Match.when("execution", () => `The GraphQL server ${answered} with errors ${stage}.`),
+    Match.exhaustive,
+  );
+  if (error.unreadBody !== undefined) return `${explanation} ${unreadBodies[error.unreadBody]}`;
+  const errors = error.errors ?? [];
+  if (errors.length === 0) return explanation;
+  const total = error.stated ?? errors.length;
+  const more = total - errors.length;
+  return `${explanation} It stated${total === 1 ? "" : ` ${total} errors`}: ${errors
+    .map((stated) => graphqlStatedText(stated, secrets))
+    .join("; ")}.${
+    more === 0 ? "" : ` ${more} more ${more === 1 ? "error is" : "errors are"} not shown.`
+  }`;
+};
+
 /**
  * Describe what an operation raised for the app's own caller. App data failures keep their
- * reason as a code, as do app cache failures and OpenAPI and MCP service failures, such as an
+ * reason as a code, as do app cache failures and OpenAPI, GraphQL and MCP service failures, such as an
  * `mcpHealth` check that cannot reach its server or cannot verify the credentials; any other thrown
  * value is the app's own error, with its own code and scalar fields. Account secrets are replaced.
  */
@@ -325,6 +455,13 @@ export const failureDetail = (error: unknown, secrets: readonly string[]): Failu
       errorName: "OpenapiError",
       code: error.reason,
       message: boundFailureMessage(openapiFailureMessage(error), secrets),
+    };
+  if (Schema.is(GraphqlError)(error))
+    return {
+      source: "service",
+      errorName: "GraphqlError",
+      code: error.reason,
+      message: boundFailureMessage(graphqlFailureMessage(error, secrets), secrets),
     };
   if (Schema.is(McpError)(error))
     return {
@@ -366,8 +503,9 @@ export const failureDetail = (error: unknown, secrets: readonly string[]): Failu
       message: boundFailureMessage(error.message, secrets),
     };
   if (error instanceof Error) {
-    const code = ownCode(error, secrets);
-    const fields = ownFields(error, code, secrets);
+    const own = ownCode(error, secrets);
+    const code = own ?? causeCode(error, secrets);
+    const fields = ownFields(error, own, secrets);
     return {
       source: "app",
       errorName: errorName(error),

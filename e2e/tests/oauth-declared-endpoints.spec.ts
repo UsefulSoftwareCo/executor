@@ -204,6 +204,7 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           scopes: ["openid", "read"],
           grant: "authorization_code",
           issuer: `${issuer.origin}/token`,
+          resource: { value: null, source: "none" },
           clients: [],
         });
         // Executor never reads ID tokens, so sign-in and refresh succeed even though these name
@@ -427,6 +428,7 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           scopes: ["read"],
           grant: "authorization_code",
           issuer: issuer.origin,
+          resource: { value: `${issuer.origin}/mcp`, source: "metadata" },
           clients: [],
         });
         const signInWith = (

@@ -2,6 +2,7 @@
 import { StorageError } from "@executor-js/sdk/core";
 import { Effect, Exit, Schedule, Schema } from "effect";
 import { SqlClient } from "effect/sql";
+import { traceFailure } from "@executor-js/telemetry/failed-span";
 import { OrganizationId } from "../contracts/organization.ts";
 import {
   OrganizationDefaults,
@@ -210,6 +211,10 @@ export const drainProvisioning = (services: ProvisioningServices) =>
       Effect.flatMap(
         Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.String }))),
       ),
+      // Self-host polls every second. The poll records nothing, unless it fails; the jobs it
+      // finds are traced.
+      Effect.withTracerEnabled(false),
+      traceFailure("hosted.provisioning.poll"),
     );
     for (const job of jobs)
       yield* provision(job.id, services).pipe(

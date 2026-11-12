@@ -19,6 +19,7 @@ import {
   OwnerId,
   HttpUrl,
   StorageError,
+  publishingDomain,
 } from "@executor-js/sdk/core";
 import {
   OrganizationIconUrl,
@@ -26,7 +27,12 @@ import {
   UploadedOrganizationIcon,
   type OrganizationIconContentType,
 } from "./organization-icon.ts";
-import { AuthenticationUnavailable, Forbidden, Unauthorized, RequireUser } from "./auth.ts";
+import {
+  AuthenticationUnavailable,
+  Forbidden,
+  Unauthorized,
+  RequireBrowserSession,
+} from "./auth.ts";
 
 /** Better Auth organization identity; never a caller-selected SDK owner. */
 export const OrganizationId = Schema.NonEmptyString.pipe(Schema.brand("OrganizationId"));
@@ -106,8 +112,6 @@ export type OrganizationForbidden = typeof OrganizationForbidden.Type;
 export class CurrentOrganization extends Context.Service<CurrentOrganization, OrganizationAccess>()(
   "hosted/CurrentOrganization",
 ) {}
-/** Public packages are published under the organization's current slug on this domain. */
-export const publishingDomain = "executor.community";
 /** An organization's publishing scope. It follows renames; the slug it had is free to reuse. */
 export const publishingScope = (slug: string) => `${slug}.${publishingDomain}`;
 /** The slug a publishing scope names, or undefined for a scope on another domain. */
@@ -199,14 +203,14 @@ export const HostedOrganization = HttpApiGroup.make("organization")
       payload: UploadedOrganizationIcon,
       success: Schema.Struct({ logo: OrganizationIconUrl }),
       error: [OrganizationIconInvalid, OrganizationIconUnavailable, OrganizationForbidden],
-    }).middleware(RequireUser),
+    }).middleware(RequireBrowserSession),
   )
   .add(
     HttpApiEndpoint.get("icon", "/api/organizations/:organization/icons/:key", {
       params: { organization: OrganizationReference, key: OrganizationIconKey },
       success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
       error: [OrganizationIconUnavailable, OrganizationIconNotFound],
-    }).middleware(RequireUser),
+    }).middleware(RequireBrowserSession),
   )
   .add(
     HttpApiEndpoint.get("catalog", "/api/organizations/:organization/catalog", {

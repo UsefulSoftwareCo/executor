@@ -361,9 +361,7 @@ export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON
     const accounts: string[] = [];
     for (let account = 0; account < app.accounts; account++) {
       const connection = yield* client
-        .request("POST", `${appPath}/accounts/user/service/connections`, {
-          destination: { kind: "shared", audience: { kind: "everyone" } },
-        })
+        .request("POST", `${appPath}/accounts/user/service/connections`, {})
         .pipe(
           Effect.flatMap((response) => expectOk(`connection ${app.name}`, response)),
           Effect.flatMap(Schema.decodeUnknownEffect(Id)),

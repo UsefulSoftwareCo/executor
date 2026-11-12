@@ -1,4 +1,4 @@
-import { Context, Deferred, Effect, Layer, Redacted, Schema } from "effect";
+import { Context, Deferred, Effect, Layer, Option, Redacted, Schema } from "effect";
 import { expect } from "@effect/vitest";
 import { randomUUID } from "node:crypto";
 import type { Locator, Page } from "playwright";
@@ -147,6 +147,7 @@ const make = Effect.gen(function* () {
   const endpoint = `${targetHosts(target).mcp}/mcp`;
   const agentsPath = /^\/api\/organizations\/[^/]+\/mcp-agents$/u;
   const agentsRead = (url: URL) => agentsPath.test(url.pathname);
+  const script = (url: URL) => url.pathname.endsWith(".js");
   const phone = { width: 390, height: 844 },
     desktop = { width: 1440, height: 960 };
   /** A small phone, where Claude's guide is taller than the screen. */
@@ -333,8 +334,12 @@ const make = Effect.gen(function* () {
         yield* browser.use("Return to agent setup", (page) => page.bringToFront());
       }),
     );
-  /** The next successful connection check, read as the page received it. */
-  const nextCheck = (label: string) =>
+  /**
+   * The next successful connection check that lists every agent in `listing`, read as the page
+   * received it. A check the page sent before an agent connected does not list it yet, and one the
+   * page cancelled before its body arrived was never received.
+   */
+  const nextCheck = (label: string, listing: ReadonlyArray<string> = []) =>
     browser
       .use(label, (page) =>
         page
@@ -342,7 +347,14 @@ const make = Effect.gen(function* () {
             (response) =>
               agentsRead(new URL(response.url())) &&
               response.request().method() === "GET" &&
-              response.status() === 200,
+              response.status() === 200 &&
+              response.json().then(
+                (body) =>
+                  Option.exists(Schema.decodeUnknownOption(ListedAgents)(body), (agents) =>
+                    listing.every((name) => agents.some((agent) => agent.name === name)),
+                  ),
+                () => false,
+              ),
           )
           .then((response) => response.json()),
       )
@@ -448,21 +460,18 @@ const make = Effect.gen(function* () {
     yield* browser.checkpoint("Any MCP client connected from the assistants");
     yield* onPhone("Any MCP client connected from the assistants", shifts, nextStep);
     yield* chooseClaude(shifts);
-    // A later check that lists the earlier agent must not call Claude connected.
-    expect(yield* nextCheck("A connection check lists the earlier agent")).toContain(
-      "Earlier agent",
-    );
-    yield* stillWaiting("the earlier agent");
-    yield* browser.checkpoint("Claude setup waiting for its connection");
-    yield* onPhone("Claude setup waiting for its connection", shifts, skipStep);
-
-    // An Executor HTTP API client authorized now is a new grant, but not an assistant connection.
+    // The earlier agent connected before the guide read its baseline, and an Executor HTTP API
+    // client authorized now is a new grant but not an assistant connection. A later check that
+    // lists both must not call Claude connected.
     yield* shifts.phase("An API client connects");
     yield* authorizeAssistant("Executor API client", "api");
-    expect(yield* nextCheck("A connection check lists the API client")).toContain(
+    yield* nextCheck("A connection check lists the earlier agent and the API client", [
+      "Earlier agent",
       "Executor API client",
-    );
-    yield* stillWaiting("an API client");
+    ]);
+    yield* stillWaiting("the earlier agent and an API client");
+    yield* browser.checkpoint("Claude setup waiting for its connection");
+    yield* onPhone("Claude setup waiting for its connection", shifts, skipStep);
 
     yield* shifts.phase("All assistants");
     yield* browser.use("Go back to the assistants", (page) =>
@@ -482,11 +491,13 @@ const make = Effect.gen(function* () {
     yield* offersSkip("on Claude's guide before it connects");
     const skipOnGuide = yield* forwardBox("Skip for now on Claude's guide", skipStep);
 
-    // The assistant connects while checks fail; retrying keeps this attempt's baseline.
+    // The assistant connects while checks fail: a failed check never calls it connected, and
+    // retrying keeps this attempt's baseline.
     yield* shifts.phase("Connection checks fail");
     yield* browser.use("Fail the connection checks", (page) =>
       page.route(agentsRead, (route) => route.abort("failed")),
     );
+    yield* authorizeAssistant("Onboarding assistant");
     yield* browser.use("A failed check is reported", (page) =>
       page.getByText("Couldn’t check the connection", { exact: true }).waitFor(),
     );
@@ -496,7 +507,6 @@ const make = Effect.gen(function* () {
       ),
     ).toBe(0);
     yield* browser.checkpoint("A failed connection check offers a retry");
-    yield* authorizeAssistant("Onboarding assistant");
     yield* shifts.phase("Retry the connection check");
     yield* browser.use("Restore the connection checks and try again", (page) =>
       page
@@ -646,22 +656,31 @@ const make = Effect.gen(function* () {
       // The entry keeps the baseline it read when the guide was first shown, so a reload still
       // counts the phone assistant as new. Its scripts wait for the whole document, so the guide
       // hydrates with the server's read, which already lists the phone assistant, as on a slow phone.
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          const scripts = yield* holdQuery(/\.js$/u, "continue", { allRequests: true });
-          expect(
-            yield* browser.use("Reload Claude's guide and receive its whole document", (page) =>
-              page
-                .reload({ waitUntil: "commit" })
-                .then((response) =>
-                  response === null ? false : response.finished().then(() => true),
-                ),
-            ),
-          ).toBe(true);
-          yield* scripts.requested;
-          yield* scripts.release;
-        }),
-      );
+      // The step lets them go itself: every step ends by waiting for the page to respond to input,
+      // which it cannot do while its scripts are held.
+      expect(
+        yield* browser.use(
+          "Reload Claude's guide; its scripts wait for its whole document",
+          (page) => {
+            let held = 0;
+            const received = page.waitForEvent(
+              "requestfinished",
+              (request) => request.isNavigationRequest() && request.frame() === page.mainFrame(),
+            );
+            return page
+              .route(script, (route) => {
+                held += 1;
+                return received.then(
+                  () => route.fallback(),
+                  () => route.fallback(),
+                );
+              })
+              .then(() => Promise.all([received, page.reload()]))
+              .finally(() => page.unroute(script))
+              .then(() => held);
+          },
+        ),
+      ).toBeGreaterThan(0);
       const guide = yield* observeLayoutShifts;
       yield* connected("Phone assistant", "after reloading the guide");
       expect(yield* setupSearch).toBe("?assistant=claude");

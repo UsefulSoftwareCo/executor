@@ -96,7 +96,13 @@ export const makeSkills = (
                 state,
                 (context) =>
                   runtime
-                    .skills({ app: app.id, build: state.version.build, sources, ...context })
+                    .skills({
+                      app: app.id,
+                      build: state.version.build,
+                      hostApi: declarations.hostApi(state.version),
+                      sources,
+                      ...context,
+                    })
                     .pipe(
                       // A service's rejection names the selected account, as in tool listing.
                       Effect.mapError((error) =>

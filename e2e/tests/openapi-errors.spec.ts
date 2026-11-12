@@ -1,5 +1,5 @@
 import { expect, layer } from "@effect/vitest";
-import { Effect, Layer, Redacted, Schema } from "effect";
+import { Clock, Effect, Layer, Redacted, Schema } from "effect";
 import { openapiAppFiles } from "../support/authored-templates.ts";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -17,6 +17,8 @@ import {
   openapiMemoryRecovery,
   openapiConflictRecovery,
   openapiDeniedMessage,
+  openapiSessionMessage,
+  openapiChallengeMessage,
   openapiOAuthMessage,
   openapiConflictMessage,
   openapiRetryRecovery,
@@ -28,6 +30,7 @@ import {
   unknownOutcomeAction,
   unknownOutcomeRecovery,
 } from "../support/write-outcome.ts";
+import { siteless } from "../support/failure-site.ts";
 
 const Recovery = Schema.Struct({ action: Schema.String, instructions: Schema.String });
 const Failure = Schema.Struct({
@@ -159,7 +162,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         expect(error.response?.status).toBe(422);
         expect(error.response?.message).toBe(openapiMemoryMessage);
         expect(error.response?.recovery).toEqual(openapiMemoryRecovery);
-        expect(error.message).toBe(
+        expect(siteless(error.message)).toBe(
           `BuildMemoryExceeded (HTTP 422): ${openapiMemoryMessage} Recovery: ${openapiMemoryRecovery.action} Retryable (unchanged call): no.`,
         );
         // A declared 4xx error is not one a repeat of the same call can fix.
@@ -199,11 +202,17 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           .execution.error;
         expect(extrasError.response?.recovery).toEqual(declaredRecovery("Conflict", 422));
         const conflict = yield* invoke("conflict-recovery");
+        const conflictError = (yield* Schema.decodeUnknownEffect(Failure)(
+          conflict.structuredContent,
+        )).execution.error;
+        expect(siteless(conflictError.message)).toBe(
+          `Conflict (HTTP 422): Read the current revision before saving again. Recovery: ${openapiConflictRecovery.action} Retryable (unchanged call): no.`,
+        );
+        expect(conflictError.message).toMatch(/ Phase: call\. Reference: [0-9a-f]{32}\.$/u);
         expect(conflict.structuredContent).toMatchObject({
           execution: {
             ok: false,
             error: {
-              message: `Conflict (HTTP 422): Read the current revision before saving again. Recovery: ${openapiConflictRecovery.action} Retryable (unchanged call): no.`,
               response: {
                 code: "Conflict",
                 status: 422,
@@ -219,7 +228,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         const deniedError = (yield* Schema.decodeUnknownEffect(Failure)(
           denied403.structuredContent,
         )).execution.error;
-        expect(deniedError.message).toBe(
+        expect(siteless(deniedError.message)).toBe(
           `ExportDenied (HTTP 403): ${openapiDeniedMessage} Recovery: ${declaredRecovery("ExportDenied", 403).action} Retryable (unchanged call): no.`,
         );
         expect(deniedError.response).toEqual({
@@ -236,6 +245,28 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         )).execution.error;
         expect(limited403.response).toMatchObject({ code: "AppProviderFailed", status: 502 });
         expect(limited403.message).toContain("limiting requests");
+        // A declared 401 keeps the credential refusal and quotes the service's own explanation.
+        const session401 = (yield* Schema.decodeUnknownEffect(Failure)(
+          (yield* invoke("declared-unauthorized")).structuredContent,
+        )).execution.error;
+        expect(session401.response).toMatchObject({ code: "AppProviderFailed", status: 502 });
+        expect(session401.response?.message).toContain(
+          `The service reported SessionExpired: ${JSON.stringify(openapiSessionMessage)}.`,
+        );
+        // A Bearer challenge's error takes precedence, so the declared body is not read: a body
+        // that never finishes does not hold the failure for the 2-second error-body read bound.
+        const challengedAt = yield* Clock.currentTimeMillis;
+        const challenged = yield* invoke("challenged-stalled");
+        const challengedMs = (yield* Clock.currentTimeMillis) - challengedAt;
+        yield* evidence.json("openapi-challenged-stalled-401.json", { challengedMs, challenged });
+        const challenged401 = (yield* Schema.decodeUnknownEffect(Failure)(
+          challenged.structuredContent,
+        )).execution.error;
+        expect(challenged401.response).toMatchObject({ code: "AppProviderFailed", status: 502 });
+        expect(challenged401.response?.message).toContain(
+          `invalid_token: ${JSON.stringify(openapiChallengeMessage)}.`,
+        );
+        expect(challengedMs).toBeLessThan(2_000);
         // Input validation names the failing field and expected type without echoing the value.
         const invalidInput = yield* client.use(
           "Call the OpenAPI tool with invalid input",
@@ -255,7 +286,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         const inputError = (yield* Schema.decodeUnknownEffect(Failure)(
           invalidInput.structuredContent,
         )).execution.error;
-        expect(inputError.message).toBe(
+        expect(siteless(inputError.message)).toBe(
           "InputInvalid (HTTP 422): Input failed validation: input.query.mode: Expected string Recovery: Change the input to the shape each problem expects, then call the tool again. Retryable (unchanged call): no.",
         );
         expect(inputError.response).toMatchObject({ code: "InputInvalid", status: 422 });
@@ -284,7 +315,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         )).execution.error;
         // The generated tool is a mutation, and the app's code refused the input after it received
         // the call, so the refusal leads with the instruction not to repeat the call.
-        expect(bodyError.message).toBe(
+        expect(siteless(bodyError.message)).toBe(
           `InputInvalid (HTTP 422): Input failed validation: input: Expected object {path, cookie?, body, contentType?} or object {path, cookie?, body, contentType}, told apart by contentType. Closest is alternative 1, whose problems follow; input.body.ids: Expected array Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expect(JSON.stringify(invalidBody)).not.toContain(openapiSecretMarker);
@@ -308,7 +339,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         yield* evidence.json("mcp-discriminated-body-invalid.json", invalidPet);
         const petError = (yield* Schema.decodeUnknownEffect(Failure)(invalidPet.structuredContent))
           .execution.error;
-        expect(petError.message).toBe(
+        expect(siteless(petError.message)).toBe(
           `InputInvalid (HTTP 422): Input failed validation: input.body: Expected object {petType, meow, ...} or object {petType, bark, ...}, told apart by petType. Closest is alternative 2, whose problems follow; input.body.bark: Missing key. Expected boolean Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expect(petError.message.toLowerCase()).not.toContain("dog");
@@ -433,7 +464,9 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
                 ),
               },
             });
-            expect(failure.message).toMatch(/ Retryable \(unchanged call\): yes\.$/);
+            expect(failure.message).toMatch(
+              / Retryable \(unchanged call\): yes\. Phase: [a-z]+\. Reference: [0-9a-f]{32}\.$/,
+            );
             yield* evidence.json("mcp-provider-bad-gateway.json", result);
             continue;
           }
@@ -520,8 +553,10 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
         );
         yield* evidence.json("openapi-undeclared-404.json", missing);
         expect(
-          (yield* Schema.decodeUnknownEffect(Failure)(missing.structuredContent)).execution.error
-            .message,
+          siteless(
+            (yield* Schema.decodeUnknownEffect(Failure)(missing.structuredContent)).execution.error
+              .message,
+          ),
         ).toBe(
           `ToolCallFailed (HTTP 502): The app's API call failed: GET /items/{item} responded with HTTP 404 (text/plain, ${openapiSecretMarker.length} bytes), which matches no error with a message in the API's OpenAPI document. Recovery: Read the reported error and check the corresponding request or configuration. Retryable (unchanged call): no.`,
         );
@@ -558,7 +593,7 @@ layer(HostedLive, { excludeTestServices: true })("OpenAPI errors", (it) => {
           write.response?.recovery,
           "For a call that only reads, the advice for this failure is: “Wait at least 30 seconds before trying again, at most twice.",
         );
-        expect(write.message).toBe(
+        expect(siteless(write.message)).toBe(
           `AppProviderFailed (HTTP 502): ${write.response?.message} Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expect(JSON.stringify(created)).not.toContain(openapiSecretMarker);
@@ -745,7 +780,7 @@ export default defineApp({}, async () => {
             declaredAdvice(`${openapiRetryRecovery.action} ${openapiRetryRecovery.instructions}`),
           ),
         );
-        expect(conflict.message).toBe(
+        expect(siteless(conflict.message)).toBe(
           `StoreConflict (HTTP 409): ${openapiConflictMessage} Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         // A program can read the same from a caught error.
@@ -775,7 +810,7 @@ export default defineApp({}, async () => {
           invalid.response?.recovery,
           "An API the app calls returned an error its OpenAPI document declares (InvalidRecord, HTTP 422).",
         );
-        expect(invalid.message).toBe(
+        expect(siteless(invalid.message)).toBe(
           `InvalidRecord (HTTP 422): Record names must not be empty. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
 

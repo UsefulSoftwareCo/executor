@@ -74,8 +74,8 @@ const SearchPage = Schema.Struct({
 });
 
 /**
- * An organization's apps and an MCP client that runs programs. Each run returns the result and the
- * request's spans, by operation name, once the execute span is delivered.
+ * An organization's apps and an MCP client that runs programs. Each run returns the result, the
+ * request's trace and its spans, by operation name, once the execute span is delivered.
  */
 const setup = (label: string, apps: ReadonlyArray<{ name: string; source: string }>) =>
   Effect.gen(function* () {
@@ -136,7 +136,7 @@ const setup = (label: string, apps: ReadonlyArray<{ name: string; source: string
           ),
           Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
         );
-        return { ...completed, spans };
+        return { ...completed, spans, trace: request.traceId };
       });
     return { apps: deployed, execute };
   });
@@ -300,7 +300,19 @@ return await tools[name].missing({});`,
 return await tools[name].echo({ text: "x" });`,
         );
         expect(staticBroken.execution).toMatchObject({ ok: false, error: { kind: "ToolFailure" } });
-        expect(dynamicBroken.execution).toEqual(staticBroken.execution);
+        // Each failure names the trace of the request that met it, so only that reference differs.
+        const reference = (run: { trace: string }) => `Reference: ${run.trace}.`;
+        expect(staticBroken.execution.error?.message).toContain(reference(staticBroken));
+        expect(dynamicBroken.execution).toEqual({
+          ok: false,
+          error: {
+            kind: staticBroken.execution.error?.kind,
+            message: staticBroken.execution.error?.message.replace(
+              reference(staticBroken),
+              reference(dynamicBroken),
+            ),
+          },
+        });
         expect(touched(dynamicBroken)).toBe(true);
       }).pipe(Effect.provide(McpClient.layer)),
     ),

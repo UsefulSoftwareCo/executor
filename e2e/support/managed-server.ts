@@ -597,6 +597,18 @@ export const startFreshSelfHost = (
 ) => startIsolatedSelfHost(target, "product", environment).pipe(Effect.map(({ origin }) => origin));
 
 /**
+ * Start an unconfigured product instance as `startFreshSelfHost` does, and return its origin and
+ * the file its output is written to.
+ */
+export const startLoggedSelfHost = (
+  target: typeof Target.Service,
+  environment: Readonly<Record<string, string>> = {},
+) =>
+  startIsolatedSelfHost(target, "product", environment).pipe(
+    Effect.map(({ origin, directory }) => ({ origin, log: `${directory}/server.log` })),
+  );
+
+/**
  * Start an unconfigured product instance as `startFreshSelfHost` does, and return the target that
  * reaches it: its origin, its directory with `server.log`, and the control plane `serverControl`
  * uses to move its clock.

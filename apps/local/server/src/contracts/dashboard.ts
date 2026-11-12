@@ -10,6 +10,7 @@ import {
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { DashboardAppBrowser } from "./app-browser.ts";
 import { DashboardWorkflows, DashboardWebhooks } from "./resources.ts";
+import { RequestRejection } from "@executor-js/sdk/core";
 import { AccountChoiceUnsupported, ToolKind, ToolKindMismatch } from "@executor-js/sdk/core";
 import { AppWorkflowsActive, AccountWorkflowsActive } from "@executor-js/sdk/core";
 import { DashboardSchedules } from "./schedules.ts";
@@ -30,6 +31,7 @@ import {
   AccountNotFound,
   AccountRequired,
   AccountSelectionInvalid,
+  MarkdownUnavailable,
   App,
   AppNotDeployed,
   AppEvaluationFailed,
@@ -490,7 +492,7 @@ const toolErrors = [
 ] as const;
 
 /** Product operations share typed session protection; programmatic SDK routes remain separate. */
-export const DashboardApi = HttpApi.make("local-dashboard").add(
+const dashboardApi = HttpApi.make("local-dashboard").add(
   HttpApiGroup.make("dashboard")
     .add(
       HttpApiEndpoint.get("mcpInstallation", "/dashboard/api/mcp-installation", {
@@ -706,6 +708,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           ...sourceErrors,
           VersionBuildFailed,
           BuildMemoryExceeded,
+          MarkdownUnavailable,
           SkillDefinitionInvalid,
           AppNameTaken,
           AppSlugTaken,
@@ -726,6 +729,7 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
           ...sourceErrors,
           VersionBuildFailed,
           BuildMemoryExceeded,
+          MarkdownUnavailable,
           SkillDefinitionInvalid,
           AppNameTaken,
           AppSlugTaken,
@@ -835,3 +839,5 @@ export const DashboardApi = HttpApi.make("local-dashboard").add(
   DashboardWebhooks.middleware(DashboardAccess),
   DashboardMcpConnections.middleware(DashboardAccess),
 );
+/** Every endpoint answers a request its schema rejects with `RequestInvalid`. */
+export const DashboardApi = dashboardApi.middleware(RequestRejection);

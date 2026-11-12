@@ -101,6 +101,7 @@ export const workerdHostHandler = (options: {
             const worker = yield* appWorker({
               app: seed.app,
               build: seed.build,
+              ...(seed.hostApi === undefined ? {} : { hostApi: seed.hostApi }),
               database: false,
               command: { operation: "workflow-run", name: seed.name, input: seed.input },
               accounts: Redacted.value(context.accounts),

@@ -83,6 +83,14 @@ export interface GeneratedToolRules {
   readonly approvals?: Readonly<Record<string, "always" | "never">>;
   /** Exposed names the app leaves out. */
   readonly omitted?: readonly string[];
+  /**
+   * What a tool the rules do not name gets, for a server that lists its tools as it runs:
+   * `always` asks before it runs, `omitted` leaves it out. `known` are the names the rules decide,
+   * including the ones they leave to the app's default.
+   */
+  readonly otherwise?:
+    | { readonly rule: "always" | "omitted"; readonly known: readonly string[] }
+    | undefined;
 }
 
 /**
@@ -110,7 +118,7 @@ export interface ProtocolAppOptions {
    * Also declare `workspace: provider.many()` in the app scope, for accounts its managers link for
    * everyone, beside each member's own `service` accounts. Each tool takes an account from either.
    */
-  readonly sharedAccounts?: boolean | undefined;
+  readonly appLinkedAccounts?: boolean | undefined;
   /**
    * Also declare `fixed: fixedProvider` in the app scope, whose one account's credentials every
    * request sends under the selected account's own. Only with sign-in methods; the provider then

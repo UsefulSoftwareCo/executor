@@ -24,7 +24,7 @@
  */
 import { Effect, Option } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
-import type { CloudHosts, HostRole } from "../infrastructure/stage.ts";
+import type { CloudHosts, HostRole, RoleHosts } from "../infrastructure/stage.ts";
 import { isBrowserPage, isMcpPath } from "../contracts/browser-pages.ts";
 import { servedOnEdge } from "../contracts/edge-paths.ts";
 import { isSitePage } from "../contracts/site-paths.ts";
@@ -35,18 +35,31 @@ const requestHost = (request: HttpServerRequest.HttpServerRequest) =>
 
 type Route = HostRole | "edge" | "deployment";
 
+/** The role host or edge `host` is, if it is one of them. */
+const roleHostOf = (roles: RoleHosts, host: string | undefined) => {
+  if (host === new URL(roles.origins.app).host) return "app";
+  if (host === new URL(roles.origins.mcp).host) return "mcp";
+  if (host === new URL(roles.origins.api).host) return "api";
+  if (host === new URL(roles.edge).host) return "edge";
+  return undefined;
+};
+
 /** The part of the product a request's host names. */
 const routeOf = (hosts: CloudHosts, host: string | undefined): Route =>
   Option.match(hosts.roles, {
     onNone: () => "deployment" as const,
-    onSome: (roles): Route => {
-      if (host === new URL(roles.origins.app).host) return "app";
-      if (host === new URL(roles.origins.mcp).host) return "mcp";
-      if (host === new URL(roles.origins.api).host) return "api";
-      if (host === new URL(roles.edge).host) return "edge";
-      return "deployment";
-    },
+    onSome: (roles): Route => roleHostOf(roles, host) ?? "deployment",
   });
+
+/**
+ * The role of the host a request to any Cloud Worker was sent to, for records of every Worker's
+ * invocations. The API Worker serves an unnamed host as the deployment origin; here such a host is
+ * `other`, because other Workers receive other hosts: an app's own domain, or the upstream of a
+ * request an app sends out.
+ */
+export const hostRoleOf = (hosts: CloudHosts, host: string | undefined): Route | "other" =>
+  (Option.isSome(hosts.roles) ? roleHostOf(hosts.roles.value, host) : undefined) ??
+  (host === new URL(hosts.deployment).host ? "deployment" : "other");
 
 /** The same path and query on `origin`. */
 const sameRequestAt = (request: HttpServerRequest.HttpServerRequest, origin: string) => {

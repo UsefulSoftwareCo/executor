@@ -5,6 +5,7 @@
  */
 import { Clock, Data, Effect, Option, Redacted, Schema } from "effect";
 import { Base64 } from "effect/encoding";
+import { traceFailure } from "@executor-js/telemetry/failed-span";
 import { DeclaredEvents } from "apps/contracts";
 import {
   AppEventDefinition,
@@ -784,7 +785,11 @@ export const makeEvents = (input: {
           limit: 100,
         }),
       );
-      for (const row of lapsed) yield* stopWith(EventSubscriptionId.make(row.id), "expired");
+      // A host may poll without tracing; the work a pass finds is traced all the same.
+      for (const row of lapsed)
+        yield* stopWith(EventSubscriptionId.make(row.id), "expired").pipe(
+          Effect.withTracerEnabled(true),
+        );
       const due = yield* query(() =>
         db.findMany("eventDeliveries", {
           where: (b) =>
@@ -801,13 +806,19 @@ export const makeEvents = (input: {
         due,
         (row) =>
           claim(row.id).pipe(
-            Effect.flatMap((claimed) => (claimed === null ? Effect.void : attempt(claimed))),
+            traceFailure("sdk.events.claim"),
+            Effect.flatMap((claimed) =>
+              claimed === null
+                ? Effect.void
+                : attempt(claimed).pipe(Effect.withTracerEnabled(true)),
+            ),
             Effect.catch(() => Effect.logWarning("Event delivery attempt failed")),
           ),
         { concurrency: 8, discard: true },
       );
-      // Retention never blocks delivery: it runs after, and its own failure is only logged.
+      // Retention never blocks delivery: it runs after, and its own failure is recorded, not raised.
       yield* cleanup(time).pipe(
+        traceFailure("sdk.events.retention"),
         Effect.catch(() => Effect.logWarning("Event retention cleanup failed")),
       );
       return due.length === maxDeliveries;

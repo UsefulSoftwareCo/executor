@@ -38,6 +38,10 @@ layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) 
           target = yield* Target,
           fs = yield* FileSystem.FileSystem;
         expect(target.metadata.mode).toBe("managed");
+        const cloud = target.metadata.target === "cloud";
+        // Each runtime operation's span names the app it ran and, on Cloud, the organization of
+        // a signed-in caller, so one app's or organization's failures can be told apart.
+        const runtime = cloud ? "runtime.cloud" : "runtime.workerd";
         const upstream = yield* mcpOutcomeFixture;
         const prefix = `/api/organizations/${actors.organization.id}`;
         const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
@@ -111,6 +115,18 @@ export default defineApp({}, async () => {
           expect(
             trace.data.find(({ span }) => span.operationName === "sdk.tools.call")?.span.status,
           ).toBe(failed ? "error" : "ok");
+          const tenant = {
+            "executor.app.id": app.id,
+            ...(cloud ? { "executor.organization.id": actors.organization.id } : {}),
+          };
+          expect(
+            trace.data.find(({ span }) => span.operationName === `${runtime}.call`)?.span.tags,
+          ).toMatchObject(tenant);
+          if (cloud)
+            expect(
+              trace.data.find(({ span }) => span.operationName === "runtime.app.remote.invoke")
+                ?.span.tags,
+            ).toMatchObject(tenant);
           yield* evidence.json(`${tool}-trace.json`, trace);
           if (target.metadata.target === "cloud") {
             const events = yield* fs.readFileString(`${target.directory}/analytics.ndjson`).pipe(

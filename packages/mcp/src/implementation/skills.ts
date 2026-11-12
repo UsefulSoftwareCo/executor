@@ -20,7 +20,7 @@ import {
   type SkillsResult,
   type SkillSummary,
 } from "../contracts/skills.ts";
-import { diagnosticSummary, reportFailure } from "./diagnostics.ts";
+import { diagnosticSummary, failureReference, reportFailure } from "./diagnostics.ts";
 
 const summaries = (catalog: AppSkillCatalog): readonly (typeof SkillSummary.Type)[] =>
   catalog.skills.map((skill) => ({
@@ -32,11 +32,24 @@ const summaries = (catalog: AppSkillCatalog): readonly (typeof SkillSummary.Type
 /** The agent reads why a read failed; the original failure reports as the same REST read would. */
 const failure = (error: Error) =>
   reportFailure(error).pipe(
-    Effect.andThen(Effect.fail(new SkillAccessFailed({ reason: diagnosticSummary(error) }))),
+    Effect.andThen(failureReference),
+    Effect.flatMap((reference) =>
+      Effect.fail(
+        new SkillAccessFailed({
+          reason: diagnosticSummary(error, { operation: "discover", reference }),
+        }),
+      ),
+    ),
   );
 /** An app the listing could not read, listed beside the others' skills. */
 const unavailable = <A extends object>(error: Error, entry: A) =>
-  reportFailure(error).pipe(Effect.as({ ...entry, reason: diagnosticSummary(error) }));
+  reportFailure(error).pipe(
+    Effect.andThen(failureReference),
+    Effect.map((reference) => ({
+      ...entry,
+      reason: diagnosticSummary(error, { operation: "discover", reference }),
+    })),
+  );
 
 type ListedApp = Pick<App, "id" | "name" | "slug" | "activeVersion">;
 

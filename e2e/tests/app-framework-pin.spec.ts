@@ -465,7 +465,8 @@ const startupPin = (surface: Surface) =>
  * Cloudflare Artifacts, so this organization's apps report `failed` and keep the run retrying while
  * the scenario observes it. Each retrying pass records its next start, 30 seconds after the first
  * pass and doubling; no pass starts before the previous one's time, and a tick before it starts
- * none. Nothing is ever applied.
+ * none. Nothing is ever applied. A tick's `job.dispatch` records a failed or partial run when items
+ * it handled failed, and a completed one when it only waited out the backoff.
  */
 const cloudReport = (surface: Surface) =>
   Effect.gen(function* () {
@@ -481,10 +482,12 @@ const cloudReport = (surface: Surface) =>
     );
     yield* Effect.addFinalizer(() => surface.cleanup(app).pipe(Effect.ignore));
     const passes = dataStepPasses(log, step);
-    // Delivered `data_step.advance` spans of ticks that found the step waiting out its backoff.
+    // The traces of ticks that found the step waiting out its backoff.
     const waiting = telemetry
-      .spans("data_step.advance", { "data_step.name": step, "data_step.status": "waiting" })
-      .pipe(Effect.map((spans) => spans.length));
+      .search("data_step.advance", { "data_step.name": step, "data_step.status": "waiting" })
+      .pipe(Effect.map((found) => new Set(found.data.map(({ traceId }) => traceId))));
+    const dispatches = (attributes: Readonly<Record<string, string>>) =>
+      telemetry.search("job.dispatch", { "executor.job": "data-steps", ...attributes });
     const tick = Effect.scoped(
       http
         .get(
@@ -512,6 +515,7 @@ const cloudReport = (surface: Surface) =>
 
     // Restart the run now that this scenario's app exists, once no pass holds it.
     const logged = (yield* passes).length;
+    const dispatched = new Set((yield* dispatches({})).data.map(({ traceId }) => traceId));
     const restart = yield* processes
       .string(
         ChildProcess.make(
@@ -567,6 +571,20 @@ const cloudReport = (surface: Surface) =>
     );
     // This app and the organization's Executor app.
     expect(started.summary.owners[surface.owner]).toEqual({ failed: 2 });
+    // The tick that handled them records its failed items, though its job route answered 204.
+    const failedTicks = yield* dispatches({ "executor.job.failure": "DataStepItemFailed" }).pipe(
+      Effect.flatMap((found) => {
+        const fresh = found.data.filter(({ traceId }) => !dispatched.has(traceId));
+        return fresh.length === 0
+          ? Effect.fail(new Error("No dispatch with failed items has reached Motel"))
+          : Effect.succeed(fresh);
+      }),
+      Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
+    );
+    for (const { span } of failedTicks) {
+      expect(["partial", "failed"]).toContain(span.tags["executor.outcome"]);
+      expect(span.tags["http.response.status_code"]).toBe("204");
+    }
 
     // A tick before the first pass's retry time finds the step waiting and starts no pass.
     expect(
@@ -576,13 +594,35 @@ const cloudReport = (surface: Surface) =>
     const waited = yield* waiting;
     const before = (yield* ofRun).length;
     yield* tick;
-    yield* waiting.pipe(
-      Effect.flatMap((count) =>
-        count > waited ? Effect.void : Effect.fail(new Error("No waiting tick delivered yet")),
-      ),
+    const waitingTrace = yield* waiting.pipe(
+      Effect.flatMap((traces) => {
+        const fresh = [...traces].find((trace) => !waited.has(trace));
+        return fresh === undefined
+          ? Effect.fail(new Error("No waiting tick delivered yet"))
+          : Effect.succeed(fresh);
+      }),
       Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 120 }),
     );
     expect((yield* ofRun).length).toBe(before);
+    // Waiting out a backoff is not a failure: that tick's dispatch records a completed run.
+    const waitingDispatch = yield* telemetry.query(waitingTrace).pipe(
+      Effect.flatMap((trace) => {
+        const dispatch = trace.data.find(
+          ({ span }) =>
+            span.operationName === "job.dispatch" && span.tags["executor.job"] === "data-steps",
+        );
+        return dispatch === undefined
+          ? Effect.fail(new Error("The waiting tick's dispatch has not arrived"))
+          : Effect.succeed(dispatch.span);
+      }),
+      Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 120 }),
+    );
+    expect(waitingDispatch.status).not.toBe("error");
+    expect(waitingDispatch.tags).toMatchObject({
+      "http.response.status_code": "204",
+      "executor.outcome": "completed",
+    });
+    expect(waitingDispatch.tags).not.toHaveProperty("executor.job.failure");
 
     // Once it passes, the next tick starts the next pass. The Worker's own cron may start it first.
     yield* Effect.sleep(Duration.millis(Math.max(0, retryAt(started) - Date.now())));

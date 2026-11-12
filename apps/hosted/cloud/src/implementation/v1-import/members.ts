@@ -90,14 +90,28 @@ export const planMembers = (
 /** v1's billing for an organization, from the plans Autumn bills it on. */
 export type V1Billing =
   | { readonly kind: "free" }
-  /** Enterprise orgs move by hand, after their v2 SSO is set up (decision 15). */
+  /**
+   * Enterprise orgs move by hand (decision 15): only when the operator lists one to copy into an
+   * existing v2 organization, carrying nothing over (decision 34).
+   */
   | { readonly kind: "enterprise"; readonly plans: readonly string[] }
+  /**
+   * v1's grandfathered Hobby and Professional plans, which no Stripe subscription bills. The
+   * organization moves to v2's Free plan, as a free one does, with nothing to carry over.
+   */
+  | { readonly kind: "grandfathered"; readonly plans: readonly string[] }
   | { readonly kind: "paid"; readonly plans: readonly string[] };
 
 const enterprisePlan = (plan: string) => plan === "enterprise" || plan.startsWith("enterprise-");
 
+/** v1 plans that move to v2's Free plan (decision 30). */
+export const grandfatheredPlans: ReadonlyArray<string> = ["hobby", "professional"];
+
 export const v1Billing = (plans: readonly string[]): V1Billing => {
   if (plans.some(enterprisePlan)) return { kind: "enterprise", plans };
   const paid = plans.filter((plan) => !freePlans.includes(plan));
-  return paid.length === 0 ? { kind: "free" } : { kind: "paid", plans: paid };
+  if (paid.length === 0) return { kind: "free" };
+  return paid.every((plan) => grandfatheredPlans.includes(plan))
+    ? { kind: "grandfathered", plans: paid }
+    : { kind: "paid", plans: paid };
 };

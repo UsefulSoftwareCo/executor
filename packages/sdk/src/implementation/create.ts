@@ -21,7 +21,12 @@ import { AppId, CredentialsError, NotImplemented, StorageError } from "../contra
 import { makeWebhooks } from "./webhooks.ts";
 import { makeAppData } from "./app-storage.ts";
 import { makeAccountConnections } from "./account-connections.ts";
-import { credentialsReadable, makeAccounts, storedAccount } from "./accounts.ts";
+import {
+  credentialsReadable,
+  makeAccounts,
+  moveImportedAccount,
+  storedAccount,
+} from "./accounts.ts";
 import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
 import { makeOwnerMoves } from "./owner-moves.ts";
 import { SavedOAuthClientsHost } from "../contracts/oauth-clients.ts";
@@ -105,6 +110,7 @@ export const createExecutor = (
       accountsUsable: oauth.usableAll,
       crypto,
       lifecycle: options.hooks,
+      hostApi: options.hostApi,
     });
     const workflows = makeWorkflowRuns(
       options.database,
@@ -135,6 +141,7 @@ export const createExecutor = (
         options.git,
         catalog.reads,
         options.blobs,
+        options.markdown,
         options.hooks,
       ),
       workflows: { list: workflows.definitions },
@@ -173,6 +180,7 @@ export const createExecutor = (
       oauth,
       firstPartyClients,
       apps.list,
+      options.hostApi,
     );
     const schedules = makeSchedules(
       options.database,
@@ -187,6 +195,7 @@ export const createExecutor = (
       liveDefinitions: webhooks.liveDefinitions,
       retarget: webhooks.retarget,
       createManaged: webhooks.createManaged,
+      removeManaged: webhooks.removeManaged,
       accountNeedingReconnect: tools.accountNeedingReconnect,
     });
     // App source defines schedules. Each activation removes saved settings for schedules the new
@@ -230,6 +239,10 @@ export const createExecutor = (
           ),
         firstPartyClient: oauth.firstPartyClient,
         credentialsReadable: credentialsReadable(db, credentials),
+        moveImportedAccount: moveImportedAccount(db),
+        refreshImportedGrant: oauth.refreshImportedGrant,
+        // The same removal without the provider-side revocation `accountOperations` makes.
+        removeImportedAccount: makeAccounts(db, credentials, crypto, options.hooks).remove,
       },
       [StorageHost]: {
         transaction: (effect) =>
@@ -294,7 +307,13 @@ export const createExecutor = (
         unlink: webhookSources.unlink,
       },
       webhookSetup: webhooks.webhookSetup,
-      appData: makeAppData(options.database, oauth.resolveSelected, runtime, workflows.controls),
+      appData: makeAppData(
+        options.database,
+        oauth.resolveSelected,
+        runtime,
+        options.hostApi,
+        workflows.controls,
+      ),
       tools: { ...tools, search: search.page },
     };
   });

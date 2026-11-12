@@ -4,8 +4,13 @@ import { ProviderError } from "../contracts/provider-error.ts";
 import { NetworkRefused } from "../contracts/network.ts";
 import { failOnNetworkRefusal } from "./network.ts";
 /** Discover GraphQL tools live; transport, decoding and cancellation stay in Effect. */
-import { Effect, Redacted, Schema } from "effect";
-import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import { Effect, Option, Redacted, Ref, Result, Schema, Stream } from "effect";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientRequest,
+  type HttpClientResponse,
+} from "effect/http";
 import {
   getIntrospectionQuery,
   Kind,
@@ -21,13 +26,20 @@ import {
   GraphqlIntrospection,
   GraphqlResponse,
   GraphqlToolsOptions,
+  maxGraphqlStatedErrors,
+  maxGraphqlStatedExtensions,
+  maxGraphqlStatedFieldLength,
+  type GraphqlStatedError,
   type GraphqlToolDefinition,
   type GraphqlField,
   type GraphqlTools,
   type GraphqlTypeRef,
 } from "../contracts/graphql.ts";
+import { FailureFieldName, maxUpstreamMessageLength } from "../contracts/failure.ts";
+import { defaultOpenapiErrorLimits } from "../contracts/api-response-error.ts";
 import { JsonObject } from "../effect.ts";
 import { jsonSchemaDecoder } from "../effect.ts";
+import { boundStated } from "./upstream-error.ts";
 
 function wrapped(type: GraphqlTypeRef): GraphqlTypeRef {
   if (!type.ofType) throw new GraphqlError({ phase: "discover", reason: "invalid_response" });
@@ -135,6 +147,118 @@ function fieldInput(
   };
 }
 
+/** One error of a GraphQL response's `errors` list; fields the specification does not document are not read. */
+const ResponseError = Schema.Struct({
+  message: Schema.String,
+  path: Schema.optional(Schema.Array(Schema.Union([Schema.String, Schema.Int]))),
+  extensions: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+});
+
+/**
+ * The first segments of a response path, as many as a path of the longest carried length shows,
+ * each bounded. They stay the server's segments: a segment can carry an account secret, which is
+ * replaced before the path is written. A written segment is at least as long as counted here.
+ */
+const boundedPath = (path: ReadonlyArray<string | number>) => {
+  const segments: Array<string | number> = [];
+  let length = 0;
+  for (const segment of path) {
+    if (length > maxGraphqlStatedFieldLength) break;
+    const bounded =
+      typeof segment === "number" ? segment : boundStated(segment, maxGraphqlStatedFieldLength);
+    length +=
+      typeof bounded === "number"
+        ? String(bounded).length + 2
+        : Math.max(bounded.length, 1) + (segments.length === 0 ? 0 : 1);
+    segments.push(bounded);
+  }
+  return segments;
+};
+
+/** The scalar `extensions` entries, `code` first; objects and lists, such as stack traces, are left out. */
+const extensionEntries = (extensions: Readonly<Record<string, unknown>>) => {
+  const entries: Record<string, string | number | boolean> = {};
+  let count = 0;
+  for (const key of [
+    ...(Object.hasOwn(extensions, "code") ? ["code"] : []),
+    ...Object.keys(extensions).filter((key) => key !== "code"),
+  ]) {
+    if (count === maxGraphqlStatedExtensions) break;
+    const value = extensions[key];
+    if (!Schema.is(FailureFieldName)(key)) continue;
+    if (typeof value === "string") entries[key] = boundStated(value, maxGraphqlStatedFieldLength);
+    else if (typeof value === "boolean" || (typeof value === "number" && Number.isFinite(value)))
+      entries[key] = value;
+    else continue;
+    count++;
+  }
+  return count === 0 ? undefined : entries;
+};
+
+/**
+ * The first errors a GraphQL server stated, bounded, and how many it stated when that is more.
+ * Only the first errors of the list are read. Account secrets are not known here; they are
+ * replaced when the failure leaves the app.
+ */
+const statedErrors = (errors: ReadonlyArray<unknown>) => {
+  const stated = errors
+    .slice(0, maxGraphqlStatedErrors)
+    .flatMap((error) => Option.toArray(Schema.decodeUnknownOption(ResponseError)(error)))
+    .map(({ message, path, extensions }): GraphqlStatedError => {
+      const entries = extensions === undefined ? undefined : extensionEntries(extensions);
+      return {
+        message: boundStated(message, maxUpstreamMessageLength),
+        ...(path === undefined || path.length === 0 ? {} : { path: boundedPath(path) }),
+        ...(entries === undefined ? {} : { extensions: entries }),
+      };
+    });
+  return {
+    ...(stated.length === 0 ? {} : { errors: stated }),
+    ...(errors.length > stated.length ? { stated: errors.length } : {}),
+  };
+};
+
+type UnreadBody = NonNullable<GraphqlError["unreadBody"]>;
+
+/** The `errors` list of a refused request's body; other content is not decoded. */
+const RefusedBody = Schema.fromJsonString(
+  Schema.Struct({ errors: Schema.optional(Schema.Array(Schema.Unknown)) }),
+);
+
+/**
+ * The errors a refused request's JSON body stated, read within the bounds of OpenAPI error bodies.
+ * Other bodies state nothing. A body that is too large or does not arrive in time is not read; the
+ * refusal keeps its status.
+ */
+const refusedBody = (response: HttpClientResponse.HttpClientResponse) =>
+  Effect.gen(function* () {
+    if (
+      !/^application\/(?:[\w.-]+\+)?json$/i.test(
+        response.headers["content-type"]?.split(";")[0]?.trim() ?? "",
+      )
+    )
+      return {};
+    const length = response.headers["content-length"];
+    if (length !== undefined && Number(length) > defaultOpenapiErrorLimits.maxBodyBytes)
+      return { unreadBody: "too_large" as const };
+    const text = yield* response.stream.pipe(
+      Stream.mapError((): UnreadBody => "incomplete"),
+      Stream.limitBytes(defaultOpenapiErrorLimits.maxBodyBytes, () =>
+        Stream.fail<UnreadBody>("too_large"),
+      ),
+      Stream.decodeText,
+      Stream.mkString,
+      Effect.timeoutOrElse({
+        duration: defaultOpenapiErrorLimits.readTimeoutMs,
+        orElse: () => Effect.fail<UnreadBody>("incomplete"),
+      }),
+      Effect.result,
+    );
+    if (Result.isFailure(text)) return { unreadBody: text.failure };
+    const body = Schema.decodeUnknownOption(RefusedBody)(text.success);
+    return Option.isSome(body) && body.value.errors?.length ? statedErrors(body.value.errors) : {};
+  });
+
 function selection(text: string): SelectionSetNode {
   const document = parse("query { result { " + text + " } }");
   const definition = document.definitions[0];
@@ -162,62 +286,94 @@ export const graphqlClientEffect = (input: GraphqlToolsOptions) =>
       return yield* new GraphqlError({ phase: "discover", reason: "invalid_input" });
     const headers = Redacted.make({ ...options.headers });
     const request = (phase: "discover" | "call", query: string, variables: JsonObject = {}) =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const client = yield* HttpClient.HttpClient;
-          const response = yield* HttpClient.withScope(client).execute(
-            HttpClientRequest.post(url.href).pipe(
-              // GitHub requires this header; Workers do not supply one by default.
-              HttpClientRequest.setHeader("user-agent", "Executor"),
-              HttpClientRequest.setHeaders(Redacted.value(headers)),
-              HttpClientRequest.bodyJsonUnsafe({ query, variables }),
-            ),
-          );
-          // Executor's network refused the request; its reason names the host or credential at fault.
-          yield* failOnNetworkRefusal(response);
-          if (response.status < 200 || response.status >= 300)
-            return yield* (
-              httpProviderError(response.status, response.headers) ??
-                new GraphqlError({ phase, reason: "request", status: response.status })
+      Effect.gen(function* () {
+        // The status of a refused request, so a body still arriving at the deadline keeps it.
+        const refusal = yield* Ref.make(Option.none<number>());
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            const client = yield* HttpClient.HttpClient;
+            const response = yield* HttpClient.withScope(client).execute(
+              HttpClientRequest.post(url.href).pipe(
+                // GitHub requires this header; Workers do not supply one by default.
+                HttpClientRequest.setHeader("user-agent", "Executor"),
+                HttpClientRequest.setHeaders(Redacted.value(headers)),
+                HttpClientRequest.bodyJsonUnsafe({ query, variables }),
+              ),
             );
-          const result = yield* response.json.pipe(
-            owned("upstream", "provider.http.response.read"),
-            Effect.flatMap(Schema.decodeUnknownEffect(GraphqlResponse)),
-            Effect.mapError(() => new GraphqlError({ phase, reason: "invalid_response" })),
-          );
-          if (result.errors?.length)
-            return yield* (
-              graphqlProviderError(result.errors, response.status) ??
-                new GraphqlError({ phase, reason: "execution", status: response.status })
+            // Executor's network refused the request; its reason names the host or credential at fault.
+            yield* failOnNetworkRefusal(response);
+            if (response.status < 200 || response.status >= 300) {
+              const classified = httpProviderError(response.status, response.headers);
+              if (classified !== undefined) return yield* classified;
+              // A server can answer a request it refuses, such as one that fails validation, with
+              // a client error status and its errors in a GraphQL response body.
+              yield* Ref.set(refusal, Option.some(response.status));
+              const refused = yield* refusedBody(response).pipe(
+                owned("upstream", "provider.http.response.read"),
+              );
+              return yield* new GraphqlError({
+                phase,
+                reason: "request",
+                status: response.status,
+                ...refused,
+              });
+            }
+            const result = yield* response.json.pipe(
+              owned("upstream", "provider.http.response.read"),
+              Effect.flatMap(Schema.decodeUnknownEffect(GraphqlResponse)),
+              Effect.mapError(() => new GraphqlError({ phase, reason: "invalid_response" })),
             );
-          if (result.data == null)
-            return yield* new GraphqlError({ phase, reason: "invalid_response" });
-          return result.data;
-        }),
-      ).pipe(
-        owned("upstream", "provider.graphql.request", {
-          attributes: {
-            "executor.operation": phase,
-            "server.address": url.hostname,
-          },
-        }),
-        Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
-        Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch),
-        Effect.provide(FetchHttpClient.layer),
-        Effect.timeoutOrElse({
-          duration: options.timeoutMs ?? defaultGraphqlClientLimits.timeoutMs,
-          orElse: () => Effect.fail(new GraphqlError({ phase, reason: "timeout" })),
-        }),
-        Effect.mapError((error) =>
-          error instanceof ProviderError && options.accountId !== undefined
-            ? accountProviderError(error, options.accountId)
-            : error instanceof GraphqlError ||
-                error instanceof ProviderError ||
-                error instanceof NetworkRefused
-              ? error
-              : new GraphqlError({ phase, reason: "request" }),
-        ),
-      );
+            if (result.errors?.length)
+              return yield* (
+                graphqlProviderError(result.errors, response.status) ??
+                  new GraphqlError({
+                    phase,
+                    reason: "execution",
+                    status: response.status,
+                    ...statedErrors(result.errors),
+                  })
+              );
+            if (result.data == null)
+              return yield* new GraphqlError({ phase, reason: "invalid_response" });
+            return result.data;
+          }),
+        ).pipe(
+          owned("upstream", "provider.graphql.request", {
+            attributes: {
+              "executor.operation": phase,
+              "server.address": url.hostname,
+            },
+          }),
+          Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+          Effect.provideService(FetchHttpClient.Fetch, globalThis.fetch),
+          Effect.provide(FetchHttpClient.layer),
+          Effect.timeoutOrElse({
+            duration: options.timeoutMs ?? defaultGraphqlClientLimits.timeoutMs,
+            orElse: () =>
+              Effect.flatMap(Ref.get(refusal), (status) =>
+                Effect.fail(
+                  Option.isSome(status)
+                    ? new GraphqlError({
+                        phase,
+                        reason: "request",
+                        status: status.value,
+                        unreadBody: "incomplete",
+                      })
+                    : new GraphqlError({ phase, reason: "timeout" }),
+                ),
+              ),
+          }),
+          Effect.mapError((error) =>
+            error instanceof ProviderError && options.accountId !== undefined
+              ? accountProviderError(error, options.accountId)
+              : error instanceof GraphqlError ||
+                  error instanceof ProviderError ||
+                  error instanceof NetworkRefused
+                ? error
+                : new GraphqlError({ phase, reason: "request" }),
+          ),
+        );
+      });
     const discover = request("discover", getIntrospectionQuery()).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(GraphqlIntrospection)),
       Effect.mapError((error) =>

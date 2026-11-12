@@ -3,12 +3,12 @@ import { SqlClient } from "effect/sql";
 import { StorageError, type App, type VersionId } from "@executor-js/sdk/core";
 
 /**
- * One-off: ask every organization's default Executor app to move to the current template.
- * Member setup redeploys a copy only while the version Executor installed is still active
- * and its workspace has no unsaved edits; customized copies are left alone.
+ * One-off, kept for its recorded migration steps: queued member setup for every organization when
+ * member setup still redeployed the default Executor app to the current template. Member setup no
+ * longer changes the app, so these jobs only link missing keys. Do not append new steps.
  *
  * Jobs start after a delay so the replacement server, not the one still serving during the
- * deployment, runs them. Append a new step when the template changes again.
+ * deployment, runs them.
  */
 export const queueExecutorAppUpgrades = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

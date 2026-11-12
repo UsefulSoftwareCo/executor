@@ -9,8 +9,8 @@
  *
  * One scenario covers account sets that become copies, the other schedules that merge or pause.
  * The fixture rebuilds the database as an upgrade from 4.0.12 finds it: it undoes 4.0.14 and 4.0.13
- * (see `beforeAppAccounts` and `beforeProfileRemoval`), labels the database 4.0.12, removes step
- * 9's ledger row and table and makes data step 10 pending again. It then writes the profiles and
+ * (see `beforeAppAccounts` and `beforeProfileRemoval`), labels the database 4.0.12, removes the
+ * ledger rows of steps 9 and 10 and step 9's table, and makes data step 10 pending again. It then writes the profiles and
  * their schedules as the last profile version left them. The next start runs 4.0.13, 4.0.14 and
  * step 9 in one transaction, as a deploy does, then the data steps. Apps, accounts, members and the app's data are created through the
  * product first.
@@ -257,7 +257,7 @@ const upgradeFixture = (
               actor,
               "POST",
               connectionsPath(appPath, "user", "primary"),
-              { destination: { kind: "personal" } },
+              {},
             );
             expect(connection.status, JSON.stringify(connection.body)).toBe(200);
             const saved = yield* api.request(
@@ -312,7 +312,7 @@ const upgradeFixture = (
       return [
         { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
         ...beforeAppAccounts(),
-        { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 9" },
+        { sql: "DELETE FROM private_hosted_migrations WHERE migration_id >= 9" },
         { sql: "DROP TABLE hosted_app_account_links" },
         ...beforeProfileRemoval(),
         ...profileAppCopiesPending("private_hosted"),
@@ -628,7 +628,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
         ]);
         expect(ledger).toEqual([{ name: "app_account_links" }]);
-        expect(version).toEqual([{ value: "4.0.15" }]);
+        expect(version).toEqual([{ value: "4.0.16" }]);
         expect(plans).toEqual(
           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
         );

@@ -20,7 +20,7 @@ export const requirementPath = (appPath: string, scope: LinkScope, requirement: 
 
 /**
  * Where a connection for one requirement of the app at `appPath` starts; completing it links the
- * new account to that requirement in that scope. Hosted only: POST `{ destination?, account? }`.
+ * new account to that requirement in that scope. Hosted only: POST `{ account? }`.
  */
 export const connectionsPath = (appPath: string, scope: LinkScope, requirement: string) =>
   `${requirementPath(appPath, scope, requirement)}/connections`;

@@ -1,6 +1,6 @@
 /** Scoped loopback listeners for isolated ports and real bind-conflict fixtures. */
 import { connect, createServer, type Socket } from "node:net";
-import { Effect } from "effect";
+import { Effect, Option, Random } from "effect";
 import { driver } from "./platform.ts";
 
 /**
@@ -28,8 +28,23 @@ export const holdPort = (port: number, onConnection?: (socket: Socket) => void) 
     );
   });
 
-/** Ask the OS for an available port and release it before returning. */
-export const freePort = Effect.scoped(holdPort(0));
+/**
+ * Where `freePort` looks: below the ephemeral ranges of Linux (32768-60999), macOS and Windows
+ * (49152-65535). The OS hands ephemeral ports to every socket that binds port zero or connects
+ * out, so a port it chose and this run released can go to another socket, such as one of the
+ * loopback connections a starting Cloud makes by the thousand, before the server it was meant
+ * for binds it. Only explicit binds take ports in this range.
+ */
+const isolatedPorts = { from: 20_000, to: 32_767 } as const;
+
+/** A loopback port that is free now and that the OS will not hand out, released before returning. */
+export const freePort = Effect.gen(function* () {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const port = yield* Random.nextIntBetween(isolatedPorts.from, isolatedPorts.to);
+    if (Option.isSome(yield* Effect.option(Effect.scoped(holdPort(port))))) return port;
+  }
+  return yield* Effect.die(new Error("No free loopback port outside the ephemeral range"));
+});
 
 /**
  * A loopback port that refuses connections until the owning scope closes. A port released by

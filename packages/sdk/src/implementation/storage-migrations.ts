@@ -26,6 +26,7 @@ import {
   version4Tables,
   storedOAuthClientIndexes,
   storedOAuthClientIssuerIndexes,
+  queueReadIndexes,
 } from "./storage-schema.ts";
 
 /** Indexes the 4.0.1 step added. Released steps never change; later indexes join their own step. */
@@ -75,6 +76,7 @@ export const currentIndexes = [
   ...storedOAuthClientIndexes,
   ...boundedReadIndexes,
   ...storedOAuthClientIssuerIndexes,
+  ...queueReadIndexes,
 ] as const;
 
 /** Versions built by {@link indexOnlyVersion}. */
@@ -471,6 +473,20 @@ const version4 = <Version extends string>(version: Version, up?: CustomMigration
     },
   });
 
+/** The 4.0.15 layout: webhook sources count their failed attempts. */
+const version4015Schema = schema({
+  version: "4.0.15",
+  tables: version4015Tables,
+  relations: {
+    accounts: ({ one }) => ({
+      providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+    }),
+    apps: ({ one }) => ({
+      deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+    }),
+  },
+});
+
 /** Version 4 is the oldest supported layout. Append future compatible upgrades here. */
 export const storageSchemas = [
   version4("4.0.0"),
@@ -633,18 +649,9 @@ export const storageSchemas = [
   }),
   // Additive for the running server: a source it writes keeps the default count, which only
   // shortens that source's next retry delay.
-  schema({
-    version: "4.0.15",
-    tables: version4015Tables,
-    relations: {
-      accounts: ({ one }) => ({
-        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
-      }),
-      apps: ({ one }) => ({
-        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
-      }),
-    },
-  }),
+  version4015Schema,
+  // Additive: three indexes; the running server's queries are unchanged.
+  indexOnlyVersion(version4015Schema, "4.0.16", queueReadIndexes),
 ] as const;
 
 /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */

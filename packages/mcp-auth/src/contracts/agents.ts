@@ -29,6 +29,11 @@ export type ConnectedAgentAccess = typeof ConnectedAgentAccess.Type;
 export const ConnectedAgent = Schema.Struct({
   id: GrantId,
   name: Schema.NullOr(Schema.String),
+  /**
+   * The logo URL the client registered (`logo_uri`), as it sent it. Self-declared like the name;
+   * the dashboard loads only an HTTPS one.
+   */
+  icon: Schema.NullOr(Schema.String),
   connectedAt: Schema.String,
   /**
    * When the client last received an access token, by sign-in or refresh; tokens last an hour,

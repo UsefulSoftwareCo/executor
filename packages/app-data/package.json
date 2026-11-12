@@ -8,7 +8,8 @@
     "./contracts": "./src/contracts/database.ts",
     "./worker-bundle": "./src/contracts/worker-bundle.ts",
     "./cloudflare": "./src/cloudflare.ts",
-    "./evaluated": "./src/contracts/evaluated.ts"
+    "./evaluated": "./src/contracts/evaluated.ts",
+    "./host-api": "./src/contracts/host-api.ts"
   },
   "dependencies": {
     "@executor-js/app-cache": "workspace:*",
