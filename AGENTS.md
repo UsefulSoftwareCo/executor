@@ -172,7 +172,7 @@ passed or failed, so a job or step the workflow skipped fails there. `e2e-covera
 push to main that did not start Cloud tests on main.
 
 Select specific files by default. A selection finishes in about five minutes; the full
-suite takes about fifteen and holds the runners other PRs wait for. Reserve `all` for
+suite takes about eight and holds the runners other PRs wait for. Reserve `all` for
 changes that every scenario runs through: the e2e harness (`e2e/sdk`, `e2e/support`,
 `e2e/setup.ts`), the toolchain, the lockfile or the workflows. Write the reason after
 it, such as `all: changes the lockfile`; `all` without a reason fails the `select` job.
@@ -269,9 +269,11 @@ scenarios on Linux instead of moving them to a Mac.
 - `e2e-local` and `e2e-self-host` run `bun run e2e:prepare`, then `e2e:local`
   and `e2e:self-host` under `xvfb-run`. The self-host run excludes the Claude
   Code MCP scenario, which needs a model API key that CI does not hold. A full run
-  splits them by spec file over runners (two for local, three for self-host; `shards` in
+  splits them by spec file over runners (three for local, six for self-host; `shards` in
   `e2e/ci-selection.ts`), each with the usual number of workers, so each part finishes in
-  about four minutes instead of six and ten. A selection runs on one runner.
+  about four minutes instead of thirteen and twenty. A selection runs on one runner. The
+  self-host parts keep their 16 vCPUs about 80% busy; the local ones are mostly idle and wait
+  on their longest spec file, so keep local spec files short enough to split.
 - `e2e-self-host-scale` runs the 1,000-account workload and then the 7,000-tool MCP
   catalog scenario and the slow and stalled tool listing scenarios on its own runner,
   in parallel with the functional jobs. This preserves the four concurrent writers,
@@ -291,10 +293,14 @@ scenarios on Linux instead of moving them to a Mac.
   per-address limit off, as deployed test stages do; the scenario that proves the limit gets
   its own local Cloud with it on (`e2e:cloud --auth-rate-limit`).
   Each of these local Clouds is a Cloud job in `e2e/ci-selection.ts`, and its `runner`
-  there puts it on one of four `e2e-cloud` runners that run at once. On a full run
-  `cloud-product` has a runner to itself, about eleven minutes, and the others take about six or
-  seven each. Each runner builds the apps package and Motel once before its runs; runs only
-  serve that Motel bundle, because every target in a run shares it.
+  there puts it on one of the `e2e-cloud` runners, which run at once; a runner's local Clouds
+  run one after another. Two local Clouds cannot run at once in one checkout: each rebuilds the
+  site and dashboard, with its own origins, into the one `apps/hosted/cloud/.generated/site`
+  that both serve. On a full run `cloud-product` passes what one local Cloud holds, and each of
+  its local Clouds has a runner of its own; the longest, about five and a half minutes, waits out
+  the MCP session restore scenario's 270-second idle. Each runner builds the apps package and
+  Motel once before its runs; runs only serve that Motel bundle, because every target in a run
+  shares it.
 - `e2e` passes when `select` succeeded, every E2E job it chose passed and every other one was
   skipped; it runs even after a cancellation, which fails it. The matrix runners' check
   names change with the selection, so this is the one E2E check to require.

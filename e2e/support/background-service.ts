@@ -23,7 +23,13 @@ import {
   Schema,
   Stream,
 } from "effect";
-import { HttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import {
+  HttpClient,
+  HttpRouter,
+  HttpServer,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { createHmac } from "node:crypto";
@@ -34,6 +40,22 @@ import { connectionRefused, freePort } from "./ports.ts";
 import { localEntryCommand } from "./local-entry.ts";
 
 /** `server.json`: the process that serves a data directory and how to reach it. */
+/** What `executor` prints when it starts a background server. */
+export const starting = "Starting background Executor...";
+
+/** Serve `routes` on a loopback port, by default a free one, for the current scope; its URL. */
+export const serving = <E, R>(routes: Layer.Layer<never, E, R>, port = 0) =>
+  Effect.gen(function* () {
+    const services = yield* Layer.build(
+      HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
+        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port })),
+      ),
+    );
+    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+    if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
+    return `http://127.0.0.1:${server.address.port}`;
+  });
+
 export const ServiceRegistration = Schema.Struct({
   id: Schema.String,
   version: Schema.String,

@@ -1876,7 +1876,7 @@ export const scenarios = plan({
   },
   localServiceAppsCli: {
     fixtures: "cli",
-    file: "local-service.spec.ts",
+    file: "local-service-recovery.spec.ts",
     title:
       "`executor apps list` without --host starts the background server, and the next command reuses it; with the service disabled it runs a private server instead",
     targets: {
@@ -1887,7 +1887,7 @@ export const scenarios = plan({
   },
   localServiceEarlierServer: {
     fixtures: "cli",
-    file: "local-service.spec.ts",
+    file: "local-service-recovery.spec.ts",
     title:
       "`executor service start` and `executor serve` refuse a data directory whose server.json names a running Executor from before the background service, and ignore such a record once nothing answers at its URL",
     targets: {
@@ -1898,7 +1898,7 @@ export const scenarios = plan({
   },
   localServiceImpostor: {
     fixtures: "cli",
-    file: "local-service.spec.ts",
+    file: "local-service-recovery.spec.ts",
     title:
       "a process that replays a killed background server's service info on its port is not trusted: `executor service status` reports stopped, and `executor` neither pairs with it nor sends it the password",
     targets: {
@@ -1920,7 +1920,7 @@ export const scenarios = plan({
   },
   localServiceSuspendedLock: {
     fixtures: "cli",
-    file: "local-service.spec.ts",
+    file: "local-service-recovery.spec.ts",
     title:
       "a suspended background server keeps its data directory however long ago it refreshed its lock: `executor --standalone` and a foreground `executor serve` on another port refuse it after a minute, `executor service status` says it is not responding, and once resumed it serves and refreshes its lock as before",
     targets: {
@@ -1931,7 +1931,7 @@ export const scenarios = plan({
   },
   localServiceCrashedLock: {
     fixtures: "cli",
-    file: "local-service.spec.ts",
+    file: "local-service-recovery.spec.ts",
     title:
       "the next server takes over the lock a killed background server left at once, also when its process ID now names another running program, and when that program also listens on its port",
     targets: {
@@ -1942,7 +1942,7 @@ export const scenarios = plan({
   },
   localServiceReusedPid: {
     fixtures: "cli",
-    file: "local-service.spec.ts",
+    file: "local-service-recovery.spec.ts",
     title:
       "`executor service stop` and `executor service start` never signal a program that now has a killed background server's process ID while its port accepts connections and never answers: they remove the registration and leave that program running",
     targets: {
@@ -1953,7 +1953,7 @@ export const scenarios = plan({
   },
   localServiceKeyStorageInvalid: {
     fixtures: "cli",
-    file: "local-service.spec.ts",
+    file: "local-service-recovery.spec.ts",
     title:
       "an invalid EXECUTOR_KEY_STORAGE, in the environment or saved with `executor service set env`, makes `executor`, `executor service start`, `executor --standalone` and `executor serve` refuse before they create anything in the data directory",
     targets: {

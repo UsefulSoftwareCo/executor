@@ -23,6 +23,7 @@ const jobs = [
   "cloud-batch",
   "cloud-autumn",
   "cloud-isolate",
+  "cloud-connections",
   "cloud-v1-bound",
   "cloud-rate-limit",
   "cloud-rollback",
@@ -328,8 +329,8 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         for (const run of [main, all]) {
           expect(run.exitCode, run.log).toBe(0);
           for (const [job, target, names] of [
-            ["local", "local", ["1/2", "2/2"]],
-            ["self-host", "self-host", ["1/3", "2/3", "3/3"]],
+            ["local", "local", ["1/3", "2/3", "3/3"]],
+            ["self-host", "self-host", ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]],
           ] as const) {
             const parts = shards(run.outputs, job);
             expect(parts.map(({ shard }) => shard)).toEqual(names);
@@ -354,26 +355,32 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
             );
           }
           const runners = cloudRunners(run.outputs);
+          // A full run's cloud-product passes what one local Cloud holds.
+          const productParts = Math.ceil(
+            Number(/\| cloud-product \| (\d+) \|/.exec(run.summary)![1]) / 30,
+          );
+          expect(productParts).toBeGreaterThan(1);
           expect(runners.map(({ name }) => name)).toEqual([
-            "cloud, cloud-isolate",
-            "cloud-workers, cloud-locks, cloud-batch, cloud-rollback",
-            "cloud-product",
-            "cloud-domains, cloud-autumn, cloud-v1-bound, cloud-rate-limit, cloud-oauth-proxy-preview",
+            "cloud",
+            "cloud-isolate, cloud-connections",
+            ...Array.from(
+              { length: productParts },
+              (_, index) => `cloud-product ${index + 1}/${productParts}`,
+            ),
+            "cloud-workers, cloud-locks, cloud-batch, cloud-autumn",
+            "cloud-domains, cloud-v1-bound, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview",
           ]);
           // Each Cloud job's pattern is on exactly one runner and empty on the others. The runner
-          // runs it unchanged, except cloud-product past what one local Cloud holds: its local
-          // Clouds together run exactly the scenarios its pattern does, each once, and keep each
-          // spec file's scenarios on one.
+          // runs it unchanged, except cloud-product past what one local Cloud holds: each of its
+          // local Clouds has a runner of its own, and together they run exactly the scenarios its
+          // pattern does, each once, and keep each spec file's scenarios on one.
           for (const job of cloudJobs) {
-            const values = runners.map((runner) => runner[job]);
-            expect(
-              values.filter((value) => value === ""),
-              job,
-            ).toHaveLength(runners.length - 1);
-            const value = values.find((value) => value !== "");
-            if (value === run.outputs[job]) continue;
+            const on = runners.flatMap((runner) =>
+              runner[job] === undefined || runner[job] === "" ? [] : [runner[job]],
+            );
+            if (on.length === 1 && on[0] === run.outputs[job]) continue;
             expect(job).toBe("cloud-product");
-            const parts = (value ?? "").split("\n");
+            const parts = on;
             const full = new RegExp(run.outputs[job]!);
             const partOf = new Map<string, number>();
             let count = 0;
@@ -395,7 +402,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           }
         }
         expect(main.summary).toMatch(
-          /\| cloud-locks \| \d+ \| e2e-cloud \(cloud-workers, cloud-locks, cloud-batch, cloud-rollback\) \|/,
+          /\| cloud-locks \| \d+ \| e2e-cloud \(cloud-workers, cloud-locks, cloud-batch, cloud-autumn\) \|/,
         );
 
         // A selection runs each job on one runner, and starts only the Cloud runners it needs.
@@ -610,9 +617,13 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         // More than one local Cloud holds, so the case is not vacuous.
         expect(selected.length).toBeGreaterThan(30);
         const fileOf = new Map(Object.values(scenarios).map((s) => [s.title, s.file]));
-        const runner = cloudRunners(run.outputs).find((entry) => entry["cloud-product"] !== "");
-        const parts = runner!["cloud-product"]!.split("\n").map(titlesOf);
+        // Each local Cloud has a runner of its own.
+        const runners = cloudRunners(run.outputs).filter((entry) => entry["cloud-product"] !== "");
+        const parts = runners.map((entry) => titlesOf(entry["cloud-product"]!));
         expect(parts).toHaveLength(Math.ceil(selected.length / 30));
+        expect(runners.map(({ name }) => name)).toEqual(
+          parts.map((_, index) => `cloud-product ${index + 1}/${parts.length}`),
+        );
         // Every selected scenario runs once, and a spec file's scenarios share one local Cloud.
         expect(parts.flat().sort()).toEqual([...selected].sort());
         const partOfFile = new Map<string, number>();
@@ -624,7 +635,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           }
         });
         expect(run.summary).toContain(
-          `| cloud-product | ${selected.length} | e2e-cloud (cloud-product), ${parts.length} local Clouds split by spec file |`,
+          `| cloud-product | ${selected.length} | ${runners.map(({ name }) => `e2e-cloud (${name})`).join(", ")}: ${parts.length} local Clouds split by spec file |`,
         );
       }),
   );
@@ -1099,6 +1110,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-batch",
         "cloud-autumn",
         "cloud-isolate",
+        "cloud-connections",
         "cloud-v1-bound",
         "cloud-rate-limit",
         "cloud-rollback",
