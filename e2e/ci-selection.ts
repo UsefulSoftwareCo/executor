@@ -65,6 +65,46 @@ const catalogScale =
   "MCP execute over 7,000 tools|MCP execute pays for a slow app|MCP execute remembers a stalled|MCP execute serves a search from rows past|MCP execute reports an app whose aged";
 
 /**
+ * Spec files that test the E2E harness rather than the product, and the paths they exercise:
+ * the harness, the failing cases they run, the dependencies that build both, and the product's
+ * span export they read back. Their job runs them only when one of these paths changed: on a pull
+ * request, since its merge base with main, so the top of a stack counts every layer; on a push to
+ * main, since the previous main commit. A manual run, or a comparison GitHub cannot list in full,
+ * runs them. `checks / e2e` is required to merge, so no change to these paths reaches main without
+ * them passing, and main runs them again on the push that lands it.
+ */
+const harnessScenarios = {
+  job: "self-host",
+  files: ["failure-evidence.spec.ts"],
+  paths: [
+    "e2e/support/",
+    "e2e/sdk/",
+    "e2e/failure-evidence/",
+    "e2e/tests/failure-evidence.spec.ts",
+    "e2e/setup.ts",
+    "e2e/run.ts",
+    "e2e/vitest.config.ts",
+    "e2e/evidence-reporter.ts",
+    "e2e/evidence-results.ts",
+    "e2e/report-model.ts",
+    "e2e/host-slot.ts",
+    "e2e/ci-selection.ts",
+    "package.json",
+    "bun.lock",
+    "patches/",
+    "packages/telemetry/",
+  ],
+} as const;
+const harnessTitles = scenariosForSuite("all")
+  .filter((scenario) => (harnessScenarios.files as ReadonlyArray<string>).includes(scenario.file))
+  .map((scenario) => scenario.title);
+const harnessPattern = harnessTitles
+  .map((title) => title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+  .join("|");
+/** GitHub's comparison lists at most this many files; a longer one may hide a harness path. */
+const compareFileLimit = 300;
+
+/**
  * Each output feeds one `--test-name` in checks.yml. Full runs use these patterns unchanged.
  *
  * A full run splits a job with `shards` into that many parts by spec file (see `split`), each on
@@ -84,7 +124,7 @@ const jobs = {
   local: { target: "local", pattern: `^(?!.*${claude})`, shards: 3 },
   "self-host": {
     target: "self-host",
-    pattern: `^(?!.*(?:${claude}|${inventoryLoad}|${catalogScale}))`,
+    pattern: `^(?!.*(?:${claude}|${inventoryLoad}|${catalogScale}|${harnessPattern}))`,
     shards: 6,
   },
   "self-host-inventory": { target: "self-host", pattern: inventoryLoad },
@@ -262,9 +302,10 @@ const split = (titles: ReadonlyArray<string>, count: number) => {
   return parts.map((part) => part.titles);
 };
 /** Spec files with a scenario that one of these jobs runs on a full run. */
-const jobFiles: ReadonlySet<string> = new Set(
-  jobRuns.flatMap(({ titles }) => [...titles].map((title) => fileOf.get(title)!)),
-);
+const jobFiles: ReadonlySet<string> = new Set([
+  ...jobRuns.flatMap(({ titles }) => [...titles].map((title) => fileOf.get(title)!)),
+  ...harnessScenarios.files,
+]);
 /**
  * Cloud scenarios that run only on deployed Cloud after merge, for a pull request that changes
  * them. The `cloud` job runs those its managed local Cloud can run; the others are reported.
@@ -339,6 +380,9 @@ const notRunInCi: Partial<
 
 /** What runs a scenario on a target in CI, for the coverage check. */
 const ciRuns = (title: string, target: typeof Target.Type) => [
+  ...(harnessTitles.includes(title) && target === jobs[harnessScenarios.job].target
+    ? [`the ${harnessScenarios.job} job when the harness changes`]
+    : []),
   ...jobRuns
     .filter((job) => job.target === target && job.titles.has(title))
     .map(({ name }) => `the ${name} job`),
@@ -1025,6 +1069,29 @@ NodeRuntime.runMain(
               '.[] | "\\(.sha) \\(.path)"',
             ]),
           );
+    // The harness scenarios run when a harness path changed since main, or since the previous
+    // main commit on a push. Without both ends of a comparison, as on a manual run, they run.
+    const compareBase = yield* Config.String("E2E_COMPARE_BASE").pipe(Config.withDefault(""));
+    const compareHead = yield* Config.String("E2E_COMPARE_HEAD").pipe(Config.withDefault(""));
+    const compared =
+      compareBase === "" || compareHead === "" || repository === ""
+        ? undefined
+        : (yield* gh([
+            "api",
+            `repos/${repository}/compare/${compareBase}...${compareHead}`,
+            "--jq",
+            ".files[].filename",
+          ]))
+            .split("\n")
+            .filter((file) => file !== "");
+    const harnessChanged =
+      compared === undefined ||
+      compared.length >= compareFileLimit ||
+      compared.some((file) =>
+        harnessScenarios.paths.some((prefix) =>
+          prefix.endsWith("/") ? file.startsWith(prefix) : file === prefix,
+        ),
+      );
     const files =
       named === undefined || "all" in named
         ? undefined
@@ -1039,7 +1106,14 @@ NodeRuntime.runMain(
     const selections = Object.entries(jobs).map(([job, definition]) => {
       const { target, pattern } = definition;
       const base = new RegExp(pattern);
-      const extra = job === deployedOnlyJob ? deployedOnlyRun : new Set<string>();
+      const extra = new Set<string>([
+        ...(job === deployedOnlyJob ? deployedOnlyRun : []),
+        ...(job === harnessScenarios.job
+          ? harnessTitles.filter(
+              (title) => harnessChanged || files?.has(fileOf.get(title)!) === true,
+            )
+          : []),
+      ]);
       const titles = planFor(definition)
         .filter(
           (scenario) =>

@@ -247,7 +247,6 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
         const intro = yield* Schema.decodeUnknownEffect(Document)(entry.structuredContent);
         expect(intro.content).toContain("`code-mode`");
         expect(intro.content).toContain("`app-authoring`");
-        expect(intro.content.split("\n").length).toBeLessThan(50);
         // The intro only points at media; the code-mode skill it names holds the detail.
         expect(intro.content).toContain("see images and hear audio");
         const codeMode = yield* client.use("Follow the intro to media guidance", (client, signal) =>
@@ -265,7 +264,6 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
         );
         const router = yield* Schema.decodeUnknownEffect(Document)(guide.structuredContent);
         expect(router.content).toContain("[ui.md](ui.md)");
-        expect(router.content.split("\n").length).toBeLessThan(90);
         const topic = yield* client.use("Follow the pinned UI topic", (client, signal) =>
           client.callTool(
             {

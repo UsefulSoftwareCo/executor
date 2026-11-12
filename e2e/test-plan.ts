@@ -479,18 +479,6 @@ export const scenarios = plan({
       ),
     },
   },
-  appDataFacetUnloaded: {
-    fixtures: "actors",
-    file: "app-worker-budget.spec.ts",
-    title: "a data facet replaced for other accounts is unloaded, not kept for the process",
-    targets: {
-      "self-host": scheduled,
-      cloud: na("Cloudflare unloads Cloud's facet Workers itself."),
-      local: na(
-        "Self-host covers the shared runner's facet unloading; the local budget scenario covers local's limit.",
-      ),
-    },
-  },
   localAppWorkerBudget: {
     file: "app-worker-budget.spec.ts",
     title:
@@ -1378,7 +1366,8 @@ export const scenarios = plan({
     },
   },
   failureEvidence: {
-    // The cases it runs in their own process start their own products.
+    // The cases it runs in their own process start their own products. It tests the harness, so
+    // CI runs it only when the harness changes: see `harnessScenarios` in e2e/ci-selection.ts.
     fixtures: "cli",
     file: "failure-evidence.spec.ts",
     title: "Failed cases keep the trace of every request they sent",
@@ -3779,10 +3768,11 @@ export const scenarios = plan({
       ),
     },
   },
-  appDataFacetUnloadedAfterEviction: {
+  appDataFacetUnloaded: {
     fixtures: "actors",
     file: "app-worker-budget.spec.ts",
-    title: "a data facet replaced after its supervisor was evicted is still unloaded",
+    title:
+      "a data facet replaced for other accounts is unloaded, with its supervisor loaded and after it was evicted",
     targets: {
       "self-host": scheduled,
       cloud: na("Cloudflare unloads Cloud's facet Workers itself."),

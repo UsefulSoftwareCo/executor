@@ -48,8 +48,8 @@ const block = (...lines: ReadonlyArray<string>) =>
 
 /**
  * A `gh` that answers the select job's reads from files beside it: the description (`body.<n>`),
- * the open pull requests based on the branch (`above.<n>`), the changed files and main's contents
- * (`main/<path with / as _>`).
+ * the open pull requests based on the branch (`above.<n>`), the changed files, the files changed
+ * between the run's comparison ends (`compared`) and main's contents (`main/<path with / as _>`).
  * The nth read of a kind returns its nth answer, and the last answer once they run out, so a case
  * can edit the description while the job waits.
  */
@@ -57,6 +57,7 @@ const stubGh = `#!/bin/sh
 dir=$(dirname "$0")
 case "$*" in
   "pr list "*) kind=above ;;
+  *"/compare/"*) cat "$dir/compared"; exit ;;
   *"/files "*) cat "$dir/files"; exit ;;
   *"/contents/"*) exec cat "$dir/main/$(echo "$*" | sed 's|.*/contents/||; s|[?].*||' | tr / _)" ;;
   *) kind=body ;;
@@ -72,11 +73,14 @@ cat "$dir/$kind.$read"
  * bodies, or of `stackedAbove` answers, is what successive reads return. The job waits `wait`
  * seconds, none by default, for an incomplete description. It runs the checkout's selector unless
  * `root` names a fixture tree. `main` answers the reads of main's contents by repository path;
- * without it the job has no default branch and compares nothing with main.
+ * without it the job has no default branch and compares nothing with main. `compared` lists the
+ * files changed since main or the previous main commit, none by default; `"unknown"` gives the job
+ * no comparison, as on a manual run.
  */
 const select = (input: {
   readonly body?: string | ReadonlyArray<string>;
   readonly changed?: ReadonlyArray<string>;
+  readonly compared?: ReadonlyArray<string> | "unknown";
   readonly main?: Readonly<Record<string, string>>;
   readonly stackedAbove?: string | ReadonlyArray<string>;
   readonly wait?: number;
@@ -104,6 +108,9 @@ const select = (input: {
     yield* answers("body", input.body ?? "");
     yield* answers("above", input.stackedAbove ?? "");
     yield* fs.writeFileString(path.join(bin, "files"), (input.changed ?? []).join("\n"));
+    const compared = input.compared ?? [];
+    if (compared !== "unknown")
+      yield* fs.writeFileString(path.join(bin, "compared"), compared.join("\n"));
     yield* fs.makeDirectory(path.join(bin, "main"));
     for (const [file, text] of Object.entries(input.main ?? {}))
       yield* fs.writeFileString(path.join(bin, "main", file.replaceAll("/", "_")), text);
@@ -115,6 +122,9 @@ const select = (input: {
           E2E_PULL_REQUEST: input.body === undefined ? "" : "1",
           E2E_HEAD_REF: "layer",
           E2E_DEFAULT_BRANCH: input.main === undefined ? "" : "main",
+          ...(compared === "unknown"
+            ? {}
+            : { E2E_COMPARE_BASE: "main", E2E_COMPARE_HEAD: "0123456789abcdef" }),
           E2E_DESCRIPTION_WAIT_SECONDS: String(input.wait ?? 0),
           E2E_DESCRIPTION_POLL_SECONDS: "0.05",
           GITHUB_REPOSITORY: "owner/repository",
@@ -915,6 +925,61 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         }).pipe(Effect.scoped),
       { discard: true },
     ),
+  );
+
+  it.effect(
+    "the harness scenarios run when a harness path changed, or when nothing says it did not",
+    () =>
+      Effect.gen(function* () {
+        const harness = scenarios.failureEvidence.title;
+        const runs = yield* Effect.all(
+          {
+            push: select({}),
+            pushChangingHarness: select({ compared: ["e2e/support/evidence.ts"] }),
+            manual: select({ compared: "unknown" }),
+            product: select({
+              body: block("groups.spec.ts"),
+              compared: ["apps/local/server/src/bin.ts", "e2e/tests/groups.spec.ts"],
+            }),
+            harnessWithNone: select({ body: block("none"), compared: ["e2e/setup.ts"] }),
+            lockfile: select({ body: block("none"), compared: ["bun.lock"] }),
+            tooLongToList: select({
+              body: block("none"),
+              compared: Array.from({ length: 300 }, (_, index) => `apps/file-${index}.ts`),
+            }),
+            named: select({ body: block("failure-evidence.spec.ts") }),
+          },
+          { concurrency: 4 },
+        );
+        const ran = Object.fromEntries(
+          Object.entries(runs).map(([name, run]) => {
+            expect(run.exitCode, `${name}: ${run.log}`).toBe(0);
+            const selected = run.outputs["self-host"] ?? "";
+            return [name, selected !== "" && new RegExp(selected).test(harness)];
+          }),
+        );
+        expect(ran).toEqual({
+          push: false,
+          pushChangingHarness: true,
+          manual: true,
+          product: false,
+          harnessWithNone: true,
+          lockfile: true,
+          tooLongToList: true,
+          named: true,
+        });
+        // A full run that runs them puts them in one of the job's parts.
+        expect(
+          shards(runs.pushChangingHarness.outputs, "self-host").some(({ pattern }) =>
+            new RegExp(pattern).test(harness),
+          ),
+        ).toBe(true);
+        expect(
+          shards(runs.push.outputs, "self-host").some(({ pattern }) =>
+            new RegExp(pattern).test(harness),
+          ),
+        ).toBe(false);
+      }),
   );
 
   it.effect("none, all and skip keep their meaning", () =>

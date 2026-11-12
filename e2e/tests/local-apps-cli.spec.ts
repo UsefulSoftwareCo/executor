@@ -157,12 +157,13 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         yield* evidence.json("skills-list.json", listed);
         expect(listed.code, listed.stderr).toBe(0);
         const catalogs = yield* Schema.decodeUnknownEffect(Catalogs)(listed.stdout);
+        // The list includes the two skills read below; which others the app ships is not this
+        // scenario's subject (deferred-server-paths holds the full published list).
         expect(
           catalogs.catalogs
             .find((catalog) => catalog.app.slug === "executor")
-            ?.skills.map((skill) => skill.name)
-            .toSorted(),
-        ).toEqual(["app-authoring", "code-mode", "executor"]);
+            ?.skills.map((skill) => skill.name),
+        ).toEqual(expect.arrayContaining(["app-authoring", "executor"]));
 
         // Agents read the entry skill first; it links to the authoring guide.
         const entry = yield* run(
