@@ -677,6 +677,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
     import("./posthog-experiment-lifecycle.config.ts"),
   "prepare-cache.config.ts": () => import("./prepare-cache.config.ts"),
   "release-archives.config.ts": () => import("./release-archives.config.ts"),
+  "request-failures.config.ts": () => import("./request-failures.config.ts"),
   "run-retention.config.ts": () => import("./run-retention.config.ts"),
   "standalone-lockdown.config.ts": () => import("./standalone-lockdown.config.ts"),
   "subrequest-depth.config.ts": () => import("./subrequest-depth.config.ts"),

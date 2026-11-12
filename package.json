@@ -112,6 +112,7 @@
     "e2e:cli-startup-imports": "vitest run --config e2e/cli-startup-imports.config.ts",
     "e2e:release-archives": "vitest run --config e2e/release-archives.config.ts",
     "e2e:emulator-failures": "vitest run --config e2e/emulator-failures.config.ts",
+    "e2e:request-failures": "vitest run --config e2e/request-failures.config.ts",
     "e2e:typecheck-runner": "vitest run --config e2e/typecheck-runner.config.ts",
     "e2e:prepare-cache": "vitest run --config e2e/prepare-cache.config.ts",
     "e2e:run-retention": "vitest run --config e2e/run-retention.config.ts",
