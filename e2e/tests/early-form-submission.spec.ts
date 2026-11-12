@@ -8,6 +8,34 @@ import { Target, driver } from "../support/platform.ts";
 import { targetHosts } from "../support/role-hosts.ts";
 import { scenarios } from "../test-plan.ts";
 
+/**
+ * An MCP client opens the consent page in its own tab, as a real client does, and Connect is
+ * pressed before the page hydrates. Consent runs on the browser origin; Cloud serves MCP on its
+ * own host, which the client names as its resource.
+ */
+const approveBeforeHydration = Effect.gen(function* () {
+  const actors = yield* Actors,
+    browser = yield* Browser,
+    target = yield* Target;
+  const hosts = targetHosts(target);
+  yield* browser.login(actors.owner);
+  yield* browser.omitNetworkTrace;
+  const token = yield* Effect.scoped(
+    Effect.gen(function* () {
+      const tab = yield* Effect.acquireRelease(
+        browser.use("Open the assistant's sign-in tab", (page) => page.context().newPage()),
+        (tab) => driver("Close the assistant's sign-in tab", () => tab.close()).pipe(Effect.orDie),
+      );
+      return yield* authorizeBrowserMcp(tab, hosts.browser, {
+        resource: `${hosts.mcp}/mcp`,
+        client: "Early assistant",
+        beforeHydration: true,
+      });
+    }),
+  );
+  expect(token).toBeDefined();
+});
+
 layer(HostedLive, { excludeTestServices: true })("Early form submission", (it) => {
   it.effect(scenarios.earlyFormSubmission.title, (context) =>
     withHostedCase(
@@ -64,31 +92,11 @@ layer(HostedLive, { excludeTestServices: true })("Early form submission", (it) =
     ),
   );
   it.effect(scenarios.earlyConsentDecision.title, (context) =>
-    withHostedCase(
-      context,
-      Effect.gen(function* () {
-        const actors = yield* Actors,
-          browser = yield* Browser,
-          target = yield* Target;
-        yield* browser.login(actors.owner);
-        yield* browser.omitNetworkTrace;
-        // The assistant's own tab, as a real MCP client opens its consent page.
-        const token = yield* Effect.scoped(
-          Effect.gen(function* () {
-            const tab = yield* Effect.acquireRelease(
-              browser.use("Open the assistant's sign-in tab", (page) => page.context().newPage()),
-              (tab) =>
-                driver("Close the assistant's sign-in tab", () => tab.close()).pipe(Effect.orDie),
-            );
-            return yield* authorizeBrowserMcp(tab, target.metadata.origin, {
-              client: "Early assistant",
-              beforeHydration: true,
-            });
-          }),
-        );
-        expect(token).toBeDefined();
-      }),
-    ),
+    withHostedCase(context, approveBeforeHydration),
+  );
+
+  it.effect(scenarios.earlyConsentDecisionCloud.title, (context) =>
+    withHostedCase(context, approveBeforeHydration),
   );
   it.effect(scenarios.earlyDeviceDecision.title, (context) =>
     withHostedCase(

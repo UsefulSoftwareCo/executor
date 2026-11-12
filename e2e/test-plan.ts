@@ -5510,9 +5510,7 @@ export const scenarios = plan({
       "Connect pressed on the MCP consent page before it is interactive is held and approves the client after hydration",
     targets: {
       "self-host": scheduled,
-      cloud: na(
-        "The consent actions and the early-submission guard are shared and run on self-host.",
-      ),
+      cloud: na("Cloud runs its own early consent scenario, on its role hosts."),
       local: na(
         "Local's server sends its consent page with Connect enabled, but Connect pressed before it hydrates still sends no decision after hydration; that is a separate open defect.",
       ),
@@ -5527,6 +5525,17 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: na("The device page and the early-submission guard are shared and run on self-host."),
       local: na("Local signs the CLI in with an API key, not a device sign-in."),
+    },
+  },
+  earlyConsentDecisionCloud: {
+    fixtures: "actors",
+    file: "early-form-submission.spec.ts",
+    title:
+      "Cloud's MCP consent page holds Connect pressed before it is interactive and approves the client after hydration",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Self-host runs its own early consent scenario."),
+      local: na("Local has no hosted MCP consent page."),
     },
   },
   earlyFormSubmission: {
