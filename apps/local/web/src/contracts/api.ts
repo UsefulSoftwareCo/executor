@@ -96,8 +96,9 @@ const pageSnapshots = new WeakSet<AsyncResult.AsyncResult<unknown, unknown>>();
  * A live read that a server render can display. The server waits for the first snapshot and sends
  * it with the page under a key derived from `name` and `key`, which must identify the subscription
  * completely. The browser shows that snapshot instead of a loading state until its own subscription
- * delivers one. From then on it follows the subscription only: a restart waits for a fresh
- * snapshot, and the page's value is consumed once, so a later mount starts from the subscription.
+ * delivers one. From then on it follows the subscription only: a restart, even one before that
+ * first snapshot, waits for a fresh snapshot, and the page's value is consumed once, so a later
+ * mount starts from the subscription.
  */
 export const liveQueryAtom = <A, I, Q, E, E2>(options: {
   readonly name: string;
@@ -126,7 +127,12 @@ export const liveQueryAtom = <A, I, Q, E, E2>(options: {
       pageSnapshots.add(shown);
       return shown;
     },
-    (refresh) => refresh(live),
+    (refresh) => {
+      refresh(live);
+      // A restart before the subscription's first snapshot also waits for a fresh one: the page's
+      // value predates the restart, such as an account change the user returned to the tab after.
+      refresh(rendered);
+    },
   );
 };
 

@@ -40,6 +40,10 @@ const LockOwner = Schema.fromJsonString(
   }),
 );
 
+/** One lock owner's process, whichever fields name it on this platform. */
+const ownerKey = (owner: typeof LockOwner.Type) =>
+  JSON.stringify([owner.pid, owner.started, owner.boot, owner.pipe]);
+
 /** On Windows, what names a lock's owner: the pipe it listens on while it holds the lock. */
 const lockPipe = /^\\\\\.\\pipe\\executor-lock-[\w-]+$/u;
 
@@ -176,13 +180,17 @@ layer(TestLive, { excludeTestServices: true })("Local background service recover
           yield* eventually(cli.alive(first.pid), (alive) => !alive, "15 seconds");
           expect(yield* lock.holder).toEqual(Option.some({ pid: first.pid, port: cli.port }));
           expect((yield* cli.registered).id).toBe(first.id);
+          const killed = yield* lock.owner;
+          if (Option.isNone(killed)) return yield* Effect.die("The killed server left no owner");
 
           // The next start takes the lock over as soon as it tries, long before the 30 seconds
-          // after which a lock without an owner counts as abandoned.
+          // after which a lock without an owner counts as abandoned. Windows may give the next
+          // server the killed one's process ID, so an owner is told apart by its start time, or on
+          // Windows by its pipe.
           const begun = yield* Clock.currentTimeMillis;
           const takenOver = yield* eventually(
             lock.owner,
-            (owner) => Option.isSome(owner) && owner.value.pid !== first.pid,
+            (owner) => Option.isSome(owner) && ownerKey(owner.value) !== ownerKey(killed.value),
             "60 seconds",
           ).pipe(
             Effect.andThen(Clock.currentTimeMillis),
@@ -192,7 +200,7 @@ layer(TestLive, { excludeTestServices: true })("Local background service recover
           const restarted = yield* cli.run(["service", "start"]);
           expect(restarted.code, restarted.stderr).toBe(0);
           const second = yield* cli.registered;
-          expect(second.pid).not.toBe(first.pid);
+          expect(second.id).not.toBe(first.id);
           const tookMs = yield* Fiber.join(takenOver);
           expect(yield* lock.holder).toEqual(Option.some({ pid: second.pid, port: cli.port }));
           expect(tookMs).toBeLessThan(20_000);
