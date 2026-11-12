@@ -90,6 +90,7 @@ import {
 } from "./infrastructure/background-jobs.ts";
 import { handledJob, jobCompleted, jobFailed } from "./contracts/job-outcome.ts";
 import { cloudEgress } from "./infrastructure/executor.ts";
+import { servedRequest } from "./infrastructure/served-request.ts";
 import { cloudProduct } from "./infrastructure/product.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
 import { EventCleanup, sqlCancellation } from "./infrastructure/event-cleanup.ts";
@@ -789,6 +790,8 @@ export default Api.make(
         // Server-rendered pages read the API through this complete pipeline, in-process.
         withHostPipeline,
         lifetime.http,
+        // The request whose close waits for the background work nested scopes offer while it runs.
+        servedRequest,
       ),
     };
   }).pipe(

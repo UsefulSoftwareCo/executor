@@ -7304,7 +7304,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "cloud-tool-call-batch.spec.ts",
     title:
-      "Cloud MCP tool calls send their checks and reads in one socket write and one snapshot, alone and in parallel, and read again in order when a batch fails",
+      "Cloud MCP tool calls send their checks and reads in one socket write and one snapshot, alone and in parallel, read again in order when a batch fails, and export a log write that outlasts the call without holding a streamed response",
     targets: {
       cloud: managedCloud,
       "self-host": na(

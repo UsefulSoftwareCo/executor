@@ -36,6 +36,7 @@ import type { cloudServingProduct } from "./serving-product.ts";
 import { isolateDeclarations } from "./isolate-memory.ts";
 import { cloudDatabaseConnection } from "./database.ts";
 import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
+import { ObjectRequests, objectRequest } from "./served-request.ts";
 import { interactionFaults } from "./mcp-interaction-faults.ts";
 import { mcpInteractionStore } from "./mcp-interaction-store.ts";
 import { mcpSessionStore } from "./mcp-session-store.ts";
@@ -108,6 +109,8 @@ export const makeMcpSession = Effect.fn(function* ({
       if (set === null || set > due || set < now - holdMillis) yield* state.storage.setAlarm(due);
     });
     const objectId = state.id.toString();
+    // A tool call that waits for input ends while a later request answers it.
+    const requests = new ObjectRequests();
     /**
      * A request may reach this object by a session id alone, so before any work it must carry a
      * bearer whose own key names this object. The key comes only from the verified bearer. Any
@@ -232,6 +235,9 @@ export const makeMcpSession = Effect.fn(function* ({
         analytics.wrap,
         reportErrors,
         Effect.provideService(ObjectDatabase, database),
+        // This call's close waits for the background work its MCP operations offer, such as a tool
+        // call's log write, so its telemetry export includes that work's spans.
+        objectRequest(requests),
       ),
       // An alarm only renews the hold. One that wakes a restarted object finds no program and stops.
       alarm: () => hold.pipe(Effect.ignore),
