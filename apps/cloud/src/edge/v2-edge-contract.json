@@ -32,6 +32,7 @@
     "/authors/*",
     "/og-image.png",
     "/pattern-graph-paper.svg",
+    "/favicon.png",
     "/.well-known/agent-skills/*",
     "/api/00e2e1f082a6ef17/*",
     "/api/fd6fab1fbb4883e1/submit"
@@ -60,6 +61,11 @@
     {
       "method": "GET",
       "target": "/oauth/client-metadata.json",
+      "forwards": true
+    },
+    {
+      "method": "GET",
+      "target": "/favicon.png",
       "forwards": true
     },
     {
