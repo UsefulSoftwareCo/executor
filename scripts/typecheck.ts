@@ -5,6 +5,11 @@
  *
  * Every project runs to completion. Its output is printed in one block when it finishes, and the
  * script exits non-zero when any project fails. A signal stops every running project.
+ *
+ * Errors and every other line are printed in full. Warnings are counted instead: the last lines
+ * give each rule's count and the files with the most. `--all-warnings` or `TYPECHECK_WARNINGS=all`
+ * prints every warning where it occurred. A project that fails without printing an error is
+ * printed in full, so a failure is never hidden. Warnings never change the exit code.
  * `e2e/tests/typecheck-runner.spec.ts` checks this.
  */
 import { spawn, type ChildProcess } from "node:child_process";
@@ -51,7 +56,56 @@ const concurrency =
     ? Math.min(4, Math.max(2, Math.ceil(availableParallelism() / 4)))
     : Number(override);
 
+const warningsMode = process.env.TYPECHECK_WARNINGS;
+if (warningsMode !== undefined && warningsMode !== "all" && warningsMode !== "summary") {
+  console.error(
+    `TYPECHECK_WARNINGS must be "all" or "summary", got ${JSON.stringify(warningsMode)}.`,
+  );
+  process.exit(1);
+}
+const allWarnings = warningsMode === "all" || process.argv.slice(2).includes("--all-warnings");
+
 type Result = { readonly name: string; readonly code: number };
+
+// A diagnostic starts with `file(line,column): warning TS123: ` or, for a project option,
+// `warning TS123: `. The lines after it up to the next diagnostic or a blank line continue it;
+// an Effect diagnostic ends with its rule, `effect(ruleName)`.
+const diagnosticStart = /^(?:(.+?)\(\d+,\d+\): )?(error|warning) TS(\d+): /;
+type Warning = { readonly rule: string; readonly file: string };
+const warnings: Array<Warning> = [];
+
+/** `text` without its warnings, which are returned instead, and the number of errors it has. */
+const splitWarnings = (text: string) => {
+  const kept: Array<string> = [];
+  const found: Array<Warning> = [];
+  let errors = 0;
+  let current: { readonly file: string; readonly code: string; lines: Array<string> } | undefined;
+  const finish = () => {
+    if (current === undefined) return;
+    const rule = /effect\((\w+)\)\s*$/.exec(current.lines.join("\n"))?.[1];
+    found.push({ rule: rule ?? `TS${current.code}`, file: current.file });
+    current = undefined;
+  };
+  for (const line of text.split("\n")) {
+    const start = diagnosticStart.exec(line);
+    if (start) {
+      finish();
+      if (start[2] === "warning") {
+        current = { file: start[1] ?? "(project options)", code: start[3] ?? "", lines: [line] };
+        continue;
+      }
+      errors++;
+    } else if (current && line !== "") {
+      current.lines.push(line);
+      continue;
+    } else {
+      finish();
+    }
+    kept.push(line);
+  }
+  finish();
+  return { kept: kept.join("\n"), warnings: found, errors };
+};
 
 // The steps stay in this process group, so a signal or kill sent to the group (Ctrl-C in a
 // terminal, an agent harness's kill) reaches them directly. A signal sent only to this process,
@@ -89,9 +143,18 @@ const run = (step: Step): Promise<Result> =>
       const code = exit === 0 ? 0 : 1;
       const seconds = ((performance.now() - started) / 1000).toFixed(1);
       const status = code === 0 ? "ok" : `failed (${signal ?? `exit ${exit}`})`;
-      process.stdout.write(`\n── ${step.name}: ${status} in ${seconds}s\n`);
-      process.stdout.write(Buffer.concat(stdout));
-      process.stdout.write(Buffer.concat(stderr));
+      const streams = [Buffer.concat(stdout).toString(), Buffer.concat(stderr).toString()];
+      const split = streams.map(splitWarnings);
+      const hidden = split.flatMap((stream) => stream.warnings);
+      const summarize =
+        !allWarnings &&
+        hidden.length > 0 &&
+        (code === 0 || split.some((stream) => stream.errors > 0));
+      const counted = summarize ? `, ${hidden.length} warnings counted at the end` : "";
+      process.stdout.write(`\n── ${step.name}: ${status} in ${seconds}s${counted}\n`);
+      if (summarize) warnings.push(...hidden);
+      for (const [index, stream] of split.entries())
+        process.stdout.write(summarize ? stream.kept : streams[index]);
       resolve({ name: step.name, code });
     });
   });
@@ -116,6 +179,32 @@ await Promise.all(
     }
   }),
 );
+
+/** `items` grouped by `key`, the largest group first. */
+const largestFirst = <T>(items: ReadonlyArray<T>, key: (item: T) => string) => {
+  const groups = new Map<string, Array<T>>();
+  for (const item of items) {
+    const group = groups.get(key(item));
+    if (group) group.push(item);
+    else groups.set(key(item), [item]);
+  }
+  return [...groups].sort((a, b) => b[1].length - a[1].length);
+};
+
+if (warnings.length > 0) {
+  const rules = largestFirst(warnings, (warning) => warning.rule);
+  const width = Math.max(...rules.map(([rule]) => rule.length));
+  console.log(
+    `\n${warnings.length} warnings by rule, with the files that have the most. ` +
+      "`--all-warnings` or TYPECHECK_WARNINGS=all prints each one.",
+  );
+  for (const [rule, found] of rules) {
+    const files = largestFirst(found, (warning) => warning.file);
+    const top = files.slice(0, 3).map(([file, inFile]) => `${file} ${inFile.length}`);
+    if (files.length > 3) top.push(`${files.length - 3} more files`);
+    console.log(`${String(found.length).padStart(6)}  ${rule.padEnd(width)}  ${top.join(", ")}`);
+  }
+}
 
 const failed = results.filter((result) => result.code !== 0);
 const total = ((performance.now() - started) / 1000).toFixed(1);

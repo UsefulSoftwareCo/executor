@@ -114,6 +114,10 @@ diagnostics built in. It reports the Effect diagnostics configured in
 `tsconfig.json`; it warns that `unstableApiUsage` and `experimentalApiUsage` are
 unknown rules because its Effect rules predate them. Effect errors fail the
 typecheck; warnings mark rules with too many existing sites to fix at once.
+`bun run typecheck` prints errors in full and counts the warnings: the last lines
+give each rule's count and the files with the most. `--all-warnings` or
+`TYPECHECK_WARNINGS=all` (which also works through `bun run check`) prints each
+warning.
 Editors still use TypeScript 7 (`tsc` is the native Go compiler), which
 `bun install` patches with `@effect/tsgo` in `prepare` for the same diagnostics.
 TypeScript 7 has no JavaScript compiler API. The `packages/apps` build scripts
