@@ -409,20 +409,22 @@ const StatusMark = ({ status }: { readonly status: ToolCallStatus }) => (
 
 /**
  * The filters the menu offers. Members see only their own calls, so they are offered no member
- * filter; agent and connection filters appear when the range has any.
+ * filter; member, agent and connection filters appear when the range has any, or with `every`
+ * before the range's choices are known.
  */
 const facetsFor = (
   search: ToolCallSearch,
   filters: ToolCallFilters | undefined,
   admin: boolean,
   calls: readonly ToolCall[],
+  every = false,
 ): readonly Facet[] => {
   const records = new Map(filters?.appRecords.map((app) => [app.id, app]));
   const members = filters?.members ?? [];
   const agents = filters?.agents ?? [];
   const connections = filters?.connections ?? [];
   const facets: Facet[] = [];
-  if (admin && (members.length > 0 || search.member !== undefined))
+  if (admin && (every || members.length > 0 || search.member !== undefined))
     facets.push({
       name: "member",
       label: "Member",
@@ -470,7 +472,7 @@ const facetsFor = (
     })),
     fallback: "Another status",
   });
-  if (agents.length > 0 || search.agent !== undefined)
+  if (every || agents.length > 0 || search.agent !== undefined)
     facets.push({
       name: "agent",
       label: "Agent",
@@ -492,7 +494,7 @@ const facetsFor = (
         { onNone: () => "Another agent", onSome: sourceName },
       ),
     });
-  if (connections.length > 0 || search.connection !== undefined)
+  if (every || connections.length > 0 || search.connection !== undefined)
     facets.push({
       name: "connection",
       label: "Connection",
@@ -568,12 +570,16 @@ function FilterMenuContent({
   readonly count: number;
 }) {
   const source = useFacetSource(search);
+  // Opened before its choices arrived, the menu lists every filter that may have some until it
+  // closes, each saying its choices are loading: rows that appeared or went as they arrived would
+  // move the one under the pointer. The next opening lists only the filters with choices.
+  const [every] = useState(source.loading);
   const beside = useMediaQuery(roomBeside);
   const [picking, setPicking] = useState<Facet["name"]>();
   const content = useRef<HTMLDivElement>(null);
   const range = search.range ?? defaultToolCallRange;
   const facets: readonly Facet[] = [
-    ...facetsFor(search, source.filters, source.admin, []),
+    ...facetsFor(search, source.filters, source.admin, [], every),
     {
       name: "range",
       label: "Time range",
