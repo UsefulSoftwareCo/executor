@@ -53,6 +53,7 @@ const Person = Schema.Struct({
   member: Schema.Boolean,
   name: Schema.NullOr(Schema.String),
   email: Schema.NullOr(Schema.String),
+  image: Schema.NullOr(Schema.String),
 });
 /** The parts of a logged call these scenarios assert; the read API's contract has more. */
 const Call = Schema.Struct({
@@ -112,7 +113,12 @@ const Filters = Schema.Struct({
   ),
 });
 const Viewer = Schema.Struct({
-  user: Schema.Struct({ id: Schema.String, name: Schema.String, email: Schema.String }),
+  user: Schema.Struct({
+    id: Schema.String,
+    name: Schema.String,
+    email: Schema.String,
+    image: Schema.optional(Schema.NullOr(Schema.String)),
+  }),
 });
 const Key = Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) });
 /** A failure as `tools.call` returns it: the error's own fields and the call's reference. */
@@ -386,6 +392,17 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log", (it) => {
           actors = yield* Actors;
         const { app, path } = yield* deployLoggedApp();
         const member = yield* viewer(actors.member);
+        // The log shows a current member's own picture beside their calls.
+        const picture = `https://avatars.example.test/${randomUUID()}.png`;
+        yield* Effect.acquireRelease(
+          api.request(actors.member, "POST", "/api/auth/update-user", { image: picture }),
+          () =>
+            api
+              .request(actors.member, "POST", "/api/auth/update-user", {
+                image: member.image ?? null,
+              })
+              .pipe(Effect.orDie),
+        );
         const key = yield* apiKey(actors.member, `Release bot ${randomUUID().slice(0, 6)}`);
         const agent = yield* api.session();
         const argumentMarker = `argument-${randomUUID()}`;
@@ -421,7 +438,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log", (it) => {
         // An admin finds exactly that call by its reference, whatever else the query names.
         const found = yield* findCall(actors.admin, ref);
         expect(found).toMatchObject({
-          member: { id: member.id, name: member.name, email: member.email },
+          member: { id: member.id, name: member.name, email: member.email, image: picture },
           // Only an agent's client has a logo.
           source: { kind: "api-key", id: key.id, name: key.name, icon: null },
           connection: null,

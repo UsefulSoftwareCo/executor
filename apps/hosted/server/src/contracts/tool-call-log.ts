@@ -218,8 +218,8 @@ export const ToolCallQuery = Schema.Struct({
 export type ToolCallQuery = typeof ToolCallQuery.Type;
 
 /**
- * A user as the log names them: the name copied when it was written, and their email while they
- * are a member of the organization. Someone who has left, or was deleted, has no email.
+ * A user as the log names them: the name copied when it was written, and their email and picture
+ * while they are a member of the organization. Someone who has left, or was deleted, has neither.
  */
 export const ToolCallPerson = Schema.Struct({
   /** Null once the user is deleted. */
@@ -228,6 +228,7 @@ export const ToolCallPerson = Schema.Struct({
   member: Schema.Boolean,
   name: Schema.NullOr(Schema.String),
   email: Schema.NullOr(Schema.String),
+  image: Schema.NullOr(Schema.String),
 });
 /** One logged call. Arguments, results and any text an app or service replied with are never kept. */
 export const ToolCall = Schema.Struct({
@@ -330,6 +331,7 @@ export const ToolCallFilters = Schema.Struct({
       id: Schema.String,
       name: Schema.NullOr(Schema.String),
       email: Schema.NullOr(Schema.String),
+      image: Schema.NullOr(Schema.String),
     }),
   ),
   apps: Schema.Array(Schema.Struct({ id: AppId, name: Schema.NullOr(Schema.String) })),

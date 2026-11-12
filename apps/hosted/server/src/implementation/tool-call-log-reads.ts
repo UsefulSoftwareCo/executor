@@ -119,6 +119,7 @@ const CallRow = Schema.Struct({
   user_id: NullableString,
   user_name: NullableString,
   user_email: NullableString,
+  user_image: NullableString,
   user_member: Schema.Boolean,
   source: ToolCallSource,
   source_id: NullableString,
@@ -141,6 +142,7 @@ const CallRow = Schema.Struct({
   decided_by: NullableString,
   decided_by_name: NullableString,
   decided_email: NullableString,
+  decided_image: NullableString,
   decided_member: Schema.Boolean,
   decided_ms: Millis,
   duration_ms: Schema.NullOr(Schema.Number),
@@ -173,7 +175,13 @@ const toCall = (row: CallRow, named: (app: AppId) => boolean): ToolCall => ({
   member:
     row.user_id === null && row.user_name === null
       ? null
-      : { id: row.user_id, member: row.user_member, name: row.user_name, email: row.user_email },
+      : {
+          id: row.user_id,
+          member: row.user_member,
+          name: row.user_name,
+          email: row.user_email,
+          image: row.user_image,
+        },
   source: { kind: row.source, id: row.source_id, name: row.source_name, icon: row.source_icon },
   connection:
     row.connection_id === null ? null : { id: row.connection_id, name: row.connection_name },
@@ -200,6 +208,7 @@ const toCall = (row: CallRow, named: (app: AppId) => boolean): ToolCall => ({
                   member: row.decided_member,
                   name: row.decided_by_name,
                   email: row.decided_email,
+                  image: row.decided_image,
                 },
           decidedAt: row.decided_ms === null ? null : new Date(row.decided_ms),
         },
@@ -307,6 +316,7 @@ const listCalls = (query: ToolCallQuery) =>
           (extract(epoch from c.started_at) * 1000)::float8 as started_ms,
           to_char(c.started_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as started_text,
           c.user_id, c.user_name, case when um.id is null then null else u.email end as user_email,
+          case when um.id is null then null else u.image end as user_image,
           um.id is not null as user_member,
           c.source, c.source_id, c.source_name,
           (select oc.icon from "mcpGrant" g join "oauthClient" oc on oc."clientId" = g."clientId"
@@ -318,6 +328,7 @@ const listCalls = (query: ToolCallQuery) =>
           (extract(epoch from c.approval_expires_at) * 1000)::float8 as expires_ms,
           c.decided_by, c.decided_by_name,
           case when dm.id is null then null else d.email end as decided_email,
+          case when dm.id is null then null else d.image end as decided_image,
           dm.id is not null as decided_member,
           (extract(epoch from coalesce(c.decided_at,
             case when ${status} = 'expired' then c.approval_expires_at end)) * 1000)::float8
@@ -396,7 +407,8 @@ const listFilters = (range: ToolCallRange | undefined) =>
     const read = Effect.gen(function* () {
       const members = yield* sql`select c.user_id as id,
           (array_agg(c.user_name order by c.started_at desc))[1] as name,
-          max(case when m.id is null then null else u.email end) as email
+          max(case when m.id is null then null else u.email end) as email,
+          max(case when m.id is null then null else u.image end) as image
         from hosted_tool_calls c left join "user" u on u.id = c.user_id
         left join member m on m."organizationId" = c.organization_id and m."userId" = c.user_id
         where ${visible} and c.user_id is not null
@@ -422,7 +434,9 @@ const listFilters = (range: ToolCallRange | undefined) =>
         group by c.connection_id order by max(c.started_at) desc limit ${toolCallFilterChoices}`;
       return {
         members: yield* Schema.decodeUnknownEffect(
-          Schema.Array(Schema.Struct({ ...Choice.fields, email: NullableString })),
+          Schema.Array(
+            Schema.Struct({ ...Choice.fields, email: NullableString, image: NullableString }),
+          ),
         )(members),
         apps: yield* Schema.decodeUnknownEffect(
           Schema.Array(Schema.Struct({ id: AppId, name: Schema.String })),

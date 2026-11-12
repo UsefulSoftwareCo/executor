@@ -42,6 +42,7 @@ export const GroupMember = Schema.Struct({
   userId: Principal.fields.userId,
   name: Schema.String,
   email: Schema.String,
+  image: Schema.NullOr(Schema.String),
 });
 export type GroupMember = typeof GroupMember.Type;
 /** One request supplies authorized groups, their members, and server-derived management authority. */

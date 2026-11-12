@@ -74,6 +74,7 @@ import {
   type ToolCallSearch,
 } from "../../contracts/tool-calls.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
+import { MemberAvatar } from "../components/member-avatar.tsx";
 import { type OrganizationPageReads, useOrganizationRoute } from "../components/organization.tsx";
 import {
   ActivityFilterButton,
@@ -224,14 +225,6 @@ const appName = (call: ToolCall) => call.app.name ?? "An app you can no longer u
 const toolName = (call: ToolCall) => call.tool ?? "A tool the app does not have";
 /** A personal account of someone else is named to nobody but its owner. */
 const accountName = (account: ToolCall["accounts"][number]) => account.name ?? "Personal account";
-
-const initials = (name: string) =>
-  name
-    .split(/[\s@._-]+/u)
-    .filter((part) => part !== "")
-    .map((part) => part[0]?.toUpperCase())
-    .join("")
-    .slice(0, 2);
 
 /**
  * Why a call did not succeed, in Executor's words, built from what the log records: Executor's
@@ -396,26 +389,6 @@ type Facet = {
   readonly fallback: string;
 };
 
-/** A member's initials, or the mark of what acted when no member did. */
-function Face({
-  name,
-  mark,
-  small = false,
-}: {
-  readonly name: string | null;
-  /** Shown when no member acted. */
-  readonly mark?: ReactNode;
-  readonly small?: boolean;
-}) {
-  return (
-    <Avatar size="sm" className={small ? "size-5" : undefined}>
-      <AvatarFallback className={`font-medium ${small ? "text-[9px]" : "text-[10px]"}`}>
-        {name === null ? mark : initials(name)}
-      </AvatarFallback>
-    </Avatar>
-  );
-}
-
 /** An app's icon at the size of a menu row. */
 function AppMark({ app, name }: { readonly app: App | undefined; readonly name: string }) {
   return (
@@ -458,7 +431,11 @@ const facetsFor = (
       value: search.member,
       choices: members.map((member) => {
         const label = member.name ?? member.email ?? "Unknown member";
-        return { value: member.id, label, mark: <Face name={label} small /> };
+        return {
+          value: member.id,
+          label,
+          mark: <MemberAvatar name={label} image={member.image} className="size-5" />,
+        };
       }),
       fallback: Option.match(
         Option.fromNullishOr(calls.find((call) => call.member?.id === search.member)?.member),
@@ -1187,10 +1164,15 @@ function Pill({ tone, children }: { readonly tone: string; readonly children: Re
 function Actor({ call }: { readonly call: ToolCall }) {
   return (
     <span className="flex min-w-0 items-center gap-2.5">
-      <Face
-        name={call.member === null ? null : personName(call.member)}
-        mark={<SourceMark source={call.source} className="size-[13px]" />}
-      />
+      {call.member === null ? (
+        <Avatar size="sm" aria-hidden>
+          <AvatarFallback>
+            <SourceMark source={call.source} className="size-[13px]" />
+          </AvatarFallback>
+        </Avatar>
+      ) : (
+        <MemberAvatar name={personName(call.member)} image={call.member.image} />
+      )}
       <span className="min-w-0">
         <span className="block truncate text-[13px] font-medium">
           {call.member === null ? sourceKinds[call.source.kind] : personName(call.member)}

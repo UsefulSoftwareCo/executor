@@ -30,8 +30,15 @@ export default defineApp({}, async () => ({ tools: router({
 }) }));`;
 const Key = Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) });
 const Viewer = Schema.Struct({
-  user: Schema.Struct({ id: Schema.String, name: Schema.String }),
+  user: Schema.Struct({
+    id: Schema.String,
+    name: Schema.String,
+    image: Schema.optional(Schema.NullOr(Schema.String)),
+  }),
 });
+/** A one-pixel picture the browser loads without a network request. */
+const picture =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
 const Failure = Schema.Struct({ reference: Schema.String });
 const Caught = Schema.Struct({
   execution: Schema.Struct({
@@ -189,9 +196,19 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
       context,
       Effect.gen(function* () {
         const actors = yield* Actors,
+          api = yield* Api,
           browser = yield* Browser;
         const seeded = yield* seedCalls;
         const slug = actors.organization.slug;
+        yield* Effect.acquireRelease(
+          api.request(actors.member, "POST", "/api/auth/update-user", { image: picture }),
+          () =>
+            api
+              .request(actors.member, "POST", "/api/auth/update-user", {
+                image: seeded.member.image ?? null,
+              })
+              .pipe(Effect.orDie),
+        );
         yield* browser.login(actors.admin);
         yield* browser.use("Allow the page to copy", (page) =>
           page.context().grantPermissions(["clipboard-read", "clipboard-write"]),
@@ -215,6 +232,16 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
               .count(),
           ),
         ).toBe(3);
+        // A member's calls show their own picture, as the members list does.
+        expect(
+          yield* browser.use("Read the picture beside a member's call", (page) => {
+            const image = calls(page)
+              .getByRole("button", { name: new RegExp(escaped(seeded.member.name), "u") })
+              .first()
+              .locator("img");
+            return image.waitFor().then(() => image.getAttribute("src"));
+          }),
+        ).toBe(picture);
         expect(
           yield* browser.use("Read the address", (page) =>
             Promise.resolve(new URL(page.url()).pathname),
