@@ -582,6 +582,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "alchemy-first-builds.config.ts": () => import("./alchemy-first-builds.config.ts"),
   "chatgpt-sign-in.config.ts": () => import("./chatgpt-sign-in.config.ts"),
   "apps-published.config.ts": () => import("./apps-published.config.ts"),
+  "beta-due.config.ts": () => import("./beta-due.config.ts"),
   "billing.config.ts": () => import("./billing.config.ts"),
   "ci-selection.config.ts": () => import("./ci-selection.config.ts"),
   "dashboard-file-names.config.ts": () => import("./dashboard-file-names.config.ts"),
