@@ -7752,6 +7752,17 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
+  webhookSourceConcurrency: {
+    fixtures: "actors",
+    file: "webhook-source-concurrency.spec.ts",
+    title:
+      "Cloud registers every source of a new version at once while each registration waits on its provider",
+    targets: {
+      local: na("Uses hosted link routes."),
+      "self-host": na("A Node server reconciles its own sources 4 at a time."),
+      cloud: scheduled,
+    },
+  },
   localHistoricalSkillAccounts: {
     file: "linked-accounts.spec.ts",
     title:

@@ -9,6 +9,7 @@ import { EventCleanup } from "./event-cleanup.ts";
 import { WebhookSourceHost } from "@executor-js/sdk/core";
 import {
   cloudScheduleConcurrency,
+  cloudWebhookSourceConcurrency,
   heldAlarmMilliseconds,
   scheduleRecoveryMilliseconds,
 } from "../contracts/schedules.ts";
@@ -232,8 +233,10 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
             );
             // Alarm callbacks own this work through waitUntil; new wakes can discover other due apps meanwhile.
             yield* dispatch.run(
-              // Webhook source maintenance keeps the Node hosts' width; only scheduled runs widen.
-              executor[WebhookSourceHost].tick(defaultScheduleWorkerOptions.concurrency),
+              executor[WebhookSourceHost].tick({
+                limit: 2 * cloudWebhookSourceConcurrency,
+                concurrency: cloudWebhookSourceConcurrency,
+              }),
               executor.scheduler.tick({
                 runner: "cloud",
                 maxCandidates: cloudScheduleConcurrency,
