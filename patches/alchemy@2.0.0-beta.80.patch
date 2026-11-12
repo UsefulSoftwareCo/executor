@@ -2287,3 +2287,281 @@ diff --git a/src/GitHub/Ruleset.ts b/src/GitHub/Ruleset.ts
  
      /**
       * The ID of the actor (role ID, team ID, or integration ID).
+diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/WorkerProvider.js
+--- a/lib/Cloudflare/Workers/WorkerProvider.js
++++ b/lib/Cloudflare/Workers/WorkerProvider.js
+@@ -614,7 +614,39 @@ const findWorkerId = (accountId, scriptName) => workers.listScripts.items({ acco
+     while: (e) => e._tag === "WorkerIdNotFound",
+     schedule: Schedule.max([Schedule.spaced(2000), Schedule.recurs(3)]),
+ }));
+-const putWorkerScript = (params) => Effect.gen(function* () {
++/**
++ * Script uploads this process has in flight. Cloudflare validates each upload's startup and
++ * refuses one over its CPU limit (error 10021); its reading of one bundle varies, so each reading
++ * is logged beside how many uploads were in flight.
++ */
++let uploadsInFlight = 0;
++const uploadSize = (files) => {
++    const bytes = (files === undefined ? [] : Array.isArray(files) ? files : [files])
++        .filter((file) => !(file instanceof File && file.name.endsWith(".map")))
++        .reduce((total, file) => total + file.size, 0);
++    return bytes > 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(2)} MB` : `${(bytes / 1024).toFixed(2)} KB`;
++};
++/**
++ * Run one script upload. Log the startup time Cloudflare measured (`startup_time_ms`), and when
++ * Cloudflare refuses the upload for startup CPU, name the Worker, its size and the uploads in
++ * flight in the error: Cloudflare's refusal carries no reading of its own.
++ */
++const measuredUpload = (scriptName, files, upload) => Effect.suspend(() => {
++    const inFlight = ++uploadsInFlight;
++    const started = Date.now();
++    const size = uploadSize(files);
++    return upload.pipe(Effect.tap((result) => Effect.logInfo(`Cloudflare Worker startup: ${scriptName} startup_time_ms=${result.startupTimeMs ?? "unreported"} (${size}, ${inFlight} uploads in flight, upload took ${Date.now() - started} ms)`)), Effect.mapError((error) => error instanceof workers.ScriptStartupError
++        ? new workers.ScriptStartupError({
++            code: error.code,
++            message: `${error.message} Cloudflare refused ${scriptName} (${size}) with ${inFlight} uploads in flight after ${Date.now() - started} ms; it reports no startup time with a refusal.`,
++        })
++        : error), Effect.tapError((error) => error instanceof workers.ScriptStartupError
++        ? Effect.logError(`Cloudflare Worker startup refused: ${error.message}`)
++        : Effect.void), Effect.ensuring(Effect.sync(() => {
++        uploadsInFlight--;
++    })));
++});
++const putWorkerScript = (params) => measuredUpload(params.scriptName, params.files, Effect.gen(function* () {
+     if (params.dispatchNamespace) {
+         return yield* wfp
+             .putDispatchNamespaceScript({
+@@ -640,7 +672,7 @@ const putWorkerScript = (params) => Effect.gen(function* () {
+         while: retryableScriptPut,
+         schedule: bindingTargetNotFoundRetrySchedule(),
+     }));
+-});
++}));
+ /**
+  * Delete a Worker script, routing to the dispatch-namespace endpoint when
+  * `dispatchNamespace` is set.
+@@ -2198,7 +2230,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
+         yield* session.note(`Uploading version of ${parentName} ...`, {
+             kind: "status",
+         });
+-        const created = yield* workers
++        const created = yield* measuredUpload(parentName, bundle.files, workers
+             .createScriptVersion({
+             accountId,
+             scriptName: parentName,
+@@ -2226,7 +2258,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
+             schedule: bindingTargetNotFoundRetrySchedule(),
+         }), Effect.catchTag("WorkerNotFound", () => Effect.fail(new WorkerVersionConfigError({
+             message: `version.parent script '${parentName}' does not exist. Deploy the parent Worker first (or check the referenced stage/stack).`,
+-        }))));
++        })))));
+         const versionId = created.id ?? undefined;
+         if (versionId === undefined) {
+             return yield* Effect.fail(new WorkerVersionConfigError({
+@@ -3063,7 +3095,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
+                 }));
+             }
+             yield* session.note(`Uploading version of ${name} (${bundleSize}) ...`, { kind: "status" });
+-            const created = yield* workers
++            const created = yield* measuredUpload(name, bundle.files, workers
+                 .createScriptVersion({
+                 accountId,
+                 scriptName: name,
+@@ -3090,7 +3122,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
+                 .pipe(Effect.retry({
+                 while: isBindingTargetNotFound,
+                 schedule: bindingTargetNotFoundRetrySchedule(),
+-            }));
++            })));
+             versionId = created.id ?? undefined;
+             if (versionId === undefined) {
+                 return yield* Effect.fail(new WorkerVersionConfigError({
+diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/WorkerProvider.ts
+--- a/src/Cloudflare/Workers/WorkerProvider.ts
++++ b/src/Cloudflare/Workers/WorkerProvider.ts
+@@ -874,6 +874,63 @@ const findWorkerId = (accountId: string, scriptName: string) =>
+     }),
+   );
+ 
++/**
++ * Script uploads this process has in flight. Cloudflare validates each upload's startup and
++ * refuses one over its CPU limit (error 10021); its reading of one bundle varies, so each reading
++ * is logged beside how many uploads were in flight.
++ */
++let uploadsInFlight = 0;
++
++type UploadFiles = Blob | ReadonlyArray<Blob> | undefined;
++
++const uploadSize = (files: UploadFiles) => {
++  const bytes = (files === undefined ? [] : Array.isArray(files) ? files : [files as Blob])
++    .filter((file) => !(file instanceof File && file.name.endsWith(".map")))
++    .reduce((total, file) => total + file.size, 0);
++  return bytes > 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(2)} MB` : `${(bytes / 1024).toFixed(2)} KB`;
++};
++
++/**
++ * Run one script upload. Log the startup time Cloudflare measured (`startup_time_ms`), and when
++ * Cloudflare refuses the upload for startup CPU, name the Worker, its size and the uploads in
++ * flight in the error: Cloudflare's refusal carries no reading of its own.
++ */
++const measuredUpload = <A extends { readonly startupTimeMs?: number | null }, E, R>(
++  scriptName: string,
++  files: UploadFiles,
++  upload: Effect.Effect<A, E, R>,
++) =>
++  Effect.suspend(() => {
++    const inFlight = ++uploadsInFlight;
++    const started = Date.now();
++    const size = uploadSize(files);
++    return upload.pipe(
++      Effect.tap((result) =>
++        Effect.logInfo(
++          `Cloudflare Worker startup: ${scriptName} startup_time_ms=${result.startupTimeMs ?? "unreported"} (${size}, ${inFlight} uploads in flight, upload took ${Date.now() - started} ms)`,
++        ),
++      ),
++      Effect.mapError((error) =>
++        error instanceof workers.ScriptStartupError
++          ? new workers.ScriptStartupError({
++              code: error.code,
++              message: `${error.message} Cloudflare refused ${scriptName} (${size}) with ${inFlight} uploads in flight after ${Date.now() - started} ms; it reports no startup time with a refusal.`,
++            })
++          : error,
++      ),
++      Effect.tapError((error) =>
++        error instanceof workers.ScriptStartupError
++          ? Effect.logError(`Cloudflare Worker startup refused: ${error.message}`)
++          : Effect.void,
++      ),
++      Effect.ensuring(
++        Effect.sync(() => {
++          uploadsInFlight--;
++        }),
++      ),
++    );
++  });
++
+ const putWorkerScript = (params: {
+   accountId: string;
+   scriptName: string;
+@@ -881,12 +938,29 @@ const putWorkerScript = (params: {
+   metadata: workers.PutScriptRequest["metadata"];
+   files: workers.PutScriptRequest["files"];
+ }) =>
+-  Effect.gen(function* () {
+-    if (params.dispatchNamespace) {
+-      return yield* wfp
+-        .putDispatchNamespaceScript({
++  measuredUpload(
++    params.scriptName,
++    params.files,
++    Effect.gen(function* () {
++      if (params.dispatchNamespace) {
++        return yield* wfp
++          .putDispatchNamespaceScript({
++            accountId: params.accountId,
++            dispatchNamespace: params.dispatchNamespace,
++            scriptName: params.scriptName,
++            metadata: params.metadata,
++            files: params.files,
++          })
++          .pipe(
++            Effect.retry({
++              while: retryableScriptPut,
++              schedule: bindingTargetNotFoundRetrySchedule(),
++            }),
++          );
++      }
++      return yield* workers
++        .putScript({
+           accountId: params.accountId,
+-          dispatchNamespace: params.dispatchNamespace,
+           scriptName: params.scriptName,
+           metadata: params.metadata,
+           files: params.files,
+@@ -897,21 +971,8 @@ const putWorkerScript = (params: {
+             schedule: bindingTargetNotFoundRetrySchedule(),
+           }),
+         );
+-    }
+-    return yield* workers
+-      .putScript({
+-        accountId: params.accountId,
+-        scriptName: params.scriptName,
+-        metadata: params.metadata,
+-        files: params.files,
+-      })
+-      .pipe(
+-        Effect.retry({
+-          while: retryableScriptPut,
+-          schedule: bindingTargetNotFoundRetrySchedule(),
+-        }),
+-      );
+-  });
++    }),
++  );
+ 
+ /**
+  * Delete a Worker script, routing to the dispatch-namespace endpoint when
+@@ -3119,8 +3180,10 @@ export const LiveWorkerProvider = () =>
+         yield* session.note(`Uploading version of ${parentName} ...`, {
+           kind: "status",
+         });
+-        const created = yield* workers
+-          .createScriptVersion({
++        const created = yield* measuredUpload(
++          parentName,
++          bundle.files,
++          workers.createScriptVersion({
+             accountId,
+             scriptName: parentName,
+             metadata: {
+@@ -3142,8 +3205,7 @@ export const LiveWorkerProvider = () =>
+                   : undefined,
+             },
+             files: bundle.files,
+-          })
+-          .pipe(
++          }).pipe(
+             Effect.retry({
+               while: isBindingTargetNotFound,
+               schedule: bindingTargetNotFoundRetrySchedule(),
+@@ -3155,7 +3217,8 @@ export const LiveWorkerProvider = () =>
+                 }),
+               ),
+             ),
+-          );
++          ),
++        );
+         const versionId = created.id ?? undefined;
+         if (versionId === undefined) {
+           return yield* Effect.fail(
+@@ -4249,8 +4312,10 @@ export const LiveWorkerProvider = () =>
+             `Uploading version of ${name} (${bundleSize}) ...`,
+             { kind: "status" },
+           );
+-          const created = yield* workers
+-            .createScriptVersion({
++          const created = yield* measuredUpload(
++            name,
++            bundle.files,
++            workers.createScriptVersion({
+               accountId,
+               scriptName: name,
+               metadata: {
+@@ -4273,13 +4338,13 @@ export const LiveWorkerProvider = () =>
+                     : undefined,
+               },
+               files: bundle.files,
+-            })
+-            .pipe(
++            }).pipe(
+               Effect.retry({
+                 while: isBindingTargetNotFound,
+                 schedule: bindingTargetNotFoundRetrySchedule(),
+               }),
+-            );
++            ),
++          );
+           versionId = created.id ?? undefined;
+           if (versionId === undefined) {
+             return yield* Effect.fail(
