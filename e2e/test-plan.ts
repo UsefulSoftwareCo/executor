@@ -9242,7 +9242,7 @@ export const scenarios = plan({
   v1HandoffSignIn: {
     file: "cloud-v1-session-handoff.spec.ts",
     title:
-      "Cloud v1 import hands a moved workspace's member from their v1 session to v2: the handoff starts a session for the user the import mapped and opens the organization with no referrer, a browser signed in as them is only redirected, one signed in as another member keeps its session, and a used token opens sign-in",
+      "Cloud v1 import hands a moved workspace's member from their v1 session to v2: the handoff starts a session for the user the import mapped and opens the organization with no referrer, a browser signed in as them is only redirected to the organization it last used while still a member, one signed in as another member keeps its session, and a used token opens sign-in",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1HandoffRefusals: {
