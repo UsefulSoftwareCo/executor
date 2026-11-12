@@ -10,9 +10,12 @@ import { scenarios } from "../test-plan.ts";
 import { Actors, password } from "../support/actors.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import { App } from "../support/contracts.ts";
+import { App, Inventory } from "../support/contracts.ts";
+import { connectionsPath } from "../support/app-accounts.ts";
 import { Evidence } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
+import { Target } from "../support/platform.ts";
+import { targetHosts } from "../support/role-hosts.ts";
 import {
   clientGrantId,
   ConnectionView,
@@ -97,6 +100,17 @@ const Page = Schema.Struct({
   total: Schema.Number,
   totalCapped: Schema.Boolean,
 });
+/** A page as an agent reads it, with each call's start and running time. */
+const AgentPage = Schema.Struct({
+  items: Schema.Array(
+    Schema.Struct({
+      ...Call.fields,
+      startedAt: Schema.String,
+      durationMs: Schema.NullOr(Schema.Number),
+    }),
+  ),
+  total: Schema.Number,
+});
 const Filters = Schema.Struct({
   members: Schema.Array(Schema.Struct({ id: Schema.String })),
   apps: Schema.Array(Schema.Struct({ id: Schema.String })),
@@ -152,6 +166,11 @@ const FailedCall = Schema.Struct({
     }),
     toolCalls: ToolCalls,
   }),
+});
+/** An `execute` program that returned a value. */
+const Completed = Schema.Struct({
+  status: Schema.Literal("completed"),
+  execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
 const Caught = Schema.Struct({
   name: Schema.String,
@@ -697,6 +716,12 @@ try { await ${tool("forbidden")}({ text: "agent" }); } catch {}
 return "done";`,
         });
         expect(ran).toMatchObject({ status: "completed", execution: { ok: true, value: "done" } });
+        // The connection does not include the Executor app, so its agent cannot read the log.
+        const read = yield* mcpTool(client, "The agent tries to read the log", "execute", {
+          code: `try { await tools.executor.toolCalls.list(${JSON.stringify({ path: { organization: actors.organization.id }, query: {} })}); return "read"; }
+catch { return "refused"; }`,
+        });
+        expect(read).toMatchObject({ execution: { ok: true, value: "refused" } });
 
         const byAgent = yield* readLogWhen(
           actors.owner,
@@ -929,18 +954,206 @@ catch (error) { return { caught: { name: error.name, message: error.message, ref
           );
         }
 
-        // An API key cannot read the log, whoever holds it.
-        for (const key of [ownerKey, memberKey])
-          for (const route of ["tool-calls", "tool-calls/filters"]) {
-            const refused = yield* api.request(
+        // An API key reads the log as the person who holds it: the member's key only their own
+        // calls, the owner's every call.
+        const asKey = (key: typeof memberKey, route: string) =>
+          Effect.gen(function* () {
+            const response = yield* api.request(
               agent,
               "GET",
               `/api/organizations/${actors.organization.id}/${route}`,
               undefined,
               key.bearer,
             );
-            expect(refused.status, `${route} with a bearer key`).toBe(401);
-          }
+            expect(response.status, `${route} with a bearer key`).toBe(200);
+            return response;
+          });
+        const memberKeyLog = yield* body(Page, yield* asKey(memberKey, "tool-calls?range=30d"));
+        expect(memberKeyLog.items.map((item) => item.id)).toEqual([memberRef]);
+        expect(
+          (yield* body(Page, yield* asKey(memberKey, `tool-calls?search=${ownerRef}`))).total,
+        ).toBe(0);
+        expect(
+          (yield* body(
+            Filters,
+            yield* asKey(memberKey, "tool-calls/filters?range=30d"),
+          )).members.map((item) => item.id),
+        ).toEqual([member.id]);
+        const ownerKeyLog = yield* body(Page, yield* asKey(ownerKey, "tool-calls?range=30d"));
+        expect(new Set(ownerKeyLog.items.map((item) => item.member?.id))).toEqual(
+          new Set([owner.id, member.id]),
+        );
+        expect(
+          (yield* body(Filters, yield* asKey(ownerKey, "tool-calls/filters?range=30d"))).members
+            .map((item) => item.id)
+            .sort(),
+        ).toEqual([owner.id, member.id].sort());
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+
+  it.effect(scenarios.toolCallLogAgentReads.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          mcp = yield* McpClient,
+          target = yield* Target;
+        const organization = actors.organization.id;
+        const { app, path } = yield* deployLoggedApp();
+        const [owner, member] = yield* Effect.all([viewer(actors.owner), viewer(actors.member)]);
+        // Owners and admins get a managed key linked to the Executor app; a member links their own.
+        const memberKey = yield* apiKey(actors.member, `Member agent ${randomUUID().slice(0, 6)}`);
+        const executorApp = (yield* body(
+          Inventory,
+          yield* api.request(actors.member, "GET", `/api/organizations/${organization}/inventory`),
+        )).apps.find((item) => item.slug === "executor");
+        if (executorApp === undefined) return yield* Effect.die("The Executor app is missing");
+        const pending = yield* body(
+          Schema.Struct({ id: Schema.String }),
+          yield* api.request(
+            actors.member,
+            "POST",
+            connectionsPath(
+              `/api/organizations/${organization}/apps/${executorApp.id}`,
+              "user",
+              "service",
+            ),
+            {},
+          ),
+        );
+        const linked = yield* api.request(
+          actors.member,
+          "POST",
+          `/api/organizations/${organization}/connections/${pending.id}/submit`,
+          {
+            method: "apiKey",
+            label: "Member agent key",
+            fields: { token: Redacted.value(memberKey.key), organization },
+          },
+        );
+        expect(linked.status, JSON.stringify(linked.body)).toBe(200);
+        const memberAccount = yield* body(Schema.Struct({ id: Schema.String }), linked);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(
+              actors.member,
+              "DELETE",
+              `/api/organizations/${organization}/accounts/${memberAccount.id}`,
+            )
+            .pipe(Effect.orDie),
+        );
+
+        // The owner's call comes from their API key.
+        const ownerKey = yield* apiKey(actors.owner, `Owner key ${randomUUID().slice(0, 6)}`);
+        const ownerCall = yield* api.request(
+          yield* api.session(),
+          "POST",
+          `${path}/tools/call`,
+          { tool: "explode", input: { text: "owner" } },
+          ownerKey.bearer,
+        );
+        const ownerRef = (yield* body(Failure, ownerCall)).reference ?? "";
+        expect(ownerRef).toMatch(reference);
+
+        /** An agent signed in over MCP OAuth as `actor`, with every tool. */
+        const agentFor = (actor: Session, label: string) =>
+          Effect.gen(function* () {
+            const consent = yield* consentTo(actor, `${targetHosts(target).mcp}/mcp`, {
+              "x-executor-organization": organization,
+            });
+            expect(consent.status).toBe(200);
+            const token = yield* consent.tokens;
+            const grant = yield* clientGrantId(actor, consent.clientId);
+            yield* Effect.addFinalizer(() =>
+              api
+                .request(actor, "POST", "/api/auth/mcp/grants/revoke", { id: grant })
+                .pipe(Effect.orDie),
+            );
+            const client = yield* mcp.connect(token, label);
+            /** Run a program and return its value; it must complete. */
+            const run = (step: string, code: string) =>
+              Effect.gen(function* () {
+                const result = yield* mcpTool(client, step, "execute", { code });
+                return (yield* Schema.decodeUnknownEffect(Completed)(result)).execution.value;
+              });
+            return { grant, run };
+          });
+        const listed = (query: Record<string, string>) =>
+          `return await tools.executor.toolCalls.list(${JSON.stringify({ path: { organization }, query })});`;
+        const filtered = `return await tools.executor.toolCalls.filters(${JSON.stringify({ path: { organization }, query: { range: "24h" } })});`;
+
+        // The member's agent calls the app, then reads its member's calls back.
+        const memberAgent = yield* agentFor(actors.member, "member-agent");
+        const tool = (name: string) => `tools[${JSON.stringify(app.slug)}].${name}`;
+        expect(
+          yield* memberAgent.run(
+            "The member's agent calls the app",
+            `await ${tool("echo")}({ text: "member" });
+try { await ${tool("explode")}({ text: "member" }); } catch {}
+return "done";`,
+          ),
+        ).toBe("done");
+        // The succeeded call's row follows its response.
+        yield* readLogWhen(actors.admin, { app: app.id, range: "24h" }, (page) => page.total >= 3);
+
+        const own = yield* Schema.decodeUnknownEffect(AgentPage)(
+          yield* memberAgent.run(
+            "The member's agent reads the log",
+            listed({ app: app.id, range: "24h" }),
+          ),
+        );
+        expect(own.items.map((item) => [item.tool, item.status]).sort()).toEqual([
+          ["echo", "succeeded"],
+          ["explode", "failed"],
+        ]);
+        for (const item of own.items) {
+          expect(item).toMatchObject({
+            member: { id: member.id },
+            source: { kind: "agent", id: memberAgent.grant, name: "Scoped connection client" },
+            app: { id: app.id, name: app.name },
+          });
+          expect(item.durationMs, `${item.tool} has a running time`).toEqual(expect.any(Number));
+          expect(item.durationMs ?? -1).toBeGreaterThanOrEqual(0);
+          expect(Number.isNaN(Date.parse(item.startedAt))).toBe(false);
+        }
+        // The owner's call is not the member's agent's to see, even by its reference.
+        expect(
+          yield* Schema.decodeUnknownEffect(AgentPage)(
+            yield* memberAgent.run(
+              "The member's agent searches for the owner's call",
+              listed({ search: ownerRef }),
+            ),
+          ),
+        ).toMatchObject({ items: [], total: 0 });
+        const memberFilters = yield* Schema.decodeUnknownEffect(Filters)(
+          yield* memberAgent.run("The member's agent reads the filters", filtered),
+        );
+        expect(memberFilters.members.map((item) => item.id)).toEqual([member.id]);
+
+        // The admin's agent reads everyone's calls.
+        const adminAgent = yield* agentFor(actors.admin, "admin-agent");
+        const all = yield* Schema.decodeUnknownEffect(AgentPage)(
+          yield* adminAgent.run(
+            "The admin's agent reads the log",
+            listed({ app: app.id, range: "24h" }),
+          ),
+        );
+        expect(all.items.map((item) => [item.member?.id, item.tool, item.status]).sort()).toEqual(
+          [
+            [member.id, "echo", "succeeded"],
+            [member.id, "explode", "failed"],
+            [owner.id, "explode", "failed"],
+          ].sort(),
+        );
+        expect(all.items.map((item) => item.id)).toContain(ownerRef);
+        const adminFilters = yield* Schema.decodeUnknownEffect(Filters)(
+          yield* adminAgent.run("The admin's agent reads the filters", filtered),
+        );
+        expect(adminFilters.members.map((item) => item.id)).toEqual(
+          expect.arrayContaining([owner.id, member.id]),
+        );
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

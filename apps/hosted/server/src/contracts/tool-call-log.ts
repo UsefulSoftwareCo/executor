@@ -15,7 +15,7 @@ import {
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { Context, Effect, Schema, SchemaAST } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
-import { AuthenticationUnavailable, RequireUser } from "./auth.ts";
+import { AuthenticationUnavailable } from "./auth.ts";
 import { RequiredAction } from "./authorization.ts";
 import {
   OrganizationForbidden,
@@ -379,8 +379,9 @@ const errors = [
   ToolCallLogBusy,
 ] as const;
 /**
- * The organization's tool call log, for the dashboard. Owners and admins see every call; members
- * see only their own, whatever they filter by. Browser sessions only.
+ * The organization's tool call log, read by the dashboard and, through the Executor app, by agents.
+ * Owners and admins see every call; members see only their own, whatever they filter by. Browser
+ * sessions and bearer credentials with the `read` action are accepted, as on other read routes.
  */
 export const HostedToolCalls = HttpApiGroup.make("toolCalls")
   .add(
@@ -393,9 +394,8 @@ export const HostedToolCalls = HttpApiGroup.make("toolCalls")
       .annotate(RequiredAction, "read")
       .annotate(
         OpenApi.Description,
-        "List the organization's logged tool calls, newest first. Owners and admins see every call; members see only their own. A search that is exactly a call reference returns that call alone. Browser session only.",
-      )
-      .middleware(RequireUser),
+        "List the organization's logged tool calls, newest first. Owners and admins see every call; members see only their own. A search that is exactly a call reference returns that call alone. Each call has its start time (startedAt), running time (durationMs), status, app, tool and the agent or key that made it (source).",
+      ),
   )
   .add(
     HttpApiEndpoint.get("filters", `${path}/filters`, {
@@ -407,8 +407,7 @@ export const HostedToolCalls = HttpApiGroup.make("toolCalls")
       .annotate(RequiredAction, "read")
       .annotate(
         OpenApi.Description,
-        "The members, apps, agents and connections with logged calls in the range that the signed-in person may see. Browser session only.",
-      )
-      .middleware(RequireUser),
+        "The members, apps, agents and connections with logged calls in the range that the caller may see: every member's for owners and admins, only their own for members.",
+      ),
   )
   .middleware(RequireOrganization);

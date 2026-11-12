@@ -9902,7 +9902,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "tool-call-log.spec.ts",
     title:
-      "An OAuth agent's calls through a scoped connection are logged with its grant and connection, and both filters find them",
+      "An OAuth agent's calls through a scoped connection are logged with its grant and connection, both filters find them, and the connection without the Executor app cannot read the log",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -9924,7 +9924,20 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "tool-call-log.spec.ts",
     title:
-      "Members read only their own logged calls and find nothing of another member's; owners and admins read all, and API keys cannot read the log",
+      "Members read only their own logged calls and find nothing of another member's; owners and admins read all, and an API key reads as the person who holds it",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogAgentReads: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    // The admin's agent reads the log with the admin's managed Executor key.
+    managementApps: ["admin"],
+    title:
+      "An agent signed in over MCP reads the tool call log through the Executor app with each call's running time: a member's agent sees only that member's calls, an admin's agent sees everyone's",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,

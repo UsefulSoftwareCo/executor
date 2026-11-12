@@ -1,8 +1,8 @@
 /**
- * Reads of the tool call log for the dashboard. Every query is scoped to the request's
- * organization, and a member's to their own calls: a member who names another member, another
- * member's reference, run, session or agent finds nothing, exactly as for an ID that does not
- * exist. A reference from another organization is likewise not found.
+ * Reads of the tool call log, for the dashboard and for agents through the Executor app. Every
+ * query is scoped to the request's organization, and a member's to their own calls: a member who
+ * names another member, another member's reference, run, session or agent finds nothing, exactly
+ * as for an ID that does not exist. A reference from another organization is likewise not found.
  */
 import { type App, AppId, Cursor, RequestInvalid, StorageError } from "@executor-js/sdk/core";
 import { Clock, Effect, Option, Schema } from "effect";
@@ -45,7 +45,7 @@ const readTimeout = "5s";
 
 /**
  * Who is reading: every call for owners and admins, only their own for members. A viewer without a
- * user, which a browser session always has, may read none.
+ * user may read none; browser sessions, API keys and OAuth grants all have one.
  */
 const viewer = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;
