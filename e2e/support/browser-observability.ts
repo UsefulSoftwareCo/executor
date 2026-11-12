@@ -1,6 +1,7 @@
 /** Inject response and document failures through Playwright's real network boundary. */
 import { Effect, FileSystem, Schedule, Schema } from "effect";
 import { Browser } from "./browser.ts";
+import { replaceResponses } from "./browser-responses.ts";
 import { Target } from "./platform.ts";
 
 const Envelope = Schema.fromJsonString(Schema.Struct({ envelope: Schema.String }));
@@ -66,20 +67,16 @@ export const awaitSentry = (predicate: (event: SentryEvent) => boolean) =>
     Effect.timeout("15 seconds"),
   );
 
-/** Keep the real server request and trace, then replace only the response under test. */
+/** Keep the browser's real server request and trace, then replace only the response under test. */
 export const injectDashboardResponse = (slug: string, body: string, status: number) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
     let trace: string | undefined;
     yield* browser.use("Leave the previous document", (page) => page.goto("about:blank"));
-    yield* browser.use("Replace the resource response", (page) =>
-      page.route("**/api/organizations/*/resources*", (route) =>
-        route.fetch().then((response) => {
-          trace = route.request().headers()["traceparent"]?.split("-")[1];
-          return route.fulfill({ response, status, body, contentType: "application/json" });
-        }),
-      ),
-    );
+    yield* replaceResponses("*/api/organizations/*/resources*", (response) => {
+      trace = response.requestHeaders["traceparent"]?.split("-")[1];
+      return { status, body, contentType: "application/json" };
+    });
     // Pages render on the server with their data, so the browser reads resources only when it
     // navigates to them itself.
     yield* browser.use("Open a page that does not read resources", (page) =>
@@ -91,11 +88,8 @@ export const injectDashboardResponse = (slug: string, body: string, status: numb
     yield* browser.use("Wait for the decoded operation failure", (page) =>
       page.waitForFunction(() => document.documentElement.hasAttribute("data-observed-failure")),
     );
-    yield* browser.use("Restore the resource route", (page) =>
-      page.unroute("**/api/organizations/*/resources*"),
-    );
     return trace;
-  });
+  }).pipe(Effect.scoped);
 
 /** Withhold the server's bootstrap data so the dashboard's browser entry cannot start. */
 export const incompleteDashboardDocument = (slug: string) =>
