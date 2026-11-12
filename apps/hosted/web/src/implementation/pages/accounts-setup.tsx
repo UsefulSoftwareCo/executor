@@ -12,6 +12,7 @@ import { Button } from "@executor-js/ui/components/button";
 import { DialogDescription, DialogTitle } from "@executor-js/ui/components/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@executor-js/ui/components/popover";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
+import { cn } from "@executor-js/ui/lib/utils";
 import { Spinner } from "@executor-js/ui/components/spinner";
 import { ProviderIcon } from "@executor-js/ui/dashboard/common";
 import {
@@ -514,6 +515,10 @@ const Check = () => (
   </span>
 );
 
+/** The labels a row's button can show; it is as wide as the widest of them. */
+const rowLabels = ["connect", "connecting", "adding", "add"] as const;
+type RowLabel = (typeof rowLabels)[number];
+
 /**
  * One app in one fixed-height row: its logo, its name over one line of detail, and one button of a
  * fixed width. Connecting changes only the detail line and the button; more accounts open over the
@@ -533,6 +538,13 @@ function AppRow({
   const { entry, accounts } = item;
   const [first] = accounts;
   const oauth = entry.auth.some((auth) => auth.kind === "oauth2");
+  const shown: RowLabel = busy
+    ? first === undefined
+      ? "connecting"
+      : "adding"
+    : first === undefined
+      ? "connect"
+      : "add";
   return (
     <div
       role="group"
@@ -575,18 +587,32 @@ function AppRow({
         onClick={onConnect}
         className="min-w-[120px] disabled:text-muted-foreground disabled:opacity-100 max-sm:min-w-[92px] max-sm:px-2.5"
       >
-        {busy ? (
-          <>
-            <Spinner className="size-3" aria-hidden role={undefined} />
-            {first === undefined ? "Connecting" : "Adding"}
-          </>
-        ) : first !== undefined ? (
-          <span>
-            Add<span className="max-sm:hidden"> another</span> +
-          </span>
-        ) : (
-          "Connect"
-        )}
+        {/* Every label stays laid out in one cell, so connecting never resizes the button. */}
+        <span className="grid justify-items-center">
+          {rowLabels.map((label) => (
+            <span
+              key={label}
+              aria-hidden={label === shown ? undefined : true}
+              className={cn(
+                "flex items-center gap-1.5 [grid-area:1/1]",
+                label !== shown && "invisible",
+              )}
+            >
+              {label === "connecting" || label === "adding" ? (
+                <>
+                  <Spinner className="size-3" aria-hidden role={undefined} />
+                  {label === "connecting" ? "Connecting" : "Adding"}
+                </>
+              ) : label === "add" ? (
+                <span>
+                  Add<span className="max-sm:hidden"> another</span> +
+                </span>
+              ) : (
+                "Connect"
+              )}
+            </span>
+          ))}
+        </span>
       </Button>
     </div>
   );

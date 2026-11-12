@@ -1048,6 +1048,8 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
       yield* browser.checkpoint(`${name} 390x844`);
       yield* browser.use("Return to the desktop layout", (page) => page.setViewportSize(desktop));
     });
+  /** Geist's sans face; a page that does not have it by its first paint keeps the fallback. */
+  const geistSans = /\/geist-sans[^/]*\.woff2$/u;
   /** Connect one Synthetic Mail account from the account step's catalog and name it. */
   const connectMail = (label: string) =>
     Effect.gen(function* () {
@@ -1119,17 +1121,47 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           yield* catalogLoaded;
           yield* waitsFor(continueAccounts, accountsHint, "before an account connects");
           yield* atBothSizes(`Required ${label}: Connect your accounts`, "accounts-setup-title");
-          // A fresh document, so the shifts observed are this step's own, not the resizes'.
-          yield* browser.use("Reload the account step", (page) => page.reload());
+          // A fresh document, so the shifts observed are this step's own, not the resizes'. Its
+          // font misses the first paint, as on a slow page, so text keeps the fallback's widths.
+          yield* browser.use("Reload the account step without its font", (page) =>
+            page
+              .context()
+              .newCDPSession(page)
+              .then((session) =>
+                // The page keeps a font it has used in memory; without the cache it asks again.
+                session
+                  .send("Network.setCacheDisabled", { cacheDisabled: true })
+                  .then(() => page.route(geistSans, (route) => route.abort("failed")))
+                  .then(() => page.reload())
+                  .finally(() =>
+                    page
+                      .unroute(geistSans)
+                      .then(() =>
+                        session.send("Network.setCacheDisabled", { cacheDisabled: false }),
+                      )
+                      .then(() => session.detach()),
+                  ),
+              ),
+          );
           yield* heading("Connect your accounts");
           yield* catalogLoaded;
           const shifts = yield* observeLayoutShifts;
           yield* shifts.phase("Connect an account");
           yield* waitsFor(continueAccounts, accountsHint, "after a reload");
           const waiting = yield* forwardControlBox(accountsHint);
+          // The row's button keeps one box through Connect, Connecting and Add another, whichever
+          // label is widest in the font the page has.
+          const mailButton = browser.use("Measure Synthetic Mail's button", (page) =>
+            page
+              .getByRole("group", { name: "Synthetic Mail", exact: true })
+              .getByRole("button")
+              .boundingBox(),
+          );
+          const before = yield* mailButton;
           yield* connectMail("Work mail");
           yield* opensWith(continueAccounts, accountsHint, "once an account connects");
           expect(yield* forwardControlBox(continueAccounts)).toEqual(waiting);
+          expect(yield* mailButton).toEqual(before);
           yield* noLayoutShifts(shifts, "required-account-step-shifts.json");
           yield* browser.checkpoint(`Required ${label}: Continue opens once an account connects`);
           yield* browser.use("Continue from the account step", (page) =>
