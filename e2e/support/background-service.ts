@@ -450,38 +450,46 @@ export const backgroundServiceCli = (options: { readonly port?: number } = {}) =
       );
 
     /**
-     * Windows: the program a process ID names now, by its image name. Windows soon gives a process
-     * ID that was freed to another process, often one that the next server starts.
+     * Windows: when the process a process ID names now started, in 100-nanosecond ticks. Windows
+     * soon gives a freed process ID to another process, often another `executor.exe`: the next
+     * server, or a command another scenario runs at the same time. An image name cannot tell those
+     * apart; a start time can. Windows keeps no start time a Node program reads without starting
+     * one, so PowerShell reads it.
      */
-    const imageOf = (pid: number) =>
+    const startOf = (pid: number) =>
       processes
         .lines(
-          ChildProcess.make("tasklist", ["/fi", `PID eq ${pid}`, "/fo", "csv", "/nh"], {
-            stderr: "ignore",
-          }),
+          ChildProcess.make(
+            "powershell.exe",
+            [
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
+            ],
+            { stderr: "ignore" },
+          ),
         )
         .pipe(
           Effect.map((lines) =>
             Option.fromNullishOr(
-              lines
-                .map((line) => /^"([^"]+)","(\d+)"/u.exec(line))
-                .find((match) => match !== null && Number(match[2]) === pid)?.[1],
+              lines.map((line) => line.trim()).find((line) => /^\d+$/u.test(line)),
             ),
           ),
           Effect.orElseSucceed(() => Option.none<string>()),
         );
-    /** On Windows, the image each server this scenario saw ran as. */
-    const images = new Map<number, string>();
+    /** On Windows, when each server this scenario saw started. */
+    const starts = new Map<number, string>();
     /**
      * Whether `pid` still names a process. On Windows a server's ID counts only while it names a
-     * process with the image that server ran as, since the ID may already name another process.
+     * process that started when that server did, since the ID may already name another process.
      */
     const running = (pid: number) =>
       Effect.gen(function* () {
         if (!(yield* alive(pid))) return false;
-        const image = images.get(pid);
-        if (image === undefined) return true;
-        return Option.contains(yield* imageOf(pid), image);
+        const start = starts.get(pid);
+        if (start === undefined) return true;
+        return Option.contains(yield* startOf(pid), start);
       });
     /** Every server this scenario saw registered, by id, for cleanup. */
     const seen = new Map<string, ServiceRegistration>();
@@ -491,9 +499,9 @@ export const backgroundServiceCli = (options: { readonly port?: number } = {}) =
       const text = yield* fs.readFileString(registrationFile);
       const value = yield* Schema.decodeUnknownEffect(RegistrationJson)(text);
       seen.set(value.id, value);
-      if (process.platform === "win32" && !images.has(value.pid)) {
-        const image = yield* imageOf(value.pid);
-        if (Option.isSome(image)) images.set(value.pid, image.value);
+      if (process.platform === "win32" && !starts.has(value.pid)) {
+        const start = yield* startOf(value.pid);
+        if (Option.isSome(start)) starts.set(value.pid, start.value);
       }
       return Option.some(value);
     });
