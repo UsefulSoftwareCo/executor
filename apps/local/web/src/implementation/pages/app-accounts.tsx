@@ -144,6 +144,7 @@ export function AppAccounts({
       <SharedAccounts
         app={app}
         accounts={accounts}
+        canEdit
         Failure={Failure}
         appAccounts={scopeAccounts("app", appLinks)}
         yourAccounts={scopeAccounts("user", userLinks)}

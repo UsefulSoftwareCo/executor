@@ -76,7 +76,7 @@ const contentBox = (
   const region = loading
     ? {
         overview: '[aria-label="App accounts placeholder"]',
-        accounts: '.accounts-section .empty-state, [aria-label="Loading accounts"] .empty-state',
+        accounts: ".accounts-section",
         tools: '[aria-label="Loading tools"]',
         source: '[aria-label="Loading files"]',
         history: '[aria-label="Loading history"] > div > div:first-child',
@@ -85,7 +85,7 @@ const contentBox = (
       }[view]
     : {
         overview: '[aria-label="App accounts"]',
-        accounts: ".empty-state",
+        accounts: ".accounts-section",
         tools: ".tools-section",
         source: '[aria-label="Source browser"]',
         history: '[aria-label="Source history"] li:first-child',
@@ -324,11 +324,10 @@ export const checkAppLoading = (input: {
                 );
                 break;
               case "accounts":
-                yield* browser.use("Known empty accounts remain explicit", (page) =>
-                  page
-                    .getByRole("heading", { name: "No accounts required", exact: true })
-                    .waitFor(),
-                );
+                for (const heading of ["No app accounts", "No user accounts"])
+                  yield* browser.use(`${heading} remains explicit`, (page) =>
+                    page.getByRole("heading", { name: heading, exact: true }).waitFor(),
+                  );
                 break;
               case "tools":
                 if (selectedTool) {

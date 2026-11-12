@@ -193,6 +193,7 @@ export function AppAccounts({
       <SharedAccounts
         app={app}
         accounts={accounts}
+        canEdit={canManage}
         Failure={HostedFailure}
         appAccounts={scopeAccounts(
           "app",

@@ -230,6 +230,48 @@ layer(HostedLive, { excludeTestServices: true })("Empty state recovery", (it) =>
             .getByRole("button", { name: "Cancel", exact: true })
             .click(),
         );
+        yield* browser.use("Owner opens the empty Accounts tab", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps/${deployed.id}?view=accounts`),
+        );
+        // Both sections stay, each explaining its scope instead of disappearing.
+        for (const [section, heading, read] of [
+          ["App accounts", "No app accounts", "ctx.app.accounts"],
+          ["Your accounts", "No user accounts", "ctx.user.accounts"],
+        ] as const)
+          yield* browser.use(`${section} explains ${read}`, (page) =>
+            page
+              .getByRole("region", { name: section, exact: true })
+              .getByRole("heading", { name: heading, exact: true })
+              .waitFor()
+              .then(() =>
+                page
+                  .getByRole("region", { name: section, exact: true })
+                  .getByText(read, { exact: true })
+                  .waitFor(),
+              ),
+          );
+        yield* browser.checkpoint("Owner empty accounts");
+        yield* browser.use("Allow clipboard access in the isolated browser", (page) =>
+          page.context().grantPermissions(["clipboard-read", "clipboard-write"]),
+        );
+        for (const [kind, scope, read, place] of [
+          ["an app account", "{ app: { accounts } }", "ctx.app.accounts", "App accounts"],
+          ["a user account", "{ user: { accounts } }", "ctx.user.accounts", "Your accounts"],
+        ] as const) {
+          yield* browser.use(`Copy the prompt to add ${kind}`, (page) =>
+            page.getByRole("button", { name: `Copy prompt to add ${kind}`, exact: true }).click(),
+          );
+          const prompt = yield* browser.use(`Read the copied ${kind} prompt`, (page) =>
+            page.evaluate(() => navigator.clipboard.readText()),
+          );
+          expect(prompt).toContain(
+            `my Executor app ${JSON.stringify(deployed.name)} (app ID: ${deployed.id})`,
+          );
+          expect(prompt).toContain("accounts.md");
+          expect(prompt).toContain(scope);
+          expect(prompt).toContain(read);
+          expect(prompt).toContain(`under ${place} on its Accounts tab`);
+        }
         yield* browser.login(actors.member);
         for (const tab of ["skills", "schedules"] as const) {
           yield* browser.use(`Member opens empty ${tab}`, (page) =>
@@ -255,6 +297,22 @@ layer(HostedLive, { excludeTestServices: true })("Empty state recovery", (it) =>
           ).toBe(true);
           yield* browser.checkpoint(`Member empty ${tab}`);
         }
+        yield* browser.use("Member opens the empty Accounts tab", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps/${deployed.id}?view=accounts`),
+        );
+        for (const section of ["App accounts", "Your accounts"])
+          yield* browser.use(`The member learns who can add ${section}`, (page) =>
+            page
+              .getByRole("region", { name: section, exact: true })
+              .getByText("People who can edit this app can add one.", { exact: true })
+              .waitFor(),
+          );
+        expect(
+          yield* browser.use("The member gets no prompt to change the app", (page) =>
+            page.getByRole("button", { name: /^Copy prompt to add/ }).count(),
+          ),
+        ).toBe(0);
+        yield* browser.checkpoint("Member empty accounts");
       }),
     ),
   );
