@@ -15,9 +15,9 @@ import { Effect, Schedule } from "effect";
 import { randomUUID } from "node:crypto";
 import { Browser } from "../support/browser.ts";
 import {
-  awaitSentry,
+  awaitSentryWholeEnvironment,
   captureThroughPage,
-  sentryEvents,
+  sentryEventsWholeEnvironment,
   type SentryEvent,
 } from "../support/browser-observability.ts";
 import { WebKitLive, withCase } from "../support/case.ts";
@@ -98,9 +98,10 @@ layer(WebKitLive, { excludeTestServices: true })("Safari error provenance", (it)
 
         const sentinel = `docs-sentinel-${run}`;
         yield* captureThroughPage(sentinel);
-        const [reported] = yield* awaitSentry((event) => mentions(event, sentinel));
+        // The sentinel and the raised failures are this run's own, so they are found anywhere.
+        const [reported] = yield* awaitSentryWholeEnvironment((event) => mentions(event, sentinel));
         expect(reported?.tags?.surface).toBe("docs");
-        const delivered = (yield* sentryEvents)
+        const delivered = (yield* sentryEventsWholeEnvironment)
           .filter((event) => raised.some((text) => mentions(event, text)))
           .map((event) => event.exception?.values.map((value) => value.value));
         yield* evidence.json("foreign-failures.json", { raised, delivered });

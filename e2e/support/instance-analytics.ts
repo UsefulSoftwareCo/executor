@@ -1,6 +1,7 @@
 /** Events a local or self-host product process delivered to its own loopback collector. */
 import { Config, Effect, FileSystem, Option, Path, Redacted, Schedule, Schema } from "effect";
 import { Api, type Session } from "./api.ts";
+import { collectorLinesWholeEnvironment } from "./collector-events.ts";
 import { Target } from "./platform.ts";
 
 /** One event as PostHog's `/batch/` endpoint receives it. */
@@ -39,20 +40,28 @@ export const reportedBuild = Effect.gen(function* () {
 
 class AnalyticsPending extends Schema.TaggedError<AnalyticsPending>()("AnalyticsPending", {}) {}
 
-/** The raw delivered text, for absence checks, and every decoded event in delivery order. */
-export const deliveredAnalytics = Effect.gen(function* () {
+/**
+ * Everything the collector received: the raw text, for absence checks, and every event of its
+ * complete lines, decoded, in delivery order. The whole collector is the subject here: these
+ * scenarios run only on self-host and local, where the collector is the scenario's own product
+ * process's, and they check what that instance sends at all. The text keeps a line still being
+ * written, since that too is something the instance sent.
+ */
+export const deliveredAnalyticsWholeEnvironment = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const target = yield* Target;
   const text = yield* fs.readFileString(`${target.directory}/analytics.ndjson`);
   const events: DeliveredEvent[] = [];
-  for (const line of text.split("\n").filter((line) => line.length > 0))
+  for (const line of yield* collectorLinesWholeEnvironment("analytics.ndjson"))
     events.push(...(yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Batch))(line)).batch);
   return { text, events };
 });
 
-/** Wait for delivery. Test products send a partial batch every second. */
-export const awaitAnalytics = (ready: (events: readonly DeliveredEvent[]) => boolean) =>
-  deliveredAnalytics.pipe(
+/** Wait for delivery, across the whole collector. Test products send a partial batch every second. */
+export const awaitAnalyticsWholeEnvironment = (
+  ready: (events: readonly DeliveredEvent[]) => boolean,
+) =>
+  deliveredAnalyticsWholeEnvironment.pipe(
     Effect.flatMap((delivered) =>
       ready(delivered.events) ? Effect.succeed(delivered) : Effect.fail(new AnalyticsPending()),
     ),

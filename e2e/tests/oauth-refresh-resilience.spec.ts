@@ -1133,10 +1133,7 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           yield* issuer.configure({ tokenError: null, expiresIn: 20 });
           // The calls ran where the case says: the facet loads its build in facet mode.
           yield* telemetry
-            .spans("runtime.app.build.load", {
-              "executor.app.id": app.id,
-              "executor.runtime.mode": mode,
-            })
+            .spans("runtime.app.build.load", { app: app.id }, { "executor.runtime.mode": mode })
             .pipe(
               Effect.flatMap((spans) =>
                 spans.length > 0

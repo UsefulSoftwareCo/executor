@@ -8,7 +8,7 @@
  * never the app's or the caller's text.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Schedule, Schema } from "effect";
+import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
@@ -17,7 +17,11 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, type SpanQuery } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
-import { awaitSentryEvents, traceEvents } from "../support/sentry-events.ts";
+import {
+  awaitSentryEvents,
+  sentryEventTextWholeEnvironment,
+  traceEvents,
+} from "../support/sentry-events.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
 /** The app's error message: its text, then a line shaped like a stack frame. */
@@ -269,8 +273,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           actors = yield* Actors,
           evidence = yield* Evidence,
           telemetry = yield* Telemetry,
-          target = yield* Target,
-          fs = yield* FileSystem.FileSystem;
+          target = yield* Target;
         const cloud = target.metadata.target === "cloud";
         // Also a valid JavaScript identifier, so the app can name a function for it.
         const marker = `synthetic_app_secret_${randomUUID().replaceAll("-", "")}`;
@@ -315,7 +318,11 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             if (trace === undefined) return yield* Effect.die("The call's trace was not recorded");
             const delivered = Effect.gen(function* () {
               const spans = (yield* telemetry.query(trace)).data;
-              const logs = yield* telemetry.logs(trace, marker);
+              // The trace's records, and any record anywhere holding the scenario's own marker.
+              const logs = [
+                yield* telemetry.logs(trace),
+                yield* telemetry.logsWholeEnvironment(marker),
+              ];
               const appLogs = (yield* Schema.decodeUnknownEffect(DeliveredLogs)(
                 logs[0],
               )).data.filter(({ serviceName }) => serviceName === "executor-app");
@@ -388,7 +395,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
         );
         const workflowTrace = Effect.gen(function* () {
           const traces = new Set(
-            (yield* telemetry.search("workflow.run", { "executor.run.id": runId })).data.map(
+            (yield* telemetry.search("workflow.run", { run: runId })).data.map(
               ({ traceId }) => traceId,
             ),
           );
@@ -399,7 +406,11 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             spans.some(({ span }) => span.operationName === name && span.status === "error");
           const [trace] = traces;
           return trace !== undefined && failedIn("workflow.run") && failedIn("workflow.step")
-            ? { trace, spans, logs: yield* telemetry.logs(trace, marker) }
+            ? {
+                trace,
+                spans,
+                logs: [yield* telemetry.logs(trace), yield* telemetry.logsWholeEnvironment(marker)],
+              }
             : yield* Effect.fail(new Error("The workflow run's spans have not been delivered"));
         }).pipe(Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }));
         const workflowRun = cloud ? yield* workflowTrace : undefined;
@@ -416,18 +427,22 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           ...(workflowRun === undefined ? {} : { workflowRun }),
         };
         const sentry = cloud
-          ? yield* awaitSentryEvents((events) =>
-              Object.entries(calls).every(
-                ([name, { trace }]) =>
-                  name === "released" ||
-                  name === "invalid" ||
-                  traceEvents(events, trace).length > 0,
-              ),
+          ? yield* awaitSentryEvents(
+              Object.values(calls).map(({ trace }) => trace),
+              (events) =>
+                Object.entries(calls).every(
+                  ([name, { trace }]) =>
+                    name === "released" ||
+                    name === "invalid" ||
+                    traceEvents(events, trace).length > 0,
+                ),
             ).pipe(
+              // Every report anywhere, for the scenario's own marker and status, which no report
+              // may hold.
               Effect.flatMap((events) =>
-                fs
-                  .readFileString(`${target.directory}/sentry.ndjson`)
-                  .pipe(Effect.map((raw) => ({ events, raw }))),
+                sentryEventTextWholeEnvironment.pipe(
+                  Effect.map((raw) => ({ events, raw: raw.join("\n") })),
+                ),
               ),
             )
           : undefined;

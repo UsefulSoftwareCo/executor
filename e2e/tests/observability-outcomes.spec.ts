@@ -1,11 +1,12 @@
 /** Observe real API/MCP outcomes after app execution and collector ingestion. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Redacted, Schedule, Schema } from "effect";
+import { Effect, Redacted, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { analyticsEvents } from "../support/collector-events.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
@@ -14,17 +15,6 @@ import { WorkflowRun } from "../support/workflow-app.ts";
 import { Target } from "../support/platform.ts";
 import { awaitSentryEvents, traceEvents } from "../support/sentry-events.ts";
 import { withApps, mcpSdkVersion } from "../support/apps-release.ts";
-
-const Analytics = Schema.fromJsonString(
-  Schema.Struct({
-    batch: Schema.Array(
-      Schema.Struct({
-        event: Schema.String,
-        properties: Schema.Record(Schema.String, Schema.Json),
-      }),
-    ),
-  }),
-);
 
 layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) => {
   it.effect(scenarios.observabilityOutcomes.title, (context) =>
@@ -35,8 +25,7 @@ layer(HostedLive, { excludeTestServices: true })("Observability outcomes", (it) 
           actors = yield* Actors,
           evidence = yield* Evidence;
         const telemetry = yield* Telemetry,
-          target = yield* Target,
-          fs = yield* FileSystem.FileSystem;
+          target = yield* Target;
         expect(target.metadata.mode).toBe("managed");
         const cloud = target.metadata.target === "cloud";
         // Each runtime operation's span names the app it ran and, on Cloud, the organization of
@@ -129,14 +118,7 @@ export default defineApp({}, async () => {
             ).toMatchObject(tenant);
           yield* evidence.json(`${tool}-trace.json`, trace);
           if (target.metadata.target === "cloud") {
-            const events = yield* fs.readFileString(`${target.directory}/analytics.ndjson`).pipe(
-              Effect.map((text) =>
-                text
-                  .trim()
-                  .split("\n")
-                  .filter(Boolean)
-                  .flatMap((line) => Schema.decodeUnknownSync(Analytics)(line).batch),
-              ),
+            const events = yield* analyticsEvents({ app: app.id }).pipe(
               Effect.repeat({
                 schedule: Schedule.spaced("100 millis"),
                 until: (events) =>
@@ -189,7 +171,10 @@ export default defineApp({}, async () => {
         const failureTrace = yield* latestTrace();
         if (target.metadata.target === "cloud") {
           const events = traceEvents(
-            yield* awaitSentryEvents((events) => traceEvents(events, failureTrace).length > 0),
+            yield* awaitSentryEvents(
+              [failureTrace],
+              (events) => traceEvents(events, failureTrace).length > 0,
+            ),
             failureTrace,
           );
           expect(events).toHaveLength(1);
@@ -214,18 +199,13 @@ export default defineApp({}, async () => {
             ],
           ).toBe(run.id);
           yield* evidence.json("workflow-initiation-trace.json", initiation);
-          const event = yield* fs.readFileString(`${target.directory}/analytics.ndjson`).pipe(
-            Effect.map((text) =>
-              text
-                .trim()
-                .split("\n")
-                .filter(Boolean)
-                .flatMap((line) => Schema.decodeUnknownSync(Analytics)(line).batch)
-                .find(
-                  (event) =>
-                    event.event === "workflow_attempt_completed" &&
-                    event.properties.run_id === run.id,
-                ),
+          const event = yield* analyticsEvents({ run: run.id }).pipe(
+            Effect.map((events) =>
+              events.find(
+                (event) =>
+                  event.event === "workflow_attempt_completed" &&
+                  event.properties.run_id === run.id,
+              ),
             ),
             Effect.repeat({
               schedule: Schedule.spaced("500 millis"),

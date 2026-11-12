@@ -1628,20 +1628,18 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const lost = yield* Fiber.join(running);
         expect(lost.status, JSON.stringify(lost.body)).toBe(200);
         const telemetry = yield* Telemetry;
-        const lostClaims = yield* telemetry
-          .search("oauth.renewal", { "executor.account.id": raced })
-          .pipe(
-            Effect.map((found) =>
-              found.data.filter(
-                ({ span }) => span.tags["oauth.renewal.lost_claim_result"] !== undefined,
-              ),
+        const lostClaims = yield* telemetry.search("oauth.renewal", { account: raced }).pipe(
+          Effect.map((found) =>
+            found.data.filter(
+              ({ span }) => span.tags["oauth.renewal.lost_claim_result"] !== undefined,
             ),
-            Effect.filterOrFail(
-              (found) => found.length > 0,
-              () => new Error("The lost renewal's span has not arrived"),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
-          );
+          ),
+          Effect.filterOrFail(
+            (found) => found.length > 0,
+            () => new Error("The lost renewal's span has not arrived"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+        );
         expect(lostClaims.map(({ span }) => span.tags)).toEqual([
           expect.objectContaining({
             "executor.account.credential_generation": "0",

@@ -225,10 +225,11 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source retry backoff",
           const stored = storedRow(legacyStorage([sourceRow(app.id, account)]));
           /** Delivered spans of the source's attempts that the host's tick started. */
           const attempts = telemetry
-            .spans("sdk.webhooks.reconcileSource", {
-              "executor.app.id": app.id,
-              "executor.account.id": account,
-            })
+            .spans(
+              "sdk.webhooks.reconcileSource",
+              { app: app.id },
+              { "executor.account.id": account },
+            )
             .pipe(Effect.orDie);
           /** Wait until `count` attempts have completed, and return the token requests made. */
           const attemptsReach = (count: number) => spansReach(attempts, count);
@@ -378,7 +379,7 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source retry backoff",
            * reconnect. Only a waiting source makes them: the app has no schedules.
            */
           const checks = telemetry
-            .spans("sdk.accounts.reconnectRequired", { "executor.app.id": app.id })
+            .spans("sdk.accounts.reconnectRequired", { app: app.id })
             .pipe(Effect.orDie);
           /**
            * Move the clock past the source's wait and return the product time bounds of the check
@@ -527,10 +528,11 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source retry backoff",
           const stored = storedRow(legacyStorage([sourceRow(app.id, account)]));
           /** Delivered spans of the source's attempts. */
           const attempts = telemetry
-            .spans("sdk.webhooks.reconcileSource", {
-              "executor.app.id": app.id,
-              "executor.account.id": account,
-            })
+            .spans(
+              "sdk.webhooks.reconcileSource",
+              { app: app.id },
+              { "executor.account.id": account },
+            )
             .pipe(Effect.orDie);
           /** The stored row after `retries` attempts in a row found the setup unfinished. */
           const waits = (

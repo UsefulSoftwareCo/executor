@@ -466,7 +466,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud role hosts", (it) => {
         for (const { request, traceId } of sent) {
           // The Tail receiver records each invocation shortly after it ends.
           const span = yield* telemetry
-            .search("cloudflare.invocation", { "executor.trace_id": traceId })
+            .search("cloudflare.invocation", { requestTrace: traceId })
             .pipe(
               Effect.flatMap(({ data }) => {
                 const record = data.find(apiWorker);

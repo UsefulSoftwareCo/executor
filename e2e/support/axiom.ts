@@ -114,7 +114,7 @@ const attributeColumn = (name: string) =>
 
 /**
  * Queries remain limited to the current run's time window and to filters built from validated
- * terms: one trace, or one operation whose attributes match exactly.
+ * terms: one trace, or one operation whose attributes match exactly, in one trace or any.
  */
 export const axiomSpans = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
@@ -197,13 +197,26 @@ export const axiomSpans = Effect.gen(function* () {
       Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u)))(
         traceId,
       ).pipe(Effect.flatMap((id) => query(`trace_id == '${id}'`))),
-    search: (operation: string, attributes: Readonly<Record<string, string>>) =>
+    /** One operation whose attributes match exactly, in one trace when `traceId` names one. */
+    search: (
+      operation: string,
+      attributes: Readonly<Record<string, string>>,
+      traceId?: string | undefined,
+    ) =>
       Effect.forEach([operation, ...Object.entries(attributes).flat()], (term) =>
         Schema.decodeUnknownEffect(Term)(term),
       ).pipe(
-        Effect.flatMap(() =>
+        Effect.andThen(
+          traceId === undefined
+            ? Effect.succeed(undefined)
+            : Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u)))(
+                traceId,
+              ),
+        ),
+        Effect.flatMap((trace) =>
           query(
             [
+              ...(trace === undefined ? [] : [`trace_id == '${trace}'`]),
               `name == '${operation}'`,
               ...Object.entries(attributes).map(
                 ([name, value]) => `tostring(${attributeColumn(name)}) == '${value}'`,

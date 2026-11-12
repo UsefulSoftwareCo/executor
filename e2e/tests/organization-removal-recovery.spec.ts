@@ -168,25 +168,21 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
             });
           /** The recovery object's arm for one removal; the object's spans start their own trace. */
           const armed = (organization: string, by: number) =>
-            telemetry
-              .search("organization.removal.recovery.arm", {
-                "executor.organization.id": organization,
-              })
-              .pipe(
-                Effect.map((found) =>
-                  found.data
-                    .map(({ span }) => span)
-                    .filter((span) => span.operationName === "organization.removal.recovery.arm"),
-                ),
-                Effect.filterOrFail(
-                  (found) => found.length > 0,
-                  () => new Error(`Removal of ${organization} has not armed recovery`),
-                ),
-                Effect.retry({
-                  schedule: Schedule.spaced("500 millis"),
-                  while: () => Date.now() < by,
-                }),
-              );
+            telemetry.search("organization.removal.recovery.arm", { organization }).pipe(
+              Effect.map((found) =>
+                found.data
+                  .map(({ span }) => span)
+                  .filter((span) => span.operationName === "organization.removal.recovery.arm"),
+              ),
+              Effect.filterOrFail(
+                (found) => found.length > 0,
+                () => new Error(`Removal of ${organization} has not armed recovery`),
+              ),
+              Effect.retry({
+                schedule: Schedule.spaced("500 millis"),
+                while: () => Date.now() < by,
+              }),
+            );
           /** Server statements matching `query` that wait on the held transaction. */
           const waiting = (holder: number, query: string) =>
             locks.run({
@@ -271,7 +267,8 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
           );
           yield* evidence.step(
             "A recovery run fails while the starts stay stalled, and the alarm tries again",
-            telemetry.search("organization.removal.recovery", {}).pipe(
+            // One recovery alarm serves the whole Cloud, and its runs name no organization.
+            telemetry.searchWholeEnvironment("organization.removal.recovery", {}).pipe(
               Effect.map((found) =>
                 found.data
                   .map(({ span }) => span)
@@ -355,19 +352,17 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
           // started it. No cron job started any of them.
           // A request's last attempt ends with its window, interrupted rather than failed.
           const startsOf = (organization: string, requestTrace: string) =>
-            telemetry
-              .search("organization.removal.start", { "executor.organization.id": organization })
-              .pipe(
-                Effect.map((found) => found.data.filter(({ span }) => isStart(span))),
-                Effect.filterOrFail(
-                  (found) =>
-                    found.some(
-                      ({ traceId, span }) => traceId !== requestTrace && span.status === "ok",
-                    ),
-                  () => new Error(`No successful start of ${organization} has arrived`),
-                ),
-                Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
-              );
+            telemetry.search("organization.removal.start", { organization }).pipe(
+              Effect.map((found) => found.data.filter(({ span }) => isStart(span))),
+              Effect.filterOrFail(
+                (found) =>
+                  found.some(
+                    ({ traceId, span }) => traceId !== requestTrace && span.status === "ok",
+                  ),
+                () => new Error(`No successful start of ${organization} has arrived`),
+              ),
+              Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+            );
           const runs = new Map<string, Span>();
           for (const [organization, requestTrace] of [
             [first, stalled[0]],
@@ -426,7 +421,10 @@ layer(HostedLive, { excludeTestServices: true })("Organization removal recovery"
             "The alarm stops once nothing is pending",
             Effect.gen(function* () {
               yield* Effect.sleep("8 seconds");
-              const recoveries = (yield* telemetry.search("organization.removal.recovery", {})).data
+              const recoveries = (yield* telemetry.searchWholeEnvironment(
+                "organization.removal.recovery",
+                {},
+              )).data
                 .map(({ span }) => span)
                 .filter(isRecovery)
                 .filter((span) => Date.parse(span.startTime) >= window);

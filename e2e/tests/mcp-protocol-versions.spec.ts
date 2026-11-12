@@ -11,6 +11,7 @@
 import { expect, layer } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Redacted, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
+import { randomBytes } from "node:crypto";
 import { Agent, createServer, request as httpRequest } from "node:http";
 import type { Socket } from "node:net";
 import { scenarios } from "../test-plan.ts";
@@ -52,6 +53,12 @@ const CallResult = Schema.Struct({
 });
 const SessionId = Schema.NonEmptyString;
 
+/** A trace of the scenario's own for one request, so what Cloud reports for it can be found. */
+const clientTrace = () => {
+  const traceId = randomBytes(16).toString("hex");
+  return { traceId, traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01` };
+};
+
 /** One POST to /mcp. The session ID is kept for the next request, not in evidence. */
 const send = <E>(
   credentials: Readonly<Record<string, string>>,
@@ -64,9 +71,15 @@ const send = <E>(
   Effect.gen(function* () {
     const target = yield* Target,
       http = yield* HttpClient.HttpClient;
+    const { traceId, traceparent } = clientTrace();
     const request = yield* body(
       HttpClientRequest.post(new URL(path, target.metadata.origin), {
-        headers: { ...credentials, accept: "application/json, text/event-stream", ...headers },
+        headers: {
+          ...credentials,
+          accept: "application/json, text/event-stream",
+          traceparent,
+          ...headers,
+        },
       }),
     );
     const response = yield* http.execute(request).pipe(Effect.timeout("30 seconds"));
@@ -88,6 +101,7 @@ const send = <E>(
       session: response.headers["mcp-session-id"],
       version: response.headers["mcp-protocol-version"],
       reply,
+      traceId,
     };
   }).pipe(Effect.scoped, Effect.provideService(HttpClient.TracerPropagationEnabled, false));
 
@@ -643,9 +657,10 @@ const stream = (
   Effect.gen(function* () {
     const target = yield* Target,
       http = yield* HttpClient.HttpClient;
+    const { traceId, traceparent } = clientTrace();
     const response = yield* http.execute(
       HttpClientRequest.post(new URL(path, target.metadata.origin), {
-        headers: { ...credentials, accept: "application/json, text/event-stream" },
+        headers: { ...credentials, accept: "application/json, text/event-stream", traceparent },
       }).pipe(HttpClientRequest.bodyJsonUnsafe({ jsonrpc: "2.0", ...message })),
     );
     yield* response.stream.pipe(
@@ -661,7 +676,7 @@ const stream = (
         ),
       ),
     );
-    return { status: response.status, contentType: response.headers["content-type"] };
+    return { status: response.status, contentType: response.headers["content-type"], traceId };
   }).pipe(Effect.scoped, Effect.provideService(HttpClient.TracerPropagationEnabled, false));
 
 const Frame = Schema.Struct({
@@ -685,6 +700,8 @@ const checkCancelledCalls = (
   Effect.gen(function* () {
     const evidence = yield* Evidence;
     const outcomes: Record<string, unknown> = {};
+    // The traces of the cancelled calls' requests, which a report about them would carry.
+    const traces: Array<string> = [];
     const cancelledCall = (input: {
       readonly version: string;
       readonly path: string;
@@ -750,6 +767,7 @@ const checkCancelledCalls = (
         expect(called.status).toBe(200);
         const result = yield* Schema.decodeUnknownEffect(CallResult)(called.reply?.result);
         expect(result.content[0].text.execution.value).toBe(42);
+        traces.push(opened.traceId, ended.traceId, cancelled.traceId, called.traceId);
         return {
           status: ended.status,
           contentType: ended.contentType,
@@ -789,7 +807,8 @@ const checkCancelledCalls = (
     yield* evidence.json("cancelled-calls.json", outcomes);
     // Cloud reported the failed request to Sentry as `Done`. Cloud strips error messages before
     // reporting, so match the exception type. A report arrives after its request finished, so
-    // wait for one before concluding there is none.
+    // wait for one before concluding there is none. Only the reports of these calls' own requests
+    // are read: other scenarios on the Cloud may rightly report a response that was not written.
     if ((yield* Target).metadata.target === "cloud") {
       const reported = (events: ReadonlyArray<SentryEvent>) =>
         events
@@ -797,8 +816,8 @@ const checkCancelledCalls = (
           .filter(
             (exception) => exception.type === "Done" || exception.type === "McpResponseNotWritten",
           );
-      const events = yield* awaitSentryEvents((events) => reported(events).length > 0).pipe(
-        Effect.catchTag("TimeoutError", () => sentryEvents),
+      const events = yield* awaitSentryEvents(traces, (events) => reported(events).length > 0).pipe(
+        Effect.catchTag("TimeoutError", () => sentryEvents(traces)),
       );
       expect(reported(events)).toEqual([]);
     }

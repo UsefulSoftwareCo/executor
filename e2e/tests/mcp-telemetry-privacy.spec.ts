@@ -7,10 +7,14 @@
  * text.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Redacted, Schedule, Schema } from "effect";
+import { Effect, Redacted, Schedule, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes, randomUUID } from "node:crypto";
-import { awaitSentryEvents, traceEvents } from "../support/sentry-events.ts";
+import {
+  awaitSentryEvents,
+  sentryEventTextWholeEnvironment,
+  traceEvents,
+} from "../support/sentry-events.ts";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -147,8 +151,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
           evidence = yield* Evidence,
           telemetry = yield* Telemetry,
           target = yield* Target,
-          http = yield* HttpClient.HttpClient,
-          fs = yield* FileSystem.FileSystem;
+          http = yield* HttpClient.HttpClient;
         const key = yield* body(
           Schema.Struct({ key: Schema.RedactedFromValue(Schema.String), id: Schema.String }),
           yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -206,9 +209,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             traces[path] = trace;
             // The trace's own log records, and any record whose body holds a marker's prefix. An
             // unreadable collector fails the scenario: absence is only evidence when it was read.
-            const logs = yield* telemetry
-              .logs(trace, "PRIVATE_")
-              .pipe(Effect.map((records) => records.join("\n")));
+            const logs = [
+              yield* telemetry.logs(trace),
+              yield* telemetry.logsWholeEnvironment("PRIVATE_"),
+            ].join("\n");
             const rpc = found.data.find(({ span }) => toolCall(span.operationName))?.span;
             leaks[path] = [
               ...(rpc?.tags.parameters === undefined ? [] : ["tools/call parameters"]),
@@ -570,9 +574,13 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
         expect(reported).toHaveLength(3);
         const incidents =
           target.metadata.target === "cloud" && target.metadata.mode === "managed"
-            ? yield* awaitSentryEvents((events) =>
+            ? yield* awaitSentryEvents(reported, (events) =>
                 reported.every((trace) => traceEvents(events, trace).length > 0),
-              ).pipe(Effect.flatMap(() => fs.readFileString(`${target.directory}/sentry.ndjson`)))
+              ).pipe(
+                // Every report anywhere: the markers are this scenario's own, so none may hold one.
+                Effect.flatMap(() => sentryEventTextWholeEnvironment),
+                Effect.map((events) => events.join("\n")),
+              )
             : "";
         yield* evidence.json("leaks.json", { leaks, traces });
         // Every path in one comparison, so a failure names each path and where it leaked.

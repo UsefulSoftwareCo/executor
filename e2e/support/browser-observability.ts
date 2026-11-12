@@ -1,10 +1,10 @@
 /** Inject response and document failures through Playwright's real network boundary. */
-import { Effect, FileSystem, Schedule, Schema } from "effect";
+import { Effect, Schedule, Schema } from "effect";
 import { Browser } from "./browser.ts";
 import { replaceResponses } from "./browser-responses.ts";
-import { Target } from "./platform.ts";
+import { collectorLinesWholeEnvironment, field, parseLeniently } from "./collector-events.ts";
+import { scopeOf, type Scope } from "./scope.ts";
 
-const Envelope = Schema.fromJsonString(Schema.Struct({ envelope: Schema.String }));
 /** The safe subset of a delivered Sentry event that scenarios assert on. */
 export const SentryEvent = Schema.fromJsonString(
   Schema.Struct({
@@ -38,27 +38,67 @@ export const automaticCapture = (event: SentryEvent) =>
   event.exception?.values.some((value) => value.mechanism?.type.startsWith("auto.browser.")) ===
   true;
 
-/** Every event the managed Cloud target's loopback Sentry receiver has accepted so far. */
-export const sentryEvents = Effect.gen(function* () {
-  const target = yield* Target;
-  const fs = yield* FileSystem.FileSystem;
-  const text = yield* fs.readFileString(`${target.directory}/sentry.ndjson`);
-  return text
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .flatMap((line) =>
-      Schema.decodeUnknownSync(Envelope)(line)
-        .envelope.split("\n")
-        .slice(2)
-        .filter(Boolean)
-        .map((value) => Schema.decodeUnknownSync(SentryEvent)(value)),
-    );
-});
+/**
+ * Which browser reports a read returns, by one kind: those of the scenario's own traces, of its
+ * own page (the `page_id` its reporter tags), or of a dashboard page of its own organization (by
+ * slug). A scope naming two kinds does not typecheck; a missing or empty ID, or no traces, is a
+ * defect.
+ */
+export type BrowserSentryScope = Scope<{
+  readonly traces: ReadonlyArray<string>;
+  readonly page: string;
+  readonly organizationSlug: string;
+}>;
 
-/** Wait until at least one delivered event matches. */
-export const awaitSentry = (predicate: (event: SentryEvent) => boolean) =>
-  sentryEvents.pipe(
+/** Every event item the receiver has accepted so far, as sent, from every scenario sharing it. */
+const eventItems = collectorLinesWholeEnvironment("sentry.ndjson").pipe(
+  Effect.map((lines) =>
+    lines.flatMap((line) => {
+      const envelope = field(parseLeniently(line), "envelope");
+      return typeof envelope === "string" ? envelope.split("\n").slice(2).filter(Boolean) : [];
+    }),
+  ),
+);
+const decode = (items: ReadonlyArray<string>) =>
+  items.map((item) => Schema.decodeUnknownSync(SentryEvent)(item));
+
+/**
+ * Every event the managed Cloud target's loopback Sentry receiver has accepted so far, from every
+ * scenario sharing it: only for finding a marker this scenario raised, or checking that one is
+ * reported nowhere.
+ */
+export const sentryEventsWholeEnvironment = eventItems.pipe(Effect.map(decode));
+
+/**
+ * The events in `scope` accepted so far. Each item is matched to the scope leniently, so another
+ * scenario's malformed event is passed over; the scenario's own are then decoded strictly.
+ */
+export const sentryEvents = (scope: BrowserSentryScope) =>
+  Effect.gen(function* () {
+    const { kind, value } = yield* scopeOf("A browser Sentry read", scope);
+    const owned = (item: unknown) => {
+      if (kind === "traces") {
+        const trace = field(item, "contexts", "trace", "trace_id");
+        return typeof trace === "string" && value.includes(trace);
+      }
+      if (kind === "page") return field(item, "tags", "page_id") === value;
+      const url = field(item, "request", "url");
+      return (
+        typeof url === "string" &&
+        URL.canParse(url) &&
+        new URL(url).pathname.startsWith(`/org/${String(value)}/`)
+      );
+    };
+    if (kind !== "traces" && kind !== "page" && kind !== "organizationSlug")
+      return yield* Effect.die(new Error(`A browser Sentry read has no scope named ${kind}`));
+    return decode((yield* eventItems).filter((item) => owned(parseLeniently(item))));
+  });
+
+const awaitAny = (
+  events: typeof sentryEventsWholeEnvironment,
+  predicate: (event: SentryEvent) => boolean,
+) =>
+  events.pipe(
     Effect.map((events) => events.filter(predicate)),
     Effect.repeat({
       schedule: Schedule.spaced("200 millis"),
@@ -66,6 +106,14 @@ export const awaitSentry = (predicate: (event: SentryEvent) => boolean) =>
     }),
     Effect.timeout("15 seconds"),
   );
+/** Wait until at least one delivered event in `scope` matches. */
+export const awaitSentry = (
+  scope: BrowserSentryScope,
+  predicate: (event: SentryEvent) => boolean,
+) => awaitAny(sentryEvents(scope), predicate);
+/** Wait until at least one delivered event matches, from any scenario sharing the receiver. */
+export const awaitSentryWholeEnvironment = (predicate: (event: SentryEvent) => boolean) =>
+  awaitAny(sentryEventsWholeEnvironment, predicate);
 
 /** Keep the browser's real server request and trace, then replace only the response under test. */
 export const injectDashboardResponse = (slug: string, body: string, status: number) =>

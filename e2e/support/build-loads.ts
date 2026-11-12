@@ -42,7 +42,7 @@ export const appBuildLoads = (app: string) =>
   Effect.gen(function* () {
     const telemetry = yield* Telemetry,
       evidence = yield* Evidence;
-    const read = telemetry.spans(buildLoadSpan, { "executor.app.id": app }).pipe(
+    const read = telemetry.spans(buildLoadSpan, { app }).pipe(
       Effect.map((spans) => {
         const counts: Record<string, number> = {};
         for (const tags of spans) {

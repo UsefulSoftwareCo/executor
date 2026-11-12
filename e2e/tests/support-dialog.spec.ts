@@ -1,24 +1,14 @@
 /** Cloud offers a support dialog from every sidebar layout; self-host has none. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Schedule, Schema } from "effect";
+import { Effect, Schedule, Schema } from "effect";
 import type { Page } from "playwright";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { analyticsEvents } from "../support/collector-events.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
-
-const Analytics = Schema.fromJsonString(
-  Schema.Struct({
-    batch: Schema.Array(
-      Schema.Struct({
-        event: Schema.String,
-        properties: Schema.Record(Schema.String, Schema.Json),
-      }),
-    ),
-  }),
-);
 
 const channels = {
   Discord: "https://discord.gg/eF29HBHwM6",
@@ -37,8 +27,7 @@ layer(HostedLive, { excludeTestServices: true })("Support dialog", (it) => {
         const browser = yield* Browser,
           actors = yield* Actors,
           api = yield* Api,
-          target = yield* Target,
-          fs = yield* FileSystem.FileSystem;
+          target = yield* Target;
         const cloud = target.metadata.target === "cloud";
         yield* browser.login(actors.owner);
         yield* browser.use("Open the dashboard", (page) =>
@@ -74,26 +63,15 @@ layer(HostedLive, { excludeTestServices: true })("Support dialog", (it) => {
           return;
         }
 
-        const readEvents = fs.readFileString(`${target.directory}/analytics.ndjson`).pipe(
-          Effect.map((text) =>
-            text
-              .trim()
-              .split("\n")
-              .filter(Boolean)
-              .flatMap((line) => Schema.decodeUnknownSync(Analytics)(line).batch),
-          ),
-        );
         // Other cases share the Worker and its collector; browser events carry this actor's identity.
         const owner = yield* body(
           Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
           yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
         );
-        const supportEvents = readEvents.pipe(
+        const supportEvents = analyticsEvents({ person: owner.user.id }).pipe(
           Effect.map((events) =>
             events.filter(
-              (event) =>
-                event.properties.distinct_id === owner.user.id &&
-                (event.event === "support_opened" || event.event === "support_link_clicked"),
+              (event) => event.event === "support_opened" || event.event === "support_link_clicked",
             ),
           ),
         );

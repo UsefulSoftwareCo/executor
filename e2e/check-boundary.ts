@@ -29,6 +29,8 @@ const allowed = new Set([
   "react",
   "react-dom/client",
 ]);
+/** A collector's event files and its span and log search endpoints. */
+const collectorReads = /(?:sentry|analytics|flags)\.ndjson|\/api\/(?:spans|logs|traces)\/search/u;
 class BoundaryViolation extends Schema.TaggedError<BoundaryViolation>()("BoundaryViolation", {
   problems: Schema.Array(Schema.String),
 }) {}
@@ -163,6 +165,27 @@ const check = Effect.gen(function* () {
           }
         };
         const visit = (node: ts.Node) => {
+          // Collector reads go through the scoped readers in support/, so a scenario cannot read
+          // another scenario's telemetry by accident.
+          if (
+            !label.startsWith(`support${path.sep}`) &&
+            (ts.isStringLiteralLike(node) ||
+              ts.isTemplateHead(node) ||
+              ts.isTemplateMiddle(node) ||
+              ts.isTemplateTail(node)) &&
+            collectorReads.test(node.text)
+          )
+            problems.push(
+              `${label}: read the collector through the scoped readers in support/, not ${node.text.match(collectorReads)?.[0]}`,
+            );
+          if (
+            !label.startsWith(`support${path.sep}`) &&
+            ts.isIdentifier(node) &&
+            node.text === "collectorLinesWholeEnvironment"
+          )
+            problems.push(
+              `${label}: collectorLinesWholeEnvironment is only for the readers in support/`,
+            );
           if (
             ts.isIdentifier(node) &&
             legacyNames.has(node.text) &&

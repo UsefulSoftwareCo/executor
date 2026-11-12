@@ -13,6 +13,7 @@ import {
 } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createServer } from "node:http";
+import { SpanQuery } from "./contracts.ts";
 
 /** workerd's control message once the collector socket accepts connections. */
 const Listening = Schema.Struct({
@@ -128,6 +129,36 @@ export const serveOtlpCollector = (
     const url = yield* serveMotel(directory, "motel", "collector.log", bounds);
     yield* announce(directory, url);
     return url;
+  });
+
+/**
+ * The spans a collector this scenario served itself (`serveOtlpCollector`) holds that started in
+ * [from, to), of one operation or all, newest first. That collector receives only this scenario's
+ * servers, so all of it is the scenario's.
+ */
+export const ownCollectorSpans = (
+  collector: string,
+  window: { readonly from: number; readonly to: number; readonly operation?: string | undefined },
+) =>
+  Effect.gen(function* () {
+    const http = yield* HttpClient.HttpClient;
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const url = new URL("/api/spans/search", collector);
+        if (window.operation !== undefined) url.searchParams.set("operation", window.operation);
+        url.searchParams.set("lookback", "1h");
+        url.searchParams.set("limit", "10000");
+        const response = yield* http.get(url.href);
+        return yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(SpanQuery)));
+      }),
+    ).pipe(
+      Effect.map(({ data }) =>
+        data.filter(({ span }) => {
+          const at = Date.parse(span.startTime);
+          return at >= window.from && at < window.to;
+        }),
+      ),
+    );
   });
 
 const Json = Schema.Record(Schema.String, Schema.Json);

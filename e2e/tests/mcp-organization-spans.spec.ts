@@ -22,7 +22,7 @@
  * object's answer, so one the object never answers names neither: the gateway never guesses.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Fiber, Layer, Redacted, Schedule, Schema } from "effect";
+import { Effect, Fiber, Layer, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
@@ -31,8 +31,8 @@ import { Api, body, type Session } from "../support/api.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import { App, Organization, Resource, type SpanQuery } from "../support/contracts.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
+import { App, Organization, Resource } from "../support/contracts.ts";
+import { Evidence, Telemetry, type DeliveredSpan } from "../support/evidence.ts";
 import {
   EventList,
   Granted,
@@ -46,7 +46,7 @@ import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { Target } from "../support/platform.ts";
 
-type Span = (typeof SpanQuery.Type)["data"][number]["span"];
+type Span = DeliveredSpan;
 
 const Key = Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) });
 const organizationId = "executor.organization.id";
@@ -179,16 +179,9 @@ const helpers = Effect.gen(function* () {
     ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
   /** A trace's delivered spans once `ready` holds for them. */
   const spans = (traceId: string, ready: (spans: ReadonlyArray<Span>) => boolean) =>
-    telemetry.query(traceId).pipe(
-      Effect.map((result) => result.data.map(({ span }) => span)),
-      Effect.flatMap((all) =>
-        ready(all)
-          ? Effect.succeed(all)
-          : Effect.fail(new Error("The request's spans have not reached the collector")),
-      ),
-      Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
-      Effect.tap((all) => evidence.json(`trace-${traceId}.json`, all)),
-    );
+    telemetry
+      .settled(traceId, ready)
+      .pipe(Effect.tap((all) => evidence.json(`trace-${traceId}.json`, all)));
   /** The Better Auth user ID and email of `actor`'s session. */
   const identity = (actor: Session) =>
     api.request(actor, "GET", "/api/auth/get-session").pipe(
@@ -230,22 +223,19 @@ layer(HostedLive, { excludeTestServices: true })("MCP organization spans", (it) 
           );
           const tool = (name: string) => `tools[${JSON.stringify(app.slug)}].${name}`;
           /** The delivered spans of every MCP request since `before`, once `ready` holds for them. */
+          // The request list is read again on each attempt: the MCP client records a request when
+          // its response starts, and sends some, such as notifications, beside the calls.
           const deliveredSince = (before: number, ready: (spans: ReadonlyArray<Span>) => boolean) =>
-            evidence.requests.pipe(
-              Effect.map((requests) =>
-                requests
-                  .slice(before)
-                  .filter((request) => request.path === "/mcp")
-                  .map((request) => request.traceId),
+            telemetry.settled(
+              evidence.requests.pipe(
+                Effect.map((requests) =>
+                  requests
+                    .slice(before)
+                    .filter((request) => request.path === "/mcp")
+                    .map((request) => request.traceId),
+                ),
               ),
-              Effect.flatMap((traces) => Effect.forEach(traces, (trace) => telemetry.query(trace))),
-              Effect.map((results) => results.flatMap(({ data }) => data.map(({ span }) => span))),
-              Effect.flatMap((all) =>
-                ready(all)
-                  ? Effect.succeed(all)
-                  : Effect.fail(new Error("The requests' spans have not reached the collector")),
-              ),
-              Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+              ready,
             );
 
           const key = yield* createKey("Organization spans");

@@ -251,9 +251,12 @@ export default defineApp({}, async () => ({
           };
         });
         // The server failure is the barrier for incident exports; every rejected request's span has arrived.
+        // Only this scenario's reports are read: the values it keeps private are common enough,
+        // such as a 40-character commit, that another scenario's report may rightly hold one.
         const events = cloud
-          ? yield* awaitSentryEvents((events) =>
-              events.some((event) => event.contexts?.trace?.trace_id === crashTrace),
+          ? yield* awaitSentryEvents(
+              [crashTrace, ...rejections.map(({ trace }) => trace)],
+              (events) => events.some((event) => event.contexts?.trace?.trace_id === crashTrace),
             )
           : [];
         const reported = rejections.map((rejection) =>

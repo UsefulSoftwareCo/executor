@@ -12,12 +12,13 @@ import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import {
   awaitSentry,
+  awaitSentryWholeEnvironment,
   breakDashboardReads,
   captureThroughPage,
   docsCopyFailure,
   docsPageActionsChunk,
   failDocsCopy,
-  sentryEvents,
+  sentryEventsWholeEnvironment,
   throwers,
   type SentryEvent,
 } from "../support/browser-observability.ts";
@@ -114,9 +115,12 @@ const raiseForeignFailures = (surface: string, pageErrors: ReadonlyArray<string>
     return [...raised, evaluated];
   });
 
-/** Every delivered report of these failures, and where each one was reported from. */
+/**
+ * Every delivered report of these failures anywhere, and where each one was reported from. The
+ * failures' texts are this run's own, so no report of them may exist.
+ */
 const deliveredOf = (foreign: ReadonlyArray<string>) =>
-  sentryEvents.pipe(
+  sentryEventsWholeEnvironment.pipe(
     Effect.map((events) =>
       events
         .filter((event) => foreign.some((text) => mentions(event, text)))
@@ -155,7 +159,10 @@ layer(HostedLive, { excludeTestServices: true })("Browser error provenance", (it
         yield* browser.use("The failed read is shown", (page) =>
           page.getByRole("button", { name: "Retry" }).first().waitFor(),
         );
-        yield* awaitSentry((event) => event.contexts?.trace?.trace_id === traces[0]);
+        yield* awaitSentry(
+          { traces: [traces[0]!] },
+          (event) => event.contexts?.trace?.trace_id === traces[0],
+        );
         const dashboard = yield* raiseForeignFailures("dashboard", pageErrors);
         const readsBefore = traces.length;
         yield* browser.use("Retry the failed read", (page) =>
@@ -168,7 +175,10 @@ layer(HostedLive, { excludeTestServices: true })("Browser error provenance", (it
           }),
           Effect.timeout("10 seconds"),
         );
-        yield* awaitSentry((event) => event.contexts?.trace?.trace_id === traces.at(-1));
+        yield* awaitSentry(
+          { traces: [traces.at(-1)!] },
+          (event) => event.contexts?.trace?.trace_id === traces.at(-1),
+        );
         delivered.dashboard = yield* deliveredOf(dashboard);
         yield* browser.use("Restore the resource responses", (page) =>
           page.unroute("**/api/organizations/*/resources*"),
@@ -180,7 +190,9 @@ layer(HostedLive, { excludeTestServices: true })("Browser error provenance", (it
         const marketing = yield* raiseForeignFailures("marketing", pageErrors);
         const sentinel = `marketing-sentinel-${randomUUID().slice(0, 8)}`;
         yield* captureThroughPage(sentinel);
-        const [marketingSentinel] = yield* awaitSentry((event) => mentions(event, sentinel));
+        const [marketingSentinel] = yield* awaitSentryWholeEnvironment((event) =>
+          mentions(event, sentinel),
+        );
         expect(marketingSentinel?.tags?.surface).toBe("marketing");
         expect(new URL(marketingSentinel?.request?.url ?? "http://invalid/").pathname).toBe(
           "/home",
@@ -194,13 +206,15 @@ layer(HostedLive, { excludeTestServices: true })("Browser error provenance", (it
           page.getByRole("heading", { level: 1 }).first().waitFor(),
         );
         yield* failDocsCopy;
-        const [docsReady] = yield* awaitSentry(docsControl);
+        // The docs are no organization's page, and their copy failures carry no trace of this
+        // scenario's, so they are read across the environment.
+        const [docsReady] = yield* awaitSentryWholeEnvironment(docsControl);
         expect(docsReady === undefined ? [] : throwers(docsReady)).toEqual([
           expect.stringMatching(docsPageActionsChunk),
         ]);
         const docs = yield* raiseForeignFailures("docs", pageErrors);
         yield* failDocsCopy;
-        yield* sentryEvents.pipe(
+        yield* sentryEventsWholeEnvironment.pipe(
           Effect.map((events) => events.filter(docsControl)),
           Effect.repeat({
             schedule: Schedule.spaced("200 millis"),

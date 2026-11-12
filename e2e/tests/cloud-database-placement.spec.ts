@@ -307,8 +307,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud database placement", (it
         );
 
         // The local Worker also fires its minute cron on its own; either tick proves the path.
+        // Cron ticks belong to the whole Cloud, not to any one scenario.
         const dispatched = telemetry
-          .search("job.dispatch", { "executor.job": "provisioning" })
+          .searchWholeEnvironment("job.dispatch", { "executor.job": "provisioning" })
           .pipe(Effect.map((found) => new Set(found.data.map((entry) => entry.traceId))));
         const before = yield* dispatched;
         yield* Effect.scoped(
@@ -709,8 +710,9 @@ return out;`,
 
           // A Cron Trigger's wake reaches the coordinator only through the placed fetch handler,
           // so the coordinator can never be created where the trigger happens to run.
+          // Cron ticks belong to the whole Cloud, not to any one scenario.
           const dispatched = telemetry
-            .search("job.dispatch", { "executor.job": "schedule-wake" })
+            .searchWholeEnvironment("job.dispatch", { "executor.job": "schedule-wake" })
             .pipe(Effect.map((found) => new Set(found.data.map((entry) => entry.traceId))));
           const before = yield* dispatched;
           yield* Effect.scoped(
@@ -781,30 +783,42 @@ return out;`,
 
           // Motel matches operation names by prefix, so `schedule.retire` would also find
           // `schedule.retired`.
-          const spans = (operation: string, attributes: Record<string, string> = {}) =>
+          const exactly = (operation: string, found: typeof SpanQuery.Type) =>
+            found.data.filter(({ span }) => span.operationName === operation);
+          // One schedule coordinator serves the whole Cloud, so its spans are the Cloud's, from
+          // every scenario sharing it, not only this one's. The exact counts below hold only on a
+          // Cloud where nothing else hands the coordinator over.
+          const coordinatorSpans = (operation: string, attributes: Record<string, string> = {}) =>
             telemetry
-              .search(operation, attributes)
-              .pipe(
-                Effect.map((found) =>
-                  found.data.filter(({ span }) => span.operationName === operation),
-                ),
-              );
-          // The dispatches of this app's runs, which leave in other exports than the runs.
-          const dispatching = (found: { readonly runs: Spans; readonly dispatches: Spans }) => {
-            const runTraces = new Set(found.runs.map((entry) => entry.traceId));
-            return found.dispatches.filter((entry) => runTraces.has(entry.traceId));
-          };
-          const coordinator = yield* Effect.all({
-            handovers: spans("schedule.handover"),
-            retirements: spans("schedule.retire"),
-            runs: spans("schedule.run", { "executor.app.id": app.id }),
-            dispatches: spans("schedule.dispatch", { "executor.schedule.runner": "cloud" }),
+              .searchWholeEnvironment(operation, attributes)
+              .pipe(Effect.map((found) => exactly(operation, found)));
+          const coordinator = yield* Effect.gen(function* () {
+            const handovers = yield* coordinatorSpans("schedule.handover");
+            const retirements = yield* coordinatorSpans("schedule.retire");
+            const runs = exactly(
+              "schedule.run",
+              yield* telemetry.search("schedule.run", { app: app.id }),
+            );
+            // The dispatches of this app's runs, which leave in other exports than the runs. Until
+            // a run has arrived there is no trace to read them in.
+            const dispatches =
+              runs.length === 0
+                ? []
+                : exactly(
+                    "schedule.dispatch",
+                    yield* telemetry.search(
+                      "schedule.dispatch",
+                      { traces: runs.map(({ traceId }) => traceId) },
+                      { "executor.schedule.runner": "cloud" },
+                    ),
+                  );
+            return { handovers, retirements, runs, dispatches };
           }).pipe(
             Effect.flatMap((found) =>
               found.handovers.length === 0 ||
               found.retirements.length === 0 ||
               found.runs.length < 3 ||
-              dispatching(found).length === 0
+              found.dispatches.length === 0
                 ? Effect.fail(new Error("The coordinator's spans have not reached Motel"))
                 : Effect.succeed(found),
             ),
@@ -825,7 +839,7 @@ return out;`,
           expect(coordinator.handovers).toHaveLength(1);
           expect(coordinator.retirements.length).toBeGreaterThanOrEqual(1);
           // The coordinator dispatches as `cloud`, as the first one did, and records where it runs.
-          const runDispatches = dispatching(coordinator);
+          const runDispatches = coordinator.dispatches;
           expect(runDispatches.length).toBeGreaterThan(0);
           for (const { span } of runDispatches)
             expect(span.tags["cloudflare.colo"]).toMatch(/^(?:[A-Z]+|unknown)$/);
@@ -847,7 +861,9 @@ return out;`,
             expect(armed, "The span must record the alarm it left").toBeDefined();
             return { at: at ?? NaN, armed: armed ?? NaN, pending: read("pending") };
           };
-          const heartbeats = spans("schedule.retired", { "executor.schedule.wake": "alarm" }).pipe(
+          const heartbeats = coordinatorSpans("schedule.retired", {
+            "executor.schedule.wake": "alarm",
+          }).pipe(
             Effect.map((found) =>
               found
                 .map((entry) => ({ trace: entry.traceId, ...heartbeat(entry) }))
@@ -874,8 +890,8 @@ return out;`,
           // `retire()` and forwarded wakes keep an earlier alarm and bring a later or missing one in
           // to a minute away, so no wake can postpone the heartbeat or leave it further off.
           const kept = [
-            ...(yield* spans("schedule.retire")),
-            ...(yield* spans("schedule.retired", { "executor.schedule.wake": "wake" })),
+            ...(yield* coordinatorSpans("schedule.retire")),
+            ...(yield* coordinatorSpans("schedule.retired", { "executor.schedule.wake": "wake" })),
           ].map(heartbeat);
           yield* evidence.json("heartbeat-deadlines.json", { heartbeats: fresh, kept });
           expect(kept.length).toBeGreaterThan(0);

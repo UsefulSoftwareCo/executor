@@ -562,12 +562,18 @@ return await tools.search({ query: "anything", namespace: ${JSON.stringify(searc
         // These reports arrive after every checked request finished. A missing one fails below,
         // naming the request.
         const events = cloud
-          ? yield* awaitSentryEvents((events) =>
-              reported.every(
-                (entry) =>
-                  traceExceptionTypes(events, entry.trace).length >= expectedTypes(entry).length,
+          ? yield* awaitSentryEvents(
+              reported.map(({ trace }) => trace),
+              (events) =>
+                reported.every(
+                  (entry) =>
+                    traceExceptionTypes(events, entry.trace).length >= expectedTypes(entry).length,
+                ),
+            ).pipe(
+              Effect.catchTag("TimeoutError", () =>
+                sentryEvents(reported.map(({ trace }) => trace)),
               ),
-            ).pipe(Effect.catchTag("TimeoutError", () => sentryEvents))
+            )
           : [];
         yield* evidence.json("app-evaluation-reporting.json", {
           lost: lost.error,

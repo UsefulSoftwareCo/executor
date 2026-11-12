@@ -59,8 +59,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud impersonation", (it) => 
           target = yield* Target;
         /** The trace's one `security.audit` record for `action`, once it is delivered. */
         const audit = (traceId: string, action: string) =>
-          telemetry.logs(traceId, "security.audit").pipe(
-            Effect.map(([trace]) => trace ?? ""),
+          telemetry.logs(traceId).pipe(
             Effect.tap((logs) => evidence.json(`audit-${action}-${traceId}.json`, logs)),
             Effect.map((logs) =>
               Schema.decodeUnknownSync(LogRecords)(logs).data.filter(
