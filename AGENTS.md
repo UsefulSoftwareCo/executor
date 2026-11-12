@@ -202,6 +202,14 @@ waits up to 3 minutes for one, so write the block right after opening the PR. Af
 changing the block once CI has read it, push or rerun the whole workflow
 (`gh run rerun <run-id>`), not only failed jobs.
 
+A ruleset on `main` requires a pull request whose `checks / check` and
+`checks / e2e` passed. When GitHub refuses a merge as blocked ("the base branch
+policy prohibits the merge"), a required check is pending, failed or missing: wait
+for a pending run with `ci-wait`, fix or report a failed one, and push or rerun a
+cancelled one. Never bypass it: no `gh pr merge --admin`, no merge through the
+REST or GraphQL API to get around a refusal, and no change to the ruleset. Only
+Rhys turns it off, in an emergency. See [CI configuration](notes/ci.md#the-main-ruleset).
+
 A failure on `main` is a regression or a flake that a PR selection missed. Fixing
 it takes priority over new work that touches the same area.
 
