@@ -2,12 +2,15 @@
 import { CodeMode } from "@opencode-ai/codemode";
 import { Schema } from "effect";
 import { HttpServerRequest } from "effect/http";
-import { McpSchema, Tool as McpTool } from "effect/ai";
+import { McpSchema, McpServer, Tool as McpTool } from "effect/ai";
+import { executionResultContent } from "./media.ts";
 import { ApiErrorResponse, ElicitationResponse } from "apps/contracts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { InteractionId, PendingInteraction, ElicitationResponseInvalid } from "./interactions.ts";
 export * from "./interactions.ts";
 import { NativeElicitationFailed } from "./elicitation.ts";
+import { CallLog, ToolCallReference } from "./call-log.ts";
+export * from "./call-log.ts";
 
 /** Fixed interpreter input, live-program capacity and discovery fan-out and time bounds. */
 export const McpRuntimeLimits = Schema.Struct({
@@ -262,6 +265,8 @@ export const McpToolCall = Schema.Struct({
   name: Schema.String,
   outcome: Schema.Literals(["success", "failure", "interrupted", "awaiting-approval"]),
   durationMs: Schema.optionalKey(Schema.Number),
+  /** The host's reference for a call that did not succeed (see `CallLog`). */
+  reference: Schema.optionalKey(ToolCallReference),
 });
 export type McpToolCall = typeof McpToolCall.Type;
 /**
@@ -297,8 +302,13 @@ export const ExecuteResult = Schema.Struct({
     Schema.Struct({
       ...CodeMode.Failure.fields,
       error: Schema.Struct({
-        ...CodeMode.Diagnostic.fields,
+        kind: CodeMode.Diagnostic.fields.kind,
+        message: CodeMode.Diagnostic.fields.message,
+        location: CodeMode.Diagnostic.fields.location,
+        suggestions: CodeMode.Diagnostic.fields.suggestions,
         response: Schema.optionalKey(McpErrorResponse),
+        /** The reference of the tool call whose uncaught failure ended the program. */
+        callLog: Schema.optionalKey(CallLog),
       }),
       toolCalls: Schema.Array(McpToolCall),
     }),
@@ -342,7 +352,9 @@ export const ResumeTool = McpTool.make("resume", {
   parameters: ResumeInput,
   success: McpExecutionResult,
   failure: ElicitationResponseInvalid,
-}).annotate(McpTool.Meta, ExecutionResultMeta);
+})
+  .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpServer.ResultContent, executionResultContent);
 
 /** Bounds that keep each tools.search item short. Pages are also bounded by bytes. */
 export const SearchLimits = Schema.Struct({
@@ -459,7 +471,13 @@ export const CallInput = Schema.Struct({
 });
 /** How one direct call ended. A failed call does not stop the others in its batch. */
 export const CallOutcome = Schema.Union([
-  Schema.Struct({ path: Schema.String, ok: Schema.Literal(true), value: Schema.Json }),
+  Schema.Struct({
+    path: Schema.String,
+    ok: Schema.Literal(true),
+    value: Schema.Json,
+    /** Set when the value says the tool failed, such as a remote MCP tool's `isError: true`. */
+    callLog: Schema.optionalKey(CallLog),
+  }),
   Schema.Struct({
     path: Schema.String,
     ok: Schema.Literal(false),
@@ -470,6 +488,7 @@ export const CallOutcome = Schema.Union([
     }),
     /** The closest tool paths, when the path names no tool. */
     matches: Schema.optionalKey(Schema.Array(Schema.String)),
+    callLog: Schema.optionalKey(CallLog),
   }),
 ]);
 export type CallOutcome = typeof CallOutcome.Type;
@@ -503,7 +522,9 @@ export const ExecuteTool = McpTool.make("execute", {
   parameters: ExecuteInput,
   success: McpExecutionResult,
   failure: ExecutionRejected,
-}).annotate(McpTool.Meta, ExecutionResultMeta);
+})
+  .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpServer.ResultContent, executionResultContent);
 
 /** Native-mode execution obtains policy decisions through server-initiated MCP requests. */
 export const NativeExecuteTool = McpTool.make("execute", {
@@ -513,7 +534,9 @@ export const NativeExecuteTool = McpTool.make("execute", {
   parameters: ExecuteInput,
   success: McpExecutionResult,
   failure: Schema.Union([NativeElicitationFailed, ElicitationResponseInvalid, ExecutionRejected]),
-}).annotate(McpTool.Meta, ExecutionResultMeta);
+})
+  .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpServer.ResultContent, executionResultContent);
 
 /** Search reports the apps it could not load beside its matches, as execute results do. */
 export const SearchToolResult = Schema.Struct({
@@ -551,7 +574,9 @@ export const CallTool = McpTool.make("call", {
   parameters: CallInput,
   success: McpExecutionResult,
   failure: ExecutionRejected,
-}).annotate(McpTool.Meta, ExecutionResultMeta);
+})
+  .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpServer.ResultContent, executionResultContent);
 /**
  * Native-mode calls. The tool is marked destructive and open-world, so the MCP client confirms each
  * call before it runs; that confirmation answers the apps' approval policies, which are not asked
@@ -565,6 +590,7 @@ export const NativeCallTool = McpTool.make("call", {
   failure: Schema.Union([NativeElicitationFailed, ElicitationResponseInvalid, ExecutionRejected]),
 })
   .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpServer.ResultContent, executionResultContent)
   .annotate(McpTool.Readonly, false)
   .annotate(McpTool.Destructive, true)
   .annotate(McpTool.OpenWorld, true);

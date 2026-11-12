@@ -1320,9 +1320,7 @@ return { items: [...small.items, ...large.items] };`;
               actor,
               "POST",
               connectionsPath(path, "user", "service"),
-              {
-                destination: { kind: "personal" },
-              },
+              {},
             );
             expect(response.status).toBe(200);
             const account = yield* submit(actor, (yield* body(Resource, response)).id, token);

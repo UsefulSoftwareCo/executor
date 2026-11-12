@@ -49,6 +49,7 @@ import { removeImported } from "../implementation/v1-import/rollback.ts";
 import { makeImportStore } from "../implementation/v1-import/store.ts";
 import { importRefusal, movedFlag, writesRefused } from "../implementation/v1-import/writes.ts";
 import { AppBuilds } from "./blobs.ts";
+import { cloudBackgroundJobs } from "./background-jobs.ts";
 import { AutumnClient } from "../contracts/autumn.ts";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { autumnLive, autumnReads } from "../implementation/autumn-client.ts";
@@ -58,6 +59,9 @@ import {
   type V1ImportBilling,
 } from "../implementation/v1-import/billing.ts";
 import type { V1ImportSettings } from "./onboarding.ts";
+
+/** The background jobs the importer asks the placed handler to run. */
+type BackgroundJobs = Effect.Success<typeof cloudBackgroundJobs>;
 
 /** The importer this deployment runs, with where it keeps reports; none where v1 is unreachable. */
 export class V1ImportConfiguration extends Context.Service<
@@ -206,6 +210,7 @@ const importEnvironment = (
   reports: V1ImportReports,
   connections: McpAuthentication["Service"]["connections"],
   meter: BillingMeter["Service"],
+  jobs: BackgroundJobs,
 ) =>
   V1ImportEnvironment.of({
     source: settings.source.pipe(
@@ -220,6 +225,10 @@ const importEnvironment = (
     v1FirstPartyClients: settings.v1FirstPartyClients,
     slugKey: settings.slugKey,
     billing: importBilling(settings, meter),
+    // A workflow step is not placed: the placed handler dispatches, as the minute job does.
+    startProvisioning: jobs
+      .request("provisioning")
+      .pipe(Effect.mapError(() => new V1ImportUnavailable())),
   });
 
 export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
@@ -245,13 +254,14 @@ export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
     const configuration = Context.get(services, V1ImportConfiguration);
     const connections = Context.get(services, McpAuthentication).connections;
     const meter = Context.get(services, BillingMeter);
+    const jobs = yield* cloudBackgroundJobs;
     return (input: unknown) =>
       Effect.gen(function* () {
         const params = yield* Schema.decodeUnknownEffect(V1ImportParams)(input);
         if (Option.isNone(configuration))
           return yield* Effect.die(new Error("This deployment has no v1 importer."));
         const { settings, reports } = configuration.value;
-        const environment = importEnvironment(settings, reports, connections, meter);
+        const environment = importEnvironment(settings, reports, connections, meter, jobs);
         return yield* runV1Import(params, runner(params, settings.stepRetries), (name, seconds) =>
           Cloudflare.Workflows.sleep(name, seconds * 1000),
         ).pipe(
@@ -285,6 +295,15 @@ const notFound = Effect.succeed(HttpServerResponse.empty({ status: 404 }));
 
 /** Instance states that will not write a report without a person restarting them. */
 const stopped = new Set(["errored", "terminated"]);
+
+/** Whether reading an instance failed because Workflows does not know it (`instance.not_found`). */
+const instanceNotFound = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause);
+  const inner = Predicate.hasProperty(error, "cause") ? error.cause : undefined;
+  return [error, inner].some(
+    (candidate) => candidate instanceof Error && candidate.message.includes("instance.not_found"),
+  );
+};
 
 /**
  * How long after its start an instance whose state cannot be read still counts as running. Past
@@ -337,6 +356,7 @@ const aggregationId = /^[0-9a-f]{32}$/u;
 export const v1ImportRoutes = (workflow: Workflow) =>
   Effect.gen(function* () {
     const configuration = yield* V1ImportConfiguration;
+    const jobs = yield* cloudBackgroundJobs;
     const authorized = Effect.gen(function* () {
       if (Option.isNone(configuration)) return Option.none();
       const token = configuration.value.settings.operatorToken;
@@ -355,6 +375,30 @@ export const v1ImportRoutes = (workflow: Workflow) =>
         Effect.map((state): string => state.status),
         Effect.timeout(callDeadline),
         Effect.catchCause(() => Effect.succeed("unknown")),
+      );
+
+    /**
+     * Whether an organization's import instance has stopped, for the routes that change an
+     * organization only after its import ended. Workflows forgets an instance some time after it
+     * ends, so one it no longer knows (`instance.not_found`) has stopped too; an organization
+     * imported before that retention could otherwise never be rolled back or repaired. Any other
+     * failure to read it is `unknown` and refuses.
+     */
+    const settled = (instance: string) =>
+      workflow.get(instance).pipe(
+        Effect.flatMap((run) => run.status()),
+        Effect.map((state) => ({
+          state: state.status as string,
+          stopped: stopped.has(state.status) || state.status === "complete",
+        })),
+        Effect.timeout(callDeadline),
+        Effect.catchCause((cause) =>
+          Effect.succeed(
+            instanceNotFound(cause)
+              ? { state: "gone", stopped: true }
+              : { state: "unknown", stopped: false },
+          ),
+        ),
       );
 
     const create = (params: V1ImportParams) => {
@@ -689,8 +733,8 @@ export const v1ImportRoutes = (workflow: Workflow) =>
       );
       if (Option.isNone(decoded)) return yield* json(400, { error: "invalid organization" });
       const organization = decoded.value;
-      const state = yield* status(organization);
-      if (state === "unknown" || !(stopped.has(state) || state === "complete"))
+      const { state, stopped: ended } = yield* settled(organization);
+      if (!ended)
         return yield* json(409, {
           error: `Its import instance is ${state}; roll it back once it has stopped.`,
         });
@@ -782,8 +826,8 @@ export const v1ImportRoutes = (workflow: Workflow) =>
       );
       if (Option.isNone(decoded)) return yield* json(400, { error: "invalid organization" });
       const organization = decoded.value;
-      const state = yield* status(organization);
-      if (state === "unknown" || !(stopped.has(state) || state === "complete"))
+      const { state, stopped: ended } = yield* settled(organization);
+      if (!ended)
         return yield* json(409, {
           error: `Its import instance is ${state}; return its billing once it has stopped.`,
         });
@@ -850,8 +894,8 @@ export const v1ImportRoutes = (workflow: Workflow) =>
       if (apply) {
         const refused = writesRefused(settings.writes);
         if (refused !== undefined) return yield* json(409, { error: refused });
-        const state = yield* status(decoded.value);
-        if (state === "unknown" || !(stopped.has(state) || state === "complete"))
+        const { state, stopped: ended } = yield* settled(decoded.value);
+        if (!ended)
           return yield* json(409, {
             error: `Its import instance is ${state}; repair it once it has stopped.`,
           });
@@ -861,7 +905,7 @@ export const v1ImportRoutes = (workflow: Workflow) =>
         Effect.scoped,
         Effect.provideService(
           V1ImportEnvironment,
-          importEnvironment(settings, reports, connections, yield* BillingMeter),
+          importEnvironment(settings, reports, connections, yield* BillingMeter, jobs),
         ),
       );
       return yield* json(200, result);
@@ -922,8 +966,8 @@ export const v1ImportRoutes = (workflow: Workflow) =>
       if (Option.isNone(decoded)) return yield* json(400, { error: "invalid organization" });
       const refused = writesRefused(settings.writes);
       if (refused !== undefined) return yield* json(409, { error: refused });
-      const state = yield* status(decoded.value);
-      if (state === "unknown" || !(stopped.has(state) || state === "complete"))
+      const { state, stopped: ended } = yield* settled(decoded.value);
+      if (!ended)
         return yield* json(409, {
           error: `Its import instance is ${state}; repair it once it has stopped.`,
         });
@@ -932,7 +976,7 @@ export const v1ImportRoutes = (workflow: Workflow) =>
         Effect.scoped,
         Effect.provideService(
           V1ImportEnvironment,
-          importEnvironment(settings, reports, connections, yield* BillingMeter),
+          importEnvironment(settings, reports, connections, yield* BillingMeter, jobs),
         ),
       );
       return yield* json(200, result);

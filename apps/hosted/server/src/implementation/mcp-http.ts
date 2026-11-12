@@ -1,4 +1,4 @@
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { CurrentUsage } from "../contracts/product-analytics.ts";
 import { requiresToolMetadata } from "@executor-js/authorization";
 import { grantAuthorization } from "@executor-js/mcp-auth";
@@ -37,6 +37,7 @@ import {
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   CurrentMcpGrant,
+  CurrentMcpSession,
   McpAuthentication,
   McpUnauthorized,
   type McpAccess,
@@ -45,6 +46,7 @@ import { CurrentOrganization, OrganizationReference } from "../contracts/organiz
 import {
   CallStateCache,
   ConcurrentStatements,
+  HostedBackground,
   HostedExecutor,
   StatementBatch,
   statementGroup,
@@ -185,6 +187,8 @@ export const dispatchHostedMcp = <E, R>(
   Effect.gen(function* () {
     const authentication = yield* McpAuthentication;
     const request = yield* HttpServerRequest.HttpServerRequest;
+    // Effect's protocol server issued it at `initialize` and refuses a request naming any other.
+    const session = request.headers["mcp-session-id"];
     const scoped = (fresh: McpAccess) =>
       Effect.gen(function* () {
         // A grant serves only the MCP URL it was issued for, and says why it cannot serve this one.
@@ -192,9 +196,10 @@ export const dispatchHostedMcp = <E, R>(
         if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
         const backend = yield* hostedMcpBackend.pipe(
           Effect.provideService(CurrentOrganization, fresh.access),
-          Effect.provideService(CurrentAuthorization, grantAuthorization(fresh.grant.policy)),
+          Effect.provideService(CurrentPolicy, grantAuthorization(fresh.grant.policy)),
           Effect.provideService(CurrentUserId, fresh.userId),
           Effect.provideService(CurrentMcpGrant, fresh.grant.id),
+          Effect.provideService(CurrentMcpSession, session),
         );
         return restrictMcpBackend<RequestError, never>(backend, Effect.succeed(fresh.grant));
       });
@@ -204,6 +209,7 @@ export const dispatchHostedMcp = <E, R>(
     const backend = scope.success;
     const services = yield* Effect.context<HostedExecutor | GroupDatabase>().pipe(
       Effect.map(Context.pick(HostedExecutor, GroupDatabase)),
+      Effect.map(Context.add(HostedBackground, yield* HostedBackground)),
     );
     // Discovery uses this HTTP request's authenticated identity. Resource policies
     // are still checked by the hosted backend. Never retain this adapter in the session.
@@ -319,10 +325,7 @@ export const dispatchHostedMcp = <E, R>(
           !fold.result.value.access.canUse
             ? Effect.succeed(undefined)
             : callerAccounts(read.app.success, fold.result.value.accounts).pipe(
-                Effect.provideService(
-                  CurrentAuthorization,
-                  grantAuthorization(access.grant.policy),
-                ),
+                Effect.provideService(CurrentPolicy, grantAuthorization(access.grant.policy)),
                 Effect.provideService(CurrentUserId, access.userId),
                 Effect.provideContext(services),
                 Effect.option,

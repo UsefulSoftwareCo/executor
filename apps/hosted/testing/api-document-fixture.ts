@@ -5,6 +5,11 @@
  * it is told apart from the product's own. The server still binds its apps to the SHA-256 of the
  * document it generated, so the served one is not of that revision. Production entry points never
  * provide it.
+ *
+ * The other revision arrives after `slowMillis`, so the listing it fails is a slow failure (over
+ * the default listing policy's `slowFailureMillis`), as a cold app Worker's often is on a loaded
+ * host. Such a failure is the kind a listing could remember, and the next read must still fetch
+ * the document again.
  */
 import { Effect, Layer, Option, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -12,6 +17,8 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 const path = "/api/devtools/api-document";
 /** The suffix another revision's operations carry. */
 export const otherRevisionSuffix = "OtherRevision";
+/** How long the other revision takes to arrive. */
+const slowMillis = 1_500;
 
 const Operation = Schema.Struct({ operationId: Schema.String });
 const Document = Schema.Struct({
@@ -52,6 +59,7 @@ export const apiDocumentFixture = Effect.sync(() => {
             return yield* app;
           const served = yield* app;
           if (served.status !== 200 || served.body._tag !== "Uint8Array") return served;
+          yield* Effect.sleep(slowMillis);
           return HttpServerResponse.text(
             otherRevision(new TextDecoder().decode(served.body.body)),
             { contentType: "application/json" },

@@ -26,7 +26,7 @@ import type {
   EventsUnavailable,
   SubscribeEvent,
 } from "@executor-js/sdk/core";
-import type { Effect } from "effect";
+import { Context, type Effect } from "effect";
 
 /** A subscription key without its principal: the product binds that to the caller. */
 export type McpEventKey = Omit<EventSubscriptionKey, "principal">;
@@ -127,3 +127,25 @@ export interface McpBackend<E extends Error> {
     options?: ToolInvocationOptions,
   ) => Effect.Effect<ToolResumeResult, E>;
 }
+
+/**
+ * The execution a backend operation runs for: one `execute` program or one `call` batch, from its
+ * start until it ends, across the requests that resume it. Its ID is the `executor.execution.id`
+ * its spans carry. Provided around every operation the execution starts; unset elsewhere.
+ */
+export const CurrentMcpExecution = Context.Reference<string | undefined>(
+  "executor/mcp/CurrentExecution",
+  { defaultValue: () => undefined },
+);
+
+/**
+ * Told the host's reference for the call `callTool` is making, once the host has recorded the
+ * call: an opaque ID the caller can quote to whoever reviews the host's records, such as hosted
+ * Executor's tool call log. The execution provides it around each tool call, including across the
+ * driving request that makes the call for a program; a host that keeps no records never calls it.
+ * A call the host did not record has no reference.
+ */
+export const ToolCallRecorded = Context.Reference<((reference: string) => void) | undefined>(
+  "executor/mcp/ToolCallRecorded",
+  { defaultValue: () => undefined },
+);

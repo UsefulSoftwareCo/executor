@@ -27,6 +27,8 @@ import { appsManifest, withApps } from "../support/apps-release.ts";
 import { containerNpmRegistry } from "../support/npm-registry.ts";
 import { connectionsPath } from "../support/app-accounts.ts";
 import { currentClient } from "../support/api.ts";
+import { releaseNetwork } from "../support/release-networks.ts";
+import { stalledPageReport } from "../support/stalled-page.ts";
 
 /**
  * `workerd --version` prints the release date of the workerd the checkout pins, which the image
@@ -329,6 +331,7 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
                 );
                 const page = yield* driver("new browser session", () => browser.newPage());
                 page.setDefaultTimeout(15_000);
+                const reportStall = stalledPageReport(page);
                 yield* driver("open image sign-in", () => page.goto(`${origin}/login`));
                 yield* driver("enter the setup user's email", () =>
                   page.getByLabel("Email", { exact: true }).fill("release@example.test"),
@@ -341,10 +344,12 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
                 yield* driver("sign in through the image dashboard", () =>
                   page.getByRole("button", { name: "Sign in", exact: true }).click(),
                 );
-                yield* driver("sign-in reaches the intended organization", () =>
-                  page.waitForURL(
-                    (url) =>
-                      url.origin === origin && url.pathname === `/org/${parsed[0].slug}/apps`,
+                yield* reportStall(
+                  driver("sign-in reaches the intended organization", () =>
+                    page.waitForURL(
+                      (url) =>
+                        url.origin === origin && url.pathname === `/org/${parsed[0].slug}/apps`,
+                    ),
                   ),
                 );
                 yield* driver("the image dashboard is authenticated", () =>
@@ -1346,10 +1351,18 @@ it.live("released images that share a temporary directory keep separate collecto
         );
         return id;
       });
+      // Each command's exit code is its answer; output alone would accept an instance still starting.
+      const succeeds = (args: readonly string[]) =>
+        processes.exitCode(ChildProcess.make("docker", args)).pipe(
+          Effect.filterOrFail(
+            (code) => code === 0,
+            () => `docker ${args.join(" ")} failed`,
+          ),
+        );
       const ready = (id: string) =>
         Effect.gen(function* () {
-          yield* run(["exec", id, "executor-host", "health"]);
-          yield* run(["exec", id, "executor-host", "telemetry", "/api/health"]);
+          yield* succeeds(["exec", id, "executor-host", "health"]);
+          yield* succeeds(["exec", id, "executor-host", "telemetry", "/api/health"]);
         }).pipe(Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 240 }));
       // Each request carries a new trace id; the instance's own collector must store its spans.
       const traced = Effect.fn("traced request")(function* (id: string) {
@@ -1436,9 +1449,9 @@ it.live("released image serves management tools at a tailnet origin with private
         );
       const id = `selfhost-e2e-${randomBytes(6).toString("hex")}`;
       const registry = yield* containerNpmRegistry;
-      // Shared CGNAT space, the same range Tailscale assigns. Vary the subnet per run.
-      const subnet = `100.64.${64 + (randomBytes(1).readUInt8(0) % 190)}`;
-      const address = `${subnet}.10`;
+      // Shared CGNAT space, the same range Tailscale assigns.
+      const network = yield* releaseNetwork("tailnet");
+      const address = `${network.subnet}.10`;
       const containerPort = 8080;
       const hostname = "nexus.example.ts.net";
       const origin = `http://${hostname}:${containerPort}`;
@@ -1463,10 +1476,6 @@ it.live("released image serves management tools at a tailnet origin with private
           return yield* Effect.fail(new Error("Ports 4431-4439 are all in use"));
         }),
       );
-      yield* Effect.acquireRelease(
-        run(["network", "create", "--subnet", `${subnet}.0/24`, id]),
-        () => run(["network", "rm", id]).pipe(Effect.orDie),
-      );
       const environment: Record<string, string> = {
         // Release scenarios never send product analytics, even from an image with a baked key.
         DO_NOT_TRACK: "1",
@@ -1486,7 +1495,7 @@ it.live("released image serves management tools at a tailnet origin with private
             id,
             "--init",
             "--network",
-            id,
+            network.name,
             "--ip",
             address,
             "--add-host",
@@ -2397,6 +2406,7 @@ it.live(
         );
         const page = yield* driver("new browser session", () => browser.newPage());
         page.setDefaultTimeout(20_000);
+        const reportStall = stalledPageReport(page);
         const scripts: Array<{ url: string; encoding: string | undefined }> = [];
         page.on("response", (response) => {
           if (new URL(response.url()).pathname.endsWith(".js"))
@@ -2413,8 +2423,10 @@ it.live(
         yield* driver("sign in", () =>
           page.getByRole("button", { name: "Sign in", exact: true }).click(),
         );
-        yield* driver("the apps page renders", () =>
-          page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),
+        yield* reportStall(
+          driver("the apps page renders", () =>
+            page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),
+          ),
         );
         expect(scripts.length).toBeGreaterThan(0);
         expect(

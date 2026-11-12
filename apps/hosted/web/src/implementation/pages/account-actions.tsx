@@ -142,11 +142,6 @@ function EditDialogBody({
       account={data.account}
       update={update}
       Failure={HostedFailure}
-      disabledReason={
-        data.canManage
-          ? undefined
-          : "Only the account creator and organization admins can manage this shared account."
-      }
       onPendingChange={onPendingChange}
       onDone={onClose}
       cancel={cancelButton(onClose)}
@@ -177,11 +172,6 @@ function DeleteDialogBody({
       }
       data={data}
       Failure={HostedFailure}
-      disabledReason={
-        data.canManage
-          ? undefined
-          : "Only the account creator and organization admins can delete this shared account."
-      }
       disconnect={() => disconnect()}
       onPendingChange={onPendingChange}
       onDisconnected={onClose}

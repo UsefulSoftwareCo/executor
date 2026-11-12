@@ -14,7 +14,7 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api
 import {
   AuthenticationUnavailable,
   BrowserSessionOnly,
-  RequireUser,
+  RequireBrowserSession,
   Unauthorized,
   Viewer,
 } from "./auth.ts";
@@ -34,6 +34,7 @@ import { HostedWebhooks } from "./webhooks.ts";
 import { HostedTools } from "./tools.ts";
 import { HostedSkills } from "./skills.ts";
 import { HostedFeedback } from "./feedback.ts";
+import { HostedToolCalls } from "./tool-call-log.ts";
 
 /** Process liveness only; this does not probe the app catalog or future storage. */
 export const Health = Schema.Struct({ status: Schema.Literal("ok") });
@@ -85,7 +86,7 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
       if (security.has(id)) throw new Error(`Duplicate product API operation: ${id}`);
       security.set(
         id,
-        [...middleware].some((service) => service.key === RequireUser.key) ||
+        [...middleware].some((service) => service.key === RequireBrowserSession.key) ||
           Context.get(mergedAnnotations, BrowserSessionOnly)
           ? [{ browserSession: [] }]
           : [...middleware].some(
@@ -186,6 +187,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
     HostedAppData,
     HostedMcpConnections,
     HostedFeedback,
+    HostedToolCalls,
   )
   .add(
     HttpApiGroup.make("context").add(
@@ -208,7 +210,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
   .add(
     HttpApiGroup.make("viewer")
       .add(HttpApiEndpoint.get("get", "/api/viewer", { success: Viewer }))
-      .middleware(RequireUser),
+      .middleware(RequireBrowserSession),
   )
   .add(
     HttpApiGroup.make("catalog")
@@ -219,7 +221,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
           error: CatalogUnavailable,
         }),
       )
-      .middleware(RequireUser),
+      .middleware(RequireBrowserSession),
   )
   .addHttpApi(HostedAppManagementApi)
   .addHttpApi(HostedFrameworkApi)

@@ -1,6 +1,6 @@
 /**
  * One v1 item becomes v2 resources: an integration an app shared with everyone, an org connection
- * a shared account linked to its app for everyone and a member's connection their personal account
+ * the owner's account linked to its app for everyone and a member's connection their own account
  * linked for them (decision 9), a policy per-tool approvals inside its integration's app, a toolkit
  * a scoped MCP connection for each member it reaches (decision 11), an artifact an app's source
  * without a version. Each returns the resource it created, or why the item cannot be imported; a
@@ -30,7 +30,6 @@ import {
   type ConnectionPolicy,
 } from "@executor-js/mcp-auth/connections";
 import {
-  accountDestination,
   personalAccountCreation,
   sharedAppCreation,
 } from "@executor-js/hosted-server/resource-lifecycle";
@@ -131,7 +130,7 @@ export interface ItemContext {
   readonly source: V1Source;
   readonly snapshot: V1Snapshot;
   readonly target: { readonly id: OrganizationId; readonly slug: string };
-  /** The v2 owner, who creates the organization's apps and shared accounts. */
+  /** The v2 owner, who creates the organization's apps and owns its accounts. */
   readonly owner: string;
   /** Each imported member's v2 user, by WorkOS user id. */
   readonly users: ReadonlyMap<string, string>;
@@ -640,8 +639,8 @@ export const appMethods = (
     if (Object.keys(methods).length === 0) methods.none = method;
   }
   // Org connections become accounts linked for everyone, so the app also takes those (decision 9).
-  const shared = plans.some((plan) => plan.row.owner === "org" && methodOf.has(plan.row.row_id));
-  return { methods, methodOf, configured, plans, shared, fixed, dropped };
+  const linked = plans.some((plan) => plan.row.owner === "org" && methodOf.has(plan.row.row_id));
+  return { methods, methodOf, configured, plans, linked, fixed, dropped };
 };
 
 /** What an integration's app takes, as `appMethods` plans it. */
@@ -1168,10 +1167,10 @@ export const generate = (
   },
   integration: IntegrationRow,
   decoded: ImportableIntegration,
-  planned: Pick<AppAccounts, "methods" | "shared" | "fixed" | "dropped" | "plans">,
+  planned: Pick<AppAccounts, "methods" | "linked" | "fixed" | "dropped" | "plans">,
 ) =>
   Effect.gen(function* () {
-    const { methods, shared: sharedAccounts, dropped } = planned;
+    const { methods, linked: appLinkedAccounts, dropped } = planned;
     const fixedAccount = planned.fixed?.account;
     const name = integrationLabel(integration);
     const { tenant, subjects } = context.snapshot;
@@ -1179,7 +1178,7 @@ export const generate = (
     // Credentials in v1's configuration are account fields; only the rest is written to source.
     const { headers, queryParams } = integrationValues(decoded);
     const accountOptions = {
-      sharedAccounts,
+      appLinkedAccounts,
       ...(fixedAccount === undefined ? {} : { fixedAccount }),
     };
     const left = { traced: [], stale: [], dropped } as const;
@@ -1569,7 +1568,7 @@ const fixedKey = (integration: IntegrationRow, connection: ConnectionRow | undef
 /**
  * Save the account that holds the integration's fixed credentials, from v1's configuration, and
  * link it to the app's `fixed` requirement for everyone (decision 22), when the app declares one.
- * It is the organization's, created by the owner. Its map row keeps it for a retry, while the app's
+ * The owner owns it. Its map row keeps it for a retry, while the app's
  * provider for it is unchanged; linking again changes nothing. With a `connection`, the app is that
  * connection's own (decision 33), which holds its own fixed account.
  */
@@ -1620,7 +1619,7 @@ export const importFixedAccount = (
                   label: `${label} fixed credentials`,
                   fields: fixed.values,
                 })
-                .pipe(accountDestination({ kind: "shared" }));
+                .pipe(personalAccountCreation(context.owner));
               yield* record(imported("account", added.id));
               return added.id;
             }),
@@ -2032,8 +2031,8 @@ export const needsNoAccount = (plan: ConnectionPlan, accounts: AppAccountRequire
   plan.access.kind === "none" && accounts.service === undefined && accounts.workspace === undefined;
 
 /**
- * Save the connection's account: an org connection's is shared with everyone and created by the
- * owner, a member's is their own. The map row commits with it.
+ * Save the connection's account: an org connection's is the owner's, linked for everyone, and a
+ * member's is their own. The map row commits with it.
  */
 export const importAccount = (
   context: ItemContext,
@@ -2059,10 +2058,8 @@ const saveAccount = (
   scope: AppScope,
 ) =>
   Effect.gen(function* () {
-    const creation =
-      plan.row.owner === "org"
-        ? accountDestination({ kind: "shared" })
-        : personalAccountCreation(actor);
+    // Every account is personal: the owner's for an org connection (`actorOf`), else the member's.
+    const creation = personalAccountCreation(actor);
     const write = yield* accountWrite(
       context,
       plan,

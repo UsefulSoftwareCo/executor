@@ -28,7 +28,9 @@ import { Onboarding } from "../support/onboarding.ts";
 import { Target } from "../support/platform.ts";
 import {
   allowV1Import,
+  allowV1ImportRow,
   listV1Into,
+  listV1IntoRow,
   listV1SlugDisplacement,
   v1ImportOperator,
   v1RunId,
@@ -589,17 +591,34 @@ const IdRow = Schema.Struct({ id: Schema.String });
 /** A synthetic address no other scenario uses. */
 const syntheticEmail = (label: string) => `${label}-${randomUUID().slice(0, 8)}@example.test`;
 
+/** The statement of a v2 user with a verified email, as v2 sign-in leaves them. */
+const v2UserRow = (id: string, email: string) =>
+  row(
+    `insert into "user" (id, name, email, "emailVerified", "createdAt", "updatedAt") values ($1, 'Synthetic member', $2, true, now(), now())`,
+    id,
+    email,
+  );
+
+/** The statements of a v2 team its owner made. */
+const v2TeamRows = (id: string, owner: string) => [
+  row(
+    `insert into organization (id, name, slug, "createdAt") values ($1, 'Synthetic team', $2, now())`,
+    id,
+    `team-${randomUUID().slice(0, 8)}`,
+  ),
+  row(
+    `insert into member (id, "organizationId", "userId", role, "createdAt") values ($1, $2, $3, 'owner', now())`,
+    randomUUID(),
+    id,
+    owner,
+  ),
+];
+
 /** A v2 user with a verified email, as v2 sign-in leaves them. */
 const v2User = (email: string) =>
   Effect.gen(function* () {
     const id = randomUUID();
-    yield* writeRows("sso-database.json", [
-      row(
-        `insert into "user" (id, name, email, "emailVerified", "createdAt", "updatedAt") values ($1, 'Synthetic member', $2, true, now(), now())`,
-        id,
-        email,
-      ),
-    ]);
+    yield* writeRows("sso-database.json", [v2UserRow(id, email)]);
     return id;
   });
 
@@ -607,24 +626,42 @@ const v2User = (email: string) =>
 const v2Team = (owner: string) =>
   Effect.gen(function* () {
     const id = randomUUID();
-    yield* writeRows("sso-database.json", [
-      row(
-        `insert into organization (id, name, slug, "createdAt") values ($1, 'Synthetic team', $2, now())`,
-        id,
-        `team-${randomUUID().slice(0, 8)}`,
-      ),
-      row(
-        `insert into member (id, "organizationId", "userId", role, "createdAt") values ($1, $2, $3, 'owner', now())`,
-        randomUUID(),
-        id,
-        owner,
-      ),
-    ]);
+    yield* writeRows("sso-database.json", v2TeamRows(id, owner));
     return id;
   });
 
-/** A v2 user and the team they own. */
-const ownV2Team = (email: string) => Effect.flatMap(v2User(email), v2Team);
+/**
+ * Statements a scenario collects to write in one transaction per database, in the order it
+ * collected them. Each `writeRows` starts a process, so a scenario with dozens of rows writes them
+ * once instead of once a row.
+ */
+const rowBatch = () => {
+  const cloud: RowStatement[] = [];
+  const v1: RowStatement[] = [];
+  return {
+    cloud,
+    v1,
+    write: Effect.gen(function* () {
+      if (v1.length > 0) yield* writeRows("v1-database.json", v1);
+      if (cloud.length > 0) yield* writeRows("sso-database.json", cloud);
+    }),
+  };
+};
+
+/** Each statement's rows, read from one database in one process, in the order given. */
+const readRows = <S extends Schema.Top>(
+  database: "sso-database.json" | "v1-database.json",
+  schema: S,
+  statements: readonly RowStatement[],
+) =>
+  writeRows(database, statements).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(Rows)),
+    Effect.flatMap((results) =>
+      Effect.forEach(statements, (_, index) =>
+        Schema.decodeUnknownEffect(Schema.Array(schema))(results[index] ?? []),
+      ),
+    ),
+  );
 
 /** A v1 workspace of these members, allowed and listed to move into `into`, in `mode`. */
 const listedV1Workspace = (
@@ -1308,8 +1345,8 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
             app,
           ),
         ).toEqual([{ creator_id: firstV2.id, audience: "everyone" }]);
-        // The org connection is a shared account linked for everyone; each member's is their own,
-        // linked for them.
+        // Every account is personal: the org connection's is the owner's, linked for everyone; each
+        // member's is their own, linked for them.
         const access = yield* cloudRows(
           Schema.Struct({
             account_id: Schema.String,
@@ -1328,8 +1365,8 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         ).toEqual(
           [
             ["personal", null, firstV2.id],
+            ["personal", null, firstV2.id],
             ["personal", null, olderV2.id],
-            ["shared", "everyone", null],
           ].toSorted((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)),
         );
         const links = yield* cloudRows(
@@ -1341,10 +1378,14 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
           "select requirement, subject, account from hosted_app_account_links where app = $1",
           app,
         );
-        const shared = access.find((entry) => entry.kind === "shared")?.account_id;
+        const workspaceAccount = links.find((link) => link.subject === null)?.account;
+        expect(
+          access.find((entry) => entry.account_id === workspaceAccount)?.personal_user_id,
+          "the org connection's account is the owner's",
+        ).toBe(firstV2.id);
         expect(
           links
-            .map((link) => [link.requirement, link.subject, link.account === shared])
+            .map((link) => [link.requirement, link.subject, link.account === workspaceAccount])
             .toSorted((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)),
         ).toEqual(
           [
@@ -1628,6 +1669,36 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
             workspace.organization,
           ),
         ).toEqual([{ v1_kind: "user" }]);
+
+        // Workflows forgets an instance some time after it ends. A workspace that moved before
+        // that, and whose v2 organization is gone, still rolls back.
+        const forgotten = (yield* emulators.v1Workspace([syntheticEmail("forgotten")]))
+          .organization;
+        yield* writeRows("v1-database.json", [
+          row(
+            "insert into organizations (id, name, slug) values ($1, $2, $3)",
+            forgotten,
+            "Synthetic forgotten workspace",
+            `forgotten-${randomUUID().slice(0, 8)}`,
+          ),
+          row(
+            "insert into org_moved_to_v2 (org_id, state, v2_org_id, v2_org_slug) values ($1, 'moved', $2, 'removed-team')",
+            forgotten,
+            randomUUID(),
+          ),
+        ]);
+        yield* writeRows("sso-database.json", [
+          row(
+            "insert into private_v1_import_org (v1_org_id, v2_org_id, state, run_id, report) values ($1, $2, 'cutover', $3, '{}'::jsonb)",
+            forgotten,
+            randomUUID(),
+            run,
+          ),
+        ]);
+        const forgottenRollback = yield* operator.rollback(forgotten);
+        expect(forgottenRollback.status, JSON.stringify(forgottenRollback.body)).toBe(200);
+        expect((yield* movedFlag(forgotten))[0]?.state).toBe("rolled_back");
+        expect(yield* importState(forgotten)).toEqual([{ state: "rolled_back" }]);
 
         // Imported again, it moves into a new v2 organization with every member's toolkit copy.
         const again = yield* importTwin({
@@ -2922,6 +2993,19 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
       Effect.gen(function* () {
         const emulators = yield* Emulators;
         const operator = yield* v1ImportOperator;
+        // Its rows are written once every workspace is made, before the dry run reads them.
+        const rows = rowBatch();
+        const v2User = (address: string) => {
+          const id = randomUUID();
+          rows.cloud.push(v2UserRow(id, address));
+          return id;
+        };
+        const v2Team = (owner: string) => {
+          const id = randomUUID();
+          rows.cloud.push(...v2TeamRows(id, owner));
+          return id;
+        };
+        const ownTeam = (address: string) => v2Team(v2User(address));
         /** A v1 workspace of these members, with no rows of its own, listed to move into `into`. */
         const listed = (
           label: string,
@@ -2930,62 +3014,69 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
           mode?: string,
         ) =>
           Effect.gen(function* () {
-            const created = yield* listedV1Workspace(label, members, into, mode);
+            const created = yield* emulators.v1Workspace(members);
+            rows.v1.push(
+              row(
+                "insert into organizations (id, name, slug) values ($1, $2, $3)",
+                created.organization,
+                `Synthetic ${label} workspace`,
+                `v1-${randomUUID().slice(0, 8)}`,
+              ),
+            );
+            rows.cloud.push(
+              allowV1ImportRow(created.organization),
+              listV1IntoRow(created.organization, into, mode),
+            );
             return { organization: created.organization, into };
           });
         /** A one-member workspace listed to move into the team its member owns in v2. */
         const ownWorkspace = (label: string, mode?: string) =>
-          Effect.gen(function* () {
+          Effect.suspend(() => {
             const address = syntheticEmail(label);
-            return yield* listed(label, [address], yield* ownV2Team(address), mode);
+            return listed(label, [address], ownTeam(address), mode);
           });
         const email = syntheticEmail;
-        const ownTeam = ownV2Team;
 
         const items = yield* ownWorkspace("items");
-        yield* writeRows("v1-database.json", [goneRule(items.organization)]);
+        rows.v1.push(goneRule(items.organization));
         const sharedOwner = email("shared");
         const shared = yield* listed(
           "shared",
           [sharedOwner, email("teammate")],
-          yield* ownTeam(sharedOwner),
+          ownTeam(sharedOwner),
         );
         const invited = yield* ownWorkspace("invited");
         yield* emulators.inviteV1Member(invited.organization, email("invitee"));
         const paid = yield* ownWorkspace("paid");
         yield* emulators.v1Plan(paid.organization, "team");
         // No v2 user has the member's email.
-        const unknown = yield* listed(
-          "unknown",
-          [email("unknown")],
-          yield* ownTeam(email("other")),
-        );
+        const unknown = yield* listed("unknown", [email("unknown")], ownTeam(email("other")));
         // The member is an admin of someone else's team.
         const adminAddress = email("admin");
-        const adminUser = yield* v2User(adminAddress);
-        const othersTeam = yield* ownTeam(email("teamowner"));
-        yield* writeRows("sso-database.json", [
+        const adminUser = v2User(adminAddress);
+        const othersTeam = ownTeam(email("teamowner"));
+        rows.cloud.push(
           row(
             `insert into member (id, "organizationId", "userId", role, "createdAt") values ($1, $2, $3, 'admin', now())`,
             randomUUID(),
             othersTeam,
             adminUser,
           ),
-        ]);
+        );
         // Even a copy needs its owner to own the organization it goes into.
         const admin = yield* listed("admin", [adminAddress], othersTeam, "copy_into_empty");
         const missingAddress = email("missing");
-        yield* v2User(missingAddress);
+        v2User(missingAddress);
         const missing = yield* listed("missing", [missingAddress], randomUUID());
         // Leaving v1's data behind takes only a free workspace of one member too.
         const leavePaid = yield* ownWorkspace("leave-paid", "leave_v1_data");
-        yield* writeRows("v1-database.json", [goneRule(leavePaid.organization)]);
+        rows.v1.push(goneRule(leavePaid.organization));
         yield* emulators.v1Plan(leavePaid.organization, "team");
         const leaveOwner = email("leave-shared");
         const leaveShared = yield* listed(
           "leave-shared",
           [leaveOwner, email("teammate")],
-          yield* ownTeam(leaveOwner),
+          ownTeam(leaveOwner),
           "leave_v1_data",
         );
         // An Enterprise workspace moves only when listed to copy (decision 34).
@@ -2994,6 +3085,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         const leaveEnterprise = yield* ownWorkspace("leave-enterprise", "leave_v1_data");
         yield* emulators.v1Plan(leaveEnterprise.organization, "enterprise");
         const unlisted = yield* ownWorkspace("mode", "everything");
+        yield* rows.write;
         const onlyOne =
           "only a workspace of one moves into an existing v2 organization without its data.";
         const refusals = [
@@ -3013,12 +3105,15 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         const organizations = refusals.map(([workspace]) => workspace.organization);
         const TeamMember = Schema.Struct({ userId: Schema.String, role: Schema.String });
         const membersOf = (organization: string) =>
-          cloudRows(
-            TeamMember,
+          row(
             `select "userId", role from member where "organizationId" = $1 order by "userId"`,
             organization,
           );
-        const before = yield* Effect.forEach(refusals, ([workspace]) => membersOf(workspace.into));
+        const before = yield* readRows(
+          "sso-database.json",
+          TeamMember,
+          refusals.map(([workspace]) => membersOf(workspace.into)),
+        );
 
         const dry = v1RunId("refused-dry");
         expect((yield* operator.start({ mode: "dry-run", runId: dry, organizations })).status).toBe(
@@ -3036,24 +3131,49 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         const run = v1RunId("refused");
         const started = yield* operator.start({ mode: "import", runId: run, organizations });
         expect(started.status, JSON.stringify(started.body)).toBe(200);
-        for (const [index, [workspace, mode, refused]] of refusals.entries()) {
+        for (const [workspace, mode, refused] of refusals) {
           const report = yield* operator.waitForReport(run, workspace.organization);
           expect(report.status, report.reason ?? "").toBe("held_back");
           expect(report.into).toEqual({ organization: workspace.into, mode, refused });
           expect(report.v2Organization).toBeUndefined();
-          // Nothing was copied, so v1 has it back at once; v2 recorded nothing for it.
-          expect(yield* movedFlag(workspace.organization)).toEqual([
+        }
+        // Nothing was copied, so v1 has each back at once; v2 recorded nothing for any.
+        const flags = yield* readRows(
+          "v1-database.json",
+          Flag,
+          organizations.map((organization) =>
+            row(
+              "select state, v2_org_id, v2_org_slug from org_moved_to_v2 where org_id = $1",
+              organization,
+            ),
+          ),
+        );
+        const states = yield* readRows(
+          "sso-database.json",
+          Schema.Struct({ state: Schema.String }),
+          organizations.map((organization) =>
+            row("select state from private_v1_import_org where v1_org_id = $1", organization),
+          ),
+        );
+        const maps = yield* readRows(
+          "sso-database.json",
+          Schema.Struct({ v1_kind: Schema.String }),
+          organizations.map((organization) =>
+            row("select v1_kind from private_v1_import_map where v1_org_id = $1", organization),
+          ),
+        );
+        const after = yield* readRows(
+          "sso-database.json",
+          TeamMember,
+          refusals.map(([workspace]) => membersOf(workspace.into)),
+        );
+        for (const [index, organization] of organizations.entries()) {
+          expect(flags[index], organization).toEqual([
             { state: "rolled_back", v2_org_id: null, v2_org_slug: null },
           ]);
-          expect(yield* importState(workspace.organization)).toEqual([{ state: "rolled_back" }]);
-          expect(
-            yield* cloudRows(
-              Schema.Struct({ v1_kind: Schema.String }),
-              "select v1_kind from private_v1_import_map where v1_org_id = $1",
-              workspace.organization,
-            ),
-          ).toEqual([]);
-          expect(yield* membersOf(workspace.into)).toEqual(before[index]);
+          expect(states[index], organization).toEqual([{ state: "rolled_back" }]);
+          expect(maps[index], organization).toEqual([]);
+          expect(after[index], organization).toEqual(before[index]);
         }
       }).pipe(Effect.provide(services)),
     ),

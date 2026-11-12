@@ -520,11 +520,11 @@ export const scenarios = plan({
   workflowReplayAccess: {
     fixtures: "actors",
     file: "workflow-replay-access.spec.ts",
-    title: "workflow replay keeps a run with its actor and key after the caller's links change",
+    title: "workflow replay checks retained account access after the app's account link changes",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
-      local: na("This scenario exercises hosted account sharing and account links."),
+      local: na("This scenario exercises hosted members' workflow runs and app account links."),
     },
   },
   activeVersionTools: {
@@ -961,6 +961,16 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: na("Loopback MCP router; covered on self-host"),
+      local: na("Hosted version API scenario"),
+    },
+  },
+  mcpMediaContent: {
+    fixtures: "actors",
+    file: "mcp-direct-calls.spec.ts",
+    title: "MCP call and execute return app images and audio as MCP content blocks",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Shared MCP path; covered on self-host"),
       local: na("Hosted version API scenario"),
     },
   },
@@ -3092,7 +3102,7 @@ export const scenarios = plan({
   accountHealth: {
     fixtures: "actors",
     file: "account-health.spec.ts",
-    title: "Apps check a shared account their own way and report its identity",
+    title: "Apps check an account their own way and report its identity",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a controlled loopback service through the shared runtime contract."),
@@ -4580,6 +4590,59 @@ export const scenarios = plan({
       cloud: na(
         "The local account API and MCP backend; hosted descriptions have their own scenario.",
       ),
+    },
+  },
+  setupHelpRefused: {
+    fixtures: "actors",
+    file: "setup-guides.spec.ts",
+    title:
+      "deploys refuse setup help with links other than https, raw HTML, images or too much text, naming the requirement, provider, method and field",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Runs the same SDK deploy and connection checks as self-host."),
+    },
+  },
+  setupHelpIdentity: {
+    fixtures: "actors",
+    file: "setup-guides.spec.ts",
+    title:
+      "apps that explain one provider differently share its ID and accounts, and editing an app's setup help keeps the provider ID, its links and tool calls",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Runs the same SDK deploy, identity and connection operations as self-host."),
+    },
+  },
+  setupHelpForm: {
+    fixtures: "actors",
+    file: "setup-guides.spec.ts",
+    title:
+      "the connect form shows the app's own guide and described fields, and OAuth client entry shows the app's client guide",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Uses a loopback OAuth issuer for client entry; self-host renders the same shared connect form.",
+      ),
+      local: na("Local connection links have their own scenario."),
+    },
+  },
+  localSetupHelp: {
+    file: "setup-guides.spec.ts",
+    title: "a local connection link shows the app's guide and field descriptions",
+    targets: {
+      local: scheduled,
+      "self-host": na("Hosted connection links have their own scenario."),
+      cloud: na("Hosted connection links have their own scenario."),
+    },
+  },
+  localToolMarkdownImages: {
+    file: "setup-guides.spec.ts",
+    title: "tool descriptions render images as their alt text and link only https addresses",
+    targets: {
+      local: scheduled,
+      "self-host": na("The hosted dashboards render tool descriptions with the same component."),
+      cloud: na("The hosted dashboards render tool descriptions with the same component."),
     },
   },
   localPastedCredentialsNamedAfterSaving: {
@@ -7615,36 +7678,14 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
-  webhookSourceUnlinkHandover: {
-    fixtures: "actors",
-    file: "webhook-source-handover.spec.ts",
-    title: "a webhook source moves to another linking member when its actor unlinks",
-    targets: {
-      local: na("Local has no organization members or shared accounts."),
-      "self-host": scheduled,
-      cloud: scheduled,
-    },
-  },
   webhookSourceRelink: {
     fixtures: "actors",
     file: "webhook-source-handover.spec.ts",
-    title:
-      "a webhook source registers again after its account is relinked and returns to an earlier actor",
+    title: "a webhook source registers again after its account is relinked",
     targets: {
-      local: na("Local has no organization members or shared accounts."),
+      local: na("Uses hosted link routes and organization members."),
       "self-host": scheduled,
       cloud: scheduled,
-    },
-  },
-  webhookSourceMemberHandover: {
-    fixtures: "actors",
-    file: "webhook-source-handover.spec.ts",
-    title:
-      "a webhook source moves to another linking member when its actor leaves the organization",
-    targets: {
-      local: na("Local has no organization members."),
-      "self-host": scheduled,
-      cloud: sourceStorageCloud,
     },
   },
   webhookSourceAccountChoice: {
@@ -7671,9 +7712,10 @@ export const scenarios = plan({
   webhookSourceConcurrentLinks: {
     fixtures: "actors",
     file: "webhook-source-handover.spec.ts",
-    title: "a concurrent last unlink and link keep the account's webhook source",
+    title:
+      "a concurrent last unlink and link in the other scope, between the account's app link and user link, keep its webhook source",
     targets: {
-      local: na("Local has one user, so no other member links the account."),
+      local: na("Uses hosted link routes."),
       "self-host": scheduled,
       cloud: scheduled,
     },
@@ -7713,9 +7755,9 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "webhook-source-handover.spec.ts",
     title:
-      "a handed-over webhook registration is removed as the member it registered as, or waits for confirmation",
+      "a member's webhook registration is removed as that member, or waits for a manager's confirmation once they leave",
     targets: {
-      local: na("Local has no organization members to hand a registration to."),
+      local: na("Local has no organization members."),
       "self-host": scheduled,
       cloud: scheduled,
     },
@@ -7908,7 +7950,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "app-account-app-links.spec.ts",
     title:
-      "a hosted app requirement links for everyone only an account its manager can use, and a connection for one completes only in the scope it started in",
+      "a hosted app requirement links for everyone only the manager's own account, not a member's, even for the organization's owner, and a connection for one completes only in the scope it started in",
     targets: {
       local: na(
         "Hosted managers and personal accounts; Local connections have their own scenario.",
@@ -7943,7 +7985,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "departed-member-app-links.spec.ts",
     title:
-      "an app link to a member's personal account stops filling the app's requirement when the member leaves and stays listed for its managers, while a shared account linked beside it keeps serving",
+      "an app link to a member's account stops filling the app's requirement when the member leaves and stays listed for its managers, while another member's account linked beside it keeps serving",
     targets: {
       local: na("Hosted members leave organizations; Local has one owner."),
       "self-host": scheduled,
@@ -7978,7 +8020,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "app-account-webhooks.spec.ts",
     title:
-      "an app-linked account is the app's webhook source without an actor, serving the webhooks of the requirements it is linked to, also while members link it, and hands the source to a linking member when its last app link goes",
+      "an app-linked account is the app's webhook source without an actor, serving the webhooks of the requirements it is linked to, also while its owner links it for themselves, and hands the source to the owner's user link when its last app link goes",
     targets: {
       local: na("Hosted managers and members; Local app-account webhooks have their own scenario."),
       "self-host": scheduled,
@@ -8033,7 +8075,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "account-webhook-dependencies.spec.ts",
     title:
-      "a member deleting their account refused for webhook subscriptions they can't see is told how many, never which apps or subscriptions, and can delete it once those are removed",
+      "someone deleting their account refused for webhook subscriptions they can't see is told how many, never which apps or subscriptions, and can delete it once those are removed",
     targets: {
       local: na("Local has one user, who sees every app and subscription."),
       "self-host": scheduled,
@@ -8192,7 +8234,7 @@ export const scenarios = plan({
     title:
       "a retained workflow run is read by the scope each captured account had on its version: an app account by its app link, a user account by the caller's use",
     targets: {
-      local: na("Hosted shared accounts and app links."),
+      local: na("Hosted members' workflow runs and app links."),
       "self-host": scheduled,
       cloud: scheduled,
     },
@@ -8295,7 +8337,8 @@ export const scenarios = plan({
   hostedAppAccountRevocation: {
     fixtures: "actors",
     file: "hosted-app-accounts.spec.ts",
-    title: "hosted app account links drop a deleted account and stop when the app becomes private",
+    title:
+      "hosted app account links drop a deleted account without substituting another, administrators cannot delete a member's account, and an app made private stops its members' calls",
     targets: {
       local: na("Hosted membership only."),
       "self-host": scheduled,
@@ -8615,6 +8658,16 @@ export const scenarios = plan({
       cloud: na("Cloud requires a verified recipient instead of password registration."),
     },
   },
+  lanHttpDashboard: {
+    file: "lan-http-dashboard.spec.ts",
+    title:
+      "a self-host dashboard served over plain HTTP at a LAN address sets up, copies, adds apps, starts workflows and connects without a secure context",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud is served only over HTTPS."),
+      local: na("Local is served only on loopback, which browsers treat as a secure context."),
+    },
+  },
   appUiWithoutAppDomain: {
     file: "app-ui-without-app-domain.spec.ts",
     title: "a self-host with no app domain says an app UI has no address because of the domain",
@@ -8819,7 +8872,7 @@ export const scenarios = plan({
   v1SignInEmpty: {
     file: "cloud-v1-sign-in.spec.ts",
     title:
-      "Cloud sign-in admits members of only empty free v1 organizations, keeps members of paid or nonempty ones on v1, and fails closed while v1's database is unavailable",
+      "Cloud sign-in admits members of only empty free or moved v1 organizations, keeps members of paid or nonempty ones on v1, and fails closed while v1's database is unavailable",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   // The import reads the emulated v1 WorkOS, Vault and database only a managed local Cloud has.
@@ -8898,7 +8951,7 @@ export const scenarios = plan({
   v1ImportRollback: {
     file: "cloud-v1-import-run.spec.ts",
     title:
-      "Cloud v1 import marks a verified workspace moved in v1 and gives it back on rollback only once its v2 organization is deleted, clearing its import map but its users, and imports it again into a new organization where every member's toolkit copy is live and v1's toolkit URL forwards to it",
+      "Cloud v1 import marks a verified workspace moved in v1 and gives it back on rollback only once its v2 organization is deleted, also after Workflows forgot its import instance, clearing its import map but its users, and imports it again into a new organization where every member's toolkit copy is live and v1's toolkit URL forwards to it",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportPaidBilling: {
@@ -8971,7 +9024,7 @@ export const scenarios = plan({
   v1ImportShared: {
     file: "cloud-v1-import-run.spec.ts",
     title:
-      "Cloud v1 import moves a shared workspace on the server and cuts it over once it verifies: the oldest admin owns it, members keep their roles without a welcome email, org connections become shared accounts linked for everyone and members' their own, a member's approve rule is dropped while their block applies to everyone, every member gets their own copy of an org toolkit, and a former member's rows stay behind",
+      "Cloud v1 import moves a shared workspace on the server and cuts it over once it verifies: the oldest admin owns it, members keep their roles without a welcome email, org connections become the owner's accounts linked for everyone and members' their own, a member's approve rule is dropped while their block applies to everyone, every member gets their own copy of an org toolkit, and a former member's rows stay behind",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportToolkitScale: {
@@ -9495,20 +9548,6 @@ export const scenarios = plan({
       local: na("Local has no organization access rows; the local scenario covers its storage."),
     },
   },
-  legacyGroupAccounts: {
-    fixtures: "actors",
-    legacyStorage: true,
-    file: "legacy-group-accounts.spec.ts",
-    title:
-      "upgrading a hosted database leaves an account shared with a group used by nobody and refuses its pending sign-in",
-    targets: {
-      "self-host": scheduled,
-      cloud: na(
-        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
-      ),
-      local: na("Local has no organization, groups or shared accounts."),
-    },
-  },
   legacyProfileSchedules: {
     fixtures: "actors",
     legacyStorage: true,
@@ -9563,6 +9602,34 @@ export const scenarios = plan({
       local: na(
         "Hosted members and their profiles; local has one subject, and its MCP profile targets scenario upgrades its profiles.",
       ),
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+    },
+  },
+  personalAccountsMigration: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "personal-accounts-migration.spec.ts",
+    title:
+      "upgrading hosted storage makes each shared account one member's own, keeping its app links serving everyone, removing other members' links to it, giving a departed creator's to the organization's owner, and refusing pending shared sign-ins",
+    targets: {
+      "self-host": scheduled,
+      local: na("Local has no organization members or shared accounts."),
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+    },
+  },
+  personalAccountsAppLinkConversion: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "personal-accounts-migration.spec.ts",
+    title:
+      "upgrading hosted storage turns a member's user link to a shared account into an app link where the app takes that provider for everyone, deletes it where the app takes only user accounts, adds no duplicate app link, and records every change in its backup table",
+    targets: {
+      "self-host": scheduled,
+      local: na("Local has no organization members or shared accounts."),
       cloud: na(
         "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
       ),
@@ -9813,6 +9880,212 @@ export const scenarios = plan({
       local: na("Local has no organization members or hosted OAuth consent."),
     },
   },
+  toolCallLogReference: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "A failed API tool call returns its log reference beside the error, and an admin finds that call without its arguments or result, or the name of a tool the app does not have",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogMcp: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "MCP call and execute return each failed call's log reference beside the unchanged error, and a program's calls share a run and a session",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogScopedAgent: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "An OAuth agent's calls through a scoped connection are logged with its grant and connection, both filters find them, and the connection without the Executor app cannot read the log",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogApprovals: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "A call that waits for approval is one log row, read as waiting and then as approved or denied with who answered",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogAuthorization: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "Members read only their own logged calls and find nothing of another member's; owners and admins read all, and an API key reads as the person who holds it",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogAgentReads: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    // The admin's agent reads the log with the admin's managed Executor key.
+    managementApps: ["admin"],
+    title:
+      "An agent signed in over MCP reads the tool call log through the Executor app with each call's running time: a member's agent sees only that member's calls, an admin's agent sees everyone's",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogExpiry: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "tool-call-log.spec.ts",
+    title:
+      "A lapsed approval reads as expired, the prune marks it, and logged calls older than 30 days are not found before the prune deletes them",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Advances the wall clock of a runner-owned product process."),
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogApprovedAtDeadline: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "tool-call-log.spec.ts",
+    title:
+      "An approval answered in time replaces the expiry the prune marked on its call while the call was still running",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Writes to a runner-owned product database."),
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogWriteFailure: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "tool-call-log.spec.ts",
+    title: "Tool calls end normally, without a reference, when the tool call log cannot be written",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Installs a storage fault in a runner-owned product database."),
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogPersonalAccounts: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "Owners and admins see a member's personal account on their calls only as a personal account and cannot search by its name; the member sees and finds it",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogWithheldApp: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "A member who can no longer use an app reads their calls to it without its name, while admins still see it",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogErrorContract: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "Every error tools/call and tools/run declare keeps its status and body, adding only the optional reference",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogSlowWrite: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "tool-call-log.spec.ts",
+    title:
+      "A slow tool call log write does not hold up a successful call, whose row appears after it, and a failed call's reference leads to its row",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Installs a storage fault in a runner-owned product database; toolCallLogSlowWriteCloud covers Cloud.",
+      ),
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogSlowWriteCloud: {
+    fixtures: "actors",
+    file: "tool-call-log.spec.ts",
+    title:
+      "On Cloud a slow tool call log write does not hold up a successful call, and a failed call waits at most its bound and returns no reference",
+    targets: {
+      "self-host": na(
+        "Self-host's database cannot be slowed without stopping it; toolCallLogSlowWrite covers self-host.",
+      ),
+      cloud: managedCloud,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogPage: {
+    fixtures: "actors",
+    file: "tool-call-log-page.spec.ts",
+    title:
+      "Admins filter the Activity page by status and member from the address, open a call by its pasted reference and narrow to its run",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogPageRefreshFailure: {
+    fixtures: "actors",
+    file: "tool-call-log-page.spec.ts",
+    title:
+      "When reading the Activity page's calls again fails, the calls already read stay under the failure, and trying again reads them",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogPageMember: {
+    fixtures: "actors",
+    file: "tool-call-log-page.spec.ts",
+    title:
+      "Members see only their own calls on the Activity page, with no member filter and no other member's reference",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local has no organization tool call log."),
+    },
+  },
+  toolCallLogRunner: {
+    fixtures: "actors",
+    file: "tool-call-log-page.spec.ts",
+    title: "The tool runner shows a failed run's call reference, which opens the call in Activity",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Local's tool runner has no call log."),
+    },
+  },
   mcpStaleRefresh: {
     fixtures: "actors",
     file: "mcp-oauth-refresh.spec.ts",
@@ -9920,14 +10193,15 @@ export const scenarios = plan({
       local: na("Local has no hosted organizations or membership roles."),
     },
   },
-  sharedAccountLinks: {
+  personalAccountLinks: {
     fixtures: "actors",
     file: "hosted-shared.spec.ts",
-    title: "a shared account linked by a member other than its creator runs that member's calls",
+    title:
+      "a saved account stays its owner's: no connection creates a shared one, and other members, the organization's owner included, cannot read it, link it or run calls with it",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
-      local: na("Local has no organization members or shared accounts."),
+      local: na("Local has no organization members."),
     },
   },
   remoteMcp: {

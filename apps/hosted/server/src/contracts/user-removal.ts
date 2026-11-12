@@ -12,7 +12,7 @@ import {
   StorageError,
 } from "@executor-js/sdk/core";
 import { AccountLinkedToApp } from "./accounts.ts";
-import { AuthenticationUnavailable, RequireUser } from "./auth.ts";
+import { AuthenticationUnavailable, RequireBrowserSession } from "./auth.ts";
 import { OrganizationId } from "./organization.ts";
 import { OrganizationRemovalUnavailable } from "./organization-removal.ts";
 
@@ -88,4 +88,4 @@ export const HostedUserRemoval = HttpApiGroup.make("userRemoval")
       "Delete the signed-in user. Organizations where they are the only member are deleted with everything they own; in the others, their personal accounts are unlinked from apps and deleted with their saved credentials, and their membership ends. Their sessions, sign-in methods, passkeys, API keys and MCP grants are deleted. Refuses while they are the only owner of an organization with other members, or while running work or a webhook subscription still uses something it would delete. Requires a browser session.",
     ),
   )
-  .middleware(RequireUser);
+  .middleware(RequireBrowserSession);

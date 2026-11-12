@@ -97,6 +97,7 @@ import {
   type ToolSummary,
   InvocationPrefetch,
   InvocationSelection,
+  ToolCallKindObserved,
   type PrefetchedInvocation,
   type PrefetchHost,
 } from "../contracts/tools.ts";
@@ -1567,6 +1568,7 @@ export const makeTools = (
         // Every failure from here, the app's or Executor's own, passes through `callFailure` once.
         return yield* Effect.gen(function* () {
           const kind = yield* kindOf(state, context, parsed.tool, named);
+          if (kind !== undefined) (yield* ToolCallKindObserved)?.(kind);
           let toolError = false;
           const execute = (context: InvocationContext) =>
             Effect.suspend(() => {

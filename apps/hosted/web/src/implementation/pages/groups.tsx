@@ -17,7 +17,7 @@ import {
 } from "@hugeicons/core-free-icons";
 import { Button } from "@executor-js/ui/components/button";
 import { Input } from "@executor-js/ui/components/input";
-import { Avatar, AvatarFallback } from "@executor-js/ui/components/avatar";
+import { MemberAvatar } from "../components/member-avatar.tsx";
 import {
   Dialog,
   DialogContent,
@@ -199,7 +199,7 @@ function GroupContent({
                         .filter((member) => group.memberIds.includes(member.id))
                         .slice(0, 4)
                         .map((member) => (
-                          <MemberAvatar key={member.id} member={member} />
+                          <GroupMemberAvatar key={member.id} member={member} />
                         ))}
                     </div>
                     <span className="text-xs text-muted-foreground">
@@ -233,7 +233,7 @@ function GroupContent({
               {search
                 ? "Try another name."
                 : admin
-                  ? "Share apps and accounts with the people in your team."
+                  ? "Share apps and OAuth clients with the people in your team."
                   : "An organization admin can create groups."}
             </EmptyState>
           )}
@@ -293,18 +293,14 @@ function GroupContent({
     </>
   );
 }
-function MemberAvatar({ member }: { readonly member: GroupMember }) {
+function GroupMemberAvatar({ member }: { readonly member: GroupMember }) {
   return (
-    <Avatar className="size-8 shrink-0 border-2 border-background">
-      <AvatarFallback className="bg-accent text-[10px]">
-        {member.name
-          .split(/\s+/)
-          .slice(0, 2)
-          .map((part) => part.slice(0, 1))
-          .join("")
-          .toUpperCase()}
-      </AvatarFallback>
-    </Avatar>
+    <MemberAvatar
+      name={member.name}
+      image={member.image}
+      size="default"
+      className="border-2 border-background"
+    />
   );
 }
 function Members({
@@ -318,7 +314,7 @@ function Members({
     <div className="divide-y rounded-lg border">
       {members.map((member) => (
         <div key={member.id} className="flex items-center gap-3 p-4">
-          <MemberAvatar member={member} />
+          <GroupMemberAvatar member={member} />
           <div className="min-w-0">
             <p className="text-sm font-medium">{member.name}</p>
             <p className="break-words text-xs text-muted-foreground">{member.email}</p>
@@ -536,7 +532,7 @@ function GroupEditor({
                       key={member.id}
                       className="flex cursor-pointer items-center gap-3 border-b px-3 py-2.5 last:border-0"
                     >
-                      <MemberAvatar member={member} />
+                      <GroupMemberAvatar member={member} />
                       <span className="min-w-0 flex-1">
                         <span className="block text-sm">{member.name}</span>
                         <span className="block break-words text-xs text-muted-foreground">

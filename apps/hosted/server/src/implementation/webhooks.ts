@@ -1,6 +1,6 @@
 import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
 /** Shared product policy; local does not acquire organizations to reuse webhook execution. */
-import { Authentication, ApiAuthentication, CurrentUserId } from "../contracts/auth.ts";
+import { SessionAuthentication, BearerAuthentication, CurrentUserId } from "../contracts/auth.ts";
 import { HttpServerRequest } from "effect/http";
 import { HttpServerResponse } from "effect/http";
 import { Effect } from "effect";
@@ -20,7 +20,7 @@ import {
 } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import {
   actorManagerOwner,
@@ -68,7 +68,7 @@ const failedToRead = <E extends { readonly _tag: string }>(
  */
 const listedIn = (executor: Executor, owner: OwnerId, app: AppId) =>
   Effect.gen(function* () {
-    const policy = yield* CurrentAuthorization;
+    const policy = yield* CurrentPolicy;
     if (!permitsAction(policy, "read") || !permitsApp(policy, app)) return [];
     yield* appReaderOwner(app);
     yield* executor.apps.get({ owner, app });
@@ -134,8 +134,8 @@ const managedSource = (executor: Executor, input: { app: AppId; account: Account
 /** Management uses current organization authority before any app code runs. */
 export const hostedWebhookHandlers = HttpApiBuilder.group(HostedApi, "webhooks", (handlers) =>
   Effect.gen(function* () {
-    const auth = yield* Authentication;
-    const api = yield* ApiAuthentication;
+    const auth = yield* SessionAuthentication;
+    const api = yield* BearerAuthentication;
     return (
       handlers
         .handle("get", ({ params }) =>

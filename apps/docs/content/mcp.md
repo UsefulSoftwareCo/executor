@@ -97,6 +97,17 @@ may still have made changes. `call` lists it the same way. An outcome of
 `success` only means no tool error was reported; check the result before
 treating its action as done.
 
+Images and audio reach the agent as media. Wherever the value `execute`, `call`
+or `resume` returns holds `{ type: "image", mimeType, data }` or
+`{ type: "audio", mimeType, data }`, with `data` in standard or URL-safe base64,
+the response carries that block as its own MCP content after the JSON text, once
+even if the value repeats it. The JSON keeps `{ type, mimeType, contentIndex }`
+in its place, the block's index in the response's `content`. MCP image and audio
+results, such as screenshots, already have that shape. A program can show bytes
+a tool returns another way, such as an email attachment's base64, by returning
+them in it. Inside a program the block is whole, so its data can be passed on to
+another tool.
+
 The interpreter has no `fetch`, no `process`, no filesystem, no timers and no
 imports. Its only way out is a tool call, which enters the trusted runtime where your
 credentials live. Limits are cooperative, not process isolation. Discovery is

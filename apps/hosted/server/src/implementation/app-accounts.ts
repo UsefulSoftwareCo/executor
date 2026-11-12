@@ -26,7 +26,7 @@ import { permitsAccounts, permittedTargets } from "@executor-js/authorization";
 import { Effect, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
 import { CurrentUserId } from "../contracts/auth.ts";
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { RequirementMismatch } from "../contracts/app-accounts.ts";
 import { OrganizationForbidden } from "../contracts/organization.ts";
 import {
@@ -35,7 +35,7 @@ import {
   linkedAccountJson,
   lockCurrentActor,
   policyDatabase,
-  requireAccountAccessAs,
+  requireAccountOwnerAs,
   requireAppAccessAs,
   usableAppLinks,
   usableLinks,
@@ -97,7 +97,7 @@ export const appAccountReads = (
 
 /** The caller's links, narrowed to the targets their grant permits. */
 const permittedLinks = (linked: ReadonlyArray<LinkedAccount>) =>
-  Effect.map(CurrentAuthorization, (policy) =>
+  Effect.map(CurrentPolicy, (policy) =>
     linked.filter((account) => {
       const targets = permittedTargets(policy.tools, account.app);
       return targets === undefined || targets.accounts.has(account.id);
@@ -177,7 +177,7 @@ export const versionAccounts = (version: AppVersion, links?: CallerLinks) =>
       version: version.version,
       ...(yield* callerRequirements(version, links)),
     });
-    const policy = yield* CurrentAuthorization;
+    const policy = yield* CurrentPolicy;
     if (!permitsAccounts(policy, version.app, userAccountIds(resolved)))
       return yield* new OrganizationForbidden();
     return resolved;
@@ -243,7 +243,7 @@ export const lockedChange = <A, E, R>(
         yield* lockAppLinks(sql, input.app);
         const actor = yield* lockCurrentActor;
         yield* requireAppAccessAs(actor, input.app, input.access);
-        if (input.account !== undefined) yield* requireAccountAccessAs(actor, input.account, "use");
+        if (input.account !== undefined) yield* requireAccountOwnerAs(actor, input.account);
         return yield* change(sql, actor);
       }),
     );
@@ -456,8 +456,8 @@ export const linkUserAccount = (
 /**
  * Link an account to an app requirement for everyone, in its own transaction, as
  * `appAccounts.appLink` does once it has checked edit access. For product code that has already
- * decided the editor may link it, such as the v1 import linking a workspace's shared accounts for
- * the organization's owner. Linking again changes nothing. Returns whether any link changed.
+ * decided the editor may link it, such as the v1 import linking the organization owner's accounts
+ * for everyone. Linking again changes nothing. Returns whether any link changed.
  */
 export const linkAppAccount = (
   executor: Executor,

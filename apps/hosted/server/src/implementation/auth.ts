@@ -17,13 +17,13 @@ import { Config, ErrorReporter, Effect, Layer, Schema } from "effect";
 import { HttpUrl } from "@executor-js/sdk/core";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
-  Authentication,
+  SessionAuthentication,
   AuthenticationUnavailable,
   CurrentPrincipal,
   CurrentUserId,
   Forbidden,
   Principal,
-  RequireUser,
+  RequireBrowserSession,
   Unauthorized,
 } from "../contracts/auth.ts";
 
@@ -33,7 +33,7 @@ import {
  * client metadata document list that exact string, whatever form the operator configured.
  */
 export const accountOAuthRedirectUri = (
-  auth: Pick<typeof Authentication.Service, "origin" | "oauthRedirectUri">,
+  auth: Pick<typeof SessionAuthentication.Service, "origin" | "oauthRedirectUri">,
 ) =>
   HttpUrl.make(
     new URL(auth.oauthRedirectUri ?? new URL("/api/oauth/callback", auth.origin).href).href,
@@ -144,10 +144,10 @@ export const sessionPrincipal = (
       }).pipe(Effect.mapError(() => new AuthenticationUnavailable()));
 
 /** Authenticate each request and reject foreign-origin cookie writes. */
-export const requireUserLive = Layer.effect(
-  RequireUser,
+export const requireBrowserSessionLive = Layer.effect(
+  RequireBrowserSession,
   Effect.gen(function* () {
-    const auth = yield* Authentication;
+    const auth = yield* SessionAuthentication;
     return (response, { endpoint, group }) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;

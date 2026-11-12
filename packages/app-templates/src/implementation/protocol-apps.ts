@@ -449,22 +449,22 @@ const appImports = (names: readonly string[]) =>
 /**
  * The account requirements an app with sign-in methods declares, the factory's parameters for
  * them, the accounts its tools take one of, and the expression for one account's credentials:
- * each member's own accounts (`service`), with `sharedAccounts` also those linked for everyone
+ * each member's own accounts (`service`), with `appLinkedAccounts` also those linked for everyone
  * (`workspace`), and with a fixed account the one account linked for everyone that holds the fixed
  * credentials (`fixed`), sent under the selected account's. An account linked in both scopes is
  * offered once.
  */
-const accountScopes = (options: Pick<ProtocolAppOptions, "sharedAccounts" | "fixedAccount">) => {
-  const shared = options.sharedAccounts === true;
+const accountScopes = (options: Pick<ProtocolAppOptions, "appLinkedAccounts" | "fixedAccount">) => {
+  const linked = options.appLinkedAccounts === true;
   const fixed = options.fixedAccount !== undefined;
   const app = [
-    ...(shared ? ["workspace: provider.many()"] : []),
+    ...(linked ? ["workspace: provider.many()"] : []),
     ...(fixed ? ["fixed: fixedProvider"] : []),
   ];
   return {
     requirements: `{ ${app.length === 0 ? "" : `app: { accounts: { ${app.join(", ")} } }, `}user: { accounts: { service: provider.many() } } }`,
     context: app.length === 0 ? "user" : "app, user",
-    accounts: shared
+    accounts: linked
       ? `[...app.accounts.workspace, ...(user?.accounts.service ?? []).filter((account) => !app.accounts.workspace.some((shared) => shared.id === account.id))]`
       : "user?.accounts.service ?? []",
     /** The provider file's names the app's index imports. */

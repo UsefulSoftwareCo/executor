@@ -30,7 +30,7 @@ import {
   Scope,
   Scheduler,
 } from "effect";
-import type { McpBackend } from "../contracts/backend.ts";
+import { CurrentMcpExecution, ToolCallRecorded, type McpBackend } from "../contracts/backend.ts";
 import {
   ApprovalUnavailable,
   defaultMcpRuntimeLimits,
@@ -413,6 +413,7 @@ export const makeExecutions = (
         const operation: Operation = { waiting: new Set() };
         run.operations.add(operation);
         yield* Effect.scoped(work(backend, operation)).pipe(
+          Effect.provideService(CurrentMcpExecution, run.id),
           Effect.ensuring(
             Effect.sync(() => run.operations.delete(operation)).pipe(Effect.andThen(wake(run))),
           ),
@@ -538,15 +539,18 @@ export const makeExecutions = (
         subscribeEvent: (input) => exchange((backend) => backend.subscribeEvent(input)),
         unsubscribeEvent: (input) => exchange((backend) => backend.unsubscribeEvent(input)),
         callTool: (input) =>
-          Effect.flatMap(Effect.fiberId, (fiber) => {
-            const call = run.progress.callFibers.get(fiber);
-            return exchange(
+          Effect.gen(function* () {
+            const call = run.progress.callFibers.get(yield* Effect.fiberId);
+            // The driving request makes the call; the program's call hears its reference.
+            const recorded = yield* ToolCallRecorded;
+            return yield* exchange(
               (backend, operation) =>
                 backend
                   .callTool(input, {
                     elicitation: elicitation(run, operation, interactionTool(input)),
                   })
                   .pipe(
+                    Effect.provideService(ToolCallRecorded, recorded),
                     toolCallSpan("mcp.tool.call", {
                       attributes: {
                         "executor.app.id": input.app,

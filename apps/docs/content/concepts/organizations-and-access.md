@@ -11,11 +11,11 @@ Executor has no organizations; it is one person on one machine.
 
 Every person in an organization is a member with one role:
 
-| Role     | Can do                                                                                                                  |
-| -------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `member` | Create apps, connect accounts, use their own apps and what is shared with them, and manage what they created.           |
-| `admin`  | A member's rights, plus invite and remove people, manage groups, publish apps, and manage every app and shared account. |
-| `owner`  | An admin's rights, plus delete the organization on Cloud.                                                               |
+| Role     | Can do                                                                                                        |
+| -------- | ------------------------------------------------------------------------------------------------------------- |
+| `member` | Create apps, connect accounts, use their own apps and what is shared with them, and manage what they created. |
+| `admin`  | A member's rights, plus invite and remove people, manage groups, publish apps, and manage every app.          |
+| `owner`  | An admin's rights, plus delete the organization on Cloud.                                                     |
 
 Roles decide who manages things, not who uses them. Using an app, including
 calling its tools through MCP, follows the app's audience:
@@ -25,10 +25,10 @@ calling its tools through MCP, follows the app's audience:
 - **Groups**: the members of the groups it is shared with. A member can share
   only with groups they belong to; admins and owners can pick any group.
 
-Accounts are not shared with groups. A personal account is used and managed
-only by the person who connected it. To give a team one account, such as a
-service key, link it to the app as one of the app's own accounts, described
-below.
+Accounts are always personal. An account is used and managed only by the
+person who connected it, while they remain a member; admins cannot manage
+other people's accounts. To give everyone one credential, link it to an app
+as described below.
 
 Managing does not grant use. An admin or owner can see, edit, deploy, share and
 delete another person's private app, but cannot call its tools unless it is
@@ -38,11 +38,11 @@ narrow an agent's access further.
 
 The exception is an app's own accounts. An app can require accounts that belong
 to the app, such as a team's service key. People who can edit the app link
-them for everyone, and only accounts they can use themselves. Everyone who can
+them for everyone, and only their own accounts. Everyone who can
 use the app then uses the linked account through the app's code, for their calls
 and the app's background work, without access to the account itself. Editing
 the app does not let anyone link somebody else's account. Unlinking stops the
-app using it at once.
+app using it at once, and so does its owner leaving the organization.
 See [Providers and accounts](/concepts/providers-and-accounts#app-accounts).
 
 People join by invitation. On hosted you can also be admitted by your identity

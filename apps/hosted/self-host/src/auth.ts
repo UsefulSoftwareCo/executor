@@ -12,11 +12,11 @@ import {
   mcpBrowserGrantError,
   mcpConnectionStore,
   provisionHostedOAuthResources,
-  ApiAuthentication,
+  BearerAuthentication,
   apiBearerAccess,
   callerSpanAttributes,
   mcpBearerAccess,
-  Authentication,
+  SessionAuthentication,
   AuthenticationUnavailable,
   sessionPrincipal,
   lookupMembership,
@@ -60,7 +60,7 @@ export const selfHostAuth = Effect.gen(function* () {
   yield* provisionHostedOAuthResources(origins, context).pipe(
     Effect.mapError(() => new AuthenticationUnavailable()),
   );
-  const identity = Layer.succeed(Authentication, {
+  const identity = Layer.succeed(SessionAuthentication, {
     ...origins,
     oauthRedirectUri: Option.getOrUndefined(settings.oauthRedirectUri),
     current: (headers) =>
@@ -113,7 +113,7 @@ export const selfHostAuth = Effect.gen(function* () {
       Effect.tryPromise({ try: () => run(auth.api), catch: (cause) => cause }),
     ),
   });
-  const apiIdentity = Layer.succeed(ApiAuthentication, {
+  const apiIdentity = Layer.succeed(BearerAuthentication, {
     ...origins,
     authenticate: (headers, organization) =>
       apiBearerAccess(origins, { headers, organization }).pipe(

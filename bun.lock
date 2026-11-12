@@ -40,7 +40,7 @@
     },
     "apps/cli": {
       "name": "executor",
-      "version": "2.0.0-beta.41",
+      "version": "2.0.0-beta.42",
     },
     "apps/docs": {
       "name": "@executor-js/docs",
@@ -661,6 +661,9 @@
         "effect": "4.0.1",
         "esbuild": "0.28.2",
         "fumadb-effect": "workspace:*",
+        "mdast-util-from-markdown": "2.0.3",
+        "mdast-util-gfm": "3.1.0",
+        "micromark-extension-gfm": "3.0.0",
         "oauth4webapi": "3.8.8",
         "parse5": "8.0.0",
         "tailwindcss": "4.3.3",

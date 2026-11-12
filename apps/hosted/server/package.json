@@ -12,6 +12,7 @@
     "./mcp/browser": "./src/contracts/mcp-browser.ts",
     "./organization": "./src/contracts/organization.ts",
     "./groups": "./src/contracts/groups.ts",
+    "./tool-call-log": "./src/contracts/tool-call-log.ts",
     "./resource-access": "./src/contracts/resource-access.ts",
     "./oauth-clients": "./src/contracts/oauth-clients.ts",
     "./oauth-client-metadata": "./src/contracts/oauth-client-metadata.ts",

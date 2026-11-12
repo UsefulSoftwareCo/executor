@@ -2650,6 +2650,11 @@ return { failed: failed.isError, text: failed.content[0].text, read: read.isErro
             path: `${tools}.remote.lookup`,
             ok: true,
             value: { isError: true, content: [{ type: "text", text: reportedError }] },
+            // The result says the tool failed, so the call's log reference is beside it.
+            callLog: {
+              reference: expect.stringMatching(/^call_[0-9a-hjkmnp-tv-z]{14}$/u),
+              note: expect.stringContaining("tool call log"),
+            },
           },
           calls: [[`${tools}.remote.lookup`, "failure"]],
         });

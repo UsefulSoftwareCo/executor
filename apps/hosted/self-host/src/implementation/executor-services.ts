@@ -21,6 +21,7 @@ import {
   type RepositoryBackend,
 } from "@executor-js/sdk/core";
 import {
+  HostedBackground,
   HostedExecutor,
   ScheduledAuthority,
   makeScheduledAuthority,
@@ -40,15 +41,17 @@ import {
   withExecutorAnalytics,
   executorDefaultRedeployed,
   hostedAppCopies,
+  pruneToolCallLog,
 } from "@executor-js/hosted-server";
 import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
 import { hostedEventAuthority } from "@executor-js/hosted-server/events";
 import { deliverEvents } from "@executor-js/sdk/scheduling";
+import { markdownRefusals } from "@executor-js/sdk/markdown";
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
 import { workerdHostHandler } from "@executor-js/sdk/workerd";
 import type { AppRuntime, BlobStorage, WorkflowRuntime } from "@executor-js/sdk/core";
-import { Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
+import { Cause, Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import { SqlClient } from "effect/sql";
 
@@ -92,6 +95,8 @@ export const selfHostExecutorServices = <E, R>(
       const storage = yield* makeExecutorStorage({ provider: "postgresql" });
       const evaluation = yield* declarationConfig;
       const server = yield* Scope.Scope;
+      const background = (work: Effect.Effect<void>) =>
+        Effect.forkIn(work, server).pipe(Effect.as(true));
       const ready = yield* Deferred.make<Executor>();
       const { runtime, workflows, declarations, blobs, repositories } = yield* acquire(
         Deferred.await(ready),
@@ -112,6 +117,7 @@ export const selfHostExecutorServices = <E, R>(
         secret: key,
         origin,
         git: repositories,
+        markdown: markdownRefusals,
         blobs,
         runtime,
         workflows,
@@ -140,7 +146,7 @@ export const selfHostExecutorServices = <E, R>(
         },
         hostApi: hostedApi([origin], revision),
         // Stale declarations refresh on the server's own lifetime.
-        background: (work) => Effect.forkIn(work, server).pipe(Effect.as(true)),
+        background,
         events: {
           sender: httpEventSender(egress),
           authorize: hostedEventAuthority(Effect.succeed(yield* SqlClient.SqlClient)),
@@ -183,6 +189,18 @@ export const selfHostExecutorServices = <E, R>(
           Effect.repeat(Schedule.spaced("5 seconds")),
         ),
       );
+      // Marks approvals that lapsed unanswered and deletes calls past the retention. A defect fails
+      // one pass, not the loop: pruning goes on at the next.
+      yield* Effect.forkScoped(
+        pruneToolCallLog.pipe(
+          Effect.catchCause((cause) =>
+            Cause.hasInterrupts(cause)
+              ? Effect.interrupt
+              : Effect.logWarning("Tool call log pruning failed", cause),
+          ),
+          Effect.repeat(Schedule.spaced("5 minutes")),
+        ),
+      );
       const initialize = yield* organizationDefaults(
         executor,
         origin,
@@ -215,6 +233,8 @@ export const selfHostExecutorServices = <E, R>(
           }),
         ),
         Layer.succeed(HostedExecutor, Effect.succeed(hosted)),
+        // Tool call log writes a call does not wait for run on the server's lifetime too.
+        Layer.succeed(HostedBackground, background),
         Layer.succeed(OrganizationDefaults, initialize),
         Layer.succeed(HostedAppRuntime, toEffectRuntime(runtime, blobs)),
         // Self-host cannot remove an organization.

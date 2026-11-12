@@ -1,5 +1,5 @@
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
-/** App and OAuth client sharing uses group grants. Accounts are never shared with a group. */
+/** App and OAuth client sharing uses group grants. Accounts are never shared. */
 import { useForm, useStore } from "@tanstack/react-form";
 import { Exit } from "effect";
 import { useEffect, useId, useRef, useState } from "react";

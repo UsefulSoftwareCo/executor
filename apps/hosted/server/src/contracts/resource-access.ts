@@ -1,6 +1,5 @@
 import { ApiError } from "@executor-js/utils/api-error";
 import { RequiredAction } from "./authorization.ts";
-import { requireAccount } from "./account-grants.ts";
 /** Hosted sharing policy stays separate from SDK tenant ownership and saved links. */
 import {
   App,
@@ -57,28 +56,6 @@ export const AppAccess = Schema.Struct({
   canUse: Schema.Boolean,
 });
 /**
- * Ownership is immutable. A personal account is one member's; a shared account is the
- * organization's, usable by every member. No account is shared with a group.
- */
-export const AccountOwnership = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("personal"), user: Principal.fields.userId }),
-  Schema.Struct({ kind: Schema.Literal("shared") }),
-]);
-/** Safe account policy metadata; personal policies are readable only by their owner. */
-export const AccountAccess = Schema.Struct({
-  account: AccountId,
-  creator: Schema.NullOr(Principal.fields.userId),
-  ownership: AccountOwnership,
-  revision: AccessRevision,
-  canManage: Schema.Boolean,
-  canUse: Schema.Boolean,
-});
-/** The selected destination is persisted before a connection link is exposed. */
-export const ConnectionDestination = Schema.Union([
-  Schema.Struct({ kind: Schema.Literal("personal") }),
-  Schema.Struct({ kind: Schema.Literal("shared") }),
-]);
-/**
  * Safe connection intent contains no credentials or OAuth tokens. The target's scope is the
  * requirement's when the connection started: completing a user requirement's links the account for
  * its creator, an app requirement's links it for everyone. Connections saved before scopes are user
@@ -87,7 +64,6 @@ export const ConnectionDestination = Schema.Union([
 export const ConnectionAccess = Schema.Struct({
   connection: AccountConnectionId,
   creator: Principal.fields.userId,
-  destination: ConnectionDestination,
   target: Schema.Struct({
     app: AppId,
     requirement: Schema.NonEmptyString,
@@ -113,7 +89,6 @@ export const AccessConflict = ApiError.define({
 export type AccessConflict = typeof AccessConflict.Type;
 const organization = { organization: OrganizationReference };
 const app = { ...organization, app: AppId };
-const account = { ...organization, account: AccountId };
 const errors = [
   OrganizationForbidden,
   ProviderNotFound,
@@ -134,10 +109,10 @@ export const ResourceDirectory = Schema.Struct({
       linkedAccounts: Schema.Array(AccountId),
     }),
   ),
+  /** The caller's own accounts; every saved account is personal to its owner. */
   accounts: Schema.Array(
     Schema.Struct({
       account: Account,
-      access: AccountAccess,
       provider: Provider,
       /** Checks by the apps listed here; reading them never runs a check. */
       health: Schema.optionalKey(AccountHealth),
@@ -168,12 +143,5 @@ export const HostedResourceAccess = HttpApiGroup.make("resourceAccess")
       success: AppAccess,
       error: errors,
     }).annotate(RequiredAction, "manage"),
-  )
-  .add(
-    HttpApiEndpoint.get("account", "/api/organizations/:organization/accounts/:account/access", {
-      params: account,
-      success: AccountAccess,
-      error: errors,
-    }).pipe(requireAccount.inspect),
   )
   .middleware(RequireOrganization);

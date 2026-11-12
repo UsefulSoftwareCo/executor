@@ -27,8 +27,8 @@ export type WorkerName =
  * Bytes of JavaScript each Worker may upload. Cloudflare compiles every uploaded ES module when
  * an isolate starts, whether or not the Worker ever imports it, so each megabyte adds about
  * 50 ms to every cold request. Load rarely used code from another Worker rather than raising a
- * budget: the API Worker leaves rendering to `dashboard`, source formatting to `formatter`, the
- * authoring reference to `authoring` and MCP sessions to `mcp-server`.
+ * budget: the API Worker leaves rendering to `dashboard`, source formatting and Markdown parsing
+ * to `formatter`, the authoring reference to `authoring` and MCP sessions to `mcp-server`.
  */
 const uploadBudgets: Record<WorkerName, number> = {
   api: 5_450_000,

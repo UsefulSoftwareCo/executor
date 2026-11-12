@@ -17,7 +17,7 @@ import { HttpServerRequest } from "effect/http";
 import { HostedApi } from "../contracts/api.ts";
 import { filterCatalog } from "@executor-js/catalog/contracts";
 import { HostedCatalog } from "../contracts/catalog.ts";
-import { ApiAuthentication, CurrentPrincipal } from "../contracts/auth.ts";
+import { BearerAuthentication, CurrentPrincipal } from "../contracts/auth.ts";
 import { hostedOrganizationHandlers } from "./organization.ts";
 import { hostedAccountHandlers, hostedOAuthCallbackHandlers } from "./accounts.ts";
 import { hostedAppDataHandlers } from "./app-data.ts";
@@ -30,6 +30,7 @@ import { hostedSkillHandlers } from "./skills.ts";
 import { hostedGroupHandlers } from "./groups.ts";
 import { hostedMcpConnectionHandlers } from "./mcp-connections.ts";
 import { hostedFeedbackHandlers } from "./feedback.ts";
+import { hostedToolCallHandlers } from "./tool-call-log-reads.ts";
 
 const health = HttpApiBuilder.group(HostedApi, "health", (handlers) =>
   handlers.handle("get", () => Effect.succeed({ status: "ok" as const })),
@@ -45,7 +46,7 @@ const catalog = HttpApiBuilder.group(HostedApi, "catalog", (handlers) =>
 
 const apiContext = HttpApiBuilder.group(HostedApi, "context", (handlers) =>
   Effect.gen(function* () {
-    const auth = yield* ApiAuthentication;
+    const auth = yield* BearerAuthentication;
     return handlers.handle("get", () =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
@@ -93,6 +94,7 @@ export const hostedHandlers = Layer.mergeAll(
   hostedAppDataHandlers,
   hostedMcpConnectionHandlers,
   hostedFeedbackHandlers,
+  hostedToolCallHandlers,
   HttpApiBuilder.group(HostedApi, "viewer", (handlers) =>
     handlers.handle("get", () =>
       Effect.gen(function* () {

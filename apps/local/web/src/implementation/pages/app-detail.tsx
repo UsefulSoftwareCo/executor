@@ -124,7 +124,7 @@ export function AppDetailPage({
       </Button>
     </div>
   );
-  const pending = <AppDetailLoading view={tab} app={app} selectedTool={tool} />;
+  const pending = <AppDetailLoading view={tab} app={app} selectedTool={tool} canEdit />;
   return (
     <AppDetailLayout
       key={id}

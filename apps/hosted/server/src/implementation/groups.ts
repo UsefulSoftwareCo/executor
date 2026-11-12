@@ -100,7 +100,7 @@ const listGroups = Effect.gen(function* () {
       Effect.flatMap((rows) => decodeRows(Membership, rows)),
     );
   const members =
-    yield* sql`select m.id, m."userId", u.name, u.email from member m join "user" u on u.id = m."userId" where m."organizationId" = ${access.organization}
+    yield* sql`select m.id, m."userId", u.name, u.email, u.image from member m join "user" u on u.id = m."userId" where m."organizationId" = ${access.organization}
     and (${access.role !== "member"} or exists (select 1 from hosted_group_members gm where gm.member_id = m.id and ${sql.in("gm.group_id", groupIds)}))
     order by lower(u.name), m.id`.pipe(Effect.flatMap((rows) => decodeRows(GroupMember, rows)));
   return {

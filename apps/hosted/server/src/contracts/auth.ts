@@ -1,6 +1,6 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import type { ApiKeyId } from "./api-keys.ts";
-import type { ResourceOrigins } from "@executor-js/mcp-auth";
+import type { GrantId, ResourceOrigins } from "@executor-js/mcp-auth";
 import type { AuthorizationPolicy } from "@executor-js/authorization";
 import type { OrganizationAccess, OrganizationReference } from "./organization.ts";
 import { CurrentActor } from "@executor-js/sdk/core";
@@ -89,11 +89,15 @@ export interface ApiAccess {
   readonly key?: {
     readonly id: typeof ApiKeyId.Type;
   };
+  /** The OAuth grant an agent's API token carries; absent for an API key. */
+  readonly grant?: {
+    readonly id: GrantId;
+  };
 }
 
 /** Organization API grants; browser sessions and bearer grants never fall back to one another. */
-export class ApiAuthentication extends Context.Service<
-  ApiAuthentication,
+export class BearerAuthentication extends Context.Service<
+  BearerAuthentication,
   {
     /** The browser origin: dashboard, sign-in, cookies and Origin checks. */
     readonly origin: string;
@@ -106,11 +110,11 @@ export class ApiAuthentication extends Context.Service<
       organization?: OrganizationReference,
     ) => Effect.Effect<ApiAccess, Unauthorized | OrganizationForbidden | AuthenticationUnavailable>;
   }
->()("hosted/ApiAuthentication") {}
+>()("hosted/BearerAuthentication") {}
 
 /** Host-specific session lookup. Refresh belongs to Better Auth's browser endpoint. */
-export class Authentication extends Context.Service<
-  Authentication,
+export class SessionAuthentication extends Context.Service<
+  SessionAuthentication,
   {
     /** The browser origin: dashboard, sign-in, cookies and Origin checks. */
     readonly origin: string;
@@ -152,7 +156,7 @@ export class Authentication extends Context.Service<
      */
     readonly removeUser: (user: Viewer["userId"]) => Effect.Effect<void, AuthenticationUnavailable>;
   }
->()("hosted/Authentication") {}
+>()("hosted/SessionAuthentication") {}
 
 /**
  * Verified actor for browser sessions and bearer grants; absent for background setup. It is the
@@ -211,7 +215,7 @@ export type AuthCredentialKind = typeof AuthCredentialKind.Type;
  * - `insufficient_scope`: the credential's grant does not permit this action, app or tool.
  * - `insufficient_role`: the caller's role does not permit this administrative action.
  * - `resource_denied`: a member was refused by a check on the resource itself, such as an app or
- *   account not shared with them.
+ *   app not shared with them or another member's account.
  * - `app_not_found`: an app page's host or app does not exist.
  * - `unclassified`: a 401 or 403 that no check above recorded; it marks a gap to classify.
  */
@@ -243,9 +247,9 @@ export class CurrentPrincipal extends Context.Service<CurrentPrincipal, Principa
 ) {}
 
 /** Hosted identity boundary; resource permissions remain separate product checks. */
-export class RequireUser extends HttpApiMiddleware.Service<
-  RequireUser,
+export class RequireBrowserSession extends HttpApiMiddleware.Service<
+  RequireBrowserSession,
   { provides: CurrentPrincipal }
->()("hosted/RequireUser", {
+>()("hosted/RequireBrowserSession", {
   error: [Unauthorized, Forbidden, AuthenticationUnavailable],
 }) {}

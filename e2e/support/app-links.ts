@@ -148,13 +148,8 @@ export const appLinksFixture = (files: ReadonlyArray<{ path: string; content: st
      * Start a connection from the app at `appPath` (the fixture's app by default) for
      * `requirement` in `scope`; the response is the caller's to check.
      */
-    const start = (
-      actor: Session,
-      scope: LinkScope,
-      requirement: string,
-      destination: unknown,
-      appPath: string = path,
-    ) => api.request(actor, "POST", connectionsPath(appPath, scope, requirement), { destination });
+    const start = (actor: Session, scope: LinkScope, requirement: string, appPath: string = path) =>
+      api.request(actor, "POST", connectionsPath(appPath, scope, requirement), {});
     /** Submit a key for a started connection. */
     const submit = (actor: Session, connection: string, token: string) =>
       api.request(actor, "POST", `${prefix}/connections/${connection}/submit`, {
@@ -166,15 +161,9 @@ export const appLinksFixture = (files: ReadonlyArray<{ path: string; content: st
      * Connect a key account from the app for `requirement` in `scope`: for an app requirement this
      * links it for everyone, for a user requirement it links it for the connecting member.
      */
-    const connect = (
-      actor: Session,
-      scope: LinkScope,
-      requirement: string,
-      token: string,
-      destination: unknown = { kind: "personal" },
-    ) =>
+    const connect = (actor: Session, scope: LinkScope, requirement: string, token: string) =>
       Effect.gen(function* () {
-        const started = yield* start(actor, scope, requirement, destination);
+        const started = yield* start(actor, scope, requirement);
         expect(started.status, JSON.stringify(started.body)).toBe(200);
         const response = yield* submit(actor, (yield* body(Resource, started)).id, token);
         expect(response.status, JSON.stringify(response.body)).toBe(200);

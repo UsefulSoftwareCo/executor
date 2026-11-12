@@ -40,7 +40,9 @@ export const declarationFreshness = {
  * evaluation retries; a success replaces it. Reads without a wait bound, such as the dashboard,
  * evaluate again, so a recovered upstream shows on their next read however slowly the remembered
  * failure arrived. A faster failure costs a read no more than reporting a remembered one, so reads
- * never remember it. Search does, for kept rows whose background renewal failed in the app or its
+ * never remember it. Nor do they remember Executor refusing the app a host API document of another
+ * revision, however slowly: its caller is told to retry in a few seconds, and that retry reads the
+ * document again. Search does, for kept rows whose background renewal failed in the app or its
  * upstream: later searches still serve those rows, and report the failure beside them until a
  * renewal succeeds. A renewal the host stopped, or one past `loadMillis`, is not such a failure: it
  * is tried again after `renewMillis`.

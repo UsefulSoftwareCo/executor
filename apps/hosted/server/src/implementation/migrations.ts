@@ -14,6 +14,8 @@ import { migrateOrganizationRemovals } from "./organization-removal-schema.ts";
 import { migrateApiKeyMemberships } from "./api-key-membership-schema.ts";
 import { queueExecutorAppUpgrades } from "./executor-app-upgrades.ts";
 import { migrateAppAccountLinks } from "./app-account-schema.ts";
+import { migrateToolCallLog } from "./tool-call-log.ts";
+import { migratePersonalAccounts } from "./personal-account-schema.ts";
 
 /**
  * Migration failures stop startup; callers must not log the driver's secret-bearing cause. The
@@ -122,6 +124,11 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
   // Accounts are no longer shared with groups; pending sign-ins for one are refused. The running
   // server already refuses a connection without an access record.
   "10_group_account_connections": removeGroupAccountConnections,
+  // Additive: the tool call log, two new tables with no backfill; the running server never reads them.
+  "11_tool_call_log": migrateToolCallLog,
+  // Every shared account becomes one member's personal account; pending sign-ins for one are
+  // refused. The running server reads personal accounts as this leaves them.
+  "12_personal_accounts": migratePersonalAccounts,
 });
 
 /**

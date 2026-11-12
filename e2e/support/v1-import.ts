@@ -5,7 +5,7 @@
 import { randomUUID } from "node:crypto";
 import { Effect, FileSystem, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
-import { writeRows } from "./cloud-rows.ts";
+import { writeRows, type RowStatement } from "./cloud-rows.ts";
 import { Target } from "./platform.ts";
 
 const Operator = Schema.Struct({ token: Schema.String });
@@ -238,13 +238,13 @@ const AggregatePage = Schema.Union([
  * without a row is refused.
  */
 export const allowV1Import = (...organizations: readonly string[]) =>
-  writeRows(
-    "sso-database.json",
-    organizations.map((organization) => ({
-      sql: "insert into private_v1_import_allowed (v1_org_id, note) values ($1, 'E2E scenario') on conflict (v1_org_id) do nothing",
-      params: [organization],
-    })),
-  ).pipe(Effect.asVoid);
+  writeRows("sso-database.json", organizations.map(allowV1ImportRow)).pipe(Effect.asVoid);
+
+/** {@link allowV1Import}'s statement, for a scenario that writes it with others. */
+export const allowV1ImportRow = (organization: string): RowStatement => ({
+  sql: "insert into private_v1_import_allowed (v1_org_id, note) values ($1, 'E2E scenario') on conflict (v1_org_id) do nothing",
+  params: [organization],
+});
 
 /**
  * List the v2 organization an import of this v1 organization may rename to take its slug, as a
@@ -264,12 +264,17 @@ export const listV1SlugDisplacement = (organization: string, holder: string) =>
  * `into_mode`, which the import reads as `nothing_to_copy` when unset.
  */
 export const listV1Into = (organization: string, target: string, mode?: string) =>
-  writeRows("sso-database.json", [
-    {
-      sql: "update private_v1_import_allowed set into_v2_org_id = $2, into_mode = nullif($3, '') where v1_org_id = $1",
-      params: [organization, target, mode ?? ""],
-    },
-  ]).pipe(Effect.asVoid);
+  writeRows("sso-database.json", [listV1IntoRow(organization, target, mode)]).pipe(Effect.asVoid);
+
+/** {@link listV1Into}'s statement, after its organization's {@link allowV1ImportRow}. */
+export const listV1IntoRow = (
+  organization: string,
+  target: string,
+  mode?: string,
+): RowStatement => ({
+  sql: "update private_v1_import_allowed set into_v2_org_id = $2, into_mode = nullif($3, '') where v1_org_id = $1",
+  params: [organization, target, mode ?? ""],
+});
 
 /** A run id no other scenario uses. */
 export const v1RunId = (prefix: string) => `${prefix}-${randomUUID().slice(0, 8)}`;

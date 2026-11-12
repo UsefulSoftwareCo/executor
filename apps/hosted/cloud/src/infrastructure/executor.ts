@@ -17,6 +17,7 @@ import {
   httpEventSender,
   StorageError,
   makeExecutorStorage,
+  type MarkdownReader,
 } from "@executor-js/sdk/core";
 import { hostedEventAuthority } from "@executor-js/hosted-server/events";
 import { SqlClient } from "effect/sql";
@@ -77,6 +78,7 @@ const cloudFirstPartyOAuthClients = Effect.gen(function* () {
 export const cloudExecutor = Effect.fn(function* (
   databases: Cloudflare.DurableObject<AppDataSupervisor>,
   appSources: AppSources,
+  markdown: MarkdownReader,
 ) {
   // Resolve during initialization so Alchemy binds every value into the Worker environment.
   const secrets = yield* cloudSecrets.pipe(Effect.orDie);
@@ -110,6 +112,37 @@ export const cloudExecutor = Effect.fn(function* (
   const blobs = yield* cloudBlobs;
   // App storage, hosted permission checks and Better Auth share the event's client.
   const database = (yield* InvocationDatabase).pipe(Effect.mapError(() => new StorageError()));
+  // Work nobody waits for (stale metadata refreshes, tool listings, tool call log writes) runs
+  // beside the request, inside this event's lifetime: until 20 s after it closes, when the remaining
+  // work is interrupted. Work offered once the event is closing is refused, so its caller releases
+  // what it holds or does it itself, and work it accepted always has those 20 s. The event's
+  // database is resolved first, so its connection closes after this work ends.
+  const backgroundWork = yield* makeExecutionMemo(
+    Effect.gen(function* () {
+      yield* database;
+      const fibers = yield* FiberSet.make();
+      let closing = false;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          closing = true;
+        }).pipe(
+          Effect.andThen(FiberSet.awaitEmpty(fibers)),
+          Effect.timeoutOption("20 seconds"),
+          Effect.asVoid,
+        ),
+      );
+      return (work: Effect.Effect<void>) =>
+        Effect.suspend(() =>
+          closing ? Effect.succeed(false) : FiberSet.run(fibers, work).pipe(Effect.as(true)),
+        );
+    }),
+  );
+  /** Without the event's database there is no event lifetime to join; the caller runs the work. */
+  const background = (work: Effect.Effect<void>) =>
+    backgroundWork.pipe(
+      Effect.flatMap((run) => run(work)),
+      Effect.catchTag("StorageError", () => Effect.succeed(false)),
+    );
   const executor = yield* makeExecutionMemo(
     Effect.gen(function* () {
       const key = yield* secrets.encryptionKey;
@@ -117,25 +150,6 @@ export const cloudExecutor = Effect.fn(function* (
       const storage = yield* makeExecutorStorage({ provider: "postgresql" }).pipe(
         Effect.provideContext(services),
       );
-      // Stale metadata refreshes and tool listings nobody waits for run beside the request, inside
-      // this event's lifetime: until 20 s after it closes, when the remaining work is interrupted.
-      // Work offered once the event is closing is refused, so its caller releases what it holds,
-      // and work it accepted always has those 20 s.
-      const refreshes = yield* FiberSet.make();
-      let closing = false;
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          closing = true;
-        }).pipe(
-          Effect.andThen(FiberSet.awaitEmpty(refreshes)),
-          Effect.timeoutOption("20 seconds"),
-          Effect.asVoid,
-        ),
-      );
-      const background = (work: Effect.Effect<void>) =>
-        Effect.suspend(() =>
-          closing ? Effect.succeed(false) : FiberSet.run(refreshes, work).pipe(Effect.as(true)),
-        );
       const lifecycle = yield* hostedResourceLifecycle.pipe(Effect.provideContext(services));
       const executor = yield* createExecutor({
         database: storage,
@@ -143,6 +157,7 @@ export const cloudExecutor = Effect.fn(function* (
         origin,
         webhookOrigin,
         git: appSources(background),
+        markdown,
         blobs: yield* cachedVersionSources(origin, blobs),
         runtime: yield* makeRuntime,
         workflows,
@@ -205,5 +220,5 @@ export const cloudExecutor = Effect.fn(function* (
       Effect.withSpan("runtime.cloud.executor.initialize"),
     ),
   );
-  return { executor, database };
+  return { executor, database, background };
 });

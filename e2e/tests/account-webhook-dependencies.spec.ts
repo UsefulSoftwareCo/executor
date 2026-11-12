@@ -31,12 +31,12 @@ const manual = { account: { app: "manualSource" }, config: object({}), state: ob
   handle: async () => Response.json({ received: true }) };
 export default defineApp({ app: { accounts: { source: team.many(), token: team.many(), manualSource: team.many() } } },
   async () => ({ tools: router({ ping: query({ input: object({}) }, async () => "pong") }), webhooks: { incoming, manual } }));`;
-/** A webhook on each member's `source`, registered with the app's `token` accounts. */
+/** A webhook on each person's `source`, registered with the app's `token` accounts. */
 const memberSource = `import { defineApp, defineProvider, secrets, query, object, string, router } from "apps";
 const team = ${keyProvider("Hidden webhook dependency fixture")};
 const incoming = { account: { user: "source" }, config: object({}), state: object({}),
   register: async () => ({}), unregister: async () => {}, handle: async () => Response.json({}) };
-export default defineApp({ app: { accounts: { token: team.many() } }, user: { accounts: { source: team.many(), seed: team.many() } } },
+export default defineApp({ app: { accounts: { token: team.many() } }, user: { accounts: { source: team.many() } } },
   async () => ({ tools: router({ ping: query({ input: object({}) }, async () => "pong") }), webhooks: { incoming } }));`;
 /** The body clients decoded before the refusal named its subscriptions; it is closed. */
 const EarlierRefusal = Schema.Struct({
@@ -45,6 +45,11 @@ const EarlierRefusal = Schema.Struct({
   message: Schema.String,
 });
 const SessionIdentity = Schema.Struct({ user: Schema.Struct({ email: Schema.String }) });
+const Members = Schema.Struct({
+  members: Schema.Array(
+    Schema.Struct({ id: Schema.String, user: Schema.Struct({ email: Schema.String }) }),
+  ),
+});
 const Token = Schema.Struct({ key: Schema.RedactedFromValue(Schema.String), id: Schema.String });
 const Execution = Schema.Struct({
   status: Schema.Literal("completed"),
@@ -106,9 +111,7 @@ layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies",
 
         // An API token for the app's own requirement, then a source account: the source's
         // registration runs with both.
-        const token = yield* connect(actors.owner, "app", "token", "api-token", {
-          kind: "shared",
-        });
+        const token = yield* connect(actors.owner, "app", "token", "api-token");
         const own = yield* connect(actors.owner, "app", "source", "owner-source");
         const registered = yield* subscription("incoming", own, "active");
         // Unlinking the token leaves the registration depending on it: removing the subscription
@@ -159,9 +162,7 @@ layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies",
 
         // A registration Executor could not remove waits, disabled, for a person to remove it at
         // the provider. That needs none of its accounts, so it does not hold the token it ran with.
-        const second = yield* connect(actors.owner, "app", "token", "second-token", {
-          kind: "shared",
-        });
+        const second = yield* connect(actors.owner, "app", "token", "second-token");
         const departed = yield* connect(actors.admin, "app", "source", "admin-source");
         const stranded = yield* subscription("incoming", departed, "active");
         const { user } = yield* body(
@@ -208,11 +209,11 @@ layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies",
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, prefix, app, path, connect, link, unlink } = yield* appLinksFixture([
+        const { api, actors, prefix, app, path, connect, unlink } = yield* appLinksFixture([
           { path: "index.ts", content: memberSource },
         ]);
         const remove = (token: string) =>
-          api.request(actors.member, "DELETE", `${prefix}/accounts/${token}`);
+          api.request(actors.admin, "DELETE", `${prefix}/accounts/${token}`);
         const refusal = (token: string) =>
           Effect.gen(function* () {
             const response = yield* remove(token);
@@ -232,23 +233,20 @@ layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies",
             ),
           );
 
-        // A member's shared token, linked by the owner for the app's own requirement, and a
-        // source account each: both registrations run with the token.
-        const token = yield* connect(actors.member, "user", "seed", "member-token", {
-          kind: "shared",
-        });
-        yield* ok(yield* link(actors.owner, "token", token));
+        // The admin's own token, linked by the admin for the app's own requirement, and a source
+        // account each for the owner and the admin: both registrations run with the token.
+        const token = yield* connect(actors.admin, "app", "token", "admin-token");
         const ownerSource = yield* connect(actors.owner, "user", "source", "owner-source");
-        const memberAccount = yield* connect(actors.member, "user", "source", "member-source");
+        const memberAccount = yield* connect(actors.admin, "user", "source", "admin-source");
         const hidden = yield* registered(actors.owner, ownerSource, "active");
-        const own = yield* registered(actors.member, memberAccount, "active");
-        yield* ok(yield* unlink(actors.owner, "token", token));
+        const own = yield* registered(actors.admin, memberAccount, "active");
+        yield* ok(yield* unlink(actors.admin, "token", token));
 
         const removers =
           "Ask the person it runs as, or a manager of its app who can use its source account, to remove it.";
-        // The member sees only their own subscription; the refusal names only that one and
-        // counts the owner's.
-        expect((yield* webhookSubscriptions(actors.member, path)).map((hook) => hook.id)).toEqual([
+        // The admin sees only their own subscription, since the owner's runs with the owner's
+        // account; the refusal names only that one and counts the owner's.
+        expect((yield* webhookSubscriptions(actors.admin, path)).map((hook) => hook.id)).toEqual([
           own.id,
         ]);
         const partly = yield* refusal(token);
@@ -258,15 +256,39 @@ layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies",
           `1 webhook subscription you can't see also uses it. ${removers}`,
         );
 
-        // Once the member can't see the app, the refusal names neither it nor its subscriptions.
+        // Once the admin, demoted to a member, can't see the app, the refusal names neither it nor
+        // its subscriptions.
         yield* ok(
           yield* api.request(
-            actors.member,
+            actors.admin,
             "DELETE",
             `${path}/accounts/user/source/${memberAccount}`,
           ),
         );
-        yield* registered(actors.member, memberAccount, "stopped");
+        yield* registered(actors.admin, memberAccount, "stopped");
+        const { user } = yield* body(
+          SessionIdentity,
+          yield* api.request(actors.admin, "GET", "/api/auth/get-session"),
+        );
+        const membership = (yield* okBody(
+          Members,
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `/api/auth/organization/list-members?organizationId=${actors.organization.id}`,
+          ),
+        )).members.find((item) => item.user.email === user.email);
+        if (membership === undefined) return yield* Effect.die("The admin's membership is missing");
+        const setRole = (role: "admin" | "member") =>
+          api
+            .request(actors.owner, "POST", "/api/auth/organization/update-member-role", {
+              organizationId: actors.organization.id,
+              memberId: membership.id,
+              role,
+            })
+            .pipe(Effect.flatMap(ok));
+        yield* Effect.addFinalizer(() => setRole("admin").pipe(Effect.orDie));
+        yield* setRole("member");
         const access = yield* okBody(
           Schema.Struct({ revision: Schema.String }),
           yield* api.request(actors.owner, "GET", `${path}/access`),
@@ -277,7 +299,7 @@ layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies",
             audience: { kind: "groups", groups: [] },
           }),
         );
-        expect((yield* api.request(actors.member, "GET", `${path}/webhooks`)).status).toBe(403);
+        expect((yield* api.request(actors.admin, "GET", `${path}/webhooks`)).status).toBe(403);
         const hiddenApp = yield* refusal(token);
         expect(hiddenApp.text).not.toContain(app.id);
         expect(hiddenApp.text).not.toContain("whk_");

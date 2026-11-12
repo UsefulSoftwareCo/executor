@@ -433,7 +433,7 @@ index 615a9f9..7874d1c 100644
  //# sourceMappingURL=McpSchema.js.map
 \ No newline at end of file
 diff --git a/dist/ai/McpServer.d.ts b/dist/ai/McpServer.d.ts
-index 63727e7..4d600ec 100644
+index 63727e7..7473681 100644
 --- a/dist/ai/McpServer.d.ts
 +++ b/dist/ai/McpServer.d.ts
 @@ -256,6 +256,39 @@ export declare const layerStdio: (options: {
@@ -476,7 +476,7 @@ index 63727e7..4d600ec 100644
  /**
   * Registers a Streamable HTTP MCP endpoint at `options.path`.
   *
-@@ -298,6 +331,11 @@ export declare const layerHttp: (options: {
+@@ -298,7 +331,27 @@ export declare const layerHttp: (options: {
      readonly protocols: Arr.NonEmptyReadonlyArray<McpProtocol.ProtocolAdapter>;
      readonly extensions?: ServerExtensions | undefined;
      readonly allowedOrigins?: ReadonlyArray<string> | undefined;
@@ -486,9 +486,25 @@ index 63727e7..4d600ec 100644
 +     */
 +    readonly sessions?: SessionStore | undefined;
  }) => Layer.Layer<McpServer | McpServerClient, Cause.IllegalArgumentError, HttpRouter.HttpRouter>;
++declare const ResultContent_base: Context.ServiceClass<ResultContent, "effect/ai/McpServer/ResultContent", (encoded: unknown) => {
++    readonly content: (typeof CallToolResult.Encoded)["content"];
++    readonly structuredContent?: (typeof CallToolResult.Encoded)["structuredContent"];
++}>;
++/**
++ * Builds a tool's successful result from its encoded value, in place of one JSON text block with
++ * the value as `structuredContent`. The returned fields use the MCP wire encoding and are decoded
++ * as a `CallToolResult`, so image data is base64. Declared failures keep the default result.
++ *
++ * @stability unstable
++ * @category handlers
++ * @since 4.0.0
++ */
++export declare class ResultContent extends ResultContent_base {
++}
  /**
   * Registers a `Toolkit` with the `McpServer`.
-@@ -315,6 +353,40 @@ export declare const registerToolkit: <Tools extends Record<string, Tool.Any>>(t
+  *
+@@ -315,6 +368,40 @@ export declare const registerToolkit: <Tools extends Record<string, Tool.Any>>(t
   * @since 4.0.0
   */
  export declare const toolkit: <Tools extends Record<string, Tool.Any>>(toolkit: Toolkit.Toolkit<Tools>) => Layer.Layer<never, never, Tool.HandlersFor<Tools> | Exclude<Tool.HandlerServices<Tools>, McpRequestContext>>;
@@ -530,7 +546,7 @@ index 63727e7..4d600ec 100644
   * Utility type that validates a completion-handler record against the allowed
   * parameter keys.
 diff --git a/dist/ai/McpServer.js b/dist/ai/McpServer.js
-index 2da5941..63c4447 100644
+index 2da5941..dd226dd 100644
 --- a/dist/ai/McpServer.js
 +++ b/dist/ai/McpServer.js
 @@ -423,8 +423,15 @@ export class McpServer extends /*#__PURE__*/Context.Service()("effect/ai/McpServ
@@ -729,7 +745,42 @@ index 2da5941..63c4447 100644
  const mcpMediaTypes = header => header === undefined ? [] : header.split(",").flatMap(part => {
    const [mediaType, ...parameters] = part.split(";");
    const quality = parameters.map(parameter => parameter.trim().toLowerCase()).find(parameter => parameter.startsWith("q="));
-@@ -1400,6 +1451,32 @@ const toolJsonSchema = (schema, strict) => {
+@@ -1280,6 +1331,17 @@ const toolResultContent = encoded => encoded === undefined ? [] : [{
+   type: "text",
+   text: JSON.stringify(encoded)
+ }];
++/**
++ * Builds a tool's successful result from its encoded value, in place of one JSON text block with
++ * the value as `structuredContent`. The returned fields use the MCP wire encoding and are decoded
++ * as a `CallToolResult`, so image data is base64. Declared failures keep the default result.
++ *
++ * @stability unstable
++ * @category handlers
++ * @since 4.0.0
++ */
++export class ResultContent extends /*#__PURE__*/Context.Service()("effect/ai/McpServer/ResultContent") {}
++const decodeCallToolResult = /*#__PURE__*/Schema.decodeUnknownEffect(CallToolResult);
+ /**
+  * Registers a `Toolkit` with the `McpServer`.
+  *
+@@ -1323,6 +1385,7 @@ export const registerToolkit = /*#__PURE__*/Effect.fnUntraced(function* (toolkit
+     };
+     const annotations = tool.annotations;
+     const toolMeta = Context.getOrUndefined(annotations, Tool.Meta);
++    const resultContent = Context.getOrUndefined(annotations, ResultContent);
+     const isDeclaredFailure = Schema.is(tool.failureSchema);
+     const encodeFailure = Schema.encodeUnknownEffect(tool.failureSchema);
+     const declaredFailureResult = error => error instanceof Error && error.message !== "" ? Effect.succeed(toolErrorResult(error.message)) : Effect.map(encodeFailure(error), encoded => new CallToolResult({
+@@ -1369,7 +1432,7 @@ export const registerToolkit = /*#__PURE__*/Effect.fnUntraced(function* (toolkit
+       handle(payload) {
+         return built.handle(tool.name, payload ?? {}, undefined, decodeOptions).pipe(Stream.unwrap, Stream.runLast, Effect.flatMap(Effect.fromOption), Effect.flatMap(result =>
+         // Declared failures return their encoded payload; anything else is classified by origin.
+-        result.isFailure && result.failureOrigin !== "handler" ? Effect.failCause(Cause.annotate(Cause.fail(result.result), Context.make(Toolkit.FailureOrigin, result.failureOrigin ?? "result"))) : Effect.succeed(new CallToolResult({
++        result.isFailure && result.failureOrigin !== "handler" ? Effect.failCause(Cause.annotate(Cause.fail(result.result), Context.make(Toolkit.FailureOrigin, result.failureOrigin ?? "result"))) : !result.isFailure && resultContent !== undefined ? Effect.orDie(decodeCallToolResult(resultContent(result.encodedResult))) : Effect.succeed(new CallToolResult({
+           isError: result.isFailure,
+           structuredContent: result.isFailure ? undefined : result.encodedResult,
+           content: toolResultContent(result.encodedResult)
+@@ -1400,6 +1463,32 @@ const toolJsonSchema = (schema, strict) => {
   * @since 4.0.0
   */
  export const toolkit = toolkit => Layer.effectDiscard(registerToolkit(toolkit)).pipe(Layer.provide(McpServer.layer));
@@ -1562,7 +1613,7 @@ index 02fa724..c316c3a 100644
 + */
 +export type UnsubscribeEventParams = typeof UnsubscribeEventParams.Type
 diff --git a/src/ai/McpServer.ts b/src/ai/McpServer.ts
-index 8c601ab..fd5df94 100644
+index 8c601ab..9303af2 100644
 --- a/src/ai/McpServer.ts
 +++ b/src/ai/McpServer.ts
 @@ -50,6 +50,7 @@ import * as AiError from "./AiError.ts"
@@ -1840,7 +1891,47 @@ index 8c601ab..fd5df94 100644
  const mcpMediaTypes = (header: string | undefined): ReadonlyArray<string> =>
    header === undefined
      ? []
-@@ -1979,6 +2094,72 @@ export const toolkit = <Tools extends Record<string, Tool.Any>>(
+@@ -1797,6 +1912,22 @@ const toolErrorResult = (message: string): CallToolResult =>
+ const toolResultContent = (encoded: unknown): CallToolResult["content"] =>
+   encoded === undefined ? [] : [{ type: "text", text: JSON.stringify(encoded) }]
+ 
++/**
++ * Builds a tool's successful result from its encoded value, in place of one JSON text block with
++ * the value as `structuredContent`. The returned fields use the MCP wire encoding and are decoded
++ * as a `CallToolResult`, so image data is base64. Declared failures keep the default result.
++ *
++ * @stability unstable
++ * @category handlers
++ * @since 4.0.0
++ */
++export class ResultContent extends Context.Service<ResultContent, (encoded: unknown) => {
++  readonly content: (typeof CallToolResult.Encoded)["content"]
++  readonly structuredContent?: (typeof CallToolResult.Encoded)["structuredContent"]
++}>()("effect/ai/McpServer/ResultContent") {}
++
++const decodeCallToolResult = Schema.decodeUnknownEffect(CallToolResult)
++
+ /**
+  * Registers a `Toolkit` with the `McpServer`.
+  *
+@@ -1856,6 +1987,7 @@ export const registerToolkit: <Tools extends Record<string, Tool.Any>>(
+     }
+     const annotations = tool.annotations
+     const toolMeta = Context.getOrUndefined(annotations, Tool.Meta)
++    const resultContent = Context.getOrUndefined(annotations, ResultContent)
+     const isDeclaredFailure = Schema.is(tool.failureSchema)
+     const encodeFailure = Schema.encodeUnknownEffect(tool.failureSchema) as (
+       error: unknown
+@@ -1927,6 +2059,8 @@ export const registerToolkit: <Tools extends Record<string, Tool.Any>>(
+                 Cause.fail(result.result),
+                 Context.make(Toolkit.FailureOrigin, result.failureOrigin ?? "result")
+               ))
++              : !result.isFailure && resultContent !== undefined
++              ? Effect.orDie(decodeCallToolResult(resultContent(result.encodedResult)))
+               : Effect.succeed(
+                 new CallToolResult({
+                   isError: result.isFailure,
+@@ -1979,6 +2113,72 @@ export const toolkit = <Tools extends Record<string, Tool.Any>>(
      Layer.provide(McpServer.layer)
    )
  

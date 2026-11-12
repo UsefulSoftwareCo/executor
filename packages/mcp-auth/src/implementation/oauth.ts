@@ -844,6 +844,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
               Schema.Struct({
                 clientId: Schema.String,
                 name: Schema.optionalKey(Schema.NullOr(Schema.String)),
+                icon: Schema.optionalKey(Schema.NullOr(Schema.String)),
                 disabled: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
               }),
             ),
@@ -872,7 +873,7 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         grants.map((grant) => grant.id),
       ).pipe(Effect.mapError(unavailable));
       const consentOf = new Map(consents.map((consent) => [consent.referenceId, consent]));
-      const nameOf = new Map(clients.map((client) => [client.clientId, client.name ?? null]));
+      const clientOf = new Map(clients.map((client) => [client.clientId, client]));
       const disabled = new Set(
         clients.flatMap((client) => (client.disabled === true ? [client.clientId] : [])),
       );
@@ -928,7 +929,8 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             return [
               ConnectedAgent.make({
                 id: grant.id,
-                name: nameOf.get(grant.clientId) ?? null,
+                name: clientOf.get(grant.clientId)?.name ?? null,
+                icon: clientOf.get(grant.clientId)?.icon ?? null,
                 connectedAt: consent.createdAt.toISOString(),
                 lastActiveAt: latest[0]?.createdAt.toISOString() ?? null,
                 access,

@@ -458,6 +458,8 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
         ).toEqual({
           status: "answered",
           result: { status: "denied", requestId: members.requestId },
+          // A refused call carries its reference in the tool call log.
+          reference: expect.stringMatching(/^call_[0-9a-hjkmnp-tv-z]{14}$/u),
         });
 
         // The refused answers consumed nothing: the owner still reviews and runs the call.

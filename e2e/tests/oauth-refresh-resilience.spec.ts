@@ -346,8 +346,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
         {
           const pair = yield* deploy(`${name} pair`, ["service", "backup"]);
           // Connecting from the app links the account to `service`; link it to `backup` too.
-          const shared = yield* connect("Synthetic shared account", pair.id);
+          const shared = yield* connect("Synthetic paired account", pair.id);
           yield* linkAccount(actors.owner, `${prefix}/apps/${pair.id}`, "backup", shared);
+          // The new link is new intent for the account's webhook source, whose background pass
+          // resolves, and so may renew, the account again. Let it finish too, so the one renewal
+          // counted below is the call's.
+          yield* settleWebhookSources(actors.owner, `${prefix}/apps/${pair.id}`, (sources) =>
+            sources.some((source) => source.account === shared && source.status !== "pending"),
+          );
           const renewed = (yield* refreshes) + 1;
           const response = yield* api.request(
             actors.owner,

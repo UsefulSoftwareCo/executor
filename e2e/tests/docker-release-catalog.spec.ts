@@ -3,7 +3,7 @@
  * `EXECUTOR_CATALOG_URL=off` turns the feed off.
  *
  * The suite does not reach the live feed. A stand-in answers as `catalog.executor.sh` over HTTPS
- * on a Docker network whose subnet is public address space, because the image fetches the feed
+ * on the suite's catalog network, whose subnet is public address space, because the image fetches the feed
  * through its public-only network. The image trusts the stand-in's one-day certificate through
  * `NODE_EXTRA_CA_CERTS`, as an operator's internal CA would be, without disabling verification.
  * Neither container sets `EXECUTOR_CATALOG_URL` except the one that turns the feed off.
@@ -18,6 +18,8 @@ import { chromium } from "playwright";
 import { driver } from "../support/platform.ts";
 import { containerNpmRegistry } from "../support/npm-registry.ts";
 import { officialApps } from "../support/public-catalogs.ts";
+import { releaseNetwork } from "../support/release-networks.ts";
+import { stalledPageReport } from "../support/stalled-page.ts";
 
 const feedHost = "catalog.executor.sh";
 const icon = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><rect width="24" height="24" rx="6" fill="#5e6ad2"/></svg>`;
@@ -100,12 +102,9 @@ it.live("released image lists the official app feed without a catalog setting", 
     yield* fs.chmod(directory, 0o755);
     yield* fs.chmod(`${directory}/key.pem`, 0o644);
 
-    // Public address space, not routed anywhere outside this network. Vary it per run.
-    const subnet = `11.${1 + (randomBytes(1).readUInt8(0) % 250)}.${1 + (randomBytes(1).readUInt8(0) % 250)}`;
-    const feedAddress = `${subnet}.20`;
-    yield* Effect.acquireRelease(run(["network", "create", "--subnet", `${subnet}.0/24`, id]), () =>
-      run(["network", "rm", id]).pipe(Effect.orDie),
-    );
+    // Public address space, not routed anywhere outside this network.
+    const network = yield* releaseNetwork("catalog");
+    const feedAddress = `${network.subnet}.20`;
     const feed = `${id}-feed`;
     yield* Effect.acquireRelease(
       run([
@@ -114,7 +113,7 @@ it.live("released image lists the official app feed without a catalog setting", 
         "--name",
         feed,
         "--network",
-        id,
+        network.name,
         "--ip",
         feedAddress,
         "--volume",
@@ -154,7 +153,7 @@ it.live("released image lists the official app feed without a catalog setting", 
               container,
               "--init",
               "--network",
-              id,
+              network.name,
               "--add-host",
               `${feedHost}:${feedAddress}`,
               "--volume",
@@ -171,7 +170,12 @@ it.live("released image lists the official app feed without a catalog setting", 
         );
         yield* Effect.addFinalizer((exit) =>
           Exit.isFailure(exit)
-            ? run(["logs", container]).pipe(Effect.flatMap(Console.error), Effect.ignore)
+            ? // The image logs to stderr, which `run` does not read.
+              processes
+                .string(ChildProcess.make("docker", ["logs", container], { stderr: "pipe" }), {
+                  includeStderr: true,
+                })
+                .pipe(Effect.flatMap(Console.error), Effect.ignore)
             : Effect.void,
         );
         yield* driver("image health", (signal) =>
@@ -190,6 +194,7 @@ it.live("released image lists the official app feed without a catalog setting", 
     );
     const page = yield* driver("new browser session", () => browser.newPage());
     page.setDefaultTimeout(30_000);
+    const reportStall = stalledPageReport(page);
     yield* driver("open first-run setup", () => page.goto(`${stock.origin}/login`));
     yield* driver("name the organization", () =>
       page.getByLabel("Organization name", { exact: true }).fill("Example Studio"),
@@ -206,8 +211,10 @@ it.live("released image lists the official app feed without a catalog setting", 
     yield* driver("create the administrator", () =>
       page.getByRole("button", { name: "Create administrator account", exact: true }).click(),
     );
-    yield* driver("setup opens the account step", () =>
-      page.waitForURL(/\/org\/[^/]+\/setup\/accounts$/u),
+    yield* reportStall(
+      driver("setup opens the account step", () =>
+        page.waitForURL(/\/org\/[^/]+\/setup\/accounts$/u),
+      ),
     );
     yield* driver("the account step lists the catalog", () =>
       page.locator("[aria-label='Loading apps']").waitFor({ state: "detached" }),

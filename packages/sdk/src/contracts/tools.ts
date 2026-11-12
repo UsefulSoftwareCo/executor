@@ -134,6 +134,15 @@ export const InvocationSelection = Context.Reference<
   | undefined
 >("executor/InvocationSelection", { defaultValue: () => undefined });
 /**
+ * Host-only: told the kind `tools.call` dispatches the call with, once it is known: the caller's,
+ * or for a call that named none, the one the app's catalog gives the tool. A call that fails
+ * before then reports none. Never supplied by authored code.
+ */
+export const ToolCallKindObserved = Context.Reference<((kind: ToolKind) => void) | undefined>(
+  "executor/ToolCallKindObserved",
+  { defaultValue: () => undefined },
+);
+/**
  * Host-only: the reads `tools.call` would make for a selection, made by the host beside its own
  * checks in one batch (see {@link PrefetchHost}). `value` is opaque to the host. `tools.call` uses
  * it only for the app, owner and accounts of its {@link InvocationSelection}, and only once: a
@@ -567,6 +576,10 @@ export const appFailureText = ({ source, errorName, code, message, fields }: App
       ? `The app's API call failed: ${message}`
       : `The app threw ${errorName}${code === undefined ? "" : ` (${code})`}: ${message}${fieldsText(fields)}`;
 
+/** Whether the app reported Executor refusing it a host API document of another revision. */
+export const refusedHostApi = (failure: AppFailure | undefined) =>
+  failure?.source === "app" && failure.code === hostApiChangingCode;
+
 /**
  * The app reported that Executor refused it Executor's own API document because the document is
  * of another revision than the one its tools are kept for, as Executor's network does while a
@@ -575,7 +588,7 @@ export const appFailureText = ({ source, errorName, code, message, fields }: App
  * reported it. It clears when the deploy finishes.
  */
 const hostApiChanging = (failure: AppFailure) =>
-  failure.source === "app" && failure.code === hostApiChangingCode
+  refusedHostApi(failure)
     ? {
         title: "Executor’s API is changing",
         description:

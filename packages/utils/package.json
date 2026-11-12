@@ -4,6 +4,7 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
+    "./random-uuid": "./src/random-uuid.ts",
     "./url-policy": "./src/url-policy.ts",
     "./safe-fetch": "./src/safe-fetch.ts",
     "./user-facing-error": "./src/user-facing-error.ts",

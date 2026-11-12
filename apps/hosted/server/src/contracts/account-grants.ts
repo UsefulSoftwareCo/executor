@@ -16,7 +16,6 @@ import { type HttpApiEndpoint, HttpApiMiddleware } from "effect/http-api";
 import type { Action } from "@executor-js/authorization";
 import { RequiredAction } from "./authorization.ts";
 import { OrganizationForbidden } from "./organization.ts";
-import type { AccountAccess } from "./resource-access.ts";
 
 /**
  * Account actions from #752. "inspect" covers metadata and health. "rename" is not in #752 yet;
@@ -35,7 +34,6 @@ export interface AccountProof<A extends AccountAction> {
   readonly [evidence]: A;
   readonly owner: OwnerId;
   readonly account: typeof AccountId.Type;
-  readonly access: typeof AccountAccess.Type;
 }
 
 /** Context identity of the account a request acts on for `A`; unrelated across actions. */
@@ -66,7 +64,7 @@ export const AccountTargets: {
  * Each middleware provides the route's `:account` as its action's target.
  */
 
-/** Read account metadata, health and policy. */
+/** Read account metadata and health. */
 export class RequireAccountInspect extends HttpApiMiddleware.Service<
   RequireAccountInspect,
   { provides: AccountTarget<"inspect"> }

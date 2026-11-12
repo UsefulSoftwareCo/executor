@@ -75,9 +75,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool index after redeploy", (i
         // Connecting an account from the app links it to the app.
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {
-            destination: { kind: "personal" },
-          }),
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
         );
         const submitted = yield* api.request(
           actors.owner,

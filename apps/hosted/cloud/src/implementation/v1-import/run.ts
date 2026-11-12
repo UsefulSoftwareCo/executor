@@ -252,6 +252,13 @@ export class V1ImportEnvironment extends Context.Service<
      * whether a subscription maps, without Autumn's preview, and no import carries one over.
      */
     readonly billing: Option.Option<Effect.Effect<V1ImportBilling, V1ImportUnavailable>>;
+    /**
+     * Start the provisioning jobs the organization's and members' rows queued (`hosted_provisioning`):
+     * its team installation, member setup and billing customer. A request that writes those rows
+     * starts them as it ends; an import writes them in a workflow step, which only the minute
+     * Cron Trigger would otherwise dispatch.
+     */
+    readonly startProvisioning: Effect.Effect<void, V1ImportUnavailable>;
   }
 >()("cloud/V1ImportEnvironment") {}
 
@@ -275,8 +282,8 @@ export type V1ImportStep<S> = <A, R>(
 
 /**
  * Storage and transport failures retry the step, as do builds that ran out of memory or whose
- * compiler did not answer, and source operations Git storage could not complete, which say nothing
- * about the source. Anything v2 refuses fails the item.
+ * compiler did not answer, setup help Executor could not check, and source operations Git storage
+ * could not complete, which say nothing about the source. Anything v2 refuses fails the item.
  */
 const transient = (error: unknown) =>
   Predicate.isTagged(error, "StorageError") ||
@@ -285,6 +292,7 @@ const transient = (error: unknown) =>
   Predicate.isTagged(error, "V1ImportUnavailable") ||
   Predicate.isTagged(error, "BuildMemoryExceeded") ||
   Predicate.isTagged(error, "BuildUnanswered") ||
+  Predicate.isTagged(error, "MarkdownUnavailable") ||
   // Git storage that could not complete an operation says nothing about the source either.
   (Predicate.isTagged(error, "SourceError") &&
     Predicate.hasProperty(error, "reason") &&
@@ -3275,6 +3283,14 @@ export const runV1Import = <S>(
         Effect.as(true),
         Effect.catchTag("V1ImportStepFailed", () => Effect.succeed(false)),
       ));
+    // The identity's rows queued the organization's provisioning, which runs once the import is
+    // done: start it now rather than at the next minute. A dispatch that keeps failing is left to
+    // that minute's Cron Trigger.
+    yield* step("provisioning", environment.startProvisioning).pipe(
+      Effect.catchTag("V1ImportStepFailed", () =>
+        Effect.logWarning("v1 import left provisioning to the Cron Trigger"),
+      ),
+    );
     return yield* finish(
       // The slug the organization took, which a displacement that no longer applied changes.
       identity.slug === undefined ? assessment : { ...assessment, slug: identity.slug },
