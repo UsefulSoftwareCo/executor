@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { Exit, Schema, type Cause } from "effect";
 import { AsyncResult } from "effect/reactivity";
@@ -280,6 +280,23 @@ function RenameAndContinue<E>({
   );
 }
 
+const publishingPending = (
+  <Skeleton className="h-9 w-26 max-[740px]:h-11" aria-label="Loading publishing access" />
+);
+
+/**
+ * Render a Publish control only on a host that publishes; one that does not shows none. If the
+ * check fails, the control stays and the host still refuses the publication.
+ */
+export function WhenPublishing<E>({
+  atoms,
+  children,
+}: Pick<AppManagementProps<E>, "atoms"> & { readonly children: ReactNode }) {
+  const { result } = useQuery(atoms.publishing);
+  if (AsyncResult.isSuccess(result)) return result.value.publishing ? children : null;
+  return AsyncResult.isFailure(result) ? children : publishingPending;
+}
+
 /** Make publishing available from every app tab; the host still owns permission. */
 export function PublishApp<E>({
   app,
@@ -287,23 +304,19 @@ export function PublishApp<E>({
   Failure,
 }: AppManagementProps<E> & { readonly app: App }) {
   return (
-    <QueryView
-      query={atoms.authoring(app.id)}
-      Failure={Failure}
-      pending={
-        <Skeleton className="h-9 w-26 max-[740px]:h-11" aria-label="Loading publishing access" />
-      }
-    >
-      {(metadata) =>
-        metadata.canPublish ? (
-          <PublishAction app={app} atoms={atoms} Failure={Failure} />
-        ) : (
-          <Button variant="outline" disabledReason="Publishing is not available on this server.">
-            Publish
-          </Button>
-        )
-      }
-    </QueryView>
+    <WhenPublishing atoms={atoms}>
+      <QueryView query={atoms.authoring(app.id)} Failure={Failure} pending={publishingPending}>
+        {(metadata) =>
+          metadata.canPublish ? (
+            <PublishAction app={app} atoms={atoms} Failure={Failure} />
+          ) : (
+            <Button variant="outline" disabledReason="Publishing is not available on this server.">
+              Publish
+            </Button>
+          )
+        }
+      </QueryView>
+    </WhenPublishing>
   );
 }
 
