@@ -31,6 +31,7 @@ import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
 import { makeOwnerMoves } from "./owner-moves.ts";
 import { SavedOAuthClientsHost } from "../contracts/oauth-clients.ts";
 import { OwnerMovesHost } from "../contracts/owner.ts";
+import { UnremovableWebhooksHost } from "../contracts/webhooks.ts";
 import { makeAccountHealth } from "./account-health.ts";
 import { makeApps } from "./apps.ts";
 import { makeOwners } from "./owners.ts";
@@ -260,6 +261,7 @@ export const createExecutor = (
         new URL("/api/oauth/callback", origin).href,
       ]),
       [OwnerMovesHost]: makeOwnerMoves(db, credentials),
+      [UnremovableWebhooksHost]: webhooks.unremovable,
       scheduler: schedules.dispatcher,
       events,
       schedules: schedules.operations,

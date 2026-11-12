@@ -9520,6 +9520,35 @@ export const scenarios = plan({
       local: na("Hosted client registration; local shares the SDK's client lookup."),
     },
   },
+  unremovableWebhookRegistrations: {
+    fixtures: "actors",
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
+    file: "unremovable-webhook-registrations.spec.ts",
+    title:
+      "A webhook registration saved without its source account, which no removal can finish, is reported, then disabled for a person to remove at the provider, leaving healthy and merely stopping subscriptions as they were; running the step again changes nothing, and once confirmed the app can be removed",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+      local: na("Hosted app link routes; localUnremovableWebhookRegistrations covers local."),
+    },
+  },
+  localUnremovableWebhookRegistrations: {
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
+    file: "unremovable-webhook-registrations.spec.ts",
+    title:
+      "upgrading local disables a webhook registration saved without its source account, which no removal can finish, for a person to remove at the provider, leaving healthy and merely stopping subscriptions as they were; running the step again changes nothing, and once confirmed the app can be removed",
+    targets: {
+      local: scheduled,
+      "self-host": na("Local app link routes; unremovableWebhookRegistrations covers self-host."),
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+    },
+  },
   oauthClientIssuerMigration: {
     fixtures: "actors",
     legacyStorage: true,

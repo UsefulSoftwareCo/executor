@@ -30,6 +30,11 @@ import {
   profileAppCopiesStepName,
   type ProfileAppCopiesHost,
 } from "./profile-app-copies.ts";
+import {
+  unremovableWebhooksStep,
+  unremovableWebhooksStepName,
+  type UnremovableWebhooksHostServices,
+} from "./unremovable-webhooks.ts";
 import type { SqlClient } from "effect/sql";
 import type { DataStep } from "../contracts/data-steps.ts";
 
@@ -41,7 +46,8 @@ export type DataStepHost = FrameworkPinHost &
   StoredOAuthClientsHost &
   LocalOwnersHost &
   OAuthClientsByIssuerHost &
-  ProfileAppCopiesHost;
+  ProfileAppCopiesHost &
+  UnremovableWebhooksHostServices;
 
 /**
  * A step by its journal name. A `local` step is listed only by a host that passes local owners:
@@ -92,6 +98,9 @@ const listedSteps: ReadonlyArray<ListedStep> = [
   { name: savedOAuthClientsByIssuerStepName, step: savedOAuthClientsByIssuerStep },
   // One-off: make the app copies SDK storage 4.0.13 planned for profiles with other accounts.
   { name: profileAppCopiesStepName, step: profileAppCopiesStep },
+  // One-off: hand webhook registrations saved without their source, which no removal can finish,
+  // to a person to remove at the provider.
+  { name: unremovableWebhooksStepName, step: unremovableWebhooksStep },
 ];
 
 export const hostDataSteps = (host: DataStepHost): ReadonlyArray<DataStep<SqlClient.SqlClient>> =>
