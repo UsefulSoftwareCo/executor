@@ -85,10 +85,11 @@ interface Host {
 }
 
 /**
- * Put one subscription into the stuck state, report and apply the step, run it again, and remove the
- * app once a person confirms. Healthy and merely stopping subscriptions are left as they were.
+ * Put one subscription into the stuck state, with two others as they were: healthy, and merely
+ * stopping (waiting for a provider that is down, a removal the product's next attempt finishes).
+ * Leaves the product stopped, as a legacy write does, with the rows as written.
  */
-const journey = (host: Host) =>
+const prepare = (host: Host) =>
   Effect.gen(function* () {
     const target = yield* Target;
     const log = `${target.directory}/server.log`;
@@ -108,19 +109,6 @@ const journey = (host: Host) =>
           ),
         ),
       );
-    const stored = (ids: ReadonlyArray<string>) =>
-      host
-        .storage([
-          {
-            sql: `SELECT id, status, failure, registered_accounts, revision FROM executor_webhooks
-            WHERE id = ANY($1::text[]) ORDER BY id`,
-            params: [`{${ids.join(",")}}`],
-          },
-        ])
-        .pipe(
-          Effect.flatMap(([rows = []]) => Schema.decodeUnknownEffect(Schema.Array(Stored))(rows)),
-          Effect.orDie,
-        );
 
     // Two healthy app links, each registered with the app's links at the time.
     const healthy = yield* host.link("healthy");
@@ -139,6 +127,20 @@ const journey = (host: Host) =>
     const stuckHook = hookOf(before, stuck),
       healthyHook = hookOf(before, healthy),
       merelyHook = hookOf(before, merely);
+    const ids = [stuckHook.id, healthyHook.id, merelyHook.id];
+    /** The three subscriptions' stored rows. Stops the product. */
+    const stored = host
+      .storage([
+        {
+          sql: `SELECT id, status, failure, registered_accounts, revision FROM executor_webhooks
+            WHERE id = ANY($1::text[]) ORDER BY id`,
+          params: [`{${ids.join(",")}}`],
+        },
+      ])
+      .pipe(
+        Effect.flatMap(([rows = []]) => Schema.decodeUnknownEffect(Schema.Array(Stored))(rows)),
+        Effect.orDie,
+      );
 
     const seen = (yield* dataStepSummaries(log, step)).length;
     // What the race saved: the app's links once the source's had gone. The other subscription waits
@@ -153,37 +155,67 @@ const journey = (host: Host) =>
         params: [merelyHook.id],
       },
     ]);
-    const ids = [stuckHook.id, healthyHook.id, merelyHook.id];
-    const written = yield* stored(ids);
-    const rowOf = (rows: ReadonlyArray<typeof Stored.Type>, id: string) =>
-      rows.find((row) => row.id === id);
-    // The stuck subscription's source keeps retrying its removal, and each attempt's claim gives it
-    // a new revision; nothing retries the other two, which stay exactly as written.
-    const state = (rows: ReadonlyArray<typeof Stored.Type>) =>
-      rows.map(({ id, status, failure, registered_accounts }) => ({
-        id,
-        status,
-        failure,
-        registered_accounts,
-      }));
-    const unchanged = (rows: ReadonlyArray<typeof Stored.Type>, earlier: typeof rows) => {
-      expect(state(rows)).toEqual(state(earlier));
-      for (const id of [healthyHook.id, merelyHook.id])
-        expect(rowOf(rows, id)).toEqual(rowOf(earlier, id));
+    const written = yield* stored;
+    return {
+      host,
+      log,
+      seen,
+      accounts: { stuck, healthy, merely },
+      hooks: { stuck: stuckHook, healthy: healthyHook, merely: merelyHook },
+      hookOf,
+      settled,
+      stored,
+      written,
     };
+  });
+type Prepared = Effect.Success<ReturnType<typeof prepare>>;
 
-    // A report names the one unremovable registration and writes nothing.
+const rowOf = (rows: ReadonlyArray<typeof Stored.Type>, id: string) =>
+  rows.find((row) => row.id === id);
+/**
+ * The stuck subscription's source keeps retrying its removal, and each attempt's claim gives it a
+ * new revision; nothing retries the other two, which stay exactly as written.
+ */
+const unchanged = (
+  prepared: Prepared,
+  rows: ReadonlyArray<typeof Stored.Type>,
+  earlier: typeof rows,
+) => {
+  const state = (all: typeof rows) =>
+    all.map(({ id, status, failure, registered_accounts }) => ({
+      id,
+      status,
+      failure,
+      registered_accounts,
+    }));
+  expect(state(rows)).toEqual(state(earlier));
+  for (const id of [prepared.hooks.healthy.id, prepared.hooks.merely.id])
+    expect(rowOf(rows, id)).toEqual(rowOf(earlier, id));
+};
+
+/**
+ * A report names the one unremovable registration and writes nothing, and its app cannot be
+ * removed. Starts the product in report mode and leaves it stopped.
+ */
+const reportFirst = (prepared: Prepared) =>
+  Effect.gen(function* () {
     yield* serverControl("start");
-    expect(yield* nextDataStepSummary(log, step, seen)).toMatchObject({
+    expect(yield* nextDataStepSummary(prepared.log, step, prepared.seen)).toMatchObject({
       mode: "report",
       status: "complete",
       outcomes: { would_disable: 1 },
     });
-    // Its app cannot be removed.
-    expect(yield* host.remove).toBe(409);
-    unchanged(yield* stored(ids), written);
+    expect(yield* prepared.host.remove).toBe(409);
+    unchanged(prepared, yield* prepared.stored, prepared.written);
+  });
 
-    // Applying it disables only that subscription, keeping its saved registration.
+/**
+ * Applying the step on the next start disables only the stuck subscription. Starts the product in
+ * apply mode from stopped and leaves it serving.
+ */
+const apply = (prepared: Prepared) =>
+  Effect.gen(function* () {
+    const { log, host, accounts, hookOf } = prepared;
     const reported = (yield* dataStepSummaries(log, step)).length;
     yield* serverControl("data-steps", 200, { mode: "apply" });
     yield* serverControl("start");
@@ -193,46 +225,95 @@ const journey = (host: Host) =>
       outcomes: { disabled: 1 },
     });
     const after = yield* webhookSubscriptions(host.actor, host.path);
-    expect(hookOf(after, stuck)).toMatchObject({ status: "disabled", failure: null });
-    expect(hookOf(after, healthy)).toMatchObject({ status: "active", failure: null });
-    expect(hookOf(after, merely)).toMatchObject({ status: "stopping", failure: "unregister" });
-    const applied = yield* stored(ids);
-    expect(rowOf(applied, stuckHook.id)).toMatchObject({
+    expect(hookOf(after, accounts.stuck)).toMatchObject({ status: "disabled", failure: null });
+    expect(hookOf(after, accounts.healthy)).toMatchObject({ status: "active", failure: null });
+    expect(hookOf(after, accounts.merely)).toMatchObject({
+      status: "stopping",
+      failure: "unregister",
+    });
+  });
+
+/**
+ * The disabled subscription keeps its saved registration, with a new revision, and the other two
+ * rows are exactly as written. Stops the product.
+ */
+const appliedRows = (prepared: Prepared) =>
+  Effect.gen(function* () {
+    const { hooks, written } = prepared;
+    const applied = yield* prepared.stored;
+    expect(rowOf(applied, hooks.stuck.id)).toMatchObject({
       status: "disabled",
       failure: null,
-      registered_accounts: rowOf(written, stuckHook.id)?.registered_accounts,
+      registered_accounts: rowOf(written, hooks.stuck.id)?.registered_accounts,
     });
-    expect(rowOf(applied, stuckHook.id)?.revision).not.toBe(rowOf(written, stuckHook.id)?.revision);
-    expect(rowOf(applied, healthyHook.id)).toEqual(rowOf(written, healthyHook.id));
-    expect(rowOf(applied, merelyHook.id)).toEqual(rowOf(written, merelyHook.id));
+    expect(rowOf(applied, hooks.stuck.id)?.revision).not.toBe(
+      rowOf(written, hooks.stuck.id)?.revision,
+    );
+    expect(rowOf(applied, hooks.healthy.id)).toEqual(rowOf(written, hooks.healthy.id));
+    expect(rowOf(applied, hooks.merely.id)).toEqual(rowOf(written, hooks.merely.id));
+    return applied;
+  });
 
-    // Running again changes nothing: an applied step does not run again, and a report after it
-    // finds nothing left to disable. Startup runs data steps before the product serves.
-    const appliedPasses = (yield* dataStepSummaries(log, step)).length;
+/**
+ * Starting again with the applied step changes nothing: it does not run again. Startup runs data
+ * steps before the product serves, so the log is complete once the start answers. Starts the
+ * product from stopped and leaves it serving.
+ */
+const startAppliedAgain = (prepared: Prepared) =>
+  Effect.gen(function* () {
+    const appliedPasses = (yield* dataStepSummaries(prepared.log, step)).length;
     yield* serverControl("start");
-    expect((yield* dataStepSummaries(log, step)).length).toBe(appliedPasses);
-    yield* serverControl("stop");
+    expect((yield* dataStepSummaries(prepared.log, step)).length).toBe(appliedPasses);
+  });
+
+/** A report after the step applied finds nothing left to disable. Starts the product from stopped. */
+const reportAfterApply = (prepared: Prepared) =>
+  Effect.gen(function* () {
+    const passes = (yield* dataStepSummaries(prepared.log, step)).length;
     yield* serverControl("data-steps", 200, { mode: "report" });
     yield* serverControl("start");
-    expect(yield* nextDataStepSummary(log, step, appliedPasses)).toMatchObject({
+    expect(yield* nextDataStepSummary(prepared.log, step, passes)).toMatchObject({
       mode: "report",
       status: "complete",
       outcomes: {},
     });
-    unchanged(yield* stored(ids), applied);
-    yield* serverControl("start");
+  });
 
-    // A person removes it at the provider and confirms. The product's next removal of the merely
-    // stopping one succeeds now that its provider answers, and the app can be removed.
-    expect(yield* host.confirm(stuckHook.id)).toBe("stopped");
-    yield* host.unlink(merely);
-    yield* host.unlink(healthy);
+/**
+ * A person removes the stuck registration at the provider and confirms. The product's next removal
+ * of the merely stopping one succeeds now that its provider answers, and the app can be removed.
+ * Needs the product serving.
+ */
+const confirmAndRemove = (prepared: Prepared) =>
+  Effect.gen(function* () {
+    const { host, accounts, hooks, settled } = prepared;
+    expect(yield* host.confirm(hooks.stuck.id)).toBe("stopped");
+    yield* host.unlink(accounts.merely);
+    yield* host.unlink(accounts.healthy);
     yield* settled({
-      [stuck]: { status: "stopped", failure: null },
-      [merely]: { status: "stopped", failure: null },
-      [healthy]: { status: "stopped", failure: null },
+      [accounts.stuck]: { status: "stopped", failure: null },
+      [accounts.merely]: { status: "stopped", failure: null },
+      [accounts.healthy]: { status: "stopped", failure: null },
     });
     expect(yield* host.remove).toBe(200);
+  });
+
+/**
+ * The whole journey on one product, as self-host runs it: report, apply, start again with the step
+ * applied and report again, then confirm and remove the app.
+ */
+const journey = (host: Host) =>
+  Effect.gen(function* () {
+    const prepared = yield* prepare(host);
+    yield* reportFirst(prepared);
+    yield* apply(prepared);
+    const applied = yield* appliedRows(prepared);
+    yield* startAppliedAgain(prepared);
+    yield* serverControl("stop");
+    yield* reportAfterApply(prepared);
+    unchanged(prepared, yield* prepared.stored, applied);
+    yield* serverControl("start");
+    yield* confirmAndRemove(prepared);
   });
 
 layer(TestLive, { excludeTestServices: true })("Unremovable webhook registrations", (it) => {
@@ -262,57 +343,101 @@ layer(TestLive, { excludeTestServices: true })("Unremovable webhook registration
     ),
   );
 
+  // Local starts take 8 to 12 seconds on CI, so its journey is three scenarios of two starts each.
   it.effect(scenarios.localUnremovableWebhookRegistrations.title, (context) =>
     withCase(
       context,
       Effect.gen(function* () {
-        const { api, agent } = yield* localAgent;
-        const deployed = yield* api.request(agent, "POST", "/v1/apps/deploy", {
-          owner: "local",
-          name: `Unremovable webhooks ${randomUUID().slice(0, 8)}`,
-          files: [{ path: "index.ts", content: source }, appsManifest],
-        });
-        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-        const { app } = yield* body(Schema.Struct({ app: App }), deployed);
-        const path = localAppPath(app.id);
-        const accounts: string[] = [];
-        yield* Effect.addFinalizer(() =>
-          Effect.gen(function* () {
-            yield* removeAppWhenStopped(agent, `/v1/apps/${app.id}`);
-            for (const account of accounts)
-              yield* api.request(agent, "DELETE", `/dashboard/api/accounts/${account}`);
-          }).pipe(Effect.orDie),
-        );
-        yield* journey({
-          actor: agent,
-          path,
-          link: (token) =>
-            Effect.gen(function* () {
-              const [saved] = yield* connectAccountsThroughOtherApp(agent, {
-                provider,
-                method: "key",
-                accounts: [{ label: token, fields: { token } }],
-              });
-              if (saved === undefined) return yield* Effect.die("Account fixture missing");
-              accounts.push(saved.id);
-              yield* linkLocal(agent, app.id, "svc", saved.id, "app");
-              return saved.id;
-            }),
-          unlink: (account) => unlinkAccount(agent, path, "svc", account, "app"),
-          confirm: (subscription) =>
-            api
-              .request(agent, "POST", `/v1/apps/${app.id}/webhooks/${subscription}/confirm-removal`)
-              .pipe(
-                Effect.flatMap((response) => okBody(Status, response)),
-                Effect.map((result) => result.status),
-              ),
-          remove: removeAppOnce(agent, `/v1/apps/${app.id}`),
-          storage: legacyStorage,
-        });
+        const prepared = yield* prepare(yield* localHost(legacyStorage, true));
+        yield* reportFirst(prepared);
+        yield* apply(prepared);
+        yield* confirmAndRemove(prepared);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.localUnremovableWebhookRegistrationsKept.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const prepared = yield* prepare(yield* localHost(legacyStorage, false));
+        yield* apply(prepared);
+        const applied = yield* appliedRows(prepared);
+        yield* startAppliedAgain(prepared);
+        unchanged(prepared, yield* prepared.stored, applied);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.localUnremovableWebhookRegistrationsReportAfter.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const prepared = yield* prepare(yield* localHost(legacyStorage, false));
+        yield* apply(prepared);
+        const applied = yield* appliedRows(prepared);
+        yield* reportAfterApply(prepared);
+        unchanged(prepared, yield* prepared.stored, applied);
       }),
     ),
   );
 });
+
+/**
+ * The unremovable-webhook app deployed on Local, writing storage with the scenario's
+ * `legacyStorage`. With `removed`, cleanup removes the app and its
+ * accounts, which needs the product serving and every subscription stopped. A scenario that ends
+ * with the product stopped and a subscription disabled leaves them: the case's own process and
+ * database end with it.
+ */
+const localHost = (storage: Host["storage"], removed: boolean) =>
+  Effect.gen(function* () {
+    const { api, agent } = yield* localAgent;
+    const deployed = yield* api.request(agent, "POST", "/v1/apps/deploy", {
+      owner: "local",
+      name: `Unremovable webhooks ${randomUUID().slice(0, 8)}`,
+      files: [{ path: "index.ts", content: source }, appsManifest],
+    });
+    expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+    const { app } = yield* body(Schema.Struct({ app: App }), deployed);
+    const path = localAppPath(app.id);
+    const accounts: string[] = [];
+    if (removed)
+      yield* Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          yield* removeAppWhenStopped(agent, `/v1/apps/${app.id}`);
+          for (const account of accounts)
+            yield* api.request(agent, "DELETE", `/dashboard/api/accounts/${account}`);
+        }).pipe(Effect.orDie),
+      );
+    const host: Host = {
+      actor: agent,
+      path,
+      link: (token) =>
+        Effect.gen(function* () {
+          const [saved] = yield* connectAccountsThroughOtherApp(agent, {
+            provider,
+            method: "key",
+            accounts: [{ label: token, fields: { token } }],
+          });
+          if (saved === undefined) return yield* Effect.die("Account fixture missing");
+          accounts.push(saved.id);
+          yield* linkLocal(agent, app.id, "svc", saved.id, "app");
+          return saved.id;
+        }),
+      unlink: (account) => unlinkAccount(agent, path, "svc", account, "app"),
+      confirm: (subscription) =>
+        api
+          .request(agent, "POST", `/v1/apps/${app.id}/webhooks/${subscription}/confirm-removal`)
+          .pipe(
+            Effect.flatMap((response) => okBody(Status, response)),
+            Effect.map((result) => result.status),
+          ),
+      remove: removeAppOnce(agent, `/v1/apps/${app.id}`),
+      storage,
+    };
+    return host;
+  });
 
 /** One attempt to remove the app at `appPath`; its HTTP status. */
 const removeAppOnce = (actor: Session, appPath: string) =>

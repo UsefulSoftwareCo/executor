@@ -9861,7 +9861,35 @@ export const scenarios = plan({
     serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
     file: "unremovable-webhook-registrations.spec.ts",
     title:
-      "upgrading local disables a webhook registration saved without its source account, which no removal can finish, for a person to remove at the provider, leaving healthy and merely stopping subscriptions as they were; running the step again changes nothing, and once confirmed the app can be removed",
+      "upgrading local reports a webhook registration saved without its source account, which no removal can finish, then disables it for a person to remove at the provider, leaving healthy and merely stopping subscriptions as they were, and once confirmed the app can be removed",
+    targets: {
+      local: scheduled,
+      "self-host": na("Local app link routes; unremovableWebhookRegistrations covers self-host."),
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+    },
+  },
+  localUnremovableWebhookRegistrationsKept: {
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
+    file: "unremovable-webhook-registrations.spec.ts",
+    title:
+      "upgrading local keeps a disabled unremovable webhook registration's saved accounts and the other subscriptions' rows as they were, and starting again with the step applied runs it no more and changes nothing",
+    targets: {
+      local: scheduled,
+      "self-host": na("Local app link routes; unremovableWebhookRegistrations covers self-host."),
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+    },
+  },
+  localUnremovableWebhookRegistrationsReportAfter: {
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },
+    file: "unremovable-webhook-registrations.spec.ts",
+    title:
+      "a report after upgrading local has disabled an unremovable webhook registration finds nothing left to disable and changes nothing",
     targets: {
       local: scheduled,
       "self-host": na("Local app link routes; unremovableWebhookRegistrations covers self-host."),
