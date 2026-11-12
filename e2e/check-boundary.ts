@@ -82,6 +82,13 @@ const check = Effect.gen(function* () {
           // This external MCP fixture needs a real TLS listener, not a product implementation.
           if (label === `support${path.sep}mcp-auth-patterns.ts` && specifier === "node:https")
             return;
+          // This scenario holds one kept-alive client connection to the target, a TLS one when a
+          // deployed stage serves it over HTTPS; `node:http` refuses an `https:` URL.
+          if (
+            label === `tests${path.sep}mcp-protocol-versions.spec.ts` &&
+            specifier === "node:https"
+          )
+            return;
           // This external upstream fixture generates its contract with Effect, not product code.
           if (
             label === `support${path.sep}openapi-error-upstream.ts` &&

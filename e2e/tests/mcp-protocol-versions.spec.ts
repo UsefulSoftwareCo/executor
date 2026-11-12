@@ -13,6 +13,7 @@ import { Deferred, Effect, Fiber, Redacted, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { Agent, createServer, request as httpRequest } from "node:http";
+import { Agent as TlsAgent, request as httpsRequest } from "node:https";
 import type { Socket } from "node:net";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
@@ -114,6 +115,22 @@ const post = (
 ) => send(credentials, HttpClientRequest.bodyJson({ jsonrpc: "2.0", ...message }), headers, path);
 
 /**
+ * An agent that keeps one connection to the target open: a TLS connection when the target is
+ * served over HTTPS, as a deployed stage is behind Cloudflare's edge, and plain TCP otherwise.
+ */
+const keptAliveAgent = Effect.gen(function* () {
+  const tls = new URL((yield* Target).metadata.origin).protocol === "https:";
+  return yield* Effect.acquireRelease(
+    Effect.sync(() =>
+      tls
+        ? new TlsAgent({ keepAlive: true, maxSockets: 1 })
+        : new Agent({ keepAlive: true, maxSockets: 1 }),
+    ),
+    (agent) => Effect.sync(() => agent.destroy()),
+  );
+});
+
+/**
  * POSTs `message` on `agent`'s one kept-alive connection, as a client that keeps its connection
  * does. Returns the answer's status and body, or what went wrong, and the socket it used.
  */
@@ -126,7 +143,7 @@ const postOn = (agent: Agent, credentials: Readonly<Record<string, string>>, mes
         new Promise<{ outcome: string; text: string; socket: Socket | undefined }>((resolve) => {
           const body = JSON.stringify({ jsonrpc: "2.0", ...message });
           let socket: Socket | undefined;
-          const pending = httpRequest(
+          const pending = (url.protocol === "https:" ? httpsRequest : httpRequest)(
             url,
             {
               method: "POST",
@@ -510,10 +527,7 @@ const checkProtocolVersions = (credentials: Readonly<Record<string, string>>) =>
         // reading the body, and behind a binding workerd then closes its connection without
         // `Connection: close`. Cloudflare's edge keeps the client's connection; on local Cloud
         // the dev proxy must (`patches/cloudflare-runtime-keep-alive.md`).
-        const agent = yield* Effect.acquireRelease(
-          Effect.sync(() => new Agent({ keepAlive: true, maxSockets: 1 })),
-          (agent) => Effect.sync(() => agent.destroy()),
-        );
+        const agent = yield* keptAliveAgent;
         const refused = yield* postOn(
           agent,
           { ...credentials, "mcp-session-id": crypto.randomUUID() },
