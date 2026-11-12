@@ -12,7 +12,6 @@ storage, UI, accounts and background work. Agents reach every app through the
 MCP tools `skills`, `search`, `describe`, `call` and `execute`, with each app's
 slug as its namespace. Credentials go only through Executor's secure connection
 links, never through chat or source code. Some calls pause for user approval.
-
 This is the Executor app's `executor` skill. Read its other skills with
 `skills({app: "executor", name: "code-mode"})`; `skills({})` lists them all.
 
@@ -28,26 +27,10 @@ of calls runs concurrently. Each result has `ok` and its `value` or `error`.
 Write a JavaScript program for `execute` when one call's result feeds another,
 or a large result should be filtered before it reaches you. Inside it, the same
 paths are async functions, and `tools.search` and `tools.search.describe` work
-as above. Return only the data you need. For depth, read the `code-mode` skill.
+as above. Return only the data you need. For depth, read the `code-mode` skill;
+it says how to see images and hear audio a tool returns, without reading base64.
 When `call` or `execute` pauses for approval or input, show the request to the
 user and resume it; never repeat the call or run the program again.
-
-## See images and hear audio
-
-You can look at any image and listen to any audio a tool gives you. Wherever
-the value `call` or `execute` returns holds `{ type: "image", mimeType, data }`
-or `{ type: "audio", mimeType, data }`, with `data` in standard or URL-safe
-base64, you receive that block as media, and the JSON shows
-`{ type, mimeType, contentIndex }` in its place. Screenshots from MCP servers already arrive in that shape. When a tool
-returns the bytes some other way, such as an email attachment as `{ base64 }`,
-return them in that shape from `execute`:
-
-```js
-const file = await tools.gmail.attachment({ messageId, attachmentId });
-return { type: "image", mimeType: "image/png", data: file.base64 };
-```
-
-Never read, decode or describe base64 yourself; return it as media and look.
 
 ## Build an app
 

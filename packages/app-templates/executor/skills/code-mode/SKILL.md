@@ -207,15 +207,6 @@ tool says it failed: the call does not throw, and its outcome is `failure`.
 Check `isError` before using such a result. Other fields, such as `ok`, mean
 what the tool's description says.
 
-Images and audio come back to you as media. Any `{ type: "image", mimeType, data }`
-or `{ type: "audio", mimeType, data }` in the returned value, at any depth,
-reaches you as an image or audio block, and the JSON shows
-`{ type, mimeType, contentIndex }` in its place; the same block repeated is sent
-once. `data` may be standard or URL-safe base64. Inside the program the block
-is whole, so its data can be passed to another tool. To look at bytes a tool
-returns in another shape, such as `{ base64 }`, build that object
-from them and return it. Never return, read or decode base64 as text.
-
 An outcome of `success` means only that the call returned normally, with no
 tool error reported to Executor. It does not show that the intended action
 happened: check the returned value, such as `isError` or the app's own status
@@ -227,6 +218,27 @@ Inside a program, a caught tool error's `message` is the same JSON as
 
 `status: "capacity-exceeded"` means the server is running too many programs.
 Wait briefly, then retry.
+
+## See images and hear audio
+
+You can look at any image and listen to any audio a tool gives you. Wherever
+the value `call` or `execute` returns holds `{ type: "image", mimeType, data }`
+or `{ type: "audio", mimeType, data }`, at any depth, with `data` in standard or
+URL-safe base64, you receive that block as media, and the JSON shows
+`{ type, mimeType, contentIndex }` in its place; the same block repeated is sent
+once. Screenshots from MCP servers already arrive in that shape. Inside the
+program the block is whole, so its data can be passed to another tool.
+
+When a tool returns the bytes some other way, such as an email attachment as
+`{ base64 }`, return them in that shape from `execute`:
+
+```js
+const file = await tools.gmail.attachment({ messageId, attachmentId });
+return { type: "image", mimeType: "image/png", data: file.base64 };
+```
+
+Never return, read, decode or describe base64 as text; return it as media and
+look.
 
 Send feedback with the Executor app's `feedback.submit` tool when Executor gets
 in your way or something works especially well; the `executor` skill says how.
