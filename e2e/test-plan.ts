@@ -8892,7 +8892,7 @@ export const scenarios = plan({
   v1SignInEmpty: {
     file: "cloud-v1-sign-in.spec.ts",
     title:
-      "Cloud sign-in admits members of only empty free v1 organizations, keeps members of paid or nonempty ones on v1, and fails closed while v1's database is unavailable",
+      "Cloud sign-in admits members of only empty free or moved v1 organizations, keeps members of paid or nonempty ones on v1, and fails closed while v1's database is unavailable",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   // The import reads the emulated v1 WorkOS, Vault and database only a managed local Cloud has.
@@ -8971,7 +8971,7 @@ export const scenarios = plan({
   v1ImportRollback: {
     file: "cloud-v1-import-run.spec.ts",
     title:
-      "Cloud v1 import marks a verified workspace moved in v1 and gives it back on rollback only once its v2 organization is deleted, clearing its import map but its users, and imports it again into a new organization where every member's toolkit copy is live and v1's toolkit URL forwards to it",
+      "Cloud v1 import marks a verified workspace moved in v1 and gives it back on rollback only once its v2 organization is deleted, also after Workflows forgot its import instance, clearing its import map but its users, and imports it again into a new organization where every member's toolkit copy is live and v1's toolkit URL forwards to it",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportPaidBilling: {

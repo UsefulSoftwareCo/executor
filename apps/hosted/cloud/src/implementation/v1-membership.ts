@@ -10,7 +10,7 @@ const Users = Schema.Struct({ data: Schema.Array(Schema.Struct({ id: Schema.Stri
 const Memberships = Schema.Struct({
   data: Schema.Array(Schema.Struct({ organization_id: Schema.String, status: Schema.String })),
 });
-const Tenants = Schema.Array(Schema.Struct({ tenant: Schema.String }));
+const Tenants = Schema.Array(Schema.Struct({ tenant: Schema.String, has_data: Schema.Boolean }));
 
 /** v1's plans that cost nothing. Every other plan, including ones added later, is paid. */
 export const freePlans: ReadonlyArray<string> = ["free", "free-pay-as-you-go"];
@@ -38,8 +38,11 @@ export const v1MembershipDisabled = Layer.succeed(
  * Reads v1's WorkOS with two list calls: the user with this email, then that user's active
  * organization memberships. An organization keeps its member on v1 only when it has data in v1
  * or a paid v1 plan; an empty free organization is ignored, so an account whose every v1
- * organization is empty and free continues to v2. One query asks v1's database which of the
- * organizations have data; Autumn is asked only about the rest. Every failure is
+ * organization is empty and free continues to v2. An organization v1 marks as moved to v2
+ * (`org_moved_to_v2`) is ignored too: v1 sends its members to v2, so holding them on v1 would
+ * loop them between the two once its v2 organization is gone. One query asks v1's database which
+ * of the organizations have data and have not moved; Autumn is asked only when none has data,
+ * about those that have not moved. Every failure is
  * `V1MembershipUnavailable`, never "continue". Emails, organization ids and responses never
  * enter errors, logs or spans.
  */
@@ -89,24 +92,30 @@ export const v1MembershipLive = (settings: V1MembershipSettings) =>
           }
           return [...found];
         });
-      /** Whether any of these organizations has a row in a v1 table that holds its data. */
-      const anyHasData = (ids: ReadonlyArray<string>) =>
+      /**
+       * Of these organizations, the ones v1 still serves (not moved to v2), and whether any of
+       * those has a row in a v1 table that holds its data.
+       */
+      const onV1Data = (ids: ReadonlyArray<string>) =>
         Effect.gen(function* () {
           const sql = yield* PgClient.PgClient;
-          const rows = yield* sql`
-            select organization.id as tenant
+          return yield* sql`
+            select organization.id as tenant,
+              (exists (select 1 from integration where tenant = organization.id)
+                or exists (select 1 from connection where tenant = organization.id)
+                or exists (select 1 from oauth_client where tenant = organization.id)
+                or exists (select 1 from tool_policy where tenant = organization.id)
+                or exists (select 1 from artifact where tenant = organization.id)
+                or exists (
+                  select 1 from plugin_storage
+                  where tenant = organization.id and plugin_id = 'toolkits'
+                )) as has_data
             from unnest(${ids}::text[]) as organization(id)
-            where exists (select 1 from integration where tenant = organization.id)
-              or exists (select 1 from connection where tenant = organization.id)
-              or exists (select 1 from oauth_client where tenant = organization.id)
-              or exists (select 1 from tool_policy where tenant = organization.id)
-              or exists (select 1 from artifact where tenant = organization.id)
-              or exists (
-                select 1 from plugin_storage
-                where tenant = organization.id and plugin_id = 'toolkits'
-              )
+            where not exists (
+              select 1 from org_moved_to_v2
+              where org_id = organization.id and state = 'moved'
+            )
           `.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Tenants)));
-          return rows.length > 0;
         }).pipe(
           Effect.provide(
             PgClient.layer({
@@ -134,8 +143,13 @@ export const v1MembershipLive = (settings: V1MembershipSettings) =>
         Effect.gen(function* () {
           const ids = yield* organizations(email);
           if (ids.length === 0) return false;
-          if (yield* anyHasData(ids)) return true;
-          const plans = yield* Effect.forEach(ids, paid, { concurrency: 4 });
+          const served = yield* onV1Data(ids);
+          if (served.some((organization) => organization.has_data)) return true;
+          const plans = yield* Effect.forEach(
+            served.map((organization) => organization.tenant),
+            paid,
+            { concurrency: 4 },
+          );
           return plans.some((isPaid) => isPaid);
         });
       return V1Membership.of({

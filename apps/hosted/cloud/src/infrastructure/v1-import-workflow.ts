@@ -296,6 +296,15 @@ const notFound = Effect.succeed(HttpServerResponse.empty({ status: 404 }));
 /** Instance states that will not write a report without a person restarting them. */
 const stopped = new Set(["errored", "terminated"]);
 
+/** Whether reading an instance failed because Workflows does not know it (`instance.not_found`). */
+const instanceNotFound = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause);
+  const inner = Predicate.hasProperty(error, "cause") ? error.cause : undefined;
+  return [error, inner].some(
+    (candidate) => candidate instanceof Error && candidate.message.includes("instance.not_found"),
+  );
+};
+
 /**
  * How long after its start an instance whose state cannot be read still counts as running. Past
  * it the instance counts as lost: listed as errored for a person, and no longer holding a place.
@@ -366,6 +375,30 @@ export const v1ImportRoutes = (workflow: Workflow) =>
         Effect.map((state): string => state.status),
         Effect.timeout(callDeadline),
         Effect.catchCause(() => Effect.succeed("unknown")),
+      );
+
+    /**
+     * Whether an organization's import instance has stopped, for the routes that change an
+     * organization only after its import ended. Workflows forgets an instance some time after it
+     * ends, so one it no longer knows (`instance.not_found`) has stopped too; an organization
+     * imported before that retention could otherwise never be rolled back or repaired. Any other
+     * failure to read it is `unknown` and refuses.
+     */
+    const settled = (instance: string) =>
+      workflow.get(instance).pipe(
+        Effect.flatMap((run) => run.status()),
+        Effect.map((state) => ({
+          state: state.status as string,
+          stopped: stopped.has(state.status) || state.status === "complete",
+        })),
+        Effect.timeout(callDeadline),
+        Effect.catchCause((cause) =>
+          Effect.succeed(
+            instanceNotFound(cause)
+              ? { state: "gone", stopped: true }
+              : { state: "unknown", stopped: false },
+          ),
+        ),
       );
 
     const create = (params: V1ImportParams) => {
@@ -700,8 +733,8 @@ export const v1ImportRoutes = (workflow: Workflow) =>
       );
       if (Option.isNone(decoded)) return yield* json(400, { error: "invalid organization" });
       const organization = decoded.value;
-      const state = yield* status(organization);
-      if (state === "unknown" || !(stopped.has(state) || state === "complete"))
+      const { state, stopped: ended } = yield* settled(organization);
+      if (!ended)
         return yield* json(409, {
           error: `Its import instance is ${state}; roll it back once it has stopped.`,
         });
@@ -793,8 +826,8 @@ export const v1ImportRoutes = (workflow: Workflow) =>
       );
       if (Option.isNone(decoded)) return yield* json(400, { error: "invalid organization" });
       const organization = decoded.value;
-      const state = yield* status(organization);
-      if (state === "unknown" || !(stopped.has(state) || state === "complete"))
+      const { state, stopped: ended } = yield* settled(organization);
+      if (!ended)
         return yield* json(409, {
           error: `Its import instance is ${state}; return its billing once it has stopped.`,
         });
@@ -861,8 +894,8 @@ export const v1ImportRoutes = (workflow: Workflow) =>
       if (apply) {
         const refused = writesRefused(settings.writes);
         if (refused !== undefined) return yield* json(409, { error: refused });
-        const state = yield* status(decoded.value);
-        if (state === "unknown" || !(stopped.has(state) || state === "complete"))
+        const { state, stopped: ended } = yield* settled(decoded.value);
+        if (!ended)
           return yield* json(409, {
             error: `Its import instance is ${state}; repair it once it has stopped.`,
           });
@@ -933,8 +966,8 @@ export const v1ImportRoutes = (workflow: Workflow) =>
       if (Option.isNone(decoded)) return yield* json(400, { error: "invalid organization" });
       const refused = writesRefused(settings.writes);
       if (refused !== undefined) return yield* json(409, { error: refused });
-      const state = yield* status(decoded.value);
-      if (state === "unknown" || !(stopped.has(state) || state === "complete"))
+      const { state, stopped: ended } = yield* settled(decoded.value);
+      if (!ended)
         return yield* json(409, {
           error: `Its import instance is ${state}; repair it once it has stopped.`,
         });

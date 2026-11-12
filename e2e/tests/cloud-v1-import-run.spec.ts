@@ -1666,6 +1666,36 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
           ),
         ).toEqual([{ v1_kind: "user" }]);
 
+        // Workflows forgets an instance some time after it ends. A workspace that moved before
+        // that, and whose v2 organization is gone, still rolls back.
+        const forgotten = (yield* emulators.v1Workspace([syntheticEmail("forgotten")]))
+          .organization;
+        yield* writeRows("v1-database.json", [
+          row(
+            "insert into organizations (id, name, slug) values ($1, $2, $3)",
+            forgotten,
+            "Synthetic forgotten workspace",
+            `forgotten-${randomUUID().slice(0, 8)}`,
+          ),
+          row(
+            "insert into org_moved_to_v2 (org_id, state, v2_org_id, v2_org_slug) values ($1, 'moved', $2, 'removed-team')",
+            forgotten,
+            randomUUID(),
+          ),
+        ]);
+        yield* writeRows("sso-database.json", [
+          row(
+            "insert into private_v1_import_org (v1_org_id, v2_org_id, state, run_id, report) values ($1, $2, 'cutover', $3, '{}'::jsonb)",
+            forgotten,
+            randomUUID(),
+            run,
+          ),
+        ]);
+        const forgottenRollback = yield* operator.rollback(forgotten);
+        expect(forgottenRollback.status, JSON.stringify(forgottenRollback.body)).toBe(200);
+        expect((yield* movedFlag(forgotten))[0]?.state).toBe("rolled_back");
+        expect(yield* importState(forgotten)).toEqual([{ state: "rolled_back" }]);
+
         // Imported again, it moves into a new v2 organization with every member's toolkit copy.
         const again = yield* importTwin({
           label: "rollback-again",
