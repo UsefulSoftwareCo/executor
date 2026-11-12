@@ -86,7 +86,7 @@ export default defineApp({}, async () => ({
             "connection payload that names the account to replace by number instead of ID",
             "POST",
             connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-            { destination: { kind: "personal" }, account: 42 },
+            { account: 42 },
             400,
             // `account` is optional, so a number matches neither an account ID nor its absence.
             { kind: "Payload", issue: "$.account: AnyOf" },

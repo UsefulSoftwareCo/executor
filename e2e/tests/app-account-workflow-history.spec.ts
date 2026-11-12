@@ -71,29 +71,28 @@ layer(HostedLive, { excludeTestServices: true })("App account workflow history",
         yield* ok(yield* link(actors.owner, "service", own));
         expect(yield* read(actors.owner, path, owned)).toBe(200);
 
-        // The member's run captures a shared account for a user requirement. A later version
-        // makes the requirement the app's, and a manager links that same account for everyone.
-        // The run is still checked by the member's use of the account, so unlinking it from the
-        // app ends the reading of the app's run only.
+        // The owner's run captures their account for a user requirement. A later deployment makes
+        // the requirement the app's, and the owner links that same account for everyone. The run
+        // is still checked by the owner's use of it, not by the app link: once the app link goes,
+        // the run stays readable, while a run on the new deployment that captured it as the app's
+        // is refused.
         const later = yield* appLinksFixture([{ path: "index.ts", content: source("user") }]);
-        const shared = yield* later.connect(actors.member, "user", "service", "shared-service", {
-          kind: "shared",
-        });
-        const run = yield* start(actors.member, later.path);
-        expect((yield* complete(actors.member, later.path, run)).output).toBe(shared);
-        yield* unlinkAccount(actors.member, later.path, "service", shared);
+        const account = yield* later.connect(actors.owner, "user", "service", "user-service");
+        const run = yield* start(actors.owner, later.path);
+        expect((yield* complete(actors.owner, later.path, run)).output).toBe(account);
+        yield* unlinkAccount(actors.owner, later.path, "service", account);
+        expect(yield* read(actors.owner, later.path, run)).toBe(200);
         const redeployed = yield* api.request(actors.owner, "POST", `${later.path}/deploy`, {
           files: [{ path: "index.ts", content: source("app") }, appsManifest],
         });
         expect(redeployed.status, JSON.stringify(redeployed.body)).toBe(200);
-        yield* ok(yield* later.link(actors.owner, "service", shared));
-        expect(yield* read(actors.member, later.path, run)).toBe(200);
-        // The owner's own run on the new version captured it as the app's, and reads it.
+        yield* ok(yield* later.link(actors.owner, "service", account));
         const appRun = yield* start(actors.owner, later.path);
-        expect((yield* complete(actors.owner, later.path, appRun)).output).toBe(shared);
-        yield* ok(yield* later.unlink(actors.owner, "service", shared));
+        expect((yield* complete(actors.owner, later.path, appRun)).output).toBe(account);
+        expect(yield* read(actors.owner, later.path, run)).toBe(200);
+        yield* ok(yield* later.unlink(actors.owner, "service", account));
+        expect(yield* read(actors.owner, later.path, run)).toBe(200);
         expect(yield* read(actors.owner, later.path, appRun)).toBe(403);
-        expect(yield* read(actors.member, later.path, run)).toBe(200);
       }),
     ),
   );

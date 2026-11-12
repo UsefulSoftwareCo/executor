@@ -35,12 +35,13 @@ import { scenarios } from "../test-plan.ts";
  * An app with a plain and a many() app requirement of one provider, whose check reports the
  * account's token as its upstream username, and a user requirement.
  */
-const source = `import { defineApp, defineProvider, secrets, query, object, string, router, type QueryContext } from "apps";
-const team = defineProvider({
+const teamProvider = `defineProvider({
   name: "App link team fixture",
   auth: { key: secrets({ label: "Key", fields: object({ token: string() }) }) },
   async health({ account }) { return { accountInfo: { username: account.fields.token } }; },
-});
+})`;
+const source = `import { defineApp, defineProvider, secrets, query, object, string, router, type QueryContext } from "apps";
+const team = ${teamProvider};
 const mail = ${keyProvider("App link mail fixture")};
 const requirements = { app: { accounts: { team, extra: team.many() } }, user: { accounts: { mail } } };
 const who = query({ input: object({}) }, async (ctx: QueryContext<typeof requirements>) => ({
@@ -50,6 +51,10 @@ const who = query({ input: object({}) }, async (ctx: QueryContext<typeof require
   mail: ctx.user.accounts.mail.id,
 }));
 export default defineApp(requirements, async () => ({ tools: router({ who }) }));`;
+/** Another app whose user requirement takes the team provider, for a member's own team account. */
+const teamUserSource = `import { defineApp, defineProvider, secrets, object, string, router } from "apps";
+const team = ${teamProvider};
+export default defineApp({ user: { accounts: { team } } }, async () => ({ tools: router({}) }));`;
 const Who = Schema.Struct({
   team: Schema.String,
   token: Schema.String,
@@ -137,45 +142,59 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         // Connecting another account for the plain requirement replaces its link; the replaced
         // account stays saved. Connecting one for many() adds it.
         const own = yield* connect(actors.owner, "app", "team", "team-own");
-        const shared = yield* connect(actors.owner, "app", "extra", "team-shared", {
-          kind: "shared",
-        });
+        const spare = yield* connect(actors.owner, "app", "extra", "team-spare");
         const linked = yield* pairs();
         expect(linked).toHaveLength(2);
         expect(linked).toEqual(
           expect.arrayContaining([
             ["team", own],
-            ["extra", shared],
+            ["extra", spare],
           ]),
         );
         expect(yield* who(actors.member)).toEqual({
           team: own,
           token: "team-own",
-          extra: [shared],
+          extra: [spare],
           mail,
         });
 
         // Members can list the app links but not read a requirement's choices, change the links
-        // or connect for an app requirement. They cannot supply an app account either: linking
-        // the shared team account for themselves fails, since the app requirement is not one of
+        // or connect for an app requirement. They cannot link a manager's account for themselves,
+        // since only its owner may use it. They cannot supply an app account either: linking
+        // their own team account for themselves fails, since the app requirement is not one of
         // theirs and their requirement takes another provider, and a call naming accounts still
         // runs with the app links.
+        const teamPath = yield* fixture.another(teamUserSource);
+        const memberStarted = yield* fixture.start(actors.member, "user", "team", teamPath);
+        expect(memberStarted.status, JSON.stringify(memberStarted.body)).toBe(200);
+        const memberTeam = (yield* okBody(
+          Resource,
+          yield* fixture.submit(
+            actors.member,
+            (yield* body(Resource, memberStarted)).id,
+            "member-team",
+          ),
+        )).id;
+        yield* fixture.saved(actors.member, memberTeam);
         yield* refused(yield* get(actors.member, "app", "team"), 403, "OrganizationForbidden");
-        expect((yield* link(actors.member, "team", shared)).status).toBe(403);
+        expect((yield* link(actors.member, "team", memberTeam)).status).toBe(403);
         expect((yield* unlink(actors.member, "team", own)).status).toBe(403);
-        expect(
-          (yield* fixture.start(actors.member, "app", "team", { kind: "personal" })).status,
-        ).toBe(403);
+        expect((yield* fixture.start(actors.member, "app", "team")).status).toBe(403);
+        yield* refused(
+          yield* linkAccountResponse(actors.member, path, "team", spare),
+          403,
+          "OrganizationForbidden",
+        );
         expect(
           yield* refused(
-            yield* linkAccountResponse(actors.member, path, "team", shared),
+            yield* linkAccountResponse(actors.member, path, "team", memberTeam),
             422,
             "RequirementMismatch",
           ),
         ).toMatchObject({ requirement: "team", scope: "user", reason: "requirement" });
         expect(
           yield* refused(
-            yield* linkAccountResponse(actors.member, path, "mail", shared),
+            yield* linkAccountResponse(actors.member, path, "mail", memberTeam),
             422,
             "RequirementMismatch",
           ),
@@ -185,7 +204,7 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
           tool: "who",
           kind: "query",
           input: {},
-          accounts: { team: shared },
+          accounts: { team: memberTeam },
         });
         expect(overridden.status, JSON.stringify(overridden.body)).toBe(200);
         expect(yield* body(Who, overridden)).toMatchObject({ team: own });
@@ -194,7 +213,7 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         expect(yield* who(actors.member)).toEqual({
           team: first,
           token: "team-first",
-          extra: [shared, own],
+          extra: [spare, own],
           mail,
         });
 
@@ -205,7 +224,7 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         expect(team.accounts[0]).toMatchObject({ account: { id: first }, linked: true });
         expect(team.accounts.slice(1).every((entry) => !entry.linked)).toBe(true);
         expect(team.accounts.map((entry) => entry.account.id)).toEqual(
-          expect.arrayContaining([own, shared]),
+          expect.arrayContaining([own, spare]),
         );
         const extra = yield* okBody(LinkRequirement, yield* get(actors.owner, "app", "extra"));
         expect(extra).toMatchObject({
@@ -216,7 +235,7 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         });
         expect(
           extra.accounts.filter((entry) => entry.linked).map((entry) => entry.account.id),
-        ).toEqual([shared, own]);
+        ).toEqual([spare, own]);
         expect(extra.accounts.slice(0, 2).every((entry) => entry.linked)).toBe(true);
         expect(extra.accounts).toEqual(
           expect.arrayContaining([
@@ -280,16 +299,10 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         ]);
         const { api, actors, start, submit, link, links } = fixture;
         // A member connects an account from another app for their own links. It is theirs alone,
-        // so the admin, who manages this app but cannot use it, cannot link it for everyone by
-        // its ID.
+        // so neither the admin nor the owner, who both manage this app but cannot use it, can link
+        // it for everyone by its ID.
         const memberPath = yield* fixture.another(scopedKeyApp("user"));
-        const memberStarted = yield* start(
-          actors.member,
-          "user",
-          "service",
-          { kind: "personal" },
-          memberPath,
-        );
+        const memberStarted = yield* start(actors.member, "user", "service", memberPath);
         expect(memberStarted.status, JSON.stringify(memberStarted.body)).toBe(200);
         const memberAccount = yield* submit(
           actors.member,
@@ -304,11 +317,12 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         expect(yield* accountLinks(actors.member, memberPath, "user")).toEqual([
           ["service", memberAccount],
         ]);
-        yield* refused(
-          yield* link(actors.admin, "service", memberAccount),
-          403,
-          "OrganizationForbidden",
-        );
+        for (const manager of [actors.admin, actors.owner])
+          yield* refused(
+            yield* link(manager, "service", memberAccount),
+            403,
+            "OrganizationForbidden",
+          );
         expect(yield* links()).toEqual([]);
 
         // A connection completes only in the scope it started in: a redeploy that moves the
@@ -316,13 +330,7 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         const drift = (from: "app" | "user", to: "app" | "user") =>
           Effect.gen(function* () {
             const driftPath = yield* fixture.another(scopedKeyApp(from));
-            const pending = yield* start(
-              actors.owner,
-              from,
-              "service",
-              { kind: "personal" },
-              driftPath,
-            );
+            const pending = yield* start(actors.owner, from, "service", driftPath);
             expect(pending.status, JSON.stringify(pending.body)).toBe(200);
             const redeployed = yield* api.request(actors.owner, "POST", `${driftPath}/deploy`, {
               files: [{ path: "index.ts", content: scopedKeyApp(to) }, appsManifest],
@@ -384,7 +392,7 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         // A requirement that changes scope between sign-in and its callback refuses the
         // completion, and reading the connection names the change, as it does for a changed
         // provider.
-        const pending = yield* start(actors.member, "user", "service", { kind: "personal" });
+        const pending = yield* start(actors.member, "user", "service");
         expect(pending.status, JSON.stringify(pending.body)).toBe(200);
         const connection = (yield* body(Resource, pending)).id;
         const callback = yield* signIn(actors.member, connection);

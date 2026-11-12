@@ -116,7 +116,9 @@ with your links.
 
 People who can edit an app link its app accounts for everyone, in the **App
 accounts** section of the app's **Accounts** tab. Linking needs edit access to
-the app and use of the account. Callers use the account through the app without
+the app, and the account must be your own: accounts are never shared, so this is
+how one account serves everyone. It stops serving if its owner leaves the
+organization. Callers use the account through the app without
 access to the account itself, and they cannot choose or replace it; everyone
 else sees the section read-only, without the account's details from the
 provider. Linking another account to a plain slot replaces the one before; a

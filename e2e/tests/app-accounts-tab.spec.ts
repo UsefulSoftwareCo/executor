@@ -90,7 +90,7 @@ const sharedApp = (name: string, content: string) =>
           actors.owner,
           "POST",
           connectionsPath(path, scope, requirement),
-          { destination: { kind: "personal" } },
+          {},
         );
         expect(connection.status, JSON.stringify(connection.body)).toBe(200);
         return (yield* body(Resource, connection)).id;
@@ -392,9 +392,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
           fixture.api.request(actors.member, "GET", requirementPath(path, "app", "datadog")),
           appLink(actors.member, "DELETE", "datadog", team),
           appLink(actors.member, "PUT", "datadog", team),
-          fixture.api.request(actors.member, "POST", connectionsPath(path, "app", "datadog"), {
-            destination: { kind: "personal" },
-          }),
+          fixture.api.request(actors.member, "POST", connectionsPath(path, "app", "datadog"), {}),
         ]);
         expect(
           refusals.map((response) => response.status),

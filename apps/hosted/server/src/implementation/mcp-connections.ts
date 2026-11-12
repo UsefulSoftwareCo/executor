@@ -17,7 +17,7 @@ import { CurrentOrganization, OrganizationForbidden } from "../contracts/organiz
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { checkAccounts, currentOwner, usableApp } from "./access.ts";
 import { addLink, linkedAccounts, lockedChange } from "./app-accounts.ts";
-import { policyDatabase, requireAccountAccessAs } from "./resource-policy.ts";
+import { policyDatabase, requireAccountOwnerAs } from "./resource-policy.ts";
 import { audited } from "./security-audit.ts";
 
 const owner = Effect.gen(function* () {
@@ -76,7 +76,7 @@ const resolveApp = (
         // change waited for it (see `lockedChange`).
         return yield* lockedChange(executor, { app: app.id, access: "use" }, (locked, actor) =>
           Effect.gen(function* () {
-            yield* requireAccountAccessAs(actor, account.id, "use").pipe(
+            yield* requireAccountOwnerAs(actor, account.id).pipe(
               Effect.catchTag("OrganizationForbidden", () => Effect.fail(invalid("account"))),
             );
             return yield* Effect.forEach(

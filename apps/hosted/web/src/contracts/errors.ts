@@ -98,7 +98,7 @@ const errorMessage = Match.type<HostedError>().pipe(
     AccountConnectionTargetChanged: () =>
       "The app’s account setup changed. Close this form and try again.",
     AccountConnectionRefused: () =>
-      "Your access doesn’t allow connecting this account for the app. Check your access to the app and the account’s destination, then start account setup again.",
+      "Your access doesn’t allow connecting this account for the app. Check your access to the app, then start account setup again.",
     ProviderNotFound: () => "This provider is no longer available. Reload the app and try again.",
     // An app's own account is reconnected by people who can edit the app; a caller cannot replace it.
     OAuthReconnectRequired: ({ appRequirement }) =>

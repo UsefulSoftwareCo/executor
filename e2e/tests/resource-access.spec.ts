@@ -3,6 +3,7 @@ import {
   linkAccount,
   linkAccountResponse,
   linkedAccountIds,
+  unlinkAccount,
 } from "../support/app-accounts.ts";
 /** Real hosted access checks cover app groups, linked accounts and current app authoring routes. */
 import { expect, layer } from "@effect/vitest";
@@ -46,7 +47,11 @@ const resourceFixture = Effect.gen(function* () {
     actors = yield* Actors;
   const prefix = `/api/organizations/${actors.organization.id}`;
   const suffix = randomUUID().slice(0, 8);
-  const created: { apps: string[]; accounts: string[]; groups: string[] } = {
+  const created: {
+    apps: string[];
+    accounts: { actor: Session; id: string }[];
+    groups: string[];
+  } = {
     apps: [],
     accounts: [],
     groups: [],
@@ -57,9 +62,10 @@ const resourceFixture = Effect.gen(function* () {
         expect((yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app}`)).status).toBe(
           200,
         );
+      // Only an account's owner may delete it.
       for (const account of created.accounts)
         expect(
-          (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)).status,
+          (yield* api.request(account.actor, "DELETE", `${prefix}/accounts/${account.id}`)).status,
         ).toBe(200);
       for (const id of created.groups) {
         const group = yield* body(
@@ -103,7 +109,28 @@ const resourceFixture = Effect.gen(function* () {
     }),
   );
   created.groups.push(sales.id, engineering.id);
-  return { api, actors, prefix, suffix, created, sales, engineering };
+  /**
+   * Connect a key account from the app at `appPath` for its user `service` requirement. The account
+   * is the actor's own, and the connection links it there for the actor.
+   */
+  const connectKey = (actor: Session, appPath: string, label: string, token: string) =>
+    Effect.gen(function* () {
+      const connection = yield* body(
+        Resource,
+        yield* api.request(actor, "POST", connectionsPath(appPath, "user", "service"), {}),
+      );
+      const account = yield* body(
+        Resource,
+        yield* api.request(actor, "POST", `${prefix}/connections/${connection.id}/submit`, {
+          method: "key",
+          label,
+          fields: { token },
+        }),
+      );
+      created.accounts.push({ actor, id: account.id });
+      return account;
+    });
+  return { api, actors, prefix, suffix, created, sales, engineering, connectKey };
 });
 
 /**
@@ -132,7 +159,7 @@ const refusedForeignAccounts = (
   });
 
 const arrayFixture = Effect.gen(function* () {
-  const { api, actors, prefix, suffix, created, sales } = yield* resourceFixture;
+  const { api, actors, prefix, suffix, created, connectKey } = yield* resourceFixture;
   const call = { tool: "identity", kind: "query", input: {} };
   const array = yield* body(
     App,
@@ -164,82 +191,45 @@ const arrayFixture = Effect.gen(function* () {
       audience: { kind: "everyone" },
     })).status,
   ).toBe(200);
-  const personalConnection = yield* body(
-    Resource,
-    yield* api.request(
-      actors.owner,
-      "POST",
-      connectionsPath(`${prefix}/apps/${array.id}`, "user", "service"),
-      { destination: { kind: "personal" } },
-    ),
+  const arrayPath = `${prefix}/apps/${array.id}`;
+  const personal = yield* connectKey(actors.owner, arrayPath, "Personal fixture", "personal");
+  const second = yield* connectKey(actors.owner, arrayPath, "Second fixture", "second");
+  // Every saved account is its owner's alone: other members, administrators included, cannot read it.
+  expect((yield* api.request(actors.member, "GET", `${prefix}/accounts/${second.id}`)).status).toBe(
+    403,
   );
-  const personal = yield* body(
-    Resource,
-    yield* api.request(
-      actors.owner,
-      "POST",
-      `${prefix}/connections/${personalConnection.id}/submit`,
-      { method: "key", label: "Personal fixture", fields: { token: "personal" } },
-    ),
-  );
-  created.accounts.push(personal.id);
-  const teamConnection = yield* body(
-    Resource,
-    yield* api.request(
-      actors.owner,
-      "POST",
-      connectionsPath(`${prefix}/apps/${array.id}`, "user", "service"),
-      { destination: { kind: "shared" } },
-    ),
-  );
-  const team = yield* body(
-    Resource,
-    yield* api.request(actors.owner, "POST", `${prefix}/connections/${teamConnection.id}/submit`, {
-      method: "key",
-      label: "Shared fixture",
-      fields: { token: "team" },
-    }),
-  );
-  created.accounts.push(team.id);
   expect(
     (yield* api.request(actors.admin, "GET", `${prefix}/accounts/${personal.id}`)).status,
   ).toBe(403);
-  // A shared account is the organization's: every member can read it, and nobody narrows it.
-  expect((yield* api.request(actors.member, "GET", `${prefix}/accounts/${team.id}`)).status).toBe(
-    200,
-  );
-  const teamAccess = yield* api.request(
-    actors.member,
-    "GET",
-    `${prefix}/accounts/${team.id}/access`,
-  );
-  expect(teamAccess.status, JSON.stringify(teamAccess.body)).toBe(200);
-  expect(teamAccess.body).toMatchObject({ ownership: { kind: "shared" }, canUse: true });
-  // The route that shared an account with groups is gone; each host answers a missing route
-  // its own way (404 on self-host, 405 on Cloud).
-  expect([404, 405]).toContain(
-    (yield* api.request(actors.owner, "PATCH", `${prefix}/accounts/${team.id}/access`, {
-      revision: (yield* body(Access, teamAccess)).revision,
-      audience: { kind: "groups", groups: [sales.id] },
-    })).status,
-  );
-  // Both connections linked their account for the owner.
-  const arrayPath = `${prefix}/apps/${array.id}`;
-  expect(yield* linkedAccountIds(actors.owner, arrayPath)).toEqual([personal.id, team.id]);
+  // No account has an access policy to read or widen: the routes are gone, even for the owner.
+  // Each host answers a missing route its own way (404 on self-host, 405 on Cloud).
+  for (const method of ["GET", "PATCH"] as const)
+    expect([404, 405], method).toContain(
+      (yield* api.request(
+        actors.owner,
+        method,
+        `${prefix}/accounts/${personal.id}/access`,
+        method === "PATCH" ? { audience: { kind: "everyone" } } : undefined,
+      )).status,
+    );
+  // Both connections linked their account for the owner, who runs with both.
+  expect(yield* linkedAccountIds(actors.owner, arrayPath)).toEqual([personal.id, second.id]);
   const allowed = yield* api.request(actors.owner, "POST", `${arrayPath}/tools/call`, call);
   expect(allowed.status, JSON.stringify(allowed.body)).toBe(200);
-  expect(allowed.body).toEqual(["personal", "team"]);
-  // Another member can neither link the owner's personal account nor run with it.
-  yield* refusedForeignAccounts(api, actors.admin, arrayPath, [personal.id], call);
+  expect(allowed.body).toEqual(["personal", "second"]);
+  // Another member can neither link the owner's accounts nor run with them.
+  yield* refusedForeignAccounts(api, actors.admin, arrayPath, [personal.id, second.id], call);
   return {
     api,
     actors,
     prefix,
     suffix,
     created,
+    connectKey,
     array,
+    arrayPath,
     personal,
-    team,
+    second,
     call,
   };
 });
@@ -365,7 +355,8 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, prefix, array, personal, call } = yield* arrayFixture;
+        const { api, actors, prefix, array, arrayPath, personal, second, call } =
+          yield* arrayFixture;
         const browser = yield* Browser;
         const appUrl = new URL(yield* waitForAppUrl(actors.owner, `${prefix}/apps/${array.id}/ui`));
         yield* browser.login(actors.owner);
@@ -373,17 +364,47 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
         yield* browser.use("Every linked account permits the UI", (page) =>
           page.getByRole("heading", { name: "Account protected UI" }).waitFor(),
         );
+        const assetUrl = yield* browser.use("Locate the account-protected asset", (page) =>
+          page.evaluate(() => document.querySelector("img")?.src ?? ""),
+        );
+        const validator = yield* browser.use("Warm the account-protected asset", (page) =>
+          page
+            .context()
+            .request.get(assetUrl)
+            .then((response) => {
+              expect(response.status()).toBe(200);
+              return response.headers()["etag"];
+            }),
+        );
+        if (validator === undefined)
+          return yield* Effect.die("Account-protected asset has no ETag");
+        // The account is its owner's to read and manage.
+        const secondDetail = yield* body(
+          Schema.Struct({ account: Resource, canManage: Schema.Boolean }),
+          yield* api.request(actors.owner, "GET", `${prefix}/accounts/${second.id}`),
+        );
+        expect(secondDetail).toEqual({ account: { id: second.id }, canManage: true });
+        yield* unlinkAccount(actors.owner, arrayPath, "service", second.id);
+        expect(
+          (yield* browser.use(
+            "Unlinking one account leaves the page the remaining account allows",
+            (page) => page.context().request.get(appUrl.href),
+          )).status(),
+        ).toBe(200);
+        const narrowed = yield* api.request(actors.owner, "POST", `${arrayPath}/tools/call`, call);
+        expect(narrowed.status, JSON.stringify(narrowed.body)).toBe(200);
+        expect(narrowed.body).toEqual(["personal"]);
+        yield* linkAccount(actors.owner, arrayPath, "service", second.id);
+        expect(
+          (yield* browser.use("Relinking the account revalidates the same asset", (page) =>
+            page.context().request.get(assetUrl, { headers: { "if-none-match": validator } }),
+          )).status(),
+        ).toBe(304);
         // An administrator opens the app with only the administrator's own links, and cannot link
-        // another person's personal account.
+        // another person's accounts.
         yield* browser.login(actors.admin);
         yield* openPrivateApp(appUrl.href);
-        yield* refusedForeignAccounts(
-          api,
-          actors.admin,
-          `${prefix}/apps/${array.id}`,
-          [personal.id],
-          call,
-        );
+        yield* refusedForeignAccounts(api, actors.admin, arrayPath, [personal.id, second.id], call);
       }),
     ),
   );
@@ -391,7 +412,7 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, prefix, suffix, created, array, personal, team, call } =
+        const { api, actors, prefix, suffix, created, connectKey, array, personal, second, call } =
           yield* arrayFixture;
         const browser = yield* Browser;
         yield* browser.login(actors.admin);
@@ -430,12 +451,31 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
         );
         created.apps.push(single.id);
         yield* linkAccount(actors.owner, `${prefix}/apps/${single.id}`, "service", personal.id);
+        // An administrator cannot delete another member's account.
+        const foreignDelete = yield* api.request(
+          actors.admin,
+          "DELETE",
+          `${prefix}/accounts/${personal.id}`,
+        );
+        expect(foreignDelete.status, JSON.stringify(foreignDelete.body)).toBe(403);
+        expect(foreignDelete.body).toMatchObject({ _tag: "OrganizationForbidden" });
+        expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${single.id}`)).toEqual([
+          personal.id,
+        ]);
         expect(
           (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${personal.id}`)).status,
         ).toBe(200);
-        created.accounts.splice(created.accounts.indexOf(personal.id), 1);
+        created.accounts.splice(
+          created.accounts.findIndex((item) => item.id === personal.id),
+          1,
+        );
         // Renaming above changed the app origin; its old session cannot transfer.
-        yield* linkAccount(actors.admin, `${prefix}/apps/${array.id}`, "service", team.id);
+        const own = yield* connectKey(
+          actors.admin,
+          `${prefix}/apps/${array.id}`,
+          "Administrator fixture",
+          "administrator",
+        );
         const renamedUrl = new URL(
           yield* waitForAppUrl(actors.admin, `${prefix}/apps/${array.id}/ui`),
         );
@@ -445,19 +485,19 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
           (page) => page.evaluate(() => document.querySelector("img")?.src ?? ""),
         );
         expect(
-          (yield* browser.use("The UI allows the remaining shared array account", (page) =>
+          (yield* browser.use("The UI allows the administrator's own array account", (page) =>
             page.context().request.get(remainingAsset),
           )).status(),
         ).toBe(200);
         // Deleting an account removes its links from every app.
         expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${array.id}`)).toEqual([
-          team.id,
+          second.id,
         ]);
         expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${single.id}`)).toEqual([]);
         expect(
           (yield* api.request(actors.admin, "POST", `${prefix}/apps/${array.id}/tools/call`, call))
             .body,
-        ).toEqual(["team"]);
+        ).toEqual(["administrator"]);
         const inventory = yield* body(
           Inventory,
           yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
@@ -465,10 +505,24 @@ layer(HostedLive, { excludeTestServices: true })("Resource access", (it) => {
         expect(inventory.accounts.some((item) => item.id === personal.id)).toBe(false);
         expect(inventory.links.some((link) => link.account === personal.id)).toBe(false);
         expect(
-          (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${team.id}`)).status,
+          (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${second.id}`)).status,
         ).toBe(200);
-        created.accounts.splice(created.accounts.indexOf(team.id), 1);
+        created.accounts.splice(
+          created.accounts.findIndex((item) => item.id === second.id),
+          1,
+        );
         expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${array.id}`)).toEqual([]);
+        // Another member's own link is untouched until that member deletes the account.
+        expect(yield* linkedAccountIds(actors.admin, `${prefix}/apps/${array.id}`)).toEqual([
+          own.id,
+        ]);
+        expect(
+          (yield* api.request(actors.admin, "DELETE", `${prefix}/accounts/${own.id}`)).status,
+        ).toBe(200);
+        created.accounts.splice(
+          created.accounts.findIndex((item) => item.id === own.id),
+          1,
+        );
         expect(yield* linkedAccountIds(actors.admin, `${prefix}/apps/${array.id}`)).toEqual([]);
       }),
     ),

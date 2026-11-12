@@ -300,7 +300,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
               actors.owner,
               "POST",
               connectionsPath(path, "user", "service"),
-              { destination: { kind: "personal" } },
+              {},
             );
             expect(connection.status, JSON.stringify(connection.body)).toBe(200);
             const request = yield* body(Resource, connection);
@@ -421,7 +421,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
               actors.owner,
               "POST",
               connectionsPath(path, "user", "service"),
-              { destination: { kind: "personal" } },
+              {},
             );
             expect(connection.status, JSON.stringify(connection.body)).toBe(200);
             const request = yield* body(Resource, connection);
@@ -844,9 +844,7 @@ export default defineApp({ app: { accounts: { team } } }, async () => ({ tools: 
           actors.owner,
           "POST",
           connectionsPath(path, "app", "team"),
-          {
-            destination: { kind: "personal" },
-          },
+          {},
         );
         expect(started.status, JSON.stringify(started.body)).toBe(200);
         const submitted = yield* api.request(

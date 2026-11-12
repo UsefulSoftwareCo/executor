@@ -1,6 +1,5 @@
 import { CurrentPolicy } from "../contracts/authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
-import { AccountGrants } from "./proofs/account-access.ts";
 /** Sharing writes are atomic; metadata visibility and credential use remain separate. */
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
@@ -22,7 +21,7 @@ import {
   currentResourceAuthority,
   lockCurrentActor as lockActor,
   applicationAccesses,
-  accountAccesses,
+  ownedAccountIds,
   requireAppAccess,
 } from "./resource-policy.ts";
 
@@ -70,17 +69,14 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
           })
       ).map((entry) => [entry.account, entry]),
     );
-    const accountPolicies = new Map(
-      (yield* accountAccesses(
-        accounts.map((account) => account.id),
-        actor,
-      )).map((access) => [access.account, access]),
+    // Owners both use and manage their accounts, so both views list the same ones.
+    const owned = yield* ownedAccountIds(
+      accounts.map((account) => account.id),
+      actor,
     );
     const accountEntries = yield* Effect.forEach(accounts, (account) =>
       Effect.gen(function* () {
-        const access = accountPolicies.get(account.id);
-        if (access === undefined || !(view === "managed" ? access.canManage : access.canUse))
-          return [];
+        if (!owned.has(account.id)) return [];
         let provider = providers.get(account.provider);
         if (provider === undefined) {
           provider = yield* executor.accounts.provider({ owner, account: account.id });
@@ -88,9 +84,7 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
         }
         const checks = health.get(account.id);
         return [
-          checks === undefined
-            ? { account, access, provider }
-            : { account, access, provider, health: checks },
+          checks === undefined ? { account, provider } : { account, provider, health: checks },
         ];
       }),
     );
@@ -144,7 +138,6 @@ export const hostedResourceAccessHandlers = HttpApiBuilder.group(
         .handle("app", ({ params }) => requireAppAccess(params.app, "read"))
         .handle("shareApp", ({ params, payload }) =>
           shareApp(params.app, payload.audience, payload.revision),
-        )
-        .handle("account", () => Effect.map(AccountGrants.inspect, (grant) => grant.access));
+        );
     }),
 );

@@ -147,9 +147,7 @@ const CallRow = Schema.Struct({
   decided_ms: Millis,
   duration_ms: Schema.NullOr(Schema.Number),
   accounts: Schema.fromJsonString(
-    Schema.Array(
-      Schema.Struct({ id: NullableString, name: NullableString, shared: Schema.Boolean }),
-    ),
+    Schema.Array(Schema.Struct({ id: NullableString, name: NullableString })),
   ),
 });
 type CallRow = typeof CallRow.Type;
@@ -263,8 +261,9 @@ const listCalls = (query: ToolCallQuery) =>
     const scope: Statement.Fragment = sql`c.organization_id = ${access.organization}
       and (${access.own}::text is null or c.user_id = ${access.own})
       and c.started_at >= ${kept}::timestamptz`;
-    // A personal account is shown, and found, only for the member it belongs to.
-    const shown = sql`(a.shared or a.owner_id = ${access.user})`;
+    // An account is shown, and found, only for the member it belonged to when the call was made.
+    // Rows from before shared accounts were removed have no owner, so they are named to nobody.
+    const shown = sql`(a.owner_id = ${access.user})`;
     // A member is told an app's name only while they may use the app, so their search finds calls
     // by the names of those apps alone: a match on any other would tell them the name.
     const named =
@@ -336,8 +335,7 @@ const listCalls = (query: ToolCallQuery) =>
           c.duration_ms,
           coalesce((select json_agg(json_build_object(
                 'id', case when ${shown} then a.account_id end,
-                'name', case when ${shown} then a.account_name end,
-                'shared', a.shared)
+                'name', case when ${shown} then a.account_name end)
               order by ${shown} desc, case when ${shown} then a.account_name end)
             from hosted_tool_call_accounts a where a.call_id = c.id), '[]'::json)::text as accounts
         from hosted_tool_calls c

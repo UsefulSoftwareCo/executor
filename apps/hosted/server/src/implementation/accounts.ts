@@ -9,7 +9,6 @@ import {
   checkConnection,
   createdConnectionOrganization,
 } from "./connection-policy.ts";
-import { accountDestination } from "./resource-lifecycle.ts";
 import { AccountGrants } from "./proofs/account-access.ts";
 import { AccountTargets } from "../contracts/account-grants.ts";
 import {
@@ -19,7 +18,6 @@ import {
   visibleApps,
   visibleAccounts,
 } from "./resource-policy.ts";
-import type { ConnectionDestination } from "../contracts/resource-access.ts";
 /** Account use cases, connection grants and OAuth routes share the same ownership checks. */
 import {
   type AccountConnectionId,
@@ -79,7 +77,7 @@ const linkedApps = (owner: OwnerId, account: AccountId) =>
  * App-scoped tokens reach this only through an app they can use; see RequireAccountGrant.
  */
 export const getAccount = Effect.gen(function* () {
-  const { owner, account, access } = yield* AccountGrants.inspect;
+  const { owner, account } = yield* AccountGrants.inspect;
   const executor = yield* Effect.flatten(HostedExecutor);
   const metadata = yield* executor.accounts.get({ owner, account });
   const provider = yield* executor.accounts.provider({ owner, account });
@@ -99,7 +97,8 @@ export const getAccount = Effect.gen(function* () {
     apps,
     health: visibleHealth(health, apps),
     revocation,
-    canManage: access.canManage,
+    // The inspect grant proves the caller owns the account, and owners manage their accounts.
+    canManage: true,
   };
 });
 /** Keep only the checks of apps the caller can see. */
@@ -216,7 +215,6 @@ export const connectAccount = (
     readonly app: AppId;
     readonly requirement: string;
     readonly scope: AccountScope;
-    readonly destination?: typeof ConnectionDestination.Type | undefined;
     readonly account?: AccountId | undefined;
   },
 ) =>
@@ -234,24 +232,18 @@ export const connectAccount = (
         scope: input.scope,
         reason: "requirement",
       });
-    // A reconnect keeps the account where it is shared; a new account goes where the caller asks.
-    const reconnect =
-      input.account === undefined
-        ? undefined
-        : yield* AccountGrants.reconnect.pipe(
-            Effect.provideService(AccountTargets.reconnect, { account: input.account }),
-          );
-    const destination =
-      reconnect === undefined
-        ? (input.destination ?? ({ kind: "personal" } as const))
-        : ({ kind: reconnect.access.ownership.kind } as const);
+    // Only the owner may replace an account's credentials; a new account is the caller's own.
+    if (input.account !== undefined)
+      yield* AccountGrants.reconnect.pipe(
+        Effect.provideService(AccountTargets.reconnect, { account: input.account }),
+      );
     return yield* executor.accountConnections
       .create({
         owner,
         target: { app: input.app, requirement: input.requirement, scope: input.scope },
         ...(input.account === undefined ? {} : { account: input.account }),
       })
-      .pipe(Effect.flatMap((connection) => recordConnection(connection, destination, input.scope)));
+      .pipe(Effect.flatMap((connection) => recordConnection(connection, input.scope)));
   });
 /** The dashboard page where a connection's creator finishes it, under the caller's slug. */
 export const connectionUrl = (
@@ -286,13 +278,10 @@ export const submitConnection = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const intent = yield* checkConnection(
-      yield* ownedConnection(executor, owner, input.connection),
-    );
-    return yield* executor.accountConnections.submit({ ...input, owner }).pipe(
-      accountDestination(intent.destination),
-      Effect.tap(() => Effect.flatten(ScheduleWakeup)),
-    );
+    yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
+    return yield* executor.accountConnections
+      .submit({ ...input, owner })
+      .pipe(Effect.tap(() => Effect.flatten(ScheduleWakeup)));
   });
 /**
  * The member's client choice is checked against its audience here, then named to the SDK, which
@@ -306,14 +295,14 @@ export const startOAuth = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const intent = yield* checkConnection(
-      yield* ownedConnection(executor, owner, input.connection),
-    );
+    yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
     const client = yield* connectionClient(executor, owner, input);
     const { client: _selected, ...rest } = input;
-    return yield* executor.accountConnections
-      .startOAuth({ ...rest, owner, ...(client === undefined ? {} : { client }) })
-      .pipe(accountDestination(intent.destination));
+    return yield* executor.accountConnections.startOAuth({
+      ...rest,
+      owner,
+      ...(client === undefined ? {} : { client }),
+    });
   });
 /** Completion rechecks connection and target ownership before saving provider credentials. */
 export const completeOAuth = (
@@ -322,13 +311,10 @@ export const completeOAuth = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const intent = yield* checkConnection(
-      yield* ownedConnection(executor, owner, input.connection),
-    );
-    return yield* executor.accountConnections.completeOAuth({ ...input, owner }).pipe(
-      accountDestination(intent.destination),
-      Effect.tap(() => Effect.flatten(ScheduleWakeup)),
-    );
+    yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
+    return yield* executor.accountConnections
+      .completeOAuth({ ...input, owner })
+      .pipe(Effect.tap(() => Effect.flatten(ScheduleWakeup)));
   });
 
 /** Account policy and persisted connection ownership protect management and OAuth return requests. */

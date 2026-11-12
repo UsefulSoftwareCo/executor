@@ -369,16 +369,16 @@ Access depends on the app as well as the caller's role. Any member can deploy
 a new app; it starts private, with the deployer as its creator. The creator and
 organization owners and administrators manage it: they rename it, activate a
 version, change its audience, remove it, and connect or link its app
-requirements, which also needs use of the account linked. Using an app (calling
+requirements with their own accounts. Using an app (calling
 its tools, opening its UI, `userConnect` and `userLink`) follows its audience: a
 private app only by its creator, even for administrators; a `groups` app by
 members of those groups; an `everyone` app by every member. Managing an app does
-not grant its use. Personal accounts are usable only by their owner; shared
-accounts follow their own audience. An MCP connection limited to selected apps
+not grant its use. Every saved account is personal: only its owner uses or
+manages it, and an app link is how one account serves every caller. An MCP connection limited to selected apps
 can only find and run those apps' tools; deploying and other management calls
 need a connection to all apps. The server rechecks the caller's grant, current
 membership and these rules on every API call.
-The management app's caller credential is never saved as a shared account.
+The management app's caller credential is never saved as an account.
 
 **The remaining management examples use the local product's API**, not
 self-host's.

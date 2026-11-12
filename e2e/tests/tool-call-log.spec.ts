@@ -80,7 +80,6 @@ const Call = Schema.Struct({
     Schema.Struct({
       id: Schema.NullOr(Schema.String),
       name: Schema.NullOr(Schema.String),
-      shared: Schema.Boolean,
     }),
   ),
   status: Schema.String,
@@ -1441,8 +1440,10 @@ catch (error) { return { caught: { message: error.message, reference: typeof err
         expect(mine.page.items[0]).toMatchObject({
           member: { id: aliceId },
           status: "succeeded",
-          accounts: [{ id: mailA, name: "Alice mail", shared: false }],
+          accounts: [{ id: mailA, name: "Alice mail" }],
         });
+        // No account is shared, so the log no longer says whether one was.
+        expect(mine.raw).not.toContain('"shared"');
         expect((yield* readLog(actors.member, { ...query, search: "Alice mail" })).page.total).toBe(
           1,
         );
@@ -1452,13 +1453,13 @@ catch (error) { return { caught: { message: error.message, reference: typeof err
         for (const actor of [actors.owner, actors.admin]) {
           const seen = yield* readLog(actor, query);
           expect(seen.page.items).toHaveLength(1);
-          expect(seen.page.items[0]?.accounts).toEqual([{ id: null, name: null, shared: false }]);
+          expect(seen.page.items[0]?.accounts).toEqual([{ id: null, name: null }]);
           expect(seen.raw).not.toContain("Alice mail");
           expect(seen.raw).not.toContain(mailA);
           const searched = yield* readLog(actor, { ...query, search: "Alice mail" });
           expect(searched.page.total).toBe(0);
           expect((yield* findCall(actor, seen.page.items[0]?.id ?? "")).accounts).toEqual([
-            { id: null, name: null, shared: false },
+            { id: null, name: null },
           ]);
         }
       }),

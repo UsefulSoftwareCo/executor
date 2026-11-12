@@ -35,7 +35,7 @@ import {
   linkedAccountJson,
   lockCurrentActor,
   policyDatabase,
-  requireAccountAccessAs,
+  requireAccountOwnerAs,
   requireAppAccessAs,
   usableAppLinks,
   usableLinks,
@@ -243,7 +243,7 @@ export const lockedChange = <A, E, R>(
         yield* lockAppLinks(sql, input.app);
         const actor = yield* lockCurrentActor;
         yield* requireAppAccessAs(actor, input.app, input.access);
-        if (input.account !== undefined) yield* requireAccountAccessAs(actor, input.account, "use");
+        if (input.account !== undefined) yield* requireAccountOwnerAs(actor, input.account);
         return yield* change(sql, actor);
       }),
     );
@@ -456,8 +456,8 @@ export const linkUserAccount = (
 /**
  * Link an account to an app requirement for everyone, in its own transaction, as
  * `appAccounts.appLink` does once it has checked edit access. For product code that has already
- * decided the editor may link it, such as the v1 import linking a workspace's shared accounts for
- * the organization's owner. Linking again changes nothing. Returns whether any link changed.
+ * decided the editor may link it, such as the v1 import linking the organization owner's accounts
+ * for everyone. Linking again changes nothing. Returns whether any link changed.
  */
 export const linkAppAccount = (
   executor: Executor,

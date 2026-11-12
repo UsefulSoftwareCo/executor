@@ -17,7 +17,7 @@ import type { SqlClient } from "effect/sql";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { OrganizationId, organizationOwner } from "../contracts/organization.ts";
 import { patGrantOf } from "./mcp-oauth.ts";
-import { accountAccesses, resourceAuthorityForApp } from "./resource-policy.ts";
+import { ownedAccountIds, resourceAuthorityForApp } from "./resource-policy.ts";
 
 const GrantRow = Schema.Struct({
   userId: Schema.String,
@@ -106,14 +106,8 @@ export const hostedEventAuthority =
       ).pipe(Effect.catchTag("OrganizationForbidden", revoked));
       if (!app.canUse) return yield* new EventAccessRevoked();
       // The event may carry data from any account its invocation used, not only its source.
-      const policies = new Map(
-        (yield* accountAccesses([...new Set(accounts)], actor)).map((policy) => [
-          policy.account,
-          policy,
-        ]),
-      );
-      for (const account of accounts)
-        if (policies.get(account)?.canUse !== true) return yield* new EventNotVisible();
+      const owned = yield* ownedAccountIds([...new Set(accounts)], actor);
+      for (const account of accounts) if (!owned.has(account)) return yield* new EventNotVisible();
       // A grant limited to some accounts receives only occurrences that use no others.
       return access;
     }).pipe(

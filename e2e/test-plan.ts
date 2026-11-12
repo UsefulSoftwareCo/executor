@@ -520,11 +520,11 @@ export const scenarios = plan({
   workflowReplayAccess: {
     fixtures: "actors",
     file: "workflow-replay-access.spec.ts",
-    title: "workflow replay keeps a run with its actor and key after the caller's links change",
+    title: "workflow replay checks retained account access after the app's account link changes",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
-      local: na("This scenario exercises hosted account sharing and account links."),
+      local: na("This scenario exercises hosted members' workflow runs and app account links."),
     },
   },
   activeVersionTools: {
@@ -3102,7 +3102,7 @@ export const scenarios = plan({
   accountHealth: {
     fixtures: "actors",
     file: "account-health.spec.ts",
-    title: "Apps check a shared account their own way and report its identity",
+    title: "Apps check an account their own way and report its identity",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a controlled loopback service through the shared runtime contract."),
@@ -7678,36 +7678,14 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
-  webhookSourceUnlinkHandover: {
-    fixtures: "actors",
-    file: "webhook-source-handover.spec.ts",
-    title: "a webhook source moves to another linking member when its actor unlinks",
-    targets: {
-      local: na("Local has no organization members or shared accounts."),
-      "self-host": scheduled,
-      cloud: scheduled,
-    },
-  },
   webhookSourceRelink: {
     fixtures: "actors",
     file: "webhook-source-handover.spec.ts",
-    title:
-      "a webhook source registers again after its account is relinked and returns to an earlier actor",
+    title: "a webhook source registers again after its account is relinked",
     targets: {
-      local: na("Local has no organization members or shared accounts."),
+      local: na("Uses hosted link routes and organization members."),
       "self-host": scheduled,
       cloud: scheduled,
-    },
-  },
-  webhookSourceMemberHandover: {
-    fixtures: "actors",
-    file: "webhook-source-handover.spec.ts",
-    title:
-      "a webhook source moves to another linking member when its actor leaves the organization",
-    targets: {
-      local: na("Local has no organization members."),
-      "self-host": scheduled,
-      cloud: sourceStorageCloud,
     },
   },
   webhookSourceAccountChoice: {
@@ -7734,9 +7712,10 @@ export const scenarios = plan({
   webhookSourceConcurrentLinks: {
     fixtures: "actors",
     file: "webhook-source-handover.spec.ts",
-    title: "a concurrent last unlink and link keep the account's webhook source",
+    title:
+      "a concurrent last unlink and link in the other scope, between the account's app link and user link, keep its webhook source",
     targets: {
-      local: na("Local has one user, so no other member links the account."),
+      local: na("Uses hosted link routes."),
       "self-host": scheduled,
       cloud: scheduled,
     },
@@ -7776,9 +7755,9 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "webhook-source-handover.spec.ts",
     title:
-      "a handed-over webhook registration is removed as the member it registered as, or waits for confirmation",
+      "a member's webhook registration is removed as that member, or waits for a manager's confirmation once they leave",
     targets: {
-      local: na("Local has no organization members to hand a registration to."),
+      local: na("Local has no organization members."),
       "self-host": scheduled,
       cloud: scheduled,
     },
@@ -7971,7 +7950,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "app-account-app-links.spec.ts",
     title:
-      "a hosted app requirement links for everyone only an account its manager can use, and a connection for one completes only in the scope it started in",
+      "a hosted app requirement links for everyone only the manager's own account, not a member's, even for the organization's owner, and a connection for one completes only in the scope it started in",
     targets: {
       local: na(
         "Hosted managers and personal accounts; Local connections have their own scenario.",
@@ -8006,7 +7985,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "departed-member-app-links.spec.ts",
     title:
-      "an app link to a member's personal account stops filling the app's requirement when the member leaves and stays listed for its managers, while a shared account linked beside it keeps serving",
+      "an app link to a member's account stops filling the app's requirement when the member leaves and stays listed for its managers, while another member's account linked beside it keeps serving",
     targets: {
       local: na("Hosted members leave organizations; Local has one owner."),
       "self-host": scheduled,
@@ -8041,7 +8020,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "app-account-webhooks.spec.ts",
     title:
-      "an app-linked account is the app's webhook source without an actor, serving the webhooks of the requirements it is linked to, also while members link it, and hands the source to a linking member when its last app link goes",
+      "an app-linked account is the app's webhook source without an actor, serving the webhooks of the requirements it is linked to, also while its owner links it for themselves, and hands the source to the owner's user link when its last app link goes",
     targets: {
       local: na("Hosted managers and members; Local app-account webhooks have their own scenario."),
       "self-host": scheduled,
@@ -8096,7 +8075,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "account-webhook-dependencies.spec.ts",
     title:
-      "a member deleting their account refused for webhook subscriptions they can't see is told how many, never which apps or subscriptions, and can delete it once those are removed",
+      "someone deleting their account refused for webhook subscriptions they can't see is told how many, never which apps or subscriptions, and can delete it once those are removed",
     targets: {
       local: na("Local has one user, who sees every app and subscription."),
       "self-host": scheduled,
@@ -8255,7 +8234,7 @@ export const scenarios = plan({
     title:
       "a retained workflow run is read by the scope each captured account had on its version: an app account by its app link, a user account by the caller's use",
     targets: {
-      local: na("Hosted shared accounts and app links."),
+      local: na("Hosted members' workflow runs and app links."),
       "self-host": scheduled,
       cloud: scheduled,
     },
@@ -8358,7 +8337,8 @@ export const scenarios = plan({
   hostedAppAccountRevocation: {
     fixtures: "actors",
     file: "hosted-app-accounts.spec.ts",
-    title: "hosted app account links drop a deleted account and stop when the app becomes private",
+    title:
+      "hosted app account links drop a deleted account without substituting another, administrators cannot delete a member's account, and an app made private stops its members' calls",
     targets: {
       local: na("Hosted membership only."),
       "self-host": scheduled,
@@ -9044,7 +9024,7 @@ export const scenarios = plan({
   v1ImportShared: {
     file: "cloud-v1-import-run.spec.ts",
     title:
-      "Cloud v1 import moves a shared workspace on the server and cuts it over once it verifies: the oldest admin owns it, members keep their roles without a welcome email, org connections become shared accounts linked for everyone and members' their own, a member's approve rule is dropped while their block applies to everyone, every member gets their own copy of an org toolkit, and a former member's rows stay behind",
+      "Cloud v1 import moves a shared workspace on the server and cuts it over once it verifies: the oldest admin owns it, members keep their roles without a welcome email, org connections become the owner's accounts linked for everyone and members' their own, a member's approve rule is dropped while their block applies to everyone, every member gets their own copy of an org toolkit, and a former member's rows stay behind",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportToolkitScale: {
@@ -9568,20 +9548,6 @@ export const scenarios = plan({
       local: na("Local has no organization access rows; the local scenario covers its storage."),
     },
   },
-  legacyGroupAccounts: {
-    fixtures: "actors",
-    legacyStorage: true,
-    file: "legacy-group-accounts.spec.ts",
-    title:
-      "upgrading a hosted database leaves an account shared with a group used by nobody and refuses its pending sign-in",
-    targets: {
-      "self-host": scheduled,
-      cloud: na(
-        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
-      ),
-      local: na("Local has no organization, groups or shared accounts."),
-    },
-  },
   legacyProfileSchedules: {
     fixtures: "actors",
     legacyStorage: true,
@@ -9636,6 +9602,34 @@ export const scenarios = plan({
       local: na(
         "Hosted members and their profiles; local has one subject, and its MCP profile targets scenario upgrades its profiles.",
       ),
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+    },
+  },
+  personalAccountsMigration: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "personal-accounts-migration.spec.ts",
+    title:
+      "upgrading hosted storage makes each shared account one member's own, keeping its app links serving everyone, removing other members' links to it, giving a departed creator's to the organization's owner, and refusing pending shared sign-ins",
+    targets: {
+      "self-host": scheduled,
+      local: na("Local has no organization members or shared accounts."),
+      cloud: na(
+        "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
+      ),
+    },
+  },
+  personalAccountsAppLinkConversion: {
+    fixtures: "actors",
+    legacyStorage: true,
+    file: "personal-accounts-migration.spec.ts",
+    title:
+      "upgrading hosted storage turns a member's user link to a shared account into an app link where the app takes that provider for everyone, deletes it where the app takes only user accounts, adds no duplicate app link, and records every change in its backup table",
+    targets: {
+      "self-host": scheduled,
+      local: na("Local has no organization members or shared accounts."),
       cloud: na(
         "Legacy rows need a runner-owned database; Cloud cases share one Worker and database.",
       ),
@@ -10199,14 +10193,15 @@ export const scenarios = plan({
       local: na("Local has no hosted organizations or membership roles."),
     },
   },
-  sharedAccountLinks: {
+  personalAccountLinks: {
     fixtures: "actors",
     file: "hosted-shared.spec.ts",
-    title: "a shared account linked by a member other than its creator runs that member's calls",
+    title:
+      "a saved account stays its owner's: no connection creates a shared one, and other members, the organization's owner included, cannot read it, link it or run calls with it",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
-      local: na("Local has no organization members or shared accounts."),
+      local: na("Local has no organization members."),
     },
   },
   remoteMcp: {

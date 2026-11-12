@@ -8,7 +8,7 @@ import {
 import {
   requireAppAccess,
   requireCurrentAppAccess,
-  accountAccesses,
+  ownedAccountIds,
   currentResourceAuthority,
   policyDatabase,
   resourceAuthorityForApp,
@@ -72,7 +72,7 @@ export const adminOwner = Effect.map(
   (organization) => organization.owner,
 );
 
-/** Account use requires its independent sharing policy as well as the SDK tenant check. */
+/** Account use requires owning the account as well as the SDK tenant check. */
 export const checkAccounts = (owner: OwnerId, accounts: SelectedAccounts) =>
   Effect.flatMap(currentResourceAuthority, (actor) => checkAccountsAs(actor, owner, accounts));
 /**
@@ -90,15 +90,9 @@ export const checkAccountsAs = (
       typeof selection === "string" ? [selection] : selection,
     );
     if (selected.length === 0) return;
-    const policies = new Map(
-      (yield* accountAccesses([...new Set(selected)], actor)).map((access) => [
-        access.account,
-        access,
-      ]),
-    );
+    const owned = yield* ownedAccountIds([...new Set(selected)], actor);
     for (const account of selected) {
-      const access = policies.get(account);
-      if (access === undefined || !access.canUse) return yield* new OrganizationForbidden();
+      if (!owned.has(account)) return yield* new OrganizationForbidden();
       if (owner !== organizationOwner(actor.organization))
         return yield* new AccountNotFound({ account });
     }

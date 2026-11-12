@@ -1,6 +1,6 @@
 /**
  * An account linked to an app's own requirements is the app's webhook source without an actor. It
- * serves the webhooks of the requirements it is linked to, also while members link it for
+ * serves the webhooks of the requirements it is linked to, also while its owner links it for
  * themselves, and its registrations are removed with its last app link.
  */
 import { expect, layer } from "@effect/vitest";
@@ -359,12 +359,10 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
             return yield* body(Delivered, delivered);
           });
 
-        // Connecting a shared account for the first app requirement links it for the app, which
+        // Connecting the owner's account for the first app requirement links it for the app, which
         // makes it the app's source without an actor. Only the first requirement's webhook
         // registers.
-        const team = yield* connect(actors.owner, "app", "first", "team-key", {
-          kind: "shared",
-        });
+        const team = yield* connect(actors.owner, "app", "first", "team-key");
         yield* settleWebhookSources(
           actors.owner,
           path,
@@ -396,20 +394,25 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
         expect(kept.id).toBe(second.id);
         expect(yield* deliver(kept)).toEqual({ user: false, first: [], second: [team] });
 
-        // The same account may be linked in both scopes. A member linking the app's account for
+        // Only the account's owner links it for themselves: a member cannot link it.
+        yield* refused(
+          yield* linkAccountResponse(actors.member, path, "personal", team, "user"),
+          403,
+          "OrganizationForbidden",
+        );
+        // The same account may be linked in both scopes. The owner linking the app's account for
         // themselves leaves it one source, serving as its app link: no user webhook registers.
-        yield* link(actors.member, "user", "personal", team);
+        yield* link(actors.owner, "user", "personal", team);
         yield* sourceRunsAs(team, null);
         expect(yield* liveNames(team)).toEqual(["secondHook"]);
         expect(yield* deliver(kept)).toEqual({ user: false, first: [], second: [team] });
-        // Linking a member's own account for the app as well moves its source to the app link:
-        // the member's webhook stops and the app requirement's registers without an actor.
-        const personal = yield* connect(actors.member, "user", "personal", "member-key", {
-          kind: "shared",
-        });
+        // Linking an account the owner linked for themselves for the app as well moves its source
+        // to the app link: the owner's webhook stops and the app requirement's registers without
+        // an actor.
+        const personal = yield* connect(actors.owner, "user", "personal", "owner-key");
         const own = yield* live("personalHook", personal, (hook) => hook.status === "active");
-        expect(own.actor).toBe(ids.member);
-        yield* sourceRunsAs(personal, ids.member);
+        expect(own.actor).toBe(ids.owner);
+        yield* sourceRunsAs(personal, ids.owner);
         yield* link(actors.owner, "app", "first", personal);
         yield* stopped("personalHook", personal);
         yield* live(
@@ -420,17 +423,17 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
         yield* sourceRunsAs(personal, null);
         expect(yield* liveNames(personal)).toEqual(["firstHook"]);
 
-        // Unlinking the app link hands the source back to the member who still links the account:
-        // the app requirement's webhook stops and the member's registers, running as the member.
+        // Unlinking the app link hands the source back to the owner, who still links the account:
+        // the app requirement's webhook stops and the owner's registers, running as the owner.
         yield* unlink(actors.owner, "app", "first", personal);
         yield* stopped("firstHook", personal);
         const handed = yield* live(
           "personalHook",
           personal,
-          (hook) => hook.status === "active" && hook.actor === ids.member,
+          (hook) => hook.status === "active" && hook.actor === ids.owner,
         );
         expect(handed.id).not.toBe(own.id);
-        yield* sourceRunsAs(personal, ids.member);
+        yield* sourceRunsAs(personal, ids.owner);
         expect(yield* liveNames(personal)).toEqual(["personalHook"]);
         // The app's account goes the same way when its last app link goes.
         yield* unlink(actors.owner, "app", "second", team);
@@ -438,15 +441,15 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
         yield* live(
           "personalHook",
           team,
-          (hook) => hook.status === "active" && hook.actor === ids.member,
+          (hook) => hook.status === "active" && hook.actor === ids.owner,
         );
-        yield* sourceRunsAs(team, ids.member);
+        yield* sourceRunsAs(team, ids.owner);
         expect(yield* liveNames(team)).toEqual(["personalHook"]);
-        // Unlinking the member's links too removes each source and stops its webhook. An app is
+        // Unlinking the owner's own links too removes each source and stops its webhook. An app is
         // removed only once its webhooks stopped.
-        yield* unlink(actors.member, "user", "personal", team);
+        yield* unlink(actors.owner, "user", "personal", team);
         yield* stopped("personalHook", team);
-        yield* unlink(actors.member, "user", "personal", personal);
+        yield* unlink(actors.owner, "user", "personal", personal);
         yield* stopped("personalHook", personal);
         yield* settleWebhookSources(actors.owner, path, (sources) => sources.length === 0);
 
@@ -513,14 +516,6 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
         yield* ok(yield* unlink(actors.owner, "team", own));
         yield* subscription(own, "stopped");
         yield* settleWebhookSources(actors.owner, path, (sources) => sources.length === 0);
-
-        // A shared account stays usable after it is unlinked, so its registration is removed too.
-        const shared = yield* connect(actors.owner, "app", "team", "shared-team", {
-          kind: "shared",
-        });
-        yield* subscription(shared, "active");
-        yield* ok(yield* unlink(actors.owner, "team", shared));
-        yield* subscription(shared, "stopped");
 
         // The admin links their personal account and then leaves the organization. The app could
         // no longer use it, so removing its registration is refused: the subscription waits,

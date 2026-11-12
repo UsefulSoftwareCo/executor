@@ -16,7 +16,7 @@ import { Context, Effect, Option, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { CurrentUserId } from "../contracts/auth.ts";
 import { OrganizationId } from "../contracts/organization.ts";
-import { ConnectionDestination, type AppAudience } from "../contracts/resource-access.ts";
+import type { AppAudience } from "../contracts/resource-access.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 
 import { requireGroupSharing } from "./group-sharing.ts";
@@ -37,11 +37,12 @@ type AppCreation =
 const AppCreation = Context.Reference<AppCreation>("hosted/AppCreation", {
   defaultValue: () => ({ kind: "member" }),
 });
+/** The member who owns a new account: the connecting member unless a system installer names one. */
 type AccountCreation =
-  | typeof ConnectionDestination.Type
-  | { readonly kind: "attributed-personal"; readonly user: string };
+  | { readonly kind: "member" }
+  | { readonly kind: "attributed"; readonly user: string };
 const AccountCreation = Context.Reference<AccountCreation>("hosted/AccountCreation", {
-  defaultValue: () => ({ kind: "personal" }),
+  defaultValue: () => ({ kind: "member" }),
 });
 /**
  * A copy a data step makes of `from`, such as for a profile with other accounts, is shared exactly
@@ -60,16 +61,14 @@ export const organizationAppCreation = <A, E, R>(effect: Effect.Effect<A, E, R>)
  */
 export const sharedAppCreation = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provideService(AppCreation, { kind: "shared" }));
-/** Connection completion uses the persisted destination, not callback query parameters. */
-export const accountDestination =
-  (destination: typeof ConnectionDestination.Type) =>
-  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    effect.pipe(Effect.provideService(AccountCreation, destination));
-/** Managed per-user credentials have a known owner even when provisioned by a system installer. */
+/**
+ * An account a system installer saves for a named member, who owns it: a managed per-user key, or
+ * an account the v1 import moves for the organization's owner. Every account is personal.
+ */
 export const personalAccountCreation =
   (user: string) =>
   <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    effect.pipe(Effect.provideService(AccountCreation, { kind: "attributed-personal", user }));
+    effect.pipe(Effect.provideService(AccountCreation, { kind: "attributed", user }));
 
 /**
  * Who may use a stored OAuth client: the audience an administrator chose when registering it, or
@@ -127,7 +126,7 @@ const organizationAccounts = <A extends AccountOwner>(accounts: readonly A[]) =>
       account.owner.startsWith("organization:") &&
       Schema.is(OrganizationId)(account.owner.slice("organization:".length)),
   );
-/** The accounts whose policy still lets the user use them, with the owner each belongs to. */
+/** The accounts the user owns and may still use as a member, with the owner each belongs to. */
 const accountAccess = (sql: SqlClient.SqlClient, accounts: readonly AccountOwner[], user: string) =>
   sql`select p.account_id as id, 'organization:' || p.organization_id as owner
         from hosted_account_access p
@@ -135,12 +134,9 @@ const accountAccess = (sql: SqlClient.SqlClient, accounts: readonly AccountOwner
           "p.account_id",
           accounts.map((account) => account.id),
         )}
-        and (p.kind <> 'personal' or exists(select 1 from member owner_member
-          where owner_member."organizationId" = p.organization_id and owner_member."userId" = p.personal_user_id))
+        and p.personal_user_id = ${user}
         and exists(select 1 from member m
-          where m."organizationId" = p.organization_id and m."userId" = ${user}
-          and ((p.kind = 'personal' and p.personal_user_id = m."userId")
-            or (p.kind = 'shared' and p.audience = 'everyone')))`;
+          where m."organizationId" = p.organization_id and m."userId" = ${user})`;
 const AllowedAccount = Schema.Struct({ id: AccountId, owner: Schema.String });
 type AllowedAccount = typeof AllowedAccount.Type;
 const AllowedUse = Schema.Struct({ requirement: Schema.String, id: AccountId });
@@ -293,7 +289,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
       // Removing what the app registered needs no app access. User accounts are checked by the
       // registration's actor's use; an app-account registration has none. An app account passes
       // when the app could still use it if linked: it belongs to the app's organization under a
-      // valid access record and, if personal, its owner is still a member. No current app link is
+      // valid access record and its owner is still a member. No current app link is
       // required, since unlinking is what removes its registrations. A departed member's personal
       // account is refused, as resolving it is, and its registrations wait for manual removal.
       removalResolving: (app, accounts, appUses) =>
@@ -318,9 +314,9 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
                     "a.id",
                     uses.map((use) => use.account.id),
                   )} and a.owner = ${app.owner}
-                  and (p.kind <> 'personal' or exists(select 1 from member owner_member
+                  and exists(select 1 from member owner_member
                     where owner_member."organizationId" = p.organization_id
-                      and owner_member."userId" = p.personal_user_id)))`;
+                      and owner_member."userId" = p.personal_user_id))`;
           const rows = yield* sql`select ${users} as accounts, ${ours} as ours`;
           const checked = (yield* Schema.decodeUnknownEffect(
             Schema.Array(
@@ -374,11 +370,10 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           // to, so the product checks its own access rows only. Whether the requirement's scope
           // lets this member complete it is checked by `appAccountConnected`, under the app's
           // lock, against the version the SDK completes against. A member who lost the access
-          // the connection needs, such as management of the account it reconnects, is refused.
+          // the connection needs, such as ownership of the account it reconnects, is refused.
           const refused = new AccountConnectionRefused(connection.target);
           const reconnect = connection.reconnectAccount;
-          const rows =
-            yield* sql`select c.connection_id, c.organization_id as organization, c.destination from hosted_connection_access c
+          const rows = yield* sql`select c.connection_id from hosted_connection_access c
         join member m on m."organizationId" = c.organization_id and m."userId" = ${user}
         join hosted_app_access a on a.id = (c.target ->> 'app') and a.organization_id = c.organization_id
         where c.connection_id = ${connection.id}
@@ -388,21 +383,10 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
         and (${reconnect}::text is null or exists (
           select 1 from hosted_account_access a where a.account_id = ${reconnect}
           and a.organization_id = c.organization_id
-          and ((a.kind = 'personal' and a.personal_user_id = ${user})
-            or (a.kind = 'shared' and (a.creator_id = ${user} or m.role in ('owner','admin'))))
+          and a.personal_user_id = ${user}
         )) for share of c, m`;
-          const intent = (yield* Schema.decodeUnknownEffect(
-            Schema.Array(
-              Schema.Struct({ organization: OrganizationId, destination: ConnectionDestination }),
-            ),
-          )(rows))[0];
-          if (intent === undefined) return yield* refused;
-        }).pipe(
-          Effect.catchTags({
-            SqlError: () => new StorageError(),
-            SchemaError: () => new StorageError(),
-          }),
-        ),
+          if (rows.length === 0) return yield* refused;
+        }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
       appCreated: (app) =>
         Effect.gen(function* () {
           const organization = yield* organizationOf(app.owner);
@@ -427,18 +411,13 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
       accountCreated: (account) =>
         Effect.gen(function* () {
           const organization = yield* organizationOf(account.owner);
-          const destination = yield* AccountCreation;
+          const creation = yield* AccountCreation;
           const user = yield* member(
             organization,
-            destination.kind === "attributed-personal" ? destination.user : yield* CurrentUserId,
+            creation.kind === "attributed" ? creation.user : yield* CurrentUserId,
           );
-          if (destination.kind !== "shared") {
-            yield* sql`insert into hosted_account_access (account_id, organization_id, creator_id, kind, personal_user_id)
+          yield* sql`insert into hosted_account_access (account_id, organization_id, creator_id, kind, personal_user_id)
           values (${account.id}, ${organization}, ${user}, 'personal', ${user})`;
-            return;
-          }
-          yield* sql`insert into hosted_account_access (account_id, organization_id, creator_id, kind, audience)
-        values (${account.id}, ${organization}, ${user}, 'shared', 'everyone')`;
         }).pipe(Effect.catchTag("SqlError", () => new StorageError())),
       oauthClientCreated: (client) =>
         Effect.gen(function* () {
@@ -541,8 +520,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           const user = yield* member(organization, yield* CurrentUserId);
           const policy = yield* sql`select p.account_id from hosted_account_access p
         where p.account_id = ${account.id} and p.organization_id = ${organization}
-        and ((p.kind = 'personal' and p.personal_user_id = ${user}) or (p.kind = 'shared' and (p.creator_id = ${user}
-          or exists(select 1 from member m where m."organizationId" = ${organization} and m."userId" = ${user} and m.role in ('owner','admin'))))) for update`;
+        and p.personal_user_id = ${user} for update`;
           if (policy.length !== 1) return yield* new StorageError();
           // An app uses an app link for every caller: it must be unlinked first. The route refuses
           // with the apps that link it; this refuses an app link made since. The access row's lock

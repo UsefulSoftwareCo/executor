@@ -233,7 +233,7 @@ function GroupContent({
               {search
                 ? "Try another name."
                 : admin
-                  ? "Share apps and accounts with the people in your team."
+                  ? "Share apps and OAuth clients with the people in your team."
                   : "An organization admin can create groups."}
             </EmptyState>
           )}

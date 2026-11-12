@@ -276,14 +276,13 @@ export const ToolCall = Schema.Struct({
   tool: Schema.NullOr(Schema.String),
   kind: Schema.NullOr(ToolKind),
   /**
-   * The accounts the call ran with. A personal account is named only to the member it belongs to;
-   * to everyone else, owners and admins included, it is a personal account with no ID or name.
+   * The accounts the call ran with. An account is named only to the member it belongs to; to
+   * everyone else, owners and admins included, it is an account with no ID or name.
    */
   accounts: Schema.Array(
     Schema.Struct({
       id: Schema.NullOr(Schema.String),
       name: Schema.NullOr(Schema.String),
-      shared: Schema.Boolean,
     }),
   ),
   status: ToolCallStatus,

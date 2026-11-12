@@ -119,7 +119,7 @@ export const HostedOAuthStartResult = Schema.Union([
   OAuthStartResult.members[1],
 ]);
 export type HostedOAuthStartResult = typeof HostedOAuthStartResult.Type;
-/** Safe metadata for the shared account detail view. */
+/** Safe metadata for the account detail view. Only the account's owner reads it. */
 export const HostedAccountDetail = Schema.Struct({
   account: Account,
   provider: Provider,
@@ -128,6 +128,7 @@ export const HostedAccountDetail = Schema.Struct({
   health: AccountHealth,
   /** Whether deleting the account also asks its service to revoke access. */
   revocation: AccountRevocation.fields.revocation,
+  /** The dashboards' shared detail shape. Only the owner reads an account, and owners manage it. */
   canManage: Schema.Boolean,
 });
 /** Credentials travel directly to the authorized host and never appear in successful responses. */

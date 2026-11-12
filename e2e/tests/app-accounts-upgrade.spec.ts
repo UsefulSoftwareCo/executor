@@ -349,7 +349,7 @@ layer(HostedLive, { excludeTestServices: true })("Protocol-12 accounts on hosted
               actor,
               "POST",
               connectionsPath(path, "user", "service"),
-              { destination: { kind: "personal" } },
+              {},
             );
             expect(started.status, JSON.stringify(started.body)).toBe(200);
             const submitted = yield* api.request(
@@ -529,7 +529,7 @@ layer(HostedLive, { excludeTestServices: true })("App accounts storage upgrade o
                   owner,
                   "POST",
                   connectionsPath(path, scope, requirement),
-                  { destination: { kind: "personal" } },
+                  {},
                 );
                 yield* ok(started);
                 const submitted = yield* api.request(

@@ -65,7 +65,7 @@ const listProjects = query(
 export default defineApp(requirements, { tools: router({ listProjects }) });
 ```
 
-For one shared account instead, declare it under `app` and read
+For one account every caller uses instead, declare it under `app` and read
 `ctx.app.accounts.vercel`:
 
 ```ts

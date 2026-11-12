@@ -130,34 +130,32 @@ const heldCase = (scope: "app" | "user") =>
     expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
     const app = (yield* body(App, deployed)).id;
     const appPath = `${prefix}/apps/${app}`;
-    const accounts: string[] = [];
+    const accounts: { actor: Session; id: string }[] = [];
     // The app goes first: an account linked for everyone cannot be deleted.
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
         yield* send(owner, "DELETE", appPath);
         for (const account of accounts)
-          yield* send(owner, "DELETE", `${prefix}/accounts/${account}`);
+          yield* send(account.actor, "DELETE", `${prefix}/accounts/${account.id}`);
       }).pipe(Effect.orDie),
     );
     /**
-     * An account shared with everyone, connected from the app, which links it to the app's
-     * requirement: for everyone, or for the owner.
+     * `actor`'s own account, connected from the app, which links it to the app's requirement: for
+     * everyone, or for `actor`.
      */
-    const connect = (token: string) =>
+    const connect = (actor: Session, token: string) =>
       Effect.gen(function* () {
-        const started = yield* send(owner, "POST", connectionsPath(appPath, scope, "service"), {
-          destination: { kind: "shared" },
-        });
+        const started = yield* send(actor, "POST", connectionsPath(appPath, scope, "service"), {});
         expect(started.status, JSON.stringify(started.body)).toBe(200);
         const saved = yield* send(
-          owner,
+          actor,
           "POST",
           `${prefix}/connections/${(yield* body(Resource, started)).id}/submit`,
           { method: "key", label: token, fields: { token } },
         );
         expect(saved.status, JSON.stringify(saved.body)).toBe(200);
         const account = (yield* body(Resource, saved)).id;
-        accounts.push(account);
+        accounts.push({ actor, id: account });
         return account;
       });
     /** The links in the app's scope that `actor` sees. */
@@ -224,9 +222,9 @@ layer(HostedLive, { excludeTestServices: true })("App account link held access",
         const linkPath = (account: string) =>
           `${requirementPath(appPath, "app", "service")}/${account}`;
 
-        const first = yield* connect("synthetic-held-first");
-        const second = yield* connect("synthetic-held-second");
-        // Connecting the second account replaced the first's link.
+        // The admin connects their own account; the owner's connected next replaces its link.
+        const first = yield* connect(admin, "synthetic-held-first");
+        const second = yield* connect(owner, "synthetic-held-second");
         expect(yield* appLinks).toEqual([["service", second]]);
 
         // Demoted while its link waits, the admin no longer edits the app: nothing is linked.
@@ -287,11 +285,17 @@ layer(HostedLive, { excludeTestServices: true })("App account link held access",
             const shared = yield* send(owner, "PATCH", path, { revision, audience });
             expect(shared.status, JSON.stringify(shared.body)).toBe(200);
           });
-        // The app is shared with everyone; the owner's account is linked for the owner and shared
-        // with everyone.
+        // The app is shared with everyone. The admin connects their own account from it, then
+        // unlinks it, so the account is saved but linked for no one.
         yield* appAccess({ kind: "everyone" });
-        const account = yield* connect("synthetic-held-mcp");
-        expect(yield* links(owner)).toEqual([["service", account]]);
+        const account = yield* connect(admin, "synthetic-held-mcp");
+        expect(yield* links(admin)).toEqual([["service", account]]);
+        const unlinked = yield* send(
+          admin,
+          "DELETE",
+          `${requirementPath(appPath, "user", "service")}/${account}`,
+        );
+        expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
         expect(yield* links(admin)).toEqual([]);
         /** Save a new connection that runs the app as the account, which links it for the admin. */
         const save = () =>

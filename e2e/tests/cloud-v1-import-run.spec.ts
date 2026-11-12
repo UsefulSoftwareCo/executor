@@ -1345,8 +1345,8 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
             app,
           ),
         ).toEqual([{ creator_id: firstV2.id, audience: "everyone" }]);
-        // The org connection is a shared account linked for everyone; each member's is their own,
-        // linked for them.
+        // Every account is personal: the org connection's is the owner's, linked for everyone; each
+        // member's is their own, linked for them.
         const access = yield* cloudRows(
           Schema.Struct({
             account_id: Schema.String,
@@ -1365,8 +1365,8 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         ).toEqual(
           [
             ["personal", null, firstV2.id],
+            ["personal", null, firstV2.id],
             ["personal", null, olderV2.id],
-            ["shared", "everyone", null],
           ].toSorted((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)),
         );
         const links = yield* cloudRows(
@@ -1378,10 +1378,14 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
           "select requirement, subject, account from hosted_app_account_links where app = $1",
           app,
         );
-        const shared = access.find((entry) => entry.kind === "shared")?.account_id;
+        const workspaceAccount = links.find((link) => link.subject === null)?.account;
+        expect(
+          access.find((entry) => entry.account_id === workspaceAccount)?.personal_user_id,
+          "the org connection's account is the owner's",
+        ).toBe(firstV2.id);
         expect(
           links
-            .map((link) => [link.requirement, link.subject, link.account === shared])
+            .map((link) => [link.requirement, link.subject, link.account === workspaceAccount])
             .toSorted((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)),
         ).toEqual(
           [

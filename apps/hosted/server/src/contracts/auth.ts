@@ -215,7 +215,7 @@ export type AuthCredentialKind = typeof AuthCredentialKind.Type;
  * - `insufficient_scope`: the credential's grant does not permit this action, app or tool.
  * - `insufficient_role`: the caller's role does not permit this administrative action.
  * - `resource_denied`: a member was refused by a check on the resource itself, such as an app or
- *   account not shared with them.
+ *   app not shared with them or another member's account.
  * - `app_not_found`: an app page's host or app does not exist.
  * - `unclassified`: a 401 or 403 that no check above recorded; it marks a gap to classify.
  */

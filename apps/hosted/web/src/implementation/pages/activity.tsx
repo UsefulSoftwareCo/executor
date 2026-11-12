@@ -223,7 +223,7 @@ const personName = (person: Person) => person.name ?? person.email ?? "Unknown m
 const appName = (call: ToolCall) => call.app.name ?? "An app you can no longer use";
 /** The tool's name, which the log does not keep when the app has no such tool. */
 const toolName = (call: ToolCall) => call.tool ?? "A tool the app does not have";
-/** A personal account of someone else is named to nobody but its owner. */
+/** Someone else's account is named to nobody but its owner. */
 const accountName = (account: ToolCall["accounts"][number]) => account.name ?? "Personal account";
 
 /**
@@ -1186,25 +1186,9 @@ function Actor({ call }: { readonly call: ToolCall }) {
   );
 }
 
-/** The log records that an account was shared, not with whom: that can change after the call. */
-const sharing = (accounts: ToolCall["accounts"]) =>
-  accounts.every((account) => account.shared)
-    ? "Shared"
-    : accounts.some((account) => account.shared)
-      ? "Personal and shared"
-      : "Personal";
-
 function Accounts({ accounts }: { readonly accounts: ToolCall["accounts"] }) {
   if (accounts.length === 0) return <span className="text-xs text-muted-foreground">None</span>;
-  return (
-    <>
-      <span className="block truncate text-[13px]">{accounts.map(accountName).join(", ")}</span>
-      {/* A withheld account already says it is personal. */}
-      {accounts.some((account) => account.name !== null) && (
-        <span className="block text-xs text-muted-foreground">{sharing(accounts)}</span>
-      )}
-    </>
-  );
+  return <span className="block truncate text-[13px]">{accounts.map(accountName).join(", ")}</span>;
 }
 
 function CallRow({
@@ -1441,12 +1425,6 @@ function CallDetail({
             call.accounts.map((account, index) => (
               <span key={account.id ?? `personal-${index}`} className="block">
                 {accountName(account)}
-                {account.name !== null && (
-                  <span className="text-xs text-muted-foreground">
-                    {" · "}
-                    {account.shared ? "Shared" : "Personal"}
-                  </span>
-                )}
               </span>
             ))
           )}

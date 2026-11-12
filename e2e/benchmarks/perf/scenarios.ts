@@ -195,11 +195,6 @@ const apiRoutes: readonly (readonly [string, string, (o: OrgReceipt) => string])
     (o) => `${app(o)}/schedules/definitions`,
   ],
   ["account", "{org}/accounts/{account}", (o) => `${org(o)}/accounts/${primaryAccount(o)}`],
-  [
-    "account.access",
-    "{org}/accounts/{account}/access",
-    (o) => `${org(o)}/accounts/${primaryAccount(o)}/access`,
-  ],
   ["catalog", "/api/catalog", () => `/api/catalog`],
   ["registry.apps", "/api/registry/apps", () => `/api/registry/apps`],
   ["auth.get-session", "/api/auth/get-session", () => `/api/auth/get-session`],
@@ -335,9 +330,7 @@ const slowFactory = (target: PerfTarget) =>
     const path = `${root}/apps/${deployed.id}`;
     // Connecting from the app links the new account to it, so calls need no account choice.
     const connection = yield* client
-      .request("POST", `${path}/accounts/user/service/connections`, {
-        destination: { kind: "personal" },
-      })
+      .request("POST", `${path}/accounts/user/service/connections`, {})
       .pipe(Effect.flatMap(ok("slow factory connection")), decode(Identified));
     yield* client
       .request("POST", `${root}/connections/${connection.id}/submit`, {

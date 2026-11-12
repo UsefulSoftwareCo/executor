@@ -1,7 +1,7 @@
 /**
  * An app link to a member's personal account serves the app only while that member is in the
  * organization. Once they leave, the account no longer fills the requirement, while its link stays
- * listed for the app's managers to remove; a shared account linked beside it keeps serving every
+ * listed for the app's managers to remove; the owner's account linked beside it keeps serving every
  * caller.
  */
 import { expect, layer } from "@effect/vitest";
@@ -36,13 +36,11 @@ layer(HostedLive, { excludeTestServices: true })("Departed member app links", (i
         });
         const listed = Effect.map(links(), (read) => read.map((item) => item.account.id));
 
-        // The admin links their personal account for everyone, then the owner a shared one.
+        // The admin links their account for everyone, then the owner theirs.
         const personal = yield* connect(actors.admin, "app", "team", "departed-admin-team");
-        const shared = yield* connect(actors.owner, "app", "team", "departed-shared-team", {
-          kind: "shared",
-        });
-        expect(yield* used).toEqual([personal, shared]);
-        expect(yield* listed).toEqual([personal, shared]);
+        const remaining = yield* connect(actors.owner, "app", "team", "departed-owner-team");
+        expect(yield* used).toEqual([personal, remaining]);
+        expect(yield* listed).toEqual([personal, remaining]);
 
         // The admin leaves. The app can no longer use their account; its link stays listed.
         const { user } = yield* body(
@@ -55,8 +53,8 @@ layer(HostedLive, { excludeTestServices: true })("Departed member app links", (i
             memberIdOrEmail: user.email,
           }),
         );
-        expect(yield* used).toEqual([shared]);
-        expect(yield* listed).toEqual([personal, shared]);
+        expect(yield* used).toEqual([remaining]);
+        expect(yield* listed).toEqual([personal, remaining]);
       }),
     ),
   );

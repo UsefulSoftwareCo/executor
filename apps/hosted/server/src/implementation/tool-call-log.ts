@@ -376,12 +376,12 @@ const insertCall = (row: CallRow) =>
         returning id
       ), accounts as (
         insert into hosted_tool_call_accounts (call_id, account_id, account_name, shared, owner_id)
-        select inserted.id, a.id, left(a.label, ${nameLength}), h.kind = 'shared',
-          case when h.kind = 'personal' then h.personal_user_id end
+        select inserted.id, a.id, left(a.label, ${nameLength}), false, h.personal_user_id
         from inserted
         join executor_accounts a
           on a.id in (select jsonb_array_elements_text(${accountIds(row.details.accounts)}::jsonb))
         join hosted_account_access h on h.account_id = a.id and h.organization_id = ${organization.organization}
+          and h.kind = 'personal'
       )
       select id from inserted`;
     return rows.length > 0 ? row.id : undefined;

@@ -32,7 +32,7 @@ const toolCall = "mcp.tool.call";
  */
 const answeredChecks = {
   "app-access": "left join hosted_app_access p on",
-  "account-access": "select p.account_id as account, p.creator_id as creator",
+  "account-access": "select p.account_id as account",
 } as const;
 const path = "/api/devtools/statement-hold";
 const Arm = Schema.Union([

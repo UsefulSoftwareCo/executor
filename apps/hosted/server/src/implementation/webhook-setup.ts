@@ -1,5 +1,5 @@
 import { actorManagerOwner } from "./access.ts";
-import { requireAccountAccess } from "./resource-policy.ts";
+import { requireAccountOwner } from "./resource-policy.ts";
 import type { WebhookId } from "@executor-js/sdk/core";
 /** Private setup shares SDK state without making secret exchange available to MCP credentials. */
 import { Effect } from "effect";
@@ -17,7 +17,6 @@ import { ScheduleWakeup } from "../contracts/schedules.ts";
 const authorized = (
   auth: typeof SessionAuthentication.Service,
   input: { organization: OrganizationReference; app: AppId; subscription: WebhookId },
-  permission: "read" | "use" = "use",
 ) =>
   Effect.gen(function* () {
     const organization = yield* auth.organization(input.organization);
@@ -29,10 +28,9 @@ const authorized = (
     yield* Effect.gen(function* () {
       const subscription = yield* executor.webhooks.get(input);
       // An app-account webhook has no actor: it is the app's, so managing the app suffices, as it
-      // does for unlinking its account. A member's webhook also needs use of their account.
+      // does for unlinking its account. A member's webhook also needs them to own its account.
       yield* actorManagerOwner(input.app, subscription.actor);
-      if (subscription.actor !== null)
-        yield* requireAccountAccess(subscription.sourceAccount, permission);
+      if (subscription.actor !== null) yield* requireAccountOwner(subscription.sourceAccount);
     }).pipe(
       Effect.provideService(CurrentOrganization, access),
       Effect.provideService(CurrentUserId, principal.userId),
@@ -64,7 +62,7 @@ export const hostedWebhookSetupHandlers = HttpApiBuilder.group(
           Effect.flatMap(authorized(auth, params), (executor) => executor.webhooks.remove(params)),
         )
         .handle("confirmRemoval", ({ params }) =>
-          Effect.flatMap(authorized(auth, params, "read"), (executor) =>
+          Effect.flatMap(authorized(auth, params), (executor) =>
             executor.webhooks.confirmRemoval(params),
           ),
         );
