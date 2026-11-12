@@ -1,9 +1,9 @@
 /**
  * CI configuration plane: repository settings, deployment environments, the CI Cloudflare
- * token, the protected-branch ruleset, and the public export. Development happens in this
- * private repository; `.github/workflows/export-public.yml` snapshots `main` to the public
- * repository's export branch. This stack places the token that workflow pushes with and
- * protects the export branch on the public repository.
+ * token and the public export. Development happens in this private repository;
+ * `.github/workflows/export-public.yml` snapshots `main` to the public repository's export
+ * branch. This stack places the token that workflow pushes with and protects the export branch
+ * on the public repository. The `main` ruleset is its own stack, `alchemy.github-ruleset.ts`.
  */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
@@ -106,16 +106,6 @@ const productionVariables = [
   "SENTRY_URL",
 ] as const;
 
-/**
- * Required status checks on `main`. These are the contexts reported by `ci.yml` calling
- * `checks.yml` (PR #246). The E2E jobs run as matrix runners whose names change with the
- * selection, so `checks / e2e` stands for all of them. `CI_RULESET_ENFORCEMENT` defaults to `active`, so an apply that
- * cannot create the ruleset fails loudly rather than leaving `main` silently unprotected.
- * Rulesets need GitHub Pro on a private repository, which is the blocker today; `.env.ci.op`
- * sets `disabled` until the plan allows them. `evaluate` is log only and blocks nothing.
- */
-const requiredStatusChecks = ["checks / check", "checks / e2e"] as const;
-
 export default Alchemy.Stack(
   "executor-next-ci",
   {
@@ -136,11 +126,6 @@ export default Alchemy.Stack(
     const runnerMode = yield* Config.Literals(["blacksmith", "desktop"], "CI_RUNNER_MODE").pipe(
       Config.withDefault("blacksmith" as const),
     );
-    const enforcement = yield* Config.Literals(
-      ["evaluate", "active", "disabled"],
-      "CI_RULESET_ENFORCEMENT",
-    ).pipe(Config.withDefault("active" as const));
-
     // The repository already exists. Alchemy observes it and converges these settings only;
     // every property it does not declare keeps its current value.
     const repository = yield* GitHub.Repository("Repository", {
@@ -508,33 +493,6 @@ export default Alchemy.Stack(
         environment: production,
       }).pipe(retain());
 
-    // Rulesets are unavailable on private repositories under the GitHub Free plan, so
-    // `CI_RULESET_ENFORCEMENT=disabled` skips the resource instead of asking GitHub for it.
-    const ruleset =
-      enforcement === "disabled"
-        ? undefined
-        : yield* GitHub.Ruleset("Main", {
-            ...target,
-            name: "main",
-            enforcement,
-            target: "branch",
-            conditions: { include: ["refs/heads/main"] },
-            // Administrators keep direct access while the workflow names are still settling.
-            bypassActors: [{ actorType: "RepositoryRole", actorId: 5, bypassMode: "always" }],
-            rules: {
-              deletion: true,
-              nonFastForward: true,
-              requiredStatusChecks: {
-                checks: requiredStatusChecks.map((context) => ({ context })),
-                strictRequiredStatusChecksPolicy: false,
-              },
-              pullRequest: {
-                requiredApprovingReviewCount: 0,
-                requiredReviewThreadResolution: true,
-              },
-            },
-          }).pipe(retain());
-
     /**
      * The export branch on the public repository receives fast-forward snapshot commits from
      * the export workflow. An export commit can have more parents: the heads of public pull
@@ -560,9 +518,6 @@ export default Alchemy.Stack(
       repositoryId: repository.repoId,
       environments: [production],
       deployTokenId: deployToken.tokenId,
-      rulesetId: ruleset?.rulesetId,
-      rulesetEnforcement: enforcement,
-      requiredStatusChecks,
     };
   }),
 );
