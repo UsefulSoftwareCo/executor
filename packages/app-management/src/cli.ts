@@ -284,9 +284,14 @@ const workingSource = (host: Host, organization: Option.Option<string>, app: App
 const gitAuthorization = (host: Host, organization: Option.Option<string>) =>
   access(host, organization).pipe(Effect.map(({ token }) => `Bearer ${Redacted.value(token)}`));
 
+/** An app's working source as the host returned it. */
+type WorkingSource = Effect.Success<ReturnType<typeof workingSource>>;
+
 /**
  * Save a local source as the commit after `expected`. A source that fits one request is sent as
  * files; a larger one is pushed with Git, sending only the files the app does not already hold.
+ * A caller that already read the working source passes it as `read`: reading a source with many
+ * public files lists and sizes each of them, so a second read is not free.
  */
 const saveSource = (input: {
   readonly host: Host;
@@ -295,6 +300,7 @@ const saveSource = (input: {
   readonly expected: typeof SourceCommit.Type;
   readonly files: ReadonlyArray<LocalFile>;
   readonly message: string;
+  readonly read?: WorkingSource;
 }) =>
   Effect.gen(function* () {
     if (fitsRequest(input.files)) {
@@ -306,7 +312,7 @@ const saveSource = (input: {
         }),
       );
     }
-    const source = yield* workingSource(input.host, input.organization, input.app);
+    const source = input.read ?? (yield* workingSource(input.host, input.organization, input.app));
     if (source.revision.commit !== input.expected)
       return yield* new GitPushRefused({
         reason: "conflict",
@@ -913,6 +919,7 @@ export const appsCommand = <E = never, R = never>(
                       expected: head.revision.commit,
                       files: local,
                       message: args.message,
+                      read: head,
                     });
                     return saved.revision.commit;
                   });

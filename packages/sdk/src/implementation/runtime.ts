@@ -200,6 +200,12 @@ export const toEffectRuntime = (
         }),
       ),
     remove: (key) => blobs.remove(key).pipe(Effect.withSpan("storage.blob.remove")),
+    removeAll: (keys) =>
+      blobs.removeAll(keys).pipe(
+        Effect.withSpan("storage.blob.remove_all", {
+          attributes: { "storage.blob.keys": keys.length },
+        }),
+      ),
     list: (folder, options) =>
       blobs.list(folder, options).pipe(Effect.withSpan("storage.blob.list")),
     stream: (key, range) =>

@@ -25,6 +25,7 @@ export const AppBuilds = Cloudflare.R2.Bucket(
 ).pipe(retain(testStage.pipe(Effect.map(Option.isNone), Effect.orDie)));
 
 type ReadClient = Effect.Success<ReturnType<typeof Cloudflare.R2.ReadBucket>>;
+type WriteClient = Effect.Success<ReturnType<typeof Cloudflare.R2.ReadWriteBucket>>;
 
 /** R2 pages object names itself; `delimiter` keeps nested folders out. */
 const listFolder = (
@@ -77,6 +78,17 @@ const streamObject = (bucket: ReadClient, key: BlobKey, range: BlobRange | undef
     Effect.mapError(() => new BlobStoreError({ operation: "get" })),
   );
 
+/** Delete one object or several in one request; missing objects are already removed. */
+const removeObjects = (bucket: WriteClient, keys: string | string[]) =>
+  bucket.delete(keys).pipe(
+    Effect.asVoid,
+    Effect.provide(RuntimeContext.phantom),
+    Effect.tapError((error) =>
+      Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
+    ),
+    Effect.mapError(() => new BlobStoreError({ operation: "remove" })),
+  );
+
 /** Resolve a binding at composition; storage I/O executes in the current Worker invocation. */
 export const cloudBlobs = Effect.gen(function* () {
   const bucket = yield* Cloudflare.R2.ReadWriteBucket(AppBuilds);
@@ -114,15 +126,9 @@ export const cloudBlobs = Effect.gen(function* () {
         ),
         Effect.mapError(() => new BlobStoreError({ operation: "put" })),
       ),
-    remove: (key) =>
-      bucket.delete(key).pipe(
-        Effect.asVoid,
-        Effect.provide(RuntimeContext.phantom),
-        Effect.tapError((error) =>
-          Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
-        ),
-        Effect.mapError(() => new BlobStoreError({ operation: "remove" })),
-      ),
+    remove: (key) => removeObjects(bucket, key),
+    // One R2 request deletes up to 1,000 objects; `removeAllKeys` keeps callers within it.
+    removeAll: (keys) => (keys.length === 0 ? Effect.void : removeObjects(bucket, [...keys])),
     list: (folder, options) => listFolder(bucket, folder, options),
     stream: (key, range) => streamObject(bucket, key, range),
   });
@@ -158,6 +164,7 @@ export const cloudBuildReader = Effect.gen(function* () {
       ),
     put: () => Effect.fail(new BlobStoreError({ operation: "put" })),
     remove: () => Effect.fail(new BlobStoreError({ operation: "remove" })),
+    removeAll: () => Effect.fail(new BlobStoreError({ operation: "remove" })),
     list: (folder, options) => listFolder(bucket, folder, options),
     stream: (key, range) => streamObject(bucket, key, range),
   });
