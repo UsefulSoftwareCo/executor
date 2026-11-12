@@ -311,11 +311,16 @@ Release PRs build and test the Linux and Windows targets only. The macOS targets
 on manual dispatch, where they are built, signed, notarized and tested. macOS runners
 cost 5-20x as much as Linux runners, so keep them off pull requests.
 
-A pull request that changes the release paths (the `paths` in
-`.github/workflows/release-artifacts.yml`) also runs "Executor releases". Gate its
-merge on that workflow as on CI: wait for both
-(`ci-wait --workflow CI --workflow "Executor releases"`) and do not merge while
-either fails.
+Every pull request also runs "Executor releases". Its `changes` job compares the
+pull request's head with its merge base with `main` and runs the release jobs only
+when that diff touches the release paths (the job's filters in
+`.github/workflows/release-artifacts.yml`). A lower stack layer, one another open
+pull request is based on, runs none of them: the top layer's run builds and tests
+the combined change, so a stack is gated on its top layer's run. The workflow's
+`releases` job passes when every job the run needed passed and the others were
+skipped. Gate a merge on that workflow as on CI: wait for both on the pull request,
+or on a stack's top layer (`ci-wait --workflow CI --workflow "Executor releases"`),
+and do not merge while either fails.
 
 A failed e2e job uploads raw reports and server logs. Product database files,
 runtime dependencies and private `actors.json` sessions are excluded.
