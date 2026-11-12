@@ -342,7 +342,13 @@ export const makeListings = (options: {
       const run = (load: PendingLoad, owner: "host" | "reader") =>
         evaluated.pipe(
           // Before readers have it, so they share its definitions too.
-          Effect.map((listing): Outcome => new Evaluated(shareListing(listing))),
+          // In its own span: what interning and counting the listing cost, apart from decoding
+          // the app's answer.
+          Effect.flatMap((listing) =>
+            Effect.sync((): Outcome => new Evaluated(shareListing(listing))).pipe(
+              Effect.withSpan("sdk.tools.listing.share"),
+            ),
+          ),
           Effect.catch((error) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((at): Outcome =>
