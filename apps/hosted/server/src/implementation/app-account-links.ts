@@ -24,7 +24,7 @@ import {
   type AppAccountRequirement,
   type LinkedAccountSignIn,
 } from "../contracts/app-accounts.ts";
-import { ApiAuthentication, Authentication, CurrentUserId } from "../contracts/auth.ts";
+import { BearerAuthentication, SessionAuthentication, CurrentUserId } from "../contracts/auth.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { OrganizationForbidden } from "../contracts/organization.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
@@ -217,8 +217,8 @@ const savedLink = (
 
 const connect = (
   services: {
-    readonly auth: Authentication["Service"];
-    readonly api: ApiAuthentication["Service"];
+    readonly auth: SessionAuthentication["Service"];
+    readonly api: BearerAuthentication["Service"];
   },
   scope: AccountScope,
   params: { readonly app: AppId; readonly requirement: string },
@@ -249,7 +249,7 @@ const connect = (
  */
 export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAccounts", (handlers) =>
   Effect.gen(function* () {
-    const services = { auth: yield* Authentication, api: yield* ApiAuthentication };
+    const services = { auth: yield* SessionAuthentication, api: yield* BearerAuthentication };
     return handlers
       .handle("appList", ({ params }) =>
         Effect.gen(function* () {

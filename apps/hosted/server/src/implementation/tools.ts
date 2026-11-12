@@ -28,7 +28,7 @@ import { Effect, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
 import { CallFailures, RunFailures } from "../contracts/tools.ts";
-import { CurrentApiCaller } from "../contracts/tool-call-log.ts";
+import { CurrentToolCallCaller } from "../contracts/tool-call-log.ts";
 import {
   dashboardRunReference,
   loggedToolCall,
@@ -37,7 +37,7 @@ import {
 } from "./tool-call-log.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { CurrentUserId, Forbidden } from "../contracts/auth.ts";
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import {
   browserOnly,
   checkedToolCall,
@@ -91,7 +91,7 @@ export const searchableTools = (
  */
 export const searchTools = (input: Parameters<Executor["tools"]["search"]>[0]) =>
   Effect.gen(function* () {
-    const policy = yield* CurrentAuthorization;
+    const policy = yield* CurrentPolicy;
     const executor = yield* Effect.flatten(HostedExecutor);
     const page = yield* executor.tools.search({
       ...input,
@@ -179,7 +179,7 @@ const startTool = (
 export const callTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
   Effect.gen(function* () {
     const { exit, reference } = yield* loggedToolCall(
-      yield* CurrentApiCaller,
+      yield* CurrentToolCallCaller,
       input,
       false,
       startTool(input),

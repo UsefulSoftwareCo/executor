@@ -1,4 +1,4 @@
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import {
   CurrentUsage,
   observeProductOperation,
@@ -52,7 +52,7 @@ import { listAppSkills, readAppSkill } from "./skills.ts";
  */
 export const hostedMcpBackend = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;
-  const policy = yield* CurrentAuthorization;
+  const policy = yield* CurrentPolicy;
   const sdk = yield* HostedExecutor;
   const database = yield* GroupDatabase;
   const user = yield* CurrentUserId;
@@ -80,7 +80,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
   });
   const context = Context.make(CurrentOrganization, organization).pipe(
     Context.add(HostedExecutor, sdk),
-    Context.add(CurrentAuthorization, policy),
+    Context.add(CurrentPolicy, policy),
     Context.add(GroupDatabase, database),
     Context.add(CurrentUserId, user),
     Context.add(HostedBackground, background),

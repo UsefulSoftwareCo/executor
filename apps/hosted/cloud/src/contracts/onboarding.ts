@@ -1,5 +1,5 @@
 import {
-  RequireUser,
+  RequireBrowserSession,
   OrganizationId,
   OrganizationLogo,
   type SetupProgress,
@@ -276,7 +276,7 @@ export const onboardingGroup = HttpApiGroup.make("onboarding")
       error: [OnboardingUnavailable, TeamIconNotFound],
     }),
   )
-  .middleware(RequireUser);
+  .middleware(RequireBrowserSession);
 
 /**
  * A new team's setup steps read their order with the page, and dashboard pages whether setup still
@@ -298,4 +298,4 @@ export const setupGroup = HttpApiGroup.make("setup")
     }),
   )
   .middleware(RequireOrganization)
-  .middleware(RequireUser);
+  .middleware(RequireBrowserSession);

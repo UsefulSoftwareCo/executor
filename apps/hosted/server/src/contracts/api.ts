@@ -14,7 +14,7 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api
 import {
   AuthenticationUnavailable,
   BrowserSessionOnly,
-  RequireUser,
+  RequireBrowserSession,
   Unauthorized,
   Viewer,
 } from "./auth.ts";
@@ -86,7 +86,7 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
       if (security.has(id)) throw new Error(`Duplicate product API operation: ${id}`);
       security.set(
         id,
-        [...middleware].some((service) => service.key === RequireUser.key) ||
+        [...middleware].some((service) => service.key === RequireBrowserSession.key) ||
           Context.get(mergedAnnotations, BrowserSessionOnly)
           ? [{ browserSession: [] }]
           : [...middleware].some(
@@ -210,7 +210,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
   .add(
     HttpApiGroup.make("viewer")
       .add(HttpApiEndpoint.get("get", "/api/viewer", { success: Viewer }))
-      .middleware(RequireUser),
+      .middleware(RequireBrowserSession),
   )
   .add(
     HttpApiGroup.make("catalog")
@@ -221,7 +221,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
           error: CatalogUnavailable,
         }),
       )
-      .middleware(RequireUser),
+      .middleware(RequireBrowserSession),
   )
   .addHttpApi(HostedAppManagementApi)
   .addHttpApi(HostedFrameworkApi)

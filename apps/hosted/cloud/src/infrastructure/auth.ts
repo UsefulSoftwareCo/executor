@@ -20,7 +20,7 @@ import {
   CurrentUserId,
   recordUsage,
   usageFailure,
-  Authentication,
+  SessionAuthentication,
   AuthenticationUnavailable,
   sessionPrincipal,
   lookupMembership,
@@ -28,7 +28,7 @@ import {
   deleteUserRecords,
   lookupOrganizationSlug,
   resolveOrganizationReference,
-  ApiAuthentication,
+  BearerAuthentication,
   apiBearerAccess,
   callerSpanAttributes,
   grantExpiry,
@@ -222,10 +222,10 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
     // shares with Better Auth and the executor.
     const withSql = yield* invocationSql;
     const identity = Layer.effect(
-      Authentication,
+      SessionAuthentication,
       Effect.gen(function* () {
         // Built inside fetch: database work stays in the current invocation's scope.
-        return Authentication.of({
+        return SessionAuthentication.of({
           origin: settings.url,
           resourceOrigins: settings.resourceOrigins,
           oauthRedirectUri: Option.getOrUndefined(settings.oauthRedirectUri),
@@ -286,9 +286,9 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
     };
     const mcpIdentity = mcpAuthentication(origins, bound, withSql, v1Forward);
     const apiIdentity = Layer.effect(
-      ApiAuthentication,
+      BearerAuthentication,
       Effect.gen(function* () {
-        return ApiAuthentication.of({
+        return BearerAuthentication.of({
           ...origins,
           authenticate: (headers, organization) =>
             withSql(apiBearerAccess(origins, { headers, organization })).pipe(

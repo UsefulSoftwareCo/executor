@@ -1,11 +1,11 @@
 import { dashboardBatchPath, maxBatchReads } from "@executor-js/dashboard-start/batch";
 import { Cache, Context, Data, Duration, Effect, Exit, Option } from "effect";
 import { HttpRouter, HttpServerRequest } from "effect/http";
-import { Authentication, type Principal } from "../contracts/auth.ts";
+import { SessionAuthentication, type Principal } from "../contracts/auth.ts";
 import { OrganizationTombstones } from "../contracts/organization-removal.ts";
 import type { OrganizationId } from "../contracts/organization.ts";
 
-const BatchAuthentication = Context.Reference<typeof Authentication.Service | undefined>(
+const BatchAuthentication = Context.Reference<typeof SessionAuthentication.Service | undefined>(
   "hosted/BatchAuthentication",
   { defaultValue: () => undefined },
 );
@@ -27,7 +27,7 @@ const answersOnly = (exit: Exit.Exit<unknown, unknown>) =>
   Exit.isSuccess(exit) ? Duration.infinity : Duration.zero;
 
 /** A batch's reads all carry its one identity; other requests use the native checks. */
-export const requestAuthentication = (native: typeof Authentication.Service) =>
+export const requestAuthentication = (native: typeof SessionAuthentication.Service) =>
   Effect.map(BatchAuthentication, (batch) => batch ?? native);
 
 export const requestTombstones = Effect.gen(function* () {
@@ -41,7 +41,7 @@ export const requestTombstones = Effect.gen(function* () {
  */
 export const batchAuthentication = HttpRouter.middleware(
   Effect.gen(function* () {
-    const native = yield* Authentication;
+    const native = yield* SessionAuthentication;
     const tombstones = yield* OrganizationTombstones;
     return (handler) =>
       Effect.gen(function* () {

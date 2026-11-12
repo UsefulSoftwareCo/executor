@@ -4,7 +4,7 @@ import { organizationIconKey } from "./organization-icons.ts";
 import { browserOnly, requireOrganizationOwner } from "./access.ts";
 import { Effect, Schedule } from "effect";
 import { defaultWebhookLifecycleLimits } from "@executor-js/sdk/core";
-import { Authentication } from "../contracts/auth.ts";
+import { SessionAuthentication } from "../contracts/auth.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import {
   OrganizationIcons,
@@ -88,7 +88,7 @@ export const removeOrganizationDurably = <R = never>(
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const authentication = yield* Authentication;
+    const authentication = yield* SessionAuthentication;
     const icons = yield* OrganizationIcons;
     const removals = yield* OrganizationRemovals;
     const billing = yield* OrganizationBilling;

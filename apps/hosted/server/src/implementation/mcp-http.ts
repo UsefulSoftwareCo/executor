@@ -1,4 +1,4 @@
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { CurrentUsage } from "../contracts/product-analytics.ts";
 import { requiresToolMetadata } from "@executor-js/authorization";
 import { grantAuthorization } from "@executor-js/mcp-auth";
@@ -196,7 +196,7 @@ export const dispatchHostedMcp = <E, R>(
         if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
         const backend = yield* hostedMcpBackend.pipe(
           Effect.provideService(CurrentOrganization, fresh.access),
-          Effect.provideService(CurrentAuthorization, grantAuthorization(fresh.grant.policy)),
+          Effect.provideService(CurrentPolicy, grantAuthorization(fresh.grant.policy)),
           Effect.provideService(CurrentUserId, fresh.userId),
           Effect.provideService(CurrentMcpGrant, fresh.grant.id),
           Effect.provideService(CurrentMcpSession, session),
@@ -325,10 +325,7 @@ export const dispatchHostedMcp = <E, R>(
           !fold.result.value.access.canUse
             ? Effect.succeed(undefined)
             : callerAccounts(read.app.success, fold.result.value.accounts).pipe(
-                Effect.provideService(
-                  CurrentAuthorization,
-                  grantAuthorization(access.grant.policy),
-                ),
+                Effect.provideService(CurrentPolicy, grantAuthorization(access.grant.policy)),
                 Effect.provideService(CurrentUserId, access.userId),
                 Effect.provideContext(services),
                 Effect.option,

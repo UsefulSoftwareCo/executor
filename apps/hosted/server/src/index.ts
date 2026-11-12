@@ -17,10 +17,10 @@ export {
 export {
   callerSpanAttributes,
   CurrentUserId,
-  ApiAuthentication,
-  Authentication,
+  BearerAuthentication,
+  SessionAuthentication,
   AuthenticationUnavailable,
-  RequireUser,
+  RequireBrowserSession,
   CurrentPrincipal,
   AuthCredentialKind,
   AuthFailureReason,

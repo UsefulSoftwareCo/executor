@@ -1,4 +1,4 @@
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
 import { AccountGrants } from "./proofs/account-access.ts";
 /** Sharing writes are atomic; metadata visibility and credential use remain separate. */
@@ -32,7 +32,7 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
     const actor = yield* currentResourceAuthority;
     const executor = yield* Effect.flatten(HostedExecutor);
     const { owner } = yield* CurrentOrganization;
-    const policy = yield* CurrentAuthorization;
+    const policy = yield* CurrentPolicy;
     const apps = yield* executor.apps.list({ owner, ids: permittedAppIds(policy) });
     const appPolicies = new Map(
       (yield* applicationAccesses(

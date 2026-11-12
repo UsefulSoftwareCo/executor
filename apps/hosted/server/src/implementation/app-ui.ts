@@ -1,4 +1,4 @@
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { CurrentUsage, recordUsage } from "../contracts/product-analytics.ts";
 import { fullAuthority } from "@executor-js/authorization";
 import { GroupDatabase } from "../contracts/groups.ts";
@@ -54,7 +54,7 @@ import {
   type AppUiAddressInvalid,
   type AppUiTarget,
 } from "../contracts/app-ui.ts";
-import { Authentication, CurrentUserId, type Principal } from "../contracts/auth.ts";
+import { SessionAuthentication, CurrentUserId, type Principal } from "../contracts/auth.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import {
   CurrentOrganization,
@@ -287,7 +287,7 @@ export const hostedAppUi = <R = never>(
       const url = new URL(request.url, addresses.dashboardOrigin);
       const attempt = Schema.decodeUnknownOption(AppSignInId)(url.searchParams.get("request"));
       if (Option.isNone(attempt)) return yield* page;
-      const principal = yield* Effect.flatMap(Authentication, (authentication) =>
+      const principal = yield* Effect.flatMap(SessionAuthentication, (authentication) =>
         authentication.current(new Headers(request.headers)),
       );
       if (principal === null) {
@@ -364,7 +364,7 @@ export const hostedAppUi = <R = never>(
       if (version !== current.app.activeVersion) return yield* new UiVersionChanged();
       const accounts = yield* callerAccounts(current.app).pipe(
         Effect.provideService(CurrentOrganization, current.access),
-        Effect.provideService(CurrentAuthorization, fullAuthority),
+        Effect.provideService(CurrentPolicy, fullAuthority),
         Effect.provideService(CurrentUserId, current.access.userId),
         Effect.mapError(dataFailure),
       );
@@ -386,7 +386,7 @@ export const hostedAppUi = <R = never>(
       const executor = yield* Effect.flatten(HostedExecutor).pipe(Effect.mapError(unavailable));
       return yield* executor.appData[kind](input).pipe(
         Effect.provideService(CurrentOrganization, current.access),
-        Effect.provideService(CurrentAuthorization, fullAuthority),
+        Effect.provideService(CurrentPolicy, fullAuthority),
         Effect.provideService(CurrentUserId, current.access.userId),
         Effect.provideService(CurrentUsage, { source: "app_ui" }),
         Effect.mapError(dataFailure),
@@ -556,7 +556,7 @@ export const hostedAppUi = <R = never>(
     const asCaller = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
         Effect.provideService(CurrentOrganization, current.access),
-        Effect.provideService(CurrentAuthorization, fullAuthority),
+        Effect.provideService(CurrentPolicy, fullAuthority),
         Effect.provideService(CurrentUserId, current.access.userId),
       );
     const fix = new URL(

@@ -6,7 +6,7 @@ import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import type { AppId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
-import { Authentication, CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
+import { SessionAuthentication, CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
 import {
   CurrentOrganization,
   organizationOwner,
@@ -15,7 +15,7 @@ import {
 import { HostedExecutor } from "../contracts/executor.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 const authorized = (
-  auth: typeof Authentication.Service,
+  auth: typeof SessionAuthentication.Service,
   input: { organization: OrganizationReference; app: AppId; subscription: WebhookId },
   permission: "read" | "use" = "use",
 ) =>
@@ -39,13 +39,13 @@ const authorized = (
     );
     return executor;
   });
-/** RequireUser owns cookie authentication and CSRF; this group owns explicit organization resource checks. */
+/** RequireBrowserSession owns cookie authentication and CSRF; this group owns explicit organization resource checks. */
 export const hostedWebhookSetupHandlers = HttpApiBuilder.group(
   HostedApi,
   "webhookSetup",
   (handlers) =>
     Effect.gen(function* () {
-      const auth = yield* Authentication;
+      const auth = yield* SessionAuthentication;
       return handlers
         .handle("read", ({ params }) =>
           Effect.flatMap(authorized(auth, params), (executor) =>

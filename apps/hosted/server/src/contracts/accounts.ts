@@ -46,7 +46,7 @@ import {
   OrganizationForbidden,
   RequireOrganization,
 } from "./organization.ts";
-import { AuthenticationUnavailable, RequireUser } from "./auth.ts";
+import { AuthenticationUnavailable, RequireBrowserSession } from "./auth.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 
 /** The account is linked to apps for everyone; it cannot be deleted until it is unlinked. */
@@ -289,4 +289,4 @@ export const HostedOAuthCallbacks = HttpApiGroup.make("oauthCallback")
       ],
     }),
   )
-  .middleware(RequireUser);
+  .middleware(RequireBrowserSession);

@@ -6,9 +6,9 @@
  */
 import { Effect, Option, Schema } from "effect";
 import { AccountId, StorageError } from "@executor-js/sdk/core";
-import { Authentication, CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
+import { SessionAuthentication, CurrentPrincipal, CurrentUserId } from "../contracts/auth.ts";
 import { fullAuthority } from "@executor-js/authorization";
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import {
   CurrentOrganization,
@@ -136,13 +136,13 @@ export const removeUser = Effect.gen(function* () {
           owner,
         }),
         Effect.provideService(CurrentUserId, user),
-        Effect.provideService(CurrentAuthorization, fullAuthority),
+        Effect.provideService(CurrentPolicy, fullAuthority),
       );
     }
   }
   const removals = yield* OrganizationRemovals;
   for (const organization of deleted) yield* removals.begin(organization.id, organization.id);
-  yield* (yield* Authentication).removeUser(user);
+  yield* (yield* SessionAuthentication).removeUser(user);
   return {
     organizations: deleted.map((entry) => entry.id),
     personalAccounts: planned.accounts.length,

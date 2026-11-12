@@ -96,8 +96,8 @@ export interface ApiAccess {
 }
 
 /** Organization API grants; browser sessions and bearer grants never fall back to one another. */
-export class ApiAuthentication extends Context.Service<
-  ApiAuthentication,
+export class BearerAuthentication extends Context.Service<
+  BearerAuthentication,
   {
     /** The browser origin: dashboard, sign-in, cookies and Origin checks. */
     readonly origin: string;
@@ -110,11 +110,11 @@ export class ApiAuthentication extends Context.Service<
       organization?: OrganizationReference,
     ) => Effect.Effect<ApiAccess, Unauthorized | OrganizationForbidden | AuthenticationUnavailable>;
   }
->()("hosted/ApiAuthentication") {}
+>()("hosted/BearerAuthentication") {}
 
 /** Host-specific session lookup. Refresh belongs to Better Auth's browser endpoint. */
-export class Authentication extends Context.Service<
-  Authentication,
+export class SessionAuthentication extends Context.Service<
+  SessionAuthentication,
   {
     /** The browser origin: dashboard, sign-in, cookies and Origin checks. */
     readonly origin: string;
@@ -156,7 +156,7 @@ export class Authentication extends Context.Service<
      */
     readonly removeUser: (user: Viewer["userId"]) => Effect.Effect<void, AuthenticationUnavailable>;
   }
->()("hosted/Authentication") {}
+>()("hosted/SessionAuthentication") {}
 
 /**
  * Verified actor for browser sessions and bearer grants; absent for background setup. It is the
@@ -247,9 +247,9 @@ export class CurrentPrincipal extends Context.Service<CurrentPrincipal, Principa
 ) {}
 
 /** Hosted identity boundary; resource permissions remain separate product checks. */
-export class RequireUser extends HttpApiMiddleware.Service<
-  RequireUser,
+export class RequireBrowserSession extends HttpApiMiddleware.Service<
+  RequireBrowserSession,
   { provides: CurrentPrincipal }
->()("hosted/RequireUser", {
+>()("hosted/RequireBrowserSession", {
   error: [Unauthorized, Forbidden, AuthenticationUnavailable],
 }) {}

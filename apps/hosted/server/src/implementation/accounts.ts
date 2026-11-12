@@ -1,7 +1,7 @@
 import { accountOAuthRedirectUri } from "./auth.ts";
 import { audited } from "./security-audit.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
 import { OrganizationForbidden } from "../contracts/organization.ts";
 import {
@@ -38,7 +38,11 @@ import { Effect, Schema } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
-import { ApiAuthentication, Authentication, CurrentPrincipal } from "../contracts/auth.ts";
+import {
+  BearerAuthentication,
+  SessionAuthentication,
+  CurrentPrincipal,
+} from "../contracts/auth.ts";
 import {
   CurrentOrganization,
   OrganizationSlug,
@@ -55,7 +59,7 @@ import { RequirementMismatch } from "../contracts/app-accounts.ts";
 const linkedApps = (owner: OwnerId, account: AccountId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const policy = yield* CurrentAuthorization;
+    const policy = yield* CurrentPolicy;
     const apps = yield* executor.apps
       .list({ owner, ids: permittedAppIds(policy) })
       .pipe(Effect.flatMap(visibleApps));
@@ -134,7 +138,7 @@ export const oauthSetup = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const policy = yield* CurrentAuthorization;
+    const policy = yield* CurrentPolicy;
     const apps = yield* executor.apps
       .list({ owner, ids: permittedAppIds(policy) })
       .pipe(Effect.flatMap(visibleApps));
@@ -251,8 +255,8 @@ export const connectAccount = (
   });
 /** The dashboard page where a connection's creator finishes it, under the caller's slug. */
 export const connectionUrl = (
-  auth: Authentication["Service"],
-  api: ApiAuthentication["Service"],
+  auth: SessionAuthentication["Service"],
+  api: BearerAuthentication["Service"],
   connection: AccountConnectionId,
 ) =>
   Effect.gen(function* () {
@@ -330,8 +334,8 @@ export const completeOAuth = (
 /** Account policy and persisted connection ownership protect management and OAuth return requests. */
 export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts", (handlers) =>
   Effect.gen(function* () {
-    const auth = yield* Authentication;
-    const api = yield* ApiAuthentication;
+    const auth = yield* SessionAuthentication;
+    const api = yield* BearerAuthentication;
     const redirectUri = accountOAuthRedirectUri(auth);
     return handlers
       .handle("get", () => getAccount)
@@ -393,7 +397,7 @@ export const hostedOAuthCallbackHandlers = HttpApiBuilder.group(
   "oauthCallback",
   (handlers) =>
     Effect.gen(function* () {
-      const auth = yield* Authentication;
+      const auth = yield* SessionAuthentication;
       return handlers.handle("resolve", ({ payload }) =>
         Effect.gen(function* () {
           const principal = yield* CurrentPrincipal;
@@ -428,7 +432,7 @@ export const hostedOAuthCallbackHandlers = HttpApiBuilder.group(
 
 /** Keep the existing provider redirect URL. Completion still requires the browser session and membership. */
 export const hostedOAuthCallback = Effect.gen(function* () {
-  const { origin } = yield* Authentication;
+  const { origin } = yield* SessionAuthentication;
   const request = yield* HttpServerRequest.HttpServerRequest;
   const url = new URL(request.url, "https://callback.internal");
   return HttpServerResponse.redirect(`${origin}/oauth/callback${url.search}`).pipe(

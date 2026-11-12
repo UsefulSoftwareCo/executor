@@ -1,7 +1,7 @@
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { billingMembers } from "../infrastructure/billing-members.ts";
 import {
-  Authentication,
+  SessionAuthentication,
   organizationOwner,
   requireOrganizationAdmin,
   type OrganizationId,
@@ -322,7 +322,7 @@ export const billingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "billing",
   Effect.gen(function* () {
     const billing = yield* Billing;
     const meter = yield* BillingMeter;
-    const auth = yield* Authentication;
+    const auth = yield* SessionAuthentication;
     const destination = (organization: OrganizationId) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;

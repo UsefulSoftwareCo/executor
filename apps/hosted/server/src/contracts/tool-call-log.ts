@@ -59,8 +59,8 @@ export interface ToolCallCaller {
  * The caller of the hosted API request being served, which its tool calls are logged under. Set by
  * the organization middleware for bearer and session requests; unset elsewhere.
  */
-export const CurrentApiCaller = Context.Reference<ToolCallCaller | undefined>(
-  "hosted/CurrentApiCaller",
+export const CurrentToolCallCaller = Context.Reference<ToolCallCaller | undefined>(
+  "hosted/CurrentToolCallCaller",
   { defaultValue: () => undefined },
 );
 

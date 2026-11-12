@@ -26,7 +26,7 @@ import { permitsAccounts, permittedTargets } from "@executor-js/authorization";
 import { Effect, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
 import { CurrentUserId } from "../contracts/auth.ts";
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { RequirementMismatch } from "../contracts/app-accounts.ts";
 import { OrganizationForbidden } from "../contracts/organization.ts";
 import {
@@ -97,7 +97,7 @@ export const appAccountReads = (
 
 /** The caller's links, narrowed to the targets their grant permits. */
 const permittedLinks = (linked: ReadonlyArray<LinkedAccount>) =>
-  Effect.map(CurrentAuthorization, (policy) =>
+  Effect.map(CurrentPolicy, (policy) =>
     linked.filter((account) => {
       const targets = permittedTargets(policy.tools, account.app);
       return targets === undefined || targets.accounts.has(account.id);
@@ -177,7 +177,7 @@ export const versionAccounts = (version: AppVersion, links?: CallerLinks) =>
       version: version.version,
       ...(yield* callerRequirements(version, links)),
     });
-    const policy = yield* CurrentAuthorization;
+    const policy = yield* CurrentPolicy;
     if (!permitsAccounts(policy, version.app, userAccountIds(resolved)))
       return yield* new OrganizationForbidden();
     return resolved;

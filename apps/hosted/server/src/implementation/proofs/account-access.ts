@@ -19,7 +19,7 @@ import {
   type AccountAction,
   type AccountProof,
 } from "../../contracts/account-grants.ts";
-import { CurrentAuthorization } from "../../contracts/authorization.ts";
+import { CurrentPolicy } from "../../contracts/authorization.ts";
 import { HostedExecutor } from "../../contracts/executor.ts";
 import { OrganizationForbidden, organizationOwner } from "../../contracts/organization.ts";
 import {
@@ -47,7 +47,7 @@ const checkAccountAccess = (account: AccountId, action: AccountAction) =>
     const access = yield* requireAccountAccessAs(actor, account, policy[action]);
     // The owner comes from the organization the policy was checked in, never from the caller.
     const owner = organizationOwner(actor.organization);
-    const scope = yield* CurrentAuthorization;
+    const scope = yield* CurrentPolicy;
     if (scope.tools.kind !== "all") {
       const executor = yield* Effect.flatten(HostedExecutor);
       const apps = yield* executor.apps.list({ owner, ids: permittedAppIds(scope) });
