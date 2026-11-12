@@ -14,7 +14,11 @@ import { Popover, PopoverContent, PopoverTrigger } from "@executor-js/ui/compone
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import { Spinner } from "@executor-js/ui/components/spinner";
 import { ProviderIcon } from "@executor-js/ui/dashboard/common";
-import { installedCatalogApps, useCatalogInstall } from "@executor-js/ui/dashboard/catalog";
+import {
+  CatalogFeedNotice,
+  installedCatalogApps,
+  useCatalogInstall,
+} from "@executor-js/ui/dashboard/catalog";
 import { useIncrementalList } from "@executor-js/ui/dashboard/incremental-list";
 import { parseAccountsSetupSearch, setupHandoff } from "../../contracts/navigation.ts";
 import { inventoryAtom } from "../../contracts/organization.ts";
@@ -127,7 +131,8 @@ export function AccountsSetupPage() {
   const retryCatalog = useAtomRefresh(atoms.catalog);
   const inventory = useAtomValue(inventoryAtom(organization));
   const retryInventory = useAtomRefresh(inventoryAtom(organization));
-  const entries = Option.getOrUndefined(AsyncResult.value(catalog));
+  const listing = Option.getOrUndefined(AsyncResult.value(catalog));
+  const entries = listing?.apps;
   const known = Option.getOrUndefined(AsyncResult.value(inventory));
   const apps = entries && known ? setupApps(entries, known) : undefined;
   const connected = new Set(apps?.flatMap((item) => item.accounts.map((account) => account.id)));
@@ -166,7 +171,19 @@ export function AccountsSetupPage() {
             ) : apps === undefined || known === undefined ? (
               <LoadingList />
             ) : apps.length === 0 ? (
-              <NotListed query="" />
+              <>
+                {listing && listing.feed.status !== "listed" && (
+                  <div className="px-4 pt-4 max-sm:px-6">
+                    <CatalogFeedNotice
+                      feed={listing.feed}
+                      retry={retryCatalog}
+                      retrying={AsyncResult.isWaiting(catalog)}
+                      layout="compact"
+                    />
+                  </div>
+                )}
+                <NotListed query="" />
+              </>
             ) : (
               <AppList apps={apps} redirectUri={known.accountSetup.redirectUri} />
             )}

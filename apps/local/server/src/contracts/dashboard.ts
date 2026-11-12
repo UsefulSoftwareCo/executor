@@ -91,7 +91,7 @@ import {
   type ProviderDefinition,
 } from "@executor-js/sdk";
 import {
-  CatalogEntry,
+  CatalogListing,
   CatalogImportFailed,
   CatalogUnavailable,
   CatalogImport,
@@ -691,12 +691,7 @@ const dashboardApi = HttpApi.make("local-dashboard").add(
         },
       ),
     )
-    .add(
-      HttpApiEndpoint.get("catalog", "/dashboard/api/catalog", {
-        success: Schema.Array(CatalogEntry),
-        error: CatalogUnavailable,
-      }),
-    )
+    .add(HttpApiEndpoint.get("catalog", "/dashboard/api/catalog", { success: CatalogListing }))
     .add(
       HttpApiEndpoint.post("importApp", "/dashboard/api/catalog/import", {
         payload: Schema.Struct({ ...CatalogImport.fields, name: Schema.NonEmptyString }),

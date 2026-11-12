@@ -186,86 +186,99 @@ it.live("released image lists the official app feed without a catalog setting", 
         return { origin, port };
       });
 
+    // Each arm runs its own image container, removed before the next starts, so this scenario
+    // never runs two at once beside the other release scenarios.
     // A stock image: first-run setup's account step offers the feed's apps that take an account.
-    const stock = yield* start("stock", {});
-    const browser = yield* Effect.acquireRelease(
-      driver("launch the browser", () => chromium.launch()),
-      (browser) => driver("close the browser", () => browser.close()).pipe(Effect.orDie),
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const stock = yield* start("stock", {});
+        const browser = yield* Effect.acquireRelease(
+          driver("launch the browser", () => chromium.launch()),
+          (browser) => driver("close the browser", () => browser.close()).pipe(Effect.orDie),
+        );
+        const page = yield* driver("new browser session", () => browser.newPage());
+        page.setDefaultTimeout(30_000);
+        const reportStall = stalledPageReport(page);
+        yield* driver("open first-run setup", () => page.goto(`${stock.origin}/login`));
+        yield* driver("name the organization", () =>
+          page.getByLabel("Organization name", { exact: true }).fill("Example Studio"),
+        );
+        yield* driver("name the administrator", () =>
+          page.getByLabel("Your name", { exact: true }).fill("Alex Example"),
+        );
+        yield* driver("enter the administrator's email", () =>
+          page.getByLabel("Email", { exact: true }).fill("alex@example.test"),
+        );
+        yield* driver("enter the administrator's password", () =>
+          page.getByLabel("Password", { exact: true }).fill("Synthetic-catalog-password-123!"),
+        );
+        yield* driver("create the administrator", () =>
+          page.getByRole("button", { name: "Create administrator account", exact: true }).click(),
+        );
+        yield* reportStall(
+          driver("setup opens the account step", () =>
+            page.waitForURL(/\/org\/[^/]+\/setup\/accounts$/u),
+          ),
+        );
+        yield* driver("the account step lists the catalog", () =>
+          page.locator("[aria-label='Loading apps']").waitFor({ state: "detached" }),
+        );
+        expect(
+          yield* driver("read the listed apps", () =>
+            page
+              .getByRole("region", { name: "Apps", exact: true })
+              .getByRole("group")
+              .allInnerTexts(),
+          ),
+        ).toEqual([
+          expect.stringContaining(officialApps.mail.name),
+          expect.stringContaining(officialApps.tracker.name),
+        ]);
+        expect(yield* feedRequests).toContain(`GET ${feedHost}/index.json`);
+      }),
     );
-    const page = yield* driver("new browser session", () => browser.newPage());
-    page.setDefaultTimeout(30_000);
-    const reportStall = stalledPageReport(page);
-    yield* driver("open first-run setup", () => page.goto(`${stock.origin}/login`));
-    yield* driver("name the organization", () =>
-      page.getByLabel("Organization name", { exact: true }).fill("Example Studio"),
-    );
-    yield* driver("name the administrator", () =>
-      page.getByLabel("Your name", { exact: true }).fill("Alex Example"),
-    );
-    yield* driver("enter the administrator's email", () =>
-      page.getByLabel("Email", { exact: true }).fill("alex@example.test"),
-    );
-    yield* driver("enter the administrator's password", () =>
-      page.getByLabel("Password", { exact: true }).fill("Synthetic-catalog-password-123!"),
-    );
-    yield* driver("create the administrator", () =>
-      page.getByRole("button", { name: "Create administrator account", exact: true }).click(),
-    );
-    yield* reportStall(
-      driver("setup opens the account step", () =>
-        page.waitForURL(/\/org\/[^/]+\/setup\/accounts$/u),
-      ),
-    );
-    yield* driver("the account step lists the catalog", () =>
-      page.locator("[aria-label='Loading apps']").waitFor({ state: "detached" }),
-    );
-    expect(
-      yield* driver("read the listed apps", () =>
-        page.getByRole("region", { name: "Apps", exact: true }).getByRole("group").allInnerTexts(),
-      ),
-    ).toEqual([
-      expect.stringContaining(officialApps.mail.name),
-      expect.stringContaining(officialApps.tracker.name),
-    ]);
-    expect(yield* feedRequests).toContain(`GET ${feedHost}/index.json`);
 
     // `off` turns the feed off: the catalog lists only the built-in Executor app, and the image
     // does not ask the feed.
     const before = (yield* feedRequests).length;
-    const off = yield* start("off", { EXECUTOR_CATALOG_URL: "off" });
-    const headers = { origin: off.origin, "content-type": "application/json" };
-    const setup = yield* driver("set up the owner", () =>
-      fetch(`http://127.0.0.1:${off.port}/api/auth/self-host/setup`, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          name: "Catalog Owner",
-          email: "catalog@example.test",
-          password: "Synthetic-catalog-password-123!",
-          organizationName: "Catalog lab",
-        }),
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        const off = yield* start("off", { EXECUTOR_CATALOG_URL: "off" });
+        const headers = { origin: off.origin, "content-type": "application/json" };
+        const setup = yield* driver("set up the owner", () =>
+          fetch(`http://127.0.0.1:${off.port}/api/auth/self-host/setup`, {
+            method: "POST",
+            headers,
+            body: JSON.stringify({
+              name: "Catalog Owner",
+              email: "catalog@example.test",
+              password: "Synthetic-catalog-password-123!",
+              organizationName: "Catalog lab",
+            }),
+          }),
+        );
+        expect(setup.status).toBe(200);
+        const cookie = setup.headers
+          .getSetCookie()
+          .map((part) => part.split(";")[0])
+          .join("; ");
+        const get = <S extends Schema.Top>(schema: S, route: string) =>
+          driver(`GET ${route}`, () =>
+            fetch(`http://127.0.0.1:${off.port}${route}`, { headers: { ...headers, cookie } }).then(
+              (response) => response.text(),
+            ),
+          ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(schema))));
+        const [organization] = yield* get(
+          Schema.NonEmptyArray(Schema.Struct({ id: Schema.String })),
+          "/api/auth/organization/list",
+        );
+        const catalog = yield* get(
+          Schema.Array(Schema.Struct({ package: Schema.String })),
+          `/api/organizations/${organization.id}/catalog`,
+        );
+        expect(catalog.map((entry) => entry.package)).toEqual(["executor"]);
+        expect((yield* feedRequests).length).toBe(before);
       }),
     );
-    expect(setup.status).toBe(200);
-    const cookie = setup.headers
-      .getSetCookie()
-      .map((part) => part.split(";")[0])
-      .join("; ");
-    const get = <S extends Schema.Top>(schema: S, route: string) =>
-      driver(`GET ${route}`, () =>
-        fetch(`http://127.0.0.1:${off.port}${route}`, { headers: { ...headers, cookie } }).then(
-          (response) => response.text(),
-        ),
-      ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(schema))));
-    const [organization] = yield* get(
-      Schema.NonEmptyArray(Schema.Struct({ id: Schema.String })),
-      "/api/auth/organization/list",
-    );
-    const catalog = yield* get(
-      Schema.Array(Schema.Struct({ package: Schema.String })),
-      `/api/organizations/${organization.id}/catalog`,
-    );
-    expect(catalog.map((entry) => entry.package)).toEqual(["executor"]);
-    expect((yield* feedRequests).length).toBe(before);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

@@ -8827,6 +8827,16 @@ export const scenarios = plan({
       local: na("Local uses device pairing instead of administrator setup."),
     },
   },
+  selfHostCatalogFeed: {
+    file: "self-host-catalog-feed.spec.ts",
+    title:
+      "Self-host onboarding, Add app and the agent's catalog tool say why official apps are missing when the app feed cannot be read or is turned off",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud's deploy sets its feed and cannot turn it off; the listing code is shared."),
+      local: na("Local has no onboarding account step; the listing and notice are shared code."),
+    },
+  },
   onboardingGoogle: {
     file: "cloud-onboarding.spec.ts",
     title: "Cloud onboarding with Google opens prepared team confirmation",

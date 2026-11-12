@@ -36,7 +36,7 @@ import { ErrorReporter, Effect, Layer, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import type { OwnerId } from "@executor-js/sdk/core";
 import { HostedApi } from "../contracts/api.ts";
-import { filterCatalog } from "@executor-js/catalog/contracts";
+import { CatalogUnavailable, filterCatalog } from "@executor-js/catalog/contracts";
 import { HostedCatalog } from "../contracts/catalog.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -300,41 +300,50 @@ export const hostedOrganizationHandlers = HttpApiBuilder.group(
   (handlers) =>
     Effect.gen(function* () {
       const authentication = yield* SessionAuthentication;
-      return handlers
-        .handleRaw("uploadIcon", () =>
-          Effect.gen(function* () {
-            const organization = yield* requireOrganizationAdmin;
-            const image = yield* readOrganizationIconUpload;
-            return yield* (yield* OrganizationIcons).upload(organization.organization, image);
-          }),
-        )
-        .handle("icon", ({ params }) =>
-          Effect.gen(function* () {
-            const organization = yield* CurrentOrganization;
-            const image = yield* (yield* OrganizationIcons).read(
-              organization.organization,
-              params.key,
-            );
-            return HttpServerResponse.uint8Array(image.bytes, {
-              contentType: image.contentType,
-              headers: { "x-content-type-options": "nosniff" },
-            });
-          }),
-        )
-        .handle("catalog", ({ query }) =>
-          Effect.flatMap(HostedCatalog, (catalog) => catalog.list).pipe(
-            Effect.map((entries) => filterCatalog(entries, query)),
-          ),
-        )
-        .handle("access", () => CurrentOrganization)
-        .handle("inventory", () =>
-          Effect.gen(function* () {
-            const organization = yield* CurrentOrganization;
-            return {
-              ...(yield* inventory(organization.owner)),
-              accountSetup: { redirectUri: accountOAuthRedirectUri(authentication) },
-            };
-          }),
-        );
+      return (
+        handlers
+          .handleRaw("uploadIcon", () =>
+            Effect.gen(function* () {
+              const organization = yield* requireOrganizationAdmin;
+              const image = yield* readOrganizationIconUpload;
+              return yield* (yield* OrganizationIcons).upload(organization.organization, image);
+            }),
+          )
+          .handle("icon", ({ params }) =>
+            Effect.gen(function* () {
+              const organization = yield* CurrentOrganization;
+              const image = yield* (yield* OrganizationIcons).read(
+                organization.organization,
+                params.key,
+              );
+              return HttpServerResponse.uint8Array(image.bytes, {
+                contentType: image.contentType,
+                headers: { "x-content-type-options": "nosniff" },
+              });
+            }),
+          )
+          // Agents and API keys keep the array this operation has always returned: a feed that
+          // cannot be read fails it with the error and its recovery. Only the dashboards' session
+          // listing carries the feed's state beside the built-in apps.
+          .handle("catalog", ({ query }) =>
+            Effect.flatMap(HostedCatalog, (catalog) => catalog.list).pipe(
+              Effect.flatMap((listing) =>
+                listing.feed.status === "unavailable"
+                  ? Effect.fail(new CatalogUnavailable())
+                  : Effect.succeed(filterCatalog(listing.apps, query)),
+              ),
+            ),
+          )
+          .handle("access", () => CurrentOrganization)
+          .handle("inventory", () =>
+            Effect.gen(function* () {
+              const organization = yield* CurrentOrganization;
+              return {
+                ...(yield* inventory(organization.owner)),
+                accountSetup: { redirectUri: accountOAuthRedirectUri(authentication) },
+              };
+            }),
+          )
+      );
     }),
 );
