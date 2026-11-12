@@ -2290,7 +2290,15 @@ diff --git a/src/GitHub/Ruleset.ts b/src/GitHub/Ruleset.ts
 diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/WorkerProvider.js
 --- a/lib/Cloudflare/Workers/WorkerProvider.js
 +++ b/lib/Cloudflare/Workers/WorkerProvider.js
-@@ -614,7 +614,39 @@ const findWorkerId = (accountId, scriptName) => workers.listScripts.items({ acco
+@@ -4,6 +4,7 @@ import * as workers from "@distilled.cloud/cloudflare/workers";
+ import * as wfp from "@distilled.cloud/cloudflare/workers-for-platforms";
+ import * as Config from "effect/Config";
+ import * as Data from "effect/Data";
++import * as Duration from "effect/Duration";
+ import * as Effect from "effect/Effect";
+ import * as Layer from "effect/Layer";
+ import * as Option from "effect/Option";
+@@ -614,7 +615,80 @@ const findWorkerId = (accountId, scriptName) => workers.listScripts.items({ acco
      while: (e) => e._tag === "WorkerIdNotFound",
      schedule: Schedule.max([Schedule.spaced(2000), Schedule.recurs(3)]),
  }));
@@ -2308,30 +2316,71 @@ diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/W
 +    return bytes > 1024 * 1024 ? `${(bytes / 1024 / 1024).toFixed(2)} MB` : `${(bytes / 1024).toFixed(2)} KB`;
 +};
 +/**
-+ * Run one script upload. Log the startup time Cloudflare measured (`startup_time_ms`), and when
-+ * Cloudflare refuses the upload for startup CPU, name the Worker, its size and the uploads in
-+ * flight in the error: Cloudflare's refusal carries no reading of its own.
++ * Attempts at one upload while Cloudflare refuses it for startup CPU (error 10021). A stopgap
++ * (executor-next `notes/cloud-latency.md`): Cloudflare refuses some uploads of bundles that read
++ * well under its limit on another attempt, and a refusal mid-deploy leaves that Worker on its
++ * previous version beside the others' new ones. No other error is re-sent.
 + */
-+const measuredUpload = (scriptName, files, upload) => Effect.suspend(() => {
-+    const inFlight = ++uploadsInFlight;
-+    const started = Date.now();
-+    const size = uploadSize(files);
-+    return upload.pipe(Effect.tap((result) => Effect.logInfo(`Cloudflare Worker startup: ${scriptName} startup_time_ms=${result.startupTimeMs ?? "unreported"} (${size}, ${inFlight} uploads in flight, upload took ${Date.now() - started} ms)`)), Effect.mapError((error) => error instanceof workers.ScriptStartupError
-+        ? new workers.ScriptStartupError({
-+            code: error.code,
-+            message: `${error.message} Cloudflare refused ${scriptName} (${size}) with ${inFlight} uploads in flight after ${Date.now() - started} ms; it reports no startup time with a refusal.`,
-+        })
-+        : error), Effect.tapError((error) => error instanceof workers.ScriptStartupError
-+        ? Effect.logError(`Cloudflare Worker startup refused: ${error.message}`)
-+        : Effect.void), Effect.ensuring(Effect.sync(() => {
-+        uploadsInFlight--;
-+    })));
++const startupAttempts = 3;
++/** The pause before re-sending a refused upload. */
++const startupRetryPause = "2 seconds";
++/**
++ * A refusal for startup CPU. Cloudflare uses error 10021 for other script validation failures
++ * too, such as a Worker that throws while it starts, and the client maps each of them to
++ * `ScriptStartupError`; only this message is the CPU limit.
++ */
++const isStartupCpuRefusal = (error) => error instanceof workers.ScriptStartupError &&
++    error.message.includes("Script startup exceeded CPU time limit");
++/** This process's upload attempts, for the summary line it writes when it exits. */
++const uploadCounts = { uploads: 0, refusals: 0, resent: 0, failed: 0 };
++// Every deploy that uploads a Worker ends with the count, so a re-sent upload stays visible.
++process.once("exit", () => {
++    if (uploadCounts.uploads === 0)
++        return;
++    const summary = `${uploadCounts.uploads} upload attempts, ${uploadCounts.refusals} refused for startup CPU (error 10021), ${uploadCounts.resent} re-sent, ${uploadCounts.failed} Workers refused on all ${startupAttempts} attempts. Re-sending is a stopgap; a refusal means a Worker's startup is too close to Cloudflare's limit.`;
++    console.log(`Cloudflare Worker startup summary: ${summary}`);
++    // On the run page too, so a deploy that only passed by re-sending is noticed.
++    if (uploadCounts.refusals > 0 && process.env.GITHUB_ACTIONS === "true")
++        console.log(`::warning title=Worker upload refused for startup CPU::${summary}`);
 +});
++/**
++ * Run one script upload. Log the startup time Cloudflare measured (`startup_time_ms`). When
++ * Cloudflare refuses it for startup CPU, log the refusal with the Worker, its size, the uploads in
++ * flight and the attempt, and send the same upload again, up to `startupAttempts` in all. The
++ * last refusal fails with that count; Cloudflare's refusal carries no reading of its own.
++ */
++export const measuredUpload = (scriptName, files, upload, 
++/** Before each re-send; executor-next's e2e tests shorten it. */
++pause = startupRetryPause) => {
++    const size = uploadSize(files);
++    const attempt = (number) => Effect.suspend(() => {
++        const inFlight = ++uploadsInFlight;
++        const started = Date.now();
++        uploadCounts.uploads++;
++        const of = `attempt ${number} of ${startupAttempts}`;
++        return upload.pipe(Effect.ensuring(Effect.sync(() => {
++            uploadsInFlight--;
++        })), Effect.tap((result) => Effect.logInfo(`Cloudflare Worker startup: ${scriptName} startup_time_ms=${result.startupTimeMs ?? "unreported"} (${size}, ${inFlight} uploads in flight, upload took ${Date.now() - started} ms${number > 1 ? `, ${of}` : ""})`)), Effect.catch((error) => {
++            if (!isStartupCpuRefusal(error))
++                return Effect.fail(error);
++            uploadCounts.refusals++;
++            const refused = `${error.message} Cloudflare refused ${scriptName} (${size}) with ${inFlight} uploads in flight after ${Date.now() - started} ms, ${of}; it reports no startup time with a refusal.`;
++            if (number >= startupAttempts) {
++                uploadCounts.failed++;
++                const message = `${refused} Refused on all ${startupAttempts} attempts.`;
++                return Effect.logError(`Cloudflare Worker startup refused: ${message}`).pipe(Effect.andThen(Effect.fail(new workers.ScriptStartupError({ code: error.code, message }))));
++            }
++            uploadCounts.resent++;
++            return Effect.logError(`Cloudflare Worker startup refused: ${refused} Sending it again in ${Duration.format(Duration.fromInputUnsafe(pause))}.`).pipe(Effect.andThen(Effect.sleep(pause)), Effect.andThen(attempt(number + 1)));
++        }));
++    });
++    return attempt(1);
++};
 +const putWorkerScript = (params) => measuredUpload(params.scriptName, params.files, Effect.gen(function* () {
      if (params.dispatchNamespace) {
          return yield* wfp
              .putDispatchNamespaceScript({
-@@ -640,7 +672,7 @@ const putWorkerScript = (params) => Effect.gen(function* () {
+@@ -640,7 +714,7 @@ const putWorkerScript = (params) => Effect.gen(function* () {
          while: retryableScriptPut,
          schedule: bindingTargetNotFoundRetrySchedule(),
      }));
@@ -2340,7 +2389,7 @@ diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/W
  /**
   * Delete a Worker script, routing to the dispatch-namespace endpoint when
   * `dispatchNamespace` is set.
-@@ -2198,7 +2230,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
+@@ -2198,7 +2272,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
          yield* session.note(`Uploading version of ${parentName} ...`, {
              kind: "status",
          });
@@ -2349,7 +2398,7 @@ diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/W
              .createScriptVersion({
              accountId,
              scriptName: parentName,
-@@ -2226,7 +2258,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
+@@ -2226,7 +2300,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
              schedule: bindingTargetNotFoundRetrySchedule(),
          }), Effect.catchTag("WorkerNotFound", () => Effect.fail(new WorkerVersionConfigError({
              message: `version.parent script '${parentName}' does not exist. Deploy the parent Worker first (or check the referenced stage/stack).`,
@@ -2358,7 +2407,7 @@ diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/W
          const versionId = created.id ?? undefined;
          if (versionId === undefined) {
              return yield* Effect.fail(new WorkerVersionConfigError({
-@@ -3063,7 +3095,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
+@@ -3063,7 +3137,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
                  }));
              }
              yield* session.note(`Uploading version of ${name} (${bundleSize}) ...`, { kind: "status" });
@@ -2367,7 +2416,7 @@ diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/W
                  .createScriptVersion({
                  accountId,
                  scriptName: name,
-@@ -3090,7 +3122,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
+@@ -3090,7 +3164,7 @@ export const LiveWorkerProvider = () => Provider.effect(Worker, Effect.gen(funct
                  .pipe(Effect.retry({
                  while: isBindingTargetNotFound,
                  schedule: bindingTargetNotFoundRetrySchedule(),
@@ -2379,7 +2428,15 @@ diff --git a/lib/Cloudflare/Workers/WorkerProvider.js b/lib/Cloudflare/Workers/W
 diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/WorkerProvider.ts
 --- a/src/Cloudflare/Workers/WorkerProvider.ts
 +++ b/src/Cloudflare/Workers/WorkerProvider.ts
-@@ -874,6 +874,63 @@ const findWorkerId = (accountId: string, scriptName: string) =>
+@@ -4,6 +4,7 @@ import * as workers from "@distilled.cloud/cloudflare/workers";
+ import * as wfp from "@distilled.cloud/cloudflare/workers-for-platforms";
+ import * as Config from "effect/Config";
+ import * as Data from "effect/Data";
++import * as Duration from "effect/Duration";
+ import * as Effect from "effect/Effect";
+ import * as Layer from "effect/Layer";
+ import * as Option from "effect/Option";
+@@ -874,6 +875,110 @@ const findWorkerId = (accountId: string, scriptName: string) =>
      }),
    );
  
@@ -2400,50 +2457,97 @@ diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/W
 +};
 +
 +/**
-+ * Run one script upload. Log the startup time Cloudflare measured (`startup_time_ms`), and when
-+ * Cloudflare refuses the upload for startup CPU, name the Worker, its size and the uploads in
-+ * flight in the error: Cloudflare's refusal carries no reading of its own.
++ * Attempts at one upload while Cloudflare refuses it for startup CPU (error 10021). A stopgap
++ * (executor-next `notes/cloud-latency.md`): Cloudflare refuses some uploads of bundles that read
++ * well under its limit on another attempt, and a refusal mid-deploy leaves that Worker on its
++ * previous version beside the others' new ones. No other error is re-sent.
 + */
-+const measuredUpload = <A extends { readonly startupTimeMs?: number | null }, E, R>(
++const startupAttempts = 3;
++
++/** The pause before re-sending a refused upload. */
++const startupRetryPause = "2 seconds";
++
++/**
++ * A refusal for startup CPU. Cloudflare uses error 10021 for other script validation failures
++ * too, such as a Worker that throws while it starts, and the client maps each of them to
++ * `ScriptStartupError`; only this message is the CPU limit.
++ */
++const isStartupCpuRefusal = (error: unknown): error is workers.ScriptStartupError =>
++  error instanceof workers.ScriptStartupError &&
++  error.message.includes("Script startup exceeded CPU time limit");
++
++/** This process's upload attempts, for the summary line it writes when it exits. */
++const uploadCounts = { uploads: 0, refusals: 0, resent: 0, failed: 0 };
++
++// Every deploy that uploads a Worker ends with the count, so a re-sent upload stays visible.
++process.once("exit", () => {
++  if (uploadCounts.uploads === 0) return;
++  const summary = `${uploadCounts.uploads} upload attempts, ${uploadCounts.refusals} refused for startup CPU (error 10021), ${uploadCounts.resent} re-sent, ${uploadCounts.failed} Workers refused on all ${startupAttempts} attempts. Re-sending is a stopgap; a refusal means a Worker's startup is too close to Cloudflare's limit.`;
++  console.log(`Cloudflare Worker startup summary: ${summary}`);
++  // On the run page too, so a deploy that only passed by re-sending is noticed.
++  if (uploadCounts.refusals > 0 && process.env.GITHUB_ACTIONS === "true")
++    console.log(`::warning title=Worker upload refused for startup CPU::${summary}`);
++});
++
++/**
++ * Run one script upload. Log the startup time Cloudflare measured (`startup_time_ms`). When
++ * Cloudflare refuses it for startup CPU, log the refusal with the Worker, its size, the uploads in
++ * flight and the attempt, and send the same upload again, up to `startupAttempts` in all. The
++ * last refusal fails with that count; Cloudflare's refusal carries no reading of its own.
++ */
++export const measuredUpload = <A extends { readonly startupTimeMs?: number | null }, E, R>(
 +  scriptName: string,
 +  files: UploadFiles,
 +  upload: Effect.Effect<A, E, R>,
-+) =>
-+  Effect.suspend(() => {
-+    const inFlight = ++uploadsInFlight;
-+    const started = Date.now();
-+    const size = uploadSize(files);
-+    return upload.pipe(
-+      Effect.tap((result) =>
-+        Effect.logInfo(
-+          `Cloudflare Worker startup: ${scriptName} startup_time_ms=${result.startupTimeMs ?? "unreported"} (${size}, ${inFlight} uploads in flight, upload took ${Date.now() - started} ms)`,
++  /** Before each re-send; executor-next's e2e tests shorten it. */
++  pause: Duration.Input = startupRetryPause,
++) => {
++  const size = uploadSize(files);
++  const attempt = (number: number): Effect.Effect<A, E | workers.ScriptStartupError, R> =>
++    Effect.suspend(() => {
++      const inFlight = ++uploadsInFlight;
++      const started = Date.now();
++      uploadCounts.uploads++;
++      const of = `attempt ${number} of ${startupAttempts}`;
++      return upload.pipe(
++        Effect.ensuring(
++          Effect.sync(() => {
++            uploadsInFlight--;
++          }),
 +        ),
-+      ),
-+      Effect.mapError((error) =>
-+        error instanceof workers.ScriptStartupError
-+          ? new workers.ScriptStartupError({
-+              code: error.code,
-+              message: `${error.message} Cloudflare refused ${scriptName} (${size}) with ${inFlight} uploads in flight after ${Date.now() - started} ms; it reports no startup time with a refusal.`,
-+            })
-+          : error,
-+      ),
-+      Effect.tapError((error) =>
-+        error instanceof workers.ScriptStartupError
-+          ? Effect.logError(`Cloudflare Worker startup refused: ${error.message}`)
-+          : Effect.void,
-+      ),
-+      Effect.ensuring(
-+        Effect.sync(() => {
-+          uploadsInFlight--;
++        Effect.tap((result) =>
++          Effect.logInfo(
++            `Cloudflare Worker startup: ${scriptName} startup_time_ms=${result.startupTimeMs ?? "unreported"} (${size}, ${inFlight} uploads in flight, upload took ${Date.now() - started} ms${number > 1 ? `, ${of}` : ""})`,
++          ),
++        ),
++        Effect.catch((error) => {
++          if (!isStartupCpuRefusal(error)) return Effect.fail(error);
++          uploadCounts.refusals++;
++          const refused = `${error.message} Cloudflare refused ${scriptName} (${size}) with ${inFlight} uploads in flight after ${Date.now() - started} ms, ${of}; it reports no startup time with a refusal.`;
++          if (number >= startupAttempts) {
++            uploadCounts.failed++;
++            const message = `${refused} Refused on all ${startupAttempts} attempts.`;
++            return Effect.logError(`Cloudflare Worker startup refused: ${message}`).pipe(
++              Effect.andThen(Effect.fail(new workers.ScriptStartupError({ code: error.code, message }))),
++            );
++          }
++          uploadCounts.resent++;
++          return Effect.logError(
++            `Cloudflare Worker startup refused: ${refused} Sending it again in ${Duration.format(Duration.fromInputUnsafe(pause))}.`,
++          ).pipe(
++            Effect.andThen(Effect.sleep(pause)),
++            Effect.andThen(attempt(number + 1)),
++          );
 +        }),
-+      ),
-+    );
-+  });
++      );
++    });
++  return attempt(1);
++};
 +
  const putWorkerScript = (params: {
    accountId: string;
    scriptName: string;
-@@ -881,12 +938,29 @@ const putWorkerScript = (params: {
+@@ -881,12 +986,29 @@ const putWorkerScript = (params: {
    metadata: workers.PutScriptRequest["metadata"];
    files: workers.PutScriptRequest["files"];
  }) =>
@@ -2478,7 +2582,7 @@ diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/W
            scriptName: params.scriptName,
            metadata: params.metadata,
            files: params.files,
-@@ -897,21 +971,8 @@ const putWorkerScript = (params: {
+@@ -897,21 +1019,8 @@ const putWorkerScript = (params: {
              schedule: bindingTargetNotFoundRetrySchedule(),
            }),
          );
@@ -2502,7 +2606,7 @@ diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/W
  
  /**
   * Delete a Worker script, routing to the dispatch-namespace endpoint when
-@@ -3119,8 +3180,10 @@ export const LiveWorkerProvider = () =>
+@@ -3119,8 +3228,10 @@ export const LiveWorkerProvider = () =>
          yield* session.note(`Uploading version of ${parentName} ...`, {
            kind: "status",
          });
@@ -2515,7 +2619,7 @@ diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/W
              accountId,
              scriptName: parentName,
              metadata: {
-@@ -3142,8 +3205,7 @@ export const LiveWorkerProvider = () =>
+@@ -3142,8 +3253,7 @@ export const LiveWorkerProvider = () =>
                    : undefined,
              },
              files: bundle.files,
@@ -2525,7 +2629,7 @@ diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/W
              Effect.retry({
                while: isBindingTargetNotFound,
                schedule: bindingTargetNotFoundRetrySchedule(),
-@@ -3155,7 +3217,8 @@ export const LiveWorkerProvider = () =>
+@@ -3155,7 +3265,8 @@ export const LiveWorkerProvider = () =>
                  }),
                ),
              ),
@@ -2535,7 +2639,7 @@ diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/W
          const versionId = created.id ?? undefined;
          if (versionId === undefined) {
            return yield* Effect.fail(
-@@ -4249,8 +4312,10 @@ export const LiveWorkerProvider = () =>
+@@ -4249,8 +4360,10 @@ export const LiveWorkerProvider = () =>
              `Uploading version of ${name} (${bundleSize}) ...`,
              { kind: "status" },
            );
@@ -2548,7 +2652,7 @@ diff --git a/src/Cloudflare/Workers/WorkerProvider.ts b/src/Cloudflare/Workers/W
                accountId,
                scriptName: name,
                metadata: {
-@@ -4273,13 +4338,13 @@ export const LiveWorkerProvider = () =>
+@@ -4273,13 +4386,13 @@ export const LiveWorkerProvider = () =>
                      : undefined,
                },
                files: bundle.files,
