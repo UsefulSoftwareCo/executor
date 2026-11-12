@@ -1,7 +1,6 @@
 import {
   Clock,
   Console,
-  Deferred,
   Effect,
   FileSystem,
   Path,
@@ -27,7 +26,7 @@ import { v1McpForwardFile } from "./v1-mcp-forward.ts";
 import { v1SessionHandoffFile } from "./v1-session-handoff.ts";
 import {
   alchemyResourceFailure,
-  isAlchemyDevFailure,
+  followAlchemyDev,
   outputLines,
   unboundPort,
 } from "./alchemy-dev-output.ts";
@@ -472,15 +471,20 @@ export const startCloudEnvironment = (input: {
     );
     // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
     // run nothing will edit the sources it waits on, so the Worker that failed never starts.
-    const applyFailed = yield* Deferred.make<void>();
     const resourceFailures = yield* Ref.make<ReadonlyArray<{ resource: string; reason: string }>>(
       [],
     );
-    yield* capture(server, "cloud.log", (line) => {
-      const failure = alchemyResourceFailure(line);
-      if (failure !== undefined) return Ref.update(resourceFailures, (all) => [...all, failure]);
-      return isAlchemyDevFailure(line) ? Deferred.succeed(applyFailed, undefined) : Effect.void;
-    });
+    const dev = yield* followAlchemyDev(server, (line) =>
+      fs.writeFileString(`${directory}/cloud.log`, `${line}\n`, { flag: "a", mode: 0o600 }).pipe(
+        Effect.orDie,
+        Effect.andThen(() => {
+          const failure = alchemyResourceFailure(line);
+          return failure === undefined
+            ? Effect.void
+            : Ref.update(resourceFailures, (all) => [...all, failure]);
+        }),
+      ),
+    );
     // Each failed resource and why, and for a port another socket holds, that socket and its
     // process while `alchemy dev` still runs: the error is in the job log even when the evidence
     // artifact is not kept.
@@ -532,13 +536,18 @@ export const startCloudEnvironment = (input: {
             ),
           ),
         ),
-        Deferred.await(applyFailed).pipe(
+        dev.failed.pipe(
+          // While alchemy still runs, so a port's holder can still be named.
           Effect.andThen(describeResourceFailures),
           Effect.flatMap((failures) =>
-            Effect.fail(
-              new CloudStartFailed({
-                operation: `Alchemy could not start every Cloud resource${failures === "" ? "" : ` (${failures})`}; see cloud.log`,
-              }),
+            dev.report.pipe(
+              Effect.flatMap((report) =>
+                Effect.fail(
+                  new CloudStartFailed({
+                    operation: `Alchemy could not start every Cloud resource${failures === "" ? "" : ` (${failures})`}; see cloud.log. Alchemy reported:\n${report}`,
+                  }),
+                ),
+              ),
             ),
           ),
         ),

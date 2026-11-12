@@ -1,14 +1,19 @@
 /**
  * A managed local Cloud writes `alchemy dev`'s stdout and stderr to cloud.log line by line, and its
  * readiness wait fails as soon as alchemy prints that it gave up on starting a resource
- * (e2e/support/cloud-environment.ts). These cases run a child that writes lines in pieces to both
- * pipes, and check the lines and failures the harness reads from it.
+ * (e2e/support/cloud-environment.ts), with the cause alchemy reports after it. These cases run a
+ * child that writes lines in pieces to both pipes, and check the lines and failures the harness
+ * reads from it.
  */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { isAlchemyDevFailure, outputLines } from "../support/alchemy-dev-output.ts";
+import {
+  followAlchemyDev,
+  isAlchemyDevFailure,
+  outputLines,
+} from "../support/alchemy-dev-output.ts";
 
 const applyFailed =
   "alchemy dev: apply failed; keeping dev alive so healthy resources keep serving.";
@@ -70,6 +75,36 @@ layer(NodeServices.layer, { excludeTestServices: true })("alchemy dev output", (
       );
       expect(lines.filter(isAlchemyDevFailure)).toEqual([applyFailed, applyInterrupted]);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a run that gives up while planning is reported with the cause alchemy prints after it",
+    () =>
+      Effect.gen(function* () {
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        // As alchemy dev does: the failure and its cause in one write, then a wait for a file
+        // change that never comes.
+        const report = [
+          runFailed,
+          "Error: synthetic plan failure",
+          "    at computePlan (file:///synthetic/Plan.js:1:1)",
+        ];
+        const child = yield* processes.spawn(
+          ChildProcess.make("node", [
+            "--input-type=module",
+            "--eval",
+            `process.stdout.write("Computing plan\\n");
+process.stderr.write(${JSON.stringify(`${report.join("\n")}\n`)});
+setInterval(() => {}, 1000);`,
+          ]),
+        );
+        const seen: Array<string> = [];
+        const dev = yield* followAlchemyDev(child, (line) => Effect.sync(() => seen.push(line)));
+        yield* dev.failed;
+        expect(yield* dev.report).toBe(report.join("\n"));
+        expect(seen.toSorted()).toEqual(["Computing plan", ...report].toSorted());
+        expect(yield* child.isRunning).toBe(false);
+      }).pipe(Effect.scoped),
   );
 
   it.effect("each way alchemy dev reports giving up is a failure, and nothing else is", () =>
