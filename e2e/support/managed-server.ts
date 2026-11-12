@@ -36,7 +36,7 @@ import {
   LegacyResults,
   LegacyStatements,
 } from "./legacy-storage.ts";
-import { freePort } from "./ports.ts";
+import { reservedPort } from "./ports.ts";
 import { scenarios } from "../test-plan.ts";
 import { recordWorkerdCoverage, workerdCoverageFlags } from "./workerd-coverage.ts";
 import { localEntryCommand } from "./local-entry.ts";
@@ -104,8 +104,15 @@ export const startManagedServer = (
       processes = yield* ChildProcessSpawner.ChildProcessSpawner,
       path = yield* Path.Path,
       http = yield* HttpClient.HttpClient;
-    const port = new URL(target.metadata.origin).port;
-    let origin = target.metadata.origin;
+    // A product asked to choose its own port (port 0) gets a reserved one instead and keeps it
+    // across restarts: a port the OS chose goes back to its ephemeral range whenever the product
+    // stops, and another socket on the machine can be handed it before the product starts again.
+    const requested = new URL(target.metadata.origin);
+    const port = requested.port === "0" ? String(yield* reservedPort) : requested.port;
+    let origin =
+      requested.port === "0"
+        ? `${requested.protocol}//${requested.hostname}:${port}`
+        : target.metadata.origin;
     const runtimePath = yield* Config.String("EXECUTOR_E2E_RUNTIME_PATH").pipe(
       Config.withDefault(process.env.PATH ?? ""),
     );
@@ -593,11 +600,9 @@ const startIsolatedSelfHost = (
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    // The product binds port zero and reports where it listens. The development entry needs its
-    // origin, port included, before it starts, so it gets a port the OS does not hand out: a port
-    // zero chose and the harness released is ephemeral, and the loopback connections of every
-    // worker's servers can take it before the server binds it (see `freePort`).
-    const port = entry === "product" ? 0 : yield* freePort;
+    // Both entries keep one reserved port for the server's life, through every restart (see
+    // `reservedPort`).
+    const port = yield* reservedPort;
     const directory = yield* fs.makeTempDirectory({ directory: target.directory, prefix: entry });
     const origin = `http://127.0.0.1:${port}`;
     const server = yield* startManagedServer(

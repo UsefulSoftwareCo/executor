@@ -148,6 +148,13 @@ group with SIGKILL, running none of its shutdown, to model a crash.
 Sleep timers and duration measurements stay real. This tests
 minute-based scheduling without adding a minute of sleep to each scenario.
 
+A product keeps its origin through every stop and start. Its port is reserved for the
+managed server's whole life (`reservedPort` in `support/ports.ts`): it lies outside the
+range the OS hands to sockets that bind port zero or connect out, which the harness
+checks, and a file per port in the machine's temporary directory gives no port to two
+owners across suites and worker processes. `freePort` draws from the same reservations.
+`product-port.spec.ts` checks that nothing else can be given a stopped product's port.
+
 ### Legacy storage
 
 Some upgrade bugs only arise from rows that an older version wrote and no current

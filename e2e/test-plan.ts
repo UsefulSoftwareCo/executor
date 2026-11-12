@@ -10319,6 +10319,17 @@ export const scenarios = plan({
       cloud: na("Cloud uses hosted sign-in rather than local device pairing."),
     },
   },
+  productPortReserved: {
+    // It tests the harness, so CI runs it only when the harness changes: see `harnessScenarios`
+    // in e2e/ci-selection.ts.
+    file: "product-port.spec.ts",
+    title: "A stopped product's port stays reserved, so it starts again on its own origin",
+    targets: {
+      "self-host": scheduled,
+      local: na("Local and self-host products take their ports from the same reservations."),
+      cloud: na("A local Cloud's ports are fixed for its whole run; it does not restart."),
+    },
+  },
   localStartupRecovery: {
     file: "local-startup-recovery.spec.ts",
     title: "local startup can recover after a real port conflict",
