@@ -136,6 +136,9 @@ describe("McpServingRoutes envelope", () => {
     expect(response.headers.get("access-control-allow-origin")).toBe("*");
     expect(response.headers.get("access-control-allow-methods")).toBe("GET, POST, DELETE, OPTIONS");
     expect(response.headers.get("access-control-allow-headers") ?? "").toContain("authorization");
+    expect(response.headers.get("access-control-allow-headers") ?? "").toContain(
+      "x-executor-client-token",
+    );
   });
 
   it("renders 500 -32603 + CORS and fires the reporter on an orchestration defect", async () => {
@@ -222,6 +225,44 @@ it("dispatches toolkit MCP routes with the parsed toolkit resource", async () =>
   expect(await Effect.runPromise(Ref.get(seen))).toEqual({
     kind: "toolkit",
     slug: "deploy",
+  });
+});
+
+it("forwards only the authenticated client identity into session dispatch", async () => {
+  const seen = await Effect.runPromise(
+    Ref.make<{ readonly clientIdentity?: string; readonly clientManifestGeneration?: number }>({}),
+  );
+  const ClientAuthProviderLive = Layer.succeed(McpAuthProvider)({
+    discoveryRoutes: [],
+    resourceMetadataUrl: (request) => `${new URL(request.url).origin}${DISCOVERY_PATH}`,
+    authenticate: () => Effect.succeed(authenticated(TEST_PRINCIPAL, "linked-client-a", 2)),
+  });
+  const RecordingStoreLive = Layer.succeed(McpSessionStore)({
+    dispatch: ({ clientIdentity, clientManifestGeneration }): Effect.Effect<McpDispatchResult> =>
+      Ref.set(seen, { clientIdentity, clientManifestGeneration }).pipe(
+        Effect.as(new Response(JSON.stringify({ jsonrpc: "2.0", id: 1 }), { status: 200 })),
+      ),
+    dispose: () => Effect.void,
+  });
+
+  const handler = buildHandler(RecordingStoreLive, McpErrorReporterNoop, ClientAuthProviderLive);
+  const response = await handler(
+    new Request("https://host.test/mcp", {
+      method: "POST",
+      headers: MCP_POST_HEADERS,
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { clientInfo: { name: "forged-client", version: "1.0.0" } },
+      }),
+    }),
+  );
+
+  expect(response.status).toBe(200);
+  expect(await Effect.runPromise(Ref.get(seen))).toEqual({
+    clientIdentity: "linked-client-a",
+    clientManifestGeneration: 2,
   });
 });
 

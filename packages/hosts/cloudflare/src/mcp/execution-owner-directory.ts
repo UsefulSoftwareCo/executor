@@ -39,6 +39,14 @@ const toMcpExecutionOwnerDirectoryStub = (stub: unknown): McpExecutionOwnerDirec
 export const mcpSessionDurableObjectName = (sessionId: string): string =>
   `streamable-http:${sessionId}`;
 
+export const mcpClientChannelDurableObjectName = (clientId: string): string =>
+  `mcp-client-channel:${clientId}`;
+
+export const mcpClientChannelIdFromName = <Id>(
+  namespace: McpExecutionOwnerDirectoryNamespace<Id>,
+  clientId: string,
+): Id => namespace.idFromName(mcpClientChannelDurableObjectName(clientId));
+
 class McpExecutionOwnerDirectoryRpcError extends Data.TaggedError(
   "McpExecutionOwnerDirectoryRpcError",
 )<{

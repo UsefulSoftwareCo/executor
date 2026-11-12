@@ -63,6 +63,16 @@ test("an unauthenticated /mcp request returns 401 with a WWW-Authenticate challe
   expect(challenge).toContain("resource_metadata=");
 });
 
+test("the persistent client channel rejects an unauthenticated upgrade", async () => {
+  const response = await handler(
+    new Request(`${BASE}/api/mcp/client-channel`, {
+      headers: { upgrade: "websocket", connection: "Upgrade" },
+    }),
+  );
+  expect(response.status).toBe(401);
+  expect(response.headers.get("www-authenticate")).toContain("Bearer");
+});
+
 test("an unauthenticated toolkit MCP request challenges with toolkit metadata", async () => {
   const res = await handler(
     new Request(`${BASE}/mcp/toolkits/deploy`, {

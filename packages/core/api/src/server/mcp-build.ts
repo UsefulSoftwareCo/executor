@@ -50,6 +50,12 @@ export const makeMcpBuildServer =
         principal.organizationName,
         {
           mcpResource: options?.resource,
+          ...(options?.clientIdentity === undefined
+            ? {}
+            : { clientIdentity: options.clientIdentity }),
+          ...(options?.clientManifestGeneration === undefined
+            ? {}
+            : { clientManifestGeneration: options.clientManifestGeneration }),
           orgWrites: "request",
         },
       ).pipe(Effect.withSpan("mcp.execution_stack.build"));

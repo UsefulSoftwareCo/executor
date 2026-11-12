@@ -142,6 +142,11 @@ export const mcpResourceKey = (resource: McpResource | null | undefined): string
 export interface McpAuthenticated {
   readonly _tag: "Authenticated";
   readonly principal: Principal;
+  /** Verified client installation identity, if a linked client token was
+   * presented and validated by the host auth provider. */
+  readonly clientIdentity?: string;
+  /** Manifest revision captured by the linked client at session initialization. */
+  readonly clientManifestGeneration?: number;
 }
 
 export interface McpUnauthorized {
@@ -171,9 +176,15 @@ export interface McpUnavailable {
 
 export type AuthOutcome = McpAuthenticated | McpUnauthorized | McpForbidden | McpUnavailable;
 
-export const authenticated = (principal: Principal): McpAuthenticated => ({
+export const authenticated = (
+  principal: Principal,
+  clientIdentity?: string,
+  clientManifestGeneration?: number,
+): McpAuthenticated => ({
   _tag: "Authenticated",
   principal,
+  ...(clientIdentity === undefined ? {} : { clientIdentity }),
+  ...(clientManifestGeneration === undefined ? {} : { clientManifestGeneration }),
 });
 
 export const unauthorized = (challenge?: string): McpUnauthorized =>
@@ -268,6 +279,11 @@ export class McpAuthProvider extends Context.Service<
 export interface McpDispatchInput {
   readonly request: Request;
   readonly principal: Principal;
+  /** Server-verified installation identity derived from the client's linked
+   * persistent connection; never copied from client-controlled MCP metadata. */
+  readonly clientIdentity?: string;
+  /** Pinned manifest revision; an update requires a fresh MCP session. */
+  readonly clientManifestGeneration?: number;
   readonly resource: McpResource;
   readonly sessionId: string | null;
   readonly method: string;

@@ -144,6 +144,25 @@ describe("resolveSessionMetaForToken", () => {
     expect(store.calls()).toBe(0);
   });
 
+  it("persists the authenticated client and manifest generation in session metadata", async () => {
+    const store = countingConnectTimeoutStore();
+
+    const meta = await Effect.runPromise(
+      resolveSessionMetaForToken(
+        {
+          ...TOKEN,
+          clientIdentity: "linked-client-a",
+          clientManifestGeneration: 3,
+        },
+        STORED,
+      ).pipe(Effect.provide(Layer.mergeAll(store.layer, unusedWorkOS))),
+    );
+
+    expect(meta.clientIdentity).toBe("linked-client-a");
+    expect(meta.clientManifestGeneration).toBe(3);
+    expect(store.calls()).toBe(0);
+  });
+
   it("reads the database only when nothing else names the org", async () => {
     const store = namingStore();
 

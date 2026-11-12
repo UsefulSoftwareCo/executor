@@ -76,7 +76,7 @@ const corsPreflightResponse = (): Response =>
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
       "access-control-allow-headers":
-        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version",
+        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version, x-executor-client-token",
       "access-control-expose-headers": "mcp-session-id, WWW-Authenticate",
     },
   });
@@ -385,6 +385,10 @@ const mcpDispatch = (resource: McpResource) =>
     const result: McpDispatchResult = yield* store.dispatch({
       request,
       principal,
+      ...(outcome.clientIdentity === undefined ? {} : { clientIdentity: outcome.clientIdentity }),
+      ...(outcome.clientManifestGeneration === undefined
+        ? {}
+        : { clientManifestGeneration: outcome.clientManifestGeneration }),
       resource,
       sessionId,
       method: request.method,

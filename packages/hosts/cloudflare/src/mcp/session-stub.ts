@@ -9,6 +9,7 @@ import type {
   McpSessionApprovalResult,
   McpSessionModelResumeResult,
   McpSessionResumeApprovalResult,
+  McpSessionOwnerIdentity,
 } from "./agent-session-durable-object";
 import { mcpSessionDurableObjectName } from "./execution-owner-directory";
 
@@ -19,7 +20,7 @@ export interface McpSessionNamespace<Id> {
 
 export interface McpSessionStub {
   readonly validateMcpSessionOwner: (
-    identity: McpApprovalOwner,
+    identity: McpSessionOwnerIdentity,
     resource: McpResource,
   ) => Promise<"ok" | "not_found" | "forbidden" | "terminated">;
   readonly _cf_scheduleDestroy: () => Promise<void>;
