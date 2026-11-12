@@ -639,12 +639,14 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
           const size = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
           let used = 0;
           // The batch being read. Settling it is atomic, so the deadline either stops a batch
-          // before it settles, keeping the traces it read, or after.
+          // before it settles or after. A batch's reads run at once and finish in any order, so
+          // one the deadline stops keeps its traces only up to the first it had not read: what is
+          // kept is always the newest of the plan, and every trace left unread is older.
           let pending: { readonly index: number; value?: unknown }[] = [];
           const settle = Effect.gen(function* () {
             const values: unknown[] = [];
             for (const { index, value } of pending) {
-              if (value === undefined) continue;
+              if (value === undefined) break;
               const trace = plan[index]!;
               used += size(value);
               if (!trace.always) {
@@ -695,7 +697,7 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
             Effect.interruptible,
             Effect.timeoutOption(Math.max(0, collectUntil - (yield* Clock.currentTimeMillis))),
           );
-          // The batch the deadline stopped keeps the traces it had read.
+          // The batch the deadline stopped keeps its newest traces that were read.
           yield* settle;
           const { unfetched, ids } = listed(Option.isSome(finished) ? "complete" : "partial");
           yield* append(

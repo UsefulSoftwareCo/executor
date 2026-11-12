@@ -516,7 +516,8 @@ kept, the `dropped` ones and the `unfetched` ones, and its `state`: `collecting`
 end, then `complete` or `partial` when the deadline stopped the reads. `telemetry.json`
 is written a batch at a time, one compact entry per line: first the newest request, then
 the other traces always kept, then the rest newest first. A trace not read before the
-deadline has an entry with only an `error`. `unanswered-requests.json` lists every
+deadline has an entry with only an `error`. The deadline, like the budget, leaves out only
+the oldest: every trace kept is newer than every trace not read, except those always kept. `unanswered-requests.json` lists every
 request that never answered. `failure-evidence.spec.ts` checks this with cases that fail
 on purpose.
 

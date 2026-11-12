@@ -77,6 +77,22 @@ export const OperatorSettings = Schema.Struct({
   EXECUTOR_OAUTH_SLACK_CLIENT_SECRET: Schema.optionalKey(Schema.String),
 });
 /** The runner owns every process generation and keeps the same synthetic secrets across restarts. */
+/** In a managed server's directory: the process group its current product process leads. */
+export const serverProcessFile = "server-process.json";
+export const ServerProcess = Schema.Struct({ processGroup: Schema.Number });
+
+/** Whether any process of `group` still runs. The spawner starts each product as a group leader. */
+export const processGroupRunning = (group: number) =>
+  Effect.sync(() => {
+    try {
+      process.kill(-group, 0);
+      return true;
+    } catch (error) {
+      // EPERM: a process of that group exists but belongs to another user.
+      return error instanceof Error && "code" in error && error.code === "EPERM";
+    }
+  });
+
 export const startManagedServer = (
   target: typeof Target.Service,
   mode: "product" | "development" = "product",
@@ -288,6 +304,15 @@ export const startManagedServer = (
           }),
         );
         running = child;
+        // The product's process group, so a scenario can tell the product stopped by the process,
+        // not by its port: a port it bound with 0 can be handed to another server once it is free.
+        yield* fs
+          .writeFileString(
+            `${target.directory}/${serverProcessFile}`,
+            JSON.stringify({ processGroup: child.pid }),
+            { mode: 0o600 },
+          )
+          .pipe(Effect.orDie);
         yield* Scope.addFinalizer(
           scope,
           Effect.sync(() => {
