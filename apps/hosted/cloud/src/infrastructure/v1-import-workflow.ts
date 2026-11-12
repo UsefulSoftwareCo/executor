@@ -49,6 +49,7 @@ import { removeImported } from "../implementation/v1-import/rollback.ts";
 import { makeImportStore } from "../implementation/v1-import/store.ts";
 import { importRefusal, movedFlag, writesRefused } from "../implementation/v1-import/writes.ts";
 import { AppBuilds } from "./blobs.ts";
+import { cloudBackgroundJobs } from "./background-jobs.ts";
 import { AutumnClient } from "../contracts/autumn.ts";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { autumnLive, autumnReads } from "../implementation/autumn-client.ts";
@@ -58,6 +59,9 @@ import {
   type V1ImportBilling,
 } from "../implementation/v1-import/billing.ts";
 import type { V1ImportSettings } from "./onboarding.ts";
+
+/** The background jobs the importer asks the placed handler to run. */
+type BackgroundJobs = Effect.Success<typeof cloudBackgroundJobs>;
 
 /** The importer this deployment runs, with where it keeps reports; none where v1 is unreachable. */
 export class V1ImportConfiguration extends Context.Service<
@@ -206,6 +210,7 @@ const importEnvironment = (
   reports: V1ImportReports,
   connections: McpAuthentication["Service"]["connections"],
   meter: BillingMeter["Service"],
+  jobs: BackgroundJobs,
 ) =>
   V1ImportEnvironment.of({
     source: settings.source.pipe(
@@ -220,6 +225,10 @@ const importEnvironment = (
     v1FirstPartyClients: settings.v1FirstPartyClients,
     slugKey: settings.slugKey,
     billing: importBilling(settings, meter),
+    // A workflow step is not placed: the placed handler dispatches, as the minute job does.
+    startProvisioning: jobs
+      .request("provisioning")
+      .pipe(Effect.mapError(() => new V1ImportUnavailable())),
   });
 
 export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
@@ -245,13 +254,14 @@ export class V1ImportWorkflow extends Cloudflare.Workflow<V1ImportWorkflow>()(
     const configuration = Context.get(services, V1ImportConfiguration);
     const connections = Context.get(services, McpAuthentication).connections;
     const meter = Context.get(services, BillingMeter);
+    const jobs = yield* cloudBackgroundJobs;
     return (input: unknown) =>
       Effect.gen(function* () {
         const params = yield* Schema.decodeUnknownEffect(V1ImportParams)(input);
         if (Option.isNone(configuration))
           return yield* Effect.die(new Error("This deployment has no v1 importer."));
         const { settings, reports } = configuration.value;
-        const environment = importEnvironment(settings, reports, connections, meter);
+        const environment = importEnvironment(settings, reports, connections, meter, jobs);
         return yield* runV1Import(params, runner(params, settings.stepRetries), (name, seconds) =>
           Cloudflare.Workflows.sleep(name, seconds * 1000),
         ).pipe(
@@ -337,6 +347,7 @@ const aggregationId = /^[0-9a-f]{32}$/u;
 export const v1ImportRoutes = (workflow: Workflow) =>
   Effect.gen(function* () {
     const configuration = yield* V1ImportConfiguration;
+    const jobs = yield* cloudBackgroundJobs;
     const authorized = Effect.gen(function* () {
       if (Option.isNone(configuration)) return Option.none();
       const token = configuration.value.settings.operatorToken;
@@ -861,7 +872,7 @@ export const v1ImportRoutes = (workflow: Workflow) =>
         Effect.scoped,
         Effect.provideService(
           V1ImportEnvironment,
-          importEnvironment(settings, reports, connections, yield* BillingMeter),
+          importEnvironment(settings, reports, connections, yield* BillingMeter, jobs),
         ),
       );
       return yield* json(200, result);
@@ -932,7 +943,7 @@ export const v1ImportRoutes = (workflow: Workflow) =>
         Effect.scoped,
         Effect.provideService(
           V1ImportEnvironment,
-          importEnvironment(settings, reports, connections, yield* BillingMeter),
+          importEnvironment(settings, reports, connections, yield* BillingMeter, jobs),
         ),
       );
       return yield* json(200, result);
