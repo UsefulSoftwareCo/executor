@@ -144,12 +144,14 @@ export const makeHostedMcp = (
   limits: McpOptions["limits"] = defaultMcpLimits,
   sessions?: McpOptions["sessions"],
   interactions?: McpOptions["interactions"],
+  maxSessions?: McpOptions["maxSessions"],
 ) =>
   makeMcp({
     backend: requestBackend,
     ...(beforeExecute === undefined ? {} : { beforeExecute }),
     ...(sessions === undefined ? {} : { sessions }),
     ...(interactions === undefined ? {} : { interactions }),
+    ...(maxSessions === undefined ? {} : { maxSessions }),
     caller: requestCaller,
     instructions: executorIntro,
     limits,

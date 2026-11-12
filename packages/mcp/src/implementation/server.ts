@@ -112,6 +112,8 @@ const query = Schema.Struct({ elicitation_mode: Schema.optionalKey(ElicitationMo
 // any of its MCP sessions. Browser approval links address one protocol session.
 const callerIdentity = (product: string, mode: "model" | "native") =>
   JSON.stringify([product, mode]);
+/** The end of every browser identity of one protocol session, whichever product it belongs to. */
+const browserSessionSuffix = (session: string) => `,"browser",${JSON.stringify(session)}]`;
 const browserIdentity = (product: string, session: string) =>
   JSON.stringify([product, "browser", session]);
 
@@ -328,6 +330,17 @@ export const makeMcp = (options: McpOptions) =>
               path: "/mcp",
               protocols: served,
               sessions: options.sessions?.(mode),
+              maxSessions: options.maxSessions,
+              // A browser program is resumed only through the protocol session it started in, so
+              // that session is kept while the program runs or waits for its approval.
+              ...(mode === "browser" && options.maxSessions !== undefined
+                ? {
+                    heldSession: (session: string) => {
+                      const named = browserSessionSuffix(session);
+                      return executions.holds((caller) => caller.endsWith(named));
+                    },
+                  }
+                : {}),
             }),
           ),
           HttpRouter.toHttpEffect,

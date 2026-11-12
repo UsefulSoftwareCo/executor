@@ -7424,6 +7424,30 @@ export const scenarios = plan({
       ),
     },
   },
+  mcpSessionBoundWork: {
+    fixtures: "actors",
+    file: "mcp-protocol-versions.spec.ts",
+    title:
+      "Self-host MCP keeps a session that owns a pending approval prompt, a running call or a browser program waiting for approval when 256 newer sessions open",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud sets no session bound; its session objects keep their own stored sessions."),
+      local: na("Local keeps one protocol server for the process and sets no session bound."),
+    },
+  },
+  mcpSessionBound: {
+    fixtures: "actors",
+    file: "mcp-protocol-versions.spec.ts",
+    title:
+      "Self-host MCP keeps a caller's 256 most recently used protocol sessions and tells a forgotten session's client to initialize again",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud session objects keep at most 64 stored sessions by last use, covered by cloudMcpSessionRestore.",
+      ),
+      local: na("Local keeps one protocol server for the process and sets no session bound."),
+    },
+  },
   // The app tool signals a loopback listener when it starts, and the Sentry check reads the managed
   // Cloud collector; a deployed Worker can reach neither.
   mcpCancelledCalls: {

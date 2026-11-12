@@ -597,6 +597,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "billing.config.ts": () => import("./billing.config.ts"),
   "ci-selection.config.ts": () => import("./ci-selection.config.ts"),
   "dashboard-file-names.config.ts": () => import("./dashboard-file-names.config.ts"),
+  "effect-mcp.config.ts": () => import("./effect-mcp.config.ts"),
   "desktop-recovery.config.ts": () => import("./desktop-recovery.config.ts"),
   "desktop-release.config.ts": () => import("./desktop-release.config.ts"),
   "emulator-failures.config.ts": () => import("./emulator-failures.config.ts"),

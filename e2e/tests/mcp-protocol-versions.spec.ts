@@ -4,7 +4,9 @@
  * negotiated version when a request omits the header. Requests the MCP transport rejects explain
  * themselves, including an unknown session, wrong media types and a batch. A call the client
  * cancels ends its event stream without a result (self-host and managed Cloud: its app tool
- * signals a loopback listener, and the Sentry check reads the managed collector).
+ * signals a loopback listener, and the Sentry check reads the managed collector). Self-host keeps
+ * each caller's most recently used sessions only, so clients that open a session per call or
+ * never end theirs (the transport has no DELETE) no longer hold memory until restart.
  */
 import { expect, layer } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Redacted, Schema, Stream } from "effect";
@@ -15,6 +17,8 @@ import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { Browser } from "../support/browser.ts";
+import { McpClient } from "../support/mcp-client.ts";
 import { Target } from "../support/platform.ts";
 import { App } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -127,6 +131,216 @@ const initialize = (
     {},
     path,
   );
+
+/** Protocol sessions one self-host caller keeps (`maxSessions` in apps/hosted/self-host/src/mcp.ts). */
+const keptSessions = 256;
+
+const openSession = (credentials: Readonly<Record<string, string>>) =>
+  initialize(credentials, "2025-11-25").pipe(
+    Effect.flatMap((opened) => Schema.decodeUnknownEffect(SessionId)(opened.session)),
+  );
+const listWith = (credentials: Readonly<Record<string, string>>, session: string) =>
+  post({ ...credentials, "mcp-session-id": session }, { id: 2, method: "tools/list" });
+
+/**
+ * Past the bound the least recently used session is forgotten, not the oldest: a session the
+ * client keeps using survives sessions opened after it. A forgotten session gets the same 404 a
+ * restart gives, and the client continues after initializing again.
+ */
+const checkSessionBound = (credentials: Readonly<Record<string, string>>) =>
+  Effect.gen(function* () {
+    const evidence = yield* Evidence;
+    const first = yield* openSession(credentials);
+    const second = yield* openSession(credentials);
+    yield* Effect.forEach(
+      Array.from({ length: keptSessions - 2 }),
+      () => openSession(credentials),
+      {
+        concurrency: 8,
+        discard: true,
+      },
+    );
+    yield* evidence.step(
+      `With ${keptSessions} sessions open, the first still answers`,
+      Effect.gen(function* () {
+        expect((yield* listWith(credentials, first)).status).toBe(200);
+      }),
+    );
+    // The first was just used, so the second is now the least recently used.
+    const newest = yield* openSession(credentials);
+    yield* evidence.step(
+      "Opening one more forgets the least recently used session, which is told to initialize again",
+      Effect.gen(function* () {
+        const rejected = yield* listWith(credentials, second);
+        yield* expectRejected(rejected, 404, ["Mcp-Session-Id", "initialize"]);
+        yield* evidence.json("forgotten-session.json", rejected.reply);
+        // Older than every session opened after it, but used since: kept.
+        expect((yield* listWith(credentials, first)).status).toBe(200);
+        expect((yield* listWith(credentials, newest)).status).toBe(200);
+      }),
+    );
+    yield* evidence.step(
+      "The forgotten session's client initializes again and continues",
+      Effect.gen(function* () {
+        const again = yield* openSession(credentials);
+        const listed = yield* listWith(credentials, again);
+        expect(listed.status).toBe(200);
+        const { tools } = yield* Schema.decodeUnknownEffect(Tools)(listed.reply?.result);
+        expect(tools.map((tool) => tool.name)).toContain("execute");
+      }),
+    );
+  });
+
+/** Open `count` more sessions for the caller in one elicitation mode, as other clients of it would. */
+const openSessions = (credentials: Readonly<Record<string, string>>, path: string, count: number) =>
+  Effect.forEach(
+    Array.from({ length: count }),
+    () =>
+      initialize(credentials, "2025-11-25", {}, path).pipe(
+        Effect.flatMap((opened) => Schema.decodeUnknownEffect(SessionId)(opened.session)),
+      ),
+    { concurrency: 8, discard: true },
+  );
+
+const BrowserPending = Schema.Struct({
+  status: Schema.Literal("approval-required"),
+  requestId: Schema.String,
+  approvalUrl: Schema.String,
+});
+const Completed = Schema.Struct({
+  status: Schema.Literal("completed"),
+  execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
+});
+
+/**
+ * A session that owns work is never the one forgotten: not while its call waits for the client's
+ * answer to an approval prompt, not while a call it can still cancel runs, and not while a browser
+ * program it started waits for approval. Each case opens `keptSessions` newer sessions for the same
+ * caller and mode while the work is pending, which forgot the session before.
+ */
+const checkSessionsOwningWork = (
+  key: Redacted.Redacted<string>,
+  credentials: Readonly<Record<string, string>>,
+  slug: string,
+  started: (call: string) => Effect.Effect<void>,
+) =>
+  Effect.gen(function* () {
+    const actors = yield* Actors,
+      browser = yield* Browser,
+      evidence = yield* Evidence,
+      mcp = yield* McpClient;
+    const organization = actors.organization.id;
+    // The client calls its approval hook outside this scenario's services.
+    const services = yield* Effect.context<HttpClient.HttpClient | Target>();
+    const approve = `return await tools[${JSON.stringify(slug)}].approved({})`;
+
+    yield* evidence.step(
+      "A native client answers an approval prompt after 256 newer sessions open, and the call completes",
+      Effect.gen(function* () {
+        const native = yield* mcp.connect(key, "bound-native", {
+          organization,
+          mode: "native",
+          whileApproving: openSessions(
+            credentials,
+            "/mcp?elicitation_mode=native",
+            keptSessions,
+          ).pipe(Effect.provideContext(services)),
+        });
+        // A forgotten session dropped the answer, and the call waited for the prompt's own timeout.
+        const answered = yield* native.use("Call a tool that asks for approval", (client, signal) =>
+          client.callTool({ name: "execute", arguments: { code: approve } }, undefined, {
+            signal,
+            timeout: 30_000,
+          }),
+        );
+        expect(yield* native.elicitationCount).toBe(1);
+        const completed = yield* Schema.decodeUnknownEffect(Completed)(answered.structuredContent);
+        expect(completed.execution.value).toBe("approved");
+      }),
+    );
+
+    yield* evidence.step(
+      "A client cancels its running call after 256 newer sessions open, and the call ends without a result",
+      Effect.gen(function* () {
+        const opened = yield* initialize(credentials, "2025-11-25");
+        const session = {
+          ...credentials,
+          "mcp-session-id": yield* Schema.decodeUnknownEffect(SessionId)(opened.session),
+          "mcp-protocol-version": "2025-11-25",
+        };
+        const id = crypto.randomUUID();
+        const frames: Array<typeof Frame.Type> = [];
+        const call = yield* stream(
+          session,
+          {
+            id: 1,
+            method: "tools/call",
+            params: {
+              name: "execute",
+              arguments: {
+                code: `return await tools[${JSON.stringify(slug)}].wait({ call: ${JSON.stringify(id)} })`,
+              },
+            },
+          },
+          "/mcp",
+          frames,
+          yield* Deferred.make<void>(),
+        ).pipe(Effect.forkScoped);
+        yield* started(id).pipe(Effect.timeout("60 seconds"));
+        yield* openSessions(credentials, "/mcp", keptSessions);
+        const cancelled = yield* post(session, {
+          method: "notifications/cancelled",
+          params: { requestId: 1, reason: "The client stopped waiting" },
+        });
+        expect(cancelled.status).toBe(202);
+        // The app tool runs 25 seconds; a cancellation that reached the call ends it well before.
+        const ended = yield* Fiber.join(call).pipe(Effect.timeout("15 seconds"));
+        expect(ended.status).toBe(200);
+        expect(frames.filter((frame) => frame.id === 1 && frame.method === undefined)).toEqual([]);
+      }).pipe(Effect.scoped),
+    );
+
+    yield* evidence.step(
+      "A browser program approved on its review page after 256 newer sessions open resumes in its own session",
+      Effect.gen(function* () {
+        yield* browser.login(actors.owner);
+        const linked = yield* mcp.connect(key, "bound-browser", { organization, mode: "browser" });
+        const pending = yield* linked
+          .use("Call a tool that asks for approval in the browser", (client, signal) =>
+            client.callTool({ name: "execute", arguments: { code: approve } }, undefined, {
+              signal,
+              timeout: 55_000,
+            }),
+          )
+          .pipe(
+            Effect.flatMap((result) =>
+              Schema.decodeUnknownEffect(BrowserPending)(result.structuredContent),
+            ),
+          );
+        yield* openSessions(credentials, "/mcp?elicitation_mode=browser", keptSessions);
+        const url = new URL(pending.approvalUrl);
+        yield* browser.use("Open the review page and approve", (page) =>
+          page
+            .goto(`${url.pathname}${url.search}`)
+            .then(() =>
+              page.getByRole("heading", { name: "Review tool request", exact: true }).waitFor(),
+            )
+            .then(() => page.getByRole("button", { name: "Approve", exact: true }).click())
+            .then(() => page.getByText("Response saved", { exact: true }).waitFor()),
+        );
+        yield* browser.checkpoint("Approval saved after 256 newer sessions opened");
+        const resumed = yield* linked.use("Collect the approval through resume", (client, signal) =>
+          client.callTool(
+            { name: "resume", arguments: { requestId: pending.requestId } },
+            undefined,
+            { signal, timeout: 55_000 },
+          ),
+        );
+        const completed = yield* Schema.decodeUnknownEffect(Completed)(resumed.structuredContent);
+        expect(completed.execution.value).toBe("approved");
+      }),
+    );
+  });
 
 /** Negotiate, then use the session the way an older client does: without the version header. */
 const checkProtocolVersions = (credentials: Readonly<Record<string, string>>) =>
@@ -312,6 +526,42 @@ const startSignals = Effect.gen(function* () {
   };
 });
 
+/**
+ * An app whose `wait` tool signals the loopback listener when it starts and then runs 25 seconds,
+ * and whose `approved` tool always asks for approval. Removed when the scenario ends.
+ */
+const deployWaitingApp = (name: string, signals: string) =>
+  Effect.gen(function* () {
+    const api = yield* Api,
+      actors = yield* Actors;
+    const root = `/api/organizations/${actors.organization.id}`;
+    const deployed = yield* api.request(actors.owner, "POST", `${root}/apps/deploy`, {
+      name,
+      files: [
+        {
+          path: "index.ts",
+          content: `import { defineApp, mutation, object, query, router, string } from "apps";
+import { always } from "apps/operations/approval";
+export default defineApp({}, { tools: router({
+  wait: query({ input: object({ call: string() }) }, async (_ctx, { call }) => {
+    await fetch(${JSON.stringify(`${signals}/started?call=`)} + encodeURIComponent(call));
+    await new Promise((resolve) => setTimeout(resolve, 25_000));
+    return "finished";
+  }),
+  approved: mutation({ input: object({}), approval: always() }, async () => "approved"),
+}) });`,
+        },
+        appsManifest,
+      ],
+    });
+    expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+    const app = yield* body(App, deployed);
+    yield* Effect.addFinalizer(() =>
+      api.request(actors.owner, "DELETE", `${root}/apps/${app.id}`).pipe(Effect.orDie),
+    );
+    return app;
+  });
+
 /** A POST whose event stream is read as it arrives: each `data` message, in order. */
 const stream = (
   credentials: Readonly<Record<string, string>>,
@@ -485,7 +735,8 @@ const checkCancelledCalls = (
   });
 
 /** An API key for the actors' organization, deleted when the case ends. */
-const keyCredentials = (name: string) =>
+/** An API key of the owner, removed when the scenario ends, and the headers that present it. */
+const apiKey = (name: string) =>
   Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors;
@@ -499,10 +750,14 @@ const keyCredentials = (name: string) =>
         .pipe(Effect.orDie),
     );
     return {
-      authorization: `Bearer ${Redacted.value(key.key)}`,
-      "x-executor-organization": actors.organization.id,
+      key: key.key,
+      credentials: {
+        authorization: `Bearer ${Redacted.value(key.key)}`,
+        "x-executor-organization": actors.organization.id,
+      },
     };
   });
+const keyCredentials = (name: string) => Effect.map(apiKey(name), ({ credentials }) => credentials);
 
 layer(HostedLive, { excludeTestServices: true })("Hosted MCP protocol versions", (it) => {
   it.effect(scenarios.mcpProtocolVersions.title, (context) =>
@@ -514,39 +769,34 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP protocol versions",
     ),
   );
 
+  it.effect(scenarios.mcpSessionBound.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        yield* checkSessionBound(yield* keyCredentials("MCP session bound"));
+      }),
+    ),
+  );
+
+  it.effect(scenarios.mcpSessionBoundWork.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { key, credentials } = yield* apiKey("MCP sessions owning work");
+        const signals = yield* startSignals;
+        const app = yield* deployWaitingApp("Sessions owning work", signals.origin);
+        yield* checkSessionsOwningWork(key, credentials, app.slug, signals.started);
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+
   it.effect(scenarios.mcpCancelledCalls.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const api = yield* Api,
-          actors = yield* Actors;
         const credentials = yield* keyCredentials("MCP cancelled calls");
         const signals = yield* startSignals;
-        const root = `/api/organizations/${actors.organization.id}`;
-        const deployed = yield* api.request(actors.owner, "POST", `${root}/apps/deploy`, {
-          name: "Cancelled call",
-          files: [
-            {
-              path: "index.ts",
-              content: `import { defineApp, mutation, object, query, router, string } from "apps";
-import { always } from "apps/operations/approval";
-export default defineApp({}, { tools: router({
-  wait: query({ input: object({ call: string() }) }, async (_ctx, { call }) => {
-    await fetch(${JSON.stringify(`${signals.origin}/started?call=`)} + encodeURIComponent(call));
-    await new Promise((resolve) => setTimeout(resolve, 25_000));
-    return "finished";
-  }),
-  approved: mutation({ input: object({}), approval: always() }, async () => "approved"),
-}) });`,
-            },
-            appsManifest,
-          ],
-        });
-        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-        const app = yield* body(App, deployed);
-        yield* Effect.addFinalizer(() =>
-          api.request(actors.owner, "DELETE", `${root}/apps/${app.id}`).pipe(Effect.orDie),
-        );
+        const app = yield* deployWaitingApp("Cancelled call", signals.origin);
         yield* checkCancelledCalls(credentials, app.slug, signals.started);
       }),
     ),
