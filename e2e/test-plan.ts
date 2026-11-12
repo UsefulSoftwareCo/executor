@@ -4301,6 +4301,16 @@ export const scenarios = plan({
       local: na("The shared source contract is exercised through hosted organization routes."),
     },
   },
+  workspaceFirstReads: {
+    fixtures: "actors",
+    file: "workspace-source.spec.ts",
+    title: "Concurrent first reads of new apps each return the one initialized source",
+    targets: {
+      "self-host": scheduled,
+      cloud: sourceStorageCloud,
+      local: na("The shared source contract is exercised through hosted organization routes."),
+    },
+  },
   appPublicFiles: {
     fixtures: "actors",
     file: "app-public-files.spec.ts",
