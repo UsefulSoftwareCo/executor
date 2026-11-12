@@ -7,6 +7,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource, Inventory } from "../support/contracts.ts";
 import { clientCredentialsIssuer, machineClient } from "../support/client-credentials-issuer.ts";
 import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
+import { Evidence, Telemetry } from "../support/evidence.ts";
 import { linkedChoice } from "../support/account-choices.ts";
 import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
@@ -238,6 +239,20 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           ).toBe(422);
           const saved = yield* api.request(actors.owner, "POST", path, payload);
           expect(saved.status).toBe(200);
+          // The exchange authenticates as the account's own client: entered, never the operator's,
+          // and its span names the token endpoint's host alone.
+          const traceId = (yield* (yield* Evidence).requests).at(-1)?.traceId;
+          if (traceId === undefined) return yield* Effect.die("Missing request trace");
+          const exchanged = (yield* (yield* Telemetry).settled(traceId, (spans) =>
+            spans.some((span) => span.operationName === "oauth.clientCredentials"),
+          )).filter((span) => span.operationName === "oauth.clientCredentials");
+          for (const { tags } of exchanged) {
+            expect(tags).toMatchObject({
+              "oauth.client.kind": "entered",
+              "oauth.token_endpoint.host": new URL(issuer.origin).hostname,
+            });
+            expect(Object.keys(tags)).not.toContain("oauth.first_party.id");
+          }
           const completed = yield* body(Completed, saved);
           expect(completed.account.label).toBe("Reporting");
           const detail = yield* body(

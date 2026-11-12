@@ -3750,6 +3750,32 @@ export const scenarios = plan({
       local: na("Local products have no operator OAuth clients."),
     },
   },
+  credentialManagedTelemetry: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "the operator's OAuth client's exchange, renewal and revocation spans name the client and its endpoint's host, and record no secret",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedServiceWords: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "a sign-in with the operator's OAuth client keeps none of the service's own words, so no part or encoding of its secret, or a token the service minted, reaches the failure",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
   credentialManagedHostPatterns: {
     fixtures: "actors",
     file: "credential-placement.spec.ts",
