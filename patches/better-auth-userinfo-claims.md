@@ -1,6 +1,6 @@
 # Better Auth Generic OAuth: UserInfo claims
 
-`better-auth@1.7.16.patch` changes `fetchUserInfo` in
+`better-auth@1.7.20.patch` changes `fetchUserInfo` in
 `dist/plugins/generic-oauth/index.mjs`. Self-host SSO uses this default fetch.
 
 An ID token that has `sub` and `email` used to be taken as the whole profile,

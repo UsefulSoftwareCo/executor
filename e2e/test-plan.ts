@@ -8703,6 +8703,18 @@ export const scenarios = plan({
       ),
     },
   },
+  mcpOAuthPrivateHttpOrigin: {
+    file: "mcp-oauth-private-http-origin.spec.ts",
+    title:
+      "MCP OAuth at a private plain-HTTP origin names one issuer in discovery, the authorization response and the token",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud is served over HTTPS only."),
+      local: na(
+        "Local serves MCP on loopback, whose HTTP issuer was never rewritten; only self-host starts a scenario-owned server at another origin.",
+      ),
+    },
+  },
   remoteRegistryFailures: {
     file: "registry-failures.spec.ts",
     title:

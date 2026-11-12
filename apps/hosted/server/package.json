@@ -31,9 +31,9 @@
     "./document": "./src/implementation/document.ts"
   },
   "dependencies": {
-    "@better-auth/api-key": "1.7.16",
-    "@better-auth/core": "1.7.16",
-    "@better-auth/oauth-provider": "1.7.16",
+    "@better-auth/api-key": "1.7.20",
+    "@better-auth/core": "1.7.20",
+    "@better-auth/oauth-provider": "1.7.20",
     "@executor-js/app-management": "workspace:*",
     "@executor-js/app-templates": "workspace:*",
     "@executor-js/authorization": "workspace:*",
@@ -45,7 +45,7 @@
     "@executor-js/telemetry": "workspace:*",
     "@executor-js/utils": "workspace:*",
     "apps": "workspace:*",
-    "better-auth": "1.7.16",
+    "better-auth": "1.7.20",
     "effect": "4.0.1"
   },
   "devDependencies": {}
