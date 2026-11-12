@@ -4304,6 +4304,7 @@ export const scenarios = plan({
   appPublicFiles: {
     fixtures: "actors",
     file: "app-public-files.spec.ts",
+    appOrigin: true,
     title:
       "The apps CLI deploys a directory of binary ui/public files larger than the code budget; they are served byte for byte with their types, ranges and blob ETags, and clone, apps source and copies return them",
     targets: {
@@ -4315,6 +4316,7 @@ export const scenarios = plan({
   appPublicFilesRollback: {
     fixtures: "actors",
     file: "app-public-files.spec.ts",
+    appOrigin: true,
     title:
       "Binary ui/public files saved through the API as base64 are served per version, an older version serves its own files, reads keep their blobs, and on Cloud a published commit installs with them",
     targets: {
