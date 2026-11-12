@@ -30,7 +30,9 @@ NodeRuntime.runMain(
       event === "pull_request"
         ? platforms.filter((target) => target.platform !== "darwin")
         : platforms;
-    const matrix = targets.map((target) => {
+    // Each job's matrix entry names the runner it runs on: `cli` overrides the platform's runner.
+    const entry = (target: (typeof targets)[number]) => {
+      const { cli, ...fields } = target;
       const directory = `.local/releases/${release.version}-${target.platform}-${target.arch}`;
       const unpacked =
         target.platform === "darwin"
@@ -39,7 +41,8 @@ NodeRuntime.runMain(
             ? `win-unpacked/${release.desktop.productName}.exe`
             : `${target.arch === "arm64" ? "linux-arm64-unpacked" : "linux-unpacked"}/${release.desktop.executableName}`;
       return {
-        ...target,
+        ...fields,
+        cliWorkers: cli === undefined ? 0 : cli.workers,
         directory,
         archive: `${directory}/${platformArchive(target)}`,
         desktop: `${directory}/desktop-artifacts/${unpacked}`,
@@ -51,7 +54,8 @@ NodeRuntime.runMain(
             }
           : {}),
       };
-    });
+    };
+    const matrix = targets.map(entry);
     const values = {
       publish: requested === "build" ? "false" : "true",
       version: release.version,
@@ -62,7 +66,12 @@ NodeRuntime.runMain(
       desktop_package: release.desktop.executableName,
       desktop_update_feed: desktopUpdateFeed.tag,
       matrix: JSON.stringify({ include: matrix }),
-      cli_matrix: JSON.stringify({ include: matrix.filter((target) => target.cliWorkers > 0) }),
+      cli_matrix: JSON.stringify({
+        include: targets.flatMap((target) =>
+          target.cli === undefined ? [] : [{ ...entry(target), runner: target.cli.runner }],
+        ),
+      }),
+      // The image builds and its scenarios run on each Linux platform's `local` runner size.
       docker_matrix: JSON.stringify({
         include: platforms
           .filter((target) => target.platform === "linux")
