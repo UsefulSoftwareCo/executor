@@ -136,8 +136,11 @@ The homepage resolves desktop downloads in the browser from GitHub's public
 release list, choosing the newest published release with this major version's
 tag prefix. A merged version bump keeps linking to the previous release until
 this one is public; without JavaScript, or when the lookup fails, the buttons
-open the releases page. Verify the public npm install, GitHub assets, Docker
-manifest and rendered site.
+open the releases page. The documentation's install commands name the newest
+release npm's dist-tags list, read when the site builds (`scripts/releases/published.ts`),
+so they too keep the previous version until publication moves the tag and the
+next deploy from `main` rebuilds the site. Verify the public npm install, GitHub
+assets, Docker manifest and rendered site.
 A successful upload alone does not establish public availability.
 
 ## Stable cutover
