@@ -36,6 +36,7 @@ import {
   LegacyResults,
   LegacyStatements,
 } from "./legacy-storage.ts";
+import { freePort } from "./ports.ts";
 import { scenarios } from "../test-plan.ts";
 import { recordWorkerdCoverage, workerdCoverageFlags } from "./workerd-coverage.ts";
 import { localEntryCommand } from "./local-entry.ts";
@@ -43,6 +44,9 @@ import { localEntryCommand } from "./local-entry.ts";
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
   message: Schema.String,
 }) {}
+
+/** How many of its last lines a server that exits before readiness quotes in the failure. */
+const startupLinesQuoted = 20;
 
 /** The furthest a scenario may move the product's clock; `wall-clock.mjs` enforces it too. */
 const maxClockOffset = 40 * 86_400_000;
@@ -304,16 +308,21 @@ export const startManagedServer = (
           );
         }
         const ready = yield* Deferred.make<void>();
+        // This generation's last lines, quoted when it exits before readiness: the job log keeps
+        // them when a rerun has replaced the failed attempt's evidence artifact.
+        const lastLines: Array<string> = [];
         const output = yield* Stream.merge(child.stdout, child.stderr).pipe(
           Stream.decodeText(),
           Stream.splitLines,
           Stream.runForEach((line) =>
             Effect.gen(function* () {
-              yield* fs.writeFileString(
-                `${target.directory}/server.log`,
-                `${line.replace(/#pair=[a-f0-9]{64}/g, "#pair=<redacted>")}\n`,
-                { flag: "a", mode: 0o600 },
-              );
+              const redacted = line.replace(/#pair=[a-f0-9]{64}/g, "#pair=<redacted>");
+              lastLines.push(redacted);
+              if (lastLines.length > startupLinesQuoted) lastLines.shift();
+              yield* fs.writeFileString(`${target.directory}/server.log`, `${redacted}\n`, {
+                flag: "a",
+                mode: 0o600,
+              });
               const clock = /^Executor test clock: (\d+)$/.exec(line);
               if (clock !== null) confirmedOffset = Number(clock[1]);
               if (/^Executor: http:\/\/127\.0\.0\.1:\d+$/.test(line)) {
@@ -352,8 +361,12 @@ export const startManagedServer = (
               Fiber.join(output).pipe(
                 Effect.timeoutOption("3 seconds"),
                 Effect.andThen(
-                  Effect.fail(
-                    new ServerFailed({ message: `Server exited before readiness (${code})` }),
+                  Effect.suspend(() =>
+                    Effect.fail(
+                      new ServerFailed({
+                        message: `Server exited before readiness (${code}) on port ${env.PORT}; its last output:\n${lastLines.length === 0 ? "(none)" : lastLines.join("\n")}`,
+                      }),
+                    ),
                   ),
                 ),
               ),
@@ -555,22 +568,11 @@ const startIsolatedSelfHost = (
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const port =
-      entry === "product"
-        ? 0
-        : yield* Effect.scoped(
-            Effect.gen(function* () {
-              const services = yield* Layer.build(
-                NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }),
-              );
-              const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
-              if (!("port" in server.address))
-                return yield* new ServerFailed({
-                  message: "Isolated self-host listener must use TCP",
-                });
-              return server.address.port;
-            }),
-          );
+    // The product binds port zero and reports where it listens. The development entry needs its
+    // origin, port included, before it starts, so it gets a port the OS does not hand out: a port
+    // zero chose and the harness released is ephemeral, and the loopback connections of every
+    // worker's servers can take it before the server binds it (see `freePort`).
+    const port = entry === "product" ? 0 : yield* freePort;
     const directory = yield* fs.makeTempDirectory({ directory: target.directory, prefix: entry });
     const origin = `http://127.0.0.1:${port}`;
     const server = yield* startManagedServer(
