@@ -154,10 +154,14 @@ layer(HostedLive, { excludeTestServices: true })("App schedules", (it) => {
         ).toBe(403);
         expect((yield* api.request(actors.member, "DELETE", appSchedule)).status).toBe(403);
 
-        // A manager runs it: it runs without a caller, with the linked account.
+        // A manager runs it: it runs without a caller, with the linked account. Its tick starts a
+        // workflow, which finishes with the account still linked.
         yield* ok(yield* api.request(actors.owner, "POST", `${appSchedule}/run`));
         yield* runsWith("succeeded", 1);
         expect(yield* ticks).toEqual([{ account: team, caller: "none" }]);
+        const [first] = yield* waitForWorkflows(api, actors.owner, path, 1);
+        if (first === undefined) return yield* Effect.die(new Error("No workflow run"));
+        yield* waitForRun(api, actors.owner, path, first.id, "complete");
 
         // Unlinking does not pause it: it waits for an account and refuses to run.
         yield* ok(yield* unlink(actors.owner, "team", team));
@@ -180,6 +184,12 @@ layer(HostedLive, { excludeTestServices: true })("App schedules", (it) => {
           { account: team, caller: "none" },
           { account: team, caller: "none" },
         ]);
+        // The workflow this tick started finishes too, before anything unlinks its account.
+        const second = (yield* waitForWorkflows(api, actors.owner, path, 2)).find(
+          (run) => run.id !== first.id,
+        );
+        if (second === undefined) return yield* Effect.die(new Error("No second workflow run"));
+        yield* waitForRun(api, actors.owner, path, second.id, "complete");
 
         // Managers pause and remove it.
         expect(
