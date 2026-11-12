@@ -32,6 +32,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { layer as alchemyRuntime } from "alchemy/Alchemist/Runtime";
 import { store } from "alchemy/Alchemist/routes/state";
 import { makeHttpStateStore } from "alchemy/State";
+import { sourceNamespace } from "../contracts/artifacts-namespace.ts";
 import { TestStageFailed } from "../contracts/test-stage-lifetime.ts";
 import { testStagePrefix } from "../infrastructure/stage.ts";
 
@@ -246,7 +247,7 @@ export const isPhysicalName = (name: string, id: string, stage: string, maxLengt
   return name === `${prefix.slice(0, Math.max(0, maxLength - tail.length))}${tail}`.toLowerCase();
 };
 
-type Service = "cloudflare" | "neon" | "axiom";
+type Service = "cloudflare" | "artifacts" | "neon" | "axiom";
 
 /** Requests with a deadline, retries for 429 and 5xx, and errors that name no account or zone. */
 const client = Effect.gen(function* () {
@@ -256,22 +257,37 @@ const client = Effect.gen(function* () {
   const neon = yield* Config.Redacted("NEON_API_KEY");
   const axiom = yield* Config.Redacted("AXIOM_TOKEN");
   const axiomOrg = yield* Config.NonEmptyString("AXIOM_ORG_ID");
+  // The test-stage token cannot read Artifacts; `scripts/with-artifacts-token.sh` mints a short-lived one.
+  const artifacts = yield* Config.option(Config.Redacted("CLOUDFLARE_ARTIFACTS_TOKEN"));
   // The origins can point at a recorded copy of these APIs (`test-stage-unreadable.spec.ts`).
   const origin = (name: string, real: string) => Config.String(name).pipe(Config.withDefault(real));
   const origins = {
     cloudflare: `${yield* origin("TEST_STAGE_CLOUDFLARE_API", "https://api.cloudflare.com")}/client/v4`,
+    artifacts: `${yield* origin("TEST_STAGE_CLOUDFLARE_API", "https://api.cloudflare.com")}/client/v4`,
     neon: `${yield* origin("TEST_STAGE_NEON_API", "https://console.neon.tech")}/api/v2`,
     axiom: `${yield* origin("TEST_STAGE_AXIOM_API", "https://api.axiom.co")}/v2`,
   };
+  /** Every request carries its service's credential; an Artifacts one without its token fails. */
   const request = (api: Service, path: string) => {
     const base = HttpClientRequest.make("GET")(`${origins[api]}${path}`);
     if (api === "cloudflare")
-      return HttpClientRequest.bearerToken(Redacted.value(cloudflare))(base);
-    if (api === "neon") return HttpClientRequest.bearerToken(Redacted.value(neon))(base);
-    return HttpClientRequest.setHeader(
-      "x-axiom-org-id",
-      axiomOrg,
-    )(HttpClientRequest.bearerToken(Redacted.value(axiom))(base));
+      return Effect.succeed(HttpClientRequest.bearerToken(Redacted.value(cloudflare))(base));
+    if (api === "artifacts")
+      return Option.isSome(artifacts)
+        ? Effect.succeed(HttpClientRequest.bearerToken(Redacted.value(artifacts.value))(base))
+        : Effect.fail(
+            failed(
+              "Set CLOUDFLARE_ARTIFACTS_TOKEN to a token with Artifacts Read; the test-stage token cannot read Artifacts.",
+            ),
+          );
+    if (api === "neon")
+      return Effect.succeed(HttpClientRequest.bearerToken(Redacted.value(neon))(base));
+    return Effect.succeed(
+      HttpClientRequest.setHeader(
+        "x-axiom-org-id",
+        axiomOrg,
+      )(HttpClientRequest.bearerToken(Redacted.value(axiom))(base)),
+    );
   };
   /** Each attempt has 30 seconds; 429 waits for its `Retry-After`, 5xx backs off, five tries. */
   const send = (outgoing: HttpClientRequest.HttpClientRequest, what: string) =>
@@ -295,7 +311,7 @@ const client = Effect.gen(function* () {
     });
   const get = <S extends Schema.Top>(api: Service, path: string, schema: S, what: string) =>
     Effect.gen(function* () {
-      const response = yield* send(request(api, path), `list ${what}`);
+      const response = yield* send(yield* request(api, path), `list ${what}`);
       if (response.status !== 200)
         return yield* failed(`Listing ${what} returned HTTP ${response.status}.`);
       return yield* HttpClientResponse.schemaBodyJson(schema)(response).pipe(
@@ -304,7 +320,7 @@ const client = Effect.gen(function* () {
     });
   const remove = (api: Service, path: string, what: string, body?: unknown) =>
     Effect.gen(function* () {
-      let outgoing = HttpClientRequest.setMethod("DELETE")(request(api, path));
+      let outgoing = HttpClientRequest.setMethod("DELETE")(yield* request(api, path));
       if (body !== undefined)
         outgoing = yield* HttpClientRequest.bodyJson(body)(outgoing).pipe(
           Effect.catch(() =>
@@ -394,6 +410,12 @@ export interface StageInventory {
   readonly tokens: ReadonlyArray<{ readonly id: string; readonly name: string }>;
   /** The labels under the app zone that the stage's own AppPages routes serve. */
   readonly appBases: ReadonlyArray<string>;
+  /** The stage's Artifacts namespace; `exists` and `repositories` are absent when unreadable. */
+  readonly artifacts: {
+    readonly namespace: string;
+    readonly exists?: boolean;
+    readonly repositories?: number;
+  };
   /** Reasons removal by name must not start; it removes nothing while any is present. */
   readonly blockers: ReadonlyArray<string>;
 }
@@ -413,6 +435,73 @@ const removable = [
 /** How many resources of the stage are left to remove. */
 export const inventoryCount = (inventory: StageInventory) =>
   removable.reduce((sum, kind) => sum + inventory[kind].length, 0);
+
+const ArtifactsNamespace = Schema.Struct({
+  namespace: Schema.String,
+  repo_count: Schema.optional(Schema.Int),
+});
+const ArtifactsRepositories = Schema.Struct({
+  success: Schema.Literal(true),
+  result: Schema.Array(Schema.Unknown),
+  result_info: Schema.optional(
+    Schema.Struct({
+      page: Schema.optional(Schema.Int),
+      total_pages: Schema.optional(Schema.Int),
+      total_count: Schema.optional(Schema.Int),
+      cursor: Schema.optional(Schema.NullOr(Schema.String)),
+    }),
+  ),
+});
+/**
+ * Whether the namespace exists and how many repositories it holds. The namespace list pages by
+ * cursor; a namespace's repositories list pages by number and says its total, and lists a
+ * namespace that does not exist as empty.
+ */
+const artifactsNamespace = (
+  api: Effect.Success<typeof client>,
+  accountPath: string,
+  namespace: string,
+) =>
+  Effect.gen(function* () {
+    let listed: typeof ArtifactsNamespace.Type | undefined;
+    const seen = new Set<string>();
+    for (let cursor = ""; ;) {
+      const page = yield* api.get(
+        "artifacts",
+        `${accountPath}/artifacts/namespaces?limit=100${cursor === "" ? "" : `&cursor=${encodeURIComponent(cursor)}`}`,
+        Envelope(Schema.Array(ArtifactsNamespace)),
+        "Artifacts namespaces",
+      );
+      listed ??= page.result.find((entry) => entry.namespace === namespace);
+      const next = page.result_info?.cursor;
+      if (next === undefined || next === null || next === "") break;
+      // A cursor seen before would list the same pages for ever.
+      if (seen.has(next)) return yield* failed("Listing Artifacts namespaces repeated a cursor.");
+      seen.add(next);
+      cursor = next;
+    }
+    const repositories = yield* api.get(
+      "artifacts",
+      `${accountPath}/artifacts/namespaces/${encodeURIComponent(namespace)}/repos?limit=200`,
+      ArtifactsRepositories,
+      `Artifacts namespace ${namespace}`,
+    );
+    const info = repositories.result_info;
+    // The answer's total settles it. Without one, a further page would hide repositories.
+    if (
+      info?.total_count === undefined &&
+      ((info?.cursor !== undefined && info.cursor !== null && info.cursor !== "") ||
+        (info?.total_pages !== undefined && (info.page ?? 1) < info.total_pages))
+    )
+      return yield* failed(
+        `Listing Artifacts namespace ${namespace} returned only part of the list.`,
+      );
+    const total = info?.total_count ?? repositories.result.length;
+    return {
+      exists: listed !== undefined,
+      repositories: Math.max(total, repositories.result.length, listed?.repo_count ?? 0),
+    };
+  });
 
 /**
  * Read-only: what the selectors match for one stage. `knownAppBases` keeps the stage's app bases
@@ -529,6 +618,7 @@ export const stageInventory = (slug: string, knownAppBases: ReadonlyArray<string
     }
 
     const buckets: string[] = [];
+    const bucketCursors = new Set<string>();
     for (let cursor = ""; ;) {
       const listed = yield* api.get(
         "cloudflare",
@@ -547,6 +637,8 @@ export const stageInventory = (slug: string, knownAppBases: ReadonlyArray<string
       );
       const next = listed.result_info?.cursor;
       if (next === undefined || next === null || next === "") break;
+      if (bucketCursors.has(next)) return yield* failed("Listing buckets repeated a cursor.");
+      bucketCursors.add(next);
       cursor = next;
     }
 
@@ -609,21 +701,20 @@ export const stageInventory = (slug: string, knownAppBases: ReadonlyArray<string
       );
 
     // An Artifacts namespace has no Alchemy record: the API Worker creates repositories at run time.
-    const namespace = `executor-${stage}-apps`;
-    const repositories = yield* listWhole(
-      `${accountPath}/artifacts/namespaces/${encodeURIComponent(namespace)}/repos`,
-      Schema.Array(Schema.Unknown),
-      `Artifacts namespace ${namespace}`,
-    ).pipe(
-      Effect.map((page) => Option.some(page.result.length)),
+    // The Worker names it with the same function; an absent namespace lists as empty.
+    const namespace = sourceNamespace(stage);
+    const artifacts = yield* artifactsNamespace(api, accountPath, namespace).pipe(
+      Effect.map(Option.some),
       Effect.catch((error) => {
         blockers.push(`${error.message} Removal by name cannot confirm it holds no repositories.`);
-        return Effect.succeed(Option.none<number>());
+        return Effect.succeed(
+          Option.none<{ readonly exists: boolean; readonly repositories: number }>(),
+        );
       }),
     );
-    if (Option.isSome(repositories) && repositories.value > 0)
+    if (Option.isSome(artifacts) && artifacts.value.repositories > 0)
       blockers.push(
-        `Artifacts namespace ${namespace} holds ${repositories.value} repositories, which removal by name does not delete.`,
+        `Artifacts namespace ${namespace} holds ${artifacts.value.repositories} repositories, which removal by name does not delete.`,
       );
 
     const listedBranches = yield* api.get(
@@ -662,6 +753,7 @@ export const stageInventory = (slug: string, knownAppBases: ReadonlyArray<string
       monitors,
       tokens,
       appBases,
+      artifacts: Option.isSome(artifacts) ? { namespace, ...artifacts.value } : { namespace },
       blockers,
     } satisfies StageInventory;
   });

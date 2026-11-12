@@ -7,7 +7,7 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
-import { describe, expect, it, layer } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Schedule, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -59,8 +59,12 @@ interface World {
   destinations: Array<{ slug: string; name: string }>;
   hyperdrive: Array<{ id: string; name: string }>;
   certificates: Array<{ id: string; name: string | null }>;
-  /** Repositories in each Artifacts namespace; a namespace not listed answers 401. */
+  /** The Artifacts namespaces and how many repositories each holds. */
   artifacts: Record<string, number>;
+  /** Whether a namespace's repository list leaves out its total, as no real answer does. */
+  repositoriesWithoutTotal?: boolean;
+  /** Whether the namespace list hands back the second page's cursor again and again. */
+  repeatNamespaceCursor?: boolean;
   branches: Array<{ id: string; name: string; default: boolean }>;
   monitors: Array<{ id: string; name: string }>;
   tokens: Array<{ id: string; name: string }>;
@@ -162,7 +166,15 @@ const pr2994World = (): World => ({
   ],
   hyperdrive: [],
   certificates: [],
-  artifacts: { "executor-test-pr-2994-apps": 0 },
+  artifacts: {
+    // More than one page of namespaces, as the account has, with this stage's on the second.
+    ...Object.fromEntries(
+      Array.from({ length: 150 }, (_, index) => [`executor-test-e2e-${index}-apps`, 0]),
+    ),
+    "executor-test-pr-2994-apps": 0,
+    "executor-test-pr-299-apps": 2,
+    "executor-v2-apps": 5,
+  },
   branches: [
     { id: "br-own", name: "test-pr-2994", default: false },
     { id: "br-neighbour", name: "test-pr-29940", default: false },
@@ -197,7 +209,7 @@ const envelope = (result: unknown, result_info?: unknown) => ({
 });
 
 /** Answer one request from the world, or a fault queued for it. */
-const answer = (world: World, method: string, url: URL, body: string) => {
+const answer = (world: World, method: string, url: URL, body: string, authorization = "") => {
   const path = url.pathname;
   const query = url.search;
   const deletes = world.requests.filter((request) => request.startsWith("DELETE ")).length;
@@ -343,10 +355,46 @@ const answer = (world: World, method: string, url: URL, body: string) => {
   }
   if (path === `${cf}/hyperdrive/configs`) return ok(world.hyperdrive);
   if (path === `${cf}/mtls_certificates`) return ok(world.certificates);
+  // Artifacts answer only the token minted for them, never the test-stage token.
+  if (path.startsWith(`${cf}/artifacts/`) && authorization !== "Bearer artifacts-token")
+    return { status: 401, headers: {}, body: "" };
+  if (path === `${cf}/artifacts/namespaces` && method === "GET") {
+    const all = Object.entries(world.artifacts);
+    const from = Number(url.searchParams.get("cursor") ?? "0");
+    const limit = Number(url.searchParams.get("limit") ?? "100");
+    const next =
+      world.repeatNamespaceCursor === true
+        ? String(limit)
+        : from + limit < all.length
+          ? String(from + limit)
+          : "";
+    return ok(
+      all.slice(from, from + limit).map(([namespace, repo_count]) => ({
+        namespace,
+        repo_count,
+        jurisdiction: "default",
+        created_at: "2026-10-01T00:00:00Z",
+        updated_at: "2026-10-01T00:00:00Z",
+      })),
+      { cursor: next, per_page: limit, count: Math.min(limit, all.length - from) },
+    );
+  }
   if ((match = new RegExp(`^${cf}/artifacts/namespaces/([^/]+)/repos$`, "u").exec(path))) {
-    const repositories = world.artifacts[decodeURIComponent(match[1]!)];
-    if (repositories === undefined) return { status: 401, headers: {}, body: "" };
-    return ok(Array.from({ length: repositories }, (_, index) => ({ name: `repo-${index}` })));
+    // A namespace that does not exist lists as empty, as Cloudflare's does.
+    const total = world.artifacts[decodeURIComponent(match[1]!)] ?? 0;
+    const shown = Math.min(total, 50);
+    return ok(
+      Array.from({ length: shown }, (_, index) => ({ id: `repo-${index}`, name: `repo-${index}` })),
+      world.repositoriesWithoutTotal === true
+        ? { page: 1, per_page: 50, total_pages: Math.ceil(total / 50), count: shown }
+        : {
+            page: 1,
+            per_page: 50,
+            total_pages: Math.ceil(total / 50),
+            count: shown,
+            total_count: total,
+          },
+    );
   }
 
   // Neon.
@@ -377,7 +425,13 @@ const recordedApis = (world: World) =>
         });
         request.on("end", () => {
           const url = new URL(request.url ?? "/", "http://recorded");
-          const reply = answer(world, request.method ?? "GET", url, body);
+          const reply = answer(
+            world,
+            request.method ?? "GET",
+            url,
+            body,
+            request.headers.authorization ?? "",
+          );
           response.writeHead(reply.status, {
             "content-type": "application/json",
             ...reply.headers,
@@ -467,7 +521,12 @@ const registry = Effect.gen(function* () {
 const cli = (
   world: World,
   args: ReadonlyArray<string>,
-  options: { readonly registry?: string; readonly env?: Record<string, string> } = {},
+  options: {
+    readonly registry?: string;
+    readonly env?: Record<string, string>;
+    /** Run as the CLI runs without `apps/hosted/cloud/scripts/with-artifacts-token.sh`. */
+    readonly withoutArtifactsToken?: boolean;
+  } = {},
 ) =>
   Effect.gen(function* () {
     const apis = yield* recordedApis(world);
@@ -479,6 +538,9 @@ const cli = (
           CI: "true",
           CLOUDFLARE_ACCOUNT_ID: account,
           CLOUDFLARE_API_TOKEN: "cloudflare-token",
+          ...(options.withoutArtifactsToken === true
+            ? {}
+            : { CLOUDFLARE_ARTIFACTS_TOKEN: "artifacts-token" }),
           NEON_API_KEY: "neon-key",
           AXIOM_TOKEN: "axiom-token",
           AXIOM_ORG_ID: "axiom-org",
@@ -532,8 +594,8 @@ const prepareRegistry = (world: World, url: string) =>
     Effect.tap((result) => Effect.sync(() => expect(result.code, result.output).toBe(0))),
   );
 
-layer(NodeServices.layer)("Removing a test stage by name", (it) => {
-  it.effect("selects only the stage's own resources, never production's or a neighbour's", () =>
+describe("Removing a test stage by name", () => {
+  it.live("selects only the stage's own resources, never production's or a neighbour's", () =>
     Effect.gen(function* () {
       const found = yield* inventory(pr2994World(), "pr-2994");
       expect(found).toMatchObject({
@@ -561,12 +623,13 @@ layer(NodeServices.layer)("Removing a test stage by name", (it) => {
         branches: [{ id: "br-own", name: "test-pr-2994" }],
         monitors: [{ id: "mon-own", name: "Executor test-pr-2994: app browser failures" }],
         tokens: [{ id: "tok-own", name: "executor-next-test-pr-2994-ingest" }],
+        artifacts: { namespace: "executor-test-pr-2994-apps", exists: true, repositories: 0 },
         blockers: [],
       });
-    }),
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("selects a shorter neighbour's resources for it and none of the longer slug's", () =>
+  it.live("selects a shorter neighbour's resources for it and none of the longer slug's", () =>
     Effect.gen(function* () {
       const world = pr2994World();
       world.state["test-pr-299"] = { Api: "undecryptable" };
@@ -578,10 +641,10 @@ layer(NodeServices.layer)("Removing a test stage by name", (it) => {
         monitors: [{ id: "mon-neighbour" }],
         tokens: [],
       });
-    }),
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("selects a long slug's truncated bucket names by their hash", () =>
+  it.live("selects a long slug's truncated bucket names by their hash", () =>
     Effect.gen(function* () {
       const world = pr2994World();
       world.workers.push({ id: searchLoop.api, tags: tags("test-search-loop", "Api") });
@@ -594,33 +657,31 @@ layer(NodeServices.layer)("Removing a test stage by name", (it) => {
       world.state["test-search-loop"] = { Api: "undecryptable" };
       const found = yield* inventory(world, "search-loop");
       expect(found.buckets).toEqual([searchLoop.appBuilds, searchLoop.siteAssets]);
-    }),
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect(
-    "finds app-zone records under the base the stage's own route serves, not its slug",
-    () =>
-      Effect.gen(function* () {
-        const world = pr2994World();
-        world.routes[appZone.id] = [
-          { id: "route-pages", pattern: "*.reload0922.executor.website/*", script: pr2994.pages },
-        ];
-        world.dns[appZone.id] = [
-          { id: "dns-own-team", name: "*.team.reload0922.executor.website", type: "AAAA" },
-          // Another stage whose app base is this one's slug.
-          { id: "dns-other-stage", name: "*.team.pr-2994.executor.website", type: "AAAA" },
-          { id: "dns-production-team", name: "*.reload0922.executor.website", type: "AAAA" },
-        ];
-        const found = yield* inventory(world, "pr-2994");
-        expect(found).toMatchObject({
-          appBases: ["reload0922"],
-          appRecords: [{ id: "dns-own-team" }],
-          blockers: [],
-        });
-      }),
+  it.live("finds app-zone records under the base the stage's own route serves, not its slug", () =>
+    Effect.gen(function* () {
+      const world = pr2994World();
+      world.routes[appZone.id] = [
+        { id: "route-pages", pattern: "*.reload0922.executor.website/*", script: pr2994.pages },
+      ];
+      world.dns[appZone.id] = [
+        { id: "dns-own-team", name: "*.team.reload0922.executor.website", type: "AAAA" },
+        // Another stage whose app base is this one's slug.
+        { id: "dns-other-stage", name: "*.team.pr-2994.executor.website", type: "AAAA" },
+        { id: "dns-production-team", name: "*.reload0922.executor.website", type: "AAAA" },
+      ];
+      const found = yield* inventory(world, "pr-2994");
+      expect(found).toMatchObject({
+        appBases: ["reload0922"],
+        appRecords: [{ id: "dns-own-team" }],
+        blockers: [],
+      });
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("refuses a stage that serves apps when no route names its app base", () =>
+  it.live("refuses a stage that serves apps when no route names its app base", () =>
     Effect.gen(function* () {
       const world = pr2994World();
       world.routes[appZone.id] = [];
@@ -628,10 +689,10 @@ layer(NodeServices.layer)("Removing a test stage by name", (it) => {
       expect(found.blockers).toEqual([
         "test-pr-2994 serves apps but none of its routes names its app base, so its app-zone records cannot be found.",
       ]);
-    }),
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("reads every page of a paginated list and fails on one that is cut short", () =>
+  it.live("reads every page of a paginated list and fails on one that is cut short", () =>
     Effect.gen(function* () {
       const paged = pr2994World();
       paged.bucketPages = [
@@ -657,10 +718,10 @@ layer(NodeServices.layer)("Removing a test stage by name", (it) => {
         expect(result.code, kind).not.toBe(0);
         expect(result.output, kind).toContain("returned only part of the list.");
       }
-    }),
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect(
+  it.live(
     "counts a record whose reads fail a while as readable, and a stage partly readable as an error",
     () =>
       Effect.gen(function* () {
@@ -676,10 +737,10 @@ layer(NodeServices.layer)("Removing a test stage by name", (it) => {
         const result = yield* cli(mixed, ["inventory", "pr-2994"]);
         expect(result.code).not.toBe(0);
         expect(result.output).toContain("1 of test-pr-2994's 2 Alchemy records could not be read");
-      }),
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("refuses records it cannot remove and an Artifacts namespace it cannot read", () =>
+  it.live("refuses records it cannot remove and Artifacts it has no token to read", () =>
     Effect.gen(function* () {
       const world = pr2994World();
       world.state["test-pr-2994"] = {
@@ -687,14 +748,90 @@ layer(NodeServices.layer)("Removing a test stage by name", (it) => {
         DatabaseConnection: "undecryptable",
         SomethingNew: "undecryptable",
       };
-      delete world.artifacts["executor-test-pr-2994-apps"];
-      const found = yield* inventory(world, "pr-2994");
+      const result = yield* cli(world, ["inventory", "pr-2994"], { withoutArtifactsToken: true });
+      expect(result.code, result.output).toBe(0);
+      const found = JSON.parse(result.stdout.slice(result.stdout.indexOf("{"))) as {
+        readonly blockers: ReadonlyArray<string>;
+      };
       expect(found.blockers).toEqual([
         "test-pr-2994's records name PlanetScale resources (DatabaseConnection), which removal by name does not cover.",
         "test-pr-2994's records name resources removal by name does not know: SomethingNew.",
-        "Listing Artifacts namespace executor-test-pr-2994-apps returned HTTP 401. Removal by name cannot confirm it holds no repositories.",
+        "Set CLOUDFLARE_ARTIFACTS_TOKEN to a token with Artifacts Read; the test-stage token cannot read Artifacts. Removal by name cannot confirm it holds no repositories.",
       ]);
-    }),
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("refuses when Artifacts refuse its token, or a later page of namespaces fails", () =>
+    Effect.gen(function* () {
+      const blocker = (message: string) =>
+        `${message} Removal by name cannot confirm it holds no repositories.`;
+      const refused = yield* cli(pr2994World(), ["inventory", "pr-2994"], {
+        env: { CLOUDFLARE_ARTIFACTS_TOKEN: "a-token-artifacts-refuse" },
+      });
+      expect(refused.code, refused.output).toBe(0);
+      expect(JSON.parse(refused.stdout.slice(refused.stdout.indexOf("{"))).blockers).toEqual([
+        blocker("Listing Artifacts namespaces returned HTTP 401."),
+      ]);
+      const failing = pr2994World();
+      failing.faults.push({
+        method: "GET",
+        path: /\/artifacts\/namespaces\?.*cursor=/u,
+        status: 500,
+      });
+      const later = yield* inventory(failing, "pr-2994");
+      expect(later.blockers).toEqual([blocker("Listing Artifacts namespaces returned HTTP 500.")]);
+      // The first page was read; only the later page failed, five times.
+      expect(
+        failing.requests.filter((request) => /artifacts\/namespaces\?.*cursor=/u.test(request)),
+      ).toHaveLength(5);
+      const repeating = pr2994World();
+      repeating.repeatNamespaceCursor = true;
+      const looped = yield* inventory(repeating, "pr-2994");
+      expect(looped.blockers).toEqual([blocker("Listing Artifacts namespaces repeated a cursor.")]);
+      expect(
+        repeating.requests.filter((request) => request.includes("/artifacts/namespaces?")),
+      ).toHaveLength(2);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.live(
+    "reads namespaces by cursor and repositories by page, for the stage's own name only",
+    () =>
+      Effect.gen(function* () {
+        const world = pr2994World();
+        // pr-39's namespace holds more than a page of repositories; pr-399's and production's are
+        // decoys with repositories of their own.
+        Object.assign(world.artifacts, {
+          "executor-test-pr-39-apps": 60,
+          "executor-test-pr-399-apps": 0,
+        });
+        world.artifacts["executor-v2-apps"] = 7;
+        const full = yield* inventory(world, "pr-39");
+        expect(full.artifacts).toEqual({
+          namespace: "executor-test-pr-39-apps",
+          exists: true,
+          repositories: 60,
+        });
+        expect(full.blockers).toEqual([
+          "Artifacts namespace executor-test-pr-39-apps holds 60 repositories, which removal by name does not delete.",
+        ]);
+        const empty = yield* inventory(world, "pr-399");
+        expect(empty).toMatchObject({
+          artifacts: { namespace: "executor-test-pr-399-apps", exists: true, repositories: 0 },
+          blockers: [],
+        });
+        const never = yield* inventory(world, "pr-3999");
+        expect(never).toMatchObject({
+          artifacts: { namespace: "executor-test-pr-3999-apps", exists: false, repositories: 0 },
+          blockers: [],
+        });
+        const untotalled = pr2994World();
+        untotalled.repositoriesWithoutTotal = true;
+        untotalled.artifacts["executor-test-pr-2994-apps"] = 60;
+        expect((yield* inventory(untotalled, "pr-2994")).blockers).toEqual([
+          "Listing Artifacts namespace executor-test-pr-2994-apps returned only part of the list. Removal by name cannot confirm it holds no repositories.",
+        ]);
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
 

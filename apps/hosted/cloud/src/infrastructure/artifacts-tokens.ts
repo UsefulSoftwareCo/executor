@@ -8,6 +8,7 @@ import { Stage } from "alchemy/Stage";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { ArtifactsCredentials } from "./artifacts-credentials-worker.ts";
 import { cloudEncryptionKey } from "./secrets.ts";
+import { sourceNamespace } from "../contracts/artifacts-namespace.ts";
 import { providerFailureCode } from "../implementation/provider-failure.ts";
 
 export const creation = Schema.Struct({
@@ -31,7 +32,7 @@ export const cloudSourceNamespace = Effect.gen(function* () {
       Option.match({ onSome: Effect.succeed, onNone: () => Config.String("ALCHEMY_STAGE") }),
     ),
   );
-  return `executor-${stage}-apps`;
+  return sourceNamespace(stage);
 });
 
 interface Coordinator {
