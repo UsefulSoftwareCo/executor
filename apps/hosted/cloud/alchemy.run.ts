@@ -44,7 +44,7 @@ import { AppCatalog } from "./src/infrastructure/app-catalog.ts";
 import { productionOAuthProxyCheck } from "./src/infrastructure/deploy-settings.ts";
 import { testStageEdge, testStageRoleHostRecords } from "./src/infrastructure/role-hosts.ts";
 
-/** Every Worker the stack deploys. `scripts/worker-sizes.ts` builds the same layers. */
+/** Every Worker the stack deploys. `scripts/worker-builds.ts` builds the same layers. */
 export const cloudWorkers = Layer.mergeAll(
   ApiLive,
   AppCompilerLive,

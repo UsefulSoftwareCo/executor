@@ -204,6 +204,29 @@ changing the block once CI has read it, push (an empty commit will do) or rerun 
 workflow (`gh run rerun <run-id>`), not only failed jobs. Rerunning the whole workflow deletes
 the evidence of every earlier attempt, so push instead when an attempt failed.
 
+### Adding to a Cloud Worker's upload
+
+Cloudflare compiles every module a Worker uploads when an isolate starts, about
+40 ms for each megabyte on every cold request. The `site` job compares each Cloud
+Worker's upload with `main` and fails a pull request that adds more than 50 KB to
+one, about 2 ms, unless the description allows it:
+
+````md
+```worker-growth
+api +120,000: the SAML sign-in library, which every enterprise sign-in loads
+```
+````
+
+Each line names a Worker, the most bytes the PR may add to it, and why that is
+worth the cold-start time. First try to make room: the job summary names the
+packages and files that grew and lists the ways. In a stack, the top layer's
+description allows for every layer. The job reads the live description, so rerun
+it after an edit. The budgets in
+[`worker-build.ts`](apps/hosted/cloud/src/infrastructure/worker-build.ts) are
+backstops with room above each Worker's size; the deploy enforces them too.
+Change one only in a PR that does nothing else and says what the added
+cold-start time buys. Never raise one to fit a change.
+
 A ruleset on `main` requires a pull request whose `checks / check` and
 `checks / e2e` passed. When GitHub refuses a merge as blocked ("the base branch
 policy prohibits the merge"), a required check is pending, failed or missing: wait
@@ -263,8 +286,9 @@ scenarios on Linux instead of moving them to a Mac.
   any marketing or docs page links to a path that would 404. Then
   `bun run hosted:cloud:worker-sizes` builds each Cloud Worker as the deploy does,
   for production and for the pull request's preview, and fails when one exceeds
-  its upload budget; the job summary shows each Worker's size, its change from
-  `main` and the packages and files that grew. `apps-package` checks the apps npm
+  its upload budget or a pull request adds more than 50 KB to one without an
+  allowance (see "Adding to a Cloud Worker's upload"); the job summary shows each
+  Worker's size, its change from `main` and the packages and files that grew. `apps-package` checks the apps npm
   tarball, and `tooling` checks the dependency patches and the scripts that run CI,
   releases, the public export and deploys. Put a new static check in the job it fits, or
   in a new job that `check` needs.

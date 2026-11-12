@@ -678,6 +678,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "test-stage-unreadable.config.ts": () => import("./test-stage-unreadable.config.ts"),
   "typecheck-runner.config.ts": () => import("./typecheck-runner.config.ts"),
   "welcome-email.config.ts": () => import("./welcome-email.config.ts"),
+  "worker-sizes.config.ts": () => import("./worker-sizes.config.ts"),
 };
 /** The part of a config module's default export that says which files Vitest runs. */
 const SuiteConfig = Schema.Struct({
