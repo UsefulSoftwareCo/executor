@@ -293,6 +293,14 @@ layer(HostedLive, { excludeTestServices: true })("Webhook source handover", (it)
             `Round ${round} left the linked account without a source`,
           ).toEqual([account]);
         }
+        // The webhooks of the scope the account left stop, including ones whose registration
+        // started after a round had already moved the link: an app-account webhook has no actor.
+        yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
+          hooks.every(
+            (hook) =>
+              (hook.actor === null) === (linked.scope === "app") || hook.status === "stopped",
+          ),
+        );
       }),
     ),
   );

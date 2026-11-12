@@ -632,6 +632,12 @@ export const makeWebhooks = (
                 }
               } else {
                 const state = yield* subscriptionState(row);
+                // The source may have lost its link since the subscription was created, such as
+                // an app link moved to a user link. The app's code refuses a run whose accounts
+                // lack its source, and removal would run with the same recorded accounts and be
+                // refused for good, so such a registration is never recorded or attempted.
+                if (!selectedIds(state.accounts).includes(row.sourceAccount))
+                  return yield* new WebhookFailed({ reason: "input", mismatch: "source" });
                 yield* recordRegistration(row, claim, state.accounts);
                 value = yield* invoke(row, { operation: "webhook-register", ...common }, state);
               }
