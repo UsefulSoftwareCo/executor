@@ -17,6 +17,7 @@ import { type FixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
 import { RecordingPaceMs, Target } from "../support/platform.ts";
 import { roleHost } from "../support/role-hosts.ts";
 import { prepareCloudScenarios } from "./prepare-scenarios.ts";
+import { holdRun, pruneRuns } from "./run-retention.ts";
 
 class RunFailed extends Schema.TaggedError<RunFailed>()("RunFailed", { message: Schema.String }) {}
 import { freePort } from "../support/ports.ts";
@@ -160,6 +161,10 @@ export const runSuite = ({
         `${new Date().toISOString().replaceAll(":", "-")}-${selected}-${randomBytes(3).toString("hex")}`,
       );
       yield* fs.makeDirectory(root, { recursive: true, mode: 0o700 });
+      yield* holdRun(root);
+      // CI jobs run several suites in one checkout and upload every run folder afterwards.
+      if (!process.env.CI)
+        yield* pruneRuns({ workspace: process.cwd(), current: path.basename(root) });
       const commit = (yield* processes.string(
         ChildProcess.make("git", ["rev-parse", "HEAD"]),
       )).trim();
@@ -439,16 +444,19 @@ export const runSuite = ({
         results.map(({ target, report }) => ({ report, prefix: `${target}/report` })),
         plan,
       );
-      yield* fs.writeFileString(path.join(root, "evidence.json"), JSON.stringify(report, null, 2));
+      const failure = results.some((result) => result.report.entries.length === 0)
+        ? "No scenarios produced evidence for a selected target. Check the test filter."
+        : results.some((result) => result.code !== 0)
+          ? "One or more targets failed. Their evidence is retained."
+          : undefined;
+      // The outcome this run reports; pruning removes early only runs that passed.
+      const outcome = failure === undefined ? "passed" : "failed";
+      yield* fs.writeFileString(
+        path.join(root, "evidence.json"),
+        JSON.stringify({ ...report, outcome }, null, 2),
+      );
       yield* Console.log(`Raw test evidence: ${root}`);
       yield* Console.log(`Render on request: bun run e2e:render --directory ${root}`);
-      if (results.some((result) => result.report.entries.length === 0))
-        return yield* new RunFailed({
-          message: "No scenarios produced evidence for a selected target. Check the test filter.",
-        });
-      if (results.some((result) => result.code !== 0))
-        return yield* new RunFailed({
-          message: "One or more targets failed. Their evidence is retained.",
-        });
+      if (failure !== undefined) return yield* new RunFailed({ message: failure });
     }),
   );

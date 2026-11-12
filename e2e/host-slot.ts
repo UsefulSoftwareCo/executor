@@ -24,7 +24,8 @@ const reportEveryMs = 60_000;
 
 type Owner = { holder: string; pid: number; cwd: string; args: string; startedAt: number };
 
-const alive = (pid: number) => {
+/** Whether a process with this PID exists. A PID owned by another user counts as alive. */
+export const alive = (pid: number) => {
   try {
     process.kill(pid, 0);
     return true;

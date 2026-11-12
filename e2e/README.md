@@ -625,6 +625,10 @@ The runner prints the saved run directory and an explicit render command. It kee
 raw case results, screenshots, browser/terminal captures, traces, Vitest JSON
 results, and a combined `evidence.json` manifest. No rendering runs automatically,
 even on failure. Test failures and empty filters still fail the test command.
+Outside CI, each run starts by removing older run folders in its workspace's `.local/e2e`,
+printing how many and the space freed: it keeps runs from the last three days, the newest five
+passed ones and every other one, up to 3 GB (passed runs go first), and any run another process
+is writing or rendering; copy evidence you must keep outside any `.local/e2e`.
 
 When evidence needs review, render the retained run, then serve the report on
 loopback. Rendering needs Playwright Chromium installed, plus ffmpeg and ffprobe

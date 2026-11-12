@@ -51,6 +51,11 @@ export const EvidenceReport = Schema.Struct({
   runs: Schema.Array(RunMetadata),
   entries: EvidenceEntries,
   plan: Schema.Array(TestPlan),
+  /**
+   * Whether `runSuite` passed the run: every target produced evidence and its Vitest exited 0.
+   * Runs saved before it was recorded, and rendered reports, have none.
+   */
+  outcome: Schema.optional(Schema.Literals(["passed", "failed"])),
 }).check(
   Schema.makeFilter(
     (report) =>
