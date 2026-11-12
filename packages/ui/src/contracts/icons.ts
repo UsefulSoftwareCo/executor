@@ -35,6 +35,13 @@ export const noCatalogIcons: CatalogIcons = {
   byName: new Map(),
 };
 
+const unsettledCatalogIcons: CatalogIcons = {
+  settled: false,
+  byPackage: new Map(),
+  byName: new Map(),
+};
+
+/** Hydration renders the server's unsettled icons, even when the browser's catalog answered first. */
 export const catalogIconsAtom = <E>(catalogAtom: Query<readonly CatalogEntry[], E>) =>
   Atom.make((get): CatalogIcons => {
     const result = get(catalogAtom);
@@ -50,7 +57,7 @@ export const catalogIconsAtom = <E>(catalogAtom: Query<readonly CatalogEntry[], 
         byName.set(name, byName.has(name) ? null : entry.icons);
       }
     return { settled, byPackage, byName };
-  });
+  }).pipe(Atom.withServerValue(() => unsettledCatalogIcons));
 
 /** An app's declared icon for each color scheme. Both are the same when it declares one. */
 export interface AppIconSources {

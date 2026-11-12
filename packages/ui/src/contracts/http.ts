@@ -74,14 +74,18 @@ export const hydratedResult =
       }) as unknown as Schema.Codec<Atom.Type<R>, unknown>,
     });
 
+const notLoaded = AsyncResult.initial();
+
 /**
- * A read that is not sent with the page. The server renders its loading state and the browser
- * requests it after hydration, so both render the same markup.
+ * A read that is not sent with the page. The server and hydration render its loading state, even
+ * when the browser's read answers first; an atom derived from it needs its own server value.
  */
 export const browserOnly = <A, E>(
   atom: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
 ): Atom.Atom<AsyncResult.AsyncResult<A, E>> =>
-  typeof window === "undefined" ? Atom.make(AsyncResult.initial<A, E>()) : atom;
+  typeof window === "undefined"
+    ? Atom.make<AsyncResult.AsyncResult<A, E>>(notLoaded)
+    : Atom.withServerValue(atom, () => notLoaded);
 
 /**
  * Better Auth client options for dashboard code. On the server there is no page origin, and the
