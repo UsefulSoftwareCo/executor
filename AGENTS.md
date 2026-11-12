@@ -241,8 +241,9 @@ the same SDK and CLI on demand.
 Every push to `main` deploys production directly, without a deployed-test gate.
 The deployed suite remains available for manual dispatch with Neon or PlanetScale.
 
-Blacksmith Linux runners run every check job. Local, self-host and Cloud E2E jobs use
-`blacksmith-16vcpu-ubuntu-2404`. The load job also uses 16 vCPUs: on 4 vCPUs the
+Blacksmith Linux runners run every check job. Local and self-host E2E jobs use
+`blacksmith-16vcpu-ubuntu-2404`. Cloud E2E jobs use `blacksmith-8vcpu-ubuntu-2404`: each runs
+one local Cloud at a time, which kept 16 vCPUs only 8-28% busy. The load job also uses 16 vCPUs: on 4 vCPUs the
 product server, PGlite and the test driver contend. Its inventory case has a 120-second
 test limit because its body takes 40-48s on CI. Static checks use 4 vCPUs.
 
