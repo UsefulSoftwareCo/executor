@@ -94,7 +94,7 @@ live in `.oxlintrc.jsonc`, formatter settings in `.oxfmtrc.json`.
 `bun run check` first runs `patches:check` (`scripts/check-patches.ts`): every
 `patchedDependencies` selector must name an installed version, and every
 installed copy must hold the whole patch: `git apply --reverse --check` at the
-exact lines, and no forward apply. Bun skips a stale selector and still exits 0,
+exact lines, the file modes the patch names, and no forward apply. Bun skips a stale selector and still exits 0,
 so move a patch with its dependency's version, or remove both. Git is stricter
 than Bun: after `bun patch --commit`, drop `.bun-tag-*` sections and sections
 whose `b/` path is outside the package, and keep `\ No newline at end of file`
@@ -124,7 +124,8 @@ do not use that package to typecheck.
 
 `.github/workflows/ci.yml` runs on pull requests, pushes to `main` and manual
 dispatch. Its local checks use no secrets and include the emulated Cloud target.
-An earlier PR run on the same ref is cancelled. Each push to `main` has its own
+A PR run on an earlier head is cancelled by the new head's run; two runs on the
+same head both run, one after the other. Each push to `main` has its own
 concurrency group, so every push finishes a run and gives each merge a baseline,
 even when merges come in a burst. A stack that lands in one push gets one run, at
 its top commit. Overlapping `main` runs share no deployed stage, database or
@@ -172,7 +173,7 @@ passed or failed, so a job or step the workflow skipped fails there. `e2e-covera
 push to main that did not start Cloud tests on main.
 
 Select specific files by default. A selection finishes in about five minutes; the full
-suite takes about fifteen and holds the runners other PRs wait for. Reserve `all` for
+suite takes about eight and holds the runners other PRs wait for. Reserve `all` for
 changes that every scenario runs through: the e2e harness (`e2e/sdk`, `e2e/support`,
 `e2e/setup.ts`), the toolchain, the lockfile or the workflows. Write the reason after
 it, such as `all: changes the lockfile`; `all` without a reason fails the `select` job.
@@ -199,8 +200,17 @@ for free; add the existing files that cover the code layers below it. `main` run
 full suite after merge, so a missed scenario is still caught there. The `select`
 job reads the live description when it runs. If it has no `e2e` block yet, the job
 waits up to 3 minutes for one, so write the block right after opening the PR. After
-changing the block once CI has read it, push or rerun the whole workflow
-(`gh run rerun <run-id>`), not only failed jobs.
+changing the block once CI has read it, push (an empty commit will do) or rerun the whole
+workflow (`gh run rerun <run-id>`), not only failed jobs. Rerunning the whole workflow deletes
+the evidence of every earlier attempt, so push instead when an attempt failed.
+
+A ruleset on `main` requires a pull request whose `checks / check` and
+`checks / e2e` passed. When GitHub refuses a merge as blocked ("the base branch
+policy prohibits the merge"), a required check is pending, failed or missing: wait
+for a pending run with `ci-wait`, fix or report a failed one, and push or rerun a
+cancelled one. Never bypass it: no `gh pr merge --admin`, no merge through the
+REST or GraphQL API to get around a refusal, and no change to the ruleset. Only
+Rhys turns it off, in an emergency. See [CI configuration](notes/ci.md#the-main-ruleset).
 
 A failure on `main` is a regression or a flake that a PR selection missed. Fixing
 it takes priority over new work that touches the same area.
@@ -212,7 +222,9 @@ touch:
 - Compare with the latest `main` run: `gh run list -w CI -b main -L 3`.
 - If `main` fails the same scenario, it is not yours. Name it in the handoff.
 - Otherwise read the failure evidence before rerunning. Rerun a failed job at
-  most once. A scenario that fails again, or fails on unrelated PRs, is a flake.
+  most once, with `gh run rerun <run-id> --failed`. Each attempt keeps its own evidence
+  artifact, named with its attempt number (`e2e-cloud-evidence-0-attempt-1`). Rerunning
+  all jobs deletes every earlier attempt's artifacts. A scenario that fails again, or fails on unrelated PRs, is a flake.
   Record the scenario, the run link and the error in the handoff and finish the
   task; fixing it is separate work that Rhys schedules.
 
@@ -233,8 +245,9 @@ the same SDK and CLI on demand.
 Every push to `main` deploys production directly, without a deployed-test gate.
 The deployed suite remains available for manual dispatch with Neon or PlanetScale.
 
-Blacksmith Linux runners run every check job. Local, self-host and Cloud E2E jobs use
-`blacksmith-16vcpu-ubuntu-2404`. The load job also uses 16 vCPUs: on 4 vCPUs the
+Blacksmith Linux runners run every check job. Local and self-host E2E jobs use
+`blacksmith-16vcpu-ubuntu-2404`. Cloud E2E jobs use `blacksmith-8vcpu-ubuntu-2404`: each runs
+one local Cloud at a time, which kept 16 vCPUs only 8-28% busy. The load job also uses 16 vCPUs: on 4 vCPUs the
 product server, PGlite and the test driver contend. Its inventory case has a 120-second
 test limit because its body takes 40-48s on CI. Static checks use 4 vCPUs.
 
@@ -261,9 +274,11 @@ scenarios on Linux instead of moving them to a Mac.
 - `e2e-local` and `e2e-self-host` run `bun run e2e:prepare`, then `e2e:local`
   and `e2e:self-host` under `xvfb-run`. The self-host run excludes the Claude
   Code MCP scenario, which needs a model API key that CI does not hold. A full run
-  splits them by spec file over runners (two for local, three for self-host; `shards` in
+  splits them by spec file over runners (three for local, six for self-host; `shards` in
   `e2e/ci-selection.ts`), each with the usual number of workers, so each part finishes in
-  about four minutes instead of six and ten. A selection runs on one runner.
+  about four minutes instead of thirteen and twenty. A selection runs on one runner. The
+  self-host parts keep their 16 vCPUs about 80% busy; the local ones are mostly idle and wait
+  on their longest spec file, so keep local spec files short enough to split.
 - `e2e-self-host-scale` runs the 1,000-account workload and then the 7,000-tool MCP
   catalog scenario and the slow and stalled tool listing scenarios on its own runner,
   in parallel with the functional jobs. This preserves the four concurrent writers,
@@ -283,10 +298,14 @@ scenarios on Linux instead of moving them to a Mac.
   per-address limit off, as deployed test stages do; the scenario that proves the limit gets
   its own local Cloud with it on (`e2e:cloud --auth-rate-limit`).
   Each of these local Clouds is a Cloud job in `e2e/ci-selection.ts`, and its `runner`
-  there puts it on one of four `e2e-cloud` runners that run at once. On a full run
-  `cloud-product` has a runner to itself, about eleven minutes, and the others take about six or
-  seven each. Each runner builds the apps package and Motel once before its runs; runs only
-  serve that Motel bundle, because every target in a run shares it.
+  there puts it on one of the `e2e-cloud` runners, which run at once; a runner's local Clouds
+  run one after another. Two local Clouds cannot run at once in one checkout: each rebuilds the
+  site and dashboard, with its own origins, into the one `apps/hosted/cloud/.generated/site`
+  that both serve. On a full run `cloud-product` passes what one local Cloud holds, and each of
+  its local Clouds has a runner of its own; the longest, about five and a half minutes, waits out
+  the MCP session restore scenario's 270-second idle. Each runner builds the apps package and
+  Motel once before its runs; runs only serve that Motel bundle, because every target in a run
+  shares it.
 - `e2e` passes when `select` succeeded, every E2E job it chose passed and every other one was
   skipped; it runs even after a cancellation, which fails it. The matrix runners' check
   names change with the selection, so this is the one E2E check to require.
@@ -296,18 +315,24 @@ API/MCP outcomes, workflow correlation, browser failures, app traces and analyti
 Deployed tests run through `bun run e2e:deployed`; the runner owns provisioning
 and teardown. The release workflow builds and tests Docker images on release PRs
 and manual dispatch. Publication requires an explicit channel dispatch from main.
-The Beta workflow (`beta.yml`) makes that dispatch every 30 minutes when main has
-commits the last beta lacks and npm published that beta at least six hours ago,
-and retries a failed one with a bounded back-off; see [Releasing](RELEASING.md#publish-beta).
+The Beta workflow (`beta.yml`) makes that dispatch, on each push to main and on a
+backstop schedule GitHub delivers hours late, when main has commits the last beta
+lacks and npm published that beta at least six hours ago, and retries a failed one
+with a bounded back-off; see [Releasing](RELEASING.md#publish-beta).
 Release PRs build and test the Linux and Windows targets only. The macOS targets run
 on manual dispatch, where they are built, signed, notarized and tested. macOS runners
 cost 5-20x as much as Linux runners, so keep them off pull requests.
 
-A pull request that changes the release paths (the `paths` in
-`.github/workflows/release-artifacts.yml`) also runs "Executor releases". Gate its
-merge on that workflow as on CI: wait for both
-(`ci-wait --workflow CI --workflow "Executor releases"`) and do not merge while
-either fails.
+Every pull request also runs "Executor releases". Its `changes` job compares the
+pull request's head with its merge base with `main` and runs the release jobs only
+when that diff touches the release paths (the job's filters in
+`.github/workflows/release-artifacts.yml`). A lower stack layer, one another open
+pull request is based on, runs none of them: the top layer's run builds and tests
+the combined change, so a stack is gated on its top layer's run. The workflow's
+`releases` job passes when every job the run needed passed and the others were
+skipped. Gate a merge on that workflow as on CI: wait for both on the pull request,
+or on a stack's top layer (`ci-wait --workflow CI --workflow "Executor releases"`),
+and do not merge while either fails.
 
 A failed e2e job uploads raw reports and server logs. Product database files,
 runtime dependencies and private `actors.json` sessions are excluded.

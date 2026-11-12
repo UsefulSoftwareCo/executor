@@ -1,6 +1,8 @@
 /**
- * Decide whether `.github/workflows/beta.yml` publishes a beta on this tick. It runs every 30
- * minutes, and on manual dispatch, from a full checkout of `main`.
+ * Decide whether `.github/workflows/beta.yml` publishes a beta on this tick. It runs on every push
+ * to `main`, on a 30-minute schedule GitHub delivers hours late, and on manual dispatch, from a
+ * full checkout of `main`. A push and a scheduled tick decide alike; only a manual dispatch skips
+ * the six hours and the retry back-off.
  *
  * npm is the record of what was published: the release workflow publishes the launcher only after
  * the Docker manifest and the public GitHub release, so a version npm lists is out. The version in
@@ -16,11 +18,11 @@
  *   in its publish job may already have a public draft for its source, so that run's failed jobs
  *   are re-run once from its own artifacts (`rerun`); after that, publication needs inspection
  *   (RELEASING.md). An attempt that failed before publishing is dispatched again on the next tick
- *   (`dispatch`). After two failures in a row, scheduled ticks wait six hours since the last
+ *   (`dispatch`). After two failures in a row, automatic ticks wait six hours since the last
  *   attempt, and until main has moved past it or a day has passed: a broken main costs at most five
  *   publishing runs a day. A manual dispatch retries at once.
  * - An attempt for the committed version that succeeded while npm still lacks it fails the tick:
- *   another run would succeed the same way, every 30 minutes, with nothing red.
+ *   another run would succeed the same way, on every tick, with nothing red.
  *
  * Attempts are publishing runs only. A dispatch with channel `build` builds and tests without
  * publishing, so it neither counts as a failure nor as a success. It still blocks the tick while it
@@ -146,7 +148,12 @@ NodeRuntime.runMain(
     const output = yield* Config.String("GITHUB_OUTPUT");
     const repository = yield* Config.String("GITHUB_REPOSITORY");
     const event = yield* Config.String("GITHUB_EVENT_NAME");
-    const scheduled = event === "schedule";
+    if (!["push", "schedule", "workflow_dispatch"].includes(event))
+      return yield* new BetaGateFailed({
+        message: `beta.yml runs on push, schedule and workflow_dispatch, not ${event}.`,
+      });
+    /** A person asked for this tick, so it skips the six hours and the retry back-off. */
+    const manual = event === "workflow_dispatch";
     const now = yield* Clock.currentTimeMillis;
 
     const readVersion = (file: string) =>
@@ -220,7 +227,7 @@ NodeRuntime.runMain(
         )
           return wait(`No commits on main since ${version}.`);
         const age = now - Date.parse(published);
-        if (scheduled && age < gap)
+        if (!manual && age < gap)
           return wait(
             `executor@${version} was published ${ago(age)}; the next beta waits six hours.`,
           );
@@ -293,7 +300,7 @@ NodeRuntime.runMain(
       }
       const twice = attempts.length === 2 && attempts[1]?.run.conclusion !== "success";
       const since = now - Date.parse(last.createdAt);
-      if (!scheduled || !twice)
+      if (manual || !twice)
         return act(
           "dispatch",
           `executor@${version} is not on npm; ${last.url} failed, so it is published again.`,

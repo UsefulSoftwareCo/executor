@@ -135,7 +135,7 @@ layer(HostedLive, { excludeTestServices: true })("Browser navigation telemetry",
         yield* setVisibility("hidden");
 
         const delivered = (path: string, count: number) =>
-          telemetry.search("ui.navigation", { "url.path": path }).pipe(
+          telemetry.search("ui.navigation", { organizationPath: path }).pipe(
             Effect.flatMap((found) =>
               found.data.length >= count
                 ? Effect.succeed(

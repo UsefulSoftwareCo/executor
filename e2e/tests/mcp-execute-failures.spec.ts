@@ -3142,10 +3142,7 @@ return { failed: failed.isError, text: failed.content[0].text, read: read.isErro
           expect(skill.body).toMatchObject({ skills: { reason: "request", status: 503 } });
           // The calls ran where the case says: the facet loads its build in facet mode.
           yield* telemetry
-            .spans("runtime.app.build.load", {
-              "executor.app.id": app.id,
-              "executor.runtime.mode": mode,
-            })
+            .spans("runtime.app.build.load", { app: app.id }, { "executor.runtime.mode": mode })
             .pipe(
               Effect.flatMap((spans) =>
                 spans.length > 0

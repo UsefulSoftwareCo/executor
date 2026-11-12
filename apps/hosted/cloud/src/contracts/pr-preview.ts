@@ -22,6 +22,43 @@ export const previewOwner = (repository: string, number: number) =>
 export const previewOrigin = (number: number) =>
   `https://${previewSlug(number)}.executor.engineering`;
 
+/**
+ * Paths a deployed preview cannot show: the tests, CI, notes and tooling around the product.
+ * This lists what does NOT need a preview, so a directory added later gets one until it is listed
+ * here; a missing entry costs a test-stage slot, never a preview a change needed.
+ */
+const unshownPaths: ReadonlyArray<RegExp> = [
+  /^e2e\//u,
+  // The other products. No Cloud package depends on them, and no Cloud source imports them:
+  // `hosted-testing` imports self-host only for local development, which no stage runs.
+  /^apps\/hosted\/self-host\//u,
+  /^apps\/hosted\/testing\//u,
+  /^apps\/local\//u,
+  /^apps\/cli\//u,
+  // The preview workflows and the toolchain setup can only be proven by deploying a preview.
+  /^\.github\/(?!workflows\/pr-previews?\.yml$|actions\/setup\/)/u,
+  /^notes\//u,
+  /^plans\//u,
+  /^\.agents\//u,
+  /^\.claude\//u,
+  // `pack-test-apps.ts` packs the apps framework every stage serves (`test-stage deploy`).
+  /^scripts\/(?!pack-test-apps\.ts$)/u,
+  // Patches change what deploys, except the one for the browser driver only tests use.
+  /^patches\/[^/]+\.md$/u,
+  /^patches\/playwright-core@[^/]+\.patch$/u,
+  /^[^/]+\.md$/u,
+  /(^|\/)(AGENTS|CLAUDE)\.md$/u,
+  /^\.oxlintrc\.jsonc$/u,
+  /^\.oxfmtrc\.json$/u,
+  /^\.gitignore$/u,
+  /^\.gitattributes$/u,
+];
+/** Whether a change to these repository paths can alter what a deployed preview shows or does. */
+export const previewShows = (paths: ReadonlyArray<string>) =>
+  paths.some((path) => !unshownPaths.some((pattern) => pattern.test(path)));
+/** GitHub's compare API lists at most this many files; a longer diff is assumed to need a preview. */
+export const compareFileLimit = 300;
+
 /** Where a preview serves its dashboard and sign-in: `app.` under its own host (`stage.ts`). */
 export const previewBrowserOrigin = (number: number) =>
   `https://app.${previewSlug(number)}.executor.engineering`;

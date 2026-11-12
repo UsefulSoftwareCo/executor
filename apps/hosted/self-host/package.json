@@ -9,7 +9,7 @@
     "package:runtime": "bun scripts/package-runtime.ts"
   },
   "dependencies": {
-    "@better-auth/core": "1.7.16",
+    "@better-auth/core": "1.7.20",
     "@effect/platform-browser": "4.0.1",
     "@effect/platform-bun": "4.0.1",
     "@effect/platform-node": "4.0.1",
@@ -27,7 +27,7 @@
     "@executor-js/telemetry": "workspace:*",
     "@executor-js/utils": "workspace:*",
     "apps": "workspace:*",
-    "better-auth": "1.7.16",
+    "better-auth": "1.7.20",
     "effect": "4.0.1",
     "fumadb-effect": "workspace:*",
     "kysely": "0.29.6",

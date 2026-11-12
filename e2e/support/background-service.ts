@@ -23,7 +23,13 @@ import {
   Schema,
   Stream,
 } from "effect";
-import { HttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import {
+  HttpClient,
+  HttpRouter,
+  HttpServer,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { createHmac } from "node:crypto";
@@ -34,6 +40,22 @@ import { connectionRefused, freePort } from "./ports.ts";
 import { localEntryCommand } from "./local-entry.ts";
 
 /** `server.json`: the process that serves a data directory and how to reach it. */
+/** What `executor` prints when it starts a background server. */
+export const starting = "Starting background Executor...";
+
+/** Serve `routes` on a loopback port, by default a free one, for the current scope; its URL. */
+export const serving = <E, R>(routes: Layer.Layer<never, E, R>, port = 0) =>
+  Effect.gen(function* () {
+    const services = yield* Layer.build(
+      HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
+        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port })),
+      ),
+    );
+    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+    if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
+    return `http://127.0.0.1:${server.address.port}`;
+  });
+
 export const ServiceRegistration = Schema.Struct({
   id: Schema.String,
   version: Schema.String,
@@ -428,38 +450,46 @@ export const backgroundServiceCli = (options: { readonly port?: number } = {}) =
       );
 
     /**
-     * Windows: the program a process ID names now, by its image name. Windows soon gives a process
-     * ID that was freed to another process, often one that the next server starts.
+     * Windows: when the process a process ID names now started, in 100-nanosecond ticks. Windows
+     * soon gives a freed process ID to another process, often another `executor.exe`: the next
+     * server, or a command another scenario runs at the same time. An image name cannot tell those
+     * apart; a start time can. Windows keeps no start time a Node program reads without starting
+     * one, so PowerShell reads it.
      */
-    const imageOf = (pid: number) =>
+    const startOf = (pid: number) =>
       processes
         .lines(
-          ChildProcess.make("tasklist", ["/fi", `PID eq ${pid}`, "/fo", "csv", "/nh"], {
-            stderr: "ignore",
-          }),
+          ChildProcess.make(
+            "powershell.exe",
+            [
+              "-NoProfile",
+              "-NonInteractive",
+              "-Command",
+              `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
+            ],
+            { stderr: "ignore" },
+          ),
         )
         .pipe(
           Effect.map((lines) =>
             Option.fromNullishOr(
-              lines
-                .map((line) => /^"([^"]+)","(\d+)"/u.exec(line))
-                .find((match) => match !== null && Number(match[2]) === pid)?.[1],
+              lines.map((line) => line.trim()).find((line) => /^\d+$/u.test(line)),
             ),
           ),
           Effect.orElseSucceed(() => Option.none<string>()),
         );
-    /** On Windows, the image each server this scenario saw ran as. */
-    const images = new Map<number, string>();
+    /** On Windows, when each server this scenario saw started. */
+    const starts = new Map<number, string>();
     /**
      * Whether `pid` still names a process. On Windows a server's ID counts only while it names a
-     * process with the image that server ran as, since the ID may already name another process.
+     * process that started when that server did, since the ID may already name another process.
      */
     const running = (pid: number) =>
       Effect.gen(function* () {
         if (!(yield* alive(pid))) return false;
-        const image = images.get(pid);
-        if (image === undefined) return true;
-        return Option.contains(yield* imageOf(pid), image);
+        const start = starts.get(pid);
+        if (start === undefined) return true;
+        return Option.contains(yield* startOf(pid), start);
       });
     /** Every server this scenario saw registered, by id, for cleanup. */
     const seen = new Map<string, ServiceRegistration>();
@@ -469,9 +499,9 @@ export const backgroundServiceCli = (options: { readonly port?: number } = {}) =
       const text = yield* fs.readFileString(registrationFile);
       const value = yield* Schema.decodeUnknownEffect(RegistrationJson)(text);
       seen.set(value.id, value);
-      if (process.platform === "win32" && !images.has(value.pid)) {
-        const image = yield* imageOf(value.pid);
-        if (Option.isSome(image)) images.set(value.pid, image.value);
+      if (process.platform === "win32" && !starts.has(value.pid)) {
+        const start = yield* startOf(value.pid);
+        if (Option.isSome(start)) starts.set(value.pid, start.value);
       }
       return Option.some(value);
     });

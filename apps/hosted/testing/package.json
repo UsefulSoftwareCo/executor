@@ -13,7 +13,7 @@
     "@executor-js/devtools": "workspace:*",
     "@executor-js/hosted-server": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
-    "better-auth": "1.7.16",
+    "better-auth": "1.7.20",
     "effect": "4.0.1",
     "pg": "8.16.3",
     "samlify": "2.13.1"

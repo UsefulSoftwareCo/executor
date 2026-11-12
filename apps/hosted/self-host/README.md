@@ -60,6 +60,49 @@ instructions for your client. MCP uses browser sign-in.
 
 The health endpoint is [http://localhost:4400/health](http://localhost:4400/health).
 
+### Health checks
+
+`/health` answers `200` once the server is ready. The thread that answers it also runs the rest of
+the product and commits its storage, syncing each commit to disk before it continues, so on a slow
+disk every response, `/health` included, can wait seconds behind one commit. With 30 apps running
+schedules on a desktop disk, `/health` took up to 16.5 seconds (99th percentile 12.9 seconds); on a
+disk limited to 5 writes a second, up to 34 seconds.
+
+The image's own check allows 30 seconds a probe and marks the container unhealthy after three
+failures in a row: a server that stops answering is marked unhealthy within three minutes, and one
+that never answers from its first boot after about five. 30 seconds covers every stall measured on
+the desktop disk but not the slowest answer on the throttled one, so on a disk that slow a check can
+still fail now and then; only three failures in a row count. Give your own probes the same room:
+
+- **Kubernetes.** A probe's `timeoutSeconds` defaults to 1 second, which ordinary commit stalls on a
+  slow disk exceed. When a liveness probe fails `failureThreshold` times in a row, the kubelet
+  restarts the container; one failed probe does not. Give a readiness probe the liveness probe's
+  timeout.
+
+  ```yaml
+  startupProbe:
+    httpGet: { path: /health, port: 4400 }
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 18 # about three minutes, whether probes fail at once or time out
+  livenessProbe:
+    httpGet: { path: /health, port: 4400 }
+    periodSeconds: 30
+    timeoutSeconds: 30
+    failureThreshold: 3
+  ```
+
+  Until the server is ready, `/health` answers `503` at once, and one success ends the startup
+  probe, so it can wait less than the liveness probe: its 18 attempts take about three minutes
+  either way. With these settings a server that stops answering is restarted 90 to 120 seconds
+  later, or 60 to 90 seconds once its connections are refused, plus the pod's termination grace
+  period.
+
+- **Railway** checks `/health` only while a deployment starts, to decide when to send it traffic,
+  and does not probe a running service. Set the path to `/health` and the timeout to 120 seconds.
+- **Docker Compose or another supervisor** with its own check: allow 30 seconds a probe and three
+  failures, for example `timeout: 30s`, `interval: 30s` and `retries: 3`.
+
 ### Runtime packaging
 
 The Docker build produces a standalone server bundle. It prepares the trusted

@@ -18,3 +18,13 @@ export const heldAlarmMilliseconds = 5_000;
  * except in the backlog after a stall.
  */
 export const cloudScheduleConcurrency = 32;
+
+/**
+ * Webhook sources the coordinator reconciles at once, for every organization together, in batches
+ * of twice as many. A new organization queues a source for each owner and admin. At the Node
+ * hosts' 4 at a time, about 3 a second, a burst of 1.25 new organizations a second kept sources
+ * waiting up to 22 s before their reconcile started. A reconcile mostly waits on its app's data
+ * object and on the coordinator's 4 database connections, so 16 at a time slows each one (1.3 s to
+ * 2.2 s) but doubles throughput, and the same burst waited at most 12 s.
+ */
+export const cloudWebhookSourceConcurrency = 16;

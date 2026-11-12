@@ -455,7 +455,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
                 name: "execute",
                 arguments: {
                   code: `const first = await ${tools}.who({});
-await ${tools}.enter({});
 await ${tools}.hold({});
 let second;
 try { second = await ${tools}.who({}); } catch (error) { second = { refused: String(error.message) }; }
@@ -476,7 +475,7 @@ return { first, second };`,
               ),
             );
         yield* untilHeld(
-          call("entered", "query").pipe(
+          call("holding", "query").pipe(
             Effect.flatMap((response) => body(Schema.Boolean, response)),
           ),
         );
@@ -662,13 +661,36 @@ return { first, second };`,
             .getByRole("img")
             .waitFor({ state: "visible" }),
         );
-        // Radix paints the dialog before the effect that makes it the topmost layer and moves focus
-        // into it. Escape pressed before that effect closes the setup dialog beneath it instead.
+        // Radix paints the dialog and moves focus into it before the render that makes it the
+        // topmost layer: until then the setup dialog beneath still owns Escape, and Escape closes
+        // both. That render is the one where the setup dialog stops taking pointer input and the
+        // full-size screenshot starts to.
         yield* browser.use("The full-size screenshot takes focus", (page) =>
           page
             .getByRole("dialog", { name: "Claude’s Add custom connector dialog" })
             .and(page.locator(":focus-within"))
             .waitFor(),
+        );
+        yield* browser.use("The full-size screenshot is the topmost dialog", (page) =>
+          page.waitForFunction(
+            ({ top, beneath }) => {
+              const dialog = (title: string) =>
+                [...document.querySelectorAll('[role="dialog"]')].find(
+                  (element) =>
+                    document.getElementById(element.getAttribute("aria-labelledby") ?? "")
+                      ?.textContent === title,
+                );
+              const screenshot = dialog(top),
+                setup = dialog(beneath);
+              return (
+                screenshot !== undefined &&
+                setup !== undefined &&
+                getComputedStyle(screenshot).pointerEvents === "auto" &&
+                getComputedStyle(setup).pointerEvents === "none"
+              );
+            },
+            { top: "Claude’s Add custom connector dialog", beneath: "Connect Full access" },
+          ),
         );
         yield* browser.use("Close the full-size screenshot", (page) =>
           page.keyboard.press("Escape"),

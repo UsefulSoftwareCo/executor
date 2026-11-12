@@ -6,6 +6,7 @@ import {
   FileSystem,
   Path,
   Redacted,
+  Ref,
   Schedule,
   Schema,
   Stream,
@@ -24,7 +25,12 @@ import {
 } from "./cloud-postgres.ts";
 import { v1McpForwardFile } from "./v1-mcp-forward.ts";
 import { v1SessionHandoffFile } from "./v1-session-handoff.ts";
-import { isAlchemyDevFailure, outputLines } from "./alchemy-dev-output.ts";
+import {
+  alchemyResourceFailure,
+  isAlchemyDevFailure,
+  outputLines,
+  unboundPort,
+} from "./alchemy-dev-output.ts";
 import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
 import { roleHost } from "./role-hosts.ts";
 import { freePort } from "./ports.ts";
@@ -355,6 +361,30 @@ export const startCloudEnvironment = (input: {
         2,
       ),
     );
+    // Every socket on `port`, with its process when this user owns it, and the range the OS hands
+    // out ephemeral ports from, which `freePort` assumes excludes its own.
+    const portHolders = (port: number) =>
+      Effect.gen(function* () {
+        const sockets = yield* processes
+          .string(
+            process.platform === "linux"
+              ? ChildProcess.make("ss", ["-Htanp", `( sport = :${port} )`])
+              : ChildProcess.make("lsof", ["-nP", `-iTCP:${port}`]),
+          )
+          .pipe(
+            Effect.timeout("5 seconds"),
+            Effect.catch(() => Effect.succeed("(could not list sockets)")),
+          );
+        const ephemeral =
+          process.platform === "linux"
+            ? yield* fs.readFileString("/proc/sys/net/ipv4/ip_local_port_range").pipe(
+                Effect.map((range) => `; ephemeral ports ${range.trim().replace(/\s+/g, "-")}`),
+                Effect.catch(() => Effect.succeed("")),
+              )
+            : "";
+        const listed = sockets.trim().replace(/\s*\n\s*/g, " | ");
+        return `sockets on port ${port}: ${listed === "" ? "none now" : listed}${ephemeral}`;
+      });
     const capture = (
       child: ChildProcessSpawner.ChildProcessHandle,
       file: string,
@@ -442,9 +472,30 @@ export const startCloudEnvironment = (input: {
     // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
     // run nothing will edit the sources it waits on, so the Worker that failed never starts.
     const applyFailed = yield* Deferred.make<void>();
-    yield* capture(server, "cloud.log", (line) =>
-      isAlchemyDevFailure(line) ? Deferred.succeed(applyFailed, undefined) : Effect.void,
+    const resourceFailures = yield* Ref.make<ReadonlyArray<{ resource: string; reason: string }>>(
+      [],
     );
+    yield* capture(server, "cloud.log", (line) => {
+      const failure = alchemyResourceFailure(line);
+      if (failure !== undefined) return Ref.update(resourceFailures, (all) => [...all, failure]);
+      return isAlchemyDevFailure(line) ? Deferred.succeed(applyFailed, undefined) : Effect.void;
+    });
+    // Each failed resource and why, and for a port another socket holds, that socket and its
+    // process while `alchemy dev` still runs: the error is in the job log even when the evidence
+    // artifact is not kept.
+    const describeResourceFailures = Effect.gen(function* () {
+      const failures = yield* Ref.get(resourceFailures);
+      const holders = yield* Effect.forEach(failures, ({ reason }) => {
+        const port = unboundPort(reason);
+        return port === undefined
+          ? Effect.succeed([])
+          : portHolders(port).pipe(Effect.map((text) => [text]));
+      });
+      return [
+        ...failures.map(({ resource, reason }) => `${resource}: ${reason}`),
+        ...holders.flat(),
+      ].join("; ");
+    });
     // A Worker that is still starting holds the request until it can answer, so each probe has its
     // own deadline and the whole wait has one too.
     const ready = Effect.scoped(
@@ -481,10 +532,11 @@ export const startCloudEnvironment = (input: {
           ),
         ),
         Deferred.await(applyFailed).pipe(
-          Effect.flatMap(() =>
+          Effect.andThen(describeResourceFailures),
+          Effect.flatMap((failures) =>
             Effect.fail(
               new CloudStartFailed({
-                operation: "Alchemy could not start every Cloud resource; see cloud.log",
+                operation: `Alchemy could not start every Cloud resource${failures === "" ? "" : ` (${failures})`}; see cloud.log`,
               }),
             ),
           ),

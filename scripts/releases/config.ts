@@ -24,6 +24,10 @@ export {
  * credential store checks; on Linux it also runs the `docker` job. Those jobs mostly wait on the
  * product: on 16 vCPUs their CPU p95 was 19-33%, so they run on 8. `cli.runner` runs the installed
  * CLI suite, whose parallel workers kept 16 vCPUs at a 58-66% p95.
+ *
+ * `cli.workers` is how many spec files the suite runs at once. Eight on the 16-vCPU runners: the
+ * suite's files add up to about 32 minutes on Linux and 58 on Windows, and the longest,
+ * `local-service.spec.ts`, takes about 5 and 9, so more than eight finishes no sooner.
  */
 export const platforms = [
   {
@@ -47,7 +51,7 @@ export const platforms = [
   {
     platform: "linux",
     arch: "x64",
-    cli: { workers: 4, runner: "blacksmith-16vcpu-ubuntu-2404" },
+    cli: { workers: 8, runner: "blacksmith-16vcpu-ubuntu-2404" },
     packagedTests: true,
     runner: "blacksmith-8vcpu-ubuntu-2404",
     desktopOs: "linux",
@@ -65,7 +69,7 @@ export const platforms = [
   {
     platform: "win32",
     arch: "x64",
-    cli: { workers: 4, runner: "blacksmith-16vcpu-windows-2025" },
+    cli: { workers: 8, runner: "blacksmith-16vcpu-windows-2025" },
     packagedTests: true,
     runner: "blacksmith-8vcpu-windows-2025",
     desktopOs: "win",

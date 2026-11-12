@@ -301,7 +301,8 @@ const upgradeFixture = (
       });
     /**
      * The database as an upgrade from 4.0.12 finds it: profiles, each with its own schedule, and
-     * some schedules' history as `[run, schedule]`. The first statement reads the hosted ledger.
+     * some schedules' history as `[run, schedule]`. The first two statements read the hosted ledger and
+     * the schema version this build records.
      */
     const upgradeStatements = (input: {
       readonly profiles: ReadonlyArray<ProfileSpec>;
@@ -311,6 +312,7 @@ const upgradeFixture = (
       const profileOf = new Map(input.schedules.map((row) => [row.id, row.profile]));
       return [
         { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
+        { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
         ...beforeAppAccounts(),
         { sql: "DELETE FROM private_hosted_migrations WHERE migration_id >= 9" },
         { sql: "DROP TABLE hosted_app_account_links" },
@@ -476,7 +478,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
         // The app's data before the upgrade: one row in its `ticks` table.
         const before = yield* setup.writeTick(actors.member);
         expect(before).toHaveLength(1);
-        const [recorded] = yield* legacyStorage(
+        const [recorded, current] = yield* legacyStorage(
           setup.upgradeStatements({
             profiles: [
               // Alice's oldest enabled profile keeps the app; her Work profile used another account.
@@ -628,7 +630,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
         ]);
         expect(ledger).toEqual([{ name: "app_account_links" }]);
-        expect(version).toEqual([{ value: "4.0.16" }]);
+        expect(version, "every step from 4.0.12 ran to the current version").toEqual(current);
         expect(plans).toEqual(
           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
         );

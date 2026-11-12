@@ -29,6 +29,8 @@ const allowed = new Set([
   "react",
   "react-dom/client",
 ]);
+/** A collector's event files and its span and log search endpoints. */
+const collectorReads = /(?:sentry|analytics|flags)\.ndjson|\/api\/(?:spans|logs|traces)\/search/u;
 class BoundaryViolation extends Schema.TaggedError<BoundaryViolation>()("BoundaryViolation", {
   problems: Schema.Array(Schema.String),
 }) {}
@@ -79,6 +81,13 @@ const check = Effect.gen(function* () {
             return;
           // This external MCP fixture needs a real TLS listener, not a product implementation.
           if (label === `support${path.sep}mcp-auth-patterns.ts` && specifier === "node:https")
+            return;
+          // This scenario holds one kept-alive client connection to the target, a TLS one when a
+          // deployed stage serves it over HTTPS; `node:http` refuses an `https:` URL.
+          if (
+            label === `tests${path.sep}mcp-protocol-versions.spec.ts` &&
+            specifier === "node:https"
+          )
             return;
           // This external upstream fixture generates its contract with Effect, not product code.
           if (
@@ -153,7 +162,37 @@ const check = Effect.gen(function* () {
           }
           return undefined;
         };
+        /** Whether a comment before `node` or a node it starts, up to its statement, says `reason`. */
+        const explained = (node: ts.Node, reason: string): boolean => {
+          const text = source.getFullText();
+          for (let current: ts.Node = node; ; current = current.parent) {
+            const comments = ts.getLeadingCommentRanges(text, current.getFullStart()) ?? [];
+            if (comments.some(({ pos, end }) => text.slice(pos, end).includes(reason))) return true;
+            if (ts.isStatement(current) || ts.isSourceFile(current.parent)) return false;
+          }
+        };
         const visit = (node: ts.Node) => {
+          // Collector reads go through the scoped readers in support/, so a scenario cannot read
+          // another scenario's telemetry by accident.
+          if (
+            !label.startsWith(`support${path.sep}`) &&
+            (ts.isStringLiteralLike(node) ||
+              ts.isTemplateHead(node) ||
+              ts.isTemplateMiddle(node) ||
+              ts.isTemplateTail(node)) &&
+            collectorReads.test(node.text)
+          )
+            problems.push(
+              `${label}: read the collector through the scoped readers in support/, not ${node.text.match(collectorReads)?.[0]}`,
+            );
+          if (
+            !label.startsWith(`support${path.sep}`) &&
+            ts.isIdentifier(node) &&
+            node.text === "collectorLinesWholeEnvironment"
+          )
+            problems.push(
+              `${label}: collectorLinesWholeEnvironment is only for the readers in support/`,
+            );
           if (
             ts.isIdentifier(node) &&
             legacyNames.has(node.text) &&
@@ -198,6 +237,20 @@ const check = Effect.gen(function* () {
           )
             problems.push(
               `${label}: scenarios must yield injected services instead of executing a Promise/runtime boundary`,
+            );
+          // Playwright's `route.fetch()` (no URL, at most an options object) resends a request from
+          // the test process over a keep-alive pool that never retries a connection the server closed
+          // while idle. Use `replaceResponses` in support/browser-responses.ts, or say beside the call,
+          // in a comment starting "route.fetch() is safe here", why that cannot happen.
+          if (
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.name.text === "fetch" &&
+            (node.arguments[0] === undefined || ts.isObjectLiteralExpression(node.arguments[0])) &&
+            !explained(node, "route.fetch() is safe here")
+          )
+            problems.push(
+              `${label}: route.fetch() resends the request from a pool that never retries; use replaceResponses from support/browser-responses.ts`,
             );
           if (ts.isImportTypeNode(node))
             module(ts.isLiteralTypeNode(node.argument) ? node.argument.literal : undefined);

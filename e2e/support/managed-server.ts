@@ -36,6 +36,7 @@ import {
   LegacyResults,
   LegacyStatements,
 } from "./legacy-storage.ts";
+import { reservedPort } from "./ports.ts";
 import { scenarios } from "../test-plan.ts";
 import { recordWorkerdCoverage, workerdCoverageFlags } from "./workerd-coverage.ts";
 import { localEntryCommand } from "./local-entry.ts";
@@ -43,6 +44,9 @@ import { localEntryCommand } from "./local-entry.ts";
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
   message: Schema.String,
 }) {}
+
+/** How many of its last lines a server that exits before readiness quotes in the failure. */
+const startupLinesQuoted = 20;
 
 /** The furthest a scenario may move the product's clock; `wall-clock.mjs` enforces it too. */
 const maxClockOffset = 40 * 86_400_000;
@@ -73,6 +77,22 @@ export const OperatorSettings = Schema.Struct({
   EXECUTOR_OAUTH_SLACK_CLIENT_SECRET: Schema.optionalKey(Schema.String),
 });
 /** The runner owns every process generation and keeps the same synthetic secrets across restarts. */
+/** In a managed server's directory: the process group its current product process leads. */
+export const serverProcessFile = "server-process.json";
+export const ServerProcess = Schema.Struct({ processGroup: Schema.Number });
+
+/** Whether any process of `group` still runs. The spawner starts each product as a group leader. */
+export const processGroupRunning = (group: number) =>
+  Effect.sync(() => {
+    try {
+      process.kill(-group, 0);
+      return true;
+    } catch (error) {
+      // EPERM: a process of that group exists but belongs to another user.
+      return error instanceof Error && "code" in error && error.code === "EPERM";
+    }
+  });
+
 export const startManagedServer = (
   target: typeof Target.Service,
   mode: "product" | "development" = "product",
@@ -84,8 +104,15 @@ export const startManagedServer = (
       processes = yield* ChildProcessSpawner.ChildProcessSpawner,
       path = yield* Path.Path,
       http = yield* HttpClient.HttpClient;
-    const port = new URL(target.metadata.origin).port;
-    let origin = target.metadata.origin;
+    // A product asked to choose its own port (port 0) gets a reserved one instead and keeps it
+    // across restarts: a port the OS chose goes back to its ephemeral range whenever the product
+    // stops, and another socket on the machine can be handed it before the product starts again.
+    const requested = new URL(target.metadata.origin);
+    const port = requested.port === "0" ? String(yield* reservedPort) : requested.port;
+    let origin =
+      requested.port === "0"
+        ? `${requested.protocol}//${requested.hostname}:${port}`
+        : target.metadata.origin;
     const runtimePath = yield* Config.String("EXECUTOR_E2E_RUNTIME_PATH").pipe(
       Config.withDefault(process.env.PATH ?? ""),
     );
@@ -284,6 +311,15 @@ export const startManagedServer = (
           }),
         );
         running = child;
+        // The product's process group, so a scenario can tell the product stopped by the process,
+        // not by its port: a port it bound with 0 can be handed to another server once it is free.
+        yield* fs
+          .writeFileString(
+            `${target.directory}/${serverProcessFile}`,
+            JSON.stringify({ processGroup: child.pid }),
+            { mode: 0o600 },
+          )
+          .pipe(Effect.orDie);
         yield* Scope.addFinalizer(
           scope,
           Effect.sync(() => {
@@ -304,16 +340,21 @@ export const startManagedServer = (
           );
         }
         const ready = yield* Deferred.make<void>();
+        // This generation's last lines, quoted when it exits before readiness: the job log keeps
+        // them when a rerun has replaced the failed attempt's evidence artifact.
+        const lastLines: Array<string> = [];
         const output = yield* Stream.merge(child.stdout, child.stderr).pipe(
           Stream.decodeText(),
           Stream.splitLines,
           Stream.runForEach((line) =>
             Effect.gen(function* () {
-              yield* fs.writeFileString(
-                `${target.directory}/server.log`,
-                `${line.replace(/#pair=[a-f0-9]{64}/g, "#pair=<redacted>")}\n`,
-                { flag: "a", mode: 0o600 },
-              );
+              const redacted = line.replace(/#pair=[a-f0-9]{64}/g, "#pair=<redacted>");
+              lastLines.push(redacted);
+              if (lastLines.length > startupLinesQuoted) lastLines.shift();
+              yield* fs.writeFileString(`${target.directory}/server.log`, `${redacted}\n`, {
+                flag: "a",
+                mode: 0o600,
+              });
               const clock = /^Executor test clock: (\d+)$/.exec(line);
               if (clock !== null) confirmedOffset = Number(clock[1]);
               if (/^Executor: http:\/\/127\.0\.0\.1:\d+$/.test(line)) {
@@ -352,8 +393,12 @@ export const startManagedServer = (
               Fiber.join(output).pipe(
                 Effect.timeoutOption("3 seconds"),
                 Effect.andThen(
-                  Effect.fail(
-                    new ServerFailed({ message: `Server exited before readiness (${code})` }),
+                  Effect.suspend(() =>
+                    Effect.fail(
+                      new ServerFailed({
+                        message: `Server exited before readiness (${code}) on port ${env.PORT}; its last output:\n${lastLines.length === 0 ? "(none)" : lastLines.join("\n")}`,
+                      }),
+                    ),
                   ),
                 ),
               ),
@@ -555,22 +600,9 @@ const startIsolatedSelfHost = (
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const port =
-      entry === "product"
-        ? 0
-        : yield* Effect.scoped(
-            Effect.gen(function* () {
-              const services = yield* Layer.build(
-                NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }),
-              );
-              const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
-              if (!("port" in server.address))
-                return yield* new ServerFailed({
-                  message: "Isolated self-host listener must use TCP",
-                });
-              return server.address.port;
-            }),
-          );
+    // Both entries keep one reserved port for the server's life, through every restart (see
+    // `reservedPort`).
+    const port = yield* reservedPort;
     const directory = yield* fs.makeTempDirectory({ directory: target.directory, prefix: entry });
     const origin = `http://127.0.0.1:${port}`;
     const server = yield* startManagedServer(

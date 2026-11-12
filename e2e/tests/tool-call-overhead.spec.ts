@@ -153,7 +153,7 @@ const fixture = Effect.gen(function* () {
     options: { readonly name?: string; readonly tool?: string; readonly timed?: boolean } = {},
   ) => {
     const name = options.name ?? "mcp.tool.call";
-    return telemetry.search(name, { "executor.app.id": app.id }).pipe(
+    return telemetry.search(name, { app: app.id }).pipe(
       Effect.flatMap((found) => {
         const match = found.data.find(
           ({ span }) =>
@@ -185,7 +185,7 @@ const fixture = Effect.gen(function* () {
   };
   /** The tags of `app`'s tool call spans for `tool`, once `count` of them have their timing. */
   const toolCalls = (app: typeof App.Type, tool: string, count: number) =>
-    telemetry.spans("mcp.tool.call", { "executor.app.id": app.id }).pipe(
+    telemetry.spans("mcp.tool.call", { app: app.id }).pipe(
       Effect.map((found) =>
         found.filter(
           (tags) =>

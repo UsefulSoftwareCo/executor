@@ -10,6 +10,7 @@ export default defineConfig({
       "e2e/tests/docker-release-executor-api.spec.ts",
       "e2e/tests/docker-release-trusted-proxies.spec.ts",
       "e2e/tests/docker-release-live-query.spec.ts",
+      "e2e/tests/docker-release-mcp-session-release.spec.ts",
       "e2e/tests/docker-release-workflow-memory.spec.ts",
       "e2e/tests/docker-release-workflow-restart.spec.ts",
       "e2e/tests/docker-release-workflow-stopped.spec.ts",

@@ -6,10 +6,12 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 import {
   PreviewCommit,
   PreviewNumber,
+  compareFileLimit,
   previewBrowserOrigin,
   previewOrigin,
   previewOwner,
   previewRepository,
+  previewShows,
   previewSlug,
 } from "../contracts/pr-preview.ts";
 import { TestStageFailed } from "../contracts/test-stage-lifetime.ts";
@@ -23,7 +25,10 @@ const PullRequest = Schema.Struct({
     ref: Schema.String,
     repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
   }),
+  base: Schema.Struct({ repo: Schema.Struct({ default_branch: Schema.NonEmptyString }) }),
 });
+/** The files a head changes since it left the default branch, renamed files' old paths included. */
+const Compared = Schema.Struct({ count: Schema.Int, paths: Schema.Array(Schema.String) });
 const StackedAbove = Schema.Array(
   Schema.Struct({
     number: PreviewNumber,
@@ -60,15 +65,39 @@ const isStackedUnder = (repository: string, ref: string) =>
     // Fork PRs never get a preview, so they cannot stand in for this one.
     return above.some((pr) => pr.head.repo?.full_name === repository);
   });
+/**
+ * Whether the head's whole change against the default branch can alter what a preview shows. For a
+ * stack's top layer that is every layer's change. GitHub lists at most 300 changed files; a longer
+ * list may hide one a preview shows, so it counts as one.
+ */
+const changesPreview = (repository: string, defaultBranch: string, sha: string) =>
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const json = yield* spawner.string(
+      ChildProcess.make("gh", [
+        "api",
+        `repos/${repository}/compare/${defaultBranch}...${sha}`,
+        "--jq",
+        "{count: (.files | length), paths: [.files[] | .filename, (.previous_filename // empty)]}",
+      ]),
+    );
+    const compared = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Compared))(json);
+    return compared.count >= compareFileLimit || previewShows(compared.paths);
+  });
+/**
+ * `destroy` a closed PR's preview, `retire` a lower stack layer's, and `unneeded` removes the
+ * preview of a PR that changes nothing a preview shows. A later push that does deploys it again.
+ */
 const previewAction = (repository: string, number: number) =>
   Effect.gen(function* () {
     const pr = yield* pullRequest(repository, number);
     if (pr.state === "closed") return { pr, action: "destroy" as const };
+    if (yield* isStackedUnder(repository, pr.head.ref)) return { pr, action: "retire" as const };
     return {
       pr,
-      action: (yield* isStackedUnder(repository, pr.head.ref))
-        ? ("retire" as const)
-        : ("deploy" as const),
+      action: (yield* changesPreview(repository, pr.base.repo.default_branch, pr.head.sha))
+        ? ("deploy" as const)
+        : ("unneeded" as const),
     };
   });
 const output = (values: Record<string, string>) =>
@@ -109,7 +138,7 @@ const guard = Command.make("guard", { number }, ({ number }) =>
     yield* output({ exists: lease === undefined ? "false" : "true" });
   }),
 );
-/** Retained previews whose PR closed or now has another layer stacked above it. */
+/** Retained previews whose PR closed, has another layer stacked above it or no longer needs one. */
 const stale = Command.make("stale", {}, () =>
   Effect.gen(function* () {
     const repository = yield* previewRepository;

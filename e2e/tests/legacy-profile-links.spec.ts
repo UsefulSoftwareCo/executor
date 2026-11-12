@@ -8,7 +8,7 @@
  * The fixture rebuilds the database as step 9 finds it inside the upgrade transaction. The
  * product's migration ledger is per step: SDK schema versions in FumaDB's settings and hosted
  * steps in `private_hosted_migrations`, which runs every step above its latest recorded one. The
- * fixture removes the ledger rows of steps 9 to 12 and the table step 9 creates, turns one
+ * fixture removes the ledger rows of step 9 and every later step and the table step 9 creates, turns one
  * account back into the shared account an older version created, and writes the profiles an
  * older version left in `executor_installations`. SDK 4.0.13 and 4.0.14 stay applied because, in
  * a real upgrade, they have already run when step 9 starts, and 4.0.13 keeps
@@ -50,8 +50,8 @@ export default defineApp({ user: { accounts: { primary: service, extras: service
   }),
 }));`;
 
-/** The hosted steps a current database has recorded, in order. */
-const ledger = [
+/** The hosted steps before step 9, which stay recorded through the fixture, in order. */
+const before = [
   "baseline",
   "api_key_memberships",
   "upgrade_executor_apps",
@@ -60,11 +60,12 @@ const ledger = [
   "upgrade_pinned_executor_apps",
   "require_connection_targets",
   "oauth_client_access",
-  "app_account_links",
-  "group_account_connections",
-  "tool_call_log",
-  "personal_accounts",
 ].map((name, index) => ({ migration_id: index + 1, name }));
+/** The two steps this scenario proves. Steps added later run after them and are not named here. */
+const proved = [
+  { migration_id: 9, name: "app_account_links" },
+  { migration_id: 12, name: "personal_accounts" },
+];
 
 const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
 const Tokens = Schema.Struct({ primary: Schema.String, extras: Schema.Array(Schema.String) });
@@ -340,13 +341,14 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
           }),
         ]);
         // The current ledger, rolled back to before step 9: steps 9 and later run again on start.
-        expect(recorded, "current hosted ledger").toEqual(ledger);
-        expect(rolledBack, "step 9 and every later step are pending again").toEqual([
-          { migration_id: 9 },
-          { migration_id: 10 },
-          { migration_id: 11 },
-          { migration_id: 12 },
-        ]);
+        expect(recorded?.slice(0, before.length), "steps 1 to 8 stay recorded").toEqual(before);
+        expect(recorded, "this build records steps 9 and 12").toEqual(
+          expect.arrayContaining(proved),
+        );
+        expect(
+          rolledBack?.map((row) => Number(row.migration_id)).toSorted((a, b) => a - b),
+          "step 9 and every later step are pending again",
+        ).toEqual(recorded?.slice(before.length).map((row) => row.migration_id));
         expect(sharedBack, "the member's account is shared again").toEqual([
           { account_id: fixture.shared },
         ]);
@@ -486,7 +488,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
             params: [fixture.shared],
           },
         ]);
-        expect(after, "steps 9 to 12 are recorded once").toEqual(ledger);
+        expect(after, "steps 9 and later are recorded again, each once").toEqual(recorded);
         expect(ownership, "the former shared account is stored as its creator's").toEqual([
           { kind: "personal", personal_user_id: fixture.member, audience: null },
         ]);

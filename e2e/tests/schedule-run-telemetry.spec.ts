@@ -111,7 +111,7 @@ layer(HostedLive, { excludeTestServices: true })("Schedule run telemetry", (it) 
           ["failed", "ToolCallFailed"],
         ]);
 
-        const spans = yield* telemetry.search("schedule.run", { "executor.app.id": app.id }).pipe(
+        const spans = yield* telemetry.search("schedule.run", { app: app.id }).pipe(
           Effect.map((found) =>
             found.data.filter(({ span }) => span.operationName === "schedule.run"),
           ),

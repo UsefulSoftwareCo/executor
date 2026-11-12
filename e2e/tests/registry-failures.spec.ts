@@ -27,6 +27,7 @@ const Copy = Schema.Struct({
   copiedFrom: Schema.Struct({ name: Schema.String, commit: Schema.String }),
 });
 const Apps = Schema.Array(Schema.Struct({ id: Schema.String }));
+const Resources = Schema.Struct({ pendingApp: Schema.Boolean });
 
 /** A fresh self-host reading the registry fixture, with its owner signed in. */
 const registryCase = Effect.gen(function* () {
@@ -291,7 +292,21 @@ layer(TestLive, { excludeTestServices: true })("Remote registry failures", (it) 
         const apps = Effect.flatMap(api.request(owner, "GET", `${prefix}/apps`), (response) =>
           body(Apps, response),
         );
-        const made = (yield* apps).length;
+        // Setup queues the organization's own Executor app, which a background job installs. Count
+        // once it is there, so the apps change only if a refused copy makes one.
+        yield* api.request(owner, "GET", `${prefix}/resources`).pipe(
+          Effect.flatMap((response) => body(Resources, response)),
+          Effect.repeat({
+            until: ({ pendingApp }) => !pendingApp,
+            schedule: Schedule.spaced("250 millis"),
+            times: 80,
+          }),
+          Effect.flatMap(({ pendingApp }) =>
+            pendingApp ? Effect.die("The Executor app was never installed") : Effect.void,
+          ),
+        );
+        const ids = Effect.map(apps, (list) => list.map((app) => app.id).sort());
+        const made = yield* ids;
         const others = registryCatalog.filter((listing) => listing !== registryScopedListing);
         const replacement = { ...registryScopedListing, commit: "e".repeat(40) };
         yield* registry.publish([...others, replacement]);
@@ -305,7 +320,7 @@ layer(TestLive, { excludeTestServices: true })("Remote registry failures", (it) 
           yield* failed(yield* copy("@scoped/notes", registryScopedListing.commit, releasedClient)),
         ).toEqual({ _tag: "RegistryError", reason: "not-found" });
         expect(yield* since(before)).not.toContain(source(renamed));
-        expect((yield* apps).length).toBe(made);
+        expect(yield* ids).toEqual(made);
       }),
     ),
   );

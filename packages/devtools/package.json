@@ -10,7 +10,7 @@
     "@effect/atom-react": "4.0.1",
     "@executor-js/ui": "workspace:*",
     "@executor-js/utils": "workspace:*",
-    "better-auth": "1.7.16",
+    "better-auth": "1.7.20",
     "effect": "4.0.1",
     "radix-ui": "1.6.7"
   },

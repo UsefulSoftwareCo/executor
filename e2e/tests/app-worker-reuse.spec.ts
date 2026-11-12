@@ -621,10 +621,11 @@ export default defineApp({ user: { accounts: { service } } }, {
             yield* observe(app.id);
             // Each call's invocation names the Worker it ran in and the caller it ran for.
             const identities = yield* telemetry
-              .spans("runtime.app.invoke", {
-                "executor.organization.id": actors.organization.id,
-                "executor.user.id": viewer.userId,
-              })
+              .spans(
+                "runtime.app.invoke",
+                { organization: actors.organization.id },
+                { "executor.user.id": viewer.userId },
+              )
               .pipe(
                 Effect.map((spans) =>
                   spans

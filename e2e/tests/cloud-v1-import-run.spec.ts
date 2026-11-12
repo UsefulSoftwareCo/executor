@@ -3580,10 +3580,11 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         // but no build is kept in the app build store or its cache. Its run's spans say so.
         const telemetry = yield* Telemetry;
         const steps = yield* telemetry
-          .search("v1_import.step", {
-            "executor.v1_import.organization": workspace.organization,
-            "executor.v1_import.step": "integration",
-          })
+          .search(
+            "v1_import.step",
+            { v1Workspace: workspace.organization },
+            { "executor.v1_import.step": "integration" },
+          )
           .pipe(
             Effect.filterOrFail(
               (found) => found.data.length >= 2,

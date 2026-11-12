@@ -13,7 +13,7 @@ export class ScenarioPreparationFailed extends Schema.TaggedError<ScenarioPrepar
   override get message() {
     return this.reason === "organization_unavailable"
       ? "The scenario's organization and identities were not provisioned within the setup deadline"
-      : "The scenario's HTTPS app origin was not ready within the infrastructure deadline";
+      : "The scenario's HTTPS app origin did not answer, or was not reported ready, within the infrastructure deadline";
   }
 }
 

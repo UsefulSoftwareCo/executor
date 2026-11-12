@@ -237,6 +237,33 @@ const main = Effect.gen(function* () {
       }),
     );
   });
+  /**
+   * The app domain status the product's location read reports for this scenario's team: the row
+   * the coordinator wrote for its current slug, or `absent` before a pass has written one.
+   */
+  const domain = Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const { id } = yield* request.json.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ id: Id }))),
+    );
+    const database = pool;
+    if (!owned.has(id) || database === undefined)
+      return yield* new TestAccountFailed({ stage: "fixture" });
+    const result = yield* Effect.tryPromise({
+      try: () =>
+        database.query(
+          `select domain.status from cloud_app_domain domain
+            join organization on organization.id = domain.organization_id
+            where organization.slug = $1 and domain.slug = organization.slug`,
+          [organizationSlug(id)],
+        ),
+      catch: () => new TestAccountFailed({ stage: "database" }),
+    });
+    const rows = yield* Schema.decodeUnknownEffect(
+      Schema.Array(Schema.Struct({ status: Schema.Literals(["pending", "ready", "failed"]) })),
+    )(result.rows);
+    return { status: rows[0]?.status ?? ("absent" as const) };
+  });
   const remove = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const { id } = yield* request.json.pipe(
@@ -383,6 +410,7 @@ const main = Effect.gen(function* () {
     HttpRouter.add("POST", "/session", endpoint(session)),
     HttpRouter.add("POST", "/operator", endpoint(operator)),
     HttpRouter.add("POST", "/remove", endpoint(remove)),
+    HttpRouter.add("POST", "/domain", endpoint(domain)),
     HttpRouter.add(
       "GET",
       "/health",

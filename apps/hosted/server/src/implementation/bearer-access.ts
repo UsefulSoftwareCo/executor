@@ -9,7 +9,7 @@
  * needs in one statement and applies the same checks to the result.
  *
  * The checks mirror `@better-auth/oauth-provider`'s opaque access token validation and
- * `@better-auth/api-key`'s verification (both 1.7.16, as configured in `auth.ts` and
+ * `@better-auth/api-key`'s verification (both 1.7.20, as configured in `auth.ts` and
  * `api-keys.ts`), followed by the grant rules in `@executor-js/mcp-auth`. Expiry is decided
  * with the application clock after the statement returns, as Better Auth decides it, never
  * with the database clock.

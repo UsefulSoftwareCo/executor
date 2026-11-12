@@ -50,5 +50,9 @@ VOLUME /app/data
 COPY --chmod=755 apps/hosted/self-host/entrypoint.sh /usr/local/bin/executor-entrypoint
 ENTRYPOINT ["executor-entrypoint"]
 EXPOSE 4400
-HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 CMD ["executor-host", "health"]
+# Every response, /health included, waits while the product commits its storage, and on a slow disk
+# one commit holds it for seconds (README, Health checks). 30 seconds covers the stalls measured on a
+# desktop disk. A server whose requests start to hang is marked unhealthy after three failed checks,
+# 147 to 177 seconds later, up from 72 to 102; one that never answers from boot, after about 5 minutes.
+HEALTHCHECK --interval=30s --timeout=30s --start-period=120s --retries=3 CMD ["executor-host", "health"]
 CMD ["executor-host", "serve"]

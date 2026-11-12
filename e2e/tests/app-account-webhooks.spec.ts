@@ -460,7 +460,7 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
           target = yield* Target;
         const runtime = target.metadata.target === "cloud" ? "runtime.cloud" : "runtime.workerd";
         const operations = yield* telemetry
-          .spans(`${runtime}.webhook`, { "executor.app.id": fixture.app.id })
+          .spans(`${runtime}.webhook`, { app: fixture.app.id })
           .pipe(
             Effect.map((spans) => spans.map((tags) => tags["executor.webhook.operation"])),
             Effect.flatMap((operations) =>

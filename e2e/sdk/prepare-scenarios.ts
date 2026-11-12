@@ -21,6 +21,7 @@ import { Target } from "../support/platform.ts";
 import { PreparedScenarios } from "./contracts.ts";
 import { startScenario } from "./scenario.ts";
 import { awaitCompiler } from "./compiler-readiness.ts";
+import { fixtureRequest, type FixtureControl } from "./fixtures.ts";
 
 class DomainNotReady extends Schema.TaggedError<DomainNotReady>()("DomainNotReady", {
   reason: Schema.Literals(["http", "transport", "timeout"]),
@@ -54,19 +55,39 @@ const transportCode = (cause: unknown, depth = 0): string | undefined => {
 };
 interface DomainObservation {
   readonly attempts: number;
+  /** The origin answered HTTPS and the product reports the team's address ready. */
   readonly ready: boolean;
   readonly elapsedMs: number;
+  /** When the origin first answered HTTPS, from the start of the wait. */
+  readonly httpsMs?: number;
+  /** The product's last reported status for the team's address, once HTTPS answered. */
+  readonly reported?: DomainReport["status"];
   readonly lastFailure?: {
     readonly reason: DomainNotReady["reason"];
     readonly status?: number | undefined;
     readonly code?: string | undefined;
   };
 }
+const DomainReport = Schema.Struct({
+  status: Schema.Literals(["absent", "pending", "ready", "failed"]),
+});
+type DomainReport = typeof DomainReport.Type;
+class DomainNotReported extends Schema.TaggedError<DomainNotReported>()("DomainNotReported", {
+  status: Schema.optional(DomainReport.fields.status),
+}) {}
 
-/** A real HTTPS response proves DNS and the edge certificate are usable. No TLS checks are disabled. */
+/**
+ * A real HTTPS response proves DNS and the edge certificate are usable. No TLS checks are disabled.
+ * The product then has to report the address ready: its location read uses the row the domain
+ * pass writes after it observes the certificate, which can lag the certificate by a pass. Both are
+ * infrastructure readiness, so both are waited for here, under the infrastructure deadline, and a
+ * scenario starts with an address its location read already reports ready.
+ */
 const waitForDomain = (
   baseUrl: string,
   organizationSlug: string,
+  scenario: string,
+  fixtures: typeof FixtureControl.Type,
   observe: (value: DomainObservation) => Effect.Effect<void>,
 ) =>
   Effect.gen(function* () {
@@ -116,21 +137,37 @@ const waitForDomain = (
         ),
       ),
       Effect.retry({ schedule: Schedule.spaced("2 seconds") }),
-      Effect.andThen(
+    );
+    const httpsMs = (yield* Clock.currentTimeMillis) - started;
+    yield* fixtureRequest(fixtures, "/domain", { id: scenario }).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(DomainReport)),
+      Effect.mapError(() => new DomainNotReported({})),
+      Effect.flatMap((report) =>
         Clock.currentTimeMillis.pipe(
           Effect.flatMap((now) =>
             observe({
               attempts,
-              ready: true,
+              ready: report.status === "ready",
               elapsedMs: now - started,
+              httpsMs,
+              reported: report.status,
             }),
+          ),
+          Effect.andThen(
+            report.status === "ready"
+              ? Effect.void
+              : Effect.fail(new DomainNotReported({ status: report.status })),
           ),
         ),
       ),
+      Effect.retry({ schedule: Schedule.spaced("2 seconds") }),
     );
   });
 
-/** Certificate issuance and a cold compiler Worker share this deadline, outside every scenario's. */
+/**
+ * Certificate issuance, the domain pass that reports it and a cold compiler Worker share this
+ * deadline, outside every scenario's.
+ */
 const infrastructureDeadline = "5 minutes";
 
 /** The suite owns provisioned actors until individual cleanup or environment teardown, including failed preparation. */
@@ -138,6 +175,8 @@ export const prepareCloudScenarios = (input: {
   readonly target: typeof Target.Service;
   readonly scenarios: readonly { readonly title: string; readonly appOrigin?: true }[];
   readonly appUiBaseUrl: string;
+  /** The attached stage's fixture control, which reads the product's report of each address. */
+  readonly fixtures: typeof FixtureControl.Type;
   readonly workers: number;
 }) =>
   Effect.gen(function* () {
@@ -194,12 +233,12 @@ export const prepareCloudScenarios = (input: {
     const observations = yield* Ref.make<ReadonlyMap<string, DomainObservation>>(new Map());
     const fs = yield* FileSystem.FileSystem;
     yield* Console.log(
-      `Cloud actors ready: ${Math.round((actorsReadyAt - started) / 1000)}s (${prepared.length}/${input.scenarios.length} organizations); waiting for ${domains.length} HTTPS domains.`,
+      `Cloud actors ready: ${Math.round((actorsReadyAt - started) / 1000)}s (${prepared.length}/${input.scenarios.length} organizations); waiting for ${domains.length} HTTPS domains to answer and be reported ready.`,
     );
     yield* Effect.forEach(
       domains,
       ({ slug, id }) =>
-        waitForDomain(input.appUiBaseUrl, slug, (observation) =>
+        waitForDomain(input.appUiBaseUrl, slug, id, input.fixtures, (observation) =>
           Ref.update(observations, (values) => new Map([...values, [id, observation]])),
         ).pipe(Effect.tap(() => Ref.update(ready, (ids) => new Set([...ids, id])))),
       // Readiness probes do not occupy scenario workers. Start every origin now;
@@ -236,7 +275,9 @@ export const prepareCloudScenarios = (input: {
               2,
             ),
           );
-          yield* Console.log(`HTTPS domains ready: ${readyDomains}/${domains.length}.`);
+          yield* Console.log(
+            `HTTPS domains ready and reported ready: ${readyDomains}/${domains.length}.`,
+          );
         }).pipe(Effect.orDie),
       ),
       // Keep independent cases runnable. Each unavailable origin is a native

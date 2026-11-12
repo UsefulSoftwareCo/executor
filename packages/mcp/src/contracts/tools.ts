@@ -74,6 +74,12 @@ export interface McpOptions {
    */
   readonly sessions?: (mode: ElicitationMode) => McpServer.SessionStore;
   /**
+   * The most protocol sessions each mode keeps in memory; past it the least recently used is
+   * forgotten, and its client gets `404` and initializes again. The server has no session DELETE,
+   * so without a bound every session a client opened stays for the protocol server's life.
+   */
+  readonly maxSessions?: number;
+  /**
    * Keeps a record of the requests the host issued beyond its memory, so a resume after a restart
    * says whether its request expired, was answered or was lost with its program. Without one, a
    * restart forgets them and a late resume reads as `not-found`.

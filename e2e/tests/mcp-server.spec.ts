@@ -312,11 +312,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
             }),
             Effect.timeout("15 seconds"),
           );
-        expect(executorSkills.map((entry) => entry.name).sort()).toEqual([
-          "app-authoring",
-          "code-mode",
-          "executor",
-        ]);
+        // Discovery finds the entry skill and the two skills the instructions name; the full list
+        // the host publishes is deferred-server-paths' subject.
+        expect(executorSkills.map((entry) => entry.name)).toEqual(
+          expect.arrayContaining(["app-authoring", "code-mode", "executor"]),
+        );
         const guide = executorSkills.find((entry) => entry.name === "executor");
         if (guide === undefined)
           return yield* Effect.die("The installed Executor app must contain its entry skill");

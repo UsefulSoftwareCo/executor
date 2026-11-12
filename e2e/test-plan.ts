@@ -34,6 +34,12 @@ export const TestPlan = Schema.Struct({
   /** Opt in to writing legacy/upgrade-era rows into the stopped product's own database. */
   legacyStorage: Schema.optional(Schema.Literal(true)),
   managementApps: Schema.optional(Schema.Array(Schema.Literals(["owner", "admin", "member"]))),
+  /**
+   * Setup waits for an actors scenario's organization to finish its own provisioning (its
+   * Executor app and the owner's and admin's managed keys). `observed` skips that wait for a
+   * scenario whose subject is the provisioning itself, so it still sees it in progress.
+   */
+  provisioning: Schema.optional(Schema.Literal("observed")),
   /** Labels of extra Testing SDK scenarios created during setup; each has its own closeable scope. */
   sdkScenarios: Schema.optional(Schema.Array(Schema.NonEmptyString)),
   /** Operator settings the scenario's own product process starts with. */
@@ -470,18 +476,6 @@ export const scenarios = plan({
       cloud: na("Cloudflare unloads Cloud's app Workers itself."),
       local: na(
         "Self-host covers the shared runner's Worker residency; the local budget scenario covers local's limit.",
-      ),
-    },
-  },
-  appDataFacetUnloaded: {
-    fixtures: "actors",
-    file: "app-worker-budget.spec.ts",
-    title: "a data facet replaced for other accounts is unloaded, not kept for the process",
-    targets: {
-      "self-host": scheduled,
-      cloud: na("Cloudflare unloads Cloud's facet Workers itself."),
-      local: na(
-        "Self-host covers the shared runner's facet unloading; the local budget scenario covers local's limit.",
       ),
     },
   },
@@ -1372,7 +1366,8 @@ export const scenarios = plan({
     },
   },
   failureEvidence: {
-    // The cases it runs in their own process start their own products.
+    // The cases it runs in their own process start their own products. It tests the harness, so
+    // CI runs it only when the harness changes: see `harnessScenarios` in e2e/ci-selection.ts.
     fixtures: "cli",
     file: "failure-evidence.spec.ts",
     title: "Failed cases keep the trace of every request they sent",
@@ -1876,7 +1871,7 @@ export const scenarios = plan({
   },
   localServiceAppsCli: {
     fixtures: "cli",
-    file: "local-service.spec.ts",
+    file: "local-service-recovery.spec.ts",
     title:
       "`executor apps list` without --host starts the background server, and the next command reuses it; with the service disabled it runs a private server instead",
     targets: {
@@ -1887,7 +1882,7 @@ export const scenarios = plan({
   },
   localServiceEarlierServer: {
     fixtures: "cli",
-    file: "local-service.spec.ts",
+    file: "local-service-recovery.spec.ts",
     title:
       "`executor service start` and `executor serve` refuse a data directory whose server.json names a running Executor from before the background service, and ignore such a record once nothing answers at its URL",
     targets: {
@@ -1898,7 +1893,7 @@ export const scenarios = plan({
   },
   localServiceImpostor: {
     fixtures: "cli",
-    file: "local-service.spec.ts",
+    file: "local-service-recovery.spec.ts",
     title:
       "a process that replays a killed background server's service info on its port is not trusted: `executor service status` reports stopped, and `executor` neither pairs with it nor sends it the password",
     targets: {
@@ -1920,7 +1915,7 @@ export const scenarios = plan({
   },
   localServiceSuspendedLock: {
     fixtures: "cli",
-    file: "local-service.spec.ts",
+    file: "local-service-recovery.spec.ts",
     title:
       "a suspended background server keeps its data directory however long ago it refreshed its lock: `executor --standalone` and a foreground `executor serve` on another port refuse it after a minute, `executor service status` says it is not responding, and once resumed it serves and refreshes its lock as before",
     targets: {
@@ -1931,7 +1926,7 @@ export const scenarios = plan({
   },
   localServiceCrashedLock: {
     fixtures: "cli",
-    file: "local-service.spec.ts",
+    file: "local-service-recovery.spec.ts",
     title:
       "the next server takes over the lock a killed background server left at once, also when its process ID now names another running program, and when that program also listens on its port",
     targets: {
@@ -1942,7 +1937,7 @@ export const scenarios = plan({
   },
   localServiceReusedPid: {
     fixtures: "cli",
-    file: "local-service.spec.ts",
+    file: "local-service-recovery.spec.ts",
     title:
       "`executor service stop` and `executor service start` never signal a program that now has a killed background server's process ID while its port accepts connections and never answers: they remove the registration and leave that program running",
     targets: {
@@ -1953,7 +1948,7 @@ export const scenarios = plan({
   },
   localServiceKeyStorageInvalid: {
     fixtures: "cli",
-    file: "local-service.spec.ts",
+    file: "local-service-recovery.spec.ts",
     title:
       "an invalid EXECUTOR_KEY_STORAGE, in the environment or saved with `executor service set env`, makes `executor`, `executor service start`, `executor --standalone` and `executor serve` refuse before they create anything in the data directory",
     targets: {
@@ -3773,10 +3768,11 @@ export const scenarios = plan({
       ),
     },
   },
-  appDataFacetUnloadedAfterEviction: {
+  appDataFacetUnloaded: {
     fixtures: "actors",
     file: "app-worker-budget.spec.ts",
-    title: "a data facet replaced after its supervisor was evicted is still unloaded",
+    title:
+      "a data facet replaced for other accounts is unloaded, with its supervisor loaded and after it was evicted",
     targets: {
       "self-host": scheduled,
       cloud: na("Cloudflare unloads Cloud's facet Workers itself."),
@@ -4305,9 +4301,20 @@ export const scenarios = plan({
       local: na("The shared source contract is exercised through hosted organization routes."),
     },
   },
+  workspaceFirstReads: {
+    fixtures: "actors",
+    file: "workspace-source.spec.ts",
+    title: "Concurrent first reads of new apps each return the one initialized source",
+    targets: {
+      "self-host": scheduled,
+      cloud: sourceStorageCloud,
+      local: na("The shared source contract is exercised through hosted organization routes."),
+    },
+  },
   appPublicFiles: {
     fixtures: "actors",
     file: "app-public-files.spec.ts",
+    appOrigin: true,
     title:
       "The apps CLI deploys a directory of binary ui/public files larger than the code budget; they are served byte for byte with their types, ranges and blob ETags, and clone, apps source and copies return them",
     targets: {
@@ -4319,6 +4326,7 @@ export const scenarios = plan({
   appPublicFilesRollback: {
     fixtures: "actors",
     file: "app-public-files.spec.ts",
+    appOrigin: true,
     title:
       "Binary ui/public files saved through the API as base64 are served per version, an older version serves its own files, reads keep their blobs, and on Cloud a published commit installs with them",
     targets: {
@@ -6574,6 +6582,8 @@ export const scenarios = plan({
   },
   teamInstallationFromRequest: {
     fixtures: "actors",
+    // Its bounded wait proves the write request installs the team, before any cron would.
+    provisioning: "observed",
     file: "team-installation.spec.ts",
     title: "A new Cloud team's Executor app is installed with nothing left pending",
     targets: {
@@ -7424,6 +7434,30 @@ export const scenarios = plan({
       ),
     },
   },
+  mcpSessionBoundWork: {
+    fixtures: "actors",
+    file: "mcp-protocol-versions.spec.ts",
+    title:
+      "Self-host MCP keeps a session that owns a pending approval prompt, a running call or a browser program waiting for approval when 256 newer sessions open",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud sets no session bound; its session objects keep their own stored sessions."),
+      local: na("Local keeps one protocol server for the process and sets no session bound."),
+    },
+  },
+  mcpSessionBound: {
+    fixtures: "actors",
+    file: "mcp-protocol-versions.spec.ts",
+    title:
+      "Self-host MCP keeps a caller's 256 most recently used protocol sessions and tells a forgotten session's client to initialize again",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud session objects keep at most 64 stored sessions by last use, covered by cloudMcpSessionRestore.",
+      ),
+      local: na("Local keeps one protocol server for the process and sets no session bound."),
+    },
+  },
   // The app tool signals a loopback listener when it starts, and the Sentry check reads the managed
   // Cloud collector; a deployed Worker can reach neither.
   mcpCancelledCalls: {
@@ -7727,6 +7761,17 @@ export const scenarios = plan({
     targets: {
       local: na("Uses hosted webhook and link routes."),
       "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  webhookSourceConcurrency: {
+    fixtures: "actors",
+    file: "webhook-source-concurrency.spec.ts",
+    title:
+      "Cloud registers every source of a new version at once while each registration waits on its provider",
+    targets: {
+      local: na("Uses hosted link routes."),
+      "self-host": na("A Node server reconciles its own sources 4 at a time."),
       cloud: scheduled,
     },
   },
@@ -8676,6 +8721,18 @@ export const scenarios = plan({
       cloud: na("Cloud always has an app domain."),
       local: na(
         "Local serves app UIs from its own origin; only self-host starts a scenario-owned server.",
+      ),
+    },
+  },
+  mcpOAuthPrivateHttpOrigin: {
+    file: "mcp-oauth-private-http-origin.spec.ts",
+    title:
+      "MCP OAuth at a private plain-HTTP origin names one issuer in discovery, the authorization response and the token",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud is served over HTTPS only."),
+      local: na(
+        "Local serves MCP on loopback, whose HTTP issuer was never rewritten; only self-host starts a scenario-owned server at another origin.",
       ),
     },
   },
@@ -10270,6 +10327,17 @@ export const scenarios = plan({
       local: scheduled,
       "self-host": na("Self-host uses hosted sign-in rather than local device pairing."),
       cloud: na("Cloud uses hosted sign-in rather than local device pairing."),
+    },
+  },
+  productPortReserved: {
+    // It tests the harness, so CI runs it only when the harness changes: see `harnessScenarios`
+    // in e2e/ci-selection.ts.
+    file: "product-port.spec.ts",
+    title: "A stopped product's port stays reserved, so it starts again on its own origin",
+    targets: {
+      "self-host": scheduled,
+      local: na("Local and self-host products take their ports from the same reservations."),
+      cloud: na("A local Cloud's ports are fixed for its whole run; it does not restart."),
     },
   },
   localStartupRecovery: {

@@ -65,7 +65,10 @@ starts its own product, so each report under `<run>/<target>/coverage/<scenario 
 belongs to one scenario. Chromium also records each scenario's page scripts on every
 target; `e2e:prepare` builds the dashboards with unreferenced source maps, which map
 that coverage to the dashboards' sources. Managed Cloud's Worker serves every scenario
-at once, so Cloud counts only browser coverage.
+at once, so Cloud counts only browser coverage. On local, every process a scenario starts
+itself, such as `executor pair`, `executor service start` and the server it starts, writes
+V8 coverage into the scenario's `processes/` directory too (see
+`support/process-coverage.ts`), so a scenario that drives the CLI counts the CLI's lines.
 
 The code each product runs inside workerd is profiled too: the host Worker, and the app
 framework in every app and data facet Worker. The runner starts workerd with V8's
@@ -87,11 +90,13 @@ node e2e/coverage.ts report .local/line-coverage.json
 
 `report` prints coverage by target and package, and the scenarios that cover no line
 another scenario does not. On a full run, CI's `line-coverage` job fails when a target
-covers fewer lines than `e2e/coverage-baseline.json` records, less a tolerance for
-paths that timing decides. Before deleting a scenario as redundant, check that it adds
-no line; a change that removes product code records a new baseline with
+covers fewer lines than `e2e/coverage-baseline.json` records, less that target's
+tolerance for paths that timing decides (twice the target's measured run-to-run spread).
+Before deleting a scenario as redundant, check that it adds no line; a change that
+removes product code records a new baseline with
 `node e2e/coverage.ts baseline e2e/coverage-baseline.json <collected files>` from the
-`line-coverage-*` artifacts of a full run.
+`line-coverage-*` artifacts of one full run. A rise past the tolerance does not fail the
+job; it adds a warning and a line to the run's summary with that command for the run.
 
 ## Dependency injection
 
@@ -142,6 +147,13 @@ processes. It is never packaged. The control API's `kill` ends the product proce
 group with SIGKILL, running none of its shutdown, to model a crash.
 Sleep timers and duration measurements stay real. This tests
 minute-based scheduling without adding a minute of sleep to each scenario.
+
+A product keeps its origin through every stop and start. Its port is reserved for the
+managed server's whole life (`reservedPort` in `support/ports.ts`): it lies outside the
+range the OS hands to sockets that bind port zero or connect out, which the harness
+checks, and a file per port in the machine's temporary directory gives no port to two
+owners across suites and worker processes. `freePort` draws from the same reservations.
+`product-port.spec.ts` checks that nothing else can be given a stopped product's port.
 
 ### Legacy storage
 
@@ -511,7 +523,8 @@ kept, the `dropped` ones and the `unfetched` ones, and its `state`: `collecting`
 end, then `complete` or `partial` when the deadline stopped the reads. `telemetry.json`
 is written a batch at a time, one compact entry per line: first the newest request, then
 the other traces always kept, then the rest newest first. A trace not read before the
-deadline has an entry with only an `error`. `unanswered-requests.json` lists every
+deadline has an entry with only an `error`. The deadline, like the budget, leaves out only
+the oldest: every trace kept is newer than every trace not read, except those always kept. `unanswered-requests.json` lists every
 request that never answered. `failure-evidence.spec.ts` checks this with cases that fail
 on purpose.
 

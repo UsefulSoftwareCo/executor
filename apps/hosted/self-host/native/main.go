@@ -1017,6 +1017,27 @@ func supervise(newCommand func() *exec.Cmd, minDelay, maxDelay time.Duration, af
 	}
 }
 
+// healthTimeout is how long `executor-host health` waits for /health. Every response, /health
+// included, waits while the product commits its storage: SQLite syncs each commit to disk on the
+// thread that runs all of the product's JavaScript. On a slow disk under 30 apps' schedules one
+// commit held /health for up to 16.5 seconds, and a 4-second wait failed 3.6% of checks. 29 seconds
+// covers those stalls and gives up just before the image's HEALTHCHECK, which allows 30, ends it.
+const healthTimeout = 29 * time.Second
+
+// checkHealth reports whether the product on port answers /health with 200 within timeout.
+func checkHealth(port string, timeout time.Duration) error {
+	client := http.Client{Timeout: timeout}
+	response, err := client.Get("http://127.0.0.1:" + port + "/health")
+	if err != nil {
+		return err
+	}
+	response.Body.Close()
+	if response.StatusCode != 200 {
+		return errors.New("Executor is not ready")
+	}
+	return nil
+}
+
 func main() {
 	mode := "serve"
 	if len(os.Args) > 1 {
@@ -1029,15 +1050,7 @@ func main() {
 	case "telemetry":
 		err = queryTelemetry(os.Args[2:], os.Stdout)
 	case "health":
-		client := http.Client{Timeout: 4 * time.Second}
-		var response *http.Response
-		response, err = client.Get("http://127.0.0.1:" + setting("PORT", "4400") + "/health")
-		if err == nil {
-			response.Body.Close()
-			if response.StatusCode != 200 {
-				err = errors.New("Executor is not ready")
-			}
-		}
+		err = checkHealth(setting("PORT", "4400"), healthTimeout)
 	default:
 		err = errors.New("expected serve, export, health, or telemetry")
 	}

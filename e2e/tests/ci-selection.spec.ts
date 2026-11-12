@@ -20,9 +20,11 @@ const jobs = [
   "cloud-domains",
   "cloud-workers",
   "cloud-locks",
+  "cloud-removal-recovery",
   "cloud-batch",
   "cloud-autumn",
   "cloud-isolate",
+  "cloud-connections",
   "cloud-v1-bound",
   "cloud-rate-limit",
   "cloud-rollback",
@@ -47,8 +49,8 @@ const block = (...lines: ReadonlyArray<string>) =>
 
 /**
  * A `gh` that answers the select job's reads from files beside it: the description (`body.<n>`),
- * the open pull requests based on the branch (`above.<n>`), the changed files and main's contents
- * (`main/<path with / as _>`).
+ * the open pull requests based on the branch (`above.<n>`), the changed files, the files changed
+ * between the run's comparison ends (`compared`) and main's contents (`main/<path with / as _>`).
  * The nth read of a kind returns its nth answer, and the last answer once they run out, so a case
  * can edit the description while the job waits.
  */
@@ -56,6 +58,7 @@ const stubGh = `#!/bin/sh
 dir=$(dirname "$0")
 case "$*" in
   "pr list "*) kind=above ;;
+  *"/compare/"*) cat "$dir/compared"; exit ;;
   *"/files "*) cat "$dir/files"; exit ;;
   *"/contents/"*) exec cat "$dir/main/$(echo "$*" | sed 's|.*/contents/||; s|[?].*||' | tr / _)" ;;
   *) kind=body ;;
@@ -71,11 +74,14 @@ cat "$dir/$kind.$read"
  * bodies, or of `stackedAbove` answers, is what successive reads return. The job waits `wait`
  * seconds, none by default, for an incomplete description. It runs the checkout's selector unless
  * `root` names a fixture tree. `main` answers the reads of main's contents by repository path;
- * without it the job has no default branch and compares nothing with main.
+ * without it the job has no default branch and compares nothing with main. `compared` lists the
+ * files changed since main or the previous main commit, none by default; `"unknown"` gives the job
+ * no comparison, as on a manual run.
  */
 const select = (input: {
   readonly body?: string | ReadonlyArray<string>;
   readonly changed?: ReadonlyArray<string>;
+  readonly compared?: ReadonlyArray<string> | "unknown";
   readonly main?: Readonly<Record<string, string>>;
   readonly stackedAbove?: string | ReadonlyArray<string>;
   readonly wait?: number;
@@ -103,6 +109,9 @@ const select = (input: {
     yield* answers("body", input.body ?? "");
     yield* answers("above", input.stackedAbove ?? "");
     yield* fs.writeFileString(path.join(bin, "files"), (input.changed ?? []).join("\n"));
+    const compared = input.compared ?? [];
+    if (compared !== "unknown")
+      yield* fs.writeFileString(path.join(bin, "compared"), compared.join("\n"));
     yield* fs.makeDirectory(path.join(bin, "main"));
     for (const [file, text] of Object.entries(input.main ?? {}))
       yield* fs.writeFileString(path.join(bin, "main", file.replaceAll("/", "_")), text);
@@ -114,6 +123,9 @@ const select = (input: {
           E2E_PULL_REQUEST: input.body === undefined ? "" : "1",
           E2E_HEAD_REF: "layer",
           E2E_DEFAULT_BRANCH: input.main === undefined ? "" : "main",
+          ...(compared === "unknown"
+            ? {}
+            : { E2E_COMPARE_BASE: "main", E2E_COMPARE_HEAD: "0123456789abcdef" }),
           E2E_DESCRIPTION_WAIT_SECONDS: String(input.wait ?? 0),
           E2E_DESCRIPTION_POLL_SECONDS: "0.05",
           GITHUB_REPOSITORY: "owner/repository",
@@ -328,8 +340,8 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         for (const run of [main, all]) {
           expect(run.exitCode, run.log).toBe(0);
           for (const [job, target, names] of [
-            ["local", "local", ["1/2", "2/2"]],
-            ["self-host", "self-host", ["1/3", "2/3", "3/3"]],
+            ["local", "local", ["1/3", "2/3", "3/3"]],
+            ["self-host", "self-host", ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]],
           ] as const) {
             const parts = shards(run.outputs, job);
             expect(parts.map(({ shard }) => shard)).toEqual(names);
@@ -354,26 +366,33 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
             );
           }
           const runners = cloudRunners(run.outputs);
+          // A full run's cloud-product passes what one local Cloud holds.
+          const productParts = Math.ceil(
+            Number(/\| cloud-product \| (\d+) \|/.exec(run.summary)![1]) / 30,
+          );
+          expect(productParts).toBeGreaterThan(1);
           expect(runners.map(({ name }) => name)).toEqual([
-            "cloud, cloud-isolate",
-            "cloud-workers, cloud-locks, cloud-batch, cloud-rollback",
-            "cloud-product",
-            "cloud-domains, cloud-autumn, cloud-v1-bound, cloud-rate-limit, cloud-oauth-proxy-preview",
+            "cloud",
+            "cloud-isolate, cloud-connections",
+            ...Array.from(
+              { length: productParts },
+              (_, index) => `cloud-product ${index + 1}/${productParts}`,
+            ),
+            "cloud-workers, cloud-locks, cloud-batch, cloud-autumn",
+            "cloud-domains, cloud-v1-bound, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview",
+            "cloud-removal-recovery",
           ]);
           // Each Cloud job's pattern is on exactly one runner and empty on the others. The runner
-          // runs it unchanged, except cloud-product past what one local Cloud holds: its local
-          // Clouds together run exactly the scenarios its pattern does, each once, and keep each
-          // spec file's scenarios on one.
+          // runs it unchanged, except cloud-product past what one local Cloud holds: each of its
+          // local Clouds has a runner of its own, and together they run exactly the scenarios its
+          // pattern does, each once, and keep each spec file's scenarios on one.
           for (const job of cloudJobs) {
-            const values = runners.map((runner) => runner[job]);
-            expect(
-              values.filter((value) => value === ""),
-              job,
-            ).toHaveLength(runners.length - 1);
-            const value = values.find((value) => value !== "");
-            if (value === run.outputs[job]) continue;
+            const on = runners.flatMap((runner) =>
+              runner[job] === undefined || runner[job] === "" ? [] : [runner[job]],
+            );
+            if (on.length === 1 && on[0] === run.outputs[job]) continue;
             expect(job).toBe("cloud-product");
-            const parts = (value ?? "").split("\n");
+            const parts = on;
             const full = new RegExp(run.outputs[job]!);
             const partOf = new Map<string, number>();
             let count = 0;
@@ -395,7 +414,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           }
         }
         expect(main.summary).toMatch(
-          /\| cloud-locks \| \d+ \| e2e-cloud \(cloud-workers, cloud-locks, cloud-batch, cloud-rollback\) \|/,
+          /\| cloud-locks \| \d+ \| e2e-cloud \(cloud-workers, cloud-locks, cloud-batch, cloud-autumn\) \|/,
         );
 
         // A selection runs each job on one runner, and starts only the Cloud runners it needs.
@@ -610,9 +629,13 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         // More than one local Cloud holds, so the case is not vacuous.
         expect(selected.length).toBeGreaterThan(30);
         const fileOf = new Map(Object.values(scenarios).map((s) => [s.title, s.file]));
-        const runner = cloudRunners(run.outputs).find((entry) => entry["cloud-product"] !== "");
-        const parts = runner!["cloud-product"]!.split("\n").map(titlesOf);
+        // Each local Cloud has a runner of its own.
+        const runners = cloudRunners(run.outputs).filter((entry) => entry["cloud-product"] !== "");
+        const parts = runners.map((entry) => titlesOf(entry["cloud-product"]!));
         expect(parts).toHaveLength(Math.ceil(selected.length / 30));
+        expect(runners.map(({ name }) => name)).toEqual(
+          parts.map((_, index) => `cloud-product ${index + 1}/${parts.length}`),
+        );
         // Every selected scenario runs once, and a spec file's scenarios share one local Cloud.
         expect(parts.flat().sort()).toEqual([...selected].sort());
         const partOfFile = new Map<string, number>();
@@ -624,7 +647,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           }
         });
         expect(run.summary).toContain(
-          `| cloud-product | ${selected.length} | e2e-cloud (cloud-product), ${parts.length} local Clouds split by spec file |`,
+          `| cloud-product | ${selected.length} | ${runners.map(({ name }) => `e2e-cloud (${name})`).join(", ")}: ${parts.length} local Clouds split by spec file |`,
         );
       }),
   );
@@ -906,6 +929,61 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
     ),
   );
 
+  it.effect(
+    "the harness scenarios run when a harness path changed, or when nothing says it did not",
+    () =>
+      Effect.gen(function* () {
+        const harness = scenarios.failureEvidence.title;
+        const runs = yield* Effect.all(
+          {
+            push: select({}),
+            pushChangingHarness: select({ compared: ["e2e/support/evidence.ts"] }),
+            manual: select({ compared: "unknown" }),
+            product: select({
+              body: block("groups.spec.ts"),
+              compared: ["apps/local/server/src/bin.ts", "e2e/tests/groups.spec.ts"],
+            }),
+            harnessWithNone: select({ body: block("none"), compared: ["e2e/setup.ts"] }),
+            lockfile: select({ body: block("none"), compared: ["bun.lock"] }),
+            tooLongToList: select({
+              body: block("none"),
+              compared: Array.from({ length: 300 }, (_, index) => `apps/file-${index}.ts`),
+            }),
+            named: select({ body: block("failure-evidence.spec.ts") }),
+          },
+          { concurrency: 4 },
+        );
+        const ran = Object.fromEntries(
+          Object.entries(runs).map(([name, run]) => {
+            expect(run.exitCode, `${name}: ${run.log}`).toBe(0);
+            const selected = run.outputs["self-host"] ?? "";
+            return [name, selected !== "" && new RegExp(selected).test(harness)];
+          }),
+        );
+        expect(ran).toEqual({
+          push: false,
+          pushChangingHarness: true,
+          manual: true,
+          product: false,
+          harnessWithNone: true,
+          lockfile: true,
+          tooLongToList: true,
+          named: true,
+        });
+        // A full run that runs them puts them in one of the job's parts.
+        expect(
+          shards(runs.pushChangingHarness.outputs, "self-host").some(({ pattern }) =>
+            new RegExp(pattern).test(harness),
+          ),
+        ).toBe(true);
+        expect(
+          shards(runs.push.outputs, "self-host").some(({ pattern }) =>
+            new RegExp(pattern).test(harness),
+          ),
+        ).toBe(false);
+      }),
+  );
+
   it.effect("none, all and skip keep their meaning", () =>
     Effect.gen(function* () {
       const [none, all, bareAll, skip, loneSkip, missing, twice] = yield* Effect.all(
@@ -1096,9 +1174,11 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-domains",
         "cloud-workers",
         "cloud-locks",
+        "cloud-removal-recovery",
         "cloud-batch",
         "cloud-autumn",
         "cloud-isolate",
+        "cloud-connections",
         "cloud-v1-bound",
         "cloud-rate-limit",
         "cloud-rollback",

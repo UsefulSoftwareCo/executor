@@ -16,6 +16,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { holdQuery } from "../support/query-transition.ts";
 
 const reference = /^call_[0-9a-hjkmnp-tv-z]{14}$/u;
 const source = `
@@ -177,6 +178,26 @@ const openFilter = (page: Page, filter: string) =>
         .getByRole("menuitem", { name: new RegExp(`^${filter}`, "u") })
         .click(),
     );
+/** The open Filter menu's rows, once it has finished opening: each row's text and where it is. */
+const filterRows = (page: Page) => {
+  const filters = page.getByRole("group", { name: "Filters" });
+  return filters
+    .evaluate((group) =>
+      Promise.all(
+        (group.closest("[role=menu]") ?? group)
+          .getAnimations({ subtree: true })
+          .map((animation) => animation.finished),
+      ),
+    )
+    .then(() =>
+      filters.getByRole("menuitem").evaluateAll((rows) =>
+        rows.map((row) => ({
+          text: row.textContent,
+          top: Math.round(row.getBoundingClientRect().top),
+        })),
+      ),
+    );
+};
 /** Where an element's text starts on screen, whatever box or touch target surrounds it. */
 const textTop = (element: Locator) =>
   element.evaluate((node) => {
@@ -215,6 +236,8 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
         );
 
         yield* browser.use("Open the dashboard", (page) => page.goto(`/org/${slug}`));
+        // The Filter menu's choices are read after the list; this holds that read.
+        const choices = yield* holdQuery(/\/tool-calls\/filters$/u, "continue");
         yield* browser.use("Open Activity from the sidebar", (page) =>
           page.getByRole("link", { name: "Activity", exact: true }).first().click(),
         );
@@ -248,6 +271,61 @@ layer(HostedLive, { excludeTestServices: true })("Tool call log page", (it) => {
           ),
         ).toBe(`/org/${slug}/activity`);
         yield* browser.checkpoint("Every call in the organization");
+
+        // Opened before its choices arrive, the menu lists every filter that may have some, and
+        // no row moves when they arrive: a row added above would take the pointer's place.
+        yield* choices.requested;
+        yield* browser.use("Open the filters while their choices load", (page) =>
+          page.getByRole("button", { name: "Filter", exact: true }).click(),
+        );
+        const loading = yield* browser.use("Read the filters while their choices load", filterRows);
+        expect(loading.map((row) => row.text?.split(/All |Last /u)[0])).toEqual([
+          "Member",
+          "App",
+          "Status",
+          "Agent",
+          "Connection",
+          "Time range",
+        ]);
+        yield* browser.use("A filter's choices say they are loading", (page) =>
+          page
+            .getByRole("group", { name: "Filters" })
+            .getByRole("menuitem", { name: /^App/u })
+            .hover()
+            .then(() =>
+              page
+                .getByRole("group", { name: "App", exact: true })
+                .getByRole("status")
+                .filter({ hasText: "Loading choices…" })
+                .waitFor(),
+            ),
+        );
+        const arrival = yield* browser.use("Watch for the filters' choices", (page) =>
+          Promise.resolve({
+            response: page.waitForResponse((response) =>
+              new URL(response.url()).pathname.endsWith("/tool-calls/filters"),
+            ),
+          }),
+        );
+        yield* choices.release;
+        yield* browser.use("The filters' choices arrive", (page) =>
+          arrival.response.then(() =>
+            page
+              .getByRole("group", { name: "App", exact: true })
+              .getByRole("status")
+              .waitFor({ state: "detached" }),
+          ),
+        );
+        expect(
+          yield* browser.use("Read the filters once their choices arrived", filterRows),
+        ).toEqual(loading);
+        yield* browser.use("Close the menu that opened while loading", (page) =>
+          page.keyboard
+            .press("Escape")
+            .then(() =>
+              page.getByRole("group", { name: "Filters" }).waitFor({ state: "detached" }),
+            ),
+        );
 
         // The Filter menu narrows by status, then by member; chips and the count follow. Resting
         // the pointer on a filter opens its choices beside the filters, which stay; resting it on

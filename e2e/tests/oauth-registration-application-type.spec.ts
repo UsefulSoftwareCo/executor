@@ -77,10 +77,11 @@ layer(TestLive, { excludeTestServices: true })("OAuth registration application t
 
         // Plain HTTP off the loopback host is refused whatever the client's type, and the refusal
         // names the callback that broke the rule.
-        const mixed = yield* refused([loopback, "http://client.example.test/callback"]);
+        const cleartext = "http://client.example.test/callback";
+        const mixed = yield* refused([loopback, cleartext]);
         expect(mixed.error).toBe("invalid_redirect_uri");
         expect(mixed.error_description).toBe(
-          "redirect_uris[1]: Redirect URI must use HTTPS (HTTP allowed only for loopback hosts)",
+          `native clients may use http only on the exact loopback hosts localhost, 127.0.0.1, or [::1]: ${cleartext}`,
         );
 
         // Without a loopback or private-use callback the client is a web client, which may not

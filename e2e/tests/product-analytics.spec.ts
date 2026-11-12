@@ -1,5 +1,5 @@
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Schema, Schedule } from "effect";
+import { Effect, Schema, Schedule } from "effect";
 import { scenarios } from "../test-plan.ts";
 import { App } from "../support/contracts.ts";
 import { Actors } from "../support/actors.ts";
@@ -7,6 +7,7 @@ import { Api, body } from "../support/api.ts";
 import { Evidence } from "../support/evidence.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withCase, withHostedCase } from "../support/case.ts";
+import { analyticsEvents } from "../support/collector-events.ts";
 import { Target } from "../support/platform.ts";
 import { captureBrowserAnalytics, renderBrowserReplay } from "../support/product-analytics.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -17,19 +18,12 @@ const Event = Schema.Struct({
   distinct_id: Schema.optional(Schema.String),
   properties: Schema.Record(Schema.String, Schema.Json),
 });
-const Batch = Schema.Struct({ batch: Schema.Array(Event) });
 const isSnapshot = (event: Schema.Json) =>
   event !== null &&
   typeof event === "object" &&
   !Array.isArray(event) &&
   "event" in event &&
   event.event === "$snapshot";
-const readEvents = (text: string) =>
-  text
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .flatMap((line) => Schema.decodeUnknownSync(Schema.fromJsonString(Batch))(line).batch);
 
 layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
   it.effect(scenarios.productAnalytics.title, (context) =>
@@ -39,16 +33,15 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
         const actors = yield* Actors,
           api = yield* Api,
           browser = yield* Browser,
-          target = yield* Target,
-          fs = yield* FileSystem.FileSystem;
+          target = yield* Target;
         expect(target.metadata.mode).toBe("managed");
         const actor = yield* body(
           Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
           yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
         );
-        const before = readEvents(
-          yield* fs.readFileString(`${target.directory}/analytics.ndjson`),
-        ).length;
+        // Cases share one collector, so only this case's organization is considered.
+        const organizationEvents = analyticsEvents({ organization: actors.organization.id });
+        const before = (yield* organizationEvents).length;
         const prefix = `/api/organizations/${actors.organization.id}`;
         // Reads are traced but never exported; dashboard refetches would otherwise dominate.
         expect((yield* api.request(actors.owner, "GET", `${prefix}/inventory`)).status).toBe(200);
@@ -56,13 +49,8 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
           message: "Synthetic feedback from the product analytics scenario",
         });
         expect(response.status).toBe(200);
-        // Cases share one collector, so only this case's organization is considered.
-        const events = yield* fs.readFileString(`${target.directory}/analytics.ndjson`).pipe(
-          Effect.map((text) =>
-            readEvents(text)
-              .slice(before)
-              .filter((event) => event.properties.organization_id === actors.organization.id),
-          ),
+        const events = yield* organizationEvents.pipe(
+          Effect.map((events) => events.slice(before)),
           Effect.repeat({
             schedule: Schedule.spaced("100 millis"),
             until: (events) =>

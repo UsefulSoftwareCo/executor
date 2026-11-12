@@ -63,17 +63,31 @@ export const testStage = Effect.gen(function* () {
   });
 });
 
+/**
+ * A configured public origin. The OAuth issuer takes its scheme as configured, so a deployed stage
+ * must serve HTTPS; Better Auth no longer rewrites an HTTP issuer to HTTPS for it. Cloud development
+ * runs on a loopback origin, as `cloudEmulators` and the session cookie name tell it apart, and may
+ * use plain HTTP there.
+ */
 const Origin = Schema.String.check(
   Schema.makeFilter(
     (value) => {
       try {
         const url = new URL(value);
-        return (url.protocol === "http:" || url.protocol === "https:") && url.origin === value;
+        return (
+          (url.protocol === "https:" ||
+            (url.protocol === "http:" && isLoopbackHostname(url.hostname))) &&
+          url.origin === value
+        );
       } catch {
         return false;
       }
     },
-    { message: "BETTER_AUTH_URL must be an HTTP(S) origin without a trailing slash" },
+    {
+      message:
+        "BETTER_AUTH_URL must be an HTTPS origin without a trailing slash. Only Cloud " +
+        "development on a loopback host may use plain HTTP.",
+    },
   ),
 );
 

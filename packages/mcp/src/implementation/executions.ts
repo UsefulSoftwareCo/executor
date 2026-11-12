@@ -695,6 +695,11 @@ export const makeExecutions = (
     return {
       /** Programs this store holds, running or waiting for an answer. */
       live: () => runs.size,
+      /** Whether a program this store holds, running or waiting for an answer, has a matching caller. */
+      holds: (caller: (id: string) => boolean) => {
+        for (const run of runs) if (caller(run.caller)) return true;
+        return false;
+      },
       /** Why the caller has no such request to answer. */
       unavailable: (caller: string, id: InteractionId) =>
         Effect.sync(() => unavailable(caller, id)),

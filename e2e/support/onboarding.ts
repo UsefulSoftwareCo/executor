@@ -22,6 +22,14 @@ const Organizations = Schema.Array(
 /** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
 const ListedAgents = Schema.Array(Schema.Struct({ name: Schema.NullOr(Schema.String) }));
+/**
+ * The setup status a member sees. Each status row also lays out invisible copies of the states it
+ * can change to, and the server streams the row in place of a "Preparing" fallback that holds
+ * those copies: until React reveals the streamed row, the document has the same title twice, once
+ * invisible. Only the shown one counts.
+ */
+const shownStatus = (page: Page, title: string) =>
+  page.getByText(title, { exact: true }).filter({ visible: true });
 const AuthFailure = Schema.Struct({
   code: Schema.String.check(Schema.isPattern(/^[A-Z][A-Z_]{0,79}$/u)),
 });
@@ -296,7 +304,7 @@ const make = Effect.gen(function* () {
         yield* shifts.phase("The baseline read returns");
         yield* baseline.release;
         yield* browser.use("Setup waits for Claude", (page) =>
-          page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+          shownStatus(page, "Waiting for Claude to connect…").waitFor(),
         );
         // Waiting for the baseline is not a step of its own: Back returns to the assistants.
         expect(yield* setupSearch).toBe("?assistant=claude");
@@ -449,7 +457,7 @@ const make = Effect.gen(function* () {
       ),
     ).toBe(endpoint);
     yield* browser.use("The assistants wait for any client to connect", (page) =>
-      page.getByText("Waiting for your assistant to connect…", { exact: true }).waitFor(),
+      shownStatus(page, "Waiting for your assistant to connect…").waitFor(),
     );
     yield* offersSkip("on the assistants before a connection");
     const skipOnAssistants = yield* forwardBox("Skip for now on the assistants", skipStep);
@@ -486,7 +494,7 @@ const make = Effect.gen(function* () {
       page.getByRole("button", { name: "Claude", exact: true }).click(),
     );
     yield* browser.use("Setup waits for the new choice", (page) =>
-      page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+      shownStatus(page, "Waiting for Claude to connect…").waitFor(),
     );
     yield* offersSkip("on Claude's guide before it connects");
     const skipOnGuide = yield* forwardBox("Skip for now on Claude's guide", skipStep);
@@ -499,7 +507,7 @@ const make = Effect.gen(function* () {
     );
     yield* authorizeAssistant("Onboarding assistant");
     yield* browser.use("A failed check is reported", (page) =>
-      page.getByText("Couldn’t check the connection", { exact: true }).waitFor(),
+      shownStatus(page, "Couldn’t check the connection").waitFor(),
     );
     expect(
       yield* browser.use("A failed check never calls the assistant connected", (page) =>
@@ -723,7 +731,7 @@ const make = Effect.gen(function* () {
         page.goto(`${setup}?assistant=claude&step=prompt`),
       );
       yield* browser.use("A link without an agent shows Claude's guide", (page) =>
-        page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+        shownStatus(page, "Waiting for Claude to connect…").waitFor(),
       );
       expect(
         yield* browser.use("A link without an agent shows no prompt", (page) =>
@@ -764,7 +772,7 @@ const make = Effect.gen(function* () {
         page.goto(`${setup}?assistant=claude`),
       );
       yield* browser.use("The guide waits for Claude", (page) =>
-        page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+        shownStatus(page, "Waiting for Claude to connect…").waitFor(),
       );
       yield* offersSkip("on a guide opened again");
       yield* browser.use("Skip agent setup from the guide", (page) => skipStep(page).click());
@@ -870,7 +878,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
       page.getByRole("button", { name: "Claude", exact: true }).click(),
     );
     yield* browser.use("Setup waits for Claude", (page) =>
-      page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+      shownStatus(page, "Waiting for Claude to connect…").waitFor(),
     );
     yield* offersSkip("while Claude's guide waits");
   });
@@ -1140,7 +1148,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
               page.getByRole("button", { name: "Claude", exact: true }).click(),
             );
             yield* browser.use("Setup waits for Claude", (page) =>
-              page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+              shownStatus(page, "Waiting for Claude to connect…").waitFor(),
             );
             yield* waitsFor(next, assistantHint, "on Claude's guide");
             yield* browser.use("Go back to a different assistant", (page) =>
@@ -1154,13 +1162,13 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
               page.getByRole("button", { name: "Claude", exact: true }).click(),
             );
             yield* browser.use("Setup waits for Claude again", (page) =>
-              page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+              shownStatus(page, "Waiting for Claude to connect…").waitFor(),
             );
             yield* atBothSizes(`Required ${label}: Claude's guide waits`, "agent-setup-title");
             // The guide keeps its baseline through a reload, in the entry's history state.
             yield* browser.use("Reload Claude's guide", (page) => page.reload());
             yield* browser.use("Claude's guide waits after a reload", (page) =>
-              page.getByText("Waiting for Claude to connect…", { exact: true }).waitFor(),
+              shownStatus(page, "Waiting for Claude to connect…").waitFor(),
             );
             const shifts = yield* observeLayoutShifts;
             yield* shifts.phase("Connect Claude");

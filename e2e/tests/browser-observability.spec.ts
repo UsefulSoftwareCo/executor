@@ -4,6 +4,7 @@ import { Effect, Schedule, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
 import {
   awaitSentry,
+  awaitSentryWholeEnvironment,
   injectDashboardResponse,
   incompleteDashboardDocument,
   docsCopyFailure,
@@ -91,6 +92,7 @@ layer(HostedLive, { excludeTestServices: true })("Browser observability", (it) =
           );
           pageIds.push(failure.page_id);
           const reported = yield* awaitSentry(
+            { traces: [failure.trace_id] },
             (event) => event.contexts?.trace?.trace_id === failure.trace_id,
           );
           expect(reported).toHaveLength(1);
@@ -115,6 +117,7 @@ layer(HostedLive, { excludeTestServices: true })("Browser observability", (it) =
           page.goto(`/org/${actors.organization.slug}/apps`),
         );
         const moduleFailure = yield* awaitSentry(
+          { organizationSlug: actors.organization.slug },
           (event) =>
             event.exception?.values.some((value) =>
               value.value.includes("Failed to fetch dynamically imported module"),
@@ -127,6 +130,7 @@ layer(HostedLive, { excludeTestServices: true })("Browser observability", (it) =
         );
         yield* incompleteDashboardDocument(actors.organization.slug);
         const boot = yield* awaitSentry(
+          { organizationSlug: actors.organization.slug },
           (event) =>
             event.exception?.values.some(
               (value) => value.value === "Dashboard document is incomplete",
@@ -139,7 +143,8 @@ layer(HostedLive, { excludeTestServices: true })("Browser observability", (it) =
         );
         // A real failure raised by the documentation's own code, captured automatically.
         yield* failDocsCopy;
-        const docs = yield* awaitSentry(docsCopyFailure("/docs/"));
+        // The docs are no organization's page: any scenario that breaks the docs copy reports this.
+        const docs = yield* awaitSentryWholeEnvironment(docsCopyFailure("/docs/"));
         expect(docs[0] === undefined ? [] : throwers(docs[0])).toEqual([
           expect.stringMatching(docsPageActionsChunk),
         ]);

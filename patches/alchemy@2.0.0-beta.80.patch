@@ -2263,3 +2263,27 @@ index 0123bbf211dfab8c3668f36efb449c5a0dc76e85..5a58f337ab567f6dc148f4eaf82bae96
          const readResult = yield* provider
            .read({
              id,
+diff --git a/lib/GitHub/Ruleset.d.ts b/lib/GitHub/Ruleset.d.ts
+--- a/lib/GitHub/Ruleset.d.ts
++++ b/lib/GitHub/Ruleset.d.ts
+@@ -48,7 +48,7 @@
+         /**
+          * The type of actor that can bypass the ruleset.
+          */
+-        actorType: "RepositoryRole" | "Team" | "Integration" | "OrganizationAdmin";
++        actorType: "RepositoryRole" | "Team" | "Integration" | "OrganizationAdmin" | "DeployKey";
+         /**
+          * The ID of the actor (role ID, team ID, or integration ID).
+          * RepositoryRole IDs are 2 for write, 4 for maintain, and 5 for admin.
+diff --git a/src/GitHub/Ruleset.ts b/src/GitHub/Ruleset.ts
+--- a/src/GitHub/Ruleset.ts
++++ b/src/GitHub/Ruleset.ts
+@@ -59,7 +59,7 @@
+     /**
+      * The type of actor that can bypass the ruleset.
+      */
+-    actorType: "RepositoryRole" | "Team" | "Integration" | "OrganizationAdmin";
++    actorType: "RepositoryRole" | "Team" | "Integration" | "OrganizationAdmin" | "DeployKey";
+ 
+     /**
+      * The ID of the actor (role ID, team ID, or integration ID).

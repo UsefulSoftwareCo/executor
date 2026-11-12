@@ -9,6 +9,7 @@ import { EventCleanup } from "./event-cleanup.ts";
 import { WebhookSourceHost } from "@executor-js/sdk/core";
 import {
   cloudScheduleConcurrency,
+  cloudWebhookSourceConcurrency,
   heldAlarmMilliseconds,
   scheduleRecoveryMilliseconds,
 } from "../contracts/schedules.ts";
@@ -49,6 +50,18 @@ const handoverKey = "handover";
  * is set, this object's alarm is at or before it.
  */
 const restoreKey = "restore";
+
+/**
+ * What a wake did to the coordinator's alarm, on the coordinator's clock: when it ran, the alarm
+ * it found (`null` for none) and the alarm it left. The caller records it on its `schedule.wake`
+ * span, so whether a wake postponed a pending alarm can be checked without timing the runtime's
+ * alarm delivery.
+ */
+interface WakeAlarm {
+  readonly at: number;
+  readonly pending: number | null;
+  readonly armed: number;
+}
 
 /** Who asked for a wake: a change in a placed request, or the `schedule-wake` job. */
 type WakeSource = "change" | "job";
@@ -220,8 +233,10 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
             );
             // Alarm callbacks own this work through waitUntil; new wakes can discover other due apps meanwhile.
             yield* dispatch.run(
-              // Webhook source maintenance keeps the Node hosts' width; only scheduled runs widen.
-              executor[WebhookSourceHost].tick(defaultScheduleWorkerOptions.concurrency),
+              executor[WebhookSourceHost].tick({
+                limit: 2 * cloudWebhookSourceConcurrency,
+                concurrency: cloudWebhookSourceConcurrency,
+              }),
               executor.scheduler.tick({
                 runner: "cloud",
                 maxCandidates: cloudScheduleConcurrency,
@@ -273,7 +288,7 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
           if (yield* lifetime.isBackgroundStopped) return yield* stop;
           // `executor` is armed before this object is. A failed attempt arms this object for its retry.
           yield* restore;
-          yield* alarms.withPermits(1)(
+          return yield* alarms.withPermits(1)(
             Effect.gen(function* () {
               // Webhook source changes wake the coordinator; the request outlives a pass already running.
               yield* dispatch.request;
@@ -283,9 +298,15 @@ const makePlacedScheduleCoordinator = Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
               const due = now + defaultScheduleWorkerOptions.pollMilliseconds;
               const pending = yield* state.storage.getAlarm();
+              const armed =
+                pending === null || pending > due
+                  ? due
+                  : alarmEvents === 0 && pending < now - heldAlarmMilliseconds
+                    ? now
+                    : pending;
               if (pending === null || pending > due) yield* state.storage.setAlarm(due);
-              else if (alarmEvents === 0 && pending < now - heldAlarmMilliseconds)
-                yield* rearm(now, pending);
+              else if (armed !== pending) yield* rearm(now, pending);
+              return { at: now, pending, armed } satisfies WakeAlarm;
             }),
           );
         }),
@@ -440,6 +461,18 @@ export const cloudSchedules = Effect.gen(function* () {
   // The namespace binding only exists at runtime, so resolve the stub when the wake runs.
   const wake = (source: WakeSource) =>
     Effect.scoped(report(Effect.suspend(() => coordinator.getByName(coordinatorName).wake()))).pipe(
+      // A stopped background deletes the alarm and reports nothing.
+      Effect.flatMap((alarm) =>
+        alarm === undefined
+          ? Effect.void
+          : Effect.annotateCurrentSpan({
+              "executor.schedule.wake.at": alarm.at,
+              "executor.schedule.wake.armed": alarm.armed,
+              ...(alarm.pending === null
+                ? {}
+                : { "executor.schedule.wake.pending": alarm.pending }),
+            }),
+      ),
       Effect.withSpan("schedule.wake", { attributes: { "executor.schedule.wake": source } }),
       Effect.provide(RuntimeContext.phantom),
     );

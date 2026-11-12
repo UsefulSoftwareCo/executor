@@ -654,3 +654,51 @@ func TestAnnounceReadyStopsWithTheHost(t *testing.T) {
 	default:
 	}
 }
+
+// healthServer answers /health on 127.0.0.1 through answer and returns its port.
+func healthServer(t *testing.T, answer http.HandlerFunc) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/health" {
+			http.NotFound(writer, request)
+			return
+		}
+		answer(writer, request)
+	}))
+	t.Cleanup(server.Close)
+	return strings.TrimPrefix(server.URL, "http://127.0.0.1:")
+}
+
+func TestHealthWaitsOutAStorageCommitStall(t *testing.T) {
+	// A slow disk held /health behind one storage commit for several seconds. The previous
+	// 4-second wait reported such a healthy instance as failing.
+	port := healthServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+		time.Sleep(6 * time.Second)
+		writer.WriteHeader(http.StatusOK)
+	})
+	if err := checkHealth(port, healthTimeout); err != nil {
+		t.Fatalf("checkHealth after a 6-second stall = %v, want healthy", err)
+	}
+}
+
+func TestHealthFailsWhenTheProductDoesNotAnswer(t *testing.T) {
+	stuck := make(chan struct{})
+	port := healthServer(t, func(http.ResponseWriter, *http.Request) { <-stuck })
+	defer close(stuck)
+	started := time.Now()
+	if err := checkHealth(port, 200*time.Millisecond); err == nil {
+		t.Fatal("checkHealth of a product that never answers = nil, want an error")
+	}
+	if waited := time.Since(started); waited > 5*time.Second {
+		t.Fatalf("checkHealth waited %v past its 200ms timeout", waited)
+	}
+}
+
+func TestHealthFailsWhileTheProductIsStarting(t *testing.T) {
+	port := healthServer(t, func(writer http.ResponseWriter, _ *http.Request) {
+		http.Error(writer, "Executor is starting", http.StatusServiceUnavailable)
+	})
+	if err := checkHealth(port, healthTimeout); err == nil || err.Error() != "Executor is not ready" {
+		t.Fatalf("checkHealth while starting = %v, want Executor is not ready", err)
+	}
+}

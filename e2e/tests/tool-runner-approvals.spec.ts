@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
+import { replaceResponses } from "../support/browser-responses.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { McpClient } from "../support/mcp-client.ts";
@@ -400,17 +401,21 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
         // run it is and what to do instead of a retry. The review's refusal is the real server's.
         const browser = yield* Browser;
         yield* browser.login(actors.member);
+        // The route stays registered after its one answer. Removing a page's last route, as an
+        // expiring `{ times: 1 }` route does, turns off Chromium's request interception, and
+        // Playwright never resumes a request Chromium paused just before that took effect
+        // (microsoft/playwright#43619). Here that request is the runner's review read.
+        let handed = 0;
         yield* browser.use("Hand the member's runner the owner's request", (page) =>
-          page.route(
-            `**/apps/${app.id}/tools/run`,
-            (route) =>
-              route.fulfill({
-                status: 200,
-                contentType: "application/json",
-                body: JSON.stringify(owners),
-              }),
-            { times: 1 },
-          ),
+          page.route(`**/apps/${app.id}/tools/run`, (route) => {
+            if (handed > 0) return route.fallback();
+            handed++;
+            return route.fulfill({
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify(owners),
+            });
+          }),
         );
         yield* browser.use("The member opens the tool", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=tools&tool=publish`),
@@ -441,6 +446,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
           0,
         ]);
         expect(notice[2]).not.toContain(secret);
+        expect(handed, "the runner's one run got the owner's request").toBe(1);
         yield* browser.checkpoint("Another person's run");
 
         // The member answers their own run; the owner cannot read it.
@@ -483,20 +489,22 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
         // The page then receives the next reply queued here in place of this server's.
         const replies: Array<(requestId: string) => unknown> = [];
         const sent: Array<unknown> = [];
-        yield* browser.use("Replace the review's replies", (page) =>
-          page.route(`**/apps/${app.id}/tools/approvals/*`, (route) => {
-            if (route.request().method() !== "POST") return route.fallback();
-            const reply = replies.shift();
-            if (reply === undefined) return route.fallback();
-            const requestId = new URL(route.request().url()).pathname.split("/").at(-1) ?? "";
-            return route.fetch().then((response) =>
-              response.json().then((body) => {
-                sent.push(body);
-                return route.fulfill({ response, json: reply(requestId) });
-              }),
-            );
-          }),
-        );
+        const approvals = `/apps/${app.id}/tools/approvals/`;
+        yield* replaceResponses(`*${approvals}*`, (response) => {
+          const url = new URL(response.url);
+          if (response.method !== "POST" || !url.pathname.includes(approvals)) return "unchanged";
+          const reply = replies.shift();
+          if (reply === undefined) return "unchanged";
+          const requestId = url.pathname.split("/").at(-1) ?? "";
+          return response.body().then((text) => {
+            sent.push(JSON.parse(text));
+            return {
+              status: response.status,
+              body: JSON.stringify(reply(requestId)),
+              contentType: "application/json",
+            };
+          });
+        });
         yield* browser.use("Open the tool that fails after approval", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=tools&tool=fails`),
         );

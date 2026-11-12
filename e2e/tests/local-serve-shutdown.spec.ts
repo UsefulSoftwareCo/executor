@@ -141,9 +141,10 @@ layer(TestLive, { excludeTestServices: true })("Local serve shutdown", (it) => {
           expect(afterStderr.millisecondsAfterSignal).toBeLessThan(5_000);
           if (afterStdout !== undefined) {
             expect(afterStdout.answeredAfterClose).toBe(true);
-            // The private server's log stays in its own process. Its port refused connections
-            // once it stopped, and its shutdown reached the shared diagnostics.
-            expect(afterStdout.refusedAfterExit).toBe(true);
+            // The private server's log stays in its own process. Its process, and every other the
+            // command started, exited after the command, and its shutdown reached the diagnostics.
+            expect(afterStdout.startedProcesses).toBeGreaterThan(0);
+            expect(afterStdout.stoppedAfterExit).toBe(true);
             expect(afterStdout.logged).toContain("Local server stopped");
             expect(afterStdout.signal).toBeNull();
             expect(afterStdout.code).toBe(130);

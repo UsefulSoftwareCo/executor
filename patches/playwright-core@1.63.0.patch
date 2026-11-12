@@ -1,0 +1,71 @@
+diff --git a/lib/coreBundle.js b/lib/coreBundle.js
+index 8ed8bb5de1b12c7c050191123b22a119298826bb..12eebf39bdf0f00055f9e4eca03a5066d5405582 100644
+--- a/lib/coreBundle.js
++++ b/lib/coreBundle.js
+@@ -35996,6 +35996,7 @@ var init_crNetworkManager = __esm({
+         this._attemptedAuthentications = /* @__PURE__ */ new Set();
+         this._userRequestInterceptionEnabled = false;
+         this._protocolRequestInterceptionEnabled = false;
++        this._interceptionCacheDisabled = false;
+         this._offline = false;
+         this._extraHTTPHeaders = [];
+         this._requestIdToRequestPausedEvent = /* @__PURE__ */ new Map();
+@@ -36101,23 +36102,24 @@ var init_crNetworkManager = __esm({
+       }
+       async _updateProtocolRequestInterception() {
+         const enabled = this._userRequestInterceptionEnabled || !!this._credentials?.length;
+-        if (enabled === this._protocolRequestInterceptionEnabled)
++        if (enabled === this._interceptionCacheDisabled)
+           return;
+-        this._protocolRequestInterceptionEnabled = enabled;
+-        await this._forEachSession((info) => this._updateProtocolRequestInterceptionForSession(info));
+-      }
+-      async _updateProtocolRequestInterceptionForSession(info, initial) {
+-        const enabled = this._protocolRequestInterceptionEnabled;
+-        if (initial && !enabled)
++        this._interceptionCacheDisabled = enabled;
++        // Once enabled, the Fetch domain stays enabled and requests no route handles are continued.
++        // Fetch.disable drops a request Chromium has paused but not yet reported, and nothing resumes
++        // it: https://github.com/microsoft/playwright/issues/43619. Only the cache follows the routes.
++        const enableFetch = enabled && !this._protocolRequestInterceptionEnabled;
++        if (enableFetch)
++          this._protocolRequestInterceptionEnabled = true;
++        await this._forEachSession((info) => this._updateProtocolRequestInterceptionForSession(info, false, enableFetch));
++      }
++      async _updateProtocolRequestInterceptionForSession(info, initial, enableFetch = initial) {
++        if (initial && !this._protocolRequestInterceptionEnabled)
+           return;
+-        const cachePromise = info.session.send("Network.setCacheDisabled", { cacheDisabled: enabled });
++        const cachePromise = info.session.send("Network.setCacheDisabled", { cacheDisabled: this._interceptionCacheDisabled });
+         let fetchPromise = Promise.resolve(void 0);
+-        if (!info.workerFrame) {
+-          if (enabled)
+-            fetchPromise = info.session.send("Fetch.enable", { handleAuthRequests: true, patterns: [{ urlPattern: "*", requestStage: "Request" }] });
+-          else
+-            fetchPromise = info.session.send("Fetch.disable");
+-        }
++        if (!info.workerFrame && enableFetch)
++          fetchPromise = info.session.send("Fetch.enable", { handleAuthRequests: true, patterns: [{ urlPattern: "*", requestStage: "Request" }] });
+         await Promise.all([cachePromise, fetchPromise]);
+       }
+       async setExtraHTTPHeaders(extraHTTPHeaders) {
+@@ -36138,7 +36140,7 @@ var init_crNetworkManager = __esm({
+       async clearCache() {
+         await this._forEachSession(async (info) => {
+           await info.session.send("Network.setCacheDisabled", { cacheDisabled: true });
+-          if (!this._protocolRequestInterceptionEnabled)
++          if (!this._interceptionCacheDisabled)
+             await info.session.send("Network.setCacheDisabled", { cacheDisabled: false });
+           if (!info.workerFrame)
+             await info.session.send("Network.clearBrowserCache");
+@@ -36201,6 +36203,10 @@ var init_crNetworkManager = __esm({
+             });
+             return;
+           }
++          if (existingRequest && !existingRequest._interceptionId && !event.redirectedRequestId) {
++            sessionInfo.session._sendMayFail("Fetch.continueRequest", { requestId: event.requestId });
++            return;
++          }
+           this._requestIdToRequestPausedEvent.set(requestId, { sessionInfo, event });
+         }
+       }

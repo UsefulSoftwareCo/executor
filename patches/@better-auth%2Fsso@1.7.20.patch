@@ -1,9 +1,9 @@
 diff --git a/dist/index.mjs b/dist/index.mjs
-index c5ede32..f6052f6 100644
+index e45d1b9..d1f9fe2 100644
 --- a/dist/index.mjs
 +++ b/dist/index.mjs
 @@ -1,8 +1,6 @@
- import { t as PACKAGE_VERSION } from "./version-CVbZQOHF.mjs";
+ import { t as PACKAGE_VERSION } from "./version-COmqWYke.mjs";
 -import { APIError, addOAuthServerContext, createAuthEndpoint, createAuthMiddleware, getSessionFromCtx, sessionMiddleware } from "better-auth/api";
 -import { XMLParser, XMLValidator } from "fast-xml-parser";
 +import { APIError, addOAuthServerContext, createAuthEndpoint as createNativeAuthEndpoint, createAuthMiddleware as createNativeAuthMiddleware, getSessionFromCtx, sessionMiddleware } from "better-auth/api";
@@ -110,7 +110,7 @@ index c5ede32..f6052f6 100644
  //#endregion
  //#region src/saml/assertions.ts
  const SAML_ASSERTION_NAMESPACE = "urn:oasis:names:tc:SAML:2.0:assertion";
-@@ -4462,10 +4486,6 @@ const initiateSLO = (options) => {
+@@ -4457,10 +4481,6 @@ const initiateSLO = (options) => {
  };
  //#endregion
  //#region src/index.ts

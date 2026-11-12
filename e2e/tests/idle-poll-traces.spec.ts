@@ -3,13 +3,12 @@
  * poll that fails, with the statement that failed.
  */
 import { expect, layer } from "@effect/vitest";
-import { Clock, Effect, FileSystem, Layer, Schedule, Schema } from "effect";
-import { HttpClient } from "effect/http";
+import { Clock, Effect, FileSystem, Layer, Schedule } from "effect";
 import { Api, SessionClients } from "../support/api.ts";
 import { TestLive, withCase } from "../support/case.ts";
-import { SpanQuery } from "../support/contracts.ts";
+import type { SpanQuery } from "../support/contracts.ts";
 import { startControlledSelfHost, startFreshSelfHost } from "../support/managed-server.ts";
-import { serveOtlpCollector } from "../support/otlp-collector.ts";
+import { ownCollectorSpans, serveOtlpCollector } from "../support/otlp-collector.ts";
 import { Target } from "../support/platform.ts";
 import { Evidence } from "../support/evidence.ts";
 import { legacyStorage } from "../support/legacy-storage.ts";
@@ -31,28 +30,9 @@ const polled = [
 /** Spans only the event delivery pass starts. */
 const passes = new Set(["events.dispatch", "sdk.events.deliver"]);
 
-/** Spans in `collector` that started in [from, to), newest first; Motel answers at most 500 a search. */
+/** Spans in this scenario's own `collector` that started in [from, to), newest first. */
 const exported = (collector: string, from: number, to: number, operation?: string) =>
-  Effect.gen(function* () {
-    const http = yield* HttpClient.HttpClient;
-    return yield* Effect.scoped(
-      Effect.gen(function* () {
-        const url = new URL("/api/spans/search", collector);
-        if (operation !== undefined) url.searchParams.set("operation", operation);
-        url.searchParams.set("lookback", "1h");
-        url.searchParams.set("limit", "10000");
-        const response = yield* http.get(url.href);
-        return yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(SpanQuery)));
-      }),
-    ).pipe(
-      Effect.map(({ data }) =>
-        data.filter(({ span }) => {
-          const at = Date.parse(span.startTime);
-          return at >= from && at < to;
-        }),
-      ),
-    );
-  });
+  ownCollectorSpans(collector, { from, to, operation });
 
 /** What a root records beside its failure: the statement that failed. */
 const detail = (tags: Readonly<Record<string, string>>) =>

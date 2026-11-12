@@ -13,14 +13,14 @@
     "./node-database": "./src/implementation/node-database.ts"
   },
   "dependencies": {
-    "@better-auth/core": "1.7.16",
-    "@better-auth/oauth-provider": "1.7.16",
+    "@better-auth/core": "1.7.20",
+    "@better-auth/oauth-provider": "1.7.20",
     "@effect/sql-pglite": "4.0.1",
     "@executor-js/authorization": "workspace:*",
     "@executor-js/mcp": "workspace:*",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/utils": "workspace:*",
-    "better-auth": "1.7.16",
+    "better-auth": "1.7.20",
     "effect": "4.0.1",
     "kysely": "0.29.6"
   }

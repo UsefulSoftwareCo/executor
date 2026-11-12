@@ -27,7 +27,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@better-auth/oauth-provider": "1.7.16",
+    "@better-auth/oauth-provider": "1.7.20",
     "@effect/atom-react": "4.0.1",
     "@executor-js/catalog": "workspace:*",
     "@executor-js/dashboard-start": "workspace:*",
@@ -44,7 +44,7 @@
     "@tanstack/react-form": "1.33.5",
     "@tanstack/react-router": "1.170.41",
     "@tanstack/react-start": "1.168.60",
-    "better-auth": "1.7.16",
+    "better-auth": "1.7.20",
     "effect": "4.0.1",
     "react": "19.3.0",
     "react-dom": "19.3.0"

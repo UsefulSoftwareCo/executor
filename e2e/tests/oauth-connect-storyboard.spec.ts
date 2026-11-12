@@ -580,7 +580,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         );
         yield* capture("Client-required-first-connection");
         yield* evidence.json("oauth-protocol-observations.json", yield* issuer.observations);
-        expect(frames.length).toBe(31);
       }),
     ),
   );

@@ -306,6 +306,7 @@ export const runSuite = ({
                             fixtures: attachment.fixtures,
                           }),
                           appUiBaseUrl: attachment.appUiBaseUrl,
+                          fixtures: attachment.fixtures,
                           workers: targetWorkers,
                           scenarios: plan
                             .filter(

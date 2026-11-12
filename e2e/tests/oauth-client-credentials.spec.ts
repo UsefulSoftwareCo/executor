@@ -11,6 +11,7 @@ import { linkedChoice } from "../support/account-choices.ts";
 import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
 import { Browser } from "../support/browser.ts";
+import { replaceResponses } from "../support/browser-responses.ts";
 import { managementApp } from "../support/management-app.ts";
 import {
   accountNameField,
@@ -104,24 +105,22 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           page.setViewportSize({ width: 1440, height: 1000 }),
         );
         let dropped = false;
-        yield* browser.use("Lose the first response after committing the account", (page) =>
-          page.route(/\/connections\/[^/]+\/oauth\/start$/, (route) => {
-            if (dropped) return route.fallback();
-            dropped = true;
-            const request: unknown = route.request().postDataJSON();
-            const submitted = Schema.decodeUnknownSync(
-              Schema.Struct({ client: Schema.Record(Schema.String, Schema.Unknown) }),
-            )(request);
-            expect(Object.keys(submitted.client).sort()).toEqual(["clientId", "clientSecret"]);
-            return route
-              .fetch()
-              .then((response) => response.json())
-              .then((value: unknown) => {
-                saved = value;
-                return route.abort("failed");
-              });
-          }),
-        );
+        yield* replaceResponses("*/connections/*/oauth/start", (response) => {
+          if (
+            dropped ||
+            !/\/connections\/[^/]+\/oauth\/start$/.test(new URL(response.url).pathname)
+          )
+            return "unchanged";
+          dropped = true;
+          const submitted = Schema.decodeUnknownSync(
+            Schema.Struct({ client: Schema.Record(Schema.String, Schema.Unknown) }),
+          )(JSON.parse(response.requestBody));
+          expect(Object.keys(submitted.client).sort()).toEqual(["clientId", "clientSecret"]);
+          return response.body().then((text) => {
+            saved = JSON.parse(text);
+            return "failed" as const;
+          });
+        });
         yield* browser.use("Connect using the declared grant", (page) =>
           page
             .getByRole("dialog")

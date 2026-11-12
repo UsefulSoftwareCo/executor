@@ -141,10 +141,18 @@ const registrationSpan = (traceId: string) =>
     Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
   );
 
-/** Server spans of one operation on one path that name this client family, newest last. */
+/**
+ * Server spans of one operation on one path that name this client family, newest last, from the
+ * whole environment: authorization and consent run in the browser's navigations, whose traces the
+ * scenario does not record, and their spans name no user. Another scenario's sign-in with this
+ * family since `since` is found too.
+ */
 const familySpans = (operation: string, path: string, family: string, since: number) =>
   Effect.flatMap(Telemetry, (telemetry) =>
-    telemetry.search(operation, { "url.path": path, "auth.token.client_family": family }),
+    telemetry.searchWholeEnvironment(operation, {
+      "url.path": path,
+      "auth.token.client_family": family,
+    }),
   ).pipe(
     Effect.map((found) =>
       found.data.map(({ span }) => span).filter((span) => Date.parse(span.startTime) >= since),
@@ -578,9 +586,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth token telemetry", (it) =
             ...registered,
           ].map(({ traceId }) => traceId),
         );
-        const reported = (yield* sentryExceptions).filter(
-          ({ trace }) => trace !== undefined && traces.has(trace),
-        );
+        const reported = yield* sentryExceptions([...traces]);
         expect(reported).toEqual([]);
         yield* evidence.json(
           "token-spans.json",

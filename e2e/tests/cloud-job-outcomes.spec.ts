@@ -45,10 +45,12 @@ const fireFiveMinuteCron = Effect.gen(function* () {
   );
 });
 
-/** The traces of every delivered dispatch of `job`. */
+/** The traces of every delivered dispatch of `job`; cron jobs belong to the whole Cloud. */
 const dispatchTraces = (job: string) =>
   Effect.gen(function* () {
-    const found = yield* (yield* Telemetry).search("job.dispatch", { "executor.job": job });
+    const found = yield* (yield* Telemetry).searchWholeEnvironment("job.dispatch", {
+      "executor.job": job,
+    });
     return new Set(found.data.map((entry) => entry.traceId));
   });
 
@@ -60,7 +62,7 @@ const dispatched = (
 ) =>
   Effect.gen(function* () {
     const telemetry = yield* Telemetry;
-    const found = yield* telemetry.search("job.dispatch", {
+    const found = yield* telemetry.searchWholeEnvironment("job.dispatch", {
       "executor.job": job,
       "executor.outcome": outcome,
     });
