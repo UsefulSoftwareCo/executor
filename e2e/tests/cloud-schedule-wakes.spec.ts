@@ -2,16 +2,20 @@
  * Every write in every organization wakes Cloud's schedule coordinator after its response, and the
  * coordinator has one alarm. A wake must never move that alarm later: while wakes keep arriving
  * less than a second apart, due schedules and requested webhook source setup still run.
+ *
+ * Each wake's `schedule.wake` span records the coordinator's clock, the alarm it found and the
+ * alarm it left. The scenario reads those spans from its own writes' traces, so whether a
+ * wake postponed a pending alarm does not depend on how far apart the writes arrived.
  */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Duration, Effect, Exit, Fiber, Option, Schedule, Schema } from "effect";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
-import { Evidence } from "../support/evidence.ts";
+import { type DeliveredSpan, Evidence, Telemetry } from "../support/evidence.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { removeAppWhenStopped, webhookSources } from "../support/webhook-sources.ts";
 import { connectionsPath, unlinkAccount } from "../support/app-accounts.ts";
@@ -39,36 +43,16 @@ const wakeEvery = "200 millis";
  * sent, requests included.
  */
 const deadlineMs = 20_000;
-/**
- * A wake arms the coordinator's alarm a second out. A pause this long between wakes lets that
- * alarm fire even where every wake postpones it, so the run no longer holds the trigger.
- */
-const pauseMs = 1_000;
+/** A wake brings the coordinator's alarm in to a second away, never further. */
+const pollMs = 1_000;
 
-/** When a wake may have armed the alarm. Each write starts its wake once it has answered. */
-interface Moment {
-  readonly start: number;
-  readonly end: number;
+/** What one wake did to the coordinator's alarm, from its span. */
+interface Wake {
+  readonly span: string;
+  readonly at: number;
+  readonly armed: number;
+  readonly pending: number | null;
 }
-/**
- * The longest time from `from` to `to` in which no moment's alarm write is certain, from the last
- * moment finished before `from`. Moments are ordered by end; a pause between two can last at most
- * from the earlier one's start to the later one's end. `to` closes the last pause, and a moment
- * not finished by `to` counts for nothing.
- */
-const pauses = (moments: ReadonlyArray<Moment>, from: number, to: number) => {
-  const finished = moments.filter(({ end }) => end <= to).sort((a, b) => a.end - b.end);
-  const before = finished.findLastIndex(({ end }) => end < from);
-  if (before === -1) return null;
-  const chain = [...finished.slice(before), { start: to, end: to }];
-  const gaps = chain.slice(1).map(({ end }, index) => end - chain[index]!.start);
-  return {
-    longestMs: Math.max(...gaps),
-    leadingMs: gaps[0]!,
-    trailingMs: gaps.at(-1)!,
-    overHalfSecondMs: gaps.filter((gap) => gap >= pauseMs / 2),
-  };
-};
 
 layer(HostedLive, { excludeTestServices: true })("Cloud schedule wakes", (it) => {
   it.effect(
@@ -79,7 +63,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule wakes", (it) =>
         Effect.gen(function* () {
           const api = yield* Api,
             actors = yield* Actors,
-            evidence = yield* Evidence;
+            evidence = yield* Evidence,
+            telemetry = yield* Telemetry;
           const prefix = `/api/organizations/${actors.organization.id}`;
           const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
             name: `Wakes ${randomUUID().slice(0, 8)}`,
@@ -110,19 +95,34 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule wakes", (it) =>
 
           // Each write is sent on time whether or not the one before has answered, so the wakes
           // keep arriving less than a second apart however long a request takes.
-          const writes: Array<{ sentAt: number; answeredAt?: number; status?: number }> = [];
+          // Each write has a trace of its own, which its wake's span joins.
+          const writes: Array<{
+            trace: string;
+            sentAt: number;
+            answeredAt?: number;
+            status?: number;
+          }> = [];
           const write = Effect.gen(function* () {
-            const entry: (typeof writes)[number] = { sentAt: yield* Clock.currentTimeMillis };
+            const entry: (typeof writes)[number] = {
+              trace: randomBytes(16).toString("hex"),
+              sentAt: yield* Clock.currentTimeMillis,
+            };
             writes.push(entry);
             const exit = yield* Effect.exit(
-              api.request(actors.owner, "PATCH", loadPath, { enabled: false }),
+              api.request(
+                actors.owner,
+                "PATCH",
+                loadPath,
+                { enabled: false },
+                { traceparent: `00-${entry.trace}-${randomBytes(8).toString("hex")}-01` },
+              ),
             );
             entry.answeredAt = yield* Clock.currentTimeMillis;
             entry.status = Exit.isSuccess(exit) ? exit.value.status : 0;
           });
           const answered = () => writes.filter((entry) => entry.answeredAt !== undefined);
           const outcome: { requested?: number; ended?: number; ran?: number; setUp?: number } = {};
-          const report: Record<string, unknown> = { wakeEvery, deadlineMs, pauseMs };
+          const report: Record<string, unknown> = { wakeEvery, deadlineMs, pollMs };
           // Kept when an assertion fails and when it passes, so every run shows the stream it ran under.
           // CI keeps evidence files only for failed jobs; the test's metadata reaches results.json.
           yield* Effect.addFinalizer(() =>
@@ -217,40 +217,60 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule wakes", (it) =>
           outcome.ended = ended;
           yield* Fiber.interrupt(stream);
 
-          const answers = answered().map(({ answeredAt }) => ({
-            start: answeredAt!,
-            end: answeredAt!,
-          }));
-          const failed = answered().filter(({ status }) => status !== 200).length;
-          const outstanding = writes.filter(
-            ({ sentAt, answeredAt }) =>
-              sentAt <= ended && (answeredAt === undefined || answeredAt > ended),
-          ).length;
-          const answerPauses = pauses(answers, requested, ended);
           report.window = {
             endedBy: Option.isSome(finished) ? "outcomes" : "deadline",
             lengthMs: ended - requested,
-            outstandingAtEnd: outstanding,
           };
-          report.answers = answerPauses;
-
-          // Any pause lets main's alarm fire, so a run with one cannot tell the two apart.
-          const interruptions = [
-            failed > 0 ? `${failed} waking writes failed` : null,
-            answerPauses === null
-              ? "no waking write had answered before Run Now"
-              : answerPauses.longestMs >= pauseMs
-                ? `waking writes paused ${answerPauses.longestMs} ms between answers`
-                : null,
-          ].filter((reason) => reason !== null);
-          if (answerPauses === null || interruptions.length > 0) {
-            report.verdict = "invalid load";
-            return yield* Effect.fail(
-              new Error(
-                `Invalid load condition: ${interruptions.join("; ")} within ${ended - requested} ms of Run Now. The coordinator's alarm could fire in a pause, so this run cannot show whether wakes postpone it.`,
-              ),
-            );
+          // Every write answered before the window closed woke the coordinator once. Its span
+          // records what that wake did to the alarm, on the coordinator's own clock.
+          const waking = answered().filter(
+            ({ status, answeredAt }) => status === 200 && answeredAt! <= ended,
+          );
+          const isWake = (span: DeliveredSpan) =>
+            span.operationName === "schedule.wake" &&
+            span.tags["executor.schedule.wake.at"] !== undefined;
+          // Read from the writes' own traces, once each has its wake's span.
+          const wakes = (yield* telemetry.settled(
+            waking.map(({ trace }) => trace),
+            (spans) => spans.filter(isWake).length >= waking.length,
+          ))
+            .filter(isWake)
+            .map((span): Wake => {
+              const read = (name: string) => span.tags[`executor.schedule.wake.${name}`];
+              const pending = read("pending");
+              return {
+                span: span.spanId,
+                at: Number(read("at")),
+                armed: Number(read("armed")),
+                pending: pending === undefined ? null : Number(pending),
+              };
+            })
+            .sort((left, right) => left.at - right.at);
+          // A wake that found the alarm due within the next second is one a wake that moved the
+          // alarm a second out would have postponed.
+          const contested = wakes.filter(
+            ({ at, pending }) => pending !== null && pending > at && pending <= at + pollMs,
+          );
+          const postponed = wakes.filter(
+            ({ armed, pending }) => pending !== null && armed > pending,
+          );
+          report.wakes = {
+            read: wakes.length,
+            contested: contested.length,
+            postponed: postponed.length,
+          };
+          yield* evidence.json("wakes.json", wakes);
+          for (const wake of wakes) {
+            expect(Number.isFinite(wake.at), `wake ${wake.span} records its clock`).toBe(true);
+            expect(Number.isFinite(wake.armed), `wake ${wake.span} records its alarm`).toBe(true);
           }
+          expect(postponed, "No wake may move a pending alarm later than the one it found").toEqual(
+            [],
+          );
+          expect(
+            contested.length,
+            "At least one wake must arrive while the alarm is due within the second",
+          ).toBeGreaterThan(0);
           if (Option.isNone(finished)) {
             report.verdict = "starved";
             const pending = [
@@ -259,7 +279,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud schedule wakes", (it) =>
             ].filter((reason) => reason !== null);
             return yield* Effect.fail(
               new Error(
-                `${pending.join(" and ")} within ${deadlineMs} ms while coordinator wakes kept arriving (longest pause ${answerPauses.longestMs} ms)`,
+                `${pending.join(" and ")} within ${deadlineMs} ms while coordinator wakes kept arriving`,
               ),
             );
           }
