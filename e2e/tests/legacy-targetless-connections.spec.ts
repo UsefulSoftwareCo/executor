@@ -103,6 +103,11 @@ const legacyIds = (): Ids => {
   };
 };
 
+/** The schema version this build records, read before the fixture labels the database 4.0.7. */
+const currentVersion: Statement = {
+  sql: `SELECT value FROM private_executor_settings WHERE key = 'version'`,
+};
+
 /** What the upgrade left: the stored layout, version and the connections and sign-ins named. */
 const stored = (
   template: string,
@@ -113,7 +118,7 @@ const stored = (
     sql: `SELECT is_nullable, column_default FROM information_schema.columns
         WHERE table_name = 'executor_account_connections' AND column_name = 'target'`,
   },
-  { sql: `SELECT value FROM private_executor_settings WHERE key = 'version'` },
+  currentVersion,
   {
     sql: `SELECT id, json_typeof(target) AS target FROM executor_account_connections
         WHERE id = ANY($1::text[]) ORDER BY id`,
@@ -130,9 +135,11 @@ const expectUpgraded = (
   [column, version, connections, attempts]: ReadonlyArray<ReadonlyArray<unknown>>,
   template: string,
   ids: Ids,
+  current: ReadonlyArray<unknown> | undefined,
 ) => {
   expect(column).toEqual([{ is_nullable: "NO", column_default: null }]);
-  expect(version).toEqual([{ value: "4.0.16" }]);
+  // Every step from 4.0.7 ran: the database is back at the version it had before the fixture.
+  expect(version, "the current schema version").toEqual(current);
   // Only the connection with a target is left, and only the sign-in no connection pointed at.
   expect(connections).toEqual([{ id: template, target: "object" }]);
   expect(attempts).toEqual([{ id: ids.unrelatedAttempt }]);
@@ -175,7 +182,7 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless connections", 
           }),
         );
         const ids = legacyIds();
-        yield* legacyStorage(legacyRows(connection, ids));
+        const [current] = yield* legacyStorage([currentVersion, ...legacyRows(connection, ids)]);
         yield* serverControl("start");
 
         // The connection with a target still works; the others are gone.
@@ -184,7 +191,7 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless connections", 
         );
         for (const id of [ids.pending, ids.reconnect, ids.defaulted])
           expect((yield* agent.send("GET", `/v1/account-connections/${id}`)).status, id).toBe(404);
-        expectUpgraded(yield* legacyStorage(stored(connection, ids)), connection, ids);
+        expectUpgraded(yield* legacyStorage(stored(connection, ids)), connection, ids, current);
 
         // Starting again changes nothing.
         yield* serverControl("start");
@@ -199,6 +206,7 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless connections", 
           ),
           connection,
           ids,
+          current,
         );
 
         // The kept connection was started before targets recorded a scope, for a profile: it
@@ -253,7 +261,8 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless hosted connect
         const connection = (yield* body(Resource, pending)).id;
         const ids = legacyIds();
         const legacy = [ids.pending, ids.reconnect, ids.defaulted];
-        yield* legacyStorage([
+        const [current] = yield* legacyStorage([
+          currentVersion,
           // Steps 9 and 10 run again with steps 7 and 8. Step 9 creates the link table and converts
           // profiles idempotently, and none are left to convert.
           { sql: `DELETE FROM private_hosted_migrations WHERE migration_id >= 9` },
@@ -296,7 +305,7 @@ layer(TestLive, { excludeTestServices: true })("Legacy targetless hosted connect
           },
         ];
         const expectHostedUpgraded = (results: ReadonlyArray<ReadonlyArray<unknown>>) => {
-          expectUpgraded(results, connection, ids);
+          expectUpgraded(results, connection, ids, current);
           // Access rows went with their connections, and the product then required a target.
           expect(results.slice(4, 7)).toEqual([
             [{ connection_id: connection }],
