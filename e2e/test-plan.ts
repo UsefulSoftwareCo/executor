@@ -8290,6 +8290,19 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
+  accountFirstChecksTogether: {
+    fixtures: "actors",
+    file: "account-check-concurrency.spec.ts",
+    title:
+      "two first checks of an account that write its check row at the same moment both record it and report the account healthy",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host's single PGlite connection runs one transaction at a time, so the scenario's held row cannot wait beside the server's writes.",
+      ),
+      local: na("Local's single PGlite connection, as on self-host."),
+    },
+  },
   hostedAppLinkRoleLock: {
     fixtures: "actors",
     file: "app-account-link-role-lock.spec.ts",

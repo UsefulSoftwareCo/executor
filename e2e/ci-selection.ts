@@ -166,13 +166,14 @@ const jobs = {
       "app Workers stay loaded across credential rotation|workflow runs reuse the app Worker|warm app calls load no build|Cold app Workers reuse a build|a cold app Worker receives only the modules|Cold app Workers read their build in the runner|A cold app load links its small build record|Apps on the same apps release store its framework|Builds on two apps releases each link",
   },
   // These hold row locks in the shared Cloud database, which would stall other scenarios' SQL.
-  // The app link role check holds an uncommitted demotion on a member row.
+  // The app link role check holds an uncommitted demotion on a member row, and the account check
+  // scenario an uncommitted check row.
   "cloud-locks": {
     target: "cloud",
     runner: 4,
 
     pattern:
-      "A Better Auth query|an app link that waits for the admin.s membership while a demotion commits",
+      "A Better Auth query|an app link that waits for the admin.s membership while a demotion commits|two first checks of an account that write its check row",
   },
   // Removal recovery needs the Cloud's one recovery alarm and its removal job to itself: the job
   // starts every pending removal on the Cloud, and the scenario locks the start records' table to
