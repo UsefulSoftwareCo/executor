@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
+import { replaceResponses } from "../support/browser-responses.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { McpClient } from "../support/mcp-client.ts";
@@ -483,20 +484,22 @@ layer(HostedLive, { excludeTestServices: true })("Hosted tool runner approvals",
         // The page then receives the next reply queued here in place of this server's.
         const replies: Array<(requestId: string) => unknown> = [];
         const sent: Array<unknown> = [];
-        yield* browser.use("Replace the review's replies", (page) =>
-          page.route(`**/apps/${app.id}/tools/approvals/*`, (route) => {
-            if (route.request().method() !== "POST") return route.fallback();
-            const reply = replies.shift();
-            if (reply === undefined) return route.fallback();
-            const requestId = new URL(route.request().url()).pathname.split("/").at(-1) ?? "";
-            return route.fetch().then((response) =>
-              response.json().then((body) => {
-                sent.push(body);
-                return route.fulfill({ response, json: reply(requestId) });
-              }),
-            );
-          }),
-        );
+        const approvals = `/apps/${app.id}/tools/approvals/`;
+        yield* replaceResponses(`*${approvals}*`, (response) => {
+          const url = new URL(response.url);
+          if (response.method !== "POST" || !url.pathname.includes(approvals)) return "unchanged";
+          const reply = replies.shift();
+          if (reply === undefined) return "unchanged";
+          const requestId = url.pathname.split("/").at(-1) ?? "";
+          return response.body().then((text) => {
+            sent.push(JSON.parse(text));
+            return {
+              status: response.status,
+              body: JSON.stringify(reply(requestId)),
+              contentType: "application/json",
+            };
+          });
+        });
         yield* browser.use("Open the tool that fails after approval", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=tools&tool=fails`),
         );

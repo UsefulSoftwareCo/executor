@@ -115,17 +115,12 @@ export const incompleteDashboardDocument = (slug: string) =>
  * dashboard's own decoder, which reports it with the request's trace.
  */
 export const breakDashboardReads = Effect.gen(function* () {
-  const browser = yield* Browser;
   const traces: Array<string> = [];
-  yield* browser.use("Break the resource responses", (page) =>
-    page.route("**/api/organizations/*/resources*", (route) =>
-      route.fetch().then((response) => {
-        const trace = route.request().headers()["traceparent"]?.split("-")[1];
-        if (trace !== undefined) traces.push(trace);
-        return route.fulfill({ response, body: "{", contentType: "application/json" });
-      }),
-    ),
-  );
+  yield* replaceResponses("*/api/organizations/*/resources*", (response) => {
+    const trace = response.requestHeaders["traceparent"]?.split("-")[1];
+    if (trace !== undefined) traces.push(trace);
+    return { status: response.status, body: "{", contentType: "application/json" };
+  });
   return traces;
 });
 

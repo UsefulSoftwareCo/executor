@@ -1,10 +1,11 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule, Schema } from "effect";
-import type { APIResponse, Page, Request, Route } from "playwright";
+import type { Page, Request, Route } from "playwright";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
+import { type Answer, replaceResponses } from "../support/browser-responses.ts";
 import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
@@ -127,7 +128,10 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
         const passing = new Set<Request>();
         const held: Route[] = [];
         // A route the test takes answers it itself; a held route waits for `release`.
-        let hold: (route: Route) => "pass" | "hold" | "take" | Promise<"take"> = () => "pass";
+        let hold: (route: Route) => "pass" | "hold" | "take" | Promise<"pass" | "take"> = () =>
+          "pass";
+        // A read the browser sent whose response the test holds until it calls `deliver`.
+        let holdResponse: (() => Promise<Answer>) | undefined;
         yield* page("Route working source reads", (page) => {
           const finished = (request: Request) => void passing.delete(request);
           page.on("requestfinished", finished);
@@ -141,6 +145,12 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
               return route.fallback();
             });
           });
+        });
+        yield* replaceResponses(`*${path}/workspace`, (response) => {
+          if (response.method !== "GET" || holdResponse === undefined) return "unchanged";
+          const held = holdResponse;
+          holdResponse = undefined;
+          return held();
         });
         const until = <A>(label: string, value: () => A | undefined) =>
           Effect.suspend(() => {
@@ -366,21 +376,29 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
         // go back to a version older than one it has accepted, while saving or after discarding.
         let saveReads = 0;
         let earlierRead: Route | undefined;
-        let checkRead: { readonly route: Route; readonly response: APIResponse } | undefined;
+        let checkRead: { readonly deliver: () => void } | undefined;
+        let checkTaken = () => {};
+        const checkHeld = new Promise<void>((resolve) => {
+          checkTaken = resolve;
+        });
         hold = (route) => {
           saveReads += 1;
           // The save's conflict check passes; its follow-up read becomes the earlier read. The next
           // save's conflict check reads the server now and answers once the earlier read has. Any
-          // read after that reaches the server directly.
-          if (saveReads === 1 || saveReads > 3) return "pass";
+          // read after that reaches the server directly, once the check's response is held, so the
+          // first response to arrive after the check was sent is the check's.
+          if (saveReads === 1) return "pass";
+          if (saveReads > 3) return checkHeld.then(() => "pass" as const);
           if (saveReads === 2) {
             earlierRead = route;
             return "hold";
           }
-          return route.fetch().then((response) => {
-            checkRead = { route, response };
-            return "take" as const;
-          });
+          holdResponse = () =>
+            new Promise<Answer>((resolve) => {
+              checkRead = { deliver: () => resolve("unchanged") };
+              checkTaken();
+            });
+          return "pass";
         };
         yield* page("Save the reply", (page) =>
           page.getByRole("button", { name: "Save", exact: true }).click(),
@@ -463,13 +481,12 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
         const accepted = yield* page("Deliver the newer version to the earlier read", () => {
           held.splice(held.indexOf(earlier), 1);
           return earlier
-            .fetch()
-            .then((response) => earlier.fulfill({ response }))
+            .fallback()
             .then(() => earlier.request().response())
             .then((response) => (response === null ? false : response.finished().then(() => true)));
         });
         yield* page("Deliver the older version to the conflict check", () =>
-          check.route.fulfill({ response: check.response }),
+          Promise.resolve(check.deliver()),
         );
         yield* page("Wait for the second conflict", (page) =>
           page.getByRole("alert").filter({ hasText: "Someone else changed this file" }).waitFor(),

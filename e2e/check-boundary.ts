@@ -153,6 +153,15 @@ const check = Effect.gen(function* () {
           }
           return undefined;
         };
+        /** Whether a comment before `node` or a node it starts, up to its statement, says `reason`. */
+        const explained = (node: ts.Node, reason: string): boolean => {
+          const text = source.getFullText();
+          for (let current: ts.Node = node; ; current = current.parent) {
+            const comments = ts.getLeadingCommentRanges(text, current.getFullStart()) ?? [];
+            if (comments.some(({ pos, end }) => text.slice(pos, end).includes(reason))) return true;
+            if (ts.isStatement(current) || ts.isSourceFile(current.parent)) return false;
+          }
+        };
         const visit = (node: ts.Node) => {
           if (
             ts.isIdentifier(node) &&
@@ -198,6 +207,20 @@ const check = Effect.gen(function* () {
           )
             problems.push(
               `${label}: scenarios must yield injected services instead of executing a Promise/runtime boundary`,
+            );
+          // Playwright's `route.fetch()` (no URL, at most an options object) resends a request from
+          // the test process over a keep-alive pool that never retries a connection the server closed
+          // while idle. Use `replaceResponses` in support/browser-responses.ts, or say beside the call,
+          // in a comment starting "route.fetch() is safe here", why that cannot happen.
+          if (
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.name.text === "fetch" &&
+            (node.arguments[0] === undefined || ts.isObjectLiteralExpression(node.arguments[0])) &&
+            !explained(node, "route.fetch() is safe here")
+          )
+            problems.push(
+              `${label}: route.fetch() resends the request from a pool that never retries; use replaceResponses from support/browser-responses.ts`,
             );
           if (ts.isImportTypeNode(node))
             module(ts.isLiteralTypeNode(node.argument) ? node.argument.literal : undefined);
