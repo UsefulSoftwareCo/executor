@@ -928,14 +928,22 @@ const make = Effect.gen(function* () {
     }).pipe(Effect.asVoid),
     received: (email: string) =>
       messages(email).pipe(Effect.map((rows) => rows.map((row) => row.id))),
-    /** The newest new code and its email subject. */
+    /**
+     * The newest new code and its email subject. Mail without a code to the same address, such as
+     * the welcome a new account's background provisioning sends, can arrive after it.
+     */
     mail: (email: string, previouslyReceived: ReadonlyArray<string>) =>
       messages(email).pipe(
         Effect.flatMap((data) => {
-          const message = data.filter((item) => !previouslyReceived.includes(item.id)).at(-1);
-          const code = message?.text?.match(/\b\d{6}\b/)?.[0];
-          return message !== undefined && code
-            ? Effect.succeed({ code: Redacted.make(code), subject: message.subject })
+          const coded = data.flatMap((item) => {
+            const code = previouslyReceived.includes(item.id)
+              ? undefined
+              : item.text?.match(/\b\d{6}\b/)?.[0];
+            return code === undefined ? [] : [{ code, subject: item.subject }];
+          });
+          const message = coded.at(-1);
+          return message !== undefined
+            ? Effect.succeed({ code: Redacted.make(message.code), subject: message.subject })
             : Effect.fail(new MailPending());
         }),
         Effect.retry({
