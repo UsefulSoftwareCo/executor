@@ -455,7 +455,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
                 name: "execute",
                 arguments: {
                   code: `const first = await ${tools}.who({});
-await ${tools}.enter({});
 await ${tools}.hold({});
 let second;
 try { second = await ${tools}.who({}); } catch (error) { second = { refused: String(error.message) }; }
@@ -476,7 +475,7 @@ return { first, second };`,
               ),
             );
         yield* untilHeld(
-          call("entered", "query").pipe(
+          call("holding", "query").pipe(
             Effect.flatMap((response) => body(Schema.Boolean, response)),
           ),
         );

@@ -108,6 +108,13 @@ const initialize = {
 
 const named = (spans: ReadonlyArray<Span>, name: string) =>
   spans.filter((span) => span.operationName === name);
+/**
+ * A refused request's bearer check and its request span have both reached the collector. A Cloud
+ * isolate exports every span that has ended with whichever request flushes first, so a concurrent
+ * request can deliver the check before the request span it runs under has ended.
+ */
+const checkedAndAnswered = (spans: ReadonlyArray<Span>) =>
+  named(spans, "auth.authenticate").length > 0 && named(spans, "http.server POST").length > 0;
 const exception = (span: Span) =>
   span.events.find((event) => event.name === "exception")?.attributes["exception.type"];
 
@@ -425,8 +432,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP organization spans", (it) 
                     {
                       name: "execute",
                       arguments: {
-                        code: `await ${tool("enter")}({});
-await ${tool("hold")}({});
+                        code: `await ${tool("hold")}({});
 try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused"; }`,
                       },
                     },
@@ -450,7 +456,7 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
                     ),
                   );
               yield* untilHeld(
-                call("entered", "query").pipe(
+                call("holding", "query").pipe(
                   Effect.flatMap((response) => body(Schema.Boolean, response)),
                 ),
               );
@@ -465,7 +471,7 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
                 before,
                 (all) =>
                   named(all, "auth.authenticate").some((span) => span.status === "error") &&
-                  named(all, "mcp.tool.call").length === 3,
+                  named(all, "mcp.tool.call").length === 2,
               );
               const checks = named(delivered, "auth.authenticate");
               yield* evidence.json(
@@ -484,7 +490,6 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
                 "Each of the program's tool calls names the organization and the caller, the refused one included",
               ).toEqual([
                 ["echo", "error", organization, owner],
-                ["enter", "ok", organization, owner],
                 ["hold", "ok", organization, owner],
               ]);
               expect(
@@ -547,10 +552,7 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
                     message: initialize,
                   });
                   expect(refused.status).toBe(403);
-                  const all = yield* spans(
-                    refused.traceId,
-                    (all) => named(all, "auth.authenticate").length > 0,
-                  );
+                  const all = yield* spans(refused.traceId, checkedAndAnswered);
                   return {
                     checks: named(all, "auth.authenticate").map((span) => [
                       span.status,
@@ -676,10 +678,7 @@ try { return await ${tool("echo")}({ text: "after" }); } catch { return "refused
                       pinnedLeft.status,
                       "A key pinned to the organization its user left",
                     ).toBe(401);
-                    const left = yield* spans(
-                      pinnedLeft.traceId,
-                      (all) => named(all, "auth.authenticate").length > 0,
-                    );
+                    const left = yield* spans(pinnedLeft.traceId, checkedAndAnswered);
                     expect(
                       {
                         naming: left.filter((span) => span.tags[organizationId] !== undefined),

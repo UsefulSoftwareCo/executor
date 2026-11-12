@@ -976,7 +976,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({
                 name: "execute",
                 arguments: {
                   code: `const first = await tools[${slug}].who({});
-await tools[${slug}].enter({});
 await tools[${slug}].hold({});
 let second;
 try { second = await tools[${slug}].who({}); } catch (error) { second = { refused: String(error.message) }; }
@@ -996,7 +995,7 @@ return { first, second };`,
             Effect.flatMap((response) => body(Completed, response)),
           );
         yield* untilHeld(
-          call("entered", "query").pipe(
+          call("holding", "query").pipe(
             Effect.flatMap((called) => Schema.decodeUnknownEffect(Schema.Boolean)(called.value)),
           ),
         );
