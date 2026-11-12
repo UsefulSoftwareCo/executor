@@ -10,10 +10,10 @@
     "./git-client": "./src/git-client.ts"
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.1",
+    "@effect/platform-node": "4.1.4",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
-    "effect": "4.0.1",
+    "effect": "4.1.4",
     "isomorphic-git": "1.37.4",
     "memfs": "4.57.7"
   }

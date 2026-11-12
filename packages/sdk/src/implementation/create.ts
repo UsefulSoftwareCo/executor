@@ -15,7 +15,9 @@ import { storedApp } from "./apps.ts";
 import { initializeAppRepository, recoverAppRepositories } from "./initial-source.ts";
 import { makeWorkflowRuns } from "./workflows.ts";
 /** Compose native operations once for in-process and HTTP callers. */
-import { Crypto, Effect } from "effect";
+import { Effect } from "effect";
+import type { Digest, SecureRandom } from "effect/crypto";
+import { hostCrypto } from "./host-crypto.ts";
 import type { Executor, ExecutorOptions, RemoteExecutorOptions } from "../contracts/executor.ts";
 import { AppId, CredentialsError, NotImplemented, StorageError } from "../contracts/shared.ts";
 import { makeWebhooks } from "./webhooks.ts";
@@ -51,9 +53,9 @@ import { AppEventSink, RuntimeProtocolFailed, type Runtime } from "../contracts/
 /** Capture host cryptography; caller owns database and platform resource lifetimes. */
 export const createExecutor = (
   options: ExecutorOptions,
-): Effect.Effect<Executor, CredentialsError, Crypto.Crypto> =>
+): Effect.Effect<Executor, CredentialsError, SecureRandom.SecureRandom | Digest.Digest> =>
   Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* hostCrypto;
     const credentials =
       options.credentials ?? (yield* aesGcmCredentials(options.secret, globalThis.crypto));
     const db = database(options.database);

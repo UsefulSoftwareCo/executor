@@ -1,6 +1,6 @@
 /** Cloud composition: Postgres is authoritative; no organization data is stored in a DO. */
 import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy";
-import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+import { Digest, SecureRandom } from "effect/crypto";
 import { makeRegistryStorage } from "@executor-js/app-registry";
 import {
   firstPartyOAuthClients,
@@ -98,7 +98,7 @@ export const cloudExecutor = Effect.fn(function* (
           Effect.flatMap(({ executorCloudApiDocument }) =>
             hostedApiRevision(JSON.stringify(executorCloudApiDocument(apiOrigin))),
           ),
-          Effect.provide(BrowserCrypto.layer),
+          Effect.provide(Digest.layerWebCrypto),
         );
   const accountSignIns = yield* cloudAccountSignIns.pipe(Effect.orDie);
   const egress = yield* cloudEgress;
@@ -227,7 +227,7 @@ export const cloudExecutor = Effect.fn(function* (
           // Deployed Workers cannot reach loopback; the local development Worker can.
           allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
         },
-      }).pipe(Effect.provide(BrowserCrypto.layer));
+      }).pipe(Effect.provide([SecureRandom.layerWebCrypto, Digest.layerWebCrypto]));
       yield* lifecycle.attach(executor);
       return executor;
     }).pipe(

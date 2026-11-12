@@ -1,11 +1,12 @@
 /** Undeployed apps and source edits belong to the same app identities as running versions. */
-import { Clock, Crypto, Effect, Option } from "effect";
+import { Clock, Effect, Option } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import type { BlobStorage } from "../contracts/blobs.ts";
 import { initializeAppRepository, writeInitialSource } from "./initial-source.ts";
 import { adoptStoredFiles, type StoredBytes } from "./public-files.ts";
 import { appSlug } from "../contracts/app-slug.ts";
 import { AppNameTaken, type AppCopyOrigin } from "../contracts/apps.ts";
-import { AppCodeId, AppId, StorageError } from "../contracts/shared.ts";
+import { AppCodeId, AppId } from "../contracts/shared.ts";
 import {
   SourceError,
   sourcePathsFit,
@@ -22,7 +23,7 @@ export const makeAppAuthoring = (
   sources: AppSourceStorage,
   repositories: RepositoryBackend,
   blobs: BlobStorage,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle?: ResourceLifecycle,
 ) => {
   const create = (
@@ -33,20 +34,14 @@ export const makeAppAuthoring = (
   ) =>
     Effect.gen(function* () {
       yield* sourcePathsFit(input.files);
-      const code = AppCodeId.make(
-        `code_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-      );
+      const code = AppCodeId.make(`code_${yield* crypto.random.uuidV4()}`);
       // A new app has no repository yet. Stored files of a copy are first copied into its own
       // store, which its initial files then name; anything else stored names nothing it owns.
       if (input.files.some((file) => "object" in file)) {
         if (stored === undefined) return yield* new SourceError({ reason: "invalid-source" });
         yield* adoptStoredFiles(blobs, code, input.files, stored);
       }
-      const id =
-        reserved ??
-        AppId.make(
-          `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-        );
+      const id = reserved ?? AppId.make(`app_${yield* crypto.random.uuidV4()}`);
       yield* writeInitialSource(blobs, code, input.files);
       const app = {
         id,

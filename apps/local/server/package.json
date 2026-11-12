@@ -19,8 +19,8 @@
     "start": "bun run ../../../packages/apps/scripts/build.mjs && node src/main.ts"
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.1",
-    "@effect/sql-pglite": "4.0.1",
+    "@effect/platform-node": "4.1.4",
+    "@effect/sql-pglite": "4.1.4",
     "@electric-sql/pglite": "0.5.8",
     "@executor-js/app-management": "workspace:*",
     "@executor-js/app-source": "workspace:*",
@@ -36,7 +36,7 @@
     "@napi-rs/keyring": "2.1.0",
     "apps": "workspace:*",
     "better-auth": "1.7.20",
-    "effect": "4.0.1",
+    "effect": "4.1.4",
     "fumadb-effect": "workspace:*",
     "proper-lockfile": "4.1.2"
   },

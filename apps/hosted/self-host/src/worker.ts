@@ -1,5 +1,5 @@
 /** Product Worker. One durable actor owns PostgreSQL, auth, sessions and background work. */
-import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+import { Digest } from "effect/crypto";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import type { DurableObjectState, Fetcher } from "@cloudflare/workers-types";
 import { PGlite } from "@electric-sql/pglite";
@@ -146,7 +146,7 @@ const prepare = (state: DurableObjectState, env: Environment) =>
             )
           : telemetryLayer(telemetry),
         HttpServer.layerServices,
-        BrowserCrypto.layer,
+        Digest.layerWebCrypto,
         Layer.succeed(ScheduleHostReady, Effect.void),
       ),
     );

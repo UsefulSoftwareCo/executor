@@ -1,7 +1,8 @@
 import { AccountWorkflowsActive } from "../contracts/account.ts";
 import { AccountWebhookDependent, AccountWebhooksActive } from "../contracts/account.ts";
 /** Reusable account operations. Owners remain lookup predicates, not authorization. */
-import { Clock, type Crypto, Effect, Option, Redacted, Schema } from "effect";
+import { Clock, Effect, Option, Redacted, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import {
   Account,
   AccountNotFound,
@@ -138,7 +139,7 @@ export interface RemovedGrant {
 export const makeAccounts = (
   db: Query,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle?: ResourceLifecycle,
   /** Best-effort provider-side revocation; it never fails and runs only after the delete commits. */
   revokeRemoved?: (removed: RemovedGrant) => Effect.Effect<void>,
@@ -160,9 +161,7 @@ export const makeAccounts = (
         input.fields,
       );
       const identity = {
-        id: AccountId.make(
-          `acc_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-        ),
+        id: AccountId.make(`acc_${yield* crypto.random.uuidV4()}`),
         owner: input.owner,
         provider: provider.id,
         method: input.method,

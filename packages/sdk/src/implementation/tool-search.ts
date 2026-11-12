@@ -3,7 +3,9 @@
  * its target's labels. A listing's rows keep each shared `$defs` entry once, as the durable
  * listing text does; only a page's tools are put back together with their definitions.
  */
-import { Crypto, Effect, JsonPointer, Schema } from "effect";
+import { Effect, JsonPointer, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
+import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
 import { type Json, JsonObject, StorageError } from "../contracts/shared.ts";
 import { invocationEntries, type AppAccounts } from "../contracts/apps.ts";
@@ -83,14 +85,11 @@ const toolTerms = (listing: ToolListing, tool: Tool) => {
 
 export const makeToolSearch = (options: {
   readonly store: ToolSearchStore;
-  readonly crypto: Crypto.Crypto;
+  readonly crypto: HostCrypto;
 }) => {
   const { store } = options;
   const digest = (text: string) =>
-    options.crypto.digest("SHA-256", encoder.encode(text)).pipe(
-      Effect.map(Hex.encode),
-      Effect.mapError(() => new StorageError()),
-    );
+    options.crypto.digest.digest(Digest.sha256, encoder.encode(text)).pipe(Effect.map(Hex.encode));
   /**
    * The target a listing belongs to: a digest of the account set it was evaluated with, each
    * requirement's accounts in ID order. Requirements without accounts name none. Requirement

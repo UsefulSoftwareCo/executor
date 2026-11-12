@@ -34,7 +34,7 @@ const make = Effect.gen(function* () {
   });
   const base = yield* HttpClient.HttpClient;
   const session = Effect.gen(function* () {
-    const jar = yield* Ref.make(Cookies.empty);
+    const jar = yield* Ref.make<ReadonlyArray<Cookies.Cookie>>([]);
     const client = base.pipe(HttpClient.withCookiesRef(jar));
     return (
       method: "GET" | "POST" | "DELETE",

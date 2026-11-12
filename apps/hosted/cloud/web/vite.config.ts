@@ -17,6 +17,9 @@ export default mergeConfig(
         define: Object.fromEntries(
           browserOnlySettings.map((name) => [`import.meta.env.${name}`, "undefined"]),
         ),
+        // The Dashboard Worker bundles this build beside its own runtime, which also imports
+        // Effect. Left as imports here, both resolve to one copy in the Worker's upload.
+        resolve: { external: ["effect"] },
       },
     },
     // The development dashboard delegates docs to the Worker's built static assets.

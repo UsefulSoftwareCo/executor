@@ -7,9 +7,9 @@
       "devDependencies": {
         "@alchemy.run/cloudflare-runtime": "2.0.0-beta.80",
         "@changesets/cli": "2.31.1",
-        "@effect/platform-node": "4.0.1",
+        "@effect/platform-node": "4.1.4",
         "@effect/tsgo": "0.51.1",
-        "@effect/vitest": "4.0.1",
+        "@effect/vitest": "4.1.4",
         "@electric-sql/pglite": "0.5.8",
         "@executor-js/sdk": "workspace:*",
         "@executor-js/utils": "workspace:*",
@@ -23,7 +23,7 @@
         "@vitest/ui": "5.0.1",
         "autumn-js": "1.2.28",
         "dugite": "3.2.3",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "esbuild": "0.28.2",
         "fflate": "0.8.3",
         "miniflare": "4.20260730.0",
@@ -67,8 +67,7 @@
         "@distilled.cloud/cloudflare": "1.0.0-rc.13",
         "@distilled.cloud/posthog": "1.0.0-rc.13",
         "@distilled.cloud/sentry": "1.0.0-rc.13",
-        "@effect/platform-browser": "4.0.1",
-        "@effect/sql-pg": "4.0.1",
+        "@effect/sql-pg": "4.1.4",
         "@executor-js/app-cache": "workspace:*",
         "@executor-js/app-data": "workspace:*",
         "@executor-js/app-management": "workspace:*",
@@ -90,7 +89,7 @@
         "apps": "workspace:*",
         "autumn-js": "1.2.28",
         "better-auth": "1.7.20",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "fumadb-effect": "workspace:*",
         "js-yaml": "5.4.3",
         "kysely": "0.29.6",
@@ -99,8 +98,8 @@
       },
       "devDependencies": {
         "@cloudflare/workers-types": "5.20260729.1",
-        "@effect/platform-bun": "4.0.1",
-        "@effect/platform-node": "4.0.1",
+        "@effect/platform-bun": "4.1.4",
+        "@effect/platform-node": "4.1.4",
         "@executor-js/hosted-testing": "workspace:*",
         "@executor-js/mcp": "workspace:*",
         "@sentry/cli": "3.8.0",
@@ -115,7 +114,7 @@
       "dependencies": {
         "@better-auth/passkey": "1.7.20",
         "@better-auth/sso": "1.7.20",
-        "@effect/atom-react": "4.0.1",
+        "@effect/atom-react": "4.1.4",
         "@executor-js/dashboard-start": "workspace:*",
         "@executor-js/devtools": "workspace:*",
         "@executor-js/hosted-server": "workspace:*",
@@ -128,7 +127,7 @@
         "@tanstack/react-router": "1.170.41",
         "@tanstack/react-start": "1.168.60",
         "better-auth": "1.7.20",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "posthog-js": "1.434.7",
         "react": "19.3.0",
         "react-dom": "19.3.0",
@@ -145,10 +144,10 @@
       "name": "@executor-js/hosted-self-host",
       "dependencies": {
         "@better-auth/core": "1.7.20",
-        "@effect/platform-browser": "4.0.1",
-        "@effect/platform-bun": "4.0.1",
-        "@effect/platform-node": "4.0.1",
-        "@effect/sql-pglite": "4.0.1",
+        "@effect/platform-browser": "4.1.4",
+        "@effect/platform-bun": "4.1.4",
+        "@effect/platform-node": "4.1.4",
+        "@effect/sql-pglite": "4.1.4",
         "@electric-sql/pglite": "0.5.8",
         "@executor-js/app-management": "workspace:*",
         "@executor-js/app-source": "workspace:*",
@@ -163,7 +162,7 @@
         "@executor-js/utils": "workspace:*",
         "apps": "workspace:*",
         "better-auth": "1.7.20",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "fumadb-effect": "workspace:*",
         "kysely": "0.29.6",
         "proper-lockfile": "4.1.2",
@@ -182,7 +181,7 @@
     "apps/hosted/self-host/web": {
       "name": "@executor-js/hosted-self-host-web",
       "dependencies": {
-        "@effect/atom-react": "4.0.1",
+        "@effect/atom-react": "4.1.4",
         "@executor-js/dashboard-start": "workspace:*",
         "@executor-js/devtools": "workspace:*",
         "@executor-js/hosted-web": "workspace:*",
@@ -190,7 +189,7 @@
         "@executor-js/ui": "workspace:*",
         "@tanstack/react-router": "1.170.41",
         "@tanstack/react-start": "1.168.60",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "react": "19.3.0",
         "react-dom": "19.3.0",
       },
@@ -219,21 +218,21 @@
         "@executor-js/utils": "workspace:*",
         "apps": "workspace:*",
         "better-auth": "1.7.20",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
       },
     },
     "apps/hosted/testing": {
       "name": "@executor-js/hosted-testing",
       "dependencies": {
-        "@effect/platform-bun": "4.0.1",
-        "@effect/platform-node": "4.0.1",
-        "@effect/sql-pg": "4.0.1",
+        "@effect/platform-bun": "4.1.4",
+        "@effect/platform-node": "4.1.4",
+        "@effect/sql-pg": "4.1.4",
         "@executor-js/dashboard-start": "workspace:*",
         "@executor-js/devtools": "workspace:*",
         "@executor-js/hosted-server": "workspace:*",
         "@executor-js/telemetry": "workspace:*",
         "better-auth": "1.7.20",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "pg": "8.16.3",
         "samlify": "2.13.1",
       },
@@ -245,7 +244,7 @@
       "name": "@executor-js/hosted-web",
       "dependencies": {
         "@better-auth/oauth-provider": "1.7.20",
-        "@effect/atom-react": "4.0.1",
+        "@effect/atom-react": "4.1.4",
         "@executor-js/catalog": "workspace:*",
         "@executor-js/dashboard-start": "workspace:*",
         "@executor-js/hosted-server": "workspace:*",
@@ -262,7 +261,7 @@
         "@tanstack/react-router": "1.170.41",
         "@tanstack/react-start": "1.168.60",
         "better-auth": "1.7.20",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "react": "19.3.0",
         "react-dom": "19.3.0",
       },
@@ -281,10 +280,10 @@
       "name": "@executor-js/desktop",
       "version": "0.0.0",
       "dependencies": {
-        "@effect/platform-node": "4.0.1",
+        "@effect/platform-node": "4.1.4",
         "@executor-js/local-server": "workspace:*",
         "@executor-js/telemetry": "workspace:*",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "electron-updater": "6.6.8",
         "fflate": "0.8.3",
         "proper-lockfile": "4.1.2",
@@ -302,8 +301,8 @@
         "executor": "./src/bin.ts",
       },
       "dependencies": {
-        "@effect/platform-node": "4.0.1",
-        "@effect/sql-pglite": "4.0.1",
+        "@effect/platform-node": "4.1.4",
+        "@effect/sql-pglite": "4.1.4",
         "@electric-sql/pglite": "0.5.8",
         "@executor-js/app-management": "workspace:*",
         "@executor-js/app-source": "workspace:*",
@@ -319,7 +318,7 @@
         "@napi-rs/keyring": "2.1.0",
         "apps": "workspace:*",
         "better-auth": "1.7.20",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "fumadb-effect": "workspace:*",
         "proper-lockfile": "4.1.2",
       },
@@ -333,7 +332,7 @@
     "apps/local/web": {
       "name": "@executor-js/local-web",
       "dependencies": {
-        "@effect/atom-react": "4.0.1",
+        "@effect/atom-react": "4.1.4",
         "@executor-js/catalog": "workspace:*",
         "@executor-js/dashboard-start": "workspace:*",
         "@executor-js/devtools": "workspace:*",
@@ -348,10 +347,10 @@
         "@hugeicons/react": "1.1.10",
         "@tanstack/react-router": "1.170.41",
         "@tanstack/react-start": "1.168.60",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "react": "19.3.0",
         "react-dom": "19.3.0",
-        "scheduler": "0.27.0",
+        "scheduler": "0.28.0",
       },
       "devDependencies": {
         "@happy-dom/global-registrator": "20.14.5",
@@ -369,7 +368,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@astrojs/react": "6.0.6",
-        "@effect/atom-react": "4.0.1",
+        "@effect/atom-react": "4.1.4",
         "@executor-js/sdk": "workspace:*",
         "@executor-js/telemetry": "workspace:*",
         "@executor-js/ui": "workspace:*",
@@ -378,7 +377,7 @@
         "astro": "7.3.3",
         "clsx": "2.1.1",
         "cookie": "2.0.1",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "motion": "12.43.0",
         "posthog-js": "1.434.7",
         "react": "19.3.0",
@@ -410,19 +409,19 @@
     "packages/app-cache": {
       "name": "@executor-js/app-cache",
       "dependencies": {
-        "effect": "4.0.1",
+        "effect": "4.1.4",
       },
     },
     "packages/app-data": {
       "name": "@executor-js/app-data",
       "dependencies": {
         "@executor-js/app-cache": "workspace:*",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
       },
       "devDependencies": {
         "@cloudflare/workers-types": "5.20260729.1",
-        "@effect/platform-node": "4.0.1",
-        "@effect/sql-sqlite-do": "4.0.1",
+        "@effect/platform-node": "4.1.4",
+        "@effect/sql-sqlite-do": "4.1.4",
         "esbuild": "0.28.2",
         "miniflare": "4.20260730.0",
         "undici": "7.16.0",
@@ -438,7 +437,7 @@
         "@executor-js/utils": "workspace:*",
         "@modelcontextprotocol/sdk": "1.32.1",
         "@napi-rs/keyring": "2.1.0",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "jsonc-parser": "3.3.1",
         "prettier": "3.9.8",
         "proper-lockfile": "4.1.2",
@@ -453,21 +452,21 @@
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
         "@executor-js/utils": "workspace:*",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "fumadb-effect": "workspace:*",
       },
       "devDependencies": {
-        "@effect/platform-node": "4.0.1",
+        "@effect/platform-node": "4.1.4",
         "@executor-js/app-source": "workspace:*",
       },
     },
     "packages/app-source": {
       "name": "@executor-js/app-source",
       "dependencies": {
-        "@effect/platform-node": "4.0.1",
+        "@effect/platform-node": "4.1.4",
         "@executor-js/sdk": "workspace:*",
         "@executor-js/telemetry": "workspace:*",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "isomorphic-git": "1.37.4",
         "memfs": "4.57.7",
       },
@@ -478,7 +477,7 @@
         "@executor-js/sdk": "workspace:*",
         "@modelcontextprotocol/sdk": "1.32.1",
         "apps": "workspace:*",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
       },
       "devDependencies": {
         "mdast-util-from-markdown": "2.0.3",
@@ -488,7 +487,7 @@
     },
     "packages/apps": {
       "name": "apps",
-      "version": "0.0.1-beta.125",
+      "version": "0.0.1-beta.127",
       "dependencies": {
         "@cfworker/json-schema": "4.1.1",
         "@csstools/css-tokenizer": "4.0.2",
@@ -498,7 +497,7 @@
         "@executor-js/utils": "workspace:*",
         "@scalar/helpers": "0.14.0",
         "@scalar/openapi-upgrader": "0.3.1",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "js-yaml": "5.4.2",
         "openapi-server-url-templating": "1.3.0",
         "parse5": "8.0.0",
@@ -530,7 +529,7 @@
       "name": "@executor-js/authorization",
       "dependencies": {
         "@executor-js/sdk": "workspace:*",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
       },
     },
     "packages/catalog": {
@@ -539,19 +538,19 @@
         "@executor-js/app-templates": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@executor-js/utils": "workspace:*",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
       },
     },
     "packages/dashboard-start": {
       "name": "@executor-js/dashboard-start",
       "dependencies": {
-        "@effect/atom-react": "4.0.1",
-        "@effect/platform-node": "4.0.1",
+        "@effect/atom-react": "4.1.4",
+        "@effect/platform-node": "4.1.4",
         "@executor-js/ui": "workspace:*",
         "@executor-js/utils": "workspace:*",
         "@tanstack/react-router": "1.170.41",
         "@tanstack/react-start": "1.168.60",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "react": "19.3.0",
         "react-dom": "19.3.0",
       },
@@ -567,11 +566,11 @@
     "packages/devtools": {
       "name": "@executor-js/devtools",
       "dependencies": {
-        "@effect/atom-react": "4.0.1",
+        "@effect/atom-react": "4.1.4",
         "@executor-js/ui": "workspace:*",
         "@executor-js/utils": "workspace:*",
         "better-auth": "1.7.20",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "radix-ui": "1.6.7",
       },
       "devDependencies": {
@@ -588,18 +587,18 @@
       "version": "0.1.0",
       "dependencies": {
         "@paralleldrive/cuid2": "3.3.0",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
       },
       "devDependencies": {
-        "@effect/platform-node": "4.0.1",
-        "@effect/sql-mssql": "4.0.1",
-        "@effect/sql-mysql2": "4.0.1",
-        "@effect/sql-pg": "4.0.1",
-        "@effect/sql-pglite": "4.0.1",
-        "@effect/sql-sqlite-node": "4.0.1",
+        "@effect/platform-node": "4.1.4",
+        "@effect/sql-mssql": "4.1.4",
+        "@effect/sql-mysql2": "4.1.4",
+        "@effect/sql-pg": "4.1.4",
+        "@effect/sql-pglite": "4.1.4",
+        "@effect/sql-sqlite-node": "4.1.4",
       },
       "peerDependencies": {
-        "@effect/sql-pglite": "4.0.1",
+        "@effect/sql-pglite": "4.1.4",
       },
       "optionalPeers": [
         "@effect/sql-pglite",
@@ -613,7 +612,7 @@
         "@opencode-ai/codemode": "0.0.0-dev-19272",
         "acorn": "8.15.0",
         "apps": "workspace:*",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
       },
     },
     "packages/mcp-auth": {
@@ -621,23 +620,23 @@
       "dependencies": {
         "@better-auth/core": "1.7.20",
         "@better-auth/oauth-provider": "1.7.20",
-        "@effect/sql-pglite": "4.0.1",
+        "@effect/sql-pglite": "4.1.4",
         "@executor-js/authorization": "workspace:*",
         "@executor-js/mcp": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "@executor-js/utils": "workspace:*",
         "better-auth": "1.7.20",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "kysely": "0.29.6",
       },
     },
     "packages/reactivity": {
       "name": "@executor-js/reactivity",
       "dependencies": {
-        "effect": "4.0.1",
+        "effect": "4.1.4",
       },
       "devDependencies": {
-        "@effect/sql-sqlite-do": "4.0.1",
+        "@effect/sql-sqlite-do": "4.1.4",
         "esbuild": "0.28.2",
         "miniflare": "4.20260730.0",
       },
@@ -649,8 +648,7 @@
         "@cfworker/json-schema": "4.1.1",
         "@cloudflare/worker-bundler": "0.2.4",
         "@distilled.cloud/cloudflare": "1.0.0-rc.13",
-        "@effect/platform-browser": "4.0.1",
-        "@effect/platform-node": "4.0.1",
+        "@effect/platform-node": "4.1.4",
         "@executor-js/app-cache": "workspace:*",
         "@executor-js/app-data": "workspace:*",
         "@executor-js/reactivity": "workspace:*",
@@ -660,7 +658,7 @@
         "ajv": "8.20.0",
         "apps": "workspace:*",
         "capnweb": "0.12.0",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "esbuild": "0.28.2",
         "fumadb-effect": "workspace:*",
         "mdast-util-from-markdown": "2.0.3",
@@ -674,8 +672,8 @@
       },
       "devDependencies": {
         "@cloudflare/workers-types": "5.20260729.1",
-        "@effect/sql-pglite": "4.0.1",
-        "@effect/sql-sqlite-node": "4.0.1",
+        "@effect/sql-pglite": "4.1.4",
+        "@effect/sql-sqlite-node": "4.1.4",
         "@executor-js/app-source": "workspace:*",
         "@types/ws": "8.18.1",
       },
@@ -685,12 +683,12 @@
       "dependencies": {
         "@bufbuild/protobuf": "2.11.0",
         "@executor-js/utils": "workspace:*",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "workerd": "1.20260918.1",
       },
       "devDependencies": {
-        "@effect/platform-bun": "4.0.1",
-        "@effect/platform-node": "4.0.1",
+        "@effect/platform-bun": "4.1.4",
+        "@effect/platform-node": "4.1.4",
       },
     },
     "packages/ui": {
@@ -700,7 +698,7 @@
         "@codemirror/lang-markdown": "6.5.2",
         "@codemirror/state": "6.7.6",
         "@codemirror/view": "6.43.13",
-        "@effect/atom-react": "4.0.1",
+        "@effect/atom-react": "4.1.4",
         "@executor-js/app-management": "workspace:*",
         "@executor-js/app-source": "workspace:*",
         "@executor-js/catalog": "workspace:*",
@@ -716,7 +714,7 @@
         "apps": "workspace:*",
         "class-variance-authority": "0.7.1",
         "clsx": "2.1.1",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "mdast-util-from-markdown": "2.0.3",
         "mdast-util-gfm": "3.1.0",
         "micromark-extension-gfm": "3.0.0",
@@ -742,8 +740,8 @@
     "packages/utils": {
       "name": "@executor-js/utils",
       "dependencies": {
-        "@effect/platform-node": "4.0.1",
-        "effect": "4.0.1",
+        "@effect/platform-node": "4.1.4",
+        "effect": "4.1.4",
         "ipaddr.js": "2.5.0",
       },
     },
@@ -752,7 +750,7 @@
       "dependencies": {
         "@executor-js/catalog": "workspace:*",
         "@executor-js/utils": "workspace:*",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
       },
     },
     "playground/demo-apps/axiom": {
@@ -807,10 +805,10 @@
     "playground/fumadb-effect": {
       "name": "@executor-js/fumadb-playground",
       "dependencies": {
-        "@effect/platform-node": "4.0.1",
-        "@effect/sql-pg": "4.0.1",
-        "@effect/sql-sqlite-node": "4.0.1",
-        "effect": "4.0.1",
+        "@effect/platform-node": "4.1.4",
+        "@effect/sql-pg": "4.1.4",
+        "@effect/sql-sqlite-node": "4.1.4",
+        "effect": "4.1.4",
         "fumadb-effect": "workspace:*",
       },
     },
@@ -818,18 +816,18 @@
       "name": "@executor-playground/hosted",
       "dependencies": {
         "@executor-js/hosted-server": "workspace:*",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
       },
     },
     "playground/sdk": {
       "name": "@executor-js/playground",
       "dependencies": {
-        "@effect/platform-node": "4.0.1",
-        "@effect/sql-pglite": "4.0.1",
+        "@effect/platform-node": "4.1.4",
+        "@effect/sql-pglite": "4.1.4",
         "@executor-js/app-source": "workspace:*",
         "@executor-js/sdk": "workspace:*",
         "apps": "workspace:*",
-        "effect": "4.0.1",
+        "effect": "4.1.4",
         "fumadb-effect": "workspace:*",
       },
     },
@@ -842,23 +840,23 @@
     "workerd",
   ],
   "patchedDependencies": {
+    "@effect/sql-pg@4.1.4": "patches/@effect%2Fsql-pg@4.1.4.patch",
     "tree-sitter@0.21.1": "patches/tree-sitter@0.21.1.patch",
-    "@effect/sql-pglite@4.0.1": "patches/@effect%2Fsql-pglite@4.0.1.patch",
     "alchemy@2.0.0-beta.80": "patches/alchemy@2.0.0-beta.80.patch",
     "@cfworker/json-schema@4.1.1": "patches/@cfworker%2Fjson-schema@4.1.1.patch",
-    "pg-cloudflare@1.4.0": "patches/pg-cloudflare@1.4.0.patch",
+    "@distilled.cloud/aws@1.0.0-rc.13": "patches/@distilled.cloud%2Faws@1.0.0-rc.13.patch",
     "tailwindcss-iso@1.0.7": "patches/tailwindcss-iso@1.0.7.patch",
+    "pg-cloudflare@1.4.0": "patches/pg-cloudflare@1.4.0.patch",
     "@swagger-api/apidom-ns-openapi-3-1@1.11.6": "patches/@swagger-api%2Fapidom-ns-openapi-3-1@1.11.6.patch",
-    "better-auth@1.7.20": "patches/better-auth@1.7.20.patch",
+    "effect@4.1.4": "patches/effect@4.1.4.patch",
     "@electric-sql/pglite@0.5.8": "patches/@electric-sql%2Fpglite@0.5.8.patch",
-    "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
+    "better-auth@1.7.20": "patches/better-auth@1.7.20.patch",
+    "@effect/sql-pglite@4.1.4": "patches/@effect%2Fsql-pglite@4.1.4.patch",
     "@better-auth/api-key@1.7.20": "patches/@better-auth%2Fapi-key@1.7.20.patch",
     "@better-auth/sso@1.7.20": "patches/@better-auth%2Fsso@1.7.20.patch",
-    "@effect/sql-pg@4.0.1": "patches/@effect%2Fsql-pg@4.0.1.patch",
-    "@better-auth/passkey@1.7.20": "patches/@better-auth%2Fpasskey@1.7.20.patch",
     "@cloudflare/worker-bundler@0.2.4": "patches/@cloudflare%2Fworker-bundler@0.2.4.patch",
-    "@effect/platform-node-shared@4.0.1": "patches/@effect%2Fplatform-node-shared@4.0.1.patch",
-    "effect@4.0.1": "patches/effect@4.0.1.patch",
+    "@better-auth/passkey@1.7.20": "patches/@better-auth%2Fpasskey@1.7.20.patch",
+    "tree-sitter@0.22.4": "patches/tree-sitter@0.22.4.patch",
     "@distilled.cloud/cloudflare@1.0.0-rc.13": "patches/@distilled.cloud%2Fcloudflare@1.0.0-rc.13.patch",
     "playwright-core@1.63.0": "patches/playwright-core@1.63.0.patch",
     "@alchemy.run/cloudflare-runtime@2.0.0-beta.80": "patches/@alchemy.run%2Fcloudflare-runtime@2.0.0-beta.80.patch",
@@ -867,11 +865,12 @@
     "@opencode-ai/codemode@0.0.0-dev-19272": "patches/@opencode-ai%2Fcodemode@0.0.0-dev-19272.patch",
   },
   "overrides": {
-    "@effect/platform-browser": "4.0.1",
-    "@effect/platform-bun": "4.0.1",
-    "@effect/platform-node": "4.0.1",
-    "@effect/platform-node-shared": "4.0.1",
-    "effect": "4.0.1",
+    "@effect/platform-bun": "4.1.4",
+    "@effect/platform-node": "4.1.4",
+    "@effect/platform-node-shared": "4.1.4",
+    "@effect/sql-d1": "4.1.4",
+    "@effect/sql-sqlite-do": "4.1.4",
+    "effect": "4.1.4",
   },
   "packages": {
     "@ai-sdk/gateway": ["@ai-sdk/gateway@4.0.87", "", { "dependencies": { "@ai-sdk/provider": "4.0.17", "@ai-sdk/provider-utils": "5.0.45", "@vercel/oidc": "3.2.0" }, "peerDependencies": { "zod": "^3.25.76 || ^4.1.8" } }, "sha512-6wJmX/D5OO7tvDJbtFdXdBuRt8AkCnW+FLK+W35UHe/tHgolAa4hclXtJcMSYnlTDy/t5DNRgdesVaoMXtwzow=="],
@@ -1242,29 +1241,29 @@
 
     "@distilled.cloud/zerossl": ["@distilled.cloud/zerossl@1.0.0-rc.13", "", { "dependencies": { "@distilled.cloud/core": "1.0.0-rc.13" }, "peerDependencies": { "effect": "^4.0.0" } }, "sha512-dnxhg39lZjpTdZbHCVYPoUC9E2r8eSHbqiYDhSq2EurVPJcc9YRXlxZR1bP1nniSp078XV8GA+aUECt/Z56aQg=="],
 
-    "@effect/atom-react": ["@effect/atom-react@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1", "react": ">=19.0.0 <20.0.0", "scheduler": ">=0.25.0 <0.28.0" } }, "sha512-V/vcbFCVY2AV7PvjhmOP37Cr4NofrtxBBGW6M1ckBIBxmpi3sMwdPTxj2obPNE4Ho3gkeEQzRC9zEIQ4BDNdQg=="],
+    "@effect/atom-react": ["@effect/atom-react@4.1.4", "", { "peerDependencies": { "effect": "^4.1.4", "react": ">=19.0.0 <20.0.0", "scheduler": ">=0.25.0 <0.29.0" } }, "sha512-Xj58DcAzKsysHhzBCPaz2v1QAJq6NvMdGVmG7SV4zkw1RMiTZv8gaOXA1VqIRlpmvdspMwRe/BQ4eayuzRZTpQ=="],
 
-    "@effect/platform-browser": ["@effect/platform-browser@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1" } }, "sha512-RsnobWEnffdkRH/wZ3ARIAgMxtGLyfrD0R3iVS+dwQCdYrSbotlJHEoVHEgzcOn5RzMsHG6FHkfdgRMwvcM7kg=="],
+    "@effect/platform-browser": ["@effect/platform-browser@4.1.4", "", { "peerDependencies": { "effect": "^4.1.4" } }, "sha512-oh6SxR62VaU8xzpVloHRJwK4ADBXCzlnjgcvV6zHc9h4PwmdhQvlfrXFu38tvqJTgK31Z1VnzbkLtymWHbEUSA=="],
 
-    "@effect/platform-bun": ["@effect/platform-bun@4.0.1", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.1" }, "peerDependencies": { "effect": "^4.0.1" } }, "sha512-m+QR4bp39ZWujCuEsUhZADIYIOFZcUHHlmrixENZqZRbEYgaPLMUWiPrRJ69CM4BuuHW8oCOxfMGUU7oSw/o5g=="],
+    "@effect/platform-bun": ["@effect/platform-bun@4.1.4", "", { "dependencies": { "@effect/platform-node-shared": "4.1.4" }, "peerDependencies": { "effect": "^4.1.4" } }, "sha512-Vdq82GOrD5HVF43aXVwHeX+4uIOrgAnjju9MEyizzFZ3yt3A6x9prtmHej1q/zAOaeNddtkpPr2ExHEvZ13S6Q=="],
 
-    "@effect/platform-node": ["@effect/platform-node@4.0.1", "", { "dependencies": { "@effect/platform-node-shared": "^4.0.1", "undici": "^8.11.2" }, "peerDependencies": { "effect": "^4.0.1", "redis": ">=5.0.0 <7.0.0" } }, "sha512-FT0Fu5LO0/XP9zBpj0HqrtJNLluK4StNKqf6TSulUsjp8FPBsDVXGJiDuyoN5J2yVMT7tgvhxSwaDcObWVRIaQ=="],
+    "@effect/platform-node": ["@effect/platform-node@4.1.4", "", { "dependencies": { "@effect/platform-node-shared": "4.1.4", "undici": "^8.12.4" }, "peerDependencies": { "effect": "^4.1.4", "redis": ">=5.1.0 <7.0.0" } }, "sha512-h7QExTPq/RfYtHP/8tMlgfBvqYsuJKhxfkU6w0+NaF/ihqQ8Y3GH9t28ltupQjoqMM7P6W5gy8rOji7F0qVrmg=="],
 
-    "@effect/platform-node-shared": ["@effect/platform-node-shared@4.0.1", "", { "dependencies": { "@types/ws": "^8.18.1", "ws": "^8.22.0" }, "peerDependencies": { "effect": "^4.0.1" } }, "sha512-VanaejudEhKJ4mpmqnEzdncVUhN6sGSO9ZDND54mRxAlZxj+4dYAWjDTYAy9o4tJo9aALeP2U8cVcOFzEdSeLg=="],
+    "@effect/platform-node-shared": ["@effect/platform-node-shared@4.1.4", "", { "dependencies": { "@types/ws": "^8.18.2", "ws": "^8.22.1" }, "peerDependencies": { "effect": "^4.1.4" } }, "sha512-DWdfphHGOFJNj/mYadgpT3jIm8aRXDcPrQiGXFBH4p2H4XmA7iYMrPsI8NxVgZ7kNX0q1+FGJZJama0tINHRAg=="],
 
-    "@effect/sql-d1": ["@effect/sql-d1@4.0.1", "", { "dependencies": { "@cloudflare/workers-types": "^5.20260926.1" }, "peerDependencies": { "effect": "^4.0.1" } }, "sha512-//VXATQFso9/y9JFDIfxxctMEwDlZq6RdlKA+q8nXE1N3q24FdBM9NF8BaBHT1G2NY+CB0U0PjqUASgsmcOvXw=="],
+    "@effect/sql-d1": ["@effect/sql-d1@4.1.4", "", { "dependencies": { "@cloudflare/workers-types": "^5.20261107.1" }, "peerDependencies": { "effect": "^4.1.4" } }, "sha512-x7UtDPNCgcAz6lvGbrf0INHxztV0qV8i4qleqPb31ADeilz7MnGYJ5Qhprqod+ySBUNPdsvXNRE9vm36TznIdg=="],
 
-    "@effect/sql-mssql": ["@effect/sql-mssql@4.0.1", "", { "dependencies": { "tedious": "^20.0.0" }, "peerDependencies": { "effect": "^4.0.1" } }, "sha512-i2BuaD0yiMNInjfYDIZZT1IoIyvj377bVL5bFxKcBwrT6sfzdH1VV5KcUWIpqF7YMG1CKM2NIWd05PH7rBfgLQ=="],
+    "@effect/sql-mssql": ["@effect/sql-mssql@4.1.4", "", { "dependencies": { "tedious": "^20.3.8" }, "peerDependencies": { "effect": "^4.1.4" } }, "sha512-PUPOCPVvmNdy163Dx+Awcn/GFy5AyaT59cc7oLI2vEWJZ0Bad58vAkEBj4zJs5WjJppy867FuYWMTO2IFui7bA=="],
 
-    "@effect/sql-mysql2": ["@effect/sql-mysql2@4.0.1", "", { "dependencies": { "mysql2": "^3.24.4" }, "peerDependencies": { "effect": "^4.0.1" } }, "sha512-qE6XARXkSAKVPtRPsIhAW1EkiFmWWMIIo7/UWpPyYCNE3DFUMRbq+q/BHtGLulRp5fGQziguu1LzbaXKzlTfMQ=="],
+    "@effect/sql-mysql2": ["@effect/sql-mysql2@4.1.4", "", { "dependencies": { "mysql2": "^3.24.6" }, "peerDependencies": { "effect": "^4.1.4" } }, "sha512-RZ/j8m3d8742q80rZn5YfWwoPUos7fkRPGnJv8XapKgGhAk7O1wxH6yHoB2aR+pVaMdrzG/MN856OIF5BPxzNQ=="],
 
-    "@effect/sql-pg": ["@effect/sql-pg@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1" } }, "sha512-X5aqOxHNWqVXL+vyTQZLYDip65lm5rrZHuNkWyyr672iup1tjYAs5Dn9tHR5h1t0blpJ57j8Ng5G5AUQ8teIqA=="],
+    "@effect/sql-pg": ["@effect/sql-pg@4.1.4", "", { "peerDependencies": { "effect": "^4.1.4" } }, "sha512-DHsmpIfJeCYiJVk3JwMQFAWaQAmKV/elUbBCjHFP7qeZtJ8dViUV/y/AHdUaZ+OmMwtr8J7ZXA7AlsKZ9hPiQA=="],
 
-    "@effect/sql-pglite": ["@effect/sql-pglite@4.0.1", "", { "dependencies": { "@electric-sql/pglite": "^0.5.8" }, "peerDependencies": { "effect": "^4.0.1" } }, "sha512-May68TQgqr5VrnBW0yCYqC46x1vw/jJPFfZVIyW+jnWcbVd2xpd3jBkiIhf5noWMRMXK6AK/dlAqFuZ2oG4Axw=="],
+    "@effect/sql-pglite": ["@effect/sql-pglite@4.1.4", "", { "dependencies": { "@electric-sql/pglite": "^0.5.15" }, "peerDependencies": { "effect": "^4.1.4" } }, "sha512-tkQjtcNLjdBlhdlPbEjtEDZ8EKVprecNarBs6J/4FsFJDOmxPSYprKGlFT2R1awAEPgLpPOjjQ5B6S96xnQtqw=="],
 
-    "@effect/sql-sqlite-do": ["@effect/sql-sqlite-do@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1" } }, "sha512-tS+qQok3xKsycnnhvIDX+6nvlM4Y2ouvru3voOzxtDQqX96NSOMX2xReLf4Feb6GN3jnzgEEtVGDDWk3YLrpsg=="],
+    "@effect/sql-sqlite-do": ["@effect/sql-sqlite-do@4.1.4", "", { "peerDependencies": { "effect": "^4.1.4" } }, "sha512-qeL9J7hgjvKmZu86d6jnzjts+lqxz/Lm/KOPka71++fl30sx9QoQLdHgmzC92S0TydC5EGO7i7rJRhLv4FV+qw=="],
 
-    "@effect/sql-sqlite-node": ["@effect/sql-sqlite-node@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1" } }, "sha512-VBlNvfFRxyyiu1viNygxA0ZVGZcpxBHA3+QLobaLQSXgAP0submgo98IzioWTHzdZUc9Xodi7ICci5ehhbD2fQ=="],
+    "@effect/sql-sqlite-node": ["@effect/sql-sqlite-node@4.1.4", "", { "peerDependencies": { "effect": "^4.1.4" } }, "sha512-vEB3Xv7TftvZscuyee8doM1rXr0Dle5jxpuvjaEBlZkGAsUt0YvGudnOfEvUHMicE8wEuDQfpjWXM1q9HjNKUA=="],
 
     "@effect/tsgo": ["@effect/tsgo@0.51.1", "", { "optionalDependencies": { "@effect/tsgo-darwin-arm64": "0.51.1", "@effect/tsgo-darwin-x64": "0.51.1", "@effect/tsgo-linux-arm": "0.51.1", "@effect/tsgo-linux-arm64": "0.51.1", "@effect/tsgo-linux-x64": "0.51.1", "@effect/tsgo-win32-arm64": "0.51.1", "@effect/tsgo-win32-x64": "0.51.1" }, "bin": { "effect-tsgo": "dist/effect-tsgo.cjs" } }, "sha512-i6mA6cNah+0mkPdu8qZILCO3Pnd9kWo03/s82Ju+1DFhdL28HFagi+1PRGxqgq1uMaHziWQ+ciKvOmIoks2RdA=="],
 
@@ -1282,7 +1281,7 @@
 
     "@effect/tsgo-win32-x64": ["@effect/tsgo-win32-x64@0.51.1", "", { "os": "win32", "cpu": "x64" }, "sha512-5HO1TJkWMlErIXbfKKWEMzg0Jj0MPQAzs0g1k7wA3B1ZxNDoDY9iRu5eGM+G1a4HmKl3zA7hQZd0ch2Dh4MohQ=="],
 
-    "@effect/vitest": ["@effect/vitest@4.0.1", "", { "peerDependencies": { "effect": "^4.0.1", "vitest": ">=5.0.0 <6.0.0" } }, "sha512-DbY9kf/018zBxRIX7rJwBnPVPzSarnUpcshm0vfYPFiDkSa7AFrXTh2BlDNUbrdrmqcIOBhVZ7GkEtxf8WiQrg=="],
+    "@effect/vitest": ["@effect/vitest@4.1.4", "", { "peerDependencies": { "effect": "^4.1.4", "vitest": ">=5.0.0 <6.0.0" } }, "sha512-AKpZ6zKihCRhY7hDbiQ2yp/krw+afIkxDRjFMwwzMiyhd0iYk0WaHa9J6GGC7TUF/C7HP2dZyMVq5xC0Qm/2/g=="],
 
     "@electric-sql/pglite": ["@electric-sql/pglite@0.5.8", "", {}, "sha512-n9tsbUOhwx2epK1V0ZG9Ar4SHWUju04dhmzZXiSBXwBoleOvIfals33NAaWgagQVAL4Rbvx/Ptsu3P+pA09f6Q=="],
 
@@ -3366,7 +3365,7 @@
 
     "ee-first": ["ee-first@1.1.1", "", {}, "sha512-WMwm9LhRUo+WUaRN+vRuETqG89IgZphVSNkdFgeb6sS/E4OrDIN7t48CAewSHXc6C8lefD8KKfr5vY61brQlow=="],
 
-    "effect": ["effect@4.0.1", "", {}, "sha512-b1VlQG9g8fwxE5QnIZuPoOP/0MsqHJSRKxUijjoM80E5q95FXrX5yWtY5XI8G+GJsBQAVSDbLS458z9a++uVvw=="],
+    "effect": ["effect@4.1.4", "", {}, "sha512-Tgrv/9FN+TZYyOn8XSli+fVqAfwDrDAkiX5Uu9vztINb675VTQdhD0gWI5Kzvhlh9QqzjZvw72iugqw5pwoghQ=="],
 
     "ejs": ["ejs@3.1.10", "", { "dependencies": { "jake": "^10.8.5" }, "bin": { "ejs": "bin/cli.js" } }, "sha512-UeJmFfOrAQS8OJWPZ4qtgHyWExa088/MtK5UEyoJGFH67cDEXkZSviOiKRCZ4Xij0zxI3JECgYs3oKx+AizQBA=="],
 
@@ -4116,7 +4115,7 @@
 
     "muggle-string": ["muggle-string@0.4.1", "", {}, "sha512-VNTrAak/KhO2i8dqqnqnAHOa3cYBwXEZe9h+D5h/1ZqFSTEFHdM65lR7RoIqq3tBBYavsOXV84NoHXZ0AkPyqQ=="],
 
-    "mysql2": ["mysql2@3.24.4", "", { "dependencies": { "aws-ssl-profiles": "^1.1.2", "generate-function": "^2.3.1", "iconv-lite": "^0.7.3", "long": "^5.3.2", "lru.min": "^1.1.4", "named-placeholders": "^1.1.6", "sql-escaper": "^1.5.1" }, "peerDependencies": { "@types/node": ">= 8" } }, "sha512-A2olluVlj0mvgyIRRISMEzXc51m+21mRtcMVjJyIpt2GG98+XrC9m9HzsqcMsX2LcnfccJvY5NB22g8fENBnOA=="],
+    "mysql2": ["mysql2@3.24.6", "", { "dependencies": { "aws-ssl-profiles": "^1.1.2", "generate-function": "^2.3.1", "iconv-lite": "^0.7.3", "long": "^5.3.2", "lru.min": "^1.1.4", "named-placeholders": "^1.1.6", "sql-escaper": "^1.5.1" }, "peerDependencies": { "@types/node": ">= 8" } }, "sha512-enu73KhbAua2L3dIxjc6qg6ZJ7H3pt1BImZASWNWY5xSsmJ1ZuUPULTDGXgmJbI61vb+nJAG19IZclIq19UidQ=="],
 
     "mz": ["mz@2.7.0", "", { "dependencies": { "any-promise": "^1.0.0", "object-assign": "^4.0.1", "thenify-all": "^1.0.0" } }, "sha512-z81GNO7nnYMEhrGh9LeymoE4+Yr0Wn5McHIZMK5cfQCl+NDX08sCZgUc9/6MHni9IWuFLm1Z3HTCXu2z9fN62Q=="],
 
@@ -4576,7 +4575,7 @@
 
     "sax": ["sax@1.6.1", "", {}, "sha512-42tBVwLWnaQvW5zc4HbZrTuWccECCZfBi92FDuwtqxasH+JbPB3/FOKb1m222K42R4WxuxzzMsTswfzgtSu64Q=="],
 
-    "scheduler": ["scheduler@0.27.0", "", {}, "sha512-eNv+WrVbKu1f3vbYJT/xtiF5syA5HPIMtf9IgY/nKg0sWqzAUEvqY/xm7OcZc/qafLx/iO9FgOmeSAp4v5ti/Q=="],
+    "scheduler": ["scheduler@0.28.0", "", {}, "sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw=="],
 
     "section-matter": ["section-matter@1.0.0", "", { "dependencies": { "extend-shallow": "^2.0.1", "kind-of": "^6.0.0" } }, "sha512-vfD3pmTzGpufjScBh50YHKzEu2lxBWhVEHsNGoEXmCmn2hKGfeNLYMzCJpe8cD7gqX7TJluOVpBkAequ6dgMmA=="],
 
@@ -4664,7 +4663,7 @@
 
     "split2": ["split2@4.2.0", "", {}, "sha512-UcjcJOWknrNkF6PLX83qcHM6KHgVKNkV62Y8a5uYDVv9ydGQVwAHMKqHdJje1VTWpljG0WYpCDhrCdAOYH4TWg=="],
 
-    "sprintf-js": ["sprintf-js@1.1.3", "", {}, "sha512-Oo+0REFV59/rz3gfJNKQiBlwfHaSESl1pcGyABQsnnIfWOFt6JNj5gCog2U6MLZ//IGYD+nA8nI+mTShREReaA=="],
+    "sprintf-js": ["sprintf-js@1.0.3", "", {}, "sha512-D9cPgkvLlV3t3IzL0D0YLvGA9Ahk4PcvVwUbN0dSGr1aP0Nrt4AEnTUbuGvquEC0mA64Gqt1fzirlRs5ibXx8g=="],
 
     "sql-escaper": ["sql-escaper@1.5.2", "", {}, "sha512-6CKD38c31SENivxOADeMNLdukOnUxUcflKtzVWzace7Riv1v7cAEym5Cx9Q7gYZ3ezIJI7ZpqecQq8cqNeSSFg=="],
 
@@ -4740,7 +4739,7 @@
 
     "tar-stream": ["tar-stream@3.2.1", "", { "dependencies": { "b4a": "^1.6.4", "bare-fs": "^4.5.5", "fast-fifo": "^1.2.0", "streamx": "^2.15.0" } }, "sha512-nqsEO8zLZJvrOMdEwkA0QdCLFbetHMn95Zqu4fKwX+hkaTWJPZZOrxx/PwtxoK0MMGQmBQNRW3CPs8IFYQz4cQ=="],
 
-    "tedious": ["tedious@20.0.0", "", { "dependencies": { "@azure/core-auth": "^1.10.1", "@azure/identity": "^4.13.1", "@azure/keyvault-keys": "^4.10.2", "@js-joda/core": "^6.0.1", "@types/node": ">=22", "bl": "^6.1.4", "iconv-lite": "^0.7.0", "js-md4": "^0.3.2", "native-duplexpair": "^1.0.0", "sprintf-js": "^1.1.3" } }, "sha512-bTR0aou0Ghucf0ytvZUJjnKHGKDV8tT57jPYtEkSpfTWFe++4uR1wxJLQ4mh5wlSvAYXzmgBxbI0vaE56qigXw=="],
+    "tedious": ["tedious@20.3.8", "", { "dependencies": { "@azure/core-auth": "^1.10.1", "@azure/identity": "^4.13.1", "@azure/keyvault-keys": "^4.10.2", "@js-joda/core": "^6.0.1", "@types/node": ">=22", "bl": "^6.1.4", "iconv-lite": "^0.7.0", "js-md4": "^0.3.2", "native-duplexpair": "^1.0.0" } }, "sha512-ZrJiwyGn340Sa0V0g37Xqj5bvmJ1riYwvEtg7zdm/lpw70f2ZNIQ2fvHmntU5fEOorWDa48Jo1oKYAuUP+rh7Q=="],
 
     "teex": ["teex@1.0.1", "", { "dependencies": { "streamx": "^2.12.5" } }, "sha512-eYE6iEI62Ni1H8oIa7KlDU6uQBtqr4Eajni3wX7rpfXD8ysFx8z0+dri+KWEPWpBsxXfxu58x/0jvTVT1ekOSg=="],
 
@@ -5130,11 +5129,15 @@
 
     "@cspotcode/source-map-support/@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.9", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.0.3", "@jridgewell/sourcemap-codec": "^1.4.10" } }, "sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ=="],
 
-    "@effect/platform-node/undici": ["undici@8.11.2", "", {}, "sha512-u4UB2/IrKdU6lFxumHmmo1a3fCQO5tzQllRorfoRS63txhrB7xTpSn1PftwC4qEHkOaqP95fCWW4lJzwErwzhQ=="],
+    "@effect/platform-node/undici": ["undici@8.12.4", "", {}, "sha512-8Mx+uNKKER2bA4AdtedkqRbwUCIJFr2nJckXRe5yrDqzePqwLP7VNcctN8/XdmDSbF7mS+jJKIszlL+vbam1VA=="],
 
-    "@effect/platform-node-shared/ws": ["ws@8.22.0", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-Ydggc987+RO0AnWtZ/7Wq9FtNvcrL1b/RO0ud9mWjUPgDrsAAwQSF51sm2hm1XofbU/4jkpGEsLFsZZxU+1DOg=="],
+    "@effect/platform-node-shared/@types/ws": ["@types/ws@8.18.2", "", { "dependencies": { "@types/node": "*" } }, "sha512-67MQl+fpWKVTT1NYdnmo3U4sc/xPo/zQBncVnI74qmQa0z/b+1g6iYqNmGCPbxO+zz2aklb08a0oHfegiVd0/w=="],
 
-    "@effect/sql-d1/@cloudflare/workers-types": ["@cloudflare/workers-types@5.20261005.1", "", {}, "sha512-QQwZY342US72QGHso/H1CSzn9FWe6IoLZ8TsYyoMnvRHHOnucGuKZRDCyOn43HAkkRQqfRHFw8NP1xe1A7Oj8A=="],
+    "@effect/platform-node-shared/ws": ["ws@8.22.2", "", { "peerDependencies": { "bufferutil": "^4.0.1", "utf-8-validate": ">=5.0.2" }, "optionalPeers": ["bufferutil", "utf-8-validate"] }, "sha512-/rEZ2ejown2N5gxVTHUu9bVVC7ttu0/Tgzf5hbTOixR3Fs7mbbXgn2DbdbcKgJOmpQMtrIUWivtYuVMnp/W/yA=="],
+
+    "@effect/sql-d1/@cloudflare/workers-types": ["@cloudflare/workers-types@5.20261110.1", "", {}, "sha512-XOr3TDQ2sNDiP9zoZtdwYVhuLZ3aFY+G+G4iSeNO9p/HDSveZJpyCbUtmpEElaClLBe9hIzfN26qd0i/S7ksPg=="],
+
+    "@effect/sql-pglite/@electric-sql/pglite": ["@electric-sql/pglite@0.5.16", "", {}, "sha512-Nj8KcIsJL748W408U2N8q4+9IlONdpRIU8MJypIAAINMJ5nqKyqpX7Mgg/5XKkXiAib3AoZGR6hnJFlrlLBrcg=="],
 
     "@electron/asar/commander": ["commander@5.1.0", "", {}, "sha512-P0CysNDQ7rtVw4QIQtm+MRxV66vKFSvlsQvGYXZWR3qFU0jlMKHZZZgw8e+8DSah4UDKMqnknRDQz+xuQXQ/Zg=="],
 
@@ -5560,11 +5563,11 @@
 
     "proxy-addr/ipaddr.js": ["ipaddr.js@1.9.1", "", {}, "sha512-0KI/607xoxSToH7GjN1FfSbLoU0+btTicjsQSWQlh/hZykN8KpmMf7uYwPW3R+akZ6R/w18ZlXSHBYXiYUPO3g=="],
 
-    "react-dom/scheduler": ["scheduler@0.28.0", "", {}, "sha512-juorfCmIkIw8tT+p5BXSm6PJjQF/ycEYmKyzURCIt/RaZIhL+PulbQ9Yu2z1HdOJDdqDTlxA1+xKBmHXJsczAw=="],
-
     "read-yaml-file/js-yaml": ["js-yaml@3.15.2", "", { "dependencies": { "argparse": "^1.0.7", "esprima": "^4.0.0" }, "bin": { "js-yaml": "bin/js-yaml.js" } }, "sha512-6EuL879VkRA+1Cz578mKMiKvjPNEuk6+r1JaFzoSWejZmtf7xWbIyw1e3KkxlkzTIt9Taw6JBhEppG7utc1P+w=="],
 
     "rimraf/glob": ["glob@7.2.3", "", { "dependencies": { "fs.realpath": "^1.0.0", "inflight": "^1.0.4", "inherits": "2", "minimatch": "^3.1.1", "once": "^1.3.0", "path-is-absolute": "^1.0.0" } }, "sha512-nFR0zLpU2YCaRxwoCJvL6UvCH2JFyFVIvwTLsIf21AuHlMskA1hhTdk+LlYJtOlYt9v6dvszD2BGRqBL+iQK9Q=="],
+
+    "roarr/sprintf-js": ["sprintf-js@1.1.3", "", {}, "sha512-Oo+0REFV59/rz3gfJNKQiBlwfHaSESl1pcGyABQsnnIfWOFt6JNj5gCog2U6MLZ//IGYD+nA8nI+mTShREReaA=="],
 
     "rolldown/@oxc-project/types": ["@oxc-project/types@0.146.0", "", {}, "sha512-XC0QsnnhVe7sLIWmYmdPw7x5P0h4W8vUU3Nv1ySgWXtvCz8NizoAEpGXA0sOYoJQV2Rl13LgURAHQ5cI5ILCSA=="],
 
@@ -6016,8 +6019,6 @@
 
     "@astrojs/react/vite/rolldown/@rolldown/binding-win32-x64-msvc": ["@rolldown/binding-win32-x64-msvc@1.2.9", "", { "os": "win32", "cpu": "x64" }, "sha512-Ip2mXoU0hM0boq3Rf+ekuT653OROSo6aSYcPT1VHE4q52KvyxgFkQgrgb/IEsxOuvQ2fZZbs8khJAyCEPM24/g=="],
 
-    "@asyncapi/converter/js-yaml/argparse/sprintf-js": ["sprintf-js@1.0.3", "", {}, "sha512-D9cPgkvLlV3t3IzL0D0YLvGA9Ahk4PcvVwUbN0dSGr1aP0Nrt4AEnTUbuGvquEC0mA64Gqt1fzirlRs5ibXx8g=="],
-
     "@electron/asar/minimatch/brace-expansion/balanced-match": ["balanced-match@1.0.2", "", {}, "sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw=="],
 
     "@electron/universal/minimatch/brace-expansion/balanced-match": ["balanced-match@1.0.2", "", {}, "sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw=="],
@@ -6134,15 +6135,11 @@
 
     "filelist/minimatch/brace-expansion/balanced-match": ["balanced-match@1.0.2", "", {}, "sha512-3oSeUO0TMV67hN1AmbXsK4yaqU7tjiHlbxRDZOpH0KW9+CeX4bRAaX0Anxt0tx2MrpRpWwQaPwIlISEJhYU5Pw=="],
 
-    "gray-matter/js-yaml/argparse/sprintf-js": ["sprintf-js@1.0.3", "", {}, "sha512-D9cPgkvLlV3t3IzL0D0YLvGA9Ahk4PcvVwUbN0dSGr1aP0Nrt4AEnTUbuGvquEC0mA64Gqt1fzirlRs5ibXx8g=="],
-
     "miniflare/sharp/@img/sharp-freebsd-wasm32/@img/sharp-wasm32": ["@img/sharp-wasm32@0.35.2", "", { "dependencies": { "@emnapi/runtime": "^1.11.1" } }, "sha512-Mrv4JQNYVQ94xH+jzZ9r+gowleN8mv2FTgKT+PI6bx5C0G8TdNYndu161pg2i7uoBwxy2ImPMHrJOM2LZef7Bw=="],
 
     "miniflare/sharp/@img/sharp-webcontainers-wasm32/@img/sharp-wasm32": ["@img/sharp-wasm32@0.35.2", "", { "dependencies": { "@emnapi/runtime": "^1.11.1" } }, "sha512-Mrv4JQNYVQ94xH+jzZ9r+gowleN8mv2FTgKT+PI6bx5C0G8TdNYndu161pg2i7uoBwxy2ImPMHrJOM2LZef7Bw=="],
 
     "node-html-parser/css-select/domutils/dom-serializer": ["dom-serializer@2.0.0", "", { "dependencies": { "domelementtype": "^2.3.0", "domhandler": "^5.0.2", "entities": "^4.2.0" } }, "sha512-wIkAryiqt/nV5EQKqQpo3SToSOV9J0DnbJqwK7Wv/Trc92zIAYZ4FlMu+JPFW1DfGFt81ZTCGgDEabffXeLyJg=="],
-
-    "read-yaml-file/js-yaml/argparse/sprintf-js": ["sprintf-js@1.0.3", "", {}, "sha512-D9cPgkvLlV3t3IzL0D0YLvGA9Ahk4PcvVwUbN0dSGr1aP0Nrt4AEnTUbuGvquEC0mA64Gqt1fzirlRs5ibXx8g=="],
 
     "rimraf/glob/minimatch/brace-expansion": ["brace-expansion@1.1.21", "", { "dependencies": { "balanced-match": "^1.0.0", "concat-map": "0.0.1" } }, "sha512-9zeA+KLZNNzglF2TPKRQEDyx6Yby7daAkuy8MiPzpXPsYDWi/DRM8jmwUDxokQjYqBpv5DgPiwD4h4ZZSy1Ujw=="],
 

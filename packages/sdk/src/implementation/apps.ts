@@ -3,7 +3,8 @@ import { AppWorkflowsActive } from "../contracts/apps.ts";
 import { AppWebhooksActive } from "../contracts/apps.ts";
 import { appSlug } from "../contracts/app-slug.ts";
 /** Durable configured apps and immutable versions, sharing one execution path. */
-import { Clock, type Crypto, Effect, Schema, Struct } from "effect";
+import { Clock, Effect, Schema, Struct } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import { SqlError } from "effect/sql";
 import {
   App,
@@ -257,7 +258,7 @@ export const createApp = (db: Query, app: StoredApp) => {
 export const makeApps = (
   db: Query,
   runtime: Runtime,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   sources: AppSourceStorage,
   repositories: RepositoryBackend,
   registry: Registry,
@@ -451,11 +452,7 @@ export const makeApps = (
           return yield* new AppNameTaken({ owner: input.owner, name: deployName });
       }
       const code =
-        before === null
-          ? AppCodeId.make(
-              `code_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-            )
-          : before.code;
+        before === null ? AppCodeId.make(`code_${yield* crypto.random.uuidV4()}`) : before.code;
       const sequence = before === null ? 1 : before.deploySequence;
       const suppliedFiles =
         input.commit === undefined
@@ -465,12 +462,7 @@ export const makeApps = (
         yield* buildSource(input.owner, deployName, suppliedFiles);
       // The app's database lives in its data facet, keyed by app ID, so a new app's ID is chosen
       // before its migrations run. A failed migration fails the deploy before anything activates.
-      const appId =
-        before?.id ??
-        reserved ??
-        AppId.make(
-          `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-        );
+      const appId = before?.id ?? reserved ?? AppId.make(`app_${yield* crypto.random.uuidV4()}`);
       // Migrations are the database. A build without any would drop the ones an earlier version
       // applied, whichever version is active now, so the app's whole version history decides.
       // The build is not asked: bundles of earlier protocols cannot answer. Checked again under the
@@ -541,9 +533,7 @@ export const makeApps = (
         );
 
       const version = {
-        id: VersionId.make(
-          `dpl_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-        ),
+        id: VersionId.make(`dpl_${yield* crypto.random.uuidV4()}`),
         code,
         owner: input.owner,
         sourceCommit: input.commit ?? null,

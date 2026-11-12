@@ -1,5 +1,7 @@
 /** Stale-while-revalidate reads of evaluated app declarations (skills, workflows, webhooks). */
-import { Clock, Deferred, Effect, Exit, Fiber, Option, Schema, type Crypto } from "effect";
+import { Clock, Deferred, Effect, Exit, Fiber, Option, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
+import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
 import {
   changeCheckMillis,
@@ -119,15 +121,12 @@ export const makeDeclarations = (options: {
   readonly background: BackgroundWork | undefined;
   readonly resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"];
   readonly accountsUsable: ReturnType<typeof makeOAuth>["usableAll"];
-  readonly crypto: Crypto.Crypto;
+  readonly crypto: HostCrypto;
   readonly lifecycle: ResourceLifecycle | undefined;
   readonly hostApi: HostApi | undefined;
 }) => {
   const digest = (bytes: Uint8Array) =>
-    options.crypto.digest("SHA-256", bytes).pipe(
-      Effect.map(Hex.encode),
-      Effect.mapError(() => new StorageError()),
-    );
+    options.crypto.digest.digest(Digest.sha256, bytes).pipe(Effect.map(Hex.encode));
   const key = (command: string, state: InvocationSnapshot) =>
     Effect.gen(function* () {
       const selections = state.selections.map(({ slot, accounts }) => [

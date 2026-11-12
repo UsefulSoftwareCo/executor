@@ -62,6 +62,7 @@ import { retainedAssetFolders, retainedAssetPath } from "./contracts/retained-as
 import * as Output from "alchemy/Output";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import { Config, Effect, Layer, Option, Path, Ref } from "effect";
+import { Digest } from "effect/crypto";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { cloudAuth } from "./infrastructure/auth.ts";
 import { cloudAccountCallback } from "./implementation/account-callback.ts";
@@ -803,6 +804,8 @@ export default Api.make(
         cloudAuthDatabase,
         cloudTelemetry,
         Cloudflare.Workers.CronEventSourceLive,
+        // The published skills' versions are digests; Workers compute them with Web Crypto.
+        Digest.layerWebCrypto,
       ),
     ),
   ),

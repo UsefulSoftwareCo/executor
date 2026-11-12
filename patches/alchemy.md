@@ -108,6 +108,30 @@ and the Bun TypeScript entry points (`src/`). It carries:
   `Random` values, PlanetScale roles, Axiom API tokens and monitors. Remove
   this part once no stage needs recovering.
 
+- **Effect 4.1 crypto services.** beta.80 is built for Effect 4.0 and reads the
+  `effect/Crypto` module, which Effect 4.1 removed. The patch carries upstream
+  beta.85's version of the three modules that used it: `Auth/OAuthFlow` takes its
+  random bytes and PKCE digest from `SecureRandom` and `Digest`,
+  `Util/PlatformServices` adds the Web Crypto layers that the platform services no
+  longer include, and `Stack` and the declarations that named `Crypto` name those
+  two services. Alchemy stays on beta.80 because beta.84 moved every provider into
+  its own package and beta.85 moves the shared Cloudflare state store to version
+  8, after which a deploy from beta.80 is refused; see
+  [the upgrade note](../notes/effect-mcp.md#alchemy-on-effect-41). Drop this part
+  with the move to beta.85 or later.
+
+- **Worker platform services.** `WorkerBridge` gave every Worker
+  `NodeServices.layer`: Node's file system, child process, terminal, stdio and
+  path services, about 40 KB of each upload. No Executor Worker calls the first
+  four, and Effect 4.1 made them larger. A Worker now gets Node's path service
+  and `FileSystem.layerNoop({})`, a file system in which every call fails, which
+  Effect's `HttpPlatform` needs in order to build. A Worker that asks for a
+  child process, terminal or stdio service fails with a missing service. Code
+  that also runs while planning a deploy still gets the real services there.
+  This is what kept the Workers inside their upload budgets on Effect 4.1
+  (`src/infrastructure/worker-build.ts` in `apps/hosted/cloud`); upstream beta.85
+  still provides all five.
+
 Upstream beta.80 now provides what the beta.79 patch also carried: storing a
 no-op resource before signalling dependents
 ([alchemy-run/alchemy#1717](https://github.com/alchemy-run/alchemy/issues/1717)),

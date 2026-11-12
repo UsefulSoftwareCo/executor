@@ -1,5 +1,7 @@
 /** Deterministic provider identity and validation of serialized field declarations. */
-import { type Crypto, Effect, JsonSchema, Redacted, Schema, SchemaRepresentation } from "effect";
+import { Effect, JsonSchema, Redacted, Schema, SchemaRepresentation } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
+import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
 import { type HostAccount, withoutHelp } from "apps/contracts";
 import { AccountFieldsInvalid } from "../contracts/account.ts";
@@ -34,7 +36,7 @@ export function canonical(value: Json): string {
  * changes the ID, and apps that explain a provider differently share its accounts.
  * `shared` is the definition every app with this ID agrees on, without hosts or help.
  */
-export const identifyProvider = (definition: ProviderDefinition, crypto: Crypto.Crypto) =>
+export const identifyProvider = (definition: ProviderDefinition, crypto: HostCrypto) =>
   Effect.gen(function* () {
     const parsed = yield* Schema.decodeUnknownEffect(ProviderDefinition)(definition).pipe(
       Effect.mapError(() => new StorageError()),
@@ -43,9 +45,10 @@ export const identifyProvider = (definition: ProviderDefinition, crypto: Crypto.
     const content = yield* Schema.decodeUnknownEffect(JsonObject)(shared).pipe(
       Effect.mapError(() => new StorageError()),
     );
-    const hash = yield* crypto
-      .digest("SHA-256", new TextEncoder().encode(canonical(content)))
-      .pipe(Effect.mapError(() => new StorageError()));
+    const hash = yield* crypto.digest.digest(
+      Digest.sha256,
+      new TextEncoder().encode(canonical(content)),
+    );
     return { id: ProviderId.make(`prv_${Hex.encode(hash)}`), definition: parsed, shared };
   });
 

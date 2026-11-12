@@ -11,7 +11,9 @@
  * reconnect keeps the client and the callback it was registered at, under the host's policy for
  * it, without the grant naming it.
  */
-import { Clock, type Crypto, Data, Effect, Option, Redacted, Schema } from "effect";
+import { Clock, Data, Effect, Option, Redacted, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
+import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
 import {
   OAuthClientAuth,
@@ -117,7 +119,7 @@ const decodeStored = <A>(schema: Schema.Decoder<A>, value: unknown) =>
 export const makeSavedOAuthClients = (
   db: Query,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle: ResourceLifecycle | undefined,
   /** Callbacks the host sent when saving clients, tried when reading which owner a key names. */
   callbacks: ReadonlyArray<string>,
@@ -233,10 +235,9 @@ export const makeSavedOAuthClients = (
     });
 
   const sha256 = (value: string) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(value)).pipe(
-      Effect.map(Hex.encode),
-      Effect.mapError(() => new StorageError()),
-    );
+    crypto.digest
+      .digest(Digest.sha256, new TextEncoder().encode(value))
+      .pipe(Effect.map(Hex.encode));
 
   /** Callbacks the host sent, as sign-ins wrote them into keys. */
   const hrefs = [

@@ -1,13 +1,13 @@
 # Tool result content in the Effect MCP server
 
-Effect 4.0.1's `McpServer.registerToolkit` sends every successful tool result as
+Effect's `McpServer.registerToolkit` sends every successful tool result as
 one text block holding the result's JSON, with the same value as
 `structuredContent`. A tool cannot return other content blocks, so the images and
 audio an app tool returns reached the MCP client as base64 inside that text: the
 model never saw them, and the bytes counted against the client's text limits
 twice ([public issue 2482](https://github.com/UsefulSoftwareCo/executor/issues/2482)).
 
-`effect@4.0.1.patch` adds the `McpServer.ResultContent` tool annotation, in source,
+`effect@4.1.4.patch` adds the `McpServer.ResultContent` tool annotation, in source,
 distributed JavaScript and `McpServer.d.ts`. Its value builds a successful
 result's `content` and `structuredContent` from the encoded value. The server
 decodes what it returns as a `CallToolResult`, so content uses the MCP wire

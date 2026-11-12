@@ -1,0 +1,388 @@
+diff --git a/dist/PgliteClient.d.ts b/dist/PgliteClient.d.ts
+index 83b4f570fe46d44a133dabb5378d7a9d85e7281c..218218cebd0d3b1d9d7a455b677747a8add5f72f 100644
+--- a/dist/PgliteClient.d.ts
++++ b/dist/PgliteClient.d.ts
+@@ -16,6 +16,7 @@ import { type PGliteInterface, type PGliteOptions } from "@electric-sql/pglite";
+ import * as Config from "effect/Config";
+ import * as Context from "effect/Context";
+ import * as Effect from "effect/Effect";
++import * as Exit from "effect/Exit";
+ import * as Layer from "effect/Layer";
+ import * as Queue from "effect/Queue";
+ import * as Reactivity from "effect/reactivity/Reactivity";
+@@ -147,6 +148,26 @@ export declare namespace PgliteClientConfig {
+  * @since 4.0.0
+  */
+ export declare const make: (options?: PgliteClientConfig) => Effect.Effect<PgliteClient & Client.SqlClient, SqlError, Scope.Scope | Reactivity.Reactivity>;
++/**
++ * Runs `leaves` concurrently and runs the first statement of each together,
++ * once every leaf has issued one or finished, holding the client's lock as a
++ * transaction does: leaves before index `outside` first, each in its own
++ * implicit transaction, then, with `begin`, the rest between `BEGIN <begin>`
++ * and `COMMIT`, so they read one snapshot. If `BEGIN` fails, every statement
++ * after it fails with that error. Statements already handed to PGlite before
++ * the lock was taken can still run inside the transaction, as with
++ * `withTransaction`. A leaf's later statements, and statements in a
++ * transaction, run as usual. Leaves must not wait for one another. Returns
++ * each leaf's exit, in order.
++ *
++ * @stability unstable
++ * @category constructors
++ * @since 4.0.0
++ */
++export declare const pipelined: (leaves: ReadonlyArray<Effect.Effect<unknown, unknown, never>>, options?: {
++    readonly outside?: number | undefined;
++    readonly begin?: string | undefined;
++}) => Effect.Effect<Array<Exit.Exit<unknown, unknown>>>;
+ /**
+  * Builds a `PgliteClient` around an existing PGlite instance, adding SQL client operations, LISTEN/NOTIFY, dump helpers, and serialized access.
+  *
+diff --git a/dist/PgliteClient.js b/dist/PgliteClient.js
+index 4eab0b88385420913f27ebe5c48fbef33482d67b..a7c96359cf0af0b343968f875c829409bf094752 100644
+--- a/dist/PgliteClient.js
++++ b/dist/PgliteClient.js
+@@ -15,7 +15,10 @@
+ import { PGlite } from "@electric-sql/pglite";
+ import * as Config from "effect/Config";
+ import * as Context from "effect/Context";
++import * as Deferred from "effect/Deferred";
+ import * as Effect from "effect/Effect";
++import * as Exit from "effect/Exit";
++import * as Fiber from "effect/Fiber";
+ import * as Layer from "effect/Layer";
+ import * as Queue from "effect/Queue";
+ import * as Reactivity from "effect/reactivity/Reactivity";
+@@ -69,6 +72,102 @@ export const make = (options = {}) => Effect.gen(function* () {
+     liveClient: pglite
+   });
+ });
++/**
++ * Set by {@link pipelined} on each of its leaves. A client's borrower asks it
++ * to `claim` a leaf's first statement; a claimed statement is held and runs
++ * with the batch. Unset everywhere else.
++ *
++ * @internal
++ */
++export const PipelineCapture = /*#__PURE__*/Context.Reference("@effect/sql-pglite/PipelineCapture", {
++  defaultValue: () => undefined
++});
++/**
++ * Runs `leaves` concurrently and runs the first statement of each together,
++ * once every leaf has issued one or finished, holding the client's lock as a
++ * transaction does: leaves before index `outside` first, each in its own
++ * implicit transaction, then, with `begin`, the rest between `BEGIN <begin>`
++ * and `COMMIT`, so they read one snapshot. If `BEGIN` fails, every statement
++ * after it fails with that error. Statements already handed to PGlite before
++ * the lock was taken can still run inside the transaction, as with
++ * `withTransaction`. A leaf's later statements, and statements in a
++ * transaction, run as usual. Leaves must not wait for one another. Returns
++ * each leaf's exit, in order.
++ *
++ * @stability unstable
++ * @category constructors
++ * @since 4.0.0
++ */
++export const pipelined = (leaves, options = {}) => Effect.suspend(() => {
++  if (leaves.length === 0) return Effect.succeed([]);
++  const outside = options.outside ?? 0;
++  const items = [];
++  let waiting = leaves.length;
++  let released = false;
++  const release = Deferred.makeUnsafe();
++  const settle = () => {
++    waiting--;
++    if (waiting === 0) {
++      released = true;
++      Deferred.doneUnsafe(release, Exit.void);
++    }
++  };
++  const leaf = (effect, index) => {
++    let claimed = false;
++    let settled = false;
++    const once = () => {
++      if (settled) return;
++      settled = true;
++      settle();
++    };
++    const capture = {
++      claim: () => {
++        if (released || claimed) return false;
++        claimed = true;
++        return true;
++      },
++      // The held statement runs in the batch's fiber, as the batch's own statement.
++      submit: (batch, run) => Effect.suspend(() => {
++        const deferred = Deferred.makeUnsafe();
++        items.push({
++          batch,
++          run: run,
++          deferred,
++          index
++        });
++        once();
++        return Deferred.await(deferred);
++      })
++    };
++    return effect.pipe(Effect.provideService(PipelineCapture, capture), Effect.exit, Effect.ensuring(Effect.sync(once)));
++  };
++  return Effect.gen(function* () {
++    const fibers = [];
++    for (let i = 0; i < leaves.length; i++) fibers.push(yield* Effect.forkChild(leaf(leaves[i], i)));
++    yield* Deferred.await(release);
++    items.sort((a, b) => a.index - b.index);
++    // Each client runs its own leaves' statements.
++    if (items.length > 0) {
++      yield* Effect.forEach(new Set(items.map(item => item.batch)), batch => {
++        const own = items.filter(item => item.batch === batch);
++        return batch(own.filter(item => item.index < outside), own.filter(item => item.index >= outside), options.begin).pipe(Effect.onError(cause => Effect.sync(() => {
++          for (const item of own) Deferred.doneUnsafe(item.deferred, Exit.failCause(cause));
++        })));
++      }, {
++        discard: true
++      }).pipe(Effect.withSpan("sql.pipeline", {
++        kind: "client",
++        attributes: {
++          "db.pipeline.leaves": leaves.length,
++          "db.pipeline.statements": items.length
++        }
++      }));
++    }
++    const exits = [];
++    for (const fiber of fibers) exits.push(yield* Fiber.join(fiber));
++    return exits;
++  });
++});
+ /**
+  * Builds a `PgliteClient` around an existing PGlite instance, adding SQL client operations, LISTEN/NOTIFY, dump helpers, and serialized access.
+  *
+@@ -89,9 +188,29 @@ export const fromClient = options => Effect.gen(function* () {
+     interruptible: true
+   }), connection);
+   const config = options;
++  // Statements held by `pipelined`, run under the lock a transaction takes, in
++  // order: `outside` first, then `inside` in one transaction when `begin` is set.
++  const runBatch = (outside, inside, begin) => semaphore.withPermits(1)(Effect.uninterruptible(Effect.gen(function* () {
++    const run = item => Effect.flatMap(Effect.exit(item.run(connection)), exit => Effect.sync(() => Deferred.doneUnsafe(item.deferred, exit)));
++    for (const item of outside) yield* run(item);
++    if (inside.length === 0) return;
++    if (begin === undefined) {
++      for (const item of inside) yield* run(item);
++      return;
++    }
++    const began = yield* Effect.exit(connection.executeRaw(`BEGIN ${begin}`, []));
++    if (Exit.isFailure(began)) {
++      for (const item of inside) Deferred.doneUnsafe(item.deferred, began);
++      return;
++    }
++    for (const item of inside) yield* run(item);
++    // An aborted transaction's COMMIT rolls it back; either way the session leaves it.
++    yield* Effect.exit(connection.executeRaw("COMMIT", []));
++  })));
+   const client = yield* Client.make({
+     driver: "pglite",
+     acquirer,
++    borrower: f => Effect.flatMap(PipelineCapture, capture => capture !== undefined && capture.claim() ? capture.submit(runBatch, f) : Effect.scoped(Effect.flatMap(acquirer, f))),
+     compiler,
+     releaseSavepoint: name => `RELEASE SAVEPOINT ${name}`,
+     spanAttributes,
+diff --git a/src/PgliteClient.ts b/src/PgliteClient.ts
+index 8a6808b4712221d6de89c93d0c29aaf7f93222be..0cb68c78e43b8d8e1333b4b913db432e0f804aa7 100644
+--- a/src/PgliteClient.ts
++++ b/src/PgliteClient.ts
+@@ -15,7 +15,10 @@
+ import { PGlite, type PGliteInterface, type PGliteOptions } from "@electric-sql/pglite"
+ import * as Config from "effect/Config"
+ import * as Context from "effect/Context"
++import * as Deferred from "effect/Deferred"
+ import * as Effect from "effect/Effect"
++import * as Exit from "effect/Exit"
++import * as Fiber from "effect/Fiber"
+ import * as Layer from "effect/Layer"
+ import * as Queue from "effect/Queue"
+ import * as Reactivity from "effect/reactivity/Reactivity"
+@@ -197,6 +200,146 @@ export const make = (
+     return yield* fromClient({ ...options, liveClient: pglite })
+   })
+ 
++/** A leaf's first statement, held for its {@link pipelined} batch. */
++interface HeldStatement {
++  readonly batch: PipelineBatch
++  readonly run: (connection: Connection) => Effect.Effect<unknown, unknown>
++  readonly deferred: Deferred.Deferred<unknown, unknown>
++  readonly index: number
++}
++
++/** Runs one client's held statements under the lock a transaction takes. */
++type PipelineBatch = (
++  outside: ReadonlyArray<HeldStatement>,
++  inside: ReadonlyArray<HeldStatement>,
++  begin: string | undefined
++) => Effect.Effect<void>
++
++/**
++ * What {@link pipelined} provides each leaf: `claim` takes the leaf's first statement for the
++ * batch (once, and only before the batch runs); `submit` hands it over and waits for its answer.
++ *
++ * @internal
++ */
++export interface PipelineCaptureService {
++  readonly claim: () => boolean
++  readonly submit: <A, E, R>(
++    batch: PipelineBatch,
++    run: (connection: Connection) => Effect.Effect<A, E, R>
++  ) => Effect.Effect<A, E, R>
++}
++
++/**
++ * Set by {@link pipelined} on each of its leaves. A client's borrower asks it
++ * to `claim` a leaf's first statement; a claimed statement is held and runs
++ * with the batch. Unset everywhere else.
++ *
++ * @internal
++ */
++export const PipelineCapture = Context.Reference<PipelineCaptureService | undefined>(
++  "@effect/sql-pglite/PipelineCapture",
++  { defaultValue: () => undefined }
++)
++
++/**
++ * Runs `leaves` concurrently and runs the first statement of each together,
++ * once every leaf has issued one or finished, holding the client's lock as a
++ * transaction does: leaves before index `outside` first, each in its own
++ * implicit transaction, then, with `begin`, the rest between `BEGIN <begin>`
++ * and `COMMIT`, so they read one snapshot. If `BEGIN` fails, every statement
++ * after it fails with that error. Statements already handed to PGlite before
++ * the lock was taken can still run inside the transaction, as with
++ * `withTransaction`. A leaf's later statements, and statements in a
++ * transaction, run as usual. Leaves must not wait for one another. Returns
++ * each leaf's exit, in order.
++ *
++ * @stability unstable
++ * @category constructors
++ * @since 4.0.0
++ */
++export const pipelined = (
++  leaves: ReadonlyArray<Effect.Effect<unknown, unknown, never>>,
++  options: { readonly outside?: number | undefined; readonly begin?: string | undefined } = {}
++): Effect.Effect<Array<Exit.Exit<unknown, unknown>>> =>
++  Effect.suspend(() => {
++    if (leaves.length === 0) return Effect.succeed([])
++    const outside = options.outside ?? 0
++    const items: Array<HeldStatement> = []
++    let waiting = leaves.length
++    let released = false
++    const release = Deferred.makeUnsafe<void>()
++    const settle = (): void => {
++      waiting--
++      if (waiting === 0) {
++        released = true
++        Deferred.doneUnsafe(release, Exit.void)
++      }
++    }
++    const leaf = (effect: Effect.Effect<unknown, unknown, never>, index: number) => {
++      let claimed = false
++      let settled = false
++      const once = (): void => {
++        if (settled) return
++        settled = true
++        settle()
++      }
++      const capture: PipelineCaptureService = {
++        claim: () => {
++          if (released || claimed) return false
++          claimed = true
++          return true
++        },
++        // The held statement runs in the batch's fiber, as the batch's own statement.
++        submit: <A, E, R>(batch: PipelineBatch, run: (connection: Connection) => Effect.Effect<A, E, R>) =>
++          Effect.suspend(() => {
++            const deferred = Deferred.makeUnsafe<unknown, unknown>()
++            items.push({ batch, run: run as HeldStatement["run"], deferred, index })
++            once()
++            return Deferred.await(deferred) as Effect.Effect<A, E, R>
++          })
++      }
++      return effect.pipe(
++        Effect.provideService(PipelineCapture, capture),
++        Effect.exit,
++        Effect.ensuring(Effect.sync(once))
++      )
++    }
++    return Effect.gen(function*() {
++      const fibers: Array<Fiber.Fiber<Exit.Exit<unknown, unknown>>> = []
++      for (let i = 0; i < leaves.length; i++) fibers.push(yield* Effect.forkChild(leaf(leaves[i], i)))
++      yield* Deferred.await(release)
++      items.sort((a, b) => a.index - b.index)
++      // Each client runs its own leaves' statements.
++      if (items.length > 0) {
++        yield* Effect.forEach(new Set(items.map((item) => item.batch)), (batch) => {
++          const own = items.filter((item) => item.batch === batch)
++          return batch(
++            own.filter((item) => item.index < outside),
++            own.filter((item) => item.index >= outside),
++            options.begin
++          ).pipe(
++            Effect.onError((cause) =>
++              Effect.sync(() => {
++                for (const item of own) Deferred.doneUnsafe(item.deferred, Exit.failCause(cause))
++              })
++            )
++          )
++        }, { discard: true }).pipe(
++          Effect.withSpan("sql.pipeline", {
++            kind: "client",
++            attributes: {
++              "db.pipeline.leaves": leaves.length,
++              "db.pipeline.statements": items.length
++            }
++          })
++        )
++      }
++      const exits: Array<Exit.Exit<unknown, unknown>> = []
++      for (const fiber of fibers) exits.push(yield* Fiber.join(fiber))
++      return exits
++    })
++  })
++
+ /**
+  * Builds a `PgliteClient` around an existing PGlite instance, adding SQL client operations, LISTEN/NOTIFY, dump helpers, and serialized access.
+  *
+@@ -233,9 +376,38 @@ export const fromClient = (
+     )
+ 
+     const config = options as PgliteClientConfig
++    // Statements held by `pipelined`, run under the lock a transaction takes, in
++    // order: `outside` first, then `inside` in one transaction when `begin` is set.
++    const runBatch: PipelineBatch = (outside, inside, begin) =>
++      semaphore.withPermits(1)(Effect.uninterruptible(Effect.gen(function*() {
++        const run = (item: HeldStatement) =>
++          Effect.flatMap(
++            Effect.exit(item.run(connection)),
++            (exit) => Effect.sync(() => Deferred.doneUnsafe(item.deferred, exit))
++          )
++        for (const item of outside) yield* run(item)
++        if (inside.length === 0) return
++        if (begin === undefined) {
++          for (const item of inside) yield* run(item)
++          return
++        }
++        const began = yield* Effect.exit(connection.executeRaw(`BEGIN ${begin}`, []))
++        if (Exit.isFailure(began)) {
++          for (const item of inside) Deferred.doneUnsafe(item.deferred, began)
++          return
++        }
++        for (const item of inside) yield* run(item)
++        // An aborted transaction's COMMIT rolls it back; either way the session leaves it.
++        yield* Effect.exit(connection.executeRaw("COMMIT", []))
++      })))
+     const client = yield* Client.make({
+       driver: "pglite",
+       acquirer,
++      borrower: (f) =>
++        Effect.flatMap(PipelineCapture, (capture) =>
++          capture !== undefined && capture.claim()
++            ? capture.submit(runBatch, f)
++            : Effect.scoped(Effect.flatMap(acquirer, f))),
+       compiler,
+       releaseSavepoint: (name) => `RELEASE SAVEPOINT ${name}`,
+       spanAttributes,

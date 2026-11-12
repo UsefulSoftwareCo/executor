@@ -17,8 +17,8 @@
     "./schema-definitions": "./src/schema-definitions.ts"
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.1",
-    "effect": "4.0.1",
+    "@effect/platform-node": "4.1.4",
+    "effect": "4.1.4",
     "ipaddr.js": "2.5.0"
   }
 }

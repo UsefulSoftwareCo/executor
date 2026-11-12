@@ -1,4 +1,5 @@
-import { Crypto, Effect } from "effect";
+import { Effect } from "effect";
+import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
 import { HttpRouter, HttpServerResponse } from "effect/http";
 import type { HostApi } from "@executor-js/sdk/core";
@@ -43,9 +44,9 @@ export const hostedApiDocumentRoute = (api: LazyHostedApiDocument) =>
  * refuses one whose revision their cache does not belong to; see `HostApiCheck` in the SDK.
  */
 export const hostedApiRevision = (body: string) =>
-  Effect.flatMap(Crypto.Crypto, (crypto) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(body)),
-  ).pipe(Effect.map(Hex.encode), Effect.orDie);
+  Effect.flatMap(Digest.Digest, (digest) =>
+    digest.digest(Digest.sha256, new TextEncoder().encode(body)),
+  ).pipe(Effect.map(Hex.encode));
 
 /**
  * This installation's API as the apps that sign in to it read it. Executor apps declare a provider

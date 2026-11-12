@@ -6,7 +6,6 @@ import {
   Array as Arr,
   Clock,
   Context,
-  type Crypto,
   Effect,
   Exit,
   Fiber,
@@ -17,6 +16,8 @@ import {
   SchemaRepresentation,
   Struct,
 } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
+import { Digest } from "effect/crypto";
 import { Base64, Hex } from "effect/encoding";
 import {
   AccountConnectionRefused,
@@ -633,17 +634,16 @@ const callbackFailed = (error: OAuthProtocolFailed, sent: OAuthResourceIndicator
 export const makeOAuth = (
   db: Query,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   options?: OAuthOptions,
   lifecycle?: ResourceLifecycle,
   background?: BackgroundWork,
 ) => {
   const hash = (value: string) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(value)).pipe(
-      Effect.map(Hex.encode),
-      Effect.mapError(() => new StorageError()),
-    );
-  const nextId = crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
+    crypto.digest
+      .digest(Digest.sha256, new TextEncoder().encode(value))
+      .pipe(Effect.map(Hex.encode));
+  const nextId = crypto.random.uuidV4();
   const protocol = options === undefined ? undefined : makeOAuthProtocol(options);
   const firstPartyClients = new Map(
     (options?.firstPartyClients ?? []).map((client) => [client.id, client] as const),

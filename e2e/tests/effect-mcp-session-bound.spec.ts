@@ -1,5 +1,5 @@
 /**
- * The MCP transport patched in `patches/effect@4.0.1.patch` keeps at most `maxSessions` HTTP
+ * The MCP transport patched in `patches/effect@4.1.4.patch` keeps at most `maxSessions` HTTP
  * sessions and never forgets one that owns work: a request in flight, or work `heldSession`
  * reports. When every session owns work, `initialize` is refused with 503 until one finishes.
  *

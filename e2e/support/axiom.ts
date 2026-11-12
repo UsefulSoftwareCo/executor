@@ -21,7 +21,8 @@ const Row = Schema.Struct({
   serviceName: Schema.String,
   startTime: Schema.String,
   durationMs: Schema.Number,
-  status: Schema.String,
+  // Effect 4.1 leaves a span that did not fail unset, which Axiom stores as no status code.
+  status: Schema.NullOr(Schema.String),
   tags: Schema.NullOr(Schema.Record(Schema.String, Schema.Json)),
   standard: Schema.Record(Schema.String, Schema.Json),
   build: Schema.NullOr(Schema.String),

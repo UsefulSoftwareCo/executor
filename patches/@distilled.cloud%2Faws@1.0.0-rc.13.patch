@@ -1,0 +1,26 @@
+diff --git a/lib/services/s3.js b/lib/services/s3.js
+index e8a4f24d6a7405b14df50adb88c3296a5ce03cde..48c11b5ef870846b7dbc74716107bd0ce2137f73 100644
+--- a/lib/services/s3.js
++++ b/lib/services/s3.js
+@@ -1925,7 +1925,7 @@ export const CompleteMultipartUploadOutput = /*@__PURE__*/ S.suspend(() => S.Str
+ });
+ export const ObjectCannedACL = S.String;
+ export const ChecksumAlgorithm = S.String;
+-export const Metadata = /*@__PURE__*/ S.Record(S.String, S.String.pipe(S.optional));
++export const Metadata = /*@__PURE__*/ S.Record(S.String, S.UndefinedOr(S.String));
+ export const MetadataDirective = S.String;
+ export const TaggingDirective = S.String;
+ export const AnnotationDirective = S.String;
+diff --git a/src/services/s3.ts b/src/services/s3.ts
+index 14315725b120901f1e5e9a8ed75f9d1fe156d3ef..4b74907d7c6f9664a0c2a341356e9f7191b57fa1 100644
+--- a/src/services/s3.ts
++++ b/src/services/s3.ts
+@@ -3652,7 +3652,7 @@ export type MetadataValue = string;
+ export type Metadata = { [key: string]: string | undefined };
+ export const Metadata = /*@__PURE__*/ S.Record(
+   S.String,
+-  S.String.pipe(S.optional),
++  S.UndefinedOr(S.String),
+ );
+ export type MetadataDirective = "COPY" | "REPLACE" | (string & {});
+ export const MetadataDirective = S.String;

@@ -1,4 +1,9 @@
-import { createServer, request as createApiRequest } from "node:http";
+import {
+  createServer,
+  IncomingMessage,
+  request as createApiRequest,
+  ServerResponse,
+} from "node:http";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -24,6 +29,9 @@ const apiProxy = (apiOrigin: string) =>
     const request = yield* HttpServerRequest.HttpServerRequest;
     const incoming = NodeHttpServerRequest.toIncomingMessage(request);
     const outgoing = NodeHttpServerRequest.toServerResponse(request);
+    // Effect 4.1 may hand over an HTTP/2 request; this development server only speaks HTTP/1.
+    if (!(incoming instanceof IncomingMessage) || !(outgoing instanceof ServerResponse))
+      return HttpServerResponse.empty({ status: 505 });
     return yield* Effect.callback<HttpServerResponse.HttpServerResponse>((resume) => {
       let finished = false;
       let upstream: ReturnType<typeof createApiRequest> | undefined;

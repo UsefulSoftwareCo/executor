@@ -230,6 +230,17 @@ const classified =
       ? undefined
       : { stringValue: known.has(found) ? found : unrecognized };
   };
+/**
+ * An error kind. Effect 4.1's HTTP client fails the span of a request answered 400 to 599 and
+ * records that status as the type, which is as closed a set as the kinds.
+ */
+const errorType: Kept = (value) => {
+  const found = text(value);
+  if (found === undefined) return undefined;
+  return {
+    stringValue: errorKinds.has(found) || /^[45]\d\d$/u.test(found) ? found : unrecognized,
+  };
+};
 const flag: Kept = (value) =>
   typeof value["boolValue"] === "boolean" ? { boolValue: value["boolValue"] } : undefined;
 const count: Kept = (value) => {
@@ -256,7 +267,7 @@ const spanAttributes: Readonly<Record<string, Kept>> = {
   "executor.trace.parent_sampled": flag,
   "executor.failure.source": oneOf("app", "storage", "service"),
   "executor.failure.code": classified(failureCodes),
-  "error.type": classified(errorKinds),
+  "error.type": errorType,
   "cache.operation": oneOf(
     "read",
     "acquire",
@@ -285,6 +296,9 @@ const spanAttributes: Readonly<Record<string, Kept>> = {
   "http.request.method": oneOf(...httpMethods),
   "http.response.status_code": status,
   "url.scheme": oneOf("http", "https"),
+  // Effect 4.1 marks an interrupted span with `effect.fiber.interrupted`; apps built on an
+  // earlier Effect still send the label and `status.interrupted`.
+  "effect.fiber.interrupted": flag,
   "span.label": oneOf("⚠︎ Interrupted"),
   "status.interrupted": flag,
   "executor.milestone.reached": flag,

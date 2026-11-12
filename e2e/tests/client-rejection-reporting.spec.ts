@@ -214,7 +214,8 @@ export default defineApp({}, async () => ({
         );
         expect(crashed.status).toBeGreaterThanOrEqual(500);
         const crashTrace = yield* latestTrace;
-        // Find the server span of each Executor request that answered 400.
+        // Find the server span of each Executor request that answered 400. An app's request to
+        // Executor passes Cloud's app outbound first, whose own span relays that answer.
         const spans = yield* Effect.forEach(rejections, (rejection) =>
           rejection.expected === undefined
             ? Effect.succeed(undefined)
@@ -223,6 +224,7 @@ export default defineApp({}, async () => ({
                   const span = result.data.find(
                     ({ span }) =>
                       span.operationName.startsWith("http.server") &&
+                      span.tags["http.route"] !== "/:upstream" &&
                       span.tags["http.response.status_code"] === "400",
                   );
                   return span === undefined

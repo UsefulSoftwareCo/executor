@@ -9,10 +9,10 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.1",
+    "@effect/platform-node": "4.1.4",
     "@executor-js/local-server": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
-    "effect": "4.0.1",
+    "effect": "4.1.4",
     "electron-updater": "6.6.8",
     "fflate": "0.8.3",
     "proper-lockfile": "4.1.2"

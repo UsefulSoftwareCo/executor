@@ -5,12 +5,14 @@ import { AppSkills, ProviderError } from "apps/contracts";
 import { AppEvaluationFailed, evaluationFailure } from "../contracts/tools.ts";
 import { AppNotDeployed } from "../contracts/apps.ts";
 /** Skill reads project one authorized runtime catalog, or a retained pre-capability folder. */
-import { Crypto, Effect, Schema } from "effect";
+import { Effect, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
+import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
 import type { BlobStorage } from "../contracts/blobs.ts";
 import type { CatalogReadOptions } from "../contracts/declarations.ts";
 import { AppSkillInputs, AppSkillNotFound, SkillRevisionChanged } from "../contracts/skills.ts";
-import { RequestInvalid, StorageError } from "../contracts/shared.ts";
+import { RequestInvalid } from "../contracts/shared.ts";
 import type { Runtime } from "../contracts/runtime.ts";
 import type { Query } from "./database.ts";
 import type { Declarations } from "./declarations.ts";
@@ -35,11 +37,10 @@ const Reusable = Schema.Union([
 ]);
 
 /** Sorted catalog digest; equal content has equal revisions. */
-const catalogRevision = (crypto: Crypto.Crypto, skills: typeof AppSkills.Type) =>
-  crypto.digest("SHA-256", new TextEncoder().encode(JSON.stringify(skills))).pipe(
-    Effect.map(Hex.encode),
-    Effect.mapError(() => new StorageError()),
-  );
+const catalogRevision = (crypto: HostCrypto, skills: typeof AppSkills.Type) =>
+  crypto.digest
+    .digest(Digest.sha256, new TextEncoder().encode(JSON.stringify(skills)))
+    .pipe(Effect.map(Hex.encode));
 const sorted = (skills: typeof AppSkills.Type) =>
   [...skills]
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -60,7 +61,7 @@ const sorted = (skills: typeof AppSkills.Type) =>
 export const makeSkills = (
   db: Query,
   runtime: Runtime,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   declarations: Declarations,
   blobs: BlobStorage,
 ) => {

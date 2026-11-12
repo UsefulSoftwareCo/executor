@@ -406,10 +406,22 @@ index 53bd66d331382b36ee33fc0488ce613579629fd9..92e0aa39bebb25d2dc1ec3e24033d99f
                              binding.namespaceId ??
                                  encodeURIComponent(`${binding.scriptName}-${binding.className}`);
 diff --git a/lib/Cloudflare/Workers/WorkerBridge.js b/lib/Cloudflare/Workers/WorkerBridge.js
-index 1d27a07a4da06307c0b8113999cf33585c0bd1d1..553a8c513fbcfa05a2e8f2e770c3e2af166a4ec2 100644
+index 1d27a07a4da06307c0b8113999cf33585c0bd1d1..df00744967e16a7b5d97ec4ae45d9acb7cd216d0 100644
 --- a/lib/Cloudflare/Workers/WorkerBridge.js
 +++ b/lib/Cloudflare/Workers/WorkerBridge.js
-@@ -17,7 +17,7 @@ import { Self } from "../../Self.js";
+@@ -1,9 +1,10 @@
+-import * as NodeServices from "@effect/platform-node/NodeServices";
++import * as NodePath from "@effect/platform-node/NodePath";
+ import * as Cause from "effect/Cause";
+ import * as ConfigProvider from "effect/ConfigProvider";
+ import * as Context from "effect/Context";
+ import * as Effect from "effect/Effect";
+ import * as Exit from "effect/Exit";
++import * as FileSystem from "effect/FileSystem";
+ import * as Layer from "effect/Layer";
+ import * as Logger from "effect/Logger";
+ import { MinimumLogLevel } from "effect/References";
+@@ -17,7 +18,7 @@ import { Self } from "../../Self.js";
  import { StackContext } from "../../StackContext.js";
  import { buildEventTelemetry } from "../../TelemetryRuntime.js";
  import { CloudflareEnvironment } from "../CloudflareEnvironmentService.js";
@@ -418,7 +430,7 @@ index 1d27a07a4da06307c0b8113999cf33585c0bd1d1..553a8c513fbcfa05a2e8f2e770c3e2af
  import { isScopeEjected } from "./HttpServer.js";
  import { ErrorTag, encodeRpcError, toRpcStream, } from "./Rpc.js";
  import { ExportedHandlerMethods, WorkerEnvironment, WorkerExecutionContext, deferredExecutionContext, fromExecutionContext, } from "./WorkerRuntime.js";
-@@ -32,10 +32,10 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
+@@ -32,10 +33,10 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
      });
      const processEvent = (makeEffect, ctx, env, onExit) => {
          const scope = Scope.makeUnsafe();
@@ -431,7 +443,7 @@ index 1d27a07a4da06307c0b8113999cf33585c0bd1d1..553a8c513fbcfa05a2e8f2e770c3e2af
              // Per-event services take precedence over the captured services
              // and the built isolate context: the isolate context carries the
              // *deferred* WorkerExecutionContext (yieldable in the top-level
-@@ -51,12 +51,12 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
+@@ -51,12 +52,12 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
              // so buffered telemetry flushes when the scope closes into
              // `ctx.waitUntil` below — never on workerd's ephemeral
              // isolate scope.
@@ -446,7 +458,7 @@ index 1d27a07a4da06307c0b8113999cf33585c0bd1d1..553a8c513fbcfa05a2e8f2e770c3e2af
              .finally(() => isScopeEjected(scope)
              ? undefined
              : ctx.waitUntil(
-@@ -65,7 +65,7 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
+@@ -65,7 +66,7 @@ export const makeWorkerBridge = (Base, { stack, entrypoint, }) => {
              // Yield one macrotask before closing the scope so that span
              // reaches the telemetry exporter's buffer before the scope's
              // flush finalizer runs.
@@ -455,7 +467,20 @@ index 1d27a07a4da06307c0b8113999cf33585c0bd1d1..553a8c513fbcfa05a2e8f2e770c3e2af
      };
      class WorkerBridge extends Base {
          ctx;
-@@ -195,12 +195,12 @@ const getSharedBuild = (entrypoint, stack) => {
+@@ -143,7 +144,11 @@ const getSharedBuild = (entrypoint, stack) => {
+     }
+     const tag = Self;
+     const layer = makeEntrypointLayer(tag, entrypoint);
+-    const platform = Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer, 
++    // Executor: `NodeServices.layer` puts Node's file system, child process,
++    // terminal and stdio services in every Worker's upload, about 35 KB that no
++    // Executor Worker calls. A Worker gets Node's path service and a file system
++    // with no files, which is enough for Effect's `HttpPlatform` to build.
++    const platform = Layer.mergeAll(NodePath.layer, FileSystem.layerNoop({}), FetchHttpClient.layer, 
+     // TODO(sam): wire this up to telemetry more directly
+     Logger.layer([Logger.consolePretty()]));
+     // Private scope for the isolate-lifetime layer build. Never closed —
+@@ -195,12 +200,12 @@ const getSharedBuild = (entrypoint, stack) => {
       * `Config` read in user init) resets the memo and heals on the next event.
       */
      shared = (pin) => {
@@ -1021,10 +1046,24 @@ index 109a8af6b4ece7c5fe3279e7275bfecce12ed3fc..7b2d1dc594bb4a33940c3570fd9b0255
                    binding.namespaceId ??
                    encodeURIComponent(
 diff --git a/src/Cloudflare/Workers/WorkerBridge.ts b/src/Cloudflare/Workers/WorkerBridge.ts
-index 362b4bd36d26880af3c96ab42e8831030552a97c..3a6b4b6e1e9f7f343224cd5637a54410392fb2fe 100644
+index 362b4bd36d26880af3c96ab42e8831030552a97c..6469ae17a31eb006b2331cabcaac3afc4302eb61 100644
 --- a/src/Cloudflare/Workers/WorkerBridge.ts
 +++ b/src/Cloudflare/Workers/WorkerBridge.ts
-@@ -22,7 +22,7 @@ import { Self } from "../../Self.ts";
+@@ -1,11 +1,12 @@
+ import type * as cf from "@cloudflare/workers-types";
+-import * as NodeServices from "@effect/platform-node/NodeServices";
++import * as NodePath from "@effect/platform-node/NodePath";
+ import type { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+ import * as Cause from "effect/Cause";
+ import * as ConfigProvider from "effect/ConfigProvider";
+ import * as Context from "effect/Context";
+ import * as Effect from "effect/Effect";
+ import * as Exit from "effect/Exit";
++import * as FileSystem from "effect/FileSystem";
+ import * as Layer from "effect/Layer";
+ import * as Logger from "effect/Logger";
+ import { MinimumLogLevel } from "effect/References";
+@@ -22,7 +23,7 @@ import { Self } from "../../Self.ts";
  import { StackContext } from "../../StackContext.ts";
  import { buildEventTelemetry } from "../../TelemetryRuntime.ts";
  import { CloudflareEnvironment } from "../CloudflareEnvironmentService.ts";
@@ -1033,7 +1072,7 @@ index 362b4bd36d26880af3c96ab42e8831030552a97c..3a6b4b6e1e9f7f343224cd5637a54410
  import { isScopeEjected } from "./HttpServer.ts";
  import {
    ErrorTag,
-@@ -90,11 +90,12 @@ export const makeWorkerBridge = (
+@@ -90,11 +91,12 @@ export const makeWorkerBridge = (
      ) => T | Promise<T>,
    ): Promise<T> => {
      const scope = Scope.makeUnsafe();
@@ -1048,7 +1087,7 @@ index 362b4bd36d26880af3c96ab42e8831030552a97c..3a6b4b6e1e9f7f343224cd5637a54410
              // Per-event services take precedence over the captured services
              // and the built isolate context: the isolate context carries the
              // *deferred* WorkerExecutionContext (yieldable in the top-level
-@@ -126,13 +127,13 @@ export const makeWorkerBridge = (
+@@ -126,13 +128,13 @@ export const makeWorkerBridge = (
                ),
              ),
              Effect.runPromiseExit,
@@ -1064,7 +1103,7 @@ index 362b4bd36d26880af3c96ab42e8831030552a97c..3a6b4b6e1e9f7f343224cd5637a54410
        .finally(() =>
          isScopeEjected(scope)
            ? undefined
-@@ -143,7 +144,7 @@ export const makeWorkerBridge = (
+@@ -143,7 +145,7 @@ export const makeWorkerBridge = (
                // reaches the telemetry exporter's buffer before the scope's
                // flush finalizer runs.
                new Promise((resolve) => setTimeout(resolve, 0)).then(() =>
@@ -1073,7 +1112,22 @@ index 362b4bd36d26880af3c96ab42e8831030552a97c..3a6b4b6e1e9f7f343224cd5637a54410
                ),
              ),
        );
-@@ -359,7 +360,7 @@ const getSharedBuild = (
+@@ -264,8 +266,13 @@ const getSharedBuild = (
+ 
+   const layer = makeEntrypointLayer(tag, entrypoint);
+ 
++  // Executor: `NodeServices.layer` puts Node's file system, child process,
++  // terminal and stdio services in every Worker's upload, about 35 KB that no
++  // Executor Worker calls. A Worker gets Node's path service and a file system
++  // with no files, which is enough for Effect's `HttpPlatform` to build.
+   const platform = Layer.mergeAll(
+-    NodeServices.layer,
++    NodePath.layer,
++    FileSystem.layerNoop({}),
+     FetchHttpClient.layer,
+     // TODO(sam): wire this up to telemetry more directly
+     Logger.layer([Logger.consolePretty()]),
+@@ -359,7 +366,7 @@ const getSharedBuild = (
     * `Config` read in user init) resets the memo and heals on the next event.
     */
    shared = (pin) => {
@@ -1082,7 +1136,7 @@ index 362b4bd36d26880af3c96ab42e8831030552a97c..3a6b4b6e1e9f7f343224cd5637a54410
        Layer.buildWithMemoMap(globalContext, memoMap, instanceScope).pipe(
          // Strip the build's memo map from the exposed context so a Layer the
          // user `Effect.provide`s *inside a handler* builds per event instead
-@@ -367,7 +368,7 @@ const getSharedBuild = (
+@@ -367,7 +374,7 @@ const getSharedBuild = (
          // across concurrent events.
          Effect.map(Context.omit(Layer.CurrentMemoMap)),
        ),
@@ -2263,6 +2317,792 @@ index 0123bbf211dfab8c3668f36efb449c5a0dc76e85..5a58f337ab567f6dc148f4eaf82bae96
          const readResult = yield* provider
            .read({
              id,
+diff --git a/lib/Alchemist/Session.d.ts b/lib/Alchemist/Session.d.ts
+index c51dff8e9ff1915bcf7fe357f86633e4bd550a33..4f052d5377a0dd0369ea3655559f9b70a1ddcbf6 100644
+--- a/lib/Alchemist/Session.d.ts
++++ b/lib/Alchemist/Session.d.ts
+@@ -80,7 +80,7 @@ declare const openUncached: (target: Target, options?: OpenOptions | undefined)
+      * and state store over this session's services.
+      */
+     context: Context.Context<unknown>;
+-}, unknown, AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | FileSystem.FileSystem | import("effect/http/HttpClient").HttpClient | import("../Interaction.ts").Interaction | Path.Path | import("../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}, unknown, AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | FileSystem.FileSystem | import("effect/http/HttpClient").HttpClient | import("../Interaction.ts").Interaction | Path.Path | import("../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ /** An imported, fully-configured stack instance. */
+ export type Session = Effect.Success<ReturnType<typeof openUncached>>;
+ export declare const open: (target: Target, options?: OpenOptions | undefined) => Effect.Effect<{
+@@ -90,7 +90,7 @@ export declare const open: (target: Target, options?: OpenOptions | undefined) =
+      * and state store over this session's services.
+      */
+     context: Context.Context<unknown>;
+-}, unknown, AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | FileSystem.FileSystem | import("effect/http/HttpClient").HttpClient | import("../Interaction.ts").Interaction | Path.Path | import("../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}, unknown, AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | FileSystem.FileSystem | import("effect/http/HttpClient").HttpClient | import("../Interaction.ts").Interaction | Path.Path | import("../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ export interface BuildStackProvidersOptions {
+     readonly main: string;
+     readonly envFile: Option.Option<string>;
+@@ -107,10 +107,10 @@ export declare const buildStackProviders: (options: BuildStackProvidersOptions)
+     };
+     context: Context.Context<AuthProviders | Stack.Stack | Stage>;
+     stackEffect: StackModule;
+-}, import("effect/Config").ConfigError | import("effect/PlatformError").PlatformError | StackEntrypointError, AlchemyContext | ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | FileSystem.FileSystem | import("effect/http/HttpClient").HttpClient | import("../Interaction.ts").Interaction | Path.Path | import("../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}, import("effect/Config").ConfigError | import("effect/PlatformError").PlatformError | StackEntrypointError, AlchemyContext | ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | FileSystem.FileSystem | import("effect/http/HttpClient").HttpClient | import("../Interaction.ts").Interaction | Path.Path | import("../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ export declare const collectAuthProviders: (options: CollectAuthProvidersOptions) => Effect.Effect<{
+     [providerName: string]: import("../Auth/AuthProvider.ts").AuthProvider<{
+         method: string;
+     }, unknown>;
+-}, AuthError | import("effect/PlatformError").PlatformError, AlchemyContext | ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | FileSystem.FileSystem | import("effect/http/HttpClient").HttpClient | import("../Interaction.ts").Interaction | Path.Path | import("../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}, AuthError | import("effect/PlatformError").PlatformError, AlchemyContext | ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | FileSystem.FileSystem | import("effect/http/HttpClient").HttpClient | import("../Interaction.ts").Interaction | Path.Path | import("../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ //# sourceMappingURL=Session.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Alchemist/routes/cloudflare.d.ts b/lib/Alchemist/routes/cloudflare.d.ts
+index 23040241e62df1ab279a63b1fa5d5ee68eb7e00d..433dfa3798cc2c297f60af4ec0597d1084c557bc 100644
+--- a/lib/Alchemist/routes/cloudflare.d.ts
++++ b/lib/Alchemist/routes/cloudflare.d.ts
+@@ -24,11 +24,11 @@ export interface StateLogsInput extends StateTarget {
+  * state-store route (`bootstrap`, `teardown`, logs) is scoped to.
+  */
+ export declare const resolveStateStoreScope: (target: StateTarget) => Effect.Effect<{
+-    layer: Layer.Layer<CloudflareAccess.Access | AuthProviders | CloudflareEnvironment.CloudflareEnvironment | CloudflareCredentials.Credentials, import("effect/PlatformError").PlatformError, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore>;
++    layer: Layer.Layer<CloudflareAccess.Access | AuthProviders | CloudflareEnvironment.CloudflareEnvironment | CloudflareCredentials.Credentials, import("effect/PlatformError").PlatformError, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore>;
+     profile: string;
+     accountId: string;
+     workerName: string;
+-}, import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore>;
++}, import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore>;
+ /** Provision (or adopt) the Cloudflare-hosted state-store worker. */
+ export declare const bootstrap: (input: BootstrapInput) => Effect.Effect<{
+     accountId: string;
+@@ -49,15 +49,15 @@ export declare const bootstrap: (input: BootstrapInput) => Effect.Effect<{
+     readonly "~effect/ErrorReporter/ignore"?: boolean;
+     readonly "~effect/ErrorReporter/severity"?: import("effect/LogLevel").Severity;
+     readonly "~effect/ErrorReporter/attributes"?: import("effect/Record").ReadonlyRecord<string, unknown>;
+-} | workers.SubdomainNotFound | import("@distilled.cloud/cloudflare/Errors").UnknownCloudflareError | import("@distilled.cloud/doppler").DefaultErrors, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore>;
++} | workers.SubdomainNotFound | import("@distilled.cloud/cloudflare/Errors").UnknownCloudflareError | import("@distilled.cloud/doppler").DefaultErrors, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore>;
+ /** Tear down the Cloudflare-hosted state store. */
+ export declare const teardown: (input: StateTarget) => Effect.Effect<{
+     accountId: string;
+     workerName: string;
+     deleted: string[];
+-}, import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError | workers.QueueConsumerConflict | workers.ServiceBindingConflict | workers.CloudflareOpError, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore>;
++}, import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError | workers.QueueConsumerConflict | workers.ServiceBindingConflict | workers.CloudflareOpError, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore>;
+ /** Query past log entries from the state-store worker, oldest first. */
+-export declare const stateLogs: (input: StateLogsInput) => Effect.Effect<LogEntry[], import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError | workers.QueryObservabilityTelemetryError, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore>;
++export declare const stateLogs: (input: StateLogsInput) => Effect.Effect<LogEntry[], import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError | workers.QueryObservabilityTelemetryError, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore>;
+ /** Live-stream log entries from the state-store worker. */
+-export declare const tailStateLogs: (input: StateTarget) => Stream.Stream<LogEntry, import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError | workers.CreateScriptTailError, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/socket/Socket").WebSocketConstructor>;
++export declare const tailStateLogs: (input: StateTarget) => Stream.Stream<LogEntry, import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError | workers.CreateScriptTailError, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/socket/Socket").WebSocketConstructor>;
+ //# sourceMappingURL=cloudflare.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Alchemist/routes/drift.d.ts b/lib/Alchemist/routes/drift.d.ts
+index 8a24e4ea5bd93e267d8d94de1929d765cdf01a71..e26d3f6d30163fc26dd6747d895773dcc536021f 100644
+--- a/lib/Alchemist/routes/drift.d.ts
++++ b/lib/Alchemist/routes/drift.d.ts
+@@ -46,7 +46,7 @@ export declare const inspect: (target: StackTarget) => Effect.Effect<{
+         stack: import("../../Stack.ts").CompiledStack<unknown, unknown>;
+         context: import("effect/Context").Context<unknown>;
+     };
+-}, any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}, any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ /**
+  * Converge state back to the cloud's actual shape. Engine apply events are
+  * reported through {@link Progress}.
+diff --git a/lib/Alchemist/routes/logs.d.ts b/lib/Alchemist/routes/logs.d.ts
+index ff74f4ddaa70b24e008d71de79339cf41752008a..c54955d16f69c609306691a21a27a664a5458d1c 100644
+--- a/lib/Alchemist/routes/logs.d.ts
++++ b/lib/Alchemist/routes/logs.d.ts
+@@ -25,7 +25,7 @@ export interface QueryInput extends LogInput {
+     readonly since?: Date;
+ }
+ /** Every deployed resource, with the log capabilities its provider offers. */
+-export declare const resources: (target: StackTarget) => Effect.Effect<LogResource[], unknown, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++export declare const resources: (target: StackTarget) => Effect.Effect<LogResource[], unknown, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ /** Query past log entries across the selected resources, oldest first. */
+ export declare const entries: (input: QueryInput) => Effect.Effect<{
+     resource: {
+@@ -35,7 +35,7 @@ export declare const entries: (input: QueryInput) => Effect.Effect<{
+     };
+     timestamp: Date;
+     message: string;
+-}[], any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}[], any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ /** Live-stream log entries from every selected resource that supports it. */
+-export declare const tail: (input: LogInput) => Stream.Stream<LogEntry, any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore>;
++export declare const tail: (input: LogInput) => Stream.Stream<LogEntry, any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore>;
+ //# sourceMappingURL=logs.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Alchemist/routes/nuke.d.ts b/lib/Alchemist/routes/nuke.d.ts
+index dad47ddf30b68e1eff196eb5fb08de5d32178f7c..7f1e93e69156e1ba3e6295e2a80d66871d75a52d 100644
+--- a/lib/Alchemist/routes/nuke.d.ts
++++ b/lib/Alchemist/routes/nuke.d.ts
+@@ -37,7 +37,7 @@ export declare const scan: (input: ScanInput) => Effect.Effect<{
+     resources: readonly Nuke.Target[];
+     failures: readonly Nuke.ProviderFailure[];
+     context: Context.Context<never>;
+-}, Config.ConfigError | import("effect/PlatformError").PlatformError | import("../Entrypoint.ts").StackEntrypointError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}, Config.ConfigError | import("effect/PlatformError").PlatformError | import("../Entrypoint.ts").StackEntrypointError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ /**
+  * Permanently delete the selected resources. Each confirmed deletion is
+  * reported through {@link Progress} as `NukeResourceDeleted`.
+diff --git a/lib/Alchemist/routes/profile.d.ts b/lib/Alchemist/routes/profile.d.ts
+index a3c56d37d3e38a9bedf44d3c3503a3d5d5f724f8..236018cd7104301e62d27d1b94e91ef6fedc7632 100644
+--- a/lib/Alchemist/routes/profile.d.ts
++++ b/lib/Alchemist/routes/profile.d.ts
+@@ -65,14 +65,14 @@ export declare const get: (input: {
+     name: string;
+     active: boolean;
+     providers: ProviderConnection[];
+-}, AlchemistNotFound | AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
++}, AlchemistNotFound | AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
+ export declare const create: (input: {
+     readonly name: string;
+ }) => Effect.Effect<{
+     name: string;
+     active: boolean;
+     providers: ProviderConnection[];
+-}, AlchemistNotFound | AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
++}, AlchemistNotFound | AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
+ export declare const rename: (input: {
+     readonly name: string;
+     readonly newName: string;
+@@ -80,7 +80,7 @@ export declare const rename: (input: {
+     name: string;
+     active: boolean;
+     providers: ProviderConnection[];
+-}, AlchemistNotFound | AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
++}, AlchemistNotFound | AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
+ /** Delete a profile and every credential stored for it. */
+ export declare const deleteProfile: (input: {
+     readonly name: string;
+@@ -93,13 +93,13 @@ export declare const providers: (input: {
+     readonly profile?: string;
+     readonly entrypoint?: string;
+     readonly envFile?: string;
+-}) => Effect.Effect<AuthProviderDescriptor[], AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
++}) => Effect.Effect<AuthProviderDescriptor[], AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
+ /** The configure methods (and fields) one provider accepts. */
+ export declare const configureForm: (input: {
+     readonly profile: string;
+     readonly provider: string;
+     readonly method?: string;
+-}) => Effect.Effect<readonly ConfigureMethod[], AlchemistNotFound | AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
++}) => Effect.Effect<readonly ConfigureMethod[], AlchemistNotFound | AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
+ /**
+  * Connect or reconfigure a provider in a profile. Reported through
+  * {@link Progress} as `ProviderConfigureStarted`; interactive providers drive
+@@ -109,7 +109,7 @@ export declare const configure: (input: ConfigureInput) => Effect.Effect<{
+     name: string;
+     active: boolean;
+     providers: ProviderConnection[];
+-}, AlchemistInvalidInput | AlchemistNotFound | AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
++}, AlchemistInvalidInput | AlchemistNotFound | AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
+ /** Log a provider out and disconnect it from the profile. */
+ export declare const removeProvider: (input: ProviderContext & {
+     readonly provider: string;
+@@ -118,7 +118,7 @@ export declare const removeProvider: (input: ProviderContext & {
+     profile: string;
+     provider: string;
+     logout: "completed" | "skipped-invalid-config" | "unavailable";
+-}, AlchemistNotFound | AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
++}, AlchemistNotFound | AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
+ /**
+  * Re-run login for connected providers without reconfiguring them. Each
+  * provider is reported through {@link Progress} as `ProviderRefreshStarted`.
+@@ -129,5 +129,5 @@ export declare const refresh: (input: ProviderContext & {
+     name: string;
+     active: boolean;
+     providers: ProviderConnection[];
+-}, AlchemistInvalidInput | AlchemistNotFound | AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
++}, AlchemistInvalidInput | AlchemistNotFound | AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | Interaction | import("effect/Path").Path | ProfileStore | import("effect/Scope").Scope>;
+ //# sourceMappingURL=profile.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Alchemist/routes/provider.d.ts b/lib/Alchemist/routes/provider.d.ts
+index cbdcfccf3f74bceb476f091fe607ee9a6ba470a0..cd449d1220713e36ea326cdf4a5f85ccf2e46096 100644
+--- a/lib/Alchemist/routes/provider.d.ts
++++ b/lib/Alchemist/routes/provider.d.ts
+@@ -29,5 +29,5 @@ export declare const checkEnvironment: (input: CheckEnvironmentInput) => Effect.
+         }[];
+     }[];
+     satisfied: boolean;
+-}, AlchemistInvalidInput | import("../../Auth/AuthProvider.ts").AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}, AlchemistInvalidInput | import("../../Auth/AuthProvider.ts").AuthError | import("effect/PlatformError").PlatformError | import("../../Auth/Profile.ts").ProfileError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ //# sourceMappingURL=provider.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Alchemist/routes/stack.d.ts b/lib/Alchemist/routes/stack.d.ts
+index d3bf9b23bf2f47b69ec848f1bf5586e2097e33e5..4acff63eb46c73a54c0c51f347c4c8182e3b8f5e 100644
+--- a/lib/Alchemist/routes/stack.d.ts
++++ b/lib/Alchemist/routes/stack.d.ts
+@@ -86,7 +86,7 @@ declare const planStack: <Module = unknown>(input: FilteredPlanInput) => Effect.
+         stack: import("../../Stack.ts").CompiledStack<unknown, unknown>;
+         context: import("effect/Context").Context<unknown>;
+     };
+-}, unknown, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}, unknown, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ /**
+  * Apply a computed plan. Engine apply events are reported through
+  * {@link Progress} as `ApplyEvent`.
+diff --git a/lib/Alchemist/routes/state.d.ts b/lib/Alchemist/routes/state.d.ts
+index 54c779bfdaaeb02500c09899f9e063e3f43da4af..b0e5573f57a51d7623b082f83f7b2f16e22ec506 100644
+--- a/lib/Alchemist/routes/state.d.ts
++++ b/lib/Alchemist/routes/state.d.ts
+@@ -29,7 +29,7 @@ export type StateSource =
+  * );
+  * ```
+  */
+-export declare const store: (source: StateSource) => Effect.Effect<State.StateService, unknown, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++export declare const store: (source: StateSource) => Effect.Effect<State.StateService, unknown, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ /** The chosen store as a `State` layer. */
+-export declare const layer: (source: StateSource) => Layer.Layer<State.State, unknown, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore>;
++export declare const layer: (source: StateSource) => Layer.Layer<State.State, unknown, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore>;
+ //# sourceMappingURL=state.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Auth/OAuthFlow.d.ts b/lib/Auth/OAuthFlow.d.ts
+index 7aeee3d7df0cfb62becf46a7d36f52dcafc2991f..3dc2b89a3f20855eecb1642f522e1fb80eadd713 100644
+--- a/lib/Auth/OAuthFlow.d.ts
++++ b/lib/Auth/OAuthFlow.d.ts
+@@ -1,4 +1,5 @@
+-import * as Crypto from "effect/Crypto";
++import * as Digest from "effect/crypto/Digest";
++import * as SecureRandom from "effect/crypto/SecureRandom";
+ import * as Effect from "effect/Effect";
+ import * as Redacted from "effect/Redacted";
+ import * as Schema from "effect/Schema";
+@@ -92,7 +93,7 @@ export interface OAuthClient {
+      * take them per-authorization; omit for providers whose scopes are
+      * configured on the application.
+      */
+-    readonly authorize: (scopes?: ReadonlyArray<string>) => Effect.Effect<Authorization, OAuthError, Crypto.Crypto>;
++    readonly authorize: (scopes?: ReadonlyArray<string>) => Effect.Effect<Authorization, OAuthError, SecureRandom.SecureRandom | Digest.Digest>;
+     /**
+      * Exchange an authorization code directly. `authorization` supplies the
+      * PKCE verifier; omit for non-PKCE clients (tests, relay-less flows).
+diff --git a/lib/Auth/OAuthFlow.js b/lib/Auth/OAuthFlow.js
+index be74a9d93a72e1198f2c8d675b59ed6dc1e85b50..930d3baa6f7f300a6680b70de41aa2049170e49e 100644
+--- a/lib/Auth/OAuthFlow.js
++++ b/lib/Auth/OAuthFlow.js
+@@ -1,6 +1,7 @@
+ import * as Data from "effect/Data";
+ import * as Clock from "effect/Clock";
+-import * as Crypto from "effect/Crypto";
++import * as Digest from "effect/crypto/Digest";
++import * as SecureRandom from "effect/crypto/SecureRandom";
+ import { Base64Url } from "effect/encoding";
+ import * as Effect from "effect/Effect";
+ import * as Redacted from "effect/Redacted";
+@@ -38,22 +39,13 @@ export const OAuthCredentials = Schema.Struct({
+     scopes: Schema.mutable(Schema.Array(Schema.String)),
+ });
+ const randomText = Effect.fn(function* (length) {
+-    const crypto = yield* Crypto.Crypto;
+-    const bytes = yield* crypto.randomBytes(length).pipe(Effect.mapError((cause) => new OAuthError({
+-        error: "crypto_error",
+-        errorDescription: `Secure random generation failed: ${cause}`,
+-    })));
+-    return Base64Url.encode(bytes);
++    const random = yield* SecureRandom.SecureRandom;
++    return Base64Url.encode(yield* random.randomBytes(length));
+ });
+ const generatePKCE = Effect.fn(function* (length = 96) {
+-    const crypto = yield* Crypto.Crypto;
++    const digest = yield* Digest.Digest;
+     const verifier = yield* randomText(length);
+-    const challenge = yield* crypto
+-        .digest("SHA-256", new TextEncoder().encode(verifier))
+-        .pipe(Effect.mapError((cause) => new OAuthError({
+-        error: "crypto_error",
+-        errorDescription: `PKCE digest failed: ${cause}`,
+-    })));
++    const challenge = yield* digest.digest(Digest.sha256, new TextEncoder().encode(verifier));
+     return { verifier, challenge: Base64Url.encode(challenge) };
+ });
+ const TokenResponse = Schema.Struct({
+diff --git a/lib/Cli/commands/cloudflare.d.ts b/lib/Cli/commands/cloudflare.d.ts
+index 61d06af1ada704962f0f02eb7b7ed46e3d8afba6..e5daa6a314d9b98f6573ab18779946f987ce9f56 100644
+--- a/lib/Cli/commands/cloudflare.d.ts
++++ b/lib/Cli/commands/cloudflare.d.ts
+@@ -17,5 +17,5 @@ export declare const cloudflareCommand: Command.Command<"cloudflare", {} | {}, {
+     readonly "~effect/ErrorReporter/ignore"?: boolean;
+     readonly "~effect/ErrorReporter/severity"?: import("effect/LogLevel").Severity;
+     readonly "~effect/ErrorReporter/attributes"?: import("effect/Record").ReadonlyRecord<string, unknown>;
+-} | import("@distilled.cloud/cloudflare/workers").SubdomainNotFound | CliKit.TerminalCancelled | import("@distilled.cloud/acme").TooManyRequests | import("@distilled.cloud/acme").Unauthorized | import("@distilled.cloud/cloudflare/Errors").UnknownCloudflareError | import("./errors.ts").UserInputError | import("@distilled.cloud/cloudflare/workers").WorkerNotFound, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit.CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/socket/Socket").WebSocketConstructor>;
++} | import("@distilled.cloud/cloudflare/workers").SubdomainNotFound | CliKit.TerminalCancelled | import("@distilled.cloud/acme").TooManyRequests | import("@distilled.cloud/acme").Unauthorized | import("@distilled.cloud/cloudflare/Errors").UnknownCloudflareError | import("./errors.ts").UserInputError | import("@distilled.cloud/cloudflare/workers").WorkerNotFound, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit.CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/socket/Socket").WebSocketConstructor>;
+ //# sourceMappingURL=cloudflare.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Cli/commands/deploy.d.ts b/lib/Cli/commands/deploy.d.ts
+index d8b13de2a09e2d9f9d9b74e9c50d863f4663a080..b329c3ebd3901baeb329b57f28743335b47c412c 100644
+--- a/lib/Cli/commands/deploy.d.ts
++++ b/lib/Cli/commands/deploy.d.ts
+@@ -16,7 +16,7 @@ export declare const deployCommand: Command.Command<"deploy", {
+     readonly adopt: boolean;
+     readonly detailed: boolean;
+     readonly detectDrift: boolean;
+-}, {}, any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | Cli | CliKit.CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}, {}, any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | Cli | CliKit.CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ export declare const destroyCommand: Command.Command<"destroy", {
+     readonly include: readonly string[] | undefined;
+     readonly exclude: readonly string[] | undefined;
+@@ -27,7 +27,7 @@ export declare const destroyCommand: Command.Command<"destroy", {
+     readonly stage: string | undefined;
+     readonly yes: boolean;
+     readonly profile: string | undefined;
+-}, {}, any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | Cli | CliKit.CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}, {}, any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | Cli | CliKit.CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ export declare const planCommand: Command.Command<"plan", {
+     readonly include: readonly string[] | undefined;
+     readonly exclude: readonly string[] | undefined;
+@@ -38,5 +38,5 @@ export declare const planCommand: Command.Command<"plan", {
+     readonly profile: string | undefined;
+     readonly adopt: boolean;
+     readonly detailed: boolean;
+-}, {}, any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | Cli | CliKit.CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}, {}, any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | Cli | CliKit.CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ //# sourceMappingURL=deploy.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Cli/commands/drift.d.ts b/lib/Cli/commands/drift.d.ts
+index 47e319bb571cad5a2a7a3c8d3eb7ae112bd49114..06c1d5f7712f836e01498add8c21bc93b58b1b15 100644
+--- a/lib/Cli/commands/drift.d.ts
++++ b/lib/Cli/commands/drift.d.ts
+@@ -8,5 +8,5 @@ export declare const driftCommand: Command.Command<"drift", {
+     readonly envFile: Option.Option<string>;
+     readonly stage: string | undefined;
+     readonly profile: string | undefined;
+-}, {}, any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | Cli | CliKit.CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}, {}, any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | Cli | CliKit.CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ //# sourceMappingURL=drift.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Cli/commands/logs.d.ts b/lib/Cli/commands/logs.d.ts
+index 8c6b371ef4730719d7236783bcd558547204743a..1250faa97b36d6b3270bf8eef795cd1ea730dc9a 100644
+--- a/lib/Cli/commands/logs.d.ts
++++ b/lib/Cli/commands/logs.d.ts
+@@ -9,5 +9,5 @@ export declare const logsCommand: Command.Command<"logs", {
+     readonly limit: number;
+     readonly since: string | undefined;
+     readonly tail: boolean;
+-}, {}, any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}, {}, any, import("../../AlchemyContext.ts").AlchemyContext | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ //# sourceMappingURL=logs.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Cli/commands/nuke.d.ts b/lib/Cli/commands/nuke.d.ts
+index 4b401acb49d0e33ebce920e8dddc86a32c415fea..199fe2f772518dae994bfb59ccfd6ef91e017eb4 100644
+--- a/lib/Cli/commands/nuke.d.ts
++++ b/lib/Cli/commands/nuke.d.ts
+@@ -1,5 +1,5 @@
+ import { Command } from "effect/cli";
+ import * as CliKit from "../../Cli/CliKit/index.ts";
+ import { UserInputError } from "./errors.ts";
+-export declare const unsafeCommand: Command.Command<"unsafe", {} | {}, {}, import("effect/Config").ConfigError | import("effect/PlatformError").PlatformError | import("../../Alchemist/Entrypoint.ts").StackEntrypointError | UserInputError | CliKit.InteractionError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit.CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++export declare const unsafeCommand: Command.Command<"unsafe", {} | {}, {}, import("effect/Config").ConfigError | import("effect/PlatformError").PlatformError | import("../../Alchemist/Entrypoint.ts").StackEntrypointError | UserInputError | CliKit.InteractionError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit.CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ //# sourceMappingURL=nuke.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Cli/commands/profile/commands.d.ts b/lib/Cli/commands/profile/commands.d.ts
+index 739ce2b414d41ffbe4c35d3737ccd497696dd0b7..71e9043d485d3f46941b814bcaa91a5fbbc20277 100644
+--- a/lib/Cli/commands/profile/commands.d.ts
++++ b/lib/Cli/commands/profile/commands.d.ts
+@@ -5,5 +5,5 @@ import { UserInputError } from "../errors.ts";
+ export declare const profileCommand: Command.Command<"profile", {
+     readonly envFile: Option.Option<string>;
+     readonly main: string;
+-} | {}, {}, import("../../../Alchemist/Errors.ts").AlchemistInvalidInput | import("../../../Alchemist/Errors.ts").AlchemistNotFound | import("../../../Auth/AuthProvider.ts").AuthError | import("../confirm.ts").ConfirmationDeclined | import("effect/PlatformError").PlatformError | import("../../../Auth/Profile.ts").ProfileError | import("effect/cli/CliError").ShowHelp | UserInputError | CliKit.InteractionError, import("../../../AlchemyContext.ts").AlchemyContext | import("../../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit.CliKit | import("../../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++} | {}, {}, import("../../../Alchemist/Errors.ts").AlchemistInvalidInput | import("../../../Alchemist/Errors.ts").AlchemistNotFound | import("../../../Auth/AuthProvider.ts").AuthError | import("../confirm.ts").ConfirmationDeclined | import("effect/PlatformError").PlatformError | import("../../../Auth/Profile.ts").ProfileError | import("effect/cli/CliError").ShowHelp | UserInputError | CliKit.InteractionError, import("../../../AlchemyContext.ts").AlchemyContext | import("../../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit.CliKit | import("../../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ //# sourceMappingURL=commands.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Cli/commands/profile/flows.d.ts b/lib/Cli/commands/profile/flows.d.ts
+index 3434c88b42b7dea41f322e06ebbe4b2232e60b98..693eaecbeee2f20a4e4e4c393532b667686cc948 100644
+--- a/lib/Cli/commands/profile/flows.d.ts
++++ b/lib/Cli/commands/profile/flows.d.ts
+@@ -13,14 +13,14 @@ export declare const showProfileFlow: (options: {
+     activeProfile: string;
+     envFile: Option.Option<string>;
+     main: string;
+-}) => Effect.Effect<void, import("../../../Alchemist/Errors.ts").AlchemistNotFound | import("../../../Auth/AuthProvider.ts").AuthError | import("effect/PlatformError").PlatformError | import("../../../Auth/Profile.ts").ProfileError, import("../../../AlchemyContext.ts").AlchemyContext | import("../../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+-export declare const renameProfileFlow: (name: string, suppliedNewName: string | undefined) => Effect.Effect<string, import("../../../Alchemist/Errors.ts").AlchemistNotFound | import("../../../Auth/AuthProvider.ts").AuthError | import("effect/PlatformError").PlatformError | import("../../../Auth/Profile.ts").ProfileError | CliKit.InteractionError, import("../../../AlchemyContext.ts").AlchemyContext | import("../../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit.CliKit | import("../../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}) => Effect.Effect<void, import("../../../Alchemist/Errors.ts").AlchemistNotFound | import("../../../Auth/AuthProvider.ts").AuthError | import("effect/PlatformError").PlatformError | import("../../../Auth/Profile.ts").ProfileError, import("../../../AlchemyContext.ts").AlchemyContext | import("../../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++export declare const renameProfileFlow: (name: string, suppliedNewName: string | undefined) => Effect.Effect<string, import("../../../Alchemist/Errors.ts").AlchemistNotFound | import("../../../Auth/AuthProvider.ts").AuthError | import("effect/PlatformError").PlatformError | import("../../../Auth/Profile.ts").ProfileError | CliKit.InteractionError, import("../../../AlchemyContext.ts").AlchemyContext | import("../../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit.CliKit | import("../../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ export declare const deleteProfileFlow: (options: {
+     name: string;
+     envFile: Option.Option<string>;
+     main: string;
+     yes: boolean;
+-}) => Effect.Effect<boolean, import("../../../Alchemist/Errors.ts").AlchemistNotFound | import("../../../Auth/AuthProvider.ts").AuthError | import("../confirm.ts").ConfirmationDeclined | import("effect/PlatformError").PlatformError | import("../../../Auth/Profile.ts").ProfileError | CliKit.InteractionError, import("../../../AlchemyContext.ts").AlchemyContext | import("../../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit.CliKit | import("../../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}) => Effect.Effect<boolean, import("../../../Alchemist/Errors.ts").AlchemistNotFound | import("../../../Auth/AuthProvider.ts").AuthError | import("../confirm.ts").ConfirmationDeclined | import("effect/PlatformError").PlatformError | import("../../../Auth/Profile.ts").ProfileError | CliKit.InteractionError, import("../../../AlchemyContext.ts").AlchemyContext | import("../../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit.CliKit | import("../../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ export declare const editProfileFlow: (options: {
+     selectedProfile: string;
+     add: ReadonlyArray<string>;
+@@ -32,5 +32,5 @@ export declare const editProfileFlow: (options: {
+         method?: string;
+         values: Record<string, string>;
+     };
+-}) => Effect.Effect<EditOutcome[], import("../../../Alchemist/Errors.ts").AlchemistInvalidInput | import("../../../Alchemist/Errors.ts").AlchemistNotFound | import("../../../Auth/AuthProvider.ts").AuthError | import("effect/PlatformError").PlatformError | import("../../../Auth/Profile.ts").ProfileError | CliKit.InteractionError, import("../../../AlchemyContext.ts").AlchemyContext | import("../../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit.CliKit | import("../../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}) => Effect.Effect<EditOutcome[], import("../../../Alchemist/Errors.ts").AlchemistInvalidInput | import("../../../Alchemist/Errors.ts").AlchemistNotFound | import("../../../Auth/AuthProvider.ts").AuthError | import("effect/PlatformError").PlatformError | import("../../../Auth/Profile.ts").ProfileError | CliKit.InteractionError, import("../../../AlchemyContext.ts").AlchemyContext | import("../../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit.CliKit | import("../../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ //# sourceMappingURL=flows.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Cli/commands/profile/hub.d.ts b/lib/Cli/commands/profile/hub.d.ts
+index b43f60059dcb76d5ffa77522084e61123468aea6..8ea58bdf1b29302e41a77c6959dc077a3ed2b77d 100644
+--- a/lib/Cli/commands/profile/hub.d.ts
++++ b/lib/Cli/commands/profile/hub.d.ts
+@@ -4,5 +4,5 @@ import { CliKit } from "../../CliKit/index.ts";
+ export declare const profileHub: (options: {
+     envFile: Option.Option<string>;
+     main: string;
+-}) => Effect.Effect<void, import("../../../Interaction.ts").NonInteractiveTerminal | import("effect/PlatformError").PlatformError | import("../../../Auth/Profile.ts").ProfileError, import("../../../AlchemyContext.ts").AlchemyContext | import("../../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit | import("../../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}) => Effect.Effect<void, import("../../../Interaction.ts").NonInteractiveTerminal | import("effect/PlatformError").PlatformError | import("../../../Auth/Profile.ts").ProfileError, import("../../../AlchemyContext.ts").AlchemyContext | import("../../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit | import("../../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ //# sourceMappingURL=hub.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Cli/commands/provider.d.ts b/lib/Cli/commands/provider.d.ts
+index 472ab2d2b2b30a5c5312be329479d0a8b3eda193..83a418a37b06a104f752a0ffde6503085c1103db 100644
+--- a/lib/Cli/commands/provider.d.ts
++++ b/lib/Cli/commands/provider.d.ts
+@@ -13,5 +13,5 @@ export declare const providerCommand: Command.Command<"provider", {} | {}, {}, i
+     readonly "~effect/ErrorReporter/ignore"?: boolean;
+     readonly "~effect/ErrorReporter/severity"?: import("effect/LogLevel").Severity;
+     readonly "~effect/ErrorReporter/attributes"?: import("effect/Record").ReadonlyRecord<string, unknown>;
+-} | import("@distilled.cloud/cloudflare/workers").SubdomainNotFound | import("@distilled.cloud/aws/Errors").ThrottlingException | import("@distilled.cloud/acme").TooManyRequests | import("@distilled.cloud/acme").Unauthorized | import("@distilled.cloud/aws/Errors").UnknownAwsError | import("@distilled.cloud/cloudflare/Errors").UnknownCloudflareError | import("@distilled.cloud/aws/Errors").UnknownOperationException | import("@distilled.cloud/aws/Errors").UnrecognizedClientException | import("./errors.ts").UserInputError | import("@distilled.cloud/aws/Errors").ValidationError | import("@distilled.cloud/aws/Errors").ValidationException | import("@distilled.cloud/cloudflare/workers").WorkerNotFound | import("@distilled.cloud/aws/Credentials").CredentialsError | import("../../Interaction.ts").InteractionError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope | import("effect/socket/Socket").WebSocketConstructor>;
++} | import("@distilled.cloud/cloudflare/workers").SubdomainNotFound | import("@distilled.cloud/aws/Errors").ThrottlingException | import("@distilled.cloud/acme").TooManyRequests | import("@distilled.cloud/acme").Unauthorized | import("@distilled.cloud/aws/Errors").UnknownAwsError | import("@distilled.cloud/cloudflare/Errors").UnknownCloudflareError | import("@distilled.cloud/aws/Errors").UnknownOperationException | import("@distilled.cloud/aws/Errors").UnrecognizedClientException | import("./errors.ts").UserInputError | import("@distilled.cloud/aws/Errors").ValidationError | import("@distilled.cloud/aws/Errors").ValidationException | import("@distilled.cloud/cloudflare/workers").WorkerNotFound | import("@distilled.cloud/aws/Credentials").CredentialsError | import("../../Interaction.ts").InteractionError, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope | import("effect/socket/Socket").WebSocketConstructor>;
+ //# sourceMappingURL=provider.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Cli/commands/state.d.ts b/lib/Cli/commands/state.d.ts
+index 6a46924a2696884235a58f127ed194ff1e1a7798..88b9238648627997350ee0c8accc7813b213d55e 100644
+--- a/lib/Cli/commands/state.d.ts
++++ b/lib/Cli/commands/state.d.ts
+@@ -6,5 +6,5 @@ export declare const stateCommand: Command.Command<"state", {} | {
+     readonly envFile: Option.Option<string>;
+     readonly profile: string | undefined;
+     readonly backend: "aws" | "cloudflare" | "configured" | "local";
+-}, {}, unknown, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit.CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
++}, {}, unknown, import("../../AlchemyContext.ts").AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CliKit.CliKit | import("../../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("../../Interaction.ts").Interaction | import("effect/Path").Path | import("../../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope>;
+ //# sourceMappingURL=state.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Cloudflare/Auth/AuthProvider.d.ts b/lib/Cloudflare/Auth/AuthProvider.d.ts
+index 064fd9bf6c68b21c9b8406528071a38fba45b81e..3c69361a8831c6c01bceb809b303c90dddb311b8 100644
+--- a/lib/Cloudflare/Auth/AuthProvider.d.ts
++++ b/lib/Cloudflare/Auth/AuthProvider.d.ts
+@@ -5,5 +5,5 @@ import { CredentialsStore } from "../../Auth/Credentials.ts";
+  * {@link AuthProviders} registry when built. Include this in the Cloudflare
+  * `providers()` layer so the alchemy CLI can discover it.
+  */
+-export declare const CloudflareAuth: Layer.Layer<never, never, import("../../index.ts").AuthProviders | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/Path").Path>;
++export declare const CloudflareAuth: Layer.Layer<never, never, import("../../index.ts").AuthProviders | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/Path").Path>;
+ //# sourceMappingURL=AuthProvider.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Cloudflare/Auth/OAuthClient.d.ts b/lib/Cloudflare/Auth/OAuthClient.d.ts
+index 1f5d4860f4f5752c533b55cc25727f75eaba83a2..dd91bd3d3a4311a5dd958536f09453b1a9a972dc 100644
+--- a/lib/Cloudflare/Auth/OAuthClient.d.ts
++++ b/lib/Cloudflare/Auth/OAuthClient.d.ts
+@@ -13,7 +13,7 @@ export declare const OAUTH_ENDPOINTS: {
+     revoke: string;
+ };
+ export { OAuthCredentials, OAuthError, type Authorization, } from "../../Auth/OAuthFlow.ts";
+-export declare const authorize: (scopes?: ReadonlyArray<string>) => import("effect/Effect").Effect<import("./OAuthClient.ts").Authorization, import("./OAuthClient.ts").OAuthError, import("effect/Crypto").Crypto>, callback: (authorization: import("./OAuthClient.ts").Authorization) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError | import("../../Auth/OAuthFlow.ts").CallbackServerStartError, never>, exchange: (code: string, authorization?: import("./OAuthClient.ts").Authorization) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError, never>, exchangeCallbackInput: (input: string, authorization: import("./OAuthClient.ts").Authorization) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError, never>, refresh: (credentials: import("./OAuthClient.ts").OAuthCredentials) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError, never>, revoke: (credentials: import("./OAuthClient.ts").OAuthCredentials) => import("effect/Effect").Effect<void, import("./OAuthClient.ts").OAuthError>, usesCurrentClient: (credentials: {
++export declare const authorize: (scopes?: ReadonlyArray<string>) => import("effect/Effect").Effect<import("./OAuthClient.ts").Authorization, import("./OAuthClient.ts").OAuthError, import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest>, callback: (authorization: import("./OAuthClient.ts").Authorization) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError | import("../../Auth/OAuthFlow.ts").CallbackServerStartError, never>, exchange: (code: string, authorization?: import("./OAuthClient.ts").Authorization) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError, never>, exchangeCallbackInput: (input: string, authorization: import("./OAuthClient.ts").Authorization) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError, never>, refresh: (credentials: import("./OAuthClient.ts").OAuthCredentials) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError, never>, revoke: (credentials: import("./OAuthClient.ts").OAuthCredentials) => import("effect/Effect").Effect<void, import("./OAuthClient.ts").OAuthError>, usesCurrentClient: (credentials: {
+     readonly clientId?: unknown;
+ }) => boolean;
+ //# sourceMappingURL=OAuthClient.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Cloudflare/Local.d.ts b/lib/Cloudflare/Local.d.ts
+index c72423f07745831e9d2a9dc1c4a7c3e5a2d8c91b..e07741b44f16f8f87db84a87caeb7a02b0809947 100644
+--- a/lib/Cloudflare/Local.d.ts
++++ b/lib/Cloudflare/Local.d.ts
+@@ -4,6 +4,6 @@
+  * session the first time a stack asks for one of their types.
+  */
+ import * as Layer from "effect/Layer";
+-declare const _default: Layer.Layer<import("../Provider.ts").Provider<import("./index.ts").ContainerApplication<unknown>> | import("../Provider.ts").Provider<import("./Queues/Consumer.ts").Consumer> | import("../Provider.ts").Provider<import("./D1/Database.ts").Database> | import("../Provider.ts").Provider<import("./Queues/Queue.ts").Queue> | import("../Provider.ts").Provider<import("./SecretsStore/Secret.ts").Secret> | import("../Provider.ts").Provider<import("./index.ts").Worker<any>>, import("effect/Config").ConfigError | import("@alchemy.run/cloudflare-runtime/core").ConfigError | import("effect/PlatformError").PlatformError | import("@alchemy.run/cloudflare-runtime/core").SystemError, import("../AlchemyContext.ts").AlchemyContext | import("../Artifacts.ts").ArtifactStore | import("../index.ts").AuthProviders | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../Auth/Credentials.ts").CredentialsStore | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("effect/Path").Path | import("../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope | import("../Stack.ts").Stack | import("../Stage.ts").Stage>;
++declare const _default: Layer.Layer<import("../Provider.ts").Provider<import("./index.ts").ContainerApplication<unknown>> | import("../Provider.ts").Provider<import("./Queues/Consumer.ts").Consumer> | import("../Provider.ts").Provider<import("./D1/Database.ts").Database> | import("../Provider.ts").Provider<import("./Queues/Queue.ts").Queue> | import("../Provider.ts").Provider<import("./SecretsStore/Secret.ts").Secret> | import("../Provider.ts").Provider<import("./index.ts").Worker<any>>, import("effect/Config").ConfigError | import("@alchemy.run/cloudflare-runtime/core").ConfigError | import("effect/PlatformError").PlatformError | import("@alchemy.run/cloudflare-runtime/core").SystemError, import("../AlchemyContext.ts").AlchemyContext | import("../Artifacts.ts").ArtifactStore | import("../index.ts").AuthProviders | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("../Auth/Credentials.ts").CredentialsStore | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("effect/Path").Path | import("../Auth/Profile.ts").ProfileStore | import("effect/Scope").Scope | import("../Stack.ts").Stack | import("../Stage.ts").Stage>;
+ export default _default;
+ //# sourceMappingURL=Local.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Cloudflare/Providers.d.ts b/lib/Cloudflare/Providers.d.ts
+index 1358c49090d74eb3876ef1acf724326e81c6ad9d..99e15ff8bcd17e140520a02ab081856c0ea9437a 100644
+--- a/lib/Cloudflare/Providers.d.ts
++++ b/lib/Cloudflare/Providers.d.ts
+@@ -14,7 +14,7 @@ export type ProviderRequirements = Layer.Services<ReturnType<typeof providers>>;
+ /**
+  * Cloudflare providers, bindings, and credentials for Worker-based stacks.
+  */
+-export declare const providers: () => Layer.Layer<Access.Access | CloudflareEnvironment.CloudflareEnvironment | Containers.Credentials | import("../Auth/Credentials.ts").CredentialsStore | import("../ACME/DnsSolver.ts").DnsSolverFactory | import("./Access/GetIdentityProvider.ts").GetIdentityProvider | import("../Auth/Profile.ts").ProfileStore | Provider.Provider<Command.Build> | Provider.Provider<Command.Dev> | Provider.Provider<Command.Exec> | Provider.Provider<KeyPair> | Provider.Provider<LoadBalancer.LoadBalancer> | Provider.Provider<LoadBalancer.Monitor> | Provider.Provider<LoadBalancer.MonitorGroup> | Provider.Provider<LoadBalancer.Pool> | Provider.Provider<Random> | Providers, never, import("../AlchemyContext.ts").AlchemyContext | import("../Artifacts.ts").ArtifactStore | import("../index.ts").AuthProviders | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("effect/Path").Path | import("effect/Scope").Scope | import("../Stack.ts").Stack | import("../Stage.ts").Stage>;
++export declare const providers: () => Layer.Layer<Access.Access | CloudflareEnvironment.CloudflareEnvironment | Containers.Credentials | import("../Auth/Credentials.ts").CredentialsStore | import("../ACME/DnsSolver.ts").DnsSolverFactory | import("./Access/GetIdentityProvider.ts").GetIdentityProvider | import("../Auth/Profile.ts").ProfileStore | Provider.Provider<Command.Build> | Provider.Provider<Command.Dev> | Provider.Provider<Command.Exec> | Provider.Provider<KeyPair> | Provider.Provider<LoadBalancer.LoadBalancer> | Provider.Provider<LoadBalancer.Monitor> | Provider.Provider<LoadBalancer.MonitorGroup> | Provider.Provider<LoadBalancer.Pool> | Provider.Provider<Random> | Providers, never, import("../AlchemyContext.ts").AlchemyContext | import("../Artifacts.ts").ArtifactStore | import("../index.ts").AuthProviders | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/http/HttpClient").HttpClient | import("effect/Path").Path | import("effect/Scope").Scope | import("../Stack.ts").Stack | import("../Stage.ts").Stage>;
+ /**
+  * The foundation every effect tree that talks to the Cloudflare API
+  * shares — credentials resolved through the Alchemy auth provider,
+@@ -33,5 +33,5 @@ export declare const providers: () => Layer.Layer<Access.Access | CloudflareEnvi
+  * "Authentication error" under load) are tagged retryable at the source
+  * in the SDK's global error map, so that default covers them.
+  */
+-export declare const CloudflareApiLive: () => Layer.Layer<Access.Access | CloudflareEnvironment.CloudflareEnvironment | Containers.Credentials | import("../Auth/Credentials.ts").CredentialsStore | import("../Auth/Profile.ts").ProfileStore, import("effect/PlatformError").PlatformError, import("../index.ts").AuthProviders | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/Path").Path>;
++export declare const CloudflareApiLive: () => Layer.Layer<Access.Access | CloudflareEnvironment.CloudflareEnvironment | Containers.Credentials | import("../Auth/Credentials.ts").CredentialsStore | import("../Auth/Profile.ts").ProfileStore, import("effect/PlatformError").PlatformError, import("../index.ts").AuthProviders | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/Path").Path>;
+ //# sourceMappingURL=Providers.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Cloudflare/StateStore/State.d.ts b/lib/Cloudflare/StateStore/State.d.ts
+index 83db6fea1adf670b705cd817276a55d4e4ddb9fd..c96985b161ff4388458b80f6a9fb942d6a4bdfc4 100644
+--- a/lib/Cloudflare/StateStore/State.d.ts
++++ b/lib/Cloudflare/StateStore/State.d.ts
+@@ -12,7 +12,7 @@ import { State, type StateService, type StateStoreError } from "../../State/Stat
+ import * as Interaction from "../../Interaction.ts";
+ import * as Access from "../Access.ts";
+ import * as CloudflareEnvironment from "../CloudflareEnvironment.ts";
+-export declare const state: () => Layer.Layer<State, never, AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("../../index.ts").AuthProviders | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | HttpClient.HttpClient | Interaction.Interaction | import("effect/Path").Path>;
++export declare const state: () => Layer.Layer<State, never, AlchemyContext | import("../../Artifacts.ts").ArtifactStore | import("../../index.ts").AuthProviders | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | HttpClient.HttpClient | Interaction.Interaction | import("effect/Path").Path>;
+ export interface BootstrapOptions {
+     /** @default "alchemy-state-store" */
+     workerName?: string;
+diff --git a/lib/Planetscale/AuthProvider.d.ts b/lib/Planetscale/AuthProvider.d.ts
+index 94ebca2ba1148115ff516eb05205b91a2d5ae088..e14ddae150af9e496c9729602ec25133a640c338 100644
+--- a/lib/Planetscale/AuthProvider.d.ts
++++ b/lib/Planetscale/AuthProvider.d.ts
+@@ -60,5 +60,5 @@ export type PlanetscaleResolvedCredentials = {
+  * - `stored`: prompts for a service token and stores it inline.
+  * - `oauth`: browser-based login storing access/refresh values inline.
+  */
+-export declare const PlanetscaleAuth: Layer.Layer<never, never, import("../index.ts").AuthProviders | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/Path").Path>;
++export declare const PlanetscaleAuth: Layer.Layer<never, never, import("../index.ts").AuthProviders | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/Path").Path>;
+ //# sourceMappingURL=AuthProvider.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Planetscale/OAuthClient.d.ts b/lib/Planetscale/OAuthClient.d.ts
+index e5675bf527b8eb1e900635d554baf6eb72bb9c9a..b84cc0f1a5cdfc96dc91a9ba8372a639ad81cfdb 100644
+--- a/lib/Planetscale/OAuthClient.d.ts
++++ b/lib/Planetscale/OAuthClient.d.ts
+@@ -28,7 +28,7 @@ export declare const OAUTH_ENDPOINTS: {
+     authorize: string;
+     token: string;
+ };
+-export declare const authorize: (scopes?: ReadonlyArray<string>) => import("effect/Effect").Effect<import("./OAuthClient.ts").Authorization, import("./OAuthClient.ts").OAuthError, import("effect/Crypto").Crypto>, callback: (authorization: import("./OAuthClient.ts").Authorization) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError | import("../Auth/OAuthFlow.ts").CallbackServerStartError, never>, exchange: (code: string, authorization?: import("./OAuthClient.ts").Authorization) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError, never>, exchangeCallbackInput: (input: string, authorization: import("./OAuthClient.ts").Authorization) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError, never>, refresh: (credentials: import("./OAuthClient.ts").OAuthCredentials) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError, never>, usesCurrentClient: (credentials: {
++export declare const authorize: (scopes?: ReadonlyArray<string>) => import("effect/Effect").Effect<import("./OAuthClient.ts").Authorization, import("./OAuthClient.ts").OAuthError, import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest>, callback: (authorization: import("./OAuthClient.ts").Authorization) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError | import("../Auth/OAuthFlow.ts").CallbackServerStartError, never>, exchange: (code: string, authorization?: import("./OAuthClient.ts").Authorization) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError, never>, exchangeCallbackInput: (input: string, authorization: import("./OAuthClient.ts").Authorization) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError, never>, refresh: (credentials: import("./OAuthClient.ts").OAuthCredentials) => import("effect/Effect").Effect<import("./OAuthClient.ts").OAuthCredentials, import("./OAuthClient.ts").OAuthError, never>, usesCurrentClient: (credentials: {
+     readonly clientId?: unknown;
+ }) => boolean;
+ //# sourceMappingURL=OAuthClient.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Planetscale/Providers.d.ts b/lib/Planetscale/Providers.d.ts
+index 2525d858be5b0ac0b86a62347555f5baccbd52e1..7030231e4e3b984f155f36dd0d7b4f47bad6990d 100644
+--- a/lib/Planetscale/Providers.d.ts
++++ b/lib/Planetscale/Providers.d.ts
+@@ -19,6 +19,6 @@ export type ProviderRequirements = Layer.Services<ReturnType<typeof providers>>;
+  * Effect.provide(Planetscale.providers())
+  * ```
+  */
+-export declare const providers: () => Layer.Layer<Credentials.Credentials | import("../Auth/Credentials.ts").CredentialsStore | import("effect/http/HttpClient").HttpClient | import("../Auth/Profile.ts").ProfileStore | Providers, never, import("../index.ts").AuthProviders | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("effect/Crypto").Crypto | import("effect/FileSystem").FileSystem | import("effect/Path").Path | import("../Stack.ts").Stack | import("../Stage.ts").Stage>;
++export declare const providers: () => Layer.Layer<Credentials.Credentials | import("../Auth/Credentials.ts").CredentialsStore | import("effect/http/HttpClient").HttpClient | import("../Auth/Profile.ts").ProfileStore | Providers, never, import("../index.ts").AuthProviders | import("effect/process/ChildProcessSpawner").ChildProcessSpawner | import("effect/crypto/SecureRandom").SecureRandom | import("effect/crypto/Digest").Digest | import("effect/FileSystem").FileSystem | import("effect/Path").Path | import("../Stack.ts").Stack | import("../Stage.ts").Stage>;
+ export {};
+ //# sourceMappingURL=Providers.d.ts.map
+\ No newline at end of file
+diff --git a/lib/Stack.d.ts b/lib/Stack.d.ts
+index b24da995d896babf7a4c8306fb6cb6c7f5377b35..820a0d923cf5d3dc094061b6f34de97f477863f3 100644
+--- a/lib/Stack.d.ts
++++ b/lib/Stack.d.ts
+@@ -1,6 +1,7 @@
+ import type { ConfigError } from "effect/Config";
+ import * as Context from "effect/Context";
+-import type { Crypto } from "effect/Crypto";
++import type { Digest } from "effect/crypto/Digest";
++import type { SecureRandom } from "effect/crypto/SecureRandom";
+ import * as Effect from "effect/Effect";
+ import { FileSystem } from "effect/FileSystem";
+ import * as Layer from "effect/Layer";
+@@ -23,7 +24,7 @@ import { Stage } from "./Stage.ts";
+ import type { State } from "./State/State.ts";
+ import type { SecretsEntry, SecretsOption } from "./Secrets/Provider.ts";
+ import { PlatformServices } from "./Util/PlatformServices.ts";
+-export type StackServices = Stack | Stage | Scope.Scope | FileSystem | Crypto | Path | AlchemyContext | HttpClient | ChildProcessSpawner | AuthProviders | ProfileStore | ArtifactStore | CredentialsStore | Interaction;
++export type StackServices = Stack | Stage | Scope.Scope | FileSystem | Digest | SecureRandom | Path | AlchemyContext | HttpClient | ChildProcessSpawner | AuthProviders | ProfileStore | ArtifactStore | CredentialsStore | Interaction;
+ export type ProviderServices = ProviderCollectionLike | Provider<any> | EnvironmentLike | CredentialsLike | DockerLike;
+ export interface EnvironmentLike {
+     readonly kind: "Environment";
+@@ -133,7 +134,7 @@ export interface MakeStackProps<ROut = never> {
+     /** @internal */
+     stack?: StackSpec;
+ }
+-export declare const make: <ROut = never>(options: MakeStackProps<ROut>) => <A, Err = never, Req extends ROut | StackServices = never>(effect: Effect.Effect<A, Err, Req>) => Effect.Effect<CompiledStack<A, ROut | StackServices>, Err | ConfigError, AlchemyContext | ArtifactStore | AuthProviders | ChildProcessSpawner | CredentialsStore | Crypto | FileSystem | HttpClient | Interaction | Path | ProfileStore | Scope.Scope | Stage | Exclude<ROut, ROut | Stack | State> | Exclude<Req, ROut | Stack | State> | Exclude<AlchemyContext, ROut | Stack | State> | Exclude<ArtifactStore, ROut | Stack | State> | Exclude<AuthProviders, ROut | Stack | State> | Exclude<ChildProcessSpawner, ROut | Stack | State> | Exclude<CredentialsStore, ROut | Stack | State> | Exclude<Crypto, ROut | Stack | State> | Exclude<FileSystem, ROut | Stack | State> | Exclude<HttpClient, ROut | Stack | State> | Exclude<Interaction, ROut | Stack | State> | Exclude<Path, ROut | Stack | State> | Exclude<ProfileStore, ROut | Stack | State> | Exclude<Scope.Scope, ROut | Stack | State> | Exclude<Stack, ROut | Stack | State> | Exclude<Stage, ROut | Stack | State>>;
++export declare const make: <ROut = never>(options: MakeStackProps<ROut>) => <A, Err = never, Req extends ROut | StackServices = never>(effect: Effect.Effect<A, Err, Req>) => Effect.Effect<CompiledStack<A, ROut | StackServices>, Err | ConfigError, AlchemyContext | ArtifactStore | AuthProviders | ChildProcessSpawner | CredentialsStore | Digest | SecureRandom | FileSystem | HttpClient | Interaction | Path | ProfileStore | Scope.Scope | Stage | Exclude<ROut, ROut | Stack | State> | Exclude<Req, ROut | Stack | State> | Exclude<AlchemyContext, ROut | Stack | State> | Exclude<ArtifactStore, ROut | Stack | State> | Exclude<AuthProviders, ROut | Stack | State> | Exclude<ChildProcessSpawner, ROut | Stack | State> | Exclude<CredentialsStore, ROut | Stack | State> | Exclude<Crypto, ROut | Stack | State> | Exclude<FileSystem, ROut | Stack | State> | Exclude<HttpClient, ROut | Stack | State> | Exclude<Interaction, ROut | Stack | State> | Exclude<Path, ROut | Stack | State> | Exclude<ProfileStore, ROut | Stack | State> | Exclude<Scope.Scope, ROut | Stack | State> | Exclude<Stack, ROut | Stack | State> | Exclude<Stage, ROut | Stack | State>>;
+ export declare const CurrentStack: Effect.Effect<Omit<StackSpec<any>, "output"> | undefined, never, never>;
+ export declare const evalStack: <A, B, StackErr, Err, Req>(effect: StackEffect<CompiledStack<A>, StackErr, Stage | AlchemyContext>, fn: (stack: CompiledStack<A>) => Effect.Effect<B, Err, Req>, options: {
+     stage: string;
+diff --git a/lib/Util/PlatformServices.d.ts b/lib/Util/PlatformServices.d.ts
+index a7291675df1893f4f322f84c60f1d2f78385bfcd..e4c83cbb4169a0cca3743313b9b470b28e7b2ad3 100644
+--- a/lib/Util/PlatformServices.d.ts
++++ b/lib/Util/PlatformServices.d.ts
+@@ -1,4 +1,5 @@
+-import type { Crypto } from "effect/Crypto";
++import * as Digest from "effect/crypto/Digest";
++import * as SecureRandom from "effect/crypto/SecureRandom";
+ import type { Input as DurationInput } from "effect/Duration";
+ import * as Effect from "effect/Effect";
+ import type { FileSystem } from "effect/FileSystem";
+@@ -18,7 +19,7 @@ export declare const platformLayer: <A, E, R>(constructors: {
+     bun: () => Promise<Layer.Layer<A, E, R>>;
+     node: () => Promise<Layer.Layer<A, E, R>>;
+ }) => Layer.Layer<A, E, R>;
+-export type PlatformServices = ChildProcessSpawner | Crypto | FileSystem | Path | Stdio | Terminal | WebSocketConstructor;
++export type PlatformServices = ChildProcessSpawner | Digest.Digest | SecureRandom.SecureRandom | FileSystem | Path | Stdio | Terminal | WebSocketConstructor;
+ export declare const PlatformServices: Layer.Layer<PlatformServices>;
+ export declare const runMain: <E, A>(effect: Effect.Effect<A, E>, options?: {
+     readonly disableErrorReporting?: boolean | undefined;
+diff --git a/lib/Util/PlatformServices.js b/lib/Util/PlatformServices.js
+index 7a31f1e6d78159e4f619f14ca5ecffc2d41ee911..9b4a4dd59356adf71e935f0aaa1b7ada77b22a11 100644
+--- a/lib/Util/PlatformServices.js
++++ b/lib/Util/PlatformServices.js
+@@ -1,3 +1,5 @@
++import * as Digest from "effect/crypto/Digest";
++import * as SecureRandom from "effect/crypto/SecureRandom";
+ import * as Effect from "effect/Effect";
+ import * as Layer from "effect/Layer";
+ import { defaultTeardown } from "effect/Runtime";
+@@ -22,20 +24,22 @@ export const platformLayer = (constructors) => Layer.unwrap(Effect.promise(async
+         return await constructors.node();
+     }
+ }));
++// effect 4.1 dropped crypto from the platform `*Services` bundles.
++const WebCryptoServices = Layer.mergeAll(SecureRandom.layerWebCrypto, Digest.layerWebCrypto);
+ export const PlatformServices = platformLayer({
+     bun: async () => {
+         const [BunServices, BunSocket] = await Promise.all([
+             importPlatformPeer("@effect/platform-bun", () => import("@effect/platform-bun/BunServices")),
+             importPlatformPeer("@effect/platform-bun", () => import("@effect/platform-bun/BunSocket")),
+         ]);
+-        return Layer.merge(BunServices.layer, BunSocket.layerWebSocketConstructor);
++        return Layer.mergeAll(BunServices.layer, BunSocket.layerWebSocketConstructor, WebCryptoServices);
+     },
+     node: async () => {
+         const [NodeServices, NodeSocket] = await Promise.all([
+             importPlatformPeer("@effect/platform-node", () => import("@effect/platform-node/NodeServices")),
+             importPlatformPeer("@effect/platform-node", () => import("@effect/platform-node/NodeSocket")),
+         ]);
+-        return Layer.merge(NodeServices.layer, NodeSocket.layerWebSocketConstructor);
++        return Layer.mergeAll(NodeServices.layer, NodeSocket.layerWebSocketConstructor, WebCryptoServices);
+     },
+ });
+ /**
+diff --git a/src/Auth/OAuthFlow.ts b/src/Auth/OAuthFlow.ts
+index acb924f05aa667c11cf7c89f8f7c3cc1ec443c06..4f23980892feeacf1c0e58b2b01bfad2f7fd1c95 100644
+--- a/src/Auth/OAuthFlow.ts
++++ b/src/Auth/OAuthFlow.ts
+@@ -1,6 +1,7 @@
+ import * as Data from "effect/Data";
+ import * as Clock from "effect/Clock";
+-import * as Crypto from "effect/Crypto";
++import * as Digest from "effect/crypto/Digest";
++import * as SecureRandom from "effect/crypto/SecureRandom";
+ import { Base64Url } from "effect/encoding";
+ import * as Effect from "effect/Effect";
+ import * as Redacted from "effect/Redacted";
+@@ -103,7 +104,7 @@ export interface OAuthClient {
+    */
+   readonly authorize: (
+     scopes?: ReadonlyArray<string>,
+-  ) => Effect.Effect<Authorization, OAuthError, Crypto.Crypto>;
++  ) => Effect.Effect<Authorization, OAuthError, SecureRandom.SecureRandom | Digest.Digest>;
+   /**
+    * Exchange an authorization code directly. `authorization` supplies the
+    * PKCE verifier; omit for non-PKCE clients (tests, relay-less flows).
+@@ -143,33 +144,14 @@ export interface OAuthClient {
+ }
+ 
+ const randomText = Effect.fn(function* (length: number) {
+-  const crypto = yield* Crypto.Crypto;
+-  const bytes = yield* crypto.randomBytes(length).pipe(
+-    Effect.mapError(
+-      (cause) =>
+-        new OAuthError({
+-          error: "crypto_error",
+-          errorDescription: `Secure random generation failed: ${cause}`,
+-        }),
+-    ),
+-  );
+-  return Base64Url.encode(bytes);
++  const random = yield* SecureRandom.SecureRandom;
++  return Base64Url.encode(yield* random.randomBytes(length));
+ });
+ 
+ const generatePKCE = Effect.fn(function* (length = 96) {
+-  const crypto = yield* Crypto.Crypto;
++  const digest = yield* Digest.Digest;
+   const verifier = yield* randomText(length);
+-  const challenge = yield* crypto
+-    .digest("SHA-256", new TextEncoder().encode(verifier))
+-    .pipe(
+-      Effect.mapError(
+-        (cause) =>
+-          new OAuthError({
+-            error: "crypto_error",
+-            errorDescription: `PKCE digest failed: ${cause}`,
+-          }),
+-      ),
+-    );
++  const challenge = yield* digest.digest(Digest.sha256, new TextEncoder().encode(verifier));
+   return { verifier, challenge: Base64Url.encode(challenge) };
+ });
+ 
+diff --git a/src/Stack.ts b/src/Stack.ts
+index bcfd49c4a227dcad699d9964a2f76c2c09bf4f2c..eda81188279bc9e651b4147eaa0bc07b2a7cfdeb 100644
+--- a/src/Stack.ts
++++ b/src/Stack.ts
+@@ -1,7 +1,8 @@
+ import type { ConfigError } from "effect/Config";
+ import { ConfigProvider } from "effect/ConfigProvider";
+ import * as Context from "effect/Context";
+-import type { Crypto } from "effect/Crypto";
++import type { Digest } from "effect/crypto/Digest";
++import type { SecureRandom } from "effect/crypto/SecureRandom";
+ import * as Effect from "effect/Effect";
+ import { FileSystem } from "effect/FileSystem";
+ import * as Layer from "effect/Layer";
+@@ -40,7 +41,8 @@ export type StackServices =
+   | Stage
+   | Scope.Scope
+   | FileSystem
+-  | Crypto
++  | Digest
++  | SecureRandom
+   | Path
+   | AlchemyContext
+   | HttpClient
+diff --git a/src/Util/PlatformServices.ts b/src/Util/PlatformServices.ts
+index 28f7818b7fb4620eba5b763d032d15ada65937b0..5ce2e6add648c625ad95311bf3f4e67d863c9ee7 100644
+--- a/src/Util/PlatformServices.ts
++++ b/src/Util/PlatformServices.ts
+@@ -1,4 +1,5 @@
+-import type { Crypto } from "effect/Crypto";
++import * as Digest from "effect/crypto/Digest";
++import * as SecureRandom from "effect/crypto/SecureRandom";
+ import type { Input as DurationInput } from "effect/Duration";
+ import * as Effect from "effect/Effect";
+ import type { FileSystem } from "effect/FileSystem";
+@@ -47,9 +48,13 @@ export const platformLayer = <A, E, R>(constructors: {
+     }),
+   );
+ 
++// effect 4.1 dropped crypto from the platform `*Services` bundles.
++const WebCryptoServices = Layer.mergeAll(SecureRandom.layerWebCrypto, Digest.layerWebCrypto);
++
+ export type PlatformServices =
+   | ChildProcessSpawner
+-  | Crypto
++  | Digest.Digest
++  | SecureRandom.SecureRandom
+   | FileSystem
+   | Path
+   | Stdio
+@@ -69,7 +74,11 @@ export const PlatformServices: Layer.Layer<PlatformServices> = platformLayer({
+         () => import("@effect/platform-bun/BunSocket"),
+       ),
+     ]);
+-    return Layer.merge(BunServices.layer, BunSocket.layerWebSocketConstructor);
++    return Layer.mergeAll(
++      BunServices.layer,
++      BunSocket.layerWebSocketConstructor,
++      WebCryptoServices,
++    );
+   },
+   node: async () => {
+     const [NodeServices, NodeSocket] = await Promise.all([
+@@ -82,9 +91,10 @@ export const PlatformServices: Layer.Layer<PlatformServices> = platformLayer({
+         () => import("@effect/platform-node/NodeSocket"),
+       ),
+     ]);
+-    return Layer.merge(
++    return Layer.mergeAll(
+       NodeServices.layer,
+       NodeSocket.layerWebSocketConstructor,
++      WebCryptoServices,
+     );
+   },
+ });
 diff --git a/lib/GitHub/Ruleset.d.ts b/lib/GitHub/Ruleset.d.ts
 --- a/lib/GitHub/Ruleset.d.ts
 +++ b/lib/GitHub/Ruleset.d.ts

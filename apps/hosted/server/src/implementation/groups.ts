@@ -1,5 +1,5 @@
 /** Group writes commit metadata and memberships together, after locking current authority. */
-import { Effect, Schema } from "effect";
+import { Array as Arr, Effect, Schema } from "effect";
 import { SqlClient, SqlError } from "effect/sql";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
@@ -138,8 +138,9 @@ const saveGroup = (
     const group = (yield* decodeRows(StoredGroup, changed))[0];
     if (group === undefined) return yield* new GroupNotFound();
     yield* sql`delete from hosted_group_members where group_id = ${group.id}`;
-    if (input.memberIds.length > 0)
-      yield* sql`insert into hosted_group_members ${sql.insert(input.memberIds.map((member) => ({ group_id: group.id, member_id: member })))}`;
+    const members = input.memberIds.map((member) => ({ group_id: group.id, member_id: member }));
+    if (Arr.isArrayNonEmpty(members))
+      yield* sql`insert into hosted_group_members ${sql.insert(members)}`;
     return { ...group, memberIds: input.memberIds } satisfies Group;
   });
 const removeGroup = (id: GroupId, revision: typeof GroupRevision.Type) =>

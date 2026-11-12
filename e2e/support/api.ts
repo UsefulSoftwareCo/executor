@@ -94,26 +94,24 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
       const deployment = targetHosts(target).deployment;
       const session = (initial?: Redacted.Redacted<BrowserCookies>) =>
         Effect.gen(function* () {
-          let initialJar = Cookies.empty;
-          for (const cookie of initial ? reveal(initial) : [])
-            initialJar = Cookies.setUnsafe(
-              initialJar,
-              cookie.name,
-              decodeURIComponent(cookie.value),
-              {
+          // The jar sends a cookie only to a host its domain matches, so each seeded cookie names
+          // the browser origin's host.
+          const jar = yield* Ref.make<ReadonlyArray<Cookies.Cookie>>(
+            (initial ? reveal(initial) : []).map((cookie) =>
+              Cookies.makeCookieUnsafe(cookie.name, decodeURIComponent(cookie.value), {
                 domain: new URL(origin).hostname,
                 path: cookie.path,
                 httpOnly: cookie.httpOnly,
                 secure: cookie.secure,
-              },
-            );
-          const jar = yield* Ref.make(initialJar);
+              }),
+            ),
+          );
           const http = client.pipe(HttpClient.withCookiesRef(jar));
           return {
             cookies: Ref.get(jar).pipe(
               Effect.map((cookies) =>
                 secret(
-                  Object.values(cookies.cookies).map((cookie) => ({
+                  cookies.map((cookie) => ({
                     name: cookie.name,
                     value: cookie.valueEncoded,
                     domain: cookie.options?.domain ?? new URL(origin).hostname,

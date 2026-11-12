@@ -1,5 +1,6 @@
 /** Persisted scheduling transitions. App code and external effects run only after a claim commits. */
-import { Clock, Cron, Effect, Option, Result, Schema, SchemaAST, type Crypto } from "effect";
+import { Clock, Cron, Effect, Option, Result, Schema, SchemaAST } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import { ScheduleTiming } from "apps/contracts";
 import { CurrentActor, type Executor, type ResourceLifecycle } from "../contracts/executor.ts";
 import { AccountRequired } from "../contracts/apps.ts";
@@ -85,13 +86,13 @@ export const makeSchedules = (
   tools: Pick<Executor["tools"], "call" | "resume"> &
     Pick<ReturnType<typeof makeTools>, "scheduled" | "accountNeedingReconnect">,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle: ResourceLifecycle | undefined,
 ) => {
   const db = database(storage);
   const approvals = makeToolApprovals(db, credentials, crypto, storage.reactivity.inTransaction);
   const now = Effect.map(Clock.currentTimeMillis, (value) => new Date(value));
-  const uuid = crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
+  const uuid = crypto.random.uuidV4();
   const parse = <A>(schema: Schema.Decoder<A>, value: unknown) =>
     Schema.decodeUnknownEffect(schema)(value).pipe(Effect.mapError(() => new StorageError()));
   const readSettings = (id: ScheduleId, owner?: OwnerId) =>

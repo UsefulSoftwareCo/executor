@@ -156,19 +156,19 @@ layer(HostedLive, { excludeTestServices: true })("Browser navigation telemetry",
         // changes, both completed on a visible page.
         expect(toApps).toHaveLength(2);
         for (const span of toApps) {
-          expect(span.tags["status.interrupted"]).toBeUndefined();
+          expect(span.tags["effect.fiber.interrupted"]).toBeUndefined();
           expect(span.tags["executor.navigation.hidden"]).toBe("false");
         }
         // Both settings navigations completed and say the page was hidden: the first went
         // hidden while pending, the second started hidden.
         expect(toSettings).toHaveLength(2);
         for (const span of toSettings) {
-          expect(span.tags["status.interrupted"]).toBeUndefined();
+          expect(span.tags["effect.fiber.interrupted"]).toBeUndefined();
           expect(span.tags["executor.navigation.hidden"]).toBe("true");
         }
         // The groups navigation never resolved, and still says the page was hidden while it ran.
         expect(toGroups).toHaveLength(1);
-        expect(toGroups[0]!.tags["status.interrupted"]).toBe("true");
+        expect(toGroups[0]!.tags["effect.fiber.interrupted"]).toBe("true");
         expect(toGroups[0]!.tags["executor.navigation.hidden"]).toBe("true");
       }),
     ),

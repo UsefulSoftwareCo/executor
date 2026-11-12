@@ -23,7 +23,7 @@
     "@executor-js/utils": "workspace:*",
     "@modelcontextprotocol/sdk": "1.32.1",
     "@napi-rs/keyring": "2.1.0",
-    "effect": "4.0.1",
+    "effect": "4.1.4",
     "jsonc-parser": "3.3.1",
     "prettier": "3.9.8",
     "proper-lockfile": "4.1.2"
