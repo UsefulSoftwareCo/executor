@@ -153,6 +153,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
             ),
           ),
       },
+      observation.providerPhoto,
     );
     const database = yield* AuthDatabase;
     const makeInstance = (secret: string) =>
