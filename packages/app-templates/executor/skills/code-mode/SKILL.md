@@ -207,6 +207,15 @@ tool says it failed: the call does not throw, and its outcome is `failure`.
 Check `isError` before using such a result. Other fields, such as `ok`, mean
 what the tool's description says.
 
+Images and audio come back to you as media. Any `{ type: "image", mimeType, data }`
+or `{ type: "audio", mimeType, data }` in the returned value, at any depth,
+reaches you as an image or audio block, and the JSON shows
+`{ type, mimeType, contentIndex }` in its place; the same block repeated is sent
+once. `data` may be standard or URL-safe base64. Inside the program the block
+is whole, so its data can be passed to another tool. To look at bytes a tool
+returns in another shape, such as `{ base64 }`, build that object
+from them and return it. Never return, read or decode base64 as text.
+
 An outcome of `success` means only that the call returned normally, with no
 tool error reported to Executor. It does not show that the intended action
 happened: check the returned value, such as `isError` or the app's own status

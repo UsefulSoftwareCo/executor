@@ -32,6 +32,23 @@ as above. Return only the data you need. For depth, read the `code-mode` skill.
 When `call` or `execute` pauses for approval or input, show the request to the
 user and resume it; never repeat the call or run the program again.
 
+## See images and hear audio
+
+You can look at any image and listen to any audio a tool gives you. Wherever
+the value `call` or `execute` returns holds `{ type: "image", mimeType, data }`
+or `{ type: "audio", mimeType, data }`, with `data` in standard or URL-safe
+base64, you receive that block as media, and the JSON shows
+`{ type, mimeType, contentIndex }` in its place. Screenshots from MCP servers already arrive in that shape. When a tool
+returns the bytes some other way, such as an email attachment as `{ base64 }`,
+return them in that shape from `execute`:
+
+```js
+const file = await tools.gmail.attachment({ messageId, attachmentId });
+return { type: "image", mimeType: "image/png", data: file.base64 };
+```
+
+Never read, decode or describe base64 yourself; return it as media and look.
+
 ## Build an app
 
 Build an app when no existing app provides the tools, data, UI or automation
