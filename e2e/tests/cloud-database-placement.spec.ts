@@ -511,17 +511,22 @@ return out;`,
           expect(dropped.windows).toBe(0);
           expect(dropped.connects).toBeGreaterThan(0);
 
-          // A pause between an agent's tool calls keeps the window and its connections: the next
-          // call opens neither a window nor a connection.
+          // A pause between an agent's tool calls keeps the window and its connections: the
+          // object still holds every connection it held before the pause, and the next call opens
+          // no window. The pool opens connections on demand, up to its limit, and the drop above
+          // left it fewer than its first calls opened, so a call that runs more statements at
+          // once than the connections held may still open one; that is the pool growing, not
+          // the pause closing one, so the call's own connects are not the measure.
+          const held = yield* objectConnections(owner);
+          expect(held).toBeGreaterThan(0);
           yield* Effect.sleep(Duration.seconds(45));
-          expect(yield* objectConnections(owner)).toBeGreaterThan(0);
+          expect(yield* objectConnections(owner), "A 45 s pause keeps the connections").toBe(held);
           const paused = yield* sessionSpans(
             yield* execute("Tool calls after a pause"),
             (counts) => counts.operations >= 6 && counts.databases >= 6,
           );
-          yield* evidence.json("after-pause.json", paused);
+          yield* evidence.json("after-pause.json", { ...paused, held });
           expect(paused.windows, "A 45 s pause keeps the window").toBe(0);
-          expect(paused.connects, "A 45 s pause keeps the connections").toBe(0);
 
           // Once the session has been idle for the whole window (120 s), it holds no connection;
           // the next call opens a window.

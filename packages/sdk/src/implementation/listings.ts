@@ -9,6 +9,7 @@ import {
   type ToolListingPolicy,
 } from "../contracts/declarations.ts";
 import {
+  refusedHostApi,
   type Tool,
   ToolListingTimedOut,
   ToolSearchListing,
@@ -276,6 +277,11 @@ export const makeListings = (options: {
             outcome.error._tag !== "ToolListingTimedOut" &&
             outcome.at - load.started < policy.slowFailureMillis
           )
+            return;
+          // Executor refused the app a host API document of another revision. That says what the
+          // host served at that moment, not how the app lists: the caller is told to retry in a
+          // few seconds, and the retry must read the document again rather than this refusal.
+          if (outcome.error._tag === "AppEvaluationFailed" && refusedHostApi(outcome.error.failure))
             return;
           const current = yield* cache.get(id);
           if (

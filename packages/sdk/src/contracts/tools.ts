@@ -576,6 +576,10 @@ export const appFailureText = ({ source, errorName, code, message, fields }: App
       ? `The app's API call failed: ${message}`
       : `The app threw ${errorName}${code === undefined ? "" : ` (${code})`}: ${message}${fieldsText(fields)}`;
 
+/** Whether the app reported Executor refusing it a host API document of another revision. */
+export const refusedHostApi = (failure: AppFailure | undefined) =>
+  failure?.source === "app" && failure.code === hostApiChangingCode;
+
 /**
  * The app reported that Executor refused it Executor's own API document because the document is
  * of another revision than the one its tools are kept for, as Executor's network does while a
@@ -584,7 +588,7 @@ export const appFailureText = ({ source, errorName, code, message, fields }: App
  * reported it. It clears when the deploy finishes.
  */
 const hostApiChanging = (failure: AppFailure) =>
-  failure.source === "app" && failure.code === hostApiChangingCode
+  refusedHostApi(failure)
     ? {
         title: "Executor’s API is changing",
         description:
