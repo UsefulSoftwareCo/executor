@@ -15,6 +15,7 @@ import { App, Resource } from "./contracts.ts";
 import { Target } from "./platform.ts";
 import { removeAppWhenStopped, settleWebhookSubscriptions } from "./webhook-sources.ts";
 import { appsManifest } from "./apps-release.ts";
+import { heldValue, reveal } from "./failure-text.ts";
 
 const whsec = () => `whsec_${randomBytes(32).toString("base64")}`;
 /** The receiver accepts a signature from either secret; the second is the rotated one. */
@@ -321,7 +322,7 @@ export const eventFixtures = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const request = HttpClientRequest.post(`${target.metadata.origin}/mcp`).pipe(
-        HttpClientRequest.bearerToken(Redacted.value(credential)),
+        HttpClientRequest.bearerToken(reveal(credential)),
         HttpClientRequest.setHeaders({
           accept: "application/json, text/event-stream",
           "content-type": "application/json",
@@ -357,7 +358,10 @@ export const eventFixtures = Effect.gen(function* () {
   const createKey = (name: string) =>
     Effect.gen(function* () {
       const key = yield* body(
-        Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+        Schema.Struct({
+          id: Schema.String,
+          key: heldValue(Schema.RedactedFromValue(Schema.String)),
+        }),
         yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", { name }),
       );
       yield* Effect.addFinalizer(() =>

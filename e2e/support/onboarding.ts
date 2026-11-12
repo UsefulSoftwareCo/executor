@@ -1,4 +1,5 @@
-import { Context, Deferred, Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Context, Deferred, Effect, Layer, Option, Schema } from "effect";
+import { reveal } from "./failure-text.ts";
 import { expect } from "@effect/vitest";
 import { randomUUID } from "node:crypto";
 import type { Locator, Page } from "playwright";
@@ -137,7 +138,7 @@ const make = Effect.gen(function* () {
       yield* browser.use("Enter the delivered code", (page) =>
         page
           .getByLabel(mode === "signup" ? "Sign-up code" : "Sign-in code", { exact: true })
-          .fill(Redacted.value(delivered.code)),
+          .fill(reveal(delivered.code)),
       );
       yield* browser.use("Verify the code", (page) =>
         page.getByRole("button", { name: flow, exact: true }).click(),

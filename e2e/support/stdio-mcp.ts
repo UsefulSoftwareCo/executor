@@ -6,13 +6,13 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ElicitRequestSchema, type ElicitResult } from "@modelcontextprotocol/sdk/types.js";
 import { Effect, Schema } from "effect";
+import { failureText } from "./failure-text.ts";
 
-/** A failed MCP request; the SDK's message only, never a credential. */
+/** A failed MCP request: the SDK error's name, message and causes, masked (support/failure-text.ts). */
 export class StdioMcpFailed extends Schema.TaggedError<StdioMcpFailed>()("StdioMcpFailed", {
   message: Schema.String,
 }) {}
-const failed = (error: unknown) =>
-  new StdioMcpFailed({ message: error instanceof Error ? error.message : String(error) });
+const failed = (error: unknown) => new StdioMcpFailed({ message: failureText(error) });
 
 /** A form the server asked the client to fill in, as the client received it. */
 export interface Elicitation {

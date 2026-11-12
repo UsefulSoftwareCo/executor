@@ -17,7 +17,6 @@ import {
   Layer,
   Option,
   Path,
-  Redacted,
   Ref,
   Schedule,
   Schema,
@@ -38,6 +37,7 @@ import { Evidence } from "./evidence.ts";
 import { Target } from "./platform.ts";
 import { connectionRefused, freePort } from "./ports.ts";
 import { localEntryCommand } from "./local-entry.ts";
+import { heldValue, reveal } from "./failure-text.ts";
 
 /** `server.json`: the process that serves a data directory and how to reach it. */
 /** What `executor` prints when it starts a background server. */
@@ -61,7 +61,7 @@ export const ServiceRegistration = Schema.Struct({
   version: Schema.String,
   url: Schema.String,
   pid: Schema.Number,
-  password: Schema.RedactedFromValue(Schema.String),
+  password: heldValue(Schema.RedactedFromValue(Schema.String)),
 });
 export type ServiceRegistration = typeof ServiceRegistration.Type;
 const RegistrationJson = Schema.fromJsonString(ServiceRegistration);
@@ -104,7 +104,7 @@ export const stoppingServer = (server: ServiceRegistration) =>
           ...(challenge === null
             ? {}
             : {
-                proof: createHmac("sha256", Redacted.value(server.password))
+                proof: createHmac("sha256", reveal(server.password))
                   .update(challenge)
                   .digest("base64url"),
               }),

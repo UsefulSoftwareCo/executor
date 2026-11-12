@@ -1,21 +1,12 @@
 /** Drive the real interactive CLI. Claude owns MCP discovery, PKCE, tokens and its loopback callback. */
-import {
-  Config,
-  Context,
-  Effect,
-  FileSystem,
-  Layer,
-  Path,
-  Redacted,
-  Schedule,
-  Schema,
-} from "effect";
+import { Config, Context, Effect, FileSystem, Layer, Path, Schedule, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { Key } from "@kitlangton/terminal-control";
 import { Evidence } from "./evidence.ts";
 import { Target } from "./platform.ts";
 import { targetHosts } from "./role-hosts.ts";
 import { Terminal } from "./terminal.ts";
+import { reveal, secret, secretConfig } from "./failure-text.ts";
 
 class ClaudeFailed extends Schema.TaggedError<ClaudeFailed>()("ClaudeFailed", {
   operation: Schema.String,
@@ -56,7 +47,7 @@ const make = Effect.gen(function* () {
       ),
     ),
   );
-  const apiKey = yield* Config.Redacted("E2E_CLAUDE_API_KEY"),
+  const apiKey = yield* secretConfig("E2E_CLAUDE_API_KEY"),
     executablePath = yield* Config.String("PATH");
   return {
     start: Effect.gen(function* () {
@@ -111,7 +102,7 @@ const make = Effect.gen(function* () {
           TERM: "xterm-256color",
           CLAUDE_CONFIG_DIR: directory,
           ANTHROPIC_BASE_URL: baseUrl,
-          ANTHROPIC_API_KEY: Redacted.value(apiKey),
+          ANTHROPIC_API_KEY: reveal(apiKey),
           CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
           BROWSER: `${directory}/bin/open`,
           E2E_BROWSER_ORIGIN: targetHosts(target).browser,
@@ -218,7 +209,7 @@ const make = Effect.gen(function* () {
             pkce: url.searchParams.get("code_challenge_method"),
             callback: callback.origin,
           });
-          return { url: Redacted.make(url.href), clientId };
+          return { url: secret(url.href), clientId };
         }),
         finishConnection: Effect.gen(function* () {
           yield* wait(

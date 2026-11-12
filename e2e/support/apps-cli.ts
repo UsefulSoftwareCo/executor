@@ -21,6 +21,7 @@ import { Actors } from "./actors.ts";
 import { Api, body } from "./api.ts";
 import { Evidence } from "./evidence.ts";
 import { withStandInPackage } from "./stand-in-package.ts";
+import { heldValue } from "./failure-text.ts";
 
 /**
  * What the device approval page sends in `x-executor-grant-settings`: the apps the sign-in reaches
@@ -362,7 +363,8 @@ export const appsCli = Effect.gen(function* () {
     fs.readFileString(path.join(root, "store.json")).pipe(
       Effect.flatMap(
         Schema.decodeUnknownEffect(
-          Schema.fromJsonString(Schema.Record(Schema.String, Schema.String)),
+          // Every value in the store is a credential the CLI saved, registered as it is read.
+          Schema.fromJsonString(Schema.Record(Schema.String, heldValue(Schema.String))),
         ),
       ),
       Effect.map((store) => Option.fromUndefinedOr(store[`${service}\n${account}`])),

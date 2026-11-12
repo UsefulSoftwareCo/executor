@@ -4,11 +4,12 @@
  */
 import { randomUUID } from "node:crypto";
 import { Effect, FileSystem, Schedule, Schema } from "effect";
+import { heldValue } from "./failure-text.ts";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { writeRows, type RowStatement } from "./cloud-rows.ts";
 import { Target } from "./platform.ts";
 
-const Operator = Schema.Struct({ token: Schema.String });
+const Operator = Schema.Struct({ token: heldValue(Schema.String) });
 
 /** An item skipped because v1 cannot run it either. */
 const StaleItem = Schema.Struct({

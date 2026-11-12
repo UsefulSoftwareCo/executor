@@ -12,6 +12,7 @@ import { Evidence } from "./evidence.ts";
 import { Target, driver } from "./platform.ts";
 import { targetHosts } from "./role-hosts.ts";
 import { chooseConsentOrganization, consentValue } from "./consent-page.ts";
+import { heldValue, reveal, secret } from "./failure-text.ts";
 
 const Tokens = Schema.Struct({
   access_token: Schema.NonEmptyString,
@@ -94,7 +95,7 @@ export const oauthCallback = (state: string) =>
               : "<h1>Authorization was not completed</h1>",
           );
           // oxlint-disable-next-line executor/no-manual-effect-runtime-in-tests -- node:http request handlers are plain callbacks
-          if (valid) Effect.runSync(Deferred.succeed(received, Redacted.make(code)));
+          if (valid) Effect.runSync(Deferred.succeed(received, secret(code)));
         }),
       ),
       (server) =>
@@ -198,7 +199,7 @@ export const authorizeBrowserMcp = (
         body: new URLSearchParams({
           grant_type: "authorization_code",
           client_id,
-          code: Redacted.value(code),
+          code: reveal(code),
           code_verifier: verifier,
           redirect_uri: receiver.url,
           resource,
@@ -211,7 +212,7 @@ export const authorizeBrowserMcp = (
       Effect.flatMap(
         Schema.decodeUnknownEffect(
           Schema.Struct({
-            access_token: Schema.RedactedFromValue(Schema.NonEmptyString),
+            access_token: heldValue(Schema.RedactedFromValue(Schema.NonEmptyString)),
           }),
         ),
       ),
@@ -260,7 +261,7 @@ const make = Effect.gen(function* () {
       {
         grant_type: "refresh_token",
         client_id: grant.clientId,
-        refresh_token: Redacted.value(grant.tokens).refresh_token,
+        refresh_token: reveal(grant.tokens).refresh_token,
         resource: grant.resource,
       },
       tokenOrigin,
@@ -463,7 +464,7 @@ const make = Effect.gen(function* () {
       const exchanged = yield* exchange({
         grant_type: "authorization_code",
         client_id: clientId,
-        code: Redacted.value(code),
+        code: reveal(code),
         code_verifier: verifier,
         redirect_uri: receiver.url,
         ...resourceField,
@@ -512,7 +513,7 @@ const make = Effect.gen(function* () {
     exchanged: Parameters<typeof body>[1],
   ) =>
     body(schema, exchanged).pipe(
-      Effect.map(Redacted.make),
+      Effect.map(secret),
       Effect.mapError(
         () => new OAuthFailed({ operation: "token response", status: exchanged.status }),
       ),
@@ -573,7 +574,7 @@ const make = Effect.gen(function* () {
         const response = yield* refreshResponse(grant, tokenOrigin);
         yield* ok("refresh grant", response.status);
         const tokens = yield* body(Tokens, response).pipe(
-          Effect.map(Redacted.make),
+          Effect.map(secret),
           Effect.mapError(
             () => new OAuthFailed({ operation: "refresh response", status: response.status }),
           ),

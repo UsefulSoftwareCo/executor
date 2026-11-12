@@ -1,5 +1,6 @@
 /** Hosted actor layers own independent organizations and sessions for each scenario. */
-import { Clock, Effect, Context, Layer, Redacted, Schedule, Schema } from "effect";
+import { Clock, Effect, Context, Layer, Schedule, Schema } from "effect";
+import { secret } from "./failure-text.ts";
 import { RequestFailed, SessionClients, body, type Session } from "./api.ts";
 import { Target } from "./platform.ts";
 import { Organization, Resource } from "./contracts.ts";
@@ -42,7 +43,7 @@ export const freshOwnerSession = Effect.gen(function* () {
       id: target.scenarioId,
       role: "owner",
     }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(FixtureActor)));
-    const renewed = yield* clients.session(Redacted.make(value.cookies));
+    const renewed = yield* clients.session(secret(value.cookies));
     yield* ready(
       (yield* clients.request(
         renewed,
@@ -136,7 +137,7 @@ export const createCloudScenarioActors = Effect.gen(function* () {
       const actor = value.actors[role];
       if (Date.parse(actor.expiresAt) <= (yield* Clock.currentTimeMillis) + 60000)
         return yield* new FixtureFailed({ operation: "Fixture session expired" });
-      return yield* clients.session(Redacted.make(actor.cookies));
+      return yield* clients.session(secret(actor.cookies));
     });
   const actors = {
     organization: value.organization,

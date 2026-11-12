@@ -135,6 +135,140 @@ and stop child processes. Owned server process groups get a 15-second graceful
 shutdown window before Effect escalates to SIGKILL. `Effect.forEach` bounds concurrent writes and waits for
 interrupted children. Transport failures are typed and do not expose credentials.
 
+A failed driver step or request reports its cause's name, code and message: for
+Playwright, its first line, the elements it matched and its call log. The raw error stays
+`Redacted`; `support/failure-text.ts` masks the text that reaches the job log, the Vitest
+message, `result.json` and the step's `error` in `steps.json`. It masks every secret the
+harness registered, drops URL userinfo and the query and fragment of URLs and paths, masks
+header, cookie, `Bearer`, key-value and typed-text values, and masks unbroken 40-character
+tokens. Its header lists what it cannot catch. Read secrets with `reveal`, and create them with
+`secret`, `secretConfig` or a `heldValue` schema, so they are registered; a secret read with
+`Redacted.value` is not, so a failure text that echoes it is not masked. Scenarios that
+expect no page errors use `noPageErrors`, which lists each message, and the browser keeps every
+page and console error in `page-errors.json`.
+
+`e2e:prepare` builds the dashboards, app framework, bundled Motel and shared
+workerd runtime artifact. Run it again after changing these inputs. It caches each
+build step's outputs in `~/.cache/executor-e2e-prepare` (or `$EXECUTOR_E2E_CACHE`)
+under a hash of the step's inputs: the files git sees in its packages and their
+workspace dependencies, the lockfile, patches and root config, and the Node and Bun
+versions. A step whose inputs have not changed, in any rift, is restored instead of
+built. `scripts/e2e-prepare.ts` lists each step's inputs; add a file there when a
+build starts reading one outside them. CI and `--no-cache` build every step. The Node server runs current TypeScript source; the workerd host bundle is prebuilt, so a change to the SDK's app runner needs `bun run e2e:runtime` before a self-host run sees it. `bun run e2e:check` runs the
+boundary check and TypeScript check; the root `check` includes it.
+
+Scenarios on the self-host, local and managed Cloud targets do not install npm
+packages from the internet. Products install them from the run's loopback registry
+(`support/npm-registry.ts`). It serves the staged `apps` package and only the
+versions pinned in `e2e/npm-packages.json`, from archives that `e2e:prepare`
+downloads once and checks against their integrity. It refuses any other package with
+a 404 that names the lock. When a scenario declares a new package, add it to the
+roots in `scripts/e2e-npm-packages.ts`, then run
+`node scripts/e2e-npm-packages.ts --update`. Self-host and local read a
+synthetic official app feed and the public app registry from a loopback copy
+(`support/public-catalogs.ts`), through `EXECUTOR_CATALOG_URL` and
+`EXECUTOR_REGISTRY_URL`. A scenario that checks interoperation with a real
+third-party service, such as `remoteMcpCloudflare`, runs only in Cloud tests on main.
+
+```sh
+bun run e2e:local
+E2E_ROWS=12 bun run e2e:self-host
+bun run e2e:self-host --test-name 'password login'
+```
+
+The default data-volume scenario remains 1,000 accounts with four concurrent
+writers. Smaller runs use the same assertions. `--test-name` is a regular expression
+matched against scenario titles, without the enclosing Vitest suite name.
+Filtered cases are not counted as executed cases in the evidence view.
+
+## Line coverage
+
+`E2E_COVERAGE=1` profiles every self-host and local product process. Self-host runs
+under `bun test --coverage` through `apps/hosted/self-host/scripts/coverage-main.ts`,
+because Bun profiles nothing else; local runs with `NODE_V8_COVERAGE`. Each scenario
+starts its own product, so each report under `<run>/<target>/coverage/<scenario id>/`
+belongs to one scenario. Chromium also records each scenario's page scripts on every
+target; `e2e:prepare` builds the dashboards with unreferenced source maps, which map
+that coverage to the dashboards' sources. Managed Cloud's Worker serves every scenario
+at once, so Cloud counts only browser coverage. On local, every process a scenario starts
+itself, such as `executor pair`, `executor service start` and the server it starts, writes
+V8 coverage into the scenario's `processes/` directory too (see
+`support/process-coverage.ts`), so a scenario that drives the CLI counts the CLI's lines.
+
+The code each product runs inside workerd is profiled too: the host Worker, and the app
+framework in every app and data facet Worker. The runner starts workerd with V8's
+`--log-function-events` (through `ALCHEMY_WORKERD_V8_FLAGS`), and
+`support/workerd-coverage.ts` reads each isolate's log once the product stops. A function
+counts as run when V8 compiled it lazily, which only a call does, or logged its first
+execution: a function that ran counts all its lines, including branches it skipped.
+Nothing attaches to the product. workerd's inspector stays closed: with it open, an app
+Worker the runtime unloaded fails to load again under the same name. `e2e:prepare` writes
+source maps beside the host bundle (`.local/test-runtime/host.json.map`) and the framework
+modules (`packages/apps/dist/runtime.json.map`, outside the package's files), which map that
+coverage to `packages/`. An app's own bundle is not product code and is not counted.
+
+```sh
+E2E_COVERAGE=1 bun run e2e:self-host --test-name 'password login'
+node e2e/coverage.ts collect .local/line-coverage.json .local/e2e/<run>
+node e2e/coverage.ts report .local/line-coverage.json
+```
+
+`report` prints coverage by target and package, and the scenarios that cover no line
+another scenario does not. On a full run, CI's `line-coverage` job fails when a target
+covers fewer lines than `e2e/coverage-baseline.json` records, less that target's
+tolerance for paths that timing decides (twice the target's measured run-to-run spread).
+Before deleting a scenario as redundant, check that it adds no line; a change that
+removes product code records a new baseline with
+`node e2e/coverage.ts baseline e2e/coverage-baseline.json <collected files>` from the
+`line-coverage-*` artifacts of one full run. A rise past the tolerance does not fail the
+job; it adds a warning and a line to the run's summary with that command for the run.
+
+## Dependency injection
+
+`support/platform.ts` supplies target configuration and native platform services.
+`support/case.ts` composes the Layers used by Effect Vitest:
+
+- `Target`: exact origin, runtime, data directory and private configuration.
+- `SessionClients`: native Effect HTTP clients with independent cookie jars.
+- `Actors`: fresh owner/admin/member sessions and an organization for each hosted case.
+- `Api`: records each real request while preserving the test trace ID.
+- `BrowserDriver`: scoped Playwright process, shared by a suite.
+- `Browser`: isolated context per case, with an Effect `use` boundary for SDK calls.
+- `Evidence`: named steps, screenshots, request timings and the final outcome.
+- `Telemetry`: queries spans that actually reached Motel over HTTP.
+- `McpOAuth`: public discovery, registration, PKCE, recorded browser consent, refresh and revocation.
+- `McpClient`: scoped official MCP protocol clients with safe method/revision/trace evidence.
+- `ClaudeClient`: real Claude Code in a Terminal Control PTY, with an injected model API.
+- `RecordingFocus`: one clock and an ordered activity log for every recorded window.
+- `Terminal`: scoped Terminal Control sessions; each `use` call selects that window in the recording.
+
+Each test yields the services it needs. Native Vitest setup hooks start the isolated
+server and provision the actors declared in the test plan. Provisioning belongs to
+the setup deadline; scenario actions retain their full deadline. Scenarios that need
+the default management app can declare `managementApps` with the required actor
+roles. Setup waits for the app and each actor's linked Executor key through public APIs. Scenarios that
+exercise provisioning progress leave that prerequisite undeclared. Scenarios that need
+another Testing SDK scenario declare `sdkScenarios`; setup creates each one in a
+child scope the test may close. Native cleanup
+hooks release those fixtures and close the server scope. `withCase` provides the per-case Layers;
+`@effect/vitest` owns suite sharing and test interruption. The scenario deadline
+is 60 seconds, with separate 60-second setup and cleanup deadlines and no retries.
+`report/lifecycle/` records setup, scenario, cleanup and total elapsed times.
+The report uses Vitest's final result so a cleanup failure cannot appear as a pass.
+Effect scopes close browsers, save evidence,
+and stop child processes. Owned server process groups get a 15-second graceful
+shutdown window before Effect escalates to SIGKILL. `Effect.forEach` bounds concurrent writes and waits for
+interrupted children. Transport failures are typed and do not expose credentials.
+
+A failed driver step or request reports its cause's name, code and message: for
+Playwright, its first line, the elements it matched and its call log. The raw error stays
+`Redacted`; `support/failure-text.ts` masks the text that reaches the job log, the Vitest
+message, `result.json` and the step's `error` in `steps.json`. It masks each secret the
+harness revealed through `reveal`, drops URL userinfo, queries and fragments and header
+values, and masks unbroken 40-character tokens. Its header lists what it cannot catch.
+Scenarios that expect no page errors use `noPageErrors`, which lists each message, and the
+browser keeps every page and console error in `page-errors.json`.
+
 `e2e:prepare` builds `.local/test-runtime/host.json` once. Each isolated local or
 self-host process reads that explicit artifact instead of rebuilding the same
 trusted runtime. Rebuild with `e2e:prepare` after source changes; scenario data

@@ -16,12 +16,13 @@ import {
 import { HttpClient, HttpClientError } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { Actors } from "../support/actors.ts";
-import { SessionClients } from "../support/api.ts";
+import { RequestFailed, SessionClients } from "../support/api.ts";
+import { keptCauseParts } from "../support/failure-text.ts";
 import { Target } from "../support/platform.ts";
 import { PreparedScenarios } from "./contracts.ts";
 import { startScenario } from "./scenario.ts";
 import { awaitCompiler } from "./compiler-readiness.ts";
-import { fixtureRequest, type FixtureControl } from "./fixtures.ts";
+import { FixtureFailed, fixtureRequest, type FixtureControl } from "./fixtures.ts";
 
 class DomainNotReady extends Schema.TaggedError<DomainNotReady>()("DomainNotReady", {
   reason: Schema.Literals(["http", "transport", "timeout"]),
@@ -53,6 +54,53 @@ const transportCode = (cause: unknown, depth = 0): string | undefined => {
     ? undefined
     : (parsed.value.code ?? transportCode(parsed.value.cause, depth + 1));
 };
+/**
+ * What preparation records about an organization that was not ready: the failing request's method,
+ * path, status, reason, response shape and the masked text of each level of its cause (its name,
+ * code and message; see support/failure-text.ts), or the fixture operation. Never a body, cookie or
+ * credential. Node puts a transport failure's kind only in the innermost causes' messages
+ * ("connect ECONNREFUSED …", "other side closed"), so every level keeps its message.
+ */
+export const preparationFailure = (error: unknown) =>
+  Schema.is(RequestFailed)(error)
+    ? {
+        method: error.method,
+        path: error.path,
+        status: error.status,
+        reason: error.reason,
+        response: error.response,
+        causes: keptCauseParts(error),
+      }
+    : Schema.is(FixtureFailed)(error)
+      ? { operation: error.operation, status: error.status, reason: error.reason }
+      : undefined;
+/** An organization preparation could not make ready, as preparation.json lists it. */
+export interface UnavailableOrganization {
+  readonly title: string;
+  readonly id: string;
+  readonly failure: string;
+  readonly detail: ReturnType<typeof preparationFailure>;
+}
+/** The run log's line for each organization preparation could not make ready. */
+export const reportUnavailable = (unavailable: ReadonlyArray<UnavailableOrganization>) =>
+  Effect.forEach(
+    unavailable,
+    ({ title, failure, detail }) =>
+      Console.log(
+        `Cloud organization not ready for "${title}": ${failure}${detail === undefined ? "" : ` ${JSON.stringify(detail)}`}`,
+      ),
+    { discard: true },
+  );
+/** Write preparation.json: what preparation made ready, and each organization it could not. */
+export const writePreparation = (
+  directory: string,
+  record: { readonly unavailableOrganizations: ReadonlyArray<UnavailableOrganization> } & Readonly<
+    Record<string, unknown>
+  >,
+) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    fs.writeFileString(`${directory}/preparation.json`, JSON.stringify(record, null, 2)),
+  );
 interface DomainObservation {
   readonly attempts: number;
   /** The origin answered HTTPS and the product reports the team's address ready. */
@@ -214,7 +262,12 @@ export const prepareCloudScenarios = (input: {
               // One organization that is not ready within its deadline is a native setup failure
               // for its own scenario; the others still run. The suite scope still releases whatever
               // it created.
-              Effect.mapError((error) => ({ title, id, failure: error._tag })),
+              Effect.mapError((error): UnavailableOrganization => ({
+                title,
+                id,
+                failure: error._tag,
+                detail: preparationFailure(error),
+              })),
               Effect.result,
             );
           },
@@ -226,12 +279,12 @@ export const prepareCloudScenarios = (input: {
     const prepared = provisioned.filter(Result.isSuccess).map((result) => result.success);
     const unavailable = provisioned.filter(Result.isFailure).map((result) => result.failure);
     const actorsReadyAt = yield* Clock.currentTimeMillis;
+    yield* reportUnavailable(unavailable);
     // All domain requests must begin before waiting on the certificate authority.
     // Waiting inside the provisioning loop would serialize issuance in worker-sized batches.
     const domains = prepared.filter((scenario) => scenario.appOrigin);
     const ready = yield* Ref.make<ReadonlySet<string>>(new Set());
     const observations = yield* Ref.make<ReadonlyMap<string, DomainObservation>>(new Map());
-    const fs = yield* FileSystem.FileSystem;
     yield* Console.log(
       `Cloud actors ready: ${Math.round((actorsReadyAt - started) / 1000)}s (${prepared.length}/${input.scenarios.length} organizations); waiting for ${domains.length} HTTPS domains to answer and be reported ready.`,
     );
@@ -251,30 +304,23 @@ export const prepareCloudScenarios = (input: {
           const finished = yield* Clock.currentTimeMillis;
           const readyDomains = (yield* Ref.get(ready)).size;
           const domainObservations = yield* Ref.get(observations);
-          yield* fs.writeFileString(
-            `${input.target.directory}/preparation.json`,
-            JSON.stringify(
-              {
-                organizations: prepared.length,
-                unavailableOrganizations: unavailable,
-                domains: domains.length,
-                readyDomains,
-                origins: domains.map(({ id, title, slug }) => ({
-                  id,
-                  title,
-                  slug,
-                  ...domainObservations.get(id),
-                })),
-                compilerAttempts: compiler.attempts,
-                compilerMs: compiler.elapsedMs,
-                actorsMs: actorsReadyAt - started,
-                httpsMs: finished - actorsReadyAt,
-                totalMs: finished - started,
-              },
-              null,
-              2,
-            ),
-          );
+          yield* writePreparation(input.target.directory, {
+            organizations: prepared.length,
+            unavailableOrganizations: unavailable,
+            domains: domains.length,
+            readyDomains,
+            origins: domains.map(({ id, title, slug }) => ({
+              id,
+              title,
+              slug,
+              ...domainObservations.get(id),
+            })),
+            compilerAttempts: compiler.attempts,
+            compilerMs: compiler.elapsedMs,
+            actorsMs: actorsReadyAt - started,
+            httpsMs: finished - actorsReadyAt,
+            totalMs: finished - started,
+          });
           yield* Console.log(
             `HTTPS domains ready and reported ready: ${readyDomains}/${domains.length}.`,
           );

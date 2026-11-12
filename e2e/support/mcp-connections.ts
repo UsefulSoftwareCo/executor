@@ -1,6 +1,7 @@
 /** Scoped connection fixtures through public product routes and the standard OAuth endpoints. */
 import { expect } from "@effect/vitest";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Schema } from "effect";
+import { secret } from "./failure-text.ts";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { createHash, randomBytes } from "node:crypto";
 import { Actors } from "./actors.ts";
@@ -163,7 +164,7 @@ export const consentTo = (
           return yield* response.json;
         }),
       );
-      return Redacted.make((yield* Schema.decodeUnknownEffect(Tokens)(exchanged)).access_token);
+      return secret((yield* Schema.decodeUnknownEffect(Tokens)(exchanged)).access_token);
     });
     return {
       status: consented.status,

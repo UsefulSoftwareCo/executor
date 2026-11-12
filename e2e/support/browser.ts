@@ -16,11 +16,11 @@ import {
   Exit,
   FileSystem,
   Layer,
-  Redacted,
   Result,
   Schedule,
 } from "effect";
 import { Target, driver, type DriverFailed } from "./platform.ts";
+import { reveal, safeText } from "./failure-text.ts";
 import { targetHosts } from "./role-hosts.ts";
 import { splitRoutedReads } from "./read-batches.ts";
 import { Evidence } from "./evidence.ts";
@@ -142,6 +142,17 @@ export class Browser extends Context.Service<
       yield* driver("route batched reads through test routes", () =>
         splitRoutedReads(context, targetHosts(target).browser),
       );
+      // Every page's uncaught errors and console errors, masked, for the evidence of any case
+      // that raised one. The first 200 are kept.
+      const pageErrors: { kind: "page" | "console"; page: string; text: string }[] = [];
+      const pageError = (kind: "page" | "console", from: Page | null, text: string) => {
+        if (pageErrors.length < 200)
+          pageErrors.push({ kind, page: safeText(from?.url() ?? "unknown"), text: safeText(text) });
+      };
+      context.on("weberror", (error) => pageError("page", error.page(), String(error.error())));
+      context.on("console", (message) => {
+        if (message.type() === "error") pageError("console", message.page(), message.text());
+      });
       // `E2E_COVERAGE=1` records the JavaScript coverage of every page Chromium opens, from its first
       // script, for `e2e/coverage.ts` to map to the dashboards' sources.
       const fs = yield* FileSystem.FileSystem;
@@ -226,6 +237,7 @@ export class Browser extends Context.Service<
           }
           yield* evidence.json("navigation.json", navigations);
           yield* evidence.json("failed-resources.json", failedResources);
+          if (pageErrors.length > 0) yield* evidence.json("page-errors.json", pageErrors);
           for (const id of traceIds) yield* evidence.browserTrace(id);
         }),
       );
@@ -409,9 +421,7 @@ export class Browser extends Context.Service<
               Effect.gen(function* () {
                 yield* driver("clear browser cookies", () => context.clearCookies());
                 const cookies = yield* session.cookies;
-                yield* driver("set actor session", () =>
-                  context.addCookies([...Redacted.value(cookies)]),
-                );
+                yield* driver("set actor session", () => context.addCookies([...reveal(cookies)]));
               }),
             );
           }),

@@ -1,20 +1,11 @@
 /** Fixture control is loopback-only. Test callers receive sessions, never database credentials. */
-import {
-  Cause,
-  Config,
-  Effect,
-  FileSystem,
-  Path,
-  Redacted,
-  Schedule,
-  Schema,
-  Stream,
-} from "effect";
+import { Cause, Config, Effect, FileSystem, Path, Schedule, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { FixtureControl } from "./contracts.ts";
 import { roleHost } from "../support/role-hosts.ts";
+import { reveal, secret } from "../support/failure-text.ts";
 export { FixtureControl, FixtureActor, FixtureActors } from "./contracts.ts";
 
 /** Safe errors describe the control operation without the capability or response body. */
@@ -79,7 +70,7 @@ export const startFixtureControl = (
       path = yield* Path.Path,
       processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const output = path.resolve(directory, `fixture-${randomBytes(8).toString("hex")}.json`);
-    const token = Redacted.make(randomBytes(32).toString("hex"));
+    const token = secret(randomBytes(32).toString("hex"));
     const child = yield* processes.spawn(
       ChildProcess.make("node", ["apps/hosted/testing/scenario-server.ts"], {
         extendEnv: false,
@@ -89,7 +80,7 @@ export const startFixtureControl = (
           // Cloud's dashboard API takes cookie writes only from its browser origin.
           TEST_FIXTURE_BROWSER_ORIGIN: browserOrigin,
           TEST_FIXTURE_OUTPUT: output,
-          TEST_FIXTURE_TOKEN: Redacted.value(token),
+          TEST_FIXTURE_TOKEN: reveal(token),
         },
         stdout: "pipe",
         stderr: "pipe",
@@ -126,4 +117,4 @@ export const startFixtureControl = (
 
 /** Encode only the generated local capability for a private process boundary. */
 export const fixtureControlEnvironment = (control: typeof FixtureControl.Type) =>
-  JSON.stringify({ origin: control.origin, token: Redacted.value(control.token) });
+  JSON.stringify({ origin: control.origin, token: reveal(control.token) });

@@ -3,7 +3,8 @@ import { Cause, Clock, Context, Effect, Layer, Redacted, Ref, Schema } from "eff
 import { Cookies, HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { Evidence } from "./evidence.ts";
-import { Target, type Response } from "./platform.ts";
+import { indented, keptCauseText, reveal, secret } from "./failure-text.ts";
+import { Target, withCause, type Response } from "./platform.ts";
 import { isMcpPath, targetHosts } from "./role-hosts.ts";
 
 import { BrowserCookies } from "../sdk/contracts.ts";
@@ -39,10 +40,12 @@ export class RequestFailed extends Schema.TaggedError<RequestFailed>()("RequestF
     }),
   ),
   reason: Schema.Literals(["origin", "timeout", "request", "deployment"]),
+  /** The raw cause stays redacted; the message gives its masked text (see `failure-text.ts`). */
   cause: Schema.optional(Schema.Redacted(Schema.Unknown)),
 }) {
   override get message() {
-    return `${this.method} ${this.path} ${this.status === undefined ? `failed (${this.reason}) before a JSON response was read` : `returned HTTP ${this.status} without a JSON response`}${this.response ? ` (${this.response.contentType}, ${this.response.characters} characters, final path ${this.response.path})` : ""}`;
+    const detail = keptCauseText(this);
+    return `${this.method} ${this.path} ${this.status === undefined ? `failed (${this.reason}) before a JSON response was read` : `returned HTTP ${this.status} without a JSON response`}${this.response ? ` (${this.response.contentType}, ${this.response.characters} characters, final path ${this.response.path})` : ""}${detail === undefined ? "" : `\n  ${indented(detail)}`}`;
   }
 }
 /** A server response may be decoded only against its public contract. */
@@ -82,7 +85,7 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
       const session = (initial?: Redacted.Redacted<BrowserCookies>) =>
         Effect.gen(function* () {
           let initialJar = Cookies.empty;
-          for (const cookie of initial ? Redacted.value(initial) : [])
+          for (const cookie of initial ? reveal(initial) : [])
             initialJar = Cookies.setUnsafe(
               initialJar,
               cookie.name,
@@ -99,7 +102,7 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
           return {
             cookies: Ref.get(jar).pipe(
               Effect.map((cookies) =>
-                Redacted.make(
+                secret(
                   Object.values(cookies.cookies).map((cookie) => ({
                     name: cookie.name,
                     value: cookie.valueEncoded,
@@ -178,12 +181,14 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
                 Effect.mapError((cause) =>
                   Schema.is(RequestFailed)(cause)
                     ? cause
-                    : new RequestFailed({
-                        method,
-                        path: new URL(path, origin).pathname,
-                        reason: Cause.isTimeoutError(cause) ? "timeout" : "request",
-                        cause: Redacted.make(cause),
-                      }),
+                    : withCause(
+                        new RequestFailed({
+                          method,
+                          path: new URL(path, origin).pathname,
+                          reason: Cause.isTimeoutError(cause) ? "timeout" : "request",
+                          cause: Redacted.make(cause),
+                        }),
+                      ),
                 ),
               ),
           } satisfies Session;

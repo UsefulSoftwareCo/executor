@@ -1,21 +1,12 @@
 /** Own one real Cloudflare environment for a suite, including cleanup on failure or interruption. */
-import {
-  Clock,
-  Config,
-  Console,
-  Effect,
-  FileSystem,
-  Path,
-  Redacted,
-  Schedule,
-  Schema,
-} from "effect";
+import { Clock, Config, Console, Effect, FileSystem, Path, Schedule, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { createEmulatorFixture, emulatorRequest } from "../support/emulators.ts";
 
 import { startFixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
+import { heldValue, reveal, secretConfig } from "../support/failure-text.ts";
 
 class DeployedTestFailed extends Schema.TaggedError<DeployedTestFailed>()("DeployedTestFailed", {
   message: Schema.String,
@@ -95,7 +86,7 @@ export const startDeployment = ({
     const fixture = yield* createEmulatorFixture(origin);
     yield* Effect.addFinalizer(() =>
       Effect.forEach(
-        Object.values(Redacted.value(fixture).services),
+        Object.values(reveal(fixture).services),
         (service) =>
           emulatorRequest(service.baseUrl, "/_emulate/reset", {}).pipe(
             Effect.catch(() => Console.error("Could not reset one external test emulator.")),
@@ -105,7 +96,7 @@ export const startDeployment = ({
     );
     const fixtures = yield* startFixtureControl(origin, directory);
     const emulators = path.join(directory, "emulators.json");
-    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(fixture)), {
+    yield* fs.writeFileString(emulators, JSON.stringify(reveal(fixture)), {
       mode: 0o600,
     });
     yield* Effect.addFinalizer(() =>
@@ -136,7 +127,7 @@ export const startDeployment = ({
       ],
       {
         CI: "true",
-        EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
+        EXECUTOR_EMULATORS: JSON.stringify(reveal(fixture).services),
         TEST_STAGE_FIXTURE_CONTROL: fixtureControlEnvironment(fixtures),
         EXECUTOR_APP_UI_BASE_URL: appUiBaseUrl,
       },
@@ -149,7 +140,7 @@ export const startDeployment = ({
       Effect.retry(Schedule.spaced("2 seconds")),
       Effect.timeout("2 minutes"),
     );
-    const axiomToken = yield* Config.Redacted("AXIOM_TOKEN");
+    const axiomToken = yield* secretConfig("AXIOM_TOKEN");
     const axiomOrganization = yield* Config.NonEmptyString("AXIOM_ORG_ID");
     const axiom = http.pipe(
       HttpClient.mapRequest((request) =>
@@ -174,7 +165,7 @@ export const startDeployment = ({
             Schema.decodeUnknownEffect(
               Schema.Struct({
                 id: Schema.NonEmptyString,
-                token: Schema.RedactedFromValue(Schema.NonEmptyString),
+                token: heldValue(Schema.RedactedFromValue(Schema.NonEmptyString)),
               }),
             ),
           ),

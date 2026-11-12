@@ -14,6 +14,7 @@ import { oauthInteropIssuer } from "../support/oauth-interop-issuer.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
 import { connectionsPath } from "../support/app-accounts.ts";
+import { noPageErrors } from "../support/page-errors.ts";
 
 /** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
@@ -152,7 +153,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth callback in a new tab", 
           signIn.app,
         );
         expect(outcome).toEqual({ connected: true, alert: null });
-        expect(failures).toEqual([]);
+        yield* noPageErrors(failures);
         const completed = yield* signIn.read;
         expect(completed.state.status).toBe("completed");
         if (completed.state.account !== undefined)

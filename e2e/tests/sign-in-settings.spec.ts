@@ -13,6 +13,7 @@ import { Evidence } from "../support/evidence.ts";
 import { startDevelopmentServer, startFreshSelfHost } from "../support/managed-server.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
+import { noPageErrors } from "../support/page-errors.ts";
 
 /** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
@@ -107,7 +108,7 @@ layer(TestLive, { excludeTestServices: true })("Sign-in settings", (it) => {
             .then(() => page.getByRole("heading", { level: 1 }).allTextContents()),
         );
         expect(settled).toEqual(["Sign in to Executor"]);
-        expect(failures, "Sign-in hydrates as the server rendered it").toEqual([]);
+        yield* noPageErrors(failures, "Sign-in hydrates as the server rendered it");
 
         yield* browser.use("Stall the page's settings read", (page) =>
           page.context().addCookies([{ name: signInSettingsCookie, value: "stall", url: origin }]),
@@ -125,7 +126,7 @@ layer(TestLive, { excludeTestServices: true })("Sign-in settings", (it) => {
           ),
         );
         yield* browser.checkpoint("Sign-in after its server read stalled");
-        expect(failures, "The loading screen hydrates as the server rendered it").toEqual([]);
+        yield* noPageErrors(failures, "The loading screen hydrates as the server rendered it");
 
         // When the browser's read fails too, sign-in says so instead of guessing a form.
         yield* browser.use("Refuse the browser's settings read", (page) =>
@@ -139,7 +140,7 @@ layer(TestLive, { excludeTestServices: true })("Sign-in settings", (it) => {
             .then(() => page.getByRole("alert").textContent()),
         );
         expect(alert).toBe("Unable to load sign-in settings. Reload to try again.");
-        expect(failures).toEqual([]);
+        yield* noPageErrors(failures);
 
         // Other pages never wait for the settings, signed out or in.
         yield* browser.use("Let the browser's settings read answer", (page) =>
@@ -312,7 +313,7 @@ layer(TestLive, { excludeTestServices: true })("Sign-in settings", (it) => {
             ),
         );
         expect(signedOut).toBe(true);
-        expect(failures, "Sign-in hydrates as the server rendered it").toEqual([]);
+        yield* noPageErrors(failures, "Sign-in hydrates as the server rendered it");
       }),
     ),
   );

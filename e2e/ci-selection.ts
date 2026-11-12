@@ -75,13 +75,15 @@ const catalogScale =
  */
 const harnessScenarios = {
   job: "self-host",
-  files: ["failure-evidence.spec.ts", "product-port.spec.ts"],
+  files: ["failure-evidence.spec.ts", "product-port.spec.ts", "failure-text.spec.ts"],
   paths: [
     "e2e/support/",
     "e2e/sdk/",
     "e2e/failure-evidence/",
     "e2e/tests/failure-evidence.spec.ts",
     "e2e/tests/product-port.spec.ts",
+    "e2e/failure-text/",
+    "e2e/tests/failure-text.spec.ts",
     "e2e/setup.ts",
     "e2e/run.ts",
     "e2e/vitest.config.ts",

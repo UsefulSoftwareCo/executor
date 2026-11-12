@@ -15,7 +15,7 @@
  */
 import { Effect, Redacted, Schema } from "effect";
 import { Browser } from "./browser.ts";
-import { DriverFailed, driver } from "./platform.ts";
+import { DriverFailed, driver, withCause } from "./platform.ts";
 
 /** What the browser sent and the server answered, before the page reads the answer. */
 export interface ReceivedResponse {
@@ -179,10 +179,12 @@ export const replaceResponses = (
       failures.length === 0
         ? Effect.void
         : Effect.die(
-            new DriverFailed({
-              operation: "Replace a response the browser received",
-              cause: Redacted.make(failures),
-            }),
+            withCause(
+              new DriverFailed({
+                operation: "Replace a response the browser received",
+                cause: Redacted.make(failures),
+              }),
+            ),
           ),
     );
   });

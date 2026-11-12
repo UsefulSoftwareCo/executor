@@ -9,6 +9,7 @@ import { Browser } from "./browser.ts";
 import { chooseConsentOrganization } from "./consent-page.ts";
 import { Evidence } from "./evidence.ts";
 import { Target } from "./platform.ts";
+import { reveal } from "./failure-text.ts";
 
 class ConsentFailed extends Schema.TaggedError<ConsentFailed>()("ConsentFailed", {
   operation: Schema.String,
@@ -30,7 +31,7 @@ const make = Effect.gen(function* () {
       readonly client: string;
     }) =>
       Effect.gen(function* () {
-        const url = new URL(Redacted.value(request.url));
+        const url = new URL(reveal(request.url));
         const callback = URL.parse(url.searchParams.get("redirect_uri") ?? "");
         const state = url.searchParams.get("state");
         if (
@@ -80,7 +81,7 @@ const make = Effect.gen(function* () {
         // Cloud starts with a signed-in synthetic browser. Self-host exercises its password sign-in.
         if (target.metadata.target === "cloud") yield* browser.login(actors.owner);
         yield* browser.use(`Open the browser requested by ${request.client}`, (page) =>
-          page.goto(Redacted.value(request.url)),
+          page.goto(reveal(request.url)),
         );
         if (target.metadata.target === "self-host") {
           yield* browser.use("Sign in as the synthetic owner", (page) =>
@@ -141,7 +142,7 @@ export const pairLocalOperator = Effect.gen(function* () {
     target = yield* Target;
   const session = yield* api.session();
   const pairing = yield* session.send("POST", "/auth/pair", undefined, {
-    authorization: `Bearer ${Redacted.value(target.apiKey)}`,
+    authorization: `Bearer ${reveal(target.apiKey)}`,
   });
   if (pairing.status !== 200)
     return yield* new ConsentFailed({ operation: "Cannot create a local pairing link" });
@@ -171,7 +172,7 @@ const makeLocal = Effect.gen(function* () {
       readonly client: string;
     }) =>
       Effect.gen(function* () {
-        const url = new URL(Redacted.value(request.url));
+        const url = new URL(reveal(request.url));
         const callback = URL.parse(url.searchParams.get("redirect_uri") ?? "");
         const state = url.searchParams.get("state");
         if (
@@ -218,7 +219,7 @@ const makeLocal = Effect.gen(function* () {
         yield* browser.omitNetworkTrace;
         yield* browser.login(session);
         yield* browser.use(`Open the browser requested by ${request.client}`, (page) =>
-          page.goto(Redacted.value(request.url)),
+          page.goto(reveal(request.url)),
         );
         yield* browser.use(`Executor Local names ${request.client} on the consent page`, (page) =>
           page.getByText(request.client, { exact: true }).waitFor({ state: "visible" }),

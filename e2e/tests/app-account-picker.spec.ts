@@ -1,5 +1,6 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
+import { noPageErrors } from "../support/page-errors.ts";
 import { randomUUID } from "node:crypto";
 import { Actors, password } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -274,7 +275,7 @@ export default defineApp({ user: { accounts: { primary: service, mailboxes: serv
         expect(
           yield* browser.use("Listing needs no dialog", (page) => page.getByRole("dialog").count()),
         ).toBe(0);
-        expect(pageErrors).toEqual([]);
+        yield* noPageErrors(pageErrors);
         yield* browser.checkpoint("Accounts listed in place");
 
         // A failed link keeps the current links and can be retried in place.

@@ -20,6 +20,7 @@ import { prepareCloudScenarios } from "./prepare-scenarios.ts";
 
 class RunFailed extends Schema.TaggedError<RunFailed>()("RunFailed", { message: Schema.String }) {}
 import { freePort } from "../support/ports.ts";
+import { reveal, secret } from "../support/failure-text.ts";
 
 /**
  * Managed Cloud workers share one local Cloud Worker and one telemetry collector, so more cores add
@@ -237,7 +238,7 @@ export const runSuite = ({
                   onSome: (production) => ({ oauthProxyProduction: production }),
                 }),
               };
-              const apiKey = Redacted.make(randomBytes(32).toString("hex"));
+              const apiKey = secret(randomBytes(32).toString("hex"));
               yield* fs.writeFileString(`${directory}/run.json`, JSON.stringify(metadata, null, 2));
               yield* Console.log(
                 `Testing ${target}: ${target === "cloud" ? origin : target === "local" && Option.isSome(packagedEntry) ? `installed CLI at ${packagedEntry.value}` : "isolated server per scenario"} · ${interactive || observeUI ? 1 : targetWorkers} workers`,
@@ -386,7 +387,7 @@ export const runSuite = ({
                             ? {}
                             : { E2E_PUBLIC_CATALOGS: catalogs.origin }),
                           EXECUTOR_E2E_RUN: directory,
-                          EXECUTOR_E2E_API_KEY: Redacted.value(apiKey),
+                          EXECUTOR_E2E_API_KEY: reveal(apiKey),
                           E2E_FIXTURES:
                             environment === undefined
                               ? attachment === undefined
@@ -395,7 +396,7 @@ export const runSuite = ({
                               : fixtureControlEnvironment(environment.fixtures),
                           ...(attachment?.axiom !== undefined
                             ? {
-                                E2E_AXIOM_TOKEN: Redacted.value(attachment.axiom.token),
+                                E2E_AXIOM_TOKEN: reveal(attachment.axiom.token),
                                 E2E_AXIOM_DATASET: attachment.axiom.dataset,
                                 E2E_AXIOM_ORG_ID: attachment.axiom.organization,
                               }

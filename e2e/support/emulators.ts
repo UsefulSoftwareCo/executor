@@ -1,18 +1,9 @@
-import {
-  Config,
-  Context,
-  Effect,
-  FileSystem,
-  Layer,
-  Option,
-  Redacted,
-  Schedule,
-  Schema,
-} from "effect";
+import { Config, Context, Effect, FileSystem, Layer, Option, Schedule, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { createHash, randomUUID } from "node:crypto";
 import { Target } from "./platform.ts";
 import { roleHost } from "./role-hosts.ts";
+import { heldValue, reveal, secret } from "./failure-text.ts";
 
 export const BaseUrl = Schema.String.check(
   Schema.makeFilter((value) => {
@@ -416,13 +407,15 @@ export const createEmulatorFixture = (origin: string) =>
         }).pipe(
           Effect.flatMap(
             Schema.decodeUnknownEffect(
-              Schema.Struct({ credential: Schema.Struct({ token: Schema.NonEmptyString }) }),
+              Schema.Struct({
+                credential: Schema.Struct({ token: heldValue(Schema.NonEmptyString) }),
+              }),
             ),
           ),
         );
         return { baseUrl: instance.providerBaseUrl, token: issued.credential.token };
       });
-    return Redacted.make(
+    return secret(
       EmulatorFixture.make({
         version: 4,
         origin,
@@ -456,10 +449,10 @@ const make = Effect.gen(function* () {
   const file = yield* Config.String("E2E_EMULATORS");
   const fixture = yield* fs.readFileString(file).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(EmulatorFixture))),
-    Effect.map(Redacted.make),
+    Effect.map(secret),
     Effect.mapError(() => new EmulatorFailed({ operation: "Read E2E_EMULATORS fixture" })),
   );
-  const value = Redacted.value(fixture);
+  const value = reveal(fixture);
   if (value.origin !== target.metadata.origin)
     return yield* new EmulatorFailed({ operation: "Fixture belongs to another server" });
   const messages = (email: string) =>
@@ -943,7 +936,7 @@ const make = Effect.gen(function* () {
           });
           const message = coded.at(-1);
           return message !== undefined
-            ? Effect.succeed({ code: Redacted.make(message.code), subject: message.subject })
+            ? Effect.succeed({ code: secret(message.code), subject: message.subject })
             : Effect.fail(new MailPending());
         }),
         Effect.retry({

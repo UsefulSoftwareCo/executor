@@ -5,11 +5,12 @@
  * workerd process. A loaded engine keeps its SQLite database open; the namespace's own
  * metadata database stays open while the process runs.
  */
-import { Effect, FileSystem, Option, Path, Redacted, Schema, Stream } from "effect";
+import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { startManagedServer } from "./managed-server.ts";
 import { driver, Target } from "./platform.ts";
 import { freePort } from "./ports.ts";
+import { reveal } from "./failure-text.ts";
 
 /** The engine namespace's storage directory below the product's data directory. */
 const engineDirectory = ["data", "workerd", "workflows", "executor-app-workflows"];
@@ -39,7 +40,7 @@ export const startLocalProduct = (environment: Readonly<Record<string, string>> 
           method,
           signal,
           headers: {
-            authorization: `Bearer ${Redacted.value(target.apiKey)}`,
+            authorization: `Bearer ${reveal(target.apiKey)}`,
             "content-type": "application/json",
           },
           ...(data === undefined ? {} : { body: JSON.stringify(data) }),

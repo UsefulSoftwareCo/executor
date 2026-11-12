@@ -1377,6 +1377,41 @@ export const scenarios = plan({
       cloud: na("Evidence selection is the same test-side code for every target."),
     },
   },
+  failureText: {
+    // The cases it runs in their own process fail on purpose with planted secrets. It tests the
+    // harness, so CI runs it only when the harness changes: see `harnessScenarios` in
+    // e2e/ci-selection.ts.
+    fixtures: "cli",
+    file: "failure-text.spec.ts",
+    title: "A failed step reports its cause without the secrets it carried",
+    targets: {
+      "self-host": scheduled,
+      local: na("Failure text is the same test-side code for every target."),
+      cloud: na("Failure text is the same test-side code for every target."),
+    },
+  },
+  workerEnvironment: {
+    // Runs in every worker the runner starts; failure-text.spec.ts also runs it with
+    // infrastructure-style variables set in the runner's own environment.
+    fixtures: "cli",
+    file: "failure-text.spec.ts",
+    title: "The scenario worker holds only the variables the runner passes it",
+    targets: {
+      "self-host": scheduled,
+      local: na("The runner starts every target's worker with the same variable list."),
+      cloud: na("The runner starts every target's worker with the same variable list."),
+    },
+  },
+  workerIsolation: {
+    fixtures: "cli",
+    file: "failure-text.spec.ts",
+    title: "Variables in the runner's own environment do not reach the scenario worker",
+    targets: {
+      "self-host": scheduled,
+      local: na("The runner starts every target's worker with the same variable list."),
+      cloud: na("The runner starts every target's worker with the same variable list."),
+    },
+  },
   testingSdk: {
     fixtures: "actors",
     file: "testing-sdk.spec.ts",

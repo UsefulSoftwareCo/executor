@@ -12,7 +12,6 @@ import {
   Layer,
   Option,
   Path,
-  Redacted,
   Schedule,
   Schema,
   Scope,
@@ -40,6 +39,7 @@ import { reservedPort } from "./ports.ts";
 import { scenarios } from "../test-plan.ts";
 import { recordWorkerdCoverage, workerdCoverageFlags } from "./workerd-coverage.ts";
 import { localEntryCommand } from "./local-entry.ts";
+import { reveal } from "./failure-text.ts";
 
 class ServerFailed extends Schema.TaggedError<ServerFailed>()("ServerFailed", {
   message: Schema.String,
@@ -172,7 +172,7 @@ export const startManagedServer = (
       HOST: "127.0.0.1",
       PORT: port,
       EXECUTOR_PORT: port,
-      EXECUTOR_API_KEY: Redacted.value(target.apiKey),
+      EXECUTOR_API_KEY: reveal(target.apiKey),
       EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
       EXECUTOR_DATA_DIR: `${target.directory}/data`,
       BETTER_AUTH_URL: target.metadata.origin,
@@ -423,7 +423,7 @@ export const startManagedServer = (
     const control = (action: "start" | "stop" | "restart" | "kill") =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        if (request.headers.authorization !== `Bearer ${Redacted.value(target.apiKey)}`)
+        if (request.headers.authorization !== `Bearer ${reveal(target.apiKey)}`)
           return HttpServerResponse.empty({ status: 401 });
         yield* gate.withPermits(1)(
           Effect.gen(function* () {
@@ -444,7 +444,7 @@ export const startManagedServer = (
         "/clock/advance",
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
-          if (request.headers.authorization !== `Bearer ${Redacted.value(target.apiKey)}`)
+          if (request.headers.authorization !== `Bearer ${reveal(target.apiKey)}`)
             return HttpServerResponse.empty({ status: 401 });
           const body = yield* request.json.pipe(
             Effect.flatMap(
@@ -485,7 +485,7 @@ export const startManagedServer = (
         "/environment",
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
-          if (request.headers.authorization !== `Bearer ${Redacted.value(target.apiKey)}`)
+          if (request.headers.authorization !== `Bearer ${reveal(target.apiKey)}`)
             return HttpServerResponse.empty({ status: 401 });
           const body = yield* request.json.pipe(
             Effect.flatMap(Schema.decodeUnknownEffect(OperatorSettings)),
@@ -505,7 +505,7 @@ export const startManagedServer = (
         "/data-steps",
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
-          if (request.headers.authorization !== `Bearer ${Redacted.value(target.apiKey)}`)
+          if (request.headers.authorization !== `Bearer ${reveal(target.apiKey)}`)
             return HttpServerResponse.empty({ status: 401 });
           const body = yield* request.json.pipe(
             Effect.flatMap(
@@ -528,7 +528,7 @@ export const startManagedServer = (
         "/storage/legacy",
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
-          if (request.headers.authorization !== `Bearer ${Redacted.value(target.apiKey)}`)
+          if (request.headers.authorization !== `Bearer ${reveal(target.apiKey)}`)
             return HttpServerResponse.empty({ status: 401 });
           // Only scenarios that declare this in the reviewed test plan may write rows directly.
           const declared = Object.values(scenarios).some(

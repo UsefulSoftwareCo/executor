@@ -6,6 +6,7 @@ import { holdOrganizationEntry } from "../support/organization-entry.ts";
 import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
 import { Onboarding } from "../support/onboarding.ts";
 import { scenarios } from "../test-plan.ts";
+import { noPageErrors } from "../support/page-errors.ts";
 
 /** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
@@ -166,7 +167,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
         yield* browser.use("The sign-in page has hydrated", (page) =>
           page.waitForFunction(() => document.documentElement.hasAttribute("data-hydrated")),
         );
-        expect(failures).toEqual([]);
+        yield* noPageErrors(failures);
         yield* browser.checkpoint("Passkey enrollment can be skipped");
         yield* browser.use("Choose Not now", (page) =>
           page.getByRole("button", { name: "Not now", exact: true }).click(),

@@ -1,5 +1,6 @@
 import { expect } from "@effect/vitest";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Schema } from "effect";
+import { reveal } from "./failure-text.ts";
 import { saveAndDeploy } from "./app-authoring.ts";
 import { Api, body } from "./api.ts";
 import { Actors } from "./actors.ts";
@@ -46,7 +47,7 @@ export const authorizationFixture = (audience: "api" | "mcp") =>
         policy: { ...policy, apps: [{ app: app.id, tools: { kind: "all" } }] },
       })).status,
     ).toBe(403);
-    const headers = { authorization: `Bearer ${Redacted.value(grant.tokens).access_token}` };
+    const headers = { authorization: `Bearer ${reveal(grant.tokens).access_token}` };
     const call = (tool: string, token = headers) =>
       api.request(
         anonymous,
