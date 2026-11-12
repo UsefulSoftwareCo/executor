@@ -90,11 +90,13 @@ node e2e/coverage.ts report .local/line-coverage.json
 
 `report` prints coverage by target and package, and the scenarios that cover no line
 another scenario does not. On a full run, CI's `line-coverage` job fails when a target
-covers fewer lines than `e2e/coverage-baseline.json` records, less a tolerance for
-paths that timing decides. Before deleting a scenario as redundant, check that it adds
-no line; a change that removes product code records a new baseline with
+covers fewer lines than `e2e/coverage-baseline.json` records, less that target's
+tolerance for paths that timing decides (twice the target's measured run-to-run spread).
+Before deleting a scenario as redundant, check that it adds no line; a change that
+removes product code records a new baseline with
 `node e2e/coverage.ts baseline e2e/coverage-baseline.json <collected files>` from the
-`line-coverage-*` artifacts of a full run.
+`line-coverage-*` artifacts of one full run. A rise past the tolerance does not fail the
+job; it adds a warning and a line to the run's summary with that command for the run.
 
 ## Dependency injection
 
