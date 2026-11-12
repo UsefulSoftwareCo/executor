@@ -15,6 +15,11 @@
  * tombstones whose workflow already exists stand in for removals that started and are still
  * erasing; one run of the job must page past them. A row lock on the last one's start record holds
  * that run open while another removal arms the alarm, which must survive the run's success.
+ *
+ * The recovery alarm, the job and the start records cover every organization on a Cloud, so this
+ * scenario runs on a local Cloud of its own (`cloud-removal-recovery` in e2e/ci-selection.ts). A
+ * removal another scenario made there would be a pending start the job reads too, and its insert
+ * would wait on the lock below, holding the run that should end on the stall.
  */
 import { randomBytes, randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";

@@ -165,14 +165,25 @@ const jobs = {
       "app Workers stay loaded across credential rotation|workflow runs reuse the app Worker|warm app calls load no build|Cold app Workers reuse a build|a cold app Worker receives only the modules|Cold app Workers read their build in the runner|A cold app load links its small build record|Apps on the same apps release store its framework|Builds on two apps releases each link",
   },
   // These hold row locks in the shared Cloud database, which would stall other scenarios' SQL.
-  // Removal recovery also needs the alarm and the removal job to itself while it holds one.
   // The app link role check holds an uncommitted demotion on a member row.
   "cloud-locks": {
     target: "cloud",
     runner: 4,
 
     pattern:
-      "A Better Auth query|Cloud starts organization removals whose Workflow start stalled|an app link that waits for the admin.s membership while a demotion commits",
+      "A Better Auth query|an app link that waits for the admin.s membership while a demotion commits",
+  },
+  // Removal recovery needs the Cloud's one recovery alarm and its removal job to itself: the job
+  // starts every pending removal on the Cloud, and the scenario locks the start records' table to
+  // hold the next run. Another scenario's organization removal, accepted just before the lock,
+  // put a start the next run's insert waited on, so the run never ended and no run read the
+  // tombstones. It starts its own local Cloud, where no other scenario removes an organization,
+  // on a runner of its own: the step takes about two minutes, most of it waiting for a minute
+  // without a cron job, which would make any other runner the slowest.
+  "cloud-removal-recovery": {
+    target: "cloud",
+    runner: 6,
+    pattern: "Cloud starts organization removals whose Workflow start stalled",
   },
   // This holds a lock on the accounts table to stop a tool call's batch partway, which would
   // stall every other scenario that reads accounts.
