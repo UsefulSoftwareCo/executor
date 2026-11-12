@@ -665,6 +665,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "local-bootstrap.config.ts": () => import("./local-bootstrap.config.ts"),
   "npm-launcher.config.ts": () => import("./npm-launcher.config.ts"),
   "pglite.config.ts": () => import("./pglite.config.ts"),
+  "playwright-routes.config.ts": () => import("./playwright-routes.config.ts"),
   "posthog-experiment-lifecycle.config.ts": () =>
     import("./posthog-experiment-lifecycle.config.ts"),
   "prepare-cache.config.ts": () => import("./prepare-cache.config.ts"),

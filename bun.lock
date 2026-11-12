@@ -858,6 +858,7 @@
     "@effect/platform-node-shared@4.0.1": "patches/@effect%2Fplatform-node-shared@4.0.1.patch",
     "effect@4.0.1": "patches/effect@4.0.1.patch",
     "@distilled.cloud/cloudflare@1.0.0-rc.13": "patches/@distilled.cloud%2Fcloudflare@1.0.0-rc.13.patch",
+    "playwright-core@1.63.0": "patches/playwright-core@1.63.0.patch",
     "@alchemy.run/cloudflare-runtime@2.0.0-beta.80": "patches/@alchemy.run%2Fcloudflare-runtime@2.0.0-beta.80.patch",
     "miniflare@4.20260730.0": "patches/miniflare@4.20260730.0.patch",
     "@better-auth/oauth-provider@1.7.20": "patches/@better-auth%2Foauth-provider@1.7.20.patch",

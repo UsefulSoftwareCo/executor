@@ -114,6 +114,7 @@
     "e2e:alchemy-first-builds": "vitest run --config e2e/alchemy-first-builds.config.ts",
     "e2e:alchemy-dev-output": "vitest run --config e2e/alchemy-dev-output.config.ts",
     "e2e:cloud-proxy-keep-alive": "vitest run --config e2e/cloud-proxy-keep-alive.config.ts",
+    "e2e:playwright-routes": "vitest run --config e2e/playwright-routes.config.ts",
     "e2e:posthog-experiment-lifecycle": "vitest run --config e2e/posthog-experiment-lifecycle.config.ts",
     "e2e:cloud-deploy-origin": "vitest run --config e2e/cloud-deploy-origin.config.ts",
     "changeset": "changeset",
@@ -199,7 +200,8 @@
     "alchemy@2.0.0-beta.80": "patches/alchemy@2.0.0-beta.80.patch",
     "@alchemy.run/cloudflare-runtime@2.0.0-beta.80": "patches/@alchemy.run%2Fcloudflare-runtime@2.0.0-beta.80.patch",
     "@distilled.cloud/cloudflare@1.0.0-rc.13": "patches/@distilled.cloud%2Fcloudflare@1.0.0-rc.13.patch",
-    "@better-auth/api-key@1.7.20": "patches/@better-auth%2Fapi-key@1.7.20.patch"
+    "@better-auth/api-key@1.7.20": "patches/@better-auth%2Fapi-key@1.7.20.patch",
+    "playwright-core@1.63.0": "patches/playwright-core@1.63.0.patch"
   },
   "trustedDependencies": [
     "dugite",
