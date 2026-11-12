@@ -65,7 +65,10 @@ starts its own product, so each report under `<run>/<target>/coverage/<scenario 
 belongs to one scenario. Chromium also records each scenario's page scripts on every
 target; `e2e:prepare` builds the dashboards with unreferenced source maps, which map
 that coverage to the dashboards' sources. Managed Cloud's Worker serves every scenario
-at once, so Cloud counts only browser coverage.
+at once, so Cloud counts only browser coverage. On local, every process a scenario starts
+itself, such as `executor pair`, `executor service start` and the server it starts, writes
+V8 coverage into the scenario's `processes/` directory too (see
+`support/process-coverage.ts`), so a scenario that drives the CLI counts the CLI's lines.
 
 The code each product runs inside workerd is profiled too: the host Worker, and the app
 framework in every app and data facet Worker. The runner starts workerd with V8's
