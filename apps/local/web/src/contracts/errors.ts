@@ -301,6 +301,8 @@ const errorMessage = Match.type<DashboardError>().pipe(
       ),
     BuildMemoryExceeded: (error) =>
       message(error.title, `${error.description} ${error.recovery.action}`),
+    MarkdownUnavailable: (error) =>
+      message(error.title, `${error.description} ${error.recovery.action}`),
     CatalogImportFailed: (error) => message("App could not be imported", error.reason),
     HttpClientError: unavailable,
     SchemaError: () =>

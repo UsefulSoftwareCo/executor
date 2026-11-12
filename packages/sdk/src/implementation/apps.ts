@@ -47,6 +47,8 @@ import { StoredApp, StoredVersion } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { removeToolSearch } from "./tool-search-store.ts";
 import { identifyProvider } from "./provider.ts";
+import { setupHelp, setupHelpProblems } from "./help-text.ts";
+import type { MarkdownReader } from "../contracts/markdown.ts";
 import {
   CodeFiles,
   SourceError,
@@ -260,6 +262,7 @@ export const makeApps = (
   repositories: RepositoryBackend,
   registry: Registry,
   blobs: BlobStorage,
+  markdown: MarkdownReader,
   lifecycle?: ResourceLifecycle,
 ) => {
   const authoring = makeAppAuthoring(db, sources, repositories, blobs, crypto, lifecycle);
@@ -364,6 +367,25 @@ export const makeApps = (
           })),
         ),
       );
+      // The connect form renders setup help as Markdown; refuse what it would not show safely.
+      // All of it is read at once, and a version without help reads nothing.
+      const helpProblems = yield* setupHelpProblems(
+        markdown,
+        entries.flatMap(({ slot, provider }) =>
+          setupHelp(provider.definition).map((help) => ({
+            ...help,
+            where: `Requirement "${slot}" (provider "${provider.definition.name}") ${help.where}`,
+          })),
+        ),
+      );
+      if (helpProblems.length > 0)
+        return yield* new VersionBuildFailed({
+          owner,
+          name,
+          reason: "Invalid setup help",
+          stage: "declaration",
+          message: `App build failed: setup help must be Markdown with absolute https links and no HTML or images. ${helpProblems.map((problem) => `${problem}.`).join(" ")}`,
+        });
       const requirements: AppRequirements = {
         ...(built.requirements.capabilities === undefined
           ? {}

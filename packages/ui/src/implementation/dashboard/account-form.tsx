@@ -33,6 +33,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/select.tsx";
+import { SetupHelp } from "./markdown.tsx";
 
 /** One credential form for creation, reconnection and agent handoff; the host owns saving, naming and navigation. */
 export function AccountForm<A, E>({
@@ -82,6 +83,8 @@ export function AccountForm<A, E>({
   const auth = provider.definition.auth[method];
   const parsed = auth && accountFields(auth);
   const fields = parsed && Option.isSome(parsed) ? parsed.value : undefined;
+  // The app's own steps for getting these credentials, in place of the generic line.
+  const guide = auth?.type === "secrets" ? auth.guide : undefined;
   const updatePending = (value: boolean) => {
     setPending(value);
     onPendingChange?.(value);
@@ -166,6 +169,7 @@ export function AccountForm<A, E>({
           {oauth({
             method,
             disabled,
+            clientGuide: auth.clientGuide,
             onPendingChange: updatePending,
             access: (
               <SignInAccess provider={provider.definition.name} hosts={provider.definition.hosts} />
@@ -174,11 +178,14 @@ export function AccountForm<A, E>({
         </div>
       ) : fields ? (
         <>
-          <p className="text-xs leading-relaxed text-muted-foreground">
-            {Object.keys(fields.properties).length === 0
-              ? "This connection sends no credentials. Continue only if the service supports public access."
-              : `Get these credentials from your ${provider.definition.name} account settings.`}
-          </p>
+          {(Object.keys(fields.properties).length === 0 || !guide) && (
+            <p className="text-xs leading-relaxed text-muted-foreground">
+              {Object.keys(fields.properties).length === 0
+                ? "This connection sends no credentials. Continue only if the service supports public access."
+                : `Get these credentials from your ${provider.definition.name} account settings.`}
+            </p>
+          )}
+          {guide && <SetupHelp label="Setup guide">{guide}</SetupHelp>}
           <CredentialAccess
             hosts={provider.definition.hosts}
             {...secretAccess(fields, provider.definition.hosts)}

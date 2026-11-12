@@ -25,6 +25,7 @@ import { RemovedOrganizations } from "../implementation/organization-removal.ts"
 import { V1ImportDatabase, V1ImportUnavailable } from "../contracts/v1-import.ts";
 import { UiFailed } from "apps/ui/contracts";
 import type { ArtifactsTokens } from "@executor-js/app-source/cloudflare";
+import { cloudMarkdownReader } from "./markdown-reader.ts";
 import { cloudProductServices } from "./product-services.ts";
 import { cloudAppSources } from "./source.ts";
 import { cloudHosts } from "./stage.ts";
@@ -42,6 +43,7 @@ export const cloudProduct = Effect.fn(function* (
   const { blobs, sdk, sql, withDatabase, services } = yield* cloudProductServices(
     databases,
     yield* cloudAppSources(tokens),
+    yield* cloudMarkdownReader,
   );
   const hosts = yield* cloudHosts.pipe(Effect.orDie);
   // The default Executor app calls this deployment's API, an OAuth resource, at its canonical origin.

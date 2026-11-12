@@ -17,6 +17,7 @@ import { parseDeclaration } from "./schema.ts";
 /** Declare a secrets method with an Effect decoder. */
 export const secrets = <Fields extends Schema.Decoder<unknown>>(options: {
   readonly label: string;
+  readonly guide?: string;
   readonly fields: Fields;
   readonly exposure?: Readonly<Record<string, FieldExposure>>;
   readonly request?: readonly Placement[];
@@ -41,6 +42,7 @@ export const oauth2 = <Response extends Schema.Decoder<unknown>>(
   response: Response,
   exposure?: Readonly<Record<string, FieldExposure>>,
   request?: readonly Placement[],
+  clientGuide?: string,
 ): Effect.Effect<OAuth2Method<Response>, DeclarationInvalid> =>
   parseDeclaration(OAuth2Config, config, "oauth2()", oauth2Form).pipe(
     Effect.map(
@@ -50,6 +52,7 @@ export const oauth2 = <Response extends Schema.Decoder<unknown>>(
           response,
           ...(exposure === undefined ? {} : { exposure }),
           ...(request === undefined ? {} : { request }),
+          ...(clientGuide === undefined ? {} : { clientGuide }),
         }),
     ),
   );

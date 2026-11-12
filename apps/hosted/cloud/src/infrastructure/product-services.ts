@@ -7,7 +7,7 @@ import {
 } from "@executor-js/hosted-server";
 import { GroupDatabase, GroupsUnavailable } from "@executor-js/hosted-server/groups";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui";
-import { BlobStore } from "@executor-js/sdk/core";
+import { BlobStore, type MarkdownReader } from "@executor-js/sdk/core";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { RuntimeContext } from "alchemy";
 import type * as Cloudflare from "alchemy/Cloudflare";
@@ -28,10 +28,11 @@ import type { AppDataSupervisor } from "./app-data.ts";
 export const cloudProductServices = Effect.fn(function* (
   databases: Cloudflare.DurableObject<AppDataSupervisor>,
   sources: AppSources,
+  markdown: MarkdownReader,
 ) {
   const origin = yield* cloudOrigin.pipe(Effect.orDie);
   const blobs = yield* cloudBlobs;
-  const { executor, database, background } = yield* cloudExecutor(databases, sources);
+  const { executor, database, background } = yield* cloudExecutor(databases, sources, markdown);
   const assets = yield* makeExecutionMemo(
     cachedBuildAssets(
       origin,

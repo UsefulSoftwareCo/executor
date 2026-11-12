@@ -40,6 +40,7 @@ import type {
   StorageError,
 } from "./shared.ts";
 import type { BlobStorage } from "./blobs.ts";
+import type { MarkdownReader, MarkdownUnavailable } from "./markdown.ts";
 import { RepositoryHost, type RepositoryBackend, type SourceFiles } from "./source.ts";
 import type { RegistryOptions } from "./registry.ts";
 import type { CatalogReadOptions } from "./declarations.ts";
@@ -262,6 +263,12 @@ export interface ExecutorInputs {
   readonly webhookOrigin?: string;
   /** The Git backend behind app source. The executor derives revision storage from it. */
   readonly git: RepositoryBackend;
+  /**
+   * Reads setup help at deploys. Pass `markdownRefusals` from `@executor-js/sdk/markdown` to parse
+   * in process. A reader that parses elsewhere fails with `MarkdownUnavailable` when it gets no
+   * answer, and so does the deploy.
+   */
+  readonly markdown: MarkdownReader;
   readonly blobs: BlobStorage;
   readonly runtime: AppRuntime;
   readonly oauth?: OAuthOptions;
@@ -429,7 +436,11 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
       readonly files: SourceFiles;
     }) => Effect.Effect<
       { readonly requirements: typeof AppRequirements.Type },
-      VersionBuildFailed | BuildMemoryExceeded | BuildUnanswered | StorageError
+      | VersionBuildFailed
+      | BuildMemoryExceeded
+      | BuildUnanswered
+      | MarkdownUnavailable
+      | StorageError
     >;
   };
   readonly [WebhookSourceHost]: WebhookSourceDispatcher;

@@ -46,6 +46,7 @@ import {
 import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
 import { hostedEventAuthority } from "@executor-js/hosted-server/events";
 import { deliverEvents } from "@executor-js/sdk/scheduling";
+import { markdownRefusals } from "@executor-js/sdk/markdown";
 import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
 import { workerdHostHandler } from "@executor-js/sdk/workerd";
@@ -116,6 +117,7 @@ export const selfHostExecutorServices = <E, R>(
         secret: key,
         origin,
         git: repositories,
+        markdown: markdownRefusals,
         blobs,
         runtime,
         workflows,

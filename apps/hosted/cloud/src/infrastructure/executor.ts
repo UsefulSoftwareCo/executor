@@ -17,6 +17,7 @@ import {
   httpEventSender,
   StorageError,
   makeExecutorStorage,
+  type MarkdownReader,
 } from "@executor-js/sdk/core";
 import { hostedEventAuthority } from "@executor-js/hosted-server/events";
 import { SqlClient } from "effect/sql";
@@ -77,6 +78,7 @@ const cloudFirstPartyOAuthClients = Effect.gen(function* () {
 export const cloudExecutor = Effect.fn(function* (
   databases: Cloudflare.DurableObject<AppDataSupervisor>,
   appSources: AppSources,
+  markdown: MarkdownReader,
 ) {
   // Resolve during initialization so Alchemy binds every value into the Worker environment.
   const secrets = yield* cloudSecrets.pipe(Effect.orDie);
@@ -155,6 +157,7 @@ export const cloudExecutor = Effect.fn(function* (
         origin,
         webhookOrigin,
         git: appSources(background),
+        markdown,
         blobs: yield* cachedVersionSources(origin, blobs),
         runtime: yield* makeRuntime,
         workflows,

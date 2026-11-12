@@ -24,6 +24,7 @@ import {
   SourceSnapshot,
 } from "./source.ts";
 import { PublicationReference, RegistryError } from "./registry.ts";
+import { MarkdownUnavailable } from "./markdown.ts";
 import {
   AppVersionChanged,
   Version,
@@ -619,6 +620,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
         AppNotDeployed,
         VersionBuildFailed,
         BuildMemoryExceeded,
+        MarkdownUnavailable,
         AccountNotFound,
         AccountSelectionInvalid,
       ],
@@ -633,6 +635,7 @@ export const AppsGroup = HttpApiGroup.make("apps")
         StorageError,
         VersionBuildFailed,
         BuildMemoryExceeded,
+        MarkdownUnavailable,
         AppNameTaken,
         AppSlugTaken,
         AppNotFound,

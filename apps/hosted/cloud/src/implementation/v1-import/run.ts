@@ -275,8 +275,8 @@ export type V1ImportStep<S> = <A, R>(
 
 /**
  * Storage and transport failures retry the step, as do builds that ran out of memory or whose
- * compiler did not answer, and source operations Git storage could not complete, which say nothing
- * about the source. Anything v2 refuses fails the item.
+ * compiler did not answer, setup help Executor could not check, and source operations Git storage
+ * could not complete, which say nothing about the source. Anything v2 refuses fails the item.
  */
 const transient = (error: unknown) =>
   Predicate.isTagged(error, "StorageError") ||
@@ -285,6 +285,7 @@ const transient = (error: unknown) =>
   Predicate.isTagged(error, "V1ImportUnavailable") ||
   Predicate.isTagged(error, "BuildMemoryExceeded") ||
   Predicate.isTagged(error, "BuildUnanswered") ||
+  Predicate.isTagged(error, "MarkdownUnavailable") ||
   // Git storage that could not complete an operation says nothing about the source either.
   (Predicate.isTagged(error, "SourceError") &&
     Predicate.hasProperty(error, "reason") &&

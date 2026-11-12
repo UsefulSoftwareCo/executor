@@ -485,7 +485,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
             const dialog = page.getByRole("dialog", { name: `Connect ${name}`, exact: true });
             return dialog.waitFor({ state: "visible" }).then(() => dialog);
           });
-          // A field's hint is part of its label, so read the inputs in declaration order.
+          // Read each field's input in declaration order.
           const types = yield* browser.use("Read each field's input type", () =>
             form
               .locator("input")

@@ -8,10 +8,17 @@ access those resources.
 **Provider**:
 A service/auth definition authored in app code, with named authentication
 methods. Matching normalized definitions have the same provider reference and
-can reuse accounts. It has no separately registered owner or slug.
+can reuse accounts; hosts and setup help are not compared. It has no separately
+registered owner or slug.
 
 **Authentication method**:
 One named way to connect an account, such as OAuth or API-key fields.
+
+**Setup help**:
+What an app version tells people connecting an account: a secrets method's
+`guide`, an OAuth method's `clientGuide`, and each field's `title` and
+`description`. It belongs to the version, not the provider.
+_Avoid_: Setup guide for the whole; onboarding uses it for assistant setup.
 
 **Account**:
 An independently owned, reusable saved instance of a provider method.

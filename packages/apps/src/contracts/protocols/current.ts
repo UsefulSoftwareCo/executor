@@ -123,39 +123,56 @@ const exposure = {
   request: Schema.optionalKey(Placements),
 };
 
+/**
+ * Markdown the connect form shows where a user enters an OAuth client for this service: where to
+ * create one and what to choose there. Setup help, not part of the provider; see `withoutHelp`.
+ * Bundles before it declare none.
+ */
+const clientGuide = { clientGuide: Schema.optionalKey(Schema.String) };
+
 /** Serializable authentication declarations interpreted by the trusted host. */
 export const DeclaredAuthMethod = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("secrets"),
     label: Schema.String,
+    /**
+     * Markdown the connect form shows above the fields: ordered setup, prerequisites, warnings.
+     * Setup help, not part of the provider; see `withoutHelp`. Bundles before it declare none.
+     */
+    guide: Schema.optionalKey(Schema.String),
     fields: JsonObject,
     ...exposure,
   }),
   Schema.Struct({
     type: Schema.Literal("oauth2"),
     ...OAuth2Config.members[0].fields,
+    ...clientGuide,
     response: JsonObject,
     ...exposure,
   }),
   Schema.Struct({
     type: Schema.Literal("oauth2"),
     ...OAuth2Config.members[1].fields,
+    ...clientGuide,
     response: JsonObject,
     ...exposure,
   }),
   Schema.Struct({
     type: Schema.Literal("oauth2"),
     ...OAuth2Config.members[2].fields,
+    ...clientGuide,
     response: JsonObject,
     ...exposure,
   }),
   Schema.Struct({
     type: Schema.Literal("oauth2"),
     ...OAuth2Config.members[3].fields,
+    ...clientGuide,
     response: JsonObject,
     ...exposure,
   }),
 ]);
+export type DeclaredAuthMethod = typeof DeclaredAuthMethod.Type;
 
 /** A credential-free provider declaration with the hosts its credentials may be sent to. */
 export const DeclaredProvider = Schema.Struct({

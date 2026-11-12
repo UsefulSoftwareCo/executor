@@ -74,6 +74,7 @@ const errorMessage = Match.type<HostedError>().pipe(
     VersionBuildFailed: () =>
       "The app could not be built. Check its source or try a different catalog entry.",
     BuildMemoryExceeded: (error) => `${error.description} ${error.recovery.action}`,
+    MarkdownUnavailable: (error) => `${error.description} ${error.recovery.action}`,
     CatalogImportFailed: ({ reason }) => `The app could not be imported. ${reason}`,
     AccountRequired: ({ scope }) =>
       scope === "app"

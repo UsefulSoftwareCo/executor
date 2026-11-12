@@ -141,6 +141,7 @@ export const createExecutor = (
         options.git,
         catalog.reads,
         options.blobs,
+        options.markdown,
         options.hooks,
       ),
       workflows: { list: workflows.definitions },
