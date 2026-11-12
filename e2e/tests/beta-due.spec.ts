@@ -1,8 +1,10 @@
 /**
- * `.github/workflows/beta.yml` runs `scripts/releases/beta-due.ts` every 30 minutes to decide
- * whether to publish a beta. These cases run the script in a scratch repository whose history has
- * a `Release <version>` commit, as main does, with stub `npm` and `gh` first on PATH answering
- * what the registry and the release runs say.
+ * `.github/workflows/beta.yml` runs `scripts/releases/beta-due.ts` on every push to main, on a
+ * schedule and on manual dispatch to decide whether to publish a beta, and
+ * `scripts/releases/beta-bump.sh` to push the version bump. These cases run the scripts in a
+ * scratch repository whose history has a `Release <version>` commit, as main does, with stub `npm`
+ * and `gh` first on PATH answering what the registry and the release runs say, and a scratch bare
+ * repository standing in for GitHub's main.
  */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -79,6 +81,7 @@ const world = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const script = path.resolve("scripts/releases/beta-due.ts");
+  const bumpScript = path.resolve("scripts/releases/beta-bump.sh");
   const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-beta-due-" });
   const gitConfig = path.join(root, "gitconfig");
   yield* fs.writeFileString(
@@ -89,6 +92,7 @@ const world = Effect.gen(function* () {
   const npm = path.join(root, "npm");
   const github = path.join(root, "github");
   const main = path.join(root, "executor-next");
+  const remote = path.join(root, "remote.git");
   for (const directory of [
     bin,
     npm,
@@ -118,7 +122,18 @@ const world = Effect.gen(function* () {
       expect(result.exitCode, `git ${args.join(" ")}: ${result.output}`).toBe(0);
       return result.output.trim();
     });
-  yield* fs.writeFileString(path.join(main, "apps/cli/package.json"), JSON.stringify({ version }));
+  yield* fs.writeFileString(
+    path.join(main, "apps/cli/package.json"),
+    `${JSON.stringify({ name: "executor", version }, null, 2)}\n`,
+  );
+  yield* fs.writeFileString(
+    path.join(main, "bun.lock"),
+    `{\n  "workspaces": {\n    "apps/cli": {\n      "name": "executor",\n      "version": "${version}",\n    },\n    "packages/apps": {\n      "name": "apps",\n      "version": "${version}",\n    },\n  },\n}\n`,
+  );
+  yield* fs.writeFileString(
+    path.join(main, "apps/cli/CHANGELOG.md"),
+    `# executor\n\n## ${version}\n\nBeta of the Executor local runtime, CLI, desktop, and self-host Docker image.\n`,
+  );
   yield* fs.writeFileString(
     path.join(main, "packages/apps/package.json"),
     JSON.stringify({ version: apps }),
@@ -138,7 +153,7 @@ const world = Effect.gen(function* () {
 
   /** Runs the script on this event, with npm and the release runs in this state. */
   const decide = (input: {
-    readonly event?: "schedule" | "workflow_dispatch";
+    readonly event?: "push" | "schedule" | "workflow_dispatch" | "pull_request";
     /** Hours since npm published the committed version; npm lacks it when undefined. */
     readonly published?: number;
     readonly betaTag?: string;
@@ -232,7 +247,59 @@ const world = Effect.gen(function* () {
       return { ...result, outputs, calls };
     });
 
-  return { decide, merge, released, previous };
+  /** GitHub's main: a bare repository holding this main's history. */
+  yield* run(root, "git", ["init", "--quiet", "--bare", remote], env);
+  yield* git("push", "--quiet", remote, "HEAD:main");
+  const remoteMain = Effect.gen(function* () {
+    const result = yield* run(root, "git", ["--git-dir", remote, "rev-parse", "main"], env);
+    expect(result.exitCode, result.output).toBe(0);
+    return result.output.trim();
+  });
+  /** Lands a merge on GitHub's main and checks it out, as the workflow's checkout does. */
+  const land = Effect.gen(function* () {
+    const merged = yield* merge;
+    yield* git("push", "--quiet", remote, "HEAD:main");
+    return merged;
+  });
+  /** Lands a merge on GitHub's main that this checkout has not read, and returns it. */
+  const mergeElsewhere = Effect.gen(function* () {
+    const head = yield* git("rev-parse", "HEAD");
+    const merged = yield* merge;
+    yield* git("push", "--quiet", remote, "HEAD:main");
+    yield* git("reset", "--quiet", "--hard", head);
+    return merged;
+  });
+  /** Refuses every push to GitHub's main, as a ruleset would. */
+  const refusePushes = Effect.gen(function* () {
+    const hook = path.join(remote, "hooks/pre-receive");
+    yield* fs.writeFileString(hook, "#!/bin/sh\necho 'push declined by a ruleset' >&2\nexit 1\n");
+    yield* fs.chmod(hook, 0o755);
+  });
+  /** Runs the bump script on this checkout of main, as the workflow does after `bump`. */
+  const bump = Effect.gen(function* () {
+    const output = path.join(root, "bump-output");
+    yield* fs.writeFileString(output, "");
+    const result = yield* run(main, bumpScript, [version, remote], {
+      ...env,
+      GITHUB_OUTPUT: output,
+    });
+    return { ...result, outputs: yield* fs.readFileString(output) };
+  });
+  const file = (name: string) => fs.readFileString(path.join(main, name));
+
+  return {
+    decide,
+    merge,
+    released,
+    previous,
+    bump,
+    remoteMain,
+    land,
+    mergeElsewhere,
+    refusePushes,
+    git,
+    file,
+  };
 });
 
 layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate", (it) => {
@@ -483,6 +550,86 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
       expect(result.exitCode).not.toBe(0);
       expect(result.output).toContain("its beta tag names 2.0.0-beta.4");
       expect(result.outputs.decision).toBeUndefined();
+    }).pipe(Effect.scoped),
+  );
+  it.effect("a push to main decides as a scheduled tick does, waits included", () =>
+    Effect.gen(function* () {
+      const { decide, merge, released, previous } = yield* world;
+      yield* merge;
+
+      const early = yield* decide({ event: "push", published: 1 });
+      expect(early.exitCode, early.output).toBe(0);
+      expect(early.outputs.decision).toBe("none");
+      expect(early.outputs.reason).toContain("waits six hours");
+      const due = yield* decide({ event: "push", published: 6.5 });
+      expect(due.outputs).toMatchObject({ decision: "bump", version });
+
+      const failed: ReadonlyArray<ReleaseRun> = [
+        { id: 3, hoursAgo: 1, headSha: released },
+        { id: 2, hoursAgo: 2, headSha: released },
+        { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+      ];
+      const held = yield* decide({ event: "push", runs: failed });
+      expect(held.outputs.decision, held.output).toBe("none");
+      expect(held.output).toContain("::warning::");
+      expect(held.outputs.reason).toContain("after two or more failed attempts in a row");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("an event the workflow does not run on stops the gate", () =>
+    Effect.gen(function* () {
+      const { decide, merge } = yield* world;
+      yield* merge;
+      const result = yield* decide({ event: "pull_request", published: 1 });
+      expect(result.exitCode, result.output).not.toBe(0);
+      expect(result.output).toContain("not pull_request");
+      expect(result.outputs.decision).toBeUndefined();
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("the bump pushes a skip-ci release commit to main and names the release", () =>
+    Effect.gen(function* () {
+      const { bump, land, remoteMain, git, file } = yield* world;
+      yield* land;
+      const result = yield* bump;
+      expect(result.exitCode, result.output).toBe(0);
+      expect(result.outputs).toBe("release=2.0.0-beta.6\n");
+      expect(yield* remoteMain).toBe(yield* git("rev-parse", "HEAD"));
+      expect(yield* git("log", "-1", "--format=%s")).toBe("Release 2.0.0-beta.6 [skip ci]");
+      expect(JSON.parse(yield* file("apps/cli/package.json")).version).toBe("2.0.0-beta.6");
+      const lock = yield* file("bun.lock");
+      expect(lock).toContain(`"name": "executor",\n      "version": "2.0.0-beta.6"`);
+      expect(lock).toContain(`"name": "apps",\n      "version": "${version}"`);
+      expect(yield* file("apps/cli/CHANGELOG.md")).toMatch(/^# executor\n\n## 2\.0\.0-beta\.6\n/);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a bump that finds main moved since the checkout pushes nothing and passes", () =>
+    Effect.gen(function* () {
+      const { bump, land, mergeElsewhere, remoteMain } = yield* world;
+      yield* land;
+      const moved = yield* mergeElsewhere;
+      const result = yield* bump;
+      expect(result.exitCode, result.output).toBe(0);
+      expect(result.output).toContain(`::notice::main moved`);
+      expect(result.output).toContain(`to ${moved} after this run read it`);
+      expect(result.outputs).toBe("");
+      expect(yield* remoteMain).toBe(moved);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a bump refused while main is where the checkout read it fails", () =>
+    Effect.gen(function* () {
+      const { bump, land, refusePushes, remoteMain } = yield* world;
+      const head = yield* land;
+      yield* refusePushes;
+      const result = yield* bump;
+      expect(result.exitCode, result.output).not.toBe(0);
+      expect(result.output).toContain(
+        `::error::Pushing Release 2.0.0-beta.6 to main was refused, and main is still at ${head}.`,
+      );
+      expect(result.outputs).toBe("");
+      expect(yield* remoteMain).toBe(head);
     }).pipe(Effect.scoped),
   );
 });

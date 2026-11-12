@@ -311,9 +311,10 @@ API/MCP outcomes, workflow correlation, browser failures, app traces and analyti
 Deployed tests run through `bun run e2e:deployed`; the runner owns provisioning
 and teardown. The release workflow builds and tests Docker images on release PRs
 and manual dispatch. Publication requires an explicit channel dispatch from main.
-The Beta workflow (`beta.yml`) makes that dispatch every 30 minutes when main has
-commits the last beta lacks and npm published that beta at least six hours ago,
-and retries a failed one with a bounded back-off; see [Releasing](RELEASING.md#publish-beta).
+The Beta workflow (`beta.yml`) makes that dispatch, on each push to main and on a
+backstop schedule GitHub delivers hours late, when main has commits the last beta
+lacks and npm published that beta at least six hours ago, and retries a failed one
+with a bounded back-off; see [Releasing](RELEASING.md#publish-beta).
 Release PRs build and test the Linux and Windows targets only. The macOS targets run
 on manual dispatch, where they are built, signed, notarized and tested. macOS runners
 cost 5-20x as much as Linux runners, so keep them off pull requests.

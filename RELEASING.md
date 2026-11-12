@@ -102,8 +102,9 @@ not.
 ## Publish beta
 
 The **Beta** workflow (`.github/workflows/beta.yml`) publishes betas. It checks
-every 30 minutes, at minutes 8 and 38, and `scripts/releases/beta-due.ts`
-decides from npm, the release runs and main's history:
+on every push to `main` and on a schedule at minutes 8 and 38, and
+`scripts/releases/beta-due.ts` decides from npm, the release runs and main's
+history. A push and a scheduled tick decide alike:
 
 - While any **Executor releases** dispatch is queued or running, it waits.
 - When npm lists the committed version, main has commits after that version's
@@ -127,12 +128,27 @@ decides from npm, the release runs and main's history:
   way without publishing. Inspect that run's publish job and the registry, fix
   the cause, then dispatch **Executor releases** with channel **beta** by hand.
 
+GitHub delivers this repository's schedules hours late and drops the ticks in
+between: in the 30 days to 2026-11-11 a `*/5` cron ran about five times a day and
+an hourly one about four and a half. So merges drive publishing, and the schedule
+is a backstop. Without merges, a beta that waits out the six hours, or a retry
+after a failed attempt, waits for the next merge or the next scheduled run, which
+has come up to 11 hours apart.
+
+Ticks never overlap. While one runs, one more waits; a newer tick replaces the
+waiting one, and it reads main afresh, so a burst of merges costs a few runs. When
+a merge lands between a tick's checkout and its bump push, the push is refused;
+the tick pushes nothing and passes with a notice, because that merge started a
+tick of its own, which decides again. A refusal while main has not moved fails
+the tick.
+
 Dispatching **Beta** by hand publishes new commits at once, skipping the six
-hours and the retry back-off. The bump commit is pushed over SSH with the
+hours and the retry back-off. A merge that lands while a manual dispatch
+waits behind a running tick replaces it; dispatch it again. The bump commit is pushed over SSH with the
 deploy key in the `beta` environment's `BETA_PUSH_KEY` secret, the one actor
 the `main` ruleset lets push without a pull request (see
 [CI configuration](notes/ci.md)). Its message ends in `[skip ci]`, so it starts
-no CI, Deploy, public export or Cloud tests run; the next merge carries it.
+no CI, Deploy, public export, Cloud tests or Beta run; the next merge carries it.
 
 To publish a beta by hand instead, set the version to an unused
 `2.0.0-beta.N`, merge the reviewed release changes, and dispatch **Executor
