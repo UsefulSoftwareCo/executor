@@ -113,6 +113,7 @@
     "e2e:beta-due": "vitest run --config e2e/beta-due.config.ts",
     "e2e:alchemy-first-builds": "vitest run --config e2e/alchemy-first-builds.config.ts",
     "e2e:alchemy-dev-output": "vitest run --config e2e/alchemy-dev-output.config.ts",
+    "e2e:cloud-proxy-keep-alive": "vitest run --config e2e/cloud-proxy-keep-alive.config.ts",
     "e2e:posthog-experiment-lifecycle": "vitest run --config e2e/posthog-experiment-lifecycle.config.ts",
     "e2e:cloud-deploy-origin": "vitest run --config e2e/cloud-deploy-origin.config.ts",
     "changeset": "changeset",

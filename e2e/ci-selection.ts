@@ -473,6 +473,7 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
  * compared with main, not the pull request's base, so the top of a stack counts every layer.
  */
 const patchGuards: Readonly<Record<string, ReadonlyArray<string>>> = {
+  "@alchemy.run/cloudflare-runtime": ["mcp-protocol-versions.spec.ts"],
   "@opencode-ai/codemode": [
     "mcp-catalog.spec.ts",
     "mcp-execute-concurrency.spec.ts",
@@ -592,6 +593,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "alchemy-dev-output.config.ts": () => import("./alchemy-dev-output.config.ts"),
   "alchemy-first-builds.config.ts": () => import("./alchemy-first-builds.config.ts"),
   "chatgpt-sign-in.config.ts": () => import("./chatgpt-sign-in.config.ts"),
+  "cloud-proxy-keep-alive.config.ts": () => import("./cloud-proxy-keep-alive.config.ts"),
   "apps-published.config.ts": () => import("./apps-published.config.ts"),
   "beta-due.config.ts": () => import("./beta-due.config.ts"),
   "billing.config.ts": () => import("./billing.config.ts"),

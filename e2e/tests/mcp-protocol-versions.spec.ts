@@ -11,7 +11,8 @@
 import { expect, layer } from "@effect/vitest";
 import { Deferred, Effect, Fiber, Redacted, Schema, Stream } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
-import { createServer } from "node:http";
+import { Agent, createServer, request as httpRequest } from "node:http";
+import type { Socket } from "node:net";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
@@ -19,7 +20,7 @@ import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Browser } from "../support/browser.ts";
 import { McpClient } from "../support/mcp-client.ts";
-import { Target } from "../support/platform.ts";
+import { driver, Target } from "../support/platform.ts";
 import { App } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { awaitSentryEvents, sentryEvents, type SentryEvent } from "../support/sentry-events.ts";
@@ -98,9 +99,57 @@ const post = (
   path = "/mcp",
 ) => send(credentials, HttpClientRequest.bodyJson({ jsonrpc: "2.0", ...message }), headers, path);
 
+/**
+ * POSTs `message` on `agent`'s one kept-alive connection, as a client that keeps its connection
+ * does. Returns the answer's status and body, or what went wrong, and the socket it used.
+ */
+const postOn = (agent: Agent, credentials: Readonly<Record<string, string>>, message: object) =>
+  Effect.gen(function* () {
+    const url = new URL("/mcp", (yield* Target).metadata.origin);
+    return yield* driver(
+      "POST /mcp on a kept-alive connection",
+      (signal) =>
+        new Promise<{ outcome: string; text: string; socket: Socket | undefined }>((resolve) => {
+          const body = JSON.stringify({ jsonrpc: "2.0", ...message });
+          let socket: Socket | undefined;
+          const pending = httpRequest(
+            url,
+            {
+              method: "POST",
+              agent,
+              signal,
+              headers: {
+                ...credentials,
+                accept: "application/json, text/event-stream",
+                "content-type": "application/json",
+                "content-length": String(Buffer.byteLength(body)),
+              },
+            },
+            (response) => {
+              let text = "";
+              response.setEncoding("utf8");
+              response.on("data", (chunk: string) => (text += chunk));
+              response.once("close", () =>
+                resolve({
+                  outcome: response.complete ? String(response.statusCode) : "answer cut short",
+                  text,
+                  socket,
+                }),
+              );
+            },
+          );
+          pending.once("socket", (used) => (socket = used));
+          pending.on("error", (error: NodeJS.ErrnoException) =>
+            resolve({ outcome: error.code ?? error.message, text: "", socket }),
+          );
+          pending.end(body);
+        }),
+    );
+  });
+
 /** A rejected request has its status, the invalid-request code and a message naming the fix. */
 const expectRejected = (
-  rejected: Effect.Success<ReturnType<typeof send>>,
+  rejected: Pick<Effect.Success<ReturnType<typeof send>>, "status" | "reply">,
   status: number,
   mentions: ReadonlyArray<string>,
 ) =>
@@ -440,16 +489,37 @@ const checkProtocolVersions = (credentials: Readonly<Record<string, string>>) =>
       }),
     );
     yield* evidence.step(
-      "A request with an unknown session is told to initialize again",
+      "A request with an unknown session is told to initialize again, and its client keeps its connection",
       Effect.gen(function* () {
-        // A restart or deploy forgets every session; the client sees this for its old one.
-        const rejected = yield* post(
+        // A restart or deploy forgets every session; the client sees this for its old one. It
+        // keeps its connection, and the refusal must not cost it. The gateway answers without
+        // reading the body, and behind a binding workerd then closes its connection without
+        // `Connection: close`. Cloudflare's edge keeps the client's connection; on local Cloud
+        // the dev proxy must (`patches/cloudflare-runtime-keep-alive.md`).
+        const agent = yield* Effect.acquireRelease(
+          Effect.sync(() => new Agent({ keepAlive: true, maxSockets: 1 })),
+          (agent) => Effect.sync(() => agent.destroy()),
+        );
+        const refused = yield* postOn(
+          agent,
           { ...credentials, "mcp-session-id": crypto.randomUUID() },
           { id: 7, method: "tools/list" },
         );
+        const rejected = {
+          status: Number(refused.outcome),
+          reply: yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Message))(refused.text),
+        };
         yield* expectRejected(rejected, 404, ["Mcp-Session-Id", "initialize"]);
         yield* evidence.json("unknown-session.json", rejected.reply);
-      }),
+        const next = yield* postOn(agent, session, { id: 12, method: "tools/list" });
+        expect(
+          {
+            outcome: next.outcome,
+            connection: next.socket === refused.socket ? "same" : "another",
+          },
+          "The client's next request goes on its connection and is answered",
+        ).toEqual({ outcome: "200", connection: "same" });
+      }).pipe(Effect.scoped),
     );
     yield* evidence.step(
       "Wrong media types and a batch are told what to send",
