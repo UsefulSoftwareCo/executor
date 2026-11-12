@@ -59,26 +59,26 @@ const BuildFailed = Schema.Struct({
 const indentedGuide = (who: string) => `
         Sign in to the help desk as ${who} first.
 
-        1. Open [API tokens](https://tickets.example.com/settings/tokens).
-        2. Choose **Create token** and copy it.
+        1. Open [Team settings](https://tickets.example.com/settings/team).
+        2. Turn on **API access**.
       `;
 const guideOf = (who: string) =>
   [
     `Sign in to the help desk as ${who} first.`,
     "",
-    "1. Open [API tokens](https://tickets.example.com/settings/tokens).",
-    "2. Choose **Create token** and copy it.",
+    "1. Open [Team settings](https://tickets.example.com/settings/team).",
+    "2. Turn on **API access**.",
   ].join("\n");
 /** How the connect form shows `guideOf(who)`. */
 const shownGuide = (who: string) =>
-  `Sign in to the help desk as ${who} first.\n\nOpen API tokens.\nChoose Create token and copy it.`;
+  `Sign in to the help desk as ${who} first.\n\nOpen Team settings.\nTurn on API access.`;
 const siteHelp = "The part before `.tickets.example.com` in your help desk URL.";
 const indentedTokenHelp = `
+          Create one under [API tokens](https://tickets.example.com/settings/tokens).
           Starts with \`tkt_\`.
-          See [token formats](https://tickets.example.com/docs/tokens).
         `;
 const tokenHelp =
-  "Starts with `tkt_`.\nSee [token formats](https://tickets.example.com/docs/tokens).";
+  "Create one under [API tokens](https://tickets.example.com/settings/tokens).\nStarts with `tkt_`.";
 const indentedQueueHelp = `
           Ask a lead which queue takes **billing** tickets.
         `;
@@ -538,13 +538,20 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
         const shown = yield* browser.use("Read the guide and field help", () =>
           Promise.all([
             guideRegion.innerText(),
-            guideRegion.getByRole("link", { name: "API tokens", exact: true }).getAttribute("href"),
+            guideRegion
+              .getByRole("link", { name: "Team settings", exact: true })
+              .getAttribute("href"),
+            // The link to where the token comes from is in the token field's own help.
+            descriptionOf(form, token).then((help) =>
+              help.getByRole("link", { name: "API tokens", exact: true }).getAttribute("href"),
+            ),
             describedInputs(form),
             form.getByText("Get these credentials from your", { exact: false }).count(),
           ]),
         );
         expect(shown).toEqual([
           shownGuide("an admin"),
+          "https://tickets.example.com/settings/team",
           "https://tickets.example.com/settings/tokens",
           // Each label is the field's title; its description is under the input, outside the label.
           [
@@ -555,7 +562,7 @@ layer(HostedLive, { excludeTestServices: true })("Setup help", (it) => {
             },
             {
               label: "API token",
-              description: "Starts with tkt_.\nSee token formats.",
+              description: "Create one under API tokens.\nStarts with tkt_.",
               outsideLabel: true,
             },
           ],
@@ -731,7 +738,7 @@ layer(TestLive, { excludeTestServices: true })("Local setup help", (it) => {
             },
             {
               label: "API token",
-              description: "Starts with tkt_.\nSee token formats.",
+              description: "Create one under API tokens.\nStarts with tkt_.",
               outsideLabel: true,
             },
           ],

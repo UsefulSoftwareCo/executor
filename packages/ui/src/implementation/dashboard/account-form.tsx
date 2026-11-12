@@ -186,16 +186,16 @@ export function AccountForm<A, E>({
             </p>
           )}
           {guide && <SetupHelp label="Setup guide">{guide}</SetupHelp>}
-          <CredentialAccess
-            hosts={provider.definition.hosts}
-            {...secretAccess(fields, provider.definition.hosts)}
-          />
           <CredentialFields
             fields={fields}
             hosts={provider.definition.hosts}
             values={values}
             onChange={changeValues}
             pending={pending}
+          />
+          <CredentialAccess
+            hosts={provider.definition.hosts}
+            {...secretAccess(fields, provider.definition.hosts)}
           />
           {check !== undefined && auth?.type === "secrets" && (
             <CredentialVerdict
@@ -244,10 +244,11 @@ const secretAccess = (fields: AccountFormFields, hosts: readonly string[] | unde
 };
 
 /**
- * What the app gets for the entered credentials, explaining each field tag the form shows. A
- * provider that declares hosts gives the app placeholders for hidden values; Executor substitutes
- * the real values only on requests to those hosts. `raw()` fields, and every secret of a provider
- * without hosts, are readable by the app.
+ * What the app gets for the entered credentials: a line above the submit button for each tag the
+ * fields carry, where `SignInAccess` says the same of a sign-in. A provider that declares hosts
+ * gives the app placeholders for hidden values; Executor substitutes the real values only on
+ * requests to those hosts. `raw()` fields, and every secret of a provider without hosts, are
+ * readable by the app, as plain fields are.
  */
 function CredentialAccess({
   hosts,
@@ -260,26 +261,22 @@ function CredentialAccess({
 }) {
   if (!hidden && !readable) return null;
   return (
-    <div className="flex flex-col gap-1.5 text-xs leading-relaxed" data-credential-hosts>
+    <div
+      className="flex flex-col gap-1.5 text-xs leading-relaxed text-muted-foreground"
+      data-credential-hosts
+    >
       {hidden && hosts !== undefined && (
-        <p
-          className="flex items-start gap-1.5 text-muted-foreground"
-          data-credential-access="hidden"
-        >
+        <p className="flex items-start gap-1.5" data-credential-access="hidden">
           <HugeiconsIcon
             icon={SquareLock02Icon}
             className="mt-0.5 size-3.5 shrink-0 text-emerald-600"
           />
           <span>
-            <span className="font-medium text-emerald-700 dark:text-emerald-400">
-              Hidden from app.
-            </span>{" "}
-            The app and your agent only get a placeholder. Executor swaps in the real value{" "}
             {hosts.length === 0 ? (
-              "on no request."
+              "Executor never sends hidden values on the app's requests."
             ) : (
               <>
-                on requests to{" "}
+                Hidden values are only sent to{" "}
                 {hosts.map((host, index) => (
                   <span key={host}>
                     <HostChip host={host} />
@@ -287,21 +284,17 @@ function CredentialAccess({
                   </span>
                 ))}
               </>
-            )}
+            )}{" "}
+            The app and your agent get a placeholder.
           </span>
         </p>
       )}
       {readable && (
-        <p
-          className="flex items-start gap-1.5 text-muted-foreground"
-          data-credential-access="readable"
-        >
+        <p className="flex items-start gap-1.5" data-credential-access="readable">
           <HugeiconsIcon icon={ViewIcon} className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
           <span>
-            <span className="font-medium text-amber-700 dark:text-amber-400">Readable by app.</span>{" "}
-            The app reads these values and can send them anywhere.
-            {hosts === undefined &&
-              " You can ask your agent to use stubbed secrets instead if possible."}
+            The app can read {hidden ? "the other" : "these"} values and send them anywhere.
+            {hosts === undefined && " You can ask your agent to limit where they are sent."}
           </span>
         </p>
       )}

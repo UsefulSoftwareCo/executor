@@ -347,11 +347,13 @@ identity or disconnect accounts; it only makes earlier results outdated.
 ## Tell users where to get credentials
 
 The connect form shows what you write about each field and method. Give every
-field a `description` first: where in the service the value is, and what it
-looks like. The form shows it under the input. `title` replaces the field's
-name as its label. Give a `secrets` method a `guide` only for ordered setup,
-prerequisites or warnings; it replaces the form's generic "Get these credentials
-from your Jira account settings." line:
+field a `description` first: where to get the value, with a link to the page
+that shows or creates it, and what it looks like. The form shows it under the
+input, so the link sits beside the field it is for. `title` replaces the
+field's name as its label. Give a `secrets` method a `guide` only for what no
+single field owns: prerequisites, setup that spans fields, or warnings. It
+replaces the form's generic "Get these credentials from your Jira account
+settings." line:
 
 ```ts
 const jira = defineProvider({
@@ -361,14 +363,16 @@ const jira = defineProvider({
     token: secrets({
       label: "API token",
       guide: `
-        Create the token while signed in as the Jira user the app acts as.
-
-        1. Open [API tokens](https://id.atlassian.com/manage-profile/security/api-tokens).
-        2. Choose **Create API token** and copy it; Atlassian shows it once.
+        Sign in as the Jira user the app acts as before you create the token.
+        Atlassian shows a new token once, so copy it before you close the page.
       `,
       fields: object({
         email: plain(string({ description: "The address you sign in to Jira with." })),
-        token: string({ title: "API token", description: "Starts with `ATATT`." }),
+        token: string({
+          title: "API token",
+          description:
+            "Create one under [API tokens](https://id.atlassian.com/manage-profile/security/api-tokens). Starts with `ATATT`.",
+        }),
       }),
       request: ({ email, token }) =>
         header("authorization", t`Basic ${base64(t`${email}:${token}`)}`),
