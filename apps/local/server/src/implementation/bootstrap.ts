@@ -20,22 +20,14 @@ import {
   keyStorageConfig,
   keyStorageInvalid,
   type KeyStorage,
-  LocalConfigurationReason,
+  LocalConfigurationError,
+  type LocalConfigurationReason,
   LocalCredentialService,
   LocalInstallation as Installation,
 } from "../contracts/auth.ts";
 import { desktopPairing } from "../contracts/startup.ts";
 import { writeAtomically } from "./atomic-file.ts";
 import { readSettings } from "./service-files.ts";
-
-/** Safe startup instructions. Key values are never displayed; native error text is sanitized. */
-export class LocalConfigurationError extends Schema.TaggedError<LocalConfigurationError>()(
-  "LocalConfigurationError",
-  {
-    reason: LocalConfigurationReason,
-    message: Schema.String,
-  },
-) {}
 
 const Keys = Schema.Struct({
   apiKey: Schema.RedactedFromValue(Schema.String.check(Schema.isMinLength(32))),

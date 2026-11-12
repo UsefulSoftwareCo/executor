@@ -20,14 +20,13 @@ import { hostedExecutorOrigin } from "@executor-js/sdk/core";
 import { ToolInputInvalid, ToolsSignInRequired } from "./client-error.ts";
 import { hostFlag, namedHost, toolsTarget, type LocalServer } from "./implementation/hosts.ts";
 import { hasRegistrySession, logout, toolsLogin } from "./implementation/node-auth.ts";
-import { pausedSession, recordPause } from "./implementation/paused-calls.ts";
-import {
-  callTool,
-  describeAccess,
-  printJson,
-  relay,
-  whoami,
-} from "./implementation/tools-client.ts";
+
+/**
+ * The MCP client and the paused-call records, loaded when a command uses them, so other commands
+ * and help start without the MCP SDK.
+ */
+const toolsClient = Effect.promise(() => import("./implementation/tools-client.ts"));
+const pausedCalls = Effect.promise(() => import("./implementation/paused-calls.ts"));
 
 const decodeJson = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json));
 
@@ -100,6 +99,8 @@ export const toolCommands = <E, R>(
   ) =>
     Effect.gen(function* () {
       const target = yield* toolsTarget(host, localServer, { fresh: false });
+      const { callTool, printJson } = yield* toolsClient;
+      const { pausedSession, recordPause } = yield* pausedCalls;
       const session =
         resumed === undefined ? Option.none() : yield* pausedSession(target.host, resumed);
       const result = yield* callTool(target, tool, input, Option.getOrUndefined(session));
@@ -128,6 +129,7 @@ export const toolCommands = <E, R>(
       Command.withHandler(({ host }) =>
         Effect.gen(function* () {
           const session = yield* toolsLogin(host, platform);
+          const { describeAccess, whoami } = yield* toolsClient;
           const target = {
             host,
             url: session.resource,
@@ -174,6 +176,7 @@ export const toolCommands = <E, R>(
           const named = yield* namedHost(host);
           if (Option.isNone(named)) return yield* new ToolsSignInRequired({});
           const target = yield* toolsTarget<never, never>(named, undefined, { fresh: false });
+          const { printJson, whoami } = yield* toolsClient;
           const known = yield* whoami(target);
           yield* printJson({
             host: target.host,
@@ -421,7 +424,9 @@ export const toolCommands = <E, R>(
         "Serve the resolved host's MCP endpoint over stdio, with this CLI's sign-in, for MCP clients such as `claude mcp add executor -- executor mcp`",
       ),
       Command.withHandler(({ host }) =>
-        toolsTarget(host, localServer, { fresh: true }).pipe(Effect.flatMap(relay)),
+        toolsTarget(host, localServer, { fresh: true }).pipe(
+          Effect.flatMap((target) => Effect.flatMap(toolsClient, ({ relay }) => relay(target))),
+        ),
       ),
     ),
   ];

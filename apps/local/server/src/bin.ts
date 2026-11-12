@@ -35,24 +35,26 @@ import {
   UpgradeFailed,
   upgradeCommand,
 } from "./contracts/startup.ts";
-import { LocalConfigurationError, rotateApiKey } from "./implementation/bootstrap.ts";
-import { launch } from "./implementation/launcher.ts";
-import { outdatedCli } from "./implementation/update-notice.ts";
-import { pair } from "./implementation/pair.ts";
+import { LocalConfigurationError } from "./contracts/auth.ts";
 import { processOutput } from "./implementation/process-output.ts";
-import { serveProcess } from "./implementation/server-process.ts";
+import { outdatedCli } from "./implementation/update-notice.ts";
 import { ensure, standalone } from "./implementation/service-client.ts";
 import { readSettings, serviceDirectory } from "./implementation/service-files.ts";
-import {
-  serviceGet,
-  serviceRestart,
-  serviceSet,
-  serviceStart,
-  serviceStatus,
-  serviceStop,
-  serviceUnset,
-} from "./implementation/service-settings.ts";
-import { upgrade } from "./implementation/upgrade.ts";
+
+/**
+ * A command's implementation, loaded when that command runs. Help, argument errors and other
+ * commands then start without the server, the launcher or the upgrader.
+ */
+const loaded = <M, A, E, R>(
+  load: () => Promise<M>,
+  run: (module: M) => Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> => Effect.flatMap(Effect.promise(load), run);
+const launcher = () => import("./implementation/launcher.ts");
+const serverProcess = () => import("./implementation/server-process.ts");
+const settings = () => import("./implementation/service-settings.ts");
+const bootstrap = () => import("./implementation/bootstrap.ts");
+const pairing = () => import("./implementation/pair.ts");
+const upgrader = () => import("./implementation/upgrade.ts");
 
 // The file that started the CLI shows how it was installed: the npm launcher, or the release
 // executable itself, names itself in EXECUTOR_LAUNCHER; otherwise it is the script Node started.
@@ -94,7 +96,9 @@ const localServer = Effect.gen(function* () {
 );
 
 const cli = executorCommand.pipe(
-  Command.withHandler((options) => processOutput.serve(launch(options, process.platform, entry))),
+  Command.withHandler((options) =>
+    loaded(launcher, ({ launch }) => processOutput.serve(launch(options, process.platform, entry))),
+  ),
   Command.withSubcommands([
     appsCommand(process.platform, localServer),
     ...toolCommands(process.platform, localServer),
@@ -103,31 +107,47 @@ const cli = executorCommand.pipe(
         Effect.gen(function* () {
           if (service && stdio)
             return yield* new CliError.UserError({ cause: "Use --service or --stdio, not both." });
-          return yield* processOutput.serve(
-            serveProcess({
-              mode: service ? "service" : stdio ? "stdio" : "foreground",
-              platform: process.platform,
-              ...(entry === undefined ? {} : { entry }),
-            }),
+          return yield* loaded(serverProcess, ({ serveProcess }) =>
+            processOutput.serve(
+              serveProcess({
+                mode: service ? "service" : stdio ? "stdio" : "foreground",
+                platform: process.platform,
+                ...(entry === undefined ? {} : { entry }),
+              }),
+            ),
           );
         }),
       ),
     ),
     serviceCommand.pipe(
       Command.withSubcommands([
-        serviceStartCommand.pipe(Command.withHandler(() => serviceStart)),
-        serviceStopCommand.pipe(Command.withHandler(() => serviceStop)),
-        serviceRestartCommand.pipe(Command.withHandler(() => serviceRestart)),
-        serviceStatusCommand.pipe(Command.withHandler(() => serviceStatus)),
-        serviceGetCommand.pipe(Command.withHandler(serviceGet)),
-        serviceSetCommand.pipe(Command.withHandler((input) => serviceSet(process.platform, input))),
-        serviceUnsetCommand.pipe(
-          Command.withHandler((input) => serviceUnset(process.platform, input)),
+        serviceStartCommand.pipe(
+          Command.withHandler(() => loaded(settings, (m) => m.serviceStart)),
         ),
-        servicePairCommand.pipe(Command.withHandler(() => pair)),
+        serviceStopCommand.pipe(Command.withHandler(() => loaded(settings, (m) => m.serviceStop))),
+        serviceRestartCommand.pipe(
+          Command.withHandler(() => loaded(settings, (m) => m.serviceRestart)),
+        ),
+        serviceStatusCommand.pipe(
+          Command.withHandler(() => loaded(settings, (m) => m.serviceStatus)),
+        ),
+        serviceGetCommand.pipe(
+          Command.withHandler((input) => loaded(settings, (m) => m.serviceGet(input))),
+        ),
+        serviceSetCommand.pipe(
+          Command.withHandler((input) =>
+            loaded(settings, (m) => m.serviceSet(process.platform, input)),
+          ),
+        ),
+        serviceUnsetCommand.pipe(
+          Command.withHandler((input) =>
+            loaded(settings, (m) => m.serviceUnset(process.platform, input)),
+          ),
+        ),
+        servicePairCommand.pipe(Command.withHandler(() => loaded(pairing, (m) => m.pair))),
         serviceRotateKeyCommand.pipe(
           Command.withHandler(() =>
-            rotateApiKey(process.platform).pipe(
+            loaded(bootstrap, (m) => m.rotateApiKey(process.platform)).pipe(
               Effect.andThen(
                 Console.log(
                   "Rotated the local API key. Run `executor service restart` to use it, then update clients that used the previous key.",
@@ -140,13 +160,15 @@ const cli = executorCommand.pipe(
     ),
     upgradeCommand.pipe(
       Command.withHandler((options) =>
-        upgrade(options, {
-          entry,
-          node: launcherNode,
-          executable: process.execPath,
-          platform: process.platform,
-          arch: process.arch,
-        }),
+        loaded(upgrader, ({ upgrade }) =>
+          upgrade(options, {
+            entry,
+            node: launcherNode,
+            executable: process.execPath,
+            platform: process.platform,
+            arch: process.arch,
+          }),
+        ),
       ),
     ),
   ]),

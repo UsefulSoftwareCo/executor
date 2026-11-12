@@ -3,10 +3,9 @@ import { Config, Console, Effect, Option, Redacted, Schedule } from "effect";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
-import { LocalAuthApi } from "../contracts/auth.ts";
+import { LocalAuthApi, LocalConfigurationError } from "../contracts/auth.ts";
 import { serverPortConfig } from "../contracts/config.ts";
 import { PairFailed } from "../contracts/startup.ts";
-import { LocalConfigurationError } from "./bootstrap.ts";
 import { registered } from "./service-client.ts";
 import { connectionRefused, serviceDirectory } from "./service-files.ts";
 

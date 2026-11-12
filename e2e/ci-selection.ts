@@ -658,6 +658,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "billing.config.ts": () => import("./billing.config.ts"),
   "ci-selection.config.ts": () => import("./ci-selection.config.ts"),
   "ci-supersede.config.ts": () => import("./ci-supersede.config.ts"),
+  "cli-startup-imports.config.ts": () => import("./cli-startup-imports.config.ts"),
   "cloud-deploy-origin.config.ts": () => import("./cloud-deploy-origin.config.ts"),
   "dashboard-file-names.config.ts": () => import("./dashboard-file-names.config.ts"),
   "effect-mcp.config.ts": () => import("./effect-mcp.config.ts"),
