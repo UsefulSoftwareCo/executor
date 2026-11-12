@@ -4,6 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer, Option } from "effect";
 import { Command, Flag } from "effect/cli";
 import { FetchHttpClient } from "effect/http";
+import { hostSlot } from "./host-slot.ts";
 import { runSuite } from "./sdk/suite.ts";
 
 /**
@@ -31,7 +32,18 @@ const command = Command.make(
     // signs in through it, and run only the scenarios that prove the proxy.
     oauthProxyPreview: Flag.Boolean("oauth-proxy-preview").pipe(Flag.withDefault(false)),
   },
-  (flags) => runSuite({ ...flags, workers: Option.getOrUndefined(flags.workers), defaultWorkers }),
+  // Outside CI, one run per machine: see host-slot.ts.
+  (flags) =>
+    hostSlot(defaultWorkers).pipe(
+      Effect.flatMap((available) =>
+        runSuite({
+          ...flags,
+          workers: Option.getOrUndefined(flags.workers),
+          defaultWorkers: available,
+        }),
+      ),
+      Effect.scoped,
+    ),
 );
 NodeRuntime.runMain(
   Command.run(command, { version: "1" }).pipe(
