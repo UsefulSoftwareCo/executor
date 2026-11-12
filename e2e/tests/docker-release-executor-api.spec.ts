@@ -36,14 +36,17 @@ const Operation = Schema.Struct({
 });
 /**
  * An operation whose only security is the browser session refuses every bearer credential, so the
- * Executor app, which calls with the agent's grant, must not list it.
+ * Executor app, which calls with the agent's grant, must not list it. Every alternative must name
+ * exactly the browser session: an empty one, `{}`, allows anonymous callers, so an operation that
+ * has one is not browser-only and must be listed if it is new.
  */
 const browserSessionOnly = (operation: typeof Operation.Type) =>
   operation.security !== undefined &&
   operation.security.length > 0 &&
-  operation.security.every((requirement) =>
-    Object.keys(requirement).every((scheme) => scheme === "browserSession"),
-  );
+  operation.security.every((requirement) => {
+    const schemes = Object.keys(requirement);
+    return schemes.length === 1 && schemes[0] === "browserSession";
+  });
 const SearchInput = Schema.Record(Schema.String, Schema.Json);
 const SearchPage = Schema.Struct({
   items: Schema.Array(Schema.Struct({ path: Schema.String })),

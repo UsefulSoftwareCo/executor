@@ -17,5 +17,8 @@ export default defineConfig({
       "e2e/tests/workflow-engine.spec.ts",
     ],
     testTimeout: 180_000,
+    // Every Docker network the scenarios use exists before the first starts; see
+    // e2e/support/release-networks.ts.
+    globalSetup: ["e2e/docker-release-networks.ts"],
   },
 });

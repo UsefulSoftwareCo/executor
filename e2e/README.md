@@ -298,8 +298,8 @@ headers, and DNS rejection before any connection, including redirected imports.
 It clones and pushes app source through the image's Git HTTP server, then checks
 the committed files through the workspace API before and after replacement.
 
-A separate case serves the image at a tailnet-style origin. It creates a Docker
-network in `100.64.0.0/10`, gives the container a fixed address there and maps
+A separate case serves the image at a tailnet-style origin. It joins the suite's
+Docker network in `100.64.0.0/10`, gives the container a fixed address there and maps
 `nexus.example.ts.net` to that address inside the container. `BETTER_AUTH_URL`
 uses that name, and `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH` is unset. After
 first-admin setup, an API key calls the built-in Executor app through `/mcp`. An
@@ -312,7 +312,7 @@ status, invalid-response, forwarded and network failures distinctly.
 The runner reaches the server through a port published on `127.0.0.1` in the
 range 4431-4439. It sends each request with the tailnet `Host` header through
 `node:http`, because Node's `fetch` replaces that header. This works with Docker
-Desktop, OrbStack and Linux Docker. The case removes its container, network and
+Desktop, OrbStack and Linux Docker. The case removes its container and
 anonymous volume:
 
 ```sh
@@ -323,6 +323,20 @@ EXECUTOR_E2E_DOCKER_VERSION=<commit-sha> \
 
 Use `amd64` when checking that image architecture. The scenario creates and
 removes its own container and volume. It does not publish the image.
+
+The suite's global setup, `e2e/docker-release-networks.ts`, creates the Docker
+networks the scenarios use before the first one starts and removes them after
+the last. A change to the host's addresses makes Chromium abort the requests of
+a page that is loading, with `net::ERR_NETWORK_CHANGED`, and creating a network
+is such a change. On Linux, so is each container start and stop, unless IPv6 is
+off for new interfaces. The release workflow turns it off before the suite. On a
+Linux host, do the same if a sign-in or setup step stalls with that error; the
+setting lasts until the next boot:
+
+```sh
+sudo sysctl -w net.ipv6.conf.default.disable_ipv6=1
+```
+
 Build with `--build-arg EXECUTOR_BUILD_VERSION=<commit-sha>`. The image embeds this
 identity in both dashboard assets and the server environment. The release check
 requires the same version in a delivered server trace before and after restart.

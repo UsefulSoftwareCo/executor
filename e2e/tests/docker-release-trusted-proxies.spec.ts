@@ -11,6 +11,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Effect, Schema, Schedule } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomBytes } from "node:crypto";
+import { releaseNetwork } from "../support/release-networks.ts";
 
 const node = "node:24-bookworm-slim";
 const origin = "http://executor.example.test";
@@ -67,7 +68,7 @@ it.live(
         const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
         const image = yield* Config.String("EXECUTOR_E2E_DOCKER_IMAGE");
         const id = `proxy-rate-limit-${randomBytes(6).toString("hex")}`;
-        const network = `${id}-network`;
+        const { name: network } = yield* releaseNetwork("proxies");
         const run = (args: readonly string[], env: Record<string, string> = {}) =>
           processes.string(ChildProcess.make("docker", args, { env, extendEnv: true }));
         const container = (name: string, args: readonly string[], env?: Record<string, string>) =>
@@ -75,9 +76,6 @@ it.live(
             run(["run", "--detach", "--name", name, "--network", network, ...args], env),
             () => run(["rm", "--force", "--volumes", name]).pipe(Effect.orDie),
           );
-        yield* Effect.acquireRelease(run(["network", "create", network]), () =>
-          run(["network", "rm", network]).pipe(Effect.orDie),
-        );
 
         const trusting = `${id}-server`;
         const proxyName = `${id}-proxy`;
