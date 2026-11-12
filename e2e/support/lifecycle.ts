@@ -7,6 +7,7 @@ import { createScenario } from "../sdk/session.ts";
 import { RuntimeLive, Target } from "./platform.ts";
 import { Actors } from "./actors.ts";
 import { prepareManagementApp } from "./management-app.ts";
+import { prepareOrganization } from "./organization-provisioning.ts";
 import { SessionClients } from "./api.ts";
 import { scenarios, type TestPlan } from "../test-plan.ts";
 
@@ -47,6 +48,7 @@ export const installScenarioLifecycle = () =>
     const startedAt = Date.now();
     let readyAt: number | undefined;
     let completedAt: number | undefined;
+    let provisioningMs: number | null = null;
     let save = (_finishedAt: number): Effect.Effect<void> => Effect.void;
     let discard: Effect.Effect<void> = Effect.void;
     // A passing scenario's server data is never read again; failures keep theirs for diagnosis.
@@ -76,6 +78,7 @@ export const installScenarioLifecycle = () =>
                   {
                     title: context.task.name,
                     setupMs: readyAt === undefined ? finishedAt - startedAt : readyAt - startedAt,
+                    provisioningMs,
                     scenarioMs:
                       readyAt === undefined || completedAt === undefined
                         ? null
@@ -107,6 +110,15 @@ export const installScenarioLifecycle = () =>
               scope,
             );
             const actors = yield* Actors.pipe(Effect.provideContext(fixtures));
+            // Background installs would otherwise land mid-scenario; owners and admins get keys.
+            if (plan.provisioning !== "observed") {
+              const settling = yield* Clock.currentTimeMillis;
+              yield* prepareOrganization(actors.organization.id, {
+                owner: actors.owner,
+                admin: actors.admin,
+              }).pipe(Effect.provideContext(fixtures));
+              provisioningMs = (yield* Clock.currentTimeMillis) - settling;
+            }
             if (plan.managementApps !== undefined)
               yield* Effect.forEach(
                 plan.managementApps,

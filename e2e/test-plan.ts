@@ -34,6 +34,12 @@ export const TestPlan = Schema.Struct({
   /** Opt in to writing legacy/upgrade-era rows into the stopped product's own database. */
   legacyStorage: Schema.optional(Schema.Literal(true)),
   managementApps: Schema.optional(Schema.Array(Schema.Literals(["owner", "admin", "member"]))),
+  /**
+   * Setup waits for an actors scenario's organization to finish its own provisioning (its
+   * Executor app, managed keys and their webhook sources). `observed` skips that wait for a
+   * scenario whose subject is the provisioning itself, so it still sees it in progress.
+   */
+  provisioning: Schema.optional(Schema.Literal("observed")),
   /** Labels of extra Testing SDK scenarios created during setup; each has its own closeable scope. */
   sdkScenarios: Schema.optional(Schema.Array(Schema.NonEmptyString)),
   /** Operator settings the scenario's own product process starts with. */
@@ -6574,6 +6580,8 @@ export const scenarios = plan({
   },
   teamInstallationFromRequest: {
     fixtures: "actors",
+    // Its bounded wait proves the write request installs the team, before any cron would.
+    provisioning: "observed",
     file: "team-installation.spec.ts",
     title: "A new Cloud team's Executor app is installed with nothing left pending",
     targets: {
