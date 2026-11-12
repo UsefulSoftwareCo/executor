@@ -36,7 +36,7 @@ export const TestPlan = Schema.Struct({
   managementApps: Schema.optional(Schema.Array(Schema.Literals(["owner", "admin", "member"]))),
   /**
    * Setup waits for an actors scenario's organization to finish its own provisioning (its
-   * Executor app, managed keys and their webhook sources). `observed` skips that wait for a
+   * Executor app and the owner's and admin's managed keys). `observed` skips that wait for a
    * scenario whose subject is the provisioning itself, so it still sees it in progress.
    */
   provisioning: Schema.optional(Schema.Literal("observed")),
