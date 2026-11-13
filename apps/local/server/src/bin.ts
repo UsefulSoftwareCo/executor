@@ -36,6 +36,7 @@ import {
   upgradeCommand,
 } from "./contracts/startup.ts";
 import { LocalConfigurationError } from "./contracts/auth.ts";
+import { exitLine } from "./implementation/exit-line.ts";
 import { processOutput } from "./implementation/process-output.ts";
 import { outdatedCli } from "./implementation/update-notice.ts";
 import { ensure, standalone } from "./implementation/service-client.ts";
@@ -173,6 +174,9 @@ const cli = executorCommand.pipe(
     ),
   ]),
 );
+
+// A server says how long its stop took, as its last line.
+processOutput.last(exitLine);
 
 NodeRuntime.runMain(
   Command.run(cli, { version: process.env.EXECUTOR_BUILD_VERSION ?? "0.0.0-dev" }).pipe(
