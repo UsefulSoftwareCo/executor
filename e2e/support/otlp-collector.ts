@@ -331,7 +331,22 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
       if (Option.isSome(current)) yield* Deferred.succeed(current.value, undefined);
       return HttpServerResponse.empty({ status: 204 });
     });
+    // While a scenario refuses exports, each one is answered 503 with the Retry-After it names, as
+    // a collector shedding load does, and is not stored.
+    const refusing = yield* Ref.make(Option.none<string>());
+    const refuse = Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const after = new URL(request.url, "http://collector").searchParams.get("retryAfter") ?? "1";
+      yield* Ref.set(refusing, Option.some(after));
+      return HttpServerResponse.empty({ status: 204 });
+    });
+    const accept = Ref.set(refusing, Option.none()).pipe(
+      Effect.as(HttpServerResponse.empty({ status: 204 })),
+    );
     const exported = Effect.gen(function* () {
+      const refused = yield* Ref.get(refusing);
+      if (Option.isSome(refused))
+        return HttpServerResponse.empty({ status: 503, headers: { "retry-after": refused.value } });
       const holding = yield* Ref.get(held);
       if (Option.isSome(holding)) {
         yield* Deferred.await(holding.value);
@@ -454,6 +469,8 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
           HttpRouter.add("GET", "/api/ingest", ingestStatus),
           HttpRouter.add("POST", "/api/e2e/exports/hold", hold),
           HttpRouter.add("POST", "/api/e2e/exports/release", release),
+          HttpRouter.add("POST", "/api/e2e/exports/refuse", refuse),
+          HttpRouter.add("POST", "/api/e2e/exports/accept", accept),
           HttpRouter.add("POST", "/api/e2e/exports/watch", watch),
           HttpRouter.add("GET", "/api/e2e/exports/received", received),
         ),
