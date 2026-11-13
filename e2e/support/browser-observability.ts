@@ -1,6 +1,7 @@
 /** Inject response and document failures through Playwright's real network boundary. */
-import { Effect, Schedule, Schema } from "effect";
+import { Clock, Duration, Effect, Schedule, Schema } from "effect";
 import { Browser } from "./browser.ts";
+import { driver } from "./platform.ts";
 import { replaceResponses } from "./browser-responses.ts";
 import { collectorLinesWholeEnvironment, field, parseLeniently } from "./collector-events.ts";
 import { scopeOf, type Scope } from "./scope.ts";
@@ -335,26 +336,131 @@ export const holdReplayChunks = Effect.gen(function* () {
 });
 
 /**
- * Count, until the scope closes, the analytics events the page sends to the PostHog proxy's event
- * path; `count` is how many it has sent so far.
+ * Until the scope closes, hold a keepalive request the page sends to a path nothing serves, as a
+ * sender the page's keepalive budget cannot see holds the quota: PostHog's unload beacons or an
+ * extension. `send` sends one of `bytes` from the open page and waits until it is held.
  */
-export const countAnalyticsPushes = Effect.gen(function* () {
+export const holdUnseenKeepalive = Effect.gen(function* () {
   const browser = yield* Browser;
-  let count = 0;
-  const pushes = (url: URL) => /^\/api\/[a-f0-9]{16}\/push$/.test(url.pathname);
+  const path = "/__unseen-keepalive";
+  const unseen = (url: URL) => url.pathname === path;
+  let release = () => {};
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let arrived = () => {};
+  const arrival = new Promise<void>((resolve) => {
+    arrived = resolve;
+  });
+  const handled = new Set<Promise<void>>();
   yield* Effect.acquireRelease(
-    browser.use("Count the page's analytics events", (page) =>
-      page.route(pushes, (route) => {
-        count++;
+    browser.use("Hold another sender's keepalive request", (page) =>
+      page.route(unseen, (route) => {
+        arrived();
+        const handling = released.then(() => route.fallback());
+        handled.add(handling);
+        return handling;
+      }),
+    ),
+    () =>
+      Effect.sync(release).pipe(
+        // Let the held request go before removing its route, so no handler outlives the scenario.
+        Effect.andThen(driver("Let the other sender's request go", () => Promise.all(handled))),
+        Effect.andThen(
+          browser.use("Stop holding the other sender's requests", (page) => page.unroute(unseen)),
+        ),
+        Effect.orDie,
+      ),
+  );
+  return {
+    send: (bytes: number) =>
+      browser
+        .use("Send another sender's keepalive request", (page) =>
+          page.evaluate(
+            ({ path, bytes }) => {
+              void fetch(path, { method: "POST", body: "x".repeat(bytes), keepalive: true }).catch(
+                () => {},
+              );
+            },
+            { path, bytes },
+          ),
+        )
+        .pipe(
+          Effect.andThen(
+            browser
+              .use("Wait until the other sender's request is held", () => arrival)
+              .pipe(Effect.timeout("15 seconds")),
+          ),
+        ),
+  };
+});
+
+/**
+ * Record, until the scope closes, each trace and log export the page sends: `bodies` is every one
+ * that reached the browser's network boundary, in order. A request the browser refused never does.
+ */
+export const recordTelemetryExports = Effect.gen(function* () {
+  const browser = yield* Browser;
+  const bodies: Array<string> = [];
+  const exports = (url: URL) => /^\/api\/telemetry\/(?:traces|logs)$/.test(url.pathname);
+  yield* Effect.acquireRelease(
+    browser.use("Record the page's telemetry exports", (page) =>
+      page.route(exports, (route) => {
+        bodies.push(route.request().postData() ?? "");
         return route.fallback();
       }),
     ),
     () =>
       browser
-        .use("Stop counting analytics events", (page) => page.unroute(pushes))
+        .use("Stop recording telemetry exports", (page) => page.unroute(exports))
         .pipe(Effect.orDie),
   );
-  return { count: Effect.sync(() => count) };
+  return {
+    bodies: Effect.sync(() => [...bodies]),
+    /** Wait until the page has started no export for `quiet`: nothing of its own is in flight. */
+    idle: (quiet: Duration.Input) =>
+      Effect.gen(function* () {
+        let seen = -1;
+        let since = 0;
+        while (true) {
+          const now = yield* Clock.currentTimeMillis;
+          if (bodies.length !== seen) {
+            seen = bodies.length;
+            since = now;
+          } else if (now - since >= Duration.toMillis(Duration.fromInputUnsafe(quiet))) return;
+          yield* Effect.sleep("100 millis");
+        }
+      }).pipe(Effect.timeout("20 seconds")),
+  };
+});
+
+/**
+ * Record, until the scope closes, the analytics events the page sends to the PostHog proxy's event
+ * path, in the order sent: the page id each names (its `page_id` property), so a scenario can tell
+ * one document's events from another's, such as those a document sends as it unloads.
+ */
+export const countAnalyticsPushes = Effect.gen(function* () {
+  const browser = yield* Browser;
+  const pageIds: Array<string | undefined> = [];
+  const pushes = (url: URL) => /^\/api\/[a-f0-9]{16}\/push$/.test(url.pathname);
+  yield* Effect.acquireRelease(
+    browser.use("Record the page's analytics events", (page) =>
+      page.route(pushes, (route) => {
+        const pageId = field(
+          parseLeniently(route.request().postData() ?? ""),
+          "properties",
+          "page_id",
+        );
+        pageIds.push(typeof pageId === "string" ? pageId : undefined);
+        return route.fallback();
+      }),
+    ),
+    () =>
+      browser
+        .use("Stop recording analytics events", (page) => page.unroute(pushes))
+        .pipe(Effect.orDie),
+  );
+  return { pageIds: Effect.sync(() => [...pageIds]) };
 });
 
 /** The URL path of the dashboard's analytics events, as their breadcrumbs would name it. */

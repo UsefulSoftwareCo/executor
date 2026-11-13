@@ -2247,6 +2247,28 @@ export const scenarios = plan({
       local: na("Cloud Sentry receiver"),
     },
   },
+  browserReportsWhileQuotaFull: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title:
+      "browser error reports reach Sentry while another sender's keepalive request fills the page's quota",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserIdleWhileQuotaHeld: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title:
+      "browser telemetry stays quiet on an idle page while another sender holds its keepalive quota",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
   browserReportsWhileReplaying: {
     fixtures: "actors",
     file: "browser-observability.spec.ts",
