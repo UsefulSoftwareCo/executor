@@ -10,6 +10,7 @@ import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { releaseSuiteConfigs } from "../release-lanes.ts";
+import { closureOf } from "../save-path.ts";
 import { scenarios } from "../test-plan.ts";
 
 const jobs = [
@@ -193,6 +194,9 @@ const fixture = (files: Readonly<Record<string, string>> = {}) =>
     yield* fs.copyFile("package.json", path.join(root, "package.json"));
     yield* fs.copy(path.join(".github", "workflows"), path.join(root, ".github", "workflows"));
     yield* fs.symlink(path.resolve("node_modules"), path.join(root, "node_modules"));
+    // The selection reads the source a save runs (e2e/save-path.ts).
+    for (const tree of ["apps", "packages", "playground"])
+      yield* fs.symlink(path.resolve(tree), path.join(root, tree));
     for (const [file, text] of Object.entries(files))
       yield* fs.writeFileString(path.join(root, file), text);
     return root;
@@ -345,12 +349,7 @@ const gate = (
 const ownConfig = "e2e/ci-selection.config.ts";
 
 /** Files `fileGuards` in e2e/ci-selection.ts watches; main lists each in its directory. */
-const guardedFiles = [
-  "packages/sdk/src/implementation/app-protocols.ts",
-  "packages/sdk/src/implementation/webhook-sources.ts",
-  "apps/hosted/server/src/implementation/app-accounts.ts",
-  "apps/hosted/server/src/implementation/app-account-schema.ts",
-];
+const guardedFiles = ["packages/sdk/src/implementation/app-protocols.ts"];
 /**
  * Main's listings of the guarded files' directories, with each file's blob ID in this checkout
  * unless `changed` gives another.
@@ -868,29 +867,13 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           patches: patches.join("\n"),
           ...guardedListings(guarded, { [protocols]: protocolsBlob }),
         });
-        const [same, changed, saves] = yield* Effect.all(
+        const [same, changed] = yield* Effect.all(
           [
             select({ body: block("none"), main: main(current) }),
             select({ body: block("none"), main: main("0".repeat(40)) }),
-            // A change to how a save links its account plans the save beside 100,000 accounts.
-            select({
-              body: block("none"),
-              main: {
-                "package.json": manifest,
-                patches: patches.join("\n"),
-                ...guardedListings(guarded, {
-                  "apps/hosted/server/src/implementation/app-accounts.ts": "0".repeat(40),
-                }),
-              },
-            }),
           ],
           { concurrency: "unbounded" },
         );
-        expect(saves.exitCode, saves.log).toBe(0);
-        expect(saves.summary).toContain(
-          "A guarded file differs from main, so its guards run: webhook-source-lookup.spec.ts",
-        );
-        expect(saves.outputs["cloud-locks"]).toContain("saving an account beside 100,000");
         expect(same.exitCode, same.log).toBe(0);
         expect(same.summary).toContain("No E2E scenarios");
         expect(same.summary).not.toContain("guards run");
@@ -1004,6 +987,115 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         }).pipe(Effect.scoped),
       { discard: true },
     ),
+  );
+
+  it.effect(
+    "the save path reads imports with a parser: wildcard exports, dynamic imports after a regular expression, no method calls or template text, and it fails closed",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-save-path-" });
+        const write = (file: string, text: string) =>
+          fs
+            .makeDirectory(path.dirname(path.join(root, file)), { recursive: true })
+            .pipe(Effect.andThen(fs.writeFileString(path.join(root, file), text)));
+        yield* write("package.json", JSON.stringify({ workspaces: ["packages/*"] }));
+        yield* write(
+          "packages/lib/package.json",
+          JSON.stringify({ name: "@example/lib", exports: { "./parts/*": "./src/parts/*.ts" } }),
+        );
+        yield* write("packages/lib/src/parts/a.ts", "export const a = 1;\n");
+        yield* write(
+          "entry.ts",
+          [
+            'import { a } from "@example/lib/parts/a";',
+            // An app's source a template writes imports its own files.
+            'const app = `import x from "./generated.ts";\n${a ? `import y from "./other.ts"` : ""}`;',
+            "export { a, app };",
+          ].join("\n"),
+        );
+        // Method calls named `from` are not imports, and a regular expression with a quote and a
+        // backtick does not hide the dynamic import after it.
+        yield* write(
+          "calls.ts",
+          [
+            'const bytes = Buffer.from("./missing");',
+            'const letters = Array.from(".");',
+            'const quoted = /["`]/;',
+            'const later = await import("./later.ts");',
+            "export { bytes, letters, quoted, later };",
+          ].join("\n"),
+        );
+        yield* write("later.ts", "export const later = 1;\n");
+        yield* write("broken.ts", 'import { gone } from "./gone.ts";\nexport { gone };\n');
+        yield* write("unparsable.ts", "export const = ;\n");
+        expect([...(yield* closureOf(root, ["entry.ts"]))].sort()).toEqual([
+          "entry.ts",
+          "packages/lib/src/parts/a.ts",
+        ]);
+        expect([...(yield* closureOf(root, ["calls.ts"]))].sort()).toEqual([
+          "calls.ts",
+          "later.ts",
+        ]);
+        // A file the parser cannot read fails the computation, naming it.
+        const unparsed = yield* closureOf(root, ["entry.ts", "unparsable.ts"]).pipe(Effect.flip);
+        expect(unparsed.message).toContain("unparsable.ts");
+        const failed = yield* closureOf(root, ["entry.ts", "broken.ts"]).pipe(Effect.flip);
+        expect(failed.message).toContain("cannot follow these imports");
+        expect(failed.message).toContain("broken.ts: ./gone.ts");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "the webhook source lookup runs when a file a save runs or reads changed, or when nothing says it did not",
+    () =>
+      Effect.gen(function* () {
+        const lookup = scenarios.webhookSourceLookup.title;
+        const runs = yield* Effect.all(
+          {
+            route: select({
+              body: block("none"),
+              compared: ["apps/hosted/server/src/implementation/accounts.ts"],
+            }),
+            // Reached only through the SDK's exports, not named anywhere by hand.
+            storage: select({
+              body: block("none"),
+              compared: ["packages/fumadb-effect/src/implementation/sql/query.ts"],
+            }),
+            schema: select({
+              body: block("none"),
+              compared: ["apps/hosted/server/src/implementation/resource-schema.ts"],
+            }),
+            elsewhere: select({ body: block("none"), compared: ["apps/marketing/src/pages.ts"] }),
+            manual: select({ body: block("none"), compared: "unknown" }),
+            // GitHub lists at most 300 files of a comparison; a longer one may hide a save's file.
+            tooLongToList: select({
+              body: block("none"),
+              compared: Array.from({ length: 300 }, (_, index) => `apps/file-${index}.ts`),
+            }),
+          },
+          { concurrency: 4 },
+        );
+        const ran = Object.fromEntries(
+          Object.entries(runs).map(([name, run]) => {
+            expect(run.exitCode, `${name}: ${run.log}`).toBe(0);
+            const selected = run.outputs["cloud-locks"] ?? "";
+            return [name, selected !== "" && new RegExp(selected).test(lookup)];
+          }),
+        );
+        expect(ran).toEqual({
+          route: true,
+          storage: true,
+          schema: true,
+          elsewhere: false,
+          manual: true,
+          tooLongToList: true,
+        });
+        expect(runs.storage.summary).toContain(
+          "A file a save runs or reads differs from main (e2e/save-path.ts), so these run in cloud-locks: webhook-source-lookup.spec.ts",
+        );
+      }),
   );
 
   it.effect(
@@ -1424,11 +1516,6 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           'import { defineConfig } from "vitest/config";\nexport default defineConfig({ test: { include: ["e2e/tests/docker-release.spec.ts"] } });\n',
         "e2e/tests/docker-release.spec.ts": 'import { it } from "vitest";\nit("runs", () => {});\n',
       });
-      // The artifacts' workspace packages, which the lanes read and the case never writes.
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      for (const directory of ["apps", "packages", "playground"])
-        yield* fs.symlink(path.resolve(directory), path.join(root, directory));
       const run = yield* select({ body: block("none"), root });
       expect(run.exitCode, run.log).toBe(1);
       expect(run.log).toContain(
@@ -1820,8 +1907,7 @@ layer(NodeServices.layer)("Release check after a push to main", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const root = yield* fixture({ "e2e/release-new-helper.ts": "export const helper = 1;\n" });
-      for (const directory of ["apps", "packages", "playground", "scripts"])
-        yield* fs.symlink(path.resolve(directory), path.join(root, directory));
+      yield* fs.symlink(path.resolve("scripts"), path.join(root, "scripts"));
       for (const directory of ["support", "sdk"])
         yield* fs.symlink(path.resolve("e2e", directory), path.join(root, "e2e", directory));
       for (const name of yield* fs.readDirectory("e2e/tests"))

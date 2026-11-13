@@ -56,6 +56,7 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createHash } from "node:crypto";
 import { lanesFor, releaseSources } from "./release-lanes.ts";
+import { savePathFiles } from "./save-path.ts";
 import { Target } from "./report-model.ts";
 import { deployedSuitePattern, scenarios, scenariosForSuite, type CloudMode } from "./test-plan.ts";
 
@@ -105,6 +106,16 @@ const harnessScenarios = {
 } as const;
 const harnessTitles = scenariosForSuite("all")
   .filter((scenario) => (harnessScenarios.files as ReadonlyArray<string>).includes(scenario.file))
+  .map((scenario) => scenario.title);
+/**
+ * Scenarios that check what saving an account executes. They run in `cloud-locks` when a pull
+ * request changes a file a save can run or read (`e2e/save-path.ts`), since main, so the top of a
+ * stack counts every layer; a manual run, or a comparison GitHub cannot list in full, runs them.
+ * Main's full runs run them always.
+ */
+const saveScenarios = { job: "cloud-locks", files: ["webhook-source-lookup.spec.ts"] } as const;
+const saveTitles = scenariosForSuite("all")
+  .filter((scenario) => (saveScenarios.files as ReadonlyArray<string>).includes(scenario.file))
   .map((scenario) => scenario.title);
 const harnessPattern = harnessTitles
   .map((title) => title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
@@ -630,11 +641,6 @@ const fileGuards: Readonly<Record<string, ReadonlyArray<string>>> = {
     "app-package.spec.ts",
     "app-older-protocols.spec.ts",
   ],
-  // A save's statements on the tables that grow with an app's accounts. The scenario plans them
-  // beside 100,000 accounts on managed local Cloud, which only runs it when it is selected.
-  "apps/hosted/server/src/implementation/app-accounts.ts": ["webhook-source-lookup.spec.ts"],
-  "apps/hosted/server/src/implementation/app-account-schema.ts": ["webhook-source-lookup.spec.ts"],
-  "packages/sdk/src/implementation/webhook-sources.ts": ["webhook-source-lookup.spec.ts"],
 };
 
 /**
@@ -1146,6 +1152,17 @@ NodeRuntime.runMain(
           prefix.endsWith("/") ? file.startsWith(prefix) : file === prefix,
         ),
       );
+    // The save scenarios, from the same comparison: a change to any file a save runs or reads.
+    // How many files the save path has, when it was read; the summary reports it.
+    let savePathSize: number | undefined;
+    const saveChanged =
+      compared === undefined ||
+      compared.length >= compareFileLimit ||
+      (yield* savePathFiles.pipe(
+        Effect.tap((files) => Effect.sync(() => (savePathSize = files.size))),
+        Effect.map((files) => compared.some((file) => files.has(file))),
+        Effect.mapError((error) => new SelectionFailed({ message: error.message })),
+      ));
     // The release lanes, from the same comparison: a pull request's changes since main, so the
     // top of a stack runs them for every layer. A comparison GitHub cannot list in full runs both.
     const lanes =
@@ -1175,6 +1192,7 @@ NodeRuntime.runMain(
               (title) => harnessChanged || files?.has(fileOf.get(title)!) === true,
             )
           : []),
+        ...(job === saveScenarios.job && saveChanged && files !== undefined ? saveTitles : []),
       ]);
       const titles = planFor(definition)
         .filter(
@@ -1311,6 +1329,15 @@ NodeRuntime.runMain(
       ...(guardedByFile.length === 0
         ? []
         : ["", `A guarded file differs from main, so its guards run: ${guardedByFile.join(", ")}`]),
+      ...(saveChanged && files !== undefined
+        ? [
+            "",
+            `A file a save runs or reads differs from main (e2e/save-path.ts), so these run in ${saveScenarios.job}: ${saveScenarios.files.join(", ")}`,
+          ]
+        : []),
+      ...(savePathSize === undefined
+        ? []
+        : ["", `The save path (e2e/save-path.ts) has ${savePathSize} files.`]),
       "",
       ...(lanes === undefined
         ? ["Release lanes: none on main, where Executor releases runs the full matrix after merge."]
