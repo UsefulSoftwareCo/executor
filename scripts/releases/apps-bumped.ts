@@ -5,9 +5,17 @@
  * greater, not only different: a lower number can be one a deploy never published (Deploy runs
  * only the newest pending commit), and taking it would move the `beta` tag backwards.
  *
- * Usage: `node scripts/releases/apps-bumped.ts <base staged directory>` after `bun run apps:build`
- * in both this checkout and the base checkout. Both are packed without scripts and compared file
- * by file; npm packs the same tree identically in any checkout.
+ * Usage: `node scripts/releases/apps-bumped.ts <main staged directory> [<merge base staged
+ * directory>]` after `bun run apps:build` in this checkout and in main's. Packages are packed
+ * without scripts and compared file by file; npm packs the same tree identically in any checkout.
+ *
+ * The base is main's tip, so a branch that claims a version main has since taken fails before it
+ * is brought up to date. An upper stack layer is built from the stack's branch, which can be behind
+ * main: its build then differs from main's and carries main's older version even when the stack
+ * never touched `apps`. So when the build differs from main's and its version is not above main's,
+ * the check needs the build where the pull request meets main. Without that directory it exits 3
+ * (the job then builds it and asks again); with it, a pull request whose build equals its merge
+ * base's passes, and one that changed `apps` must take a version above main's tip.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -59,6 +67,7 @@ NodeRuntime.runMain(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const base = process.argv[2];
+    const mergeBase = process.argv[3];
     if (base === undefined)
       return yield* new AppsReleaseMismatch({ message: "Supply the base checkout's staged apps." });
     const [ours, theirs] = yield* Effect.all([stagedVersion(staged), stagedVersion(base)]);
@@ -73,14 +82,33 @@ NodeRuntime.runMain(
     );
     if (differing.length === 0)
       return yield* Effect.log(`The apps package is unchanged from the base (${theirs}).`);
+    if (compareVersions(ours, theirs) > 0)
+      return yield* Effect.log(
+        `The apps package changed and its version moves from ${theirs} to ${ours}.`,
+      );
+    if (mergeBase === undefined) {
+      yield* Effect.log(
+        `The apps package differs from main's (${theirs}) and keeps ${ours}; whether this pull request changed it needs the build where it meets main.`,
+      );
+      process.exitCode = 3;
+      return;
+    }
+    const meeting = yield* pack(mergeBase, path.join(directory, "merge-base"));
+    const changed = yield* differingFiles(
+      path.join(directory, "head-files"),
+      yield* unpack(meeting.archive, path.join(directory, "merge-base-files")),
+    );
+    if (changed.length === 0)
+      return yield* Effect.log(
+        `This pull request does not change the apps package; it is behind main's ${theirs}, which bringing it up to date picks up.`,
+      );
     if (ours === theirs)
       return yield* new AppsReleaseMismatch({
-        message: `packages/apps changed from the base but keeps apps@${ours}; bump the version in packages/apps/package.json to ${next(theirs)} or later and run \`bun install\` to record it in bun.lock. See notes/apps-publishing.md. ${listFiles(differing)}`,
+        message: `packages/apps changed from the base but keeps apps@${ours}; bump the version in packages/apps/package.json to ${next(theirs)} or later and run \`bun install\` to record it in bun.lock. See notes/apps-publishing.md. ${listFiles(changed)}`,
       });
     if (compareVersions(ours, theirs) < 0)
       return yield* new AppsReleaseMismatch({
-        message: `packages/apps changed and its version moves back from ${theirs} on the base to ${ours}; take ${next(theirs)} or later in packages/apps/package.json and run \`bun install\`. A lower version may be one no deploy published, and publishing it would move the beta tag backwards. See notes/apps-publishing.md. ${listFiles(differing)}`,
+        message: `packages/apps changed and its version moves back from ${theirs} on the base to ${ours}; take ${next(theirs)} or later in packages/apps/package.json and run \`bun install\`. A lower version may be one no deploy published, and publishing it would move the beta tag backwards. See notes/apps-publishing.md. ${listFiles(changed)}`,
       });
-    yield* Effect.log(`The apps package changed and its version moves from ${theirs} to ${ours}.`);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
