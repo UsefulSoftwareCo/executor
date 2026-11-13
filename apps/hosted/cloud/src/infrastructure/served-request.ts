@@ -20,10 +20,15 @@
  * event pool. The event's own export runs later still, when Alchemy closes the event's scope.
  *
  * A close that waited a second or more in all, or reached a bound, reports in one log line how long
- * it waited for each kind of work and which waits reached their bound. It carries durations and
- * counts only.
+ * it waited for each kind of work and which waits reached their bound; for a telemetry wait, also
+ * which one (the forwarder's drain or the analytics flush). It carries durations and fixed labels
+ * only.
  */
-import { TelemetryDrainScope } from "@executor-js/telemetry";
+import {
+  TelemetryDrainScope,
+  type TelemetryWait,
+  TelemetryWaitReport,
+} from "@executor-js/telemetry";
 import { isScopeEjected } from "alchemy/Http";
 import { Clock, Context, Duration, Effect, Exit, Scope } from "effect";
 
@@ -58,6 +63,8 @@ export class ServedRequest {
   readonly #waits = new Set<Effect.Effect<void>>();
   readonly #waited: Record<Wait, number> = { background: 0, nested: 0, telemetry: 0 };
   readonly #bounded = new Set<Wait>();
+  /** Which of the request's telemetry waits reached their bound. */
+  readonly #telemetryBounded = new Set<TelemetryWait>();
 
   constructor(
     readonly scope: Scope.Scope,
@@ -151,6 +158,14 @@ export class ServedRequest {
     );
   }
 
+  /** Record that one of the request's telemetry waits reached its bound. */
+  telemetryBound(wait: TelemetryWait): Effect.Effect<void> {
+    return Effect.sync(() => {
+      this.#bounded.add("telemetry");
+      this.#telemetryBounded.add(wait);
+    });
+  }
+
   /** One log line for a close that waited. */
   readonly report: Effect.Effect<void> = Effect.suspend(() => {
     const waited = this.#waited;
@@ -165,6 +180,7 @@ export class ServedRequest {
         "executor.close.nested_ms": waited.nested,
         "executor.close.telemetry_ms": waited.telemetry,
         "executor.close.bounded": [...this.#bounded].sort().join(","),
+        "executor.close.telemetry_bounded": [...this.#telemetryBounded].sort().join(","),
         "executor.close.streamed": isScopeEjected(this.scope),
       }),
     );
@@ -239,6 +255,7 @@ const serving =
       handler.pipe(
         Effect.provideService(CurrentRequest, request),
         Effect.provideService(TelemetryDrainScope, telemetry),
+        Effect.provideService(TelemetryWaitReport, (wait) => request.telemetryBound(wait)),
       ),
     );
 

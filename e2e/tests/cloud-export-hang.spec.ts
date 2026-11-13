@@ -5,7 +5,9 @@
  * connections are open: they carry its reads, and the scenario sees them. Each call answers as
  * before, and its connections close once its own work is done, long before the app telemetry it
  * forwards gives up on the endpoint (three seconds). A request that waited on that telemetry
- * before releasing its pool kept its connections open the whole three seconds.
+ * before releasing its pool kept its connections open the whole three seconds. Each held call's
+ * close report says that its telemetry wait reached its bound, and that it was the forwarder's
+ * drain.
  *
  * Holding exports affects every scenario of the Cloud, so this one runs on a local Cloud of its
  * own (`cloud-export-hang` in e2e/ci-selection.ts).
@@ -19,7 +21,7 @@ import { Api, body } from "../support/api.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { cloudLocks } from "../support/cloud-locks.ts";
-import { Evidence } from "../support/evidence.ts";
+import { Evidence, Telemetry } from "../support/evidence.ts";
 import { holdExports } from "../support/held-exports.ts";
 import { Target } from "../support/platform.ts";
 import { targetHosts } from "../support/role-hosts.ts";
@@ -44,6 +46,16 @@ const toolMs = 800;
 const App = Schema.Struct({ id: Schema.String, activeVersion: Schema.String });
 const Location = Schema.Struct({ status: Schema.Literal("ready"), url: Schema.String });
 const Count = Schema.Array(Schema.Struct({ n: Schema.Number }));
+const LogRecords = Schema.fromJsonString(
+  Schema.Struct({
+    data: Schema.Array(
+      Schema.Struct({
+        body: Schema.String,
+        attributes: Schema.Record(Schema.String, Schema.Unknown),
+      }),
+    ),
+  }),
+);
 
 layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
   it.effect(
@@ -55,6 +67,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
           const api = yield* Api,
             actors = yield* Actors,
             evidence = yield* Evidence,
+            telemetry = yield* Telemetry,
             client = yield* HttpClient.HttpClient,
             locks = yield* cloudLocks;
           const session = yield* freshOwnerSession;
@@ -217,10 +230,42 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
                   )),
                 });
               }
+              // The endpoint stays hung past the forwarder's bound, so every held call's drain
+              // reaches it before the endpoint answers again.
+              yield* Effect.sleep(drainMs);
               return calls;
             }),
           );
           yield* evidence.json("cloud-export-hang.json", { warm, held });
+          // Each held call waited out its forwarder's bound, and its close report, exported once the
+          // endpoint answers again, says so. A close runs after its request's span has ended, so
+          // its report carries no trace; this Cloud serves only this scenario, so every report on
+          // its collector is one of these calls'.
+          const reports = yield* telemetry.logsWholeEnvironment("executor.request.close").pipe(
+            Effect.map((logs) =>
+              Schema.decodeUnknownSync(LogRecords)(logs).data.filter(
+                (record) => record.body === "executor.request.close",
+              ),
+            ),
+            Effect.filterOrFail(
+              (records) => records.length >= held.length,
+              () => new Error("The held calls' close reports have not reached Motel"),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
+          );
+          yield* evidence.json(
+            "close-reports.json",
+            reports.map((record) => record.attributes),
+          );
+          const forwarderBounded = reports.filter(
+            (record) =>
+              String(record.attributes["executor.close.bounded"]).includes("telemetry") &&
+              String(record.attributes["executor.close.telemetry_bounded"]).includes("forwarder"),
+          );
+          expect(
+            forwarderBounded.length,
+            "Each held call's report says its forwarder's drain reached its bound",
+          ).toBeGreaterThanOrEqual(held.length);
           for (const timing of [...warm, ...held])
             expect(
               timing.openWhileRunning,

@@ -34,12 +34,19 @@ const forwarder = Effect.gen(function* () {
     queued -= size;
     return pending.splice(0, count);
   };
+  /** Whether the scope is closing, and whether an export reached its deadline meanwhile. */
+  let closing = false;
+  let deadlineWhileClosing = false;
   const sendAll: Effect.Effect<void> = Effect.suspend(() => {
     const forwards = take();
     return forwards.length === 0
       ? Effect.void
       : exportForwards(forwards, "executor-app").pipe(
-          Effect.catchTag("TimeoutError", () => failed("timeout")),
+          Effect.catchTag("TimeoutError", () =>
+            Effect.sync(() => {
+              if (closing) deadlineWhileClosing = true;
+            }).pipe(Effect.andThen(failed("timeout"))),
+          ),
           Effect.catch(() => failed("relay")),
           Effect.andThen(sendAll),
         );
@@ -52,9 +59,18 @@ const forwarder = Effect.gen(function* () {
         Effect.flatMap((sent) => (Option.isSome(sent) && pending.length > 0 ? drain : Effect.void)),
       ),
   );
+  const reportWait = yield* TelemetryWaitReport;
+  // The close's wait reached a bound when the drain ran out its time or an export it waited for
+  // reached its own deadline.
   yield* Effect.addFinalizer(() =>
-    FiberSet.awaitEmpty(fibers).pipe(
+    Effect.sync(() => {
+      closing = true;
+    }).pipe(
+      Effect.andThen(FiberSet.awaitEmpty(fibers)),
       Effect.timeoutOption("3 seconds"),
+      Effect.tap((drained) =>
+        Option.isNone(drained) || deadlineWhileClosing ? reportWait("forwarder") : Effect.void,
+      ),
       Effect.flatMap((drained) =>
         Option.isNone(drained) || pending.length > 0 ? failed("shutdown") : Effect.void,
       ),
@@ -69,6 +85,17 @@ const forwarder = Effect.gen(function* () {
       return FiberSet.run(fibers, drain).pipe(Effect.asVoid);
     });
 });
+
+/**
+ * A telemetry wait a request's close makes that reached its bound: the forwarder's drain, or the
+ * product analytics flush. A host that reports how its requests closed records it; the default
+ * records nothing.
+ */
+export type TelemetryWait = "forwarder" | "analytics";
+export const TelemetryWaitReport = Context.Reference<(wait: TelemetryWait) => Effect.Effect<void>>(
+  "@executor-js/telemetry/TelemetryWaitReport",
+  { defaultValue: () => () => Effect.void },
+);
 
 /**
  * The scope a host gives telemetry it waits for when a request ends: the forwarder's queue and

@@ -1,6 +1,6 @@
 /** Request-owned analytics and explicitly submitted feedback sent to PostHog. */
 import { readSiteVisitor, siteVisitorCookie } from "@executor-js/marketing/site-visitor";
-import { recordRoute, TelemetryDrainScope } from "@executor-js/telemetry";
+import { recordRoute, TelemetryDrainScope, TelemetryWaitReport } from "@executor-js/telemetry";
 import { FeedbackUnavailable } from "@executor-js/telemetry/product-analytics";
 import {
   ProductAnalytics,
@@ -8,7 +8,7 @@ import {
   type UsageProperties,
 } from "@executor-js/hosted-server";
 import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
-import { Context, Effect, Option, Redacted, Schema, Scope } from "effect";
+import { Context, Effect, Option, Predicate, Redacted, Schema, Scope } from "effect";
 import {
   Cookies,
   FetchHttpClient,
@@ -197,6 +197,7 @@ export const withProductAnalytics = <A, E, R>(
     // The batch is sent after the request has released its database connections when the host
     // gives it a telemetry scope (`served-request.ts`), and as the handler's scope closes otherwise.
     const flushScope = (yield* TelemetryDrainScope) ?? (yield* Effect.scope);
+    const reportWait = yield* TelemetryWaitReport;
     yield* Scope.addFinalizer(
       flushScope,
       Effect.suspend(() =>
@@ -214,7 +215,14 @@ export const withProductAnalytics = <A, E, R>(
                       properties: { dropped_events: dropped },
                     },
                   ],
-            ).pipe(Effect.catch(() => Effect.logWarning("PostHog batch export failed"))),
+            ).pipe(
+              // A flush that ran out its time is a telemetry wait of the request that reached its
+              // bound.
+              Effect.tapError((error) =>
+                Predicate.isTagged(error, "TimeoutError") ? reportWait("analytics") : Effect.void,
+              ),
+              Effect.catch(() => Effect.logWarning("PostHog batch export failed")),
+            ),
       ),
     );
     return yield* handler.pipe(

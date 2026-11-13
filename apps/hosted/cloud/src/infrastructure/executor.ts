@@ -35,7 +35,7 @@ import { cloudRuntime } from "./runtime.ts";
 import { durableDeclarations } from "./durable-declarations.ts";
 import { InvocationDatabase } from "./invocation-database.ts";
 import { backgroundWait, CurrentRequest, ownTelemetryScope } from "./served-request.ts";
-import { TelemetryDrainScope } from "@executor-js/telemetry";
+import { TelemetryDrainScope, TelemetryWaitReport } from "@executor-js/telemetry";
 import { cloudSecrets } from "./secrets.ts";
 import { cloudOrigin, cloudResourceOrigins, productionStage, stageName } from "./stage.ts";
 import { cloudEmulators } from "./emulators.ts";
@@ -178,9 +178,15 @@ export const cloudExecutor = Effect.fn(function* (
         markdown,
         blobs: yield* cachedVersionSources(origin, blobs),
         // The runtime's telemetry forwarder joins the request's telemetry scope only when this
-        // executor is the request's own (`ownTelemetryScope`).
-        runtime: yield* makeRuntime.pipe(
-          Effect.provideService(TelemetryDrainScope, yield* ownTelemetryScope),
+        // executor is the request's own (`ownTelemetryScope`). A nested executor's drain is not a
+        // wait of the request's close, so it does not report to the request.
+        runtime: yield* Effect.flatMap(ownTelemetryScope, (own) =>
+          makeRuntime.pipe(
+            Effect.provideService(TelemetryDrainScope, own),
+            own === undefined
+              ? Effect.provideService(TelemetryWaitReport, () => Effect.void)
+              : (runtime) => runtime,
+          ),
         ),
         workflows,
         registry: {

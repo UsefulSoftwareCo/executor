@@ -597,7 +597,10 @@ try {
            * Wait for the app's own spans, which the app runtime forwards from the app's isolate
            * once its call ends, to reach Motel in `traces`; return their operations.
            */
-          const appSpans = (traces: ReadonlyArray<string>) =>
+          const appSpans = (
+            traces: ReadonlyArray<string>,
+            needed: ReadonlyArray<string> = ["app.call"],
+          ) =>
             Effect.forEach(traces, (trace) => telemetry.query(trace)).pipe(
               Effect.map((found) =>
                 found
@@ -606,7 +609,7 @@ try {
                   .map(({ span }) => span.operationName),
               ),
               Effect.filterOrFail(
-                (names) => names.includes("app.call"),
+                (names) => needed.every((name) => names.includes(name)),
                 () => new Error("The app's forwarded spans have not reached Motel"),
               ),
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
@@ -681,7 +684,7 @@ try {
           );
 
           yield* evidence.step(
-            "A call paused for approval and approved by a second request forwards the app's own spans",
+            "A call paused for approval and approved by a second request forwards the approved call's own spans",
             Effect.gen(function* () {
               const paused = yield* client
                 .use("Call a tool that needs approval", (client, signal) =>
@@ -710,7 +713,15 @@ try {
                 status: "completed",
                 execution: { ok: true },
               });
-              expect(yield* appSpans(yield* mcpTraces(2))).toContain("app.call");
+              // The pause's request already ran the app once, to ask whether the call needs
+              // approval (`app.tool.approval`), and exported that `app.call`. The approved call
+              // runs the tool under the approving request: its own spans, with the tool's execution,
+              // are in that request's trace.
+              const [pausedTrace, approvedTrace] = yield* mcpTraces(2);
+              expect(
+                yield* appSpans([approvedTrace ?? ""], ["app.call", "app.operation.execute"]),
+              ).toContain("app.operation.execute");
+              expect(yield* appSpans([pausedTrace ?? ""])).not.toContain("app.operation.execute");
             }),
           );
 
