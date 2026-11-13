@@ -430,19 +430,31 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
         "a package manifest under a listed path": {
           "e2e/tools/package.json": JSON.stringify({ name: "tools" }),
         },
-        "a deleted file of a deploy root": { "apps/hosted/cloud/src/main.ts": null },
       };
-      for (const [name, change] of Object.entries(inputs)) {
-        const run = yield* decide({
-          history: [],
-          change: { ...change, "notes/ci.md": "Changed note.\n" },
-        });
-        expect(run.deploy, name).toBe("true");
-        expect(run.summary, name).toContain(
+      // The decision classifies each changed file on its own, so one push with every input, and
+      // a note beside them, names each input among the matched files and only those. A deleted
+      // file changes the same path as the first input, so it is a push of its own.
+      const pushes = [
+        Object.assign({}, ...Object.values(inputs)) as Record<string, string | null>,
+        { "apps/hosted/cloud/src/main.ts": null },
+      ];
+      const runs = yield* Effect.forEach(
+        pushes,
+        (change) =>
+          decide({ history: [], change: { ...change, "notes/ci.md": "Changed note.\n" } }),
+        { concurrency: "unbounded" },
+      );
+      for (const [index, run] of runs.entries()) {
+        const files = Object.keys(pushes[index]!);
+        expect(run.deploy).toBe("true");
+        expect(run.summary).toContain(
           "**Deploying:** files a deploy may depend on changed since the last deploy",
         );
-        for (const file of Object.keys(change)) expect(run.summary, name).toContain(`\`${file}\``);
-        expect(run.summary, name).not.toContain("`notes/ci.md`");
+        expect(run.summary).toContain(
+          `${files.length} of the ${files.length + 1} changed files may be deploy inputs:`,
+        );
+        for (const file of files) expect(run.summary, file).toContain(`- \`${file}\``);
+        expect(run.summary).not.toContain("`notes/ci.md`");
       }
     }),
   );

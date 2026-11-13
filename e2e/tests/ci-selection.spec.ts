@@ -9,7 +9,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { releaseSuiteConfigs } from "../release-lanes.ts";
+import { lanesFor, releaseSources, releaseSuiteConfigs } from "../release-lanes.ts";
 import { closureOf } from "../save-path.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -1530,14 +1530,16 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
 
   it.effect("a pull request runs each release lane for the files it reads, since main", () =>
     Effect.gen(function* () {
-      const lanes = (compared: ReadonlyArray<string> | "unknown") =>
-        select({ body: block("none"), compared }).pipe(
-          Effect.tap((run) => Effect.sync(() => expect(run.exitCode, run.log).toBe(0))),
-          Effect.map((run) => [run.outputs["release-docker"], run.outputs["release-local"]]),
+      // The lanes for a comparison, as the select job writes them from `lanesFor`: the job reads
+      // the release sources once and decides each lane from the changed files. Deciding the
+      // comparisons here, in one process, keeps this case to the few select runs below; each
+      // run starts the selection program and reads the save path again (about 2 s in CI).
+      const sources = yield* releaseSources;
+      const lanes = (compared: ReadonlyArray<string>) =>
+        Object.values(lanesFor(sources, compared)).map((matched) =>
+          matched.length > 0 ? "true" : "",
         );
-      const cases: ReadonlyArray<
-        readonly [ReadonlyArray<string> | "unknown", readonly [string, string]]
-      > = [
+      const cases: ReadonlyArray<readonly [ReadonlyArray<string>, readonly [string, string]]> = [
         // A file the released-image suite imports, and the image's own inputs.
         [["e2e/support/docker-release-server.ts"], ["true", ""]],
         // A support file both a local suite and the released-image suite import.
@@ -1587,22 +1589,33 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           ["apps/hosted/cloud/src/worker.ts", "apps/marketing/src/index.ts"],
           ["", ""],
         ],
-        // Without a comparison, or with one GitHub cut short, both run.
-        ["unknown", ["true", "true"]],
-        [Array.from({ length: 300 }, (_, index) => `notes/file-${index}.md`), ["true", "true"]],
       ];
-      const results = yield* Effect.forEach(cases, ([compared]) => lanes(compared), {
-        concurrency: 4,
-      });
-      for (const [index, [compared, expected]] of cases.entries())
-        expect(results[index], JSON.stringify(compared).slice(0, 120)).toEqual(expected);
+      for (const [compared, expected] of cases)
+        expect(lanes(compared), JSON.stringify(compared).slice(0, 120)).toEqual(expected);
 
-      const summary = (yield* select({
-        body: block("none"),
-        compared: ["e2e/support/docker-release-server.ts"],
-      })).summary;
-      expect(summary).toContain("release-docker: runs, for e2e/support/docker-release-server.ts.");
-      expect(summary).toContain("release-local: skipped, no file it reads changed.");
+      // The select job itself: it writes the lanes `lanesFor` gives, and runs both without a
+      // comparison or with one GitHub cut short.
+      const runs = yield* Effect.forEach(
+        [
+          ["e2e/support/docker-release-server.ts"],
+          "unknown",
+          Array.from({ length: 300 }, (_, index) => `notes/file-${index}.md`),
+        ] as const,
+        (compared) => select({ body: block("none"), compared }),
+        { concurrency: "unbounded" },
+      );
+      for (const run of runs) expect(run.exitCode, run.log).toBe(0);
+      expect(
+        runs.map((run) => [run.outputs["release-docker"], run.outputs["release-local"]]),
+      ).toEqual([
+        ["true", ""],
+        ["true", "true"],
+        ["true", "true"],
+      ]);
+      expect(runs[0]!.summary).toContain(
+        "release-docker: runs, for e2e/support/docker-release-server.ts.",
+      );
+      expect(runs[0]!.summary).toContain("release-local: skipped, no file it reads changed.");
     }),
   );
 
