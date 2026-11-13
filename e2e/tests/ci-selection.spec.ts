@@ -1530,7 +1530,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       const path = yield* Path.Path;
       const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-release-matrix-" });
-      const targets = (channel: string) =>
+      const targets = (channel: string, notarize = false, ref = "refs/heads/main") =>
         Effect.gen(function* () {
           const output = path.join(directory, channel);
           yield* fs.writeFileString(output, "");
@@ -1539,8 +1539,9 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               env: {
                 GITHUB_OUTPUT: output,
                 GITHUB_EVENT_NAME: "workflow_dispatch",
-                GITHUB_REF: "refs/heads/main",
+                GITHUB_REF: ref,
                 RELEASE_CHANNEL: channel,
+                RELEASE_NOTARIZE: String(notarize),
               },
               extendEnv: true,
             }),
@@ -1563,21 +1564,82 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               )
               .sort();
           return {
+            publish: values.publish,
             local: names("matrix"),
+            checks: names("checks_matrix"),
+            recovery: names("recovery_matrix"),
+            notarized: names("notarized_recovery_matrix"),
             cli: names("cli_matrix"),
             docker: names("docker_matrix"),
           };
         }).pipe(Effect.scoped);
+      // The CLI suite runs in two parts and desktop crash recovery in three, each on its own runner.
+      const parts = (names: ReadonlyArray<string>, count: number) =>
+        names.flatMap((name) => Array.from({ length: count }, () => name));
       expect(yield* targets("check")).toEqual({
+        publish: "false",
         local: ["linux-x64"],
-        cli: ["linux-x64"],
+        checks: ["linux-x64"],
+        recovery: parts(["linux-x64"], 3),
+        notarized: [],
+        cli: parts(["linux-x64"], 2),
         docker: ["amd64", "arm64"],
       });
       expect(yield* targets("build")).toEqual({
+        publish: "false",
         local: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
-        cli: ["linux-x64", "win32-x64"],
+        checks: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        recovery: parts(["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"], 3),
+        notarized: [],
+        cli: parts(["linux-x64", "win32-x64"], 2),
         docker: ["amd64", "arm64"],
       });
+      // A publishing run, in the channel the CLI's version names, tests the macOS app it
+      // notarizes, after local has built it.
+      const { version } = JSON.parse(yield* fs.readFileString("apps/cli/package.json")) as {
+        readonly version: string;
+      };
+      const notarized = {
+        local: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        checks: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        recovery: parts(["linux-arm64", "linux-x64", "win32-x64"], 3),
+        notarized: parts(["darwin-arm64"], 3),
+        cli: parts(["linux-x64", "win32-x64"], 2),
+        docker: ["amd64", "arm64"],
+      };
+      expect(yield* targets(version.includes("-beta.") ? "beta" : "latest")).toEqual({
+        publish: "true",
+        ...notarized,
+      });
+      // A build asked to notarize tests the notarized macOS app the same way, and publishes nothing.
+      expect(yield* targets("build", true)).toEqual({ publish: "false", ...notarized });
+      // Notarizing signs and notarizes the desktop app with the company's Developer ID, so only main may ask.
+      const refused = yield* Effect.gen(function* () {
+        const output = path.join(directory, "branch-notarize");
+        yield* fs.writeFileString(output, "");
+        const child = yield* processes.spawn(
+          ChildProcess.make("node", ["scripts/releases/workflow.ts"], {
+            env: {
+              GITHUB_OUTPUT: output,
+              GITHUB_EVENT_NAME: "workflow_dispatch",
+              GITHUB_REF: "refs/heads/some-branch",
+              RELEASE_CHANNEL: "build",
+              RELEASE_NOTARIZE: "true",
+            },
+            extendEnv: true,
+          }),
+        );
+        const [log, exitCode] = yield* Effect.all(
+          [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+          { concurrency: "unbounded" },
+        );
+        return { log, exitCode, written: yield* fs.readFileString(output) };
+      }).pipe(Effect.scoped);
+      expect(refused.exitCode, refused.log).not.toBe(0);
+      expect(refused.log).toContain("Notarize from main: it signs and notarizes the desktop app.");
+      expect(refused.written, "a refused run decides no matrix").toBe("");
+      // A build from a branch without notarize still runs.
+      expect((yield* targets("build", false, "refs/heads/some-branch")).publish).toBe("false");
     }),
   );
 
@@ -1598,6 +1660,17 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               .flatMap((line) => /^ {6}- name: (.+)$/.exec(line)?.[1] ?? []);
           });
         const own = "Read the release identity";
+        /**
+         * The local release job's steps with the checks job's tests where local ran them, after
+         * staging the apps package: release-local runs both jobs' steps for Linux x64, in one job.
+         */
+        const localAndChecks = Effect.gen(function* () {
+          const local = yield* steps(".github/workflows/release-artifacts.yml", "local");
+          const checks = yield* steps(".github/workflows/release-artifacts.yml", "checks");
+          const staged = local.indexOf("Stage the apps package") + 1;
+          const tests = checks.slice(checks.indexOf("Stage the apps package") + 1);
+          return [...local.slice(0, staged), ...tests, ...local.slice(staged)];
+        });
         const lanes = [
           ["release-docker", "docker", ["Push the tested architecture without moving a channel"]],
           [
@@ -1613,17 +1686,21 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               "Verify the macOS update archive keeps a valid signature",
               "Verify Windows long-path support survives both packages",
               "Verify Apple signing and notarization",
-              // After merge only.
-              "Verify packaged desktop crash recovery and reset",
-              // For publication: the archives job compares it with the cli job's.
+              "Wait for Apple to accept the CLI's notarization",
+              // For publication: the archives job compares it with the cli and checks jobs'.
               "Record the published archive's digest",
+              // The archives job compares it with the recovery parts' apps, which this lane lacks.
+              "Record the packaged desktop app's digest",
             ],
           ],
         ] as const;
         for (const [lane, job, omitted] of lanes) {
           const ran = yield* steps(".github/workflows/checks.yml", lane);
           expect(ran, lane).toContain(own);
-          const released = yield* steps(".github/workflows/release-artifacts.yml", job);
+          const released =
+            job === "local"
+              ? yield* localAndChecks
+              : yield* steps(".github/workflows/release-artifacts.yml", job);
           for (const name of omitted) expect(released, `${job} still has ${name}`).toContain(name);
           expect(
             ran.filter((name) => name !== own),

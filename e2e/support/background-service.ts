@@ -17,6 +17,7 @@ import {
   Layer,
   Option,
   Path,
+  Queue,
   Ref,
   Schedule,
   Schema,
@@ -170,17 +171,100 @@ export class ServiceCliFailed extends Schema.TaggedError<ServiceCliFailed>()("Se
 
 const otherUser = Schema.is(Schema.Struct({ code: Schema.Literal("EPERM") }));
 /** Signal 0 checks that a process exists; EPERM means it exists under another user. */
-const alive = (pid: number) =>
+export const alive = (pid: number) =>
   Effect.try({ try: () => process.kill(pid, 0), catch: otherUser }).pipe(
     Effect.match({ onSuccess: () => true, onFailure: (exists) => exists }),
   );
 
+/** A Windows start time could not be read: no answer is a guess, so the scenario fails. */
+class StartTimeUnreadable extends Schema.TaggedError<StartTimeUnreadable>()("StartTimeUnreadable", {
+  message: Schema.String,
+}) {}
+
 /**
- * Windows: when the process a process ID names now started, in 100-nanosecond ticks. Windows soon
- * gives a freed process ID to another process, often another `executor.exe`: the next server, or a
- * command another scenario runs at the same time. An image name cannot tell those apart; a start
- * time can. Windows keeps no start time a Node program reads without starting one, so PowerShell
- * reads it.
+ * Prints the start time of each process ID read from stdin, in 100-nanosecond ticks, or `none`
+ * when no process has the ID.
+ */
+const startTimeScript = [
+  "$ErrorActionPreference = 'Stop'",
+  "while ($null -ne ($line = [Console]::In.ReadLine())) {",
+  "  try { $ticks = (Get-Process -Id ([int]$line)).StartTime.ToUniversalTime().Ticks } catch { $ticks = 'none' }",
+  "  [Console]::Out.WriteLine($ticks); [Console]::Out.Flush()",
+  "}",
+].join("\n");
+
+/**
+ * Windows: a reader of process start times for the current scope, from one PowerShell. Windows
+ * keeps no start time a Node program reads without starting a process, and starting PowerShell
+ * took over ten seconds on a busy release runner: a liveness poll that started one each time got
+ * a single answer in a ten-second window. This one starts once, when the harness that polls is
+ * created, and then answers each question in milliseconds.
+ */
+export const windowsStartTimes = Effect.gen(function* () {
+  const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const questions = yield* Queue.unbounded<Uint8Array>();
+  /** Callers waiting for an answer, in the order their questions were written. */
+  const waiting: Array<Deferred.Deferred<Option.Option<string>, StartTimeUnreadable>> = [];
+  const child = yield* processes.spawn(
+    ChildProcess.make(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", startTimeScript],
+      { stdin: Stream.fromQueue(questions), stderr: "ignore" },
+    ),
+  );
+  const unanswered = (message: string) =>
+    Effect.sync(() => {
+      for (const deferred of waiting.splice(0))
+        Deferred.doneUnsafe(deferred, Effect.fail(new StartTimeUnreadable({ message })));
+    });
+  yield* child.stdout.pipe(
+    Stream.decodeText(),
+    Stream.splitLines,
+    Stream.runForEach((line) =>
+      Effect.sync(() => {
+        const answer = line.trim();
+        const deferred = waiting.shift();
+        if (deferred !== undefined)
+          Deferred.doneUnsafe(
+            deferred,
+            Effect.succeed(/^\d+$/u.test(answer) ? Option.some(answer) : Option.none()),
+          );
+      }),
+    ),
+    Effect.ignore,
+    Effect.andThen(unanswered("PowerShell stopped answering start time questions")),
+    Effect.forkScoped,
+  );
+  const encoder = new TextEncoder();
+  return (pid: number) =>
+    Effect.gen(function* () {
+      const deferred = Deferred.makeUnsafe<Option.Option<string>, StartTimeUnreadable>();
+      // Queue the caller and its question together, so answers keep the questions' order.
+      yield* Effect.sync(() => {
+        waiting.push(deferred);
+        Queue.offerUnsafe(questions, encoder.encode(`${pid}\n`));
+      });
+      return yield* Deferred.await(deferred);
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: "60 seconds",
+        orElse: () =>
+          Effect.fail(
+            new StartTimeUnreadable({
+              message: `PowerShell gave no start time for ${pid} in 60 s`,
+            }),
+          ),
+      }),
+      Effect.orDie,
+    );
+});
+
+/**
+ * Windows: when the process a process ID names now started, in 100-nanosecond ticks, from a
+ * PowerShell started for this one question. Windows soon gives a freed process ID to another
+ * process, often another `executor.exe`: the next server, or a command another scenario runs at the
+ * same time. An image name cannot tell those apart; a start time can. Polls use
+ * `windowsStartTimes`, which starts PowerShell once.
  */
 export const windowsStartTime = (pid: number) =>
   Effect.gen(function* () {
@@ -206,6 +290,25 @@ export const windowsStartTime = (pid: number) =>
         ),
         Effect.orElseSucceed(() => Option.none<string>()),
       );
+  });
+
+/**
+ * Whether `pid` still names the process that started at `recorded`. A process ID that names no
+ * process answers at once, without reading a start time; one that names a process started at
+ * another time is a reused ID. Without a recorded start time, the ID alone decides.
+ */
+export const sameProcess = <R>(
+  pid: number,
+  recorded: string | undefined,
+  probe: {
+    readonly alive: (pid: number) => Effect.Effect<boolean, never, R>;
+    readonly startTime: (pid: number) => Effect.Effect<Option.Option<string>, never, R>;
+  },
+) =>
+  Effect.gen(function* () {
+    if (!(yield* probe.alive(pid))) return false;
+    if (recorded === undefined) return true;
+    return Option.contains(yield* probe.startTime(pid), recorded);
   });
 
 /**
@@ -482,10 +585,12 @@ export const backgroundServiceCli = (options: { readonly port?: number } = {}) =
         }),
       );
 
-    const startOf = (pid: number) =>
-      windowsStartTime(pid).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, processes),
-      );
+    // One PowerShell answers every start time question this harness asks; it starts here, before
+    // any poll's window opens.
+    const startOf =
+      process.platform === "win32"
+        ? yield* windowsStartTimes
+        : () => Effect.succeed(Option.none<string>());
     /** On Windows, when each server this scenario saw started. */
     const starts = new Map<number, string>();
     /**
@@ -493,12 +598,7 @@ export const backgroundServiceCli = (options: { readonly port?: number } = {}) =
      * process that started when that server did, since the ID may already name another process.
      */
     const running = (pid: number) =>
-      Effect.gen(function* () {
-        if (!(yield* alive(pid))) return false;
-        const start = starts.get(pid);
-        if (start === undefined) return true;
-        return Option.contains(yield* startOf(pid), start);
-      });
+      sameProcess(pid, starts.get(pid), { alive, startTime: startOf });
     /** Every server this scenario saw registered, by id, for cleanup. */
     const seen = new Map<string, ServiceRegistration>();
     /** The registered server, if `server.json` exists. */

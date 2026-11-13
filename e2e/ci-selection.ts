@@ -58,6 +58,7 @@ import { createHash } from "node:crypto";
 import { lanesFor, releaseSources } from "./release-lanes.ts";
 import { savePathFiles } from "./save-path.ts";
 import { Target } from "./report-model.ts";
+import { exactly, split } from "./scenario-parts.ts";
 import { deployedSuitePattern, scenarios, scenariosForSuite, type CloudMode } from "./test-plan.ts";
 
 class SelectionFailed extends Schema.TaggedError<SelectionFailed>()("SelectionFailed", {
@@ -291,8 +292,6 @@ const specFiles: ReadonlySet<string> = new Set(
   scenariosForSuite("all").map((scenario) => scenario.file),
 );
 const escape = (title: string) => title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-/** A pattern that matches exactly these titles. */
-const exactly = (titles: ReadonlyArray<string>) => `^(?:${titles.map(escape).join("|")})$`;
 /** The titles of the scenarios a plan schedules on a target whose title a pattern matches. */
 const runs = (
   plan: ReturnType<typeof scenariosForSuite>,
@@ -319,34 +318,6 @@ const deployedRuns = runs(scenariosForSuite("all", "attached"), "cloud", deploye
 const fileOf: ReadonlyMap<string, string> = new Map(
   Object.values(scenarios).map((scenario) => [scenario.title, scenario.file]),
 );
-/**
- * Scenarios split into at most `count` parts, by spec file: a file's scenarios share its setup, so
- * they stay in one part. Each file goes, most scenarios first, to the part with the least weight
- * so far, weighing a file as its scenarios plus one for its setup. Over four full self-host runs,
- * the slowest of three parts took 2-9% longer than an even split of the measured time; Vitest's
- * --shard, which splits by a hash of the path, left one part up to 33% over. With five parts the
- * suite has fewer files per part, so a few slow files decide more: in two full runs the slowest
- * part ran 22% more test time than the next slowest, and 49% more than one with as many scenarios.
- */
-const split = (titles: ReadonlyArray<string>, count: number) => {
-  const byFile = new Map<string, Array<string>>();
-  for (const title of titles) {
-    const file = fileOf.get(title)!;
-    byFile.set(file, [...(byFile.get(file) ?? []), title]);
-  }
-  const parts = Array.from({ length: Math.min(count, byFile.size) }, () => ({
-    weight: 0,
-    titles: new Array<string>(),
-  }));
-  for (const [, scenarios] of [...byFile].sort(
-    ([a, x], [b, y]) => y.length - x.length || a.localeCompare(b),
-  )) {
-    const lightest = parts.reduce((least, part) => (part.weight < least.weight ? part : least));
-    lightest.weight += scenarios.length + 1;
-    lightest.titles.push(...scenarios);
-  }
-  return parts.map((part) => part.titles);
-};
 /** Spec files with a scenario that one of these jobs runs on a full run. */
 const jobFiles: ReadonlySet<string> = new Set([
   ...jobRuns.flatMap(({ titles }) => [...titles].map((title) => fileOf.get(title)!)),
@@ -710,6 +681,8 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "posthog-experiment-lifecycle.config.ts": () =>
     import("./posthog-experiment-lifecycle.config.ts"),
   "prepare-cache.config.ts": () => import("./prepare-cache.config.ts"),
+  "part-results.config.ts": () => import("./part-results.config.ts"),
+  "process-identity.config.ts": () => import("./process-identity.config.ts"),
   "release-archives.config.ts": () => import("./release-archives.config.ts"),
   "removal-evidence.config.ts": () => import("./removal-evidence.config.ts"),
   "request-failures.config.ts": () => import("./request-failures.config.ts"),

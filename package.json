@@ -107,6 +107,8 @@
     "e2e:ci-selection": "vitest run --config e2e/ci-selection.config.ts",
     "e2e:ci-supersede": "vitest run --config e2e/ci-supersede.config.ts",
     "e2e:telemetry-event-lifetime": "vitest run --config e2e/telemetry-event-lifetime.config.ts",
+    "e2e:process-identity": "vitest run --config e2e/process-identity.config.ts",
+    "e2e:part-results": "vitest run --config e2e/part-results.config.ts",
     "e2e:desktop-next-server": "vitest run --config e2e/desktop-next-server.config.ts",
     "e2e:pr-preview-selection": "vitest run --config e2e/pr-preview-selection.config.ts",
     "e2e:test-stage-unreadable": "vitest run --config e2e/test-stage-unreadable.config.ts",

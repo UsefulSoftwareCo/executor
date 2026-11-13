@@ -415,7 +415,15 @@ export const standaloneIdentifier = "com.usefulsoftware.executor.v2.cli";
 export const signStandaloneMac = (
   install: string,
   executable: string,
-  options: { readonly entitlements: string; readonly notarize: boolean },
+  options: {
+    readonly entitlements: string;
+    readonly notarize: boolean;
+    /**
+     * Submit for notarization without waiting, and write the submission id to this file:
+     * `waitForNotarization` waits for it later, so the build goes on while Apple checks it.
+     */
+    readonly submission?: string;
+  },
 ) =>
   Effect.scoped(
     Effect.gen(function* () {
@@ -497,14 +505,57 @@ export const signStandaloneMac = (
           notaryProfile,
           "--keychain",
           keychain.file,
-          "--wait",
+          ...(options.submission === undefined ? ["--wait"] : []),
           "--output-format",
           "json",
         ]),
       );
-      const status = /"status"\s*:\s*"([^"]+)"/u.exec(report)?.[1];
       // The submission id identifies the job to Apple and is not a credential.
       yield* Console.log(`Notarization: ${report.trim()}`);
+      if (options.submission !== undefined) {
+        const id = /"id"\s*:\s*"([0-9a-f-]+)"/u.exec(report)?.[1];
+        if (id === undefined)
+          return yield* Effect.die(new Error("Apple returned no notarization submission id"));
+        yield* fs.writeFileString(options.submission, id);
+        return;
+      }
+      const status = /"status"\s*:\s*"([^"]+)"/u.exec(report)?.[1];
+      if (status !== "Accepted")
+        return yield* Effect.die(new Error(`Apple did not accept the install: ${status}`));
+    }),
+  ).pipe(Effect.orDie);
+
+/**
+ * Wait for the notarization submission `signStandaloneMac` wrote to `file`, and fail unless Apple
+ * accepted it. Needs the notary credentials of the build that submitted it.
+ */
+export const waitForNotarization = (file: string) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      if (process.platform !== "darwin")
+        return yield* Effect.die(new Error("Notarization runs on macOS"));
+      const id = (yield* fs.readFileString(file)).trim();
+      if (!/^[0-9a-f-]+$/u.test(id))
+        return yield* Effect.die(new Error(`${file} holds no notarization submission id`));
+      const keychain = yield* temporaryKeychain;
+      yield* storeNotaryCredentials(keychain);
+      const report = yield* processes.string(
+        ChildProcess.make("/usr/bin/xcrun", [
+          "notarytool",
+          "wait",
+          id,
+          "--keychain-profile",
+          notaryProfile,
+          "--keychain",
+          keychain.file,
+          "--output-format",
+          "json",
+        ]),
+      );
+      yield* Console.log(`Notarization: ${report.trim()}`);
+      const status = /"status"\s*:\s*"([^"]+)"/u.exec(report)?.[1];
       if (status !== "Accepted")
         return yield* Effect.die(new Error(`Apple did not accept the install: ${status}`));
     }),
