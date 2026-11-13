@@ -320,9 +320,10 @@ const refusalOutcome = (error: unknown): Pick<Outcome, "status" | "reason" | "st
 /**
  * A connection's result for a refusal. One that v2 cannot take as v1 kept it moves without its
  * account, for its owner to connect again in v2 (`reconnect`), and does not block the
- * organization. An outage, a Vault that did not answer, an integration that did not move and a
- * first-party client this deployment does not hold as v1's (`firstParty`) are failures, which
- * block it: trying again, or configuring the client, can move the connection with its account.
+ * organization. An outage of a service v1 last saw working (decision 36), a Vault that did not
+ * answer, an integration that did not move and a first-party client this deployment does not hold
+ * as v1's (`firstParty`) are failures, which block it: trying again, or configuring the client,
+ * can move the connection with its account.
  */
 const connectionRefusal = (
   error: unknown,

@@ -308,7 +308,7 @@ export const createV1Database = (input: {
         name varchar(255) not null default 'main', template text not null default 'none',
         provider text not null default 'workos-vault', item_ids json not null default '{}',
         oauth_client text, oauth_client_owner text, refresh_item_id text, expires_at bigint,
-        oauth_scope text, oauth_token_url text, tools_synced_at bigint, ${times}`,
+        oauth_scope text, oauth_token_url text, tools_synced_at bigint, last_health json, ${times}`,
       oauth_client: `${owned}, slug varchar(255) not null default gen_random_uuid()::text,
         authorization_url text not null default '', token_url text not null default '',
         "grant" text not null default 'authorization_code', client_id text not null default '',

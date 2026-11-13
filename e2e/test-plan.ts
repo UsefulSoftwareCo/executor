@@ -9646,6 +9646,12 @@ export const scenarios = plan({
       "Cloud v1 import dry runs skip and report what v1 cannot run either, without blocking the organization: a local MCP server, an API with no absolute base URL or a server variable no server declares, an unreadable specification, a GraphQL endpoint that is not http(s), their connections and rules, an operation on a WebSocket server, a tool the organization's revised specification dropped, connections whose OAuth client, credential or Vault secret is gone, and rules that match no tool; move an API on two services' hosts, an org connection whose secret a member saved, flagging members who saved different values, a token saved on an OAuth method without a client, and OAuth MCP servers with fixed headers, reporting those that repeat the server's own OAuth client",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportFailingInV1: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import moves an organization whose OAuth MCP server does not respond while its sign-in is set up, for its owner to reconnect, when v1's last verdict on that connection was a failure, and still refuses one whose connection v1 last saw healthy or never checked",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   // The bound counts every run's organizations on a Cloud, so this runs on its own local Cloud.
   v1ImportBounded: {
     file: "cloud-v1-import-run.spec.ts",

@@ -61,9 +61,63 @@ export const ConnectionRow = Schema.Struct({
   expires_at: Schema.NullOr(Millis),
   oauth_scope: Schema.NullOr(Schema.String),
   oauth_token_url: Schema.NullOr(Schema.String),
+  /** v1's last health verdict on the connection (`HealthCheckResult`); see {@link failingInV1}. */
+  last_health: JsonColumn,
   created_ms: Millis,
 });
 export type ConnectionRow = typeof ConnectionRow.Type;
+
+/**
+ * v1's `HealthCheckResult`, as v1 decodes `connection.last_health`: a value that does not decode
+ * in full, such as one with a `reason` v1 does not know, is a connection v1 never checked.
+ */
+const HealthCheckResult = Schema.Struct({
+  status: Schema.Literals(["healthy", "expired", "misconfigured", "degraded", "unknown"]),
+  httpStatus: Schema.optional(Schema.Number),
+  identity: Schema.optional(Schema.String),
+  checkedAt: Millis,
+  detail: Schema.optional(Schema.String),
+  reason: Schema.optional(
+    Schema.Literals([
+      "credential_missing",
+      "credential_refresh_rejected",
+      "blocked_by_admin",
+      "probe_timeout",
+      "probe_failed",
+      "upstream_status",
+      "tool_sync_failed",
+    ]),
+  ),
+  responseSample: Schema.optional(
+    Schema.Array(Schema.Struct({ path: Schema.String, value: Schema.String })),
+  ),
+});
+
+/**
+ * Which of v1's verdicts say the connection is failing. `unknown` is v1's "no check configured",
+ * not a failure.
+ */
+const failingStatus: Record<typeof HealthCheckResult.Type.status, boolean> = {
+  healthy: false,
+  unknown: false,
+  expired: true,
+  misconfigured: true,
+  degraded: true,
+};
+
+/**
+ * Whether v1's last verdict on the connection is a failure: `expired` (the service refused the
+ * credential, or v1 recorded its grant dead), `misconfigured`, or `degraded` (any other non-2xx
+ * answer, no answer, a probe timeout, or a failed tool listing). v1 writes it when it checks the
+ * connection or fails to list its tools; a later listing that succeeds clears a listing's
+ * verdict, and a call that succeeds turns a check's back to `healthy`. A connection with no
+ * verdict, or one that does not decode, is not failing.
+ */
+export const failingInV1 = (row: Pick<ConnectionRow, "last_health">) =>
+  Option.exists(
+    Schema.decodeUnknownOption(HealthCheckResult)(jsonValue(row.last_health)),
+    (verdict) => failingStatus[verdict.status],
+  );
 
 export const OAuthClientRow = Schema.Struct({
   row_id: Schema.String,
