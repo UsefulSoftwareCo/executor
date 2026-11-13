@@ -18,6 +18,7 @@ import {
 import { ReleaseRefusal, releaseRefusalReport } from "../contracts/release-guard.ts";
 import { withStageAdmin } from "./test-stage-inventory.ts";
 import { discoverTestStages } from "./test-stage-discovery.ts";
+import { findOrphanBranches } from "./test-stage-orphans.ts";
 import { awaitStageRollout } from "./test-stage-rollout.ts";
 import {
   destroyUnreadableStage,
@@ -416,11 +417,21 @@ const cleanup = Command.make("cleanup", {}, () =>
       { concurrency: 4 },
     );
     const failures = results.filter((success) => !success).length;
+    // Leases as read before this pass destroyed anything: a stage removed just now may still be
+    // deleting its branch, and is looked at again next pass, when its lease is gone.
+    const orphans = yield* findOrphanBranches(new Set(stages.map((stage) => stage.slug)), now).pipe(
+      Effect.result,
+    );
     if (failures > 0)
       return yield* failure(
         `Could not remove ${failures} preview(s). Other due previews were still processed.`,
       );
     if (Result.isFailure(discovery)) return yield* discovery.failure;
+    if (Result.isFailure(orphans)) return yield* failure(orphans.failure.message);
+    if (Option.isSome(orphans.success) && orphans.success.value.length > 0)
+      return yield* failure(
+        `PlanetScale branches of deployed E2E runs with no stage lease, older than the 3-hour lease: ${orphans.success.value.join(", ")}. Nothing was deleted. Their stages are gone from the registry and \`destroy --by-name\` refuses PlanetScale stages; check that nothing uses them, then delete them in PlanetScale.`,
+      );
     yield* Console.log("Preview cleanup complete.");
   }),
 );

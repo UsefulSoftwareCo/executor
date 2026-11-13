@@ -703,6 +703,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "run-retention.config.ts": () => import("./run-retention.config.ts"),
   "standalone-lockdown.config.ts": () => import("./standalone-lockdown.config.ts"),
   "subrequest-depth.config.ts": () => import("./subrequest-depth.config.ts"),
+  "test-stage-orphans.config.ts": () => import("./test-stage-orphans.config.ts"),
   "test-stage-unreadable.config.ts": () => import("./test-stage-unreadable.config.ts"),
   "typecheck-runner.config.ts": () => import("./typecheck-runner.config.ts"),
   "welcome-email.config.ts": () => import("./welcome-email.config.ts"),
