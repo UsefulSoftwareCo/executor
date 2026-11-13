@@ -977,6 +977,95 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       }),
   );
 
+  it.effect(
+    "a stack's top layer answers for the deployed scenarios its lower layers add, whatever it changes itself",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const names = yield* fs.readDirectory("patches");
+        const hashed = (yield* processes.string(
+          ChildProcess.make("git", [
+            "hash-object",
+            ...guardedFiles,
+            ...names.map((name) => `patches/${name}`),
+          ]),
+        ))
+          .trim()
+          .split("\n");
+        const plan = yield* fs.readFileString("e2e/test-plan.ts");
+        const manifest = yield* fs.readFileString("package.json");
+        const title = "Cloud product links follow the deployment origin";
+        const main = (mainPlan: string) => ({
+          "package.json": manifest,
+          patches: names
+            .map((name, index) => `${hashed[guardedFiles.length + index]} ${name}`)
+            .join("\n"),
+          ...guardedListings(hashed.slice(0, guardedFiles.length)),
+          "e2e/test-plan.ts": mainPlan,
+        });
+        const without = plan.replace(
+          JSON.stringify(title),
+          JSON.stringify("Cloud product links followed an earlier origin"),
+        );
+        // The top layer changes only groups.spec.ts; a lower layer, which skipped, added the
+        // deployed scenario in deployment-links.spec.ts. The comparison since main holds both.
+        const changed = ["e2e/tests/groups.spec.ts"];
+        const compared = ["e2e/tests/groups.spec.ts", "e2e/tests/deployment-links.spec.ts"];
+        const verified =
+          "Verified on a deployed stage: bun run e2e:deployed --database planetscale --test-name 'Cloud product links' passed on a synthetic stage";
+        const [refused, stated, known, uncompared, cutShort] = yield* Effect.all(
+          [
+            select({ body: block("none"), changed, compared, main: main(without) }),
+            select({
+              body: `${block("none")}\n${verified}\n`,
+              changed,
+              compared,
+              main: main(without),
+            }),
+            select({ body: block("none"), changed, compared, main: main(plan) }),
+            // Without a full comparison the check reads every spec file: it may ask for a line a
+            // stack did not need, but never lets a new deployed scenario through unseen.
+            select({ body: block("none"), changed, compared: "unknown", main: main(without) }),
+            select({
+              body: block("none"),
+              changed,
+              compared: Array.from({ length: 300 }, (_, index) => `notes/file-${index}.md`),
+              main: main(without),
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(refused.exitCode).toBe(1);
+        expect(refused.log).toContain("These scenarios are new to the deployed suite.");
+        expect(refused.log).toContain(`- deployment-links.spec.ts: ${title}`);
+        expect(stated.exitCode, stated.log).toBe(0);
+        // A title main already has is not new, wherever the stack changed it.
+        expect(known.exitCode, known.log).toBe(0);
+        expect(known.log).not.toContain("new to the deployed suite");
+        for (const run of [uncompared, cutShort]) {
+          expect(run.exitCode).toBe(1);
+          expect(run.log).toContain(`- deployment-links.spec.ts: ${title}`);
+        }
+      }),
+  );
+
+  it.effect("a stack's top layer refuses a spec file a lower layer added that no job runs", () =>
+    Effect.gen(function* () {
+      const root = yield* fixture({ "e2e/tests/orphan.spec.ts": "export {};\n" });
+      const run = yield* select({
+        root,
+        body: block("none"),
+        changed: ["e2e/tests/groups.spec.ts"],
+        compared: ["e2e/tests/groups.spec.ts", "e2e/tests/orphan.spec.ts"],
+      });
+      expect(run.exitCode).toBe(1);
+      expect(run.log).toContain(
+        "No CI job runs these spec files, because neither e2e/test-plan.ts nor an e2e/*.config.ts includes them: orphan.spec.ts.",
+      );
+    }),
+  );
+
   it.effect("a changed spec file that no plan or config includes fails", () =>
     Effect.gen(function* () {
       const name = "ci-selection-unregistered.spec.ts";

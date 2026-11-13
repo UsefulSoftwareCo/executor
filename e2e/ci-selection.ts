@@ -1061,6 +1061,22 @@ NodeRuntime.runMain(
           'Add a scenario to a job pattern in e2e/ci-selection.ts; a Cloud scenario without runtime "managed", "rate-limited" or "rolled-back" runs in Cloud tests on main. Otherwise mark the target not-run with its reason in e2e/test-plan.ts, or add it to notRunInCi in e2e/ci-selection.ts with why no CI job runs it.',
         ].join("\n"),
       });
+    // What changed since main for a pull request, so a stack's top layer covers every layer below
+    // it, or since the previous main commit on a push. A manual run has no comparison.
+    const compareBase = yield* Config.String("E2E_COMPARE_BASE").pipe(Config.withDefault(""));
+    const compareHead = yield* Config.String("E2E_COMPARE_HEAD").pipe(Config.withDefault(""));
+    const compared =
+      compareBase === "" || compareHead === "" || repository === ""
+        ? undefined
+        : (yield* gh([
+            "api",
+            `repos/${repository}/compare/${compareBase}...${compareHead}`,
+            "--jq",
+            // A renamed file counts by its old name too: moving it out of a path changes that path.
+            ".files[] | .filename, (.previous_filename // empty)",
+          ]))
+            .split("\n")
+            .filter((file) => file !== "");
     const changed =
       read === undefined
         ? ""
@@ -1078,9 +1094,26 @@ NodeRuntime.runMain(
       .split("\n")
       .map((file) => /^e2e\/tests\/([\w.-]+\.spec\.ts)$/.exec(file.trim())?.[1])
       .filter((file) => file !== undefined);
+    // The spec files a stack's top layer answers for: everything changed since main, which holds
+    // its lower layers' changes, as well as its own. A lower layer that skips leaves these checks
+    // to the layer above. Without a full comparison, every spec file counts. Only a pull request
+    // has these checks.
     const tests = yield* path.fromFileUrl(new URL("tests/", import.meta.url));
+    const stackSpecs =
+      read === undefined
+        ? []
+        : compared === undefined || compared.length >= compareFileLimit
+          ? (yield* fs.readDirectory(tests)).filter((file) => file.endsWith(".spec.ts"))
+          : [
+              ...new Set([
+                ...changedSpecs,
+                ...compared
+                  .map((file) => /^e2e\/tests\/([\w.-]+\.spec\.ts)$/.exec(file)?.[1])
+                  .filter((file) => file !== undefined),
+              ]),
+            ];
     const unregistered = yield* Effect.filter(
-      changedSpecs.filter((file) => !specFiles.has(file) && !suites.has(file)),
+      stackSpecs.filter((file) => !specFiles.has(file) && !suites.has(file)),
       (file) => fs.exists(path.join(tests, file)),
     );
     if (unregistered.length > 0)
@@ -1099,7 +1132,7 @@ NodeRuntime.runMain(
     // that needed files only managed local Cloud has reddened Cloud tests on main on three runs.
     // It merges once the description says how it was verified on a deployed stage.
     const changedDeployed = [...deployedRuns].filter((title) =>
-      changedSpecs.includes(fileOf.get(title)!),
+      stackSpecs.includes(fileOf.get(title)!),
     );
     if (read !== undefined && defaultBranch !== "" && changedDeployed.length > 0) {
       const mainPlan = yield* gh([
@@ -1171,20 +1204,6 @@ NodeRuntime.runMain(
           );
     // The harness scenarios run when a harness path changed since main, or since the previous
     // main commit on a push. Without both ends of a comparison, as on a manual run, they run.
-    const compareBase = yield* Config.String("E2E_COMPARE_BASE").pipe(Config.withDefault(""));
-    const compareHead = yield* Config.String("E2E_COMPARE_HEAD").pipe(Config.withDefault(""));
-    const compared =
-      compareBase === "" || compareHead === "" || repository === ""
-        ? undefined
-        : (yield* gh([
-            "api",
-            `repos/${repository}/compare/${compareBase}...${compareHead}`,
-            "--jq",
-            // A renamed file counts by its old name too: moving it out of a path changes that path.
-            ".files[] | .filename, (.previous_filename // empty)",
-          ]))
-            .split("\n")
-            .filter((file) => file !== "");
     const harnessChanged =
       compared === undefined ||
       compared.length >= compareFileLimit ||
