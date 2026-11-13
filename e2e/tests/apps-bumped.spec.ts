@@ -1,0 +1,107 @@
+/**
+ * The `apps-version` job runs `scripts/releases/apps-bumped.ts` to require a new `apps` version
+ * whenever a pull request changes what the package publishes. These cases run it as a process on
+ * two staged packages written beforehand, the base's and the pull request's, the way the job runs
+ * it after `bun run apps:build` in both checkouts, and read its exit code and output.
+ */
+import { expect, layer } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { Effect, FileSystem, Path, Stream } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+
+/** One staged package: its version and the content of its one module. */
+interface Staged {
+  readonly version: string;
+  readonly code: string;
+}
+
+const check = (input: { readonly base: Staged; readonly head: Staged }) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-apps-bumped-" });
+    const stage = (target: string, staged: Staged) =>
+      Effect.gen(function* () {
+        yield* fs.makeDirectory(target, { recursive: true });
+        yield* fs.writeFileString(
+          path.join(target, "package.json"),
+          JSON.stringify({ name: "apps", version: staged.version, main: "index.js" }),
+        );
+        yield* fs.writeFileString(path.join(target, "index.js"), staged.code);
+      });
+    // The script reads the pull request's package from packages/apps/dist under its directory.
+    yield* stage(path.join(directory, "packages/apps/dist"), input.head);
+    yield* stage(path.join(directory, "base"), input.base);
+    const child = yield* processes.spawn(
+      ChildProcess.make(
+        "node",
+        [path.resolve("scripts/releases/apps-bumped.ts"), path.join(directory, "base")],
+        { cwd: directory },
+      ),
+    );
+    const [log, exitCode] = yield* Effect.all(
+      [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+      { concurrency: "unbounded" },
+    );
+    return { exitCode, log };
+  }).pipe(Effect.scoped);
+
+const base = { version: "0.0.1-beta.136", code: "export const answer = 1;\n" };
+const changed = "export const answer = 2;\n";
+
+layer(NodeServices.layer, { excludeTestServices: true })("Apps version bump", (it) => {
+  it.effect("an unchanged package keeps its version", () =>
+    Effect.gen(function* () {
+      const result = yield* check({ base, head: base });
+      expect(result.exitCode, result.log).toBe(0);
+      expect(result.log).toContain("unchanged from the base (0.0.1-beta.136)");
+    }),
+  );
+
+  it.effect("a changed package that keeps its version fails and names the next one", () =>
+    Effect.gen(function* () {
+      const result = yield* check({ base, head: { ...base, code: changed } });
+      expect(result.exitCode, result.log).toBe(1);
+      expect(result.log).toContain(
+        "packages/apps changed from the base but keeps apps@0.0.1-beta.136; bump the version in packages/apps/package.json to 0.0.1-beta.137 or later",
+      );
+    }),
+  );
+
+  it.effect("a changed package with a greater version passes", () =>
+    Effect.gen(function* () {
+      const result = yield* check({
+        base,
+        head: { version: "0.0.1-beta.137", code: changed },
+      });
+      expect(result.exitCode, result.log).toBe(0);
+      expect(result.log).toContain("moves from 0.0.1-beta.136 to 0.0.1-beta.137");
+    }),
+  );
+
+  it.effect("a changed package whose version moves back fails, even to an unused number", () =>
+    Effect.gen(function* () {
+      // beta.131 differs from main's beta.136 but is lower, like a number a skipped deploy never
+      // published.
+      const result = yield* check({
+        base,
+        head: { version: "0.0.1-beta.131", code: changed },
+      });
+      expect(result.exitCode, result.log).toBe(1);
+      expect(result.log).toContain(
+        "its version moves back from 0.0.1-beta.136 on the base to 0.0.1-beta.131; take 0.0.1-beta.137 or later",
+      );
+    }),
+  );
+
+  it.effect("numbers compare as numbers, not as text", () =>
+    Effect.gen(function* () {
+      const result = yield* check({
+        base: { ...base, version: "0.0.1-beta.99" },
+        head: { version: "0.0.1-beta.100", code: changed },
+      });
+      expect(result.exitCode, result.log).toBe(0);
+    }),
+  );
+});
