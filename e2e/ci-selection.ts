@@ -59,6 +59,7 @@ import { lanesFor, releaseSources } from "./release-lanes.ts";
 import { savePathFiles } from "./save-path.ts";
 import { Target } from "./report-model.ts";
 import { exactly, split } from "./scenario-parts.ts";
+import { platformSignatures } from "./platform-signatures.ts";
 import { deployedSuitePattern, scenarios, scenariosForSuite, type CloudMode } from "./test-plan.ts";
 
 class SelectionFailed extends Schema.TaggedError<SelectionFailed>()("SelectionFailed", {
@@ -447,7 +448,11 @@ const Results = Schema.fromJsonString(
       Schema.Struct({
         name: Schema.String,
         assertionResults: Schema.Array(
-          Schema.Struct({ title: Schema.String, status: Schema.String }),
+          Schema.Struct({
+            title: Schema.String,
+            status: Schema.String,
+            failureMessages: Schema.optional(Schema.Array(Schema.String)),
+          }),
         ),
       }),
     ),
@@ -466,6 +471,8 @@ const executed = (directory: string) =>
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const ran = new Set<string>();
+    // Failed scenario runs whose failure names each platform signature (`platformSignatures`).
+    const signatures = { "runtime-502": 0, lost: 0 };
     const reports = (yield* fs.exists(directory))
       ? (yield* fs.readDirectory(directory, { recursive: true })).filter(
           (file) => path.basename(file) === "results.json",
@@ -486,10 +493,14 @@ const executed = (directory: string) =>
         .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Results)));
       for (const file of results.testResults)
         for (const test of file.assertionResults)
-          if (test.status === "passed" || test.status === "failed")
+          if (test.status === "passed" || test.status === "failed") {
             ran.add(pair(target, path.basename(file.name), test.title));
+            const messages = (test.failureMessages ?? []).join("\n");
+            for (const signature of ["runtime-502", "lost"] as const)
+              if (messages.includes(platformSignatures[signature])) signatures[signature] += 1;
+          }
     }
-    return ran;
+    return { ran, signatures };
   });
 
 /**
@@ -505,7 +516,7 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
       return yield* new SelectionFailed({
         message: "Usage: node e2e/ci-selection.ts verify <ci|deployed> <directory of saved runs>",
       });
-    const ran = yield* executed(directory);
+    const { ran, signatures } = yield* executed(directory);
     const paths =
       suite === "ci"
         ? jobRuns.map(({ name, target, titles }) => ({ name: `the ${name} job`, target, titles }))
@@ -533,7 +544,12 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
           "A job or step that was skipped, cancelled or never started saves no result. Check this run's jobs. If a scenario cannot run in CI, list it in notRunInCi in e2e/ci-selection.ts with the reason.",
         ].join("\n"),
       });
-    const report = `## E2E coverage\n\nEvery one of the ${expected} scenario runs ${suite === "ci" ? "the jobs here schedule" : "Cloud tests on main schedules"} executed. ${Object.keys(notRunInCi).length} scenarios are in notRunInCi.\n`;
+    // Counted on every deployed run, zero included, so a rise shows without reading logs.
+    const platform =
+      suite === "deployed"
+        ? `\nScenario runs that failed on a platform signature: ${signatures["runtime-502"]} on Cloudflare's runtime answering 502 itself (our Worker did not answer), ${signatures.lost} on a request lost before any response.\n`
+        : "";
+    const report = `## E2E coverage\n\nEvery one of the ${expected} scenario runs ${suite === "ci" ? "the jobs here schedule" : "Cloud tests on main schedules"} executed. ${Object.keys(notRunInCi).length} scenarios are in notRunInCi.\n${platform}`;
     yield* Console.log(report);
     const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
     if (Option.isSome(summary))

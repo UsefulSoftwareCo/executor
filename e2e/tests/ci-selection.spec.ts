@@ -210,6 +210,8 @@ interface SavedRun {
   readonly target: "local" | "self-host" | "cloud";
   readonly status?: (title: string) => string;
   readonly files?: (file: string) => boolean;
+  /** A failed scenario's failure message, as Vitest saves it. */
+  readonly failure?: (title: string) => string | undefined;
 }
 
 /**
@@ -223,7 +225,10 @@ const verify = (suite: string, saved: ReadonlyArray<SavedRun>) =>
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-ci-coverage-" });
     for (const [index, run] of saved.entries()) {
-      const files = new Map<string, Array<{ title: string; status: string }>>();
+      const files = new Map<
+        string,
+        Array<{ title: string; status: string; failureMessages: ReadonlyArray<string> }>
+      >();
       for (const scenario of Object.values(scenarios))
         if (
           scenario.targets[run.target].status === "scheduled" &&
@@ -231,7 +236,13 @@ const verify = (suite: string, saved: ReadonlyArray<SavedRun>) =>
         )
           files.set(scenario.file, [
             ...(files.get(scenario.file) ?? []),
-            { title: scenario.title, status: run.status?.(scenario.title) ?? "passed" },
+            {
+              title: scenario.title,
+              status: run.status?.(scenario.title) ?? "passed",
+              failureMessages: [run.failure?.(scenario.title)].filter(
+                (message) => message !== undefined,
+              ),
+            },
           ]);
       const report = path.join(
         directory,
@@ -1360,6 +1371,47 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       );
       expect(deployed.exitCode, deployed.log).toBe(0);
       expect(deployed.log).toMatch(/Every one of the \d+ scenario runs Cloud tests on main/);
+    }),
+  );
+
+  it.effect("a deployed run counts its scenario runs that failed on each platform signature", () =>
+    Effect.gen(function* () {
+      const cloud = Object.values(scenarios)
+        .filter((scenario) => scenario.targets.cloud.status === "scheduled")
+        .map((scenario) => scenario.title);
+      const [first, second, third, fourth] = cloud;
+      const messages: Record<string, string> = {
+        [first!]:
+          "RequestFailed: Cloudflare's Workers runtime answered 502 Bad Gateway itself; our Worker did not answer (ray 8f0c1a2b3c4d5e6f-AMS): POST /api/x returned HTTP 502 without a JSON response",
+        [second!]:
+          "RequestFailed: Cloudflare's Workers runtime answered 502 Bad Gateway itself; our Worker did not answer (ray 0f0c1a2b3c4d5e6f-AMS): GET /api/y returned HTTP 502 without a JSON response",
+        [third!]:
+          "RequestFailed: Request lost before any response: the client saw the connection reset with no response after 41 ms: POST /api/z failed (request)",
+        // Our own 502 failing a scenario is not a platform signature.
+        [fourth!]: "AssertionError: expected 502 to be 200 // Object.is equality",
+      };
+      const [counted, none] = yield* Effect.all(
+        [
+          verify("deployed", [
+            {
+              target: "cloud",
+              status: (title) => (title in messages ? "failed" : "passed"),
+              failure: (title) => messages[title],
+            },
+          ]),
+          verify("deployed", [{ target: "cloud" }]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(counted.exitCode, counted.log).toBe(0);
+      expect(counted.log).toContain(
+        "Scenario runs that failed on a platform signature: 2 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 1 on a request lost before any response.",
+      );
+      // Zero is reported too, so a rise shows against it.
+      expect(none.exitCode, none.log).toBe(0);
+      expect(none.log).toContain(
+        "Scenario runs that failed on a platform signature: 0 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 0 on a request lost before any response.",
+      );
     }),
   );
 

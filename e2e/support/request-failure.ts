@@ -13,6 +13,7 @@
 import { Clock, Duration, Effect, Option, Redacted, Result, Schema } from "effect";
 import type { HttpClientError, HttpClientResponse } from "effect/http";
 import { errorCode, nextCause } from "./failure-text.ts";
+import { platformSignatures } from "../platform-signatures.ts";
 
 export const RequestStage = Schema.Literals([
   // No response headers arrived: connect, DNS, TLS, a reset before the answer, or a request
@@ -57,8 +58,54 @@ export const RequestFailure = Schema.Struct({
   /** The first low-level error code on the chain: `ECONNRESET`, `UND_ERR_SOCKET`, `ENOTFOUND`. */
   code: Schema.optional(Schema.String),
   elapsedMs: Schema.Number,
+  /** A platform failure this is exactly one of; see `platformSignatures`. */
+  signature: Schema.optional(Schema.Literals(["runtime-502", "lost"])),
 });
 export type RequestFailure = typeof RequestFailure.Type;
+
+/**
+ * Two ways a request to a stage fails in Cloudflare's platform rather than in our Worker, as seen
+ * on deployed runs. A failure that is exactly one of them says so at the start of its first line,
+ * and Cloud tests on main counts each per run (`e2e/ci-selection.ts`, `verify deployed`).
+ *
+ * - `runtime-502`: Cloudflare's Workers runtime answered `502` with its own plain-text body
+ *   `Bad Gateway`, with a ray id, so our Worker did not answer. Our own 502s are JSON errors with
+ *   a `_tag`, or empty.
+ * - `lost`: the request was sent and no response arrived: the connection was reset or closed with
+ *   no response headers.
+ *
+ * Anything else keeps its ordinary text: a refused connection, a failed name lookup or TLS
+ * handshake, and a deadline with no response headers, which is also what our own Worker hanging
+ * looks like (a handler stuck on the database or on a hung endpoint) and so is not the platform's.
+ */
+export { platformSignatures } from "../platform-signatures.ts";
+
+/** Cloudflare's runtime 502: status 502, `text/plain`, body exactly `Bad Gateway`, and a ray. */
+export const isRuntimeBadGateway = (input: {
+  readonly status: number;
+  readonly contentType: string | undefined;
+  readonly text: string;
+  readonly ray: string | undefined;
+}) =>
+  input.status === 502 &&
+  /^text\/plain(?:\s*;|$)/iu.test((input.contentType ?? "").trim()) &&
+  input.text === "Bad Gateway" &&
+  input.ray !== undefined;
+
+/** No response headers arrived, and the connection was reset or closed. A deadline is not this. */
+export const isLost = (failure: Omit<RequestFailure, "signature">) =>
+  failure.status === undefined &&
+  failure.stage === "before response" &&
+  (failure.connection === "reset" || failure.connection === "closed");
+
+/** The start of a failure's first line when it is a platform signature, else nothing. */
+export const signatureText = (failure: RequestFailure | undefined) => {
+  if (failure?.signature === "runtime-502")
+    return `${platformSignatures["runtime-502"]} (ray ${failure.ray}${failure.colo === undefined ? "" : `-${failure.colo}`}): `;
+  if (failure?.signature === "lost")
+    return `${platformSignatures.lost}: the client saw the connection ${failure.connection === "reset" ? "reset" : "closed"} with no response after ${failure.elapsedMs} ms: `;
+  return "";
+};
 
 // Names are identifiers set by code, never by data, and kept only in that shape.
 const identifier = /^[A-Za-z][A-Za-z0-9]{0,39}$/u;
@@ -183,16 +230,17 @@ export const readResponse = <R>(
           Effect.flatMap((now) => {
             const chain = causeChain(cause);
             const connection = connectionOf(stage, chain.code);
+            const failure = {
+              stage,
+              ...(status !== undefined && { status }),
+              ...(connection !== undefined && { connection }),
+              ...edge,
+              ...chain,
+              elapsedMs: now - started,
+            };
             return Effect.fail(
               new CallFailed({
-                failure: {
-                  stage,
-                  ...(status !== undefined && { status }),
-                  ...(connection !== undefined && { connection }),
-                  ...edge,
-                  ...chain,
-                  elapsedMs: now - started,
-                },
+                failure: { ...failure, ...(isLost(failure) && { signature: "lost" as const }) },
                 ...(cause !== undefined && { cause: Redacted.make(cause) }),
               }),
             );
@@ -228,15 +276,29 @@ export const decodeFailure = (
   started: number,
   cause: unknown,
   headers?: Readonly<Record<string, string | undefined>>,
+  /** The whole body, so Cloudflare's own 502 can be told from ours; it is not kept. */
+  text?: string,
 ) =>
   Clock.currentTimeMillis.pipe(
-    Effect.map((now): RequestFailure => ({
-      stage: "decoding body",
-      status,
-      ...edgeOf(headers),
-      ...causeChain(cause),
-      elapsedMs: now - started,
-    })),
+    Effect.map((now): RequestFailure => {
+      const edge = edgeOf(headers);
+      const runtime =
+        text !== undefined &&
+        isRuntimeBadGateway({
+          status,
+          contentType: headers?.["content-type"],
+          text,
+          ray: edge.ray,
+        });
+      return {
+        stage: "decoding body",
+        status,
+        ...edge,
+        ...causeChain(cause),
+        elapsedMs: now - started,
+        ...(runtime && { signature: "runtime-502" as const }),
+      };
+    }),
   );
 
 /**
@@ -256,7 +318,7 @@ export const parseJson = (
     const parsed = Result.try((): unknown => JSON.parse(text));
     return Result.isSuccess(parsed)
       ? Effect.succeed(parsed.success)
-      : decodeFailure(status, started, parsed.failure, headers).pipe(
+      : decodeFailure(status, started, parsed.failure, headers, text).pipe(
           Effect.flatMap((failure) => Effect.fail(new CallFailed({ failure }))),
         );
   });
