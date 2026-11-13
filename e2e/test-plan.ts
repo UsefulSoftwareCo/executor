@@ -6404,7 +6404,9 @@ export const scenarios = plan({
       "A tool listing whose definition names are long and of one length evaluates as fast as one whose names differ in length",
     targets: {
       cloud: managedCloud,
-      "self-host": scheduled,
+      "self-host": na(
+        "E2E self-host runs the listing code on Bun, whose engine hashes long strings in full; V8's length-only hash is in Cloud's and the released image's workerd.",
+      ),
       local: na("Hosted app deploy fixture; self-host runs the same listing code in process."),
     },
   },
