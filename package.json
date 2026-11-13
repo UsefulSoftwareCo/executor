@@ -104,6 +104,7 @@
     "e2e:pglite": "vitest run --config e2e/pglite.config.ts",
     "e2e:dashboard-file-names": "vitest run --config e2e/dashboard-file-names.config.ts",
     "e2e:apps-bumped": "vitest run --config e2e/apps-bumped.config.ts",
+    "e2e:apps-job": "vitest run --config e2e/apps-job.config.ts",
     "e2e:apps-published": "vitest run --config e2e/apps-published.config.ts",
     "e2e:ci-selection": "vitest run --config e2e/ci-selection.config.ts",
     "e2e:deploy-decision": "vitest run --config e2e/deploy-decision.config.ts",

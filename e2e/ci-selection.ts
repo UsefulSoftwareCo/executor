@@ -685,6 +685,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "chatgpt-sign-in.config.ts": () => import("./chatgpt-sign-in.config.ts"),
   "cloud-proxy-keep-alive.config.ts": () => import("./cloud-proxy-keep-alive.config.ts"),
   "apps-bumped.config.ts": () => import("./apps-bumped.config.ts"),
+  "apps-job.config.ts": () => import("./apps-job.config.ts"),
   "apps-published.config.ts": () => import("./apps-published.config.ts"),
   "beta-due.config.ts": () => import("./beta-due.config.ts"),
   "billing.config.ts": () => import("./billing.config.ts"),
