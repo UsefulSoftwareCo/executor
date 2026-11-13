@@ -23,6 +23,8 @@ import {
   traceEvents,
 } from "../support/sentry-events.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { appLinksFixture, keyProvider } from "../support/app-links.ts";
+import { settleWebhookSubscriptions } from "../support/webhook-sources.ts";
 
 /** The app's error message: its text, then a line shaped like a stack frame. */
 const thrownMessage = (marker: string) =>
@@ -183,6 +185,51 @@ export default defineApp({}, {
   },
   appsManifest,
 ];
+
+/**
+ * An app whose webhook handler, as each delivery's body asks: throws an error named for the
+ * marker; throws a provider failure quoting the marker, which the framework reports as the
+ * handler's own failure; answers with a header that makes the app's own code garble the encoded
+ * body of the reply its framework sends; or otherwise answers a status no other path gives, with
+ * the marker in its body and a header. With a second account linked, evaluating the app fails
+ * with a provider error before any handler runs.
+ */
+const webhookSource = (
+  marker: string,
+) => `import { defineApp, defineProvider, secrets, query, object, string, router, ProviderError } from "apps";
+const marker = ${JSON.stringify(marker)};
+class Failure extends Error { constructor() { super(marker); this.name = marker; } }
+// The RPC bridge reads each reply through Response.prototype.json. A reply that answers with the
+// garble header has its encoded body replaced by text that is not base64.
+const read = Response.prototype.json;
+Response.prototype.json = async function () {
+  const value = await read.call(this);
+  if (!JSON.stringify(value).includes("x-garble")) return value;
+  const garble = (item) => {
+    if (item === null || typeof item !== "object") return;
+    if (typeof item.body === "string" && item.headers && "x-garble" in item.headers) item.body = "%%%" + marker;
+    for (const child of Object.values(item)) garble(child);
+  };
+  garble(value);
+  return value;
+};
+const team = ${keyProvider("Failure webhook fixture")};
+const incoming = { account: { app: "team" }, config: object({}), state: object({}),
+  register: async () => ({}), unregister: async () => {},
+  handle: async (ctx, { request }) => {
+    const kind = await request.text();
+    if (kind.includes("throw")) throw new Failure();
+    if (kind.includes("provider"))
+      throw new ProviderError({ reason: "forbidden", status: 403 });
+    if (kind.includes("garble")) return Response.json({ marker }, { headers: { "x-garble": "1" } });
+    return Response.json({ marker }, { status: 418, headers: { "x-marker": marker } });
+  } };
+// Once a second account is linked, evaluating the app fails with a provider error, as an app whose
+// provider refuses during evaluation does: the handler call then fails before the handler runs.
+export default defineApp({ app: { accounts: { team: team.many() } } }, async (ctx) => {
+  if (ctx.app.accounts.team.length > 1) throw new ProviderError({ reason: "forbidden", status: 403 });
+  return { tools: router({ ping: query({ input: object({}) }, async () => "pong") }), webhooks: { incoming } };
+});`;
 
 const ToolFailed = Schema.Struct({
   _tag: Schema.Literal("ToolCallFailed"),
@@ -730,6 +777,103 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             "RuntimeProtocolFailed: The app's Worker failed for a reason the runtime did not recognize",
           );
         }
+        // A webhook delivery's span records the app's answer by its status alone, and a delivery
+        // the app's handler failed by fixed labels: neither carries the app's text, its body or
+        // its headers.
+        const webhookApp = yield* appLinksFixture([
+          { path: "index.ts", content: webhookSource(marker) },
+        ]);
+        yield* webhookApp.connect(actors.owner, "app", "team", "webhook-key");
+        const [hook] = yield* settleWebhookSubscriptions(actors.owner, webhookApp.path, (rows) =>
+          rows.some((row) => row.status === "active"),
+        );
+        if (hook === undefined) return yield* Effect.die("The webhook subscription is missing");
+        type Kind = "throw" | "provider" | "garble" | "answer" | "oversize" | "evaluate";
+        /** The request's span carrying `refusal`, or the delivery span, once delivered. */
+        const delivery = (kind: Kind, refusal?: string) =>
+          Effect.gen(function* () {
+            const response = yield* api.request(
+              yield* api.session(),
+              "POST",
+              new URL(hook.callbackUrl).pathname,
+              kind === "oversize" ? { pad: "x".repeat(1024 * 1024) } : { kind },
+            );
+            const trace = (yield* evidence.requests).at(-1)?.traceId;
+            if (trace === undefined)
+              return yield* Effect.die("The delivery's trace was not recorded");
+            const spans = yield* telemetry.settled(trace, (spans) =>
+              spans.some(({ operationName, tags }) =>
+                refusal === undefined
+                  ? operationName === "sdk.webhooks.deliver"
+                  : tags["executor.webhook.refusal"] === refusal,
+              ),
+            );
+            return { response, trace, spans };
+          });
+        const thrownDelivery = yield* delivery("throw");
+        const providerDelivery = yield* delivery("provider");
+        const answered = yield* delivery("answer");
+        expect(answered.response.status).toBe(418);
+        const oversized = yield* delivery("oversize", "body-too-large");
+        // A body over the transport limit is answered as the callback declares.
+        expect(oversized.response.status).toBe(413);
+        const garbled = yield* delivery("garble", "invalid-response-body");
+        // A second linked account makes the app's evaluation fail with a provider error.
+        yield* webhookApp.connect(actors.owner, "app", "team", "webhook-second-key");
+        const evaluated = yield* delivery("evaluate");
+        // Which status a failed delivery gets is the product's to decide; it is not a success.
+        for (const failed of [thrownDelivery, providerDelivery, garbled, evaluated])
+          expect(Math.floor(failed.response.status / 100)).not.toBe(2);
+        const deliveredTags = (spans: ReadonlyArray<{ operationName: string; tags: object }>) =>
+          spans.find(({ operationName }) => operationName === "sdk.webhooks.deliver")?.tags;
+        expect(deliveredTags(answered.spans)).toMatchObject({
+          "executor.webhook.response_status": "418",
+        });
+        expect(deliveredTags(answered.spans)).not.toHaveProperty("executor.webhook.refusal");
+        expect(deliveredTags(thrownDelivery.spans)).toMatchObject({
+          "executor.webhook.refusal": "handler",
+          "executor.webhook.handler_error": "HostOperationFailed",
+        });
+        expect(deliveredTags(thrownDelivery.spans)).not.toHaveProperty(
+          "executor.webhook.response_status",
+        );
+        // A provider error the handler throws is the handler's own failure to the framework.
+        expect(deliveredTags(providerDelivery.spans)).toMatchObject({
+          "executor.webhook.refusal": "handler",
+          "executor.webhook.handler_error": "HostOperationFailed",
+        });
+        // A provider error that fails the handler call has its own label, once, with its kind.
+        expect(deliveredTags(evaluated.spans)).toMatchObject({
+          "executor.webhook.refusal": "provider",
+          "executor.webhook.handler_error": "ProviderError",
+        });
+        // A reply whose body cannot be decoded: the delivery span has the app's status, and the
+        // request's own span says why the sender was not answered with it.
+        expect(deliveredTags(garbled.spans)).toMatchObject({
+          "executor.webhook.response_status": "200",
+        });
+        expect(deliveredTags(garbled.spans)).not.toHaveProperty("executor.webhook.refusal");
+        // A body over the limit never reaches a delivery; the request's own span says why.
+        expect(deliveredTags(oversized.spans)).toBeUndefined();
+        for (const [name, { spans, trace }] of Object.entries({
+          webhookThrown: thrownDelivery,
+          webhookProvider: providerDelivery,
+          webhookGarbled: garbled,
+          webhookAnswered: answered,
+          webhookOversized: oversized,
+          webhookEvaluated: evaluated,
+        })) {
+          expect(JSON.stringify(spans), `${name}: the spans omit the app's text`).not.toContain(
+            marker,
+          );
+          expect(
+            [yield* telemetry.logs(trace), yield* telemetry.logsWholeEnvironment(marker)].join(
+              "\n",
+            ),
+            `${name}: the logs omit the app's text`,
+          ).not.toContain(marker);
+        }
+
         if (sentry !== undefined) {
           // The failures are still reported, by name with the fixed description and no stack of
           // their own, and the app's text appears nowhere in the envelopes.

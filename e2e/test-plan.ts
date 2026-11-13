@@ -1769,6 +1769,15 @@ export const scenarios = plan({
       cloud: na("Cloudflare runs Cloud's app Workers; there is no workerd process to restart."),
     },
   },
+  localRegistryCredentials: {
+    file: "local-registry-credentials.spec.ts",
+    title: "a failed dependency install names the registry's host and path but not its credentials",
+    targets: {
+      local: scheduled,
+      "self-host": na("Self-host builds through the same compiler; the local product covers it."),
+      cloud: na("Cloud's compiler uses the public npm registry; no operator registry URL exists."),
+    },
+  },
   localWorkflowEngineMemory: {
     file: "local-workflow-engine-memory.spec.ts",
     title: "local releases finished workflow runs' engines from memory",
