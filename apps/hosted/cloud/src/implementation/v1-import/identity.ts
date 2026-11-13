@@ -15,6 +15,7 @@ import { sourceHash, type ImportStore } from "./store.ts";
 
 const Users = Schema.Array(Schema.Struct({ id: Schema.String, emailVerified: Schema.Boolean }));
 const Ids = Schema.Array(Schema.Struct({ id: Schema.String }));
+const MemberRows = Schema.Array(Schema.Struct({ id: Schema.String, userId: Schema.String }));
 const Slugs = Schema.Array(Schema.Struct({ slug: Schema.String }));
 
 /** What becomes of a member's v1 user in v2. */
@@ -330,6 +331,8 @@ const intoNotes: Record<V1IntoMode, string> = {
   leave_v1_data:
     "Moved into an existing v2 organization its member owns, leaving its v1 data in v1.",
   copy_into_empty: "Imported into an existing v2 organization its owner owns, which was empty.",
+  copy_selected:
+    "Imported its listed integrations into an existing v2 organization its owner owns and its members are in, leaving the rest of its v1 data in v1.",
 };
 
 /** The existing v2 organization a v1 organization moves into, and the v2 user its owner is. */
@@ -346,6 +349,64 @@ export interface IntoRefused {
 }
 
 const notOwner = "Its owner is not an owner of the listed v2 organization.";
+
+/**
+ * The v2 user a v1 member already is: the one the import map records for them (`recorded`), or
+ * else a v2 user who verified the same email (decision 13). Never a new one: otherwise it says
+ * whether no v2 user has the email (`create`) or one has it unverified (`conflict`).
+ */
+const existingUser = (
+  sql: SqlClient.SqlClient,
+  store: ImportStore,
+  member: string,
+  email: string,
+) =>
+  Effect.gen(function* () {
+    const mapped = yield* store.find("user", member);
+    if (mapped?.status === "imported" && mapped.v2_id !== null)
+      return { kind: "found", user: mapped.v2_id, recorded: true } as const;
+    const match = yield* matchUser(sql, email);
+    return match.kind === "merge"
+      ? ({ kind: "found", user: match.user, recorded: false } as const)
+      : match;
+  });
+
+/** A v1 member, by WorkOS user id, and the email their v1 user has. */
+export interface MemberEmail {
+  readonly member: string;
+  readonly email: string;
+}
+
+/** Why a `copy_selected` move is refused when some of its members are not in the organization. */
+export const membersOutside = (outside: number, total: number) =>
+  `Its active members must all be members of the listed v2 organization; ${outside} of ${total} ${outside === 1 ? "is" : "are"} not.`;
+
+/**
+ * How many of these v1 members are not members of `target`: each must already be a v2 user
+ * (`existingUser`) with a membership there. A `copy_selected` move adds no member (decision 35).
+ */
+export const outsideOf = (
+  sql: SqlClient.SqlClient,
+  store: ImportStore,
+  target: string,
+  members: readonly MemberEmail[],
+) =>
+  Effect.gen(function* () {
+    const users: string[] = [];
+    for (const { member, email } of members) {
+      const found = yield* existingUser(sql, store, member, email);
+      if (found.kind === "found") users.push(found.user);
+    }
+    const inside =
+      users.length === 0
+        ? []
+        : yield* sql`
+            select "userId" as id from member
+            where "organizationId" = ${target} and ${sql.in("userId", users)}
+          `.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Ids)), unavailable);
+    const held = new Set(inside.map((row) => row.id));
+    return members.length - users.filter((user) => held.has(user)).length;
+  });
 
 /**
  * Whether the v1 organization's owner owns `target`, the existing v2 organization the operator
@@ -368,19 +429,14 @@ export const intoOwner = (
     const recorded = yield* store.find("organization", input.organization);
     if (recorded?.status === "imported" && recorded.v2_id !== input.target)
       return refused("An earlier run recorded it against another v2 organization.");
-    const mapped = yield* store.find("user", input.member);
-    let user: string;
-    if (mapped?.status === "imported" && mapped.v2_id !== null) user = mapped.v2_id;
-    else {
-      const match = yield* matchUser(sql, input.email);
-      if (match.kind !== "merge")
-        return refused(
-          match.kind === "create"
-            ? "Its owner has no v2 account."
-            : "A v2 account has its owner's email but has not verified it.",
-        );
-      user = match.user;
-    }
+    const found = yield* existingUser(sql, store, input.member, input.email);
+    if (found.kind !== "found")
+      return refused(
+        found.kind === "create"
+          ? "Its owner has no v2 account."
+          : "A v2 account has its owner's email but has not verified it.",
+      );
+    const user = found.user;
     const target = yield* store.target(input.target);
     if (target === undefined) return refused("The listed v2 organization does not exist.");
     const owners = yield* sql`
@@ -438,6 +494,11 @@ export const setUpIn = (sql: SqlClient.SqlClient, organization: string) =>
  * `billingHold`, the transaction also holds its billing while the paid v1 subscription carries over,
  * as the statement that creates an organization does. Nothing else in the organization changes: not
  * its name, slug or members.
+ *
+ * A `copy_selected` move (decision 35) adds no member: the same transaction holds the membership
+ * of each of its other members (`others`), each the v2 user they already are, and records their
+ * users and memberships as existing ones, or records nothing when one is not a member. It returns
+ * each member's v2 user, by WorkOS user id.
  */
 export const importInto = (
   sql: SqlClient.SqlClient,
@@ -450,6 +511,8 @@ export const importInto = (
     readonly email: string;
     /** The paid v1 subscription its billing carries over from, as JSON, if any. */
     readonly billingHold: string | null;
+    /** For `copy_selected`: its other members, each with their v1 email. */
+    readonly others?: ReadonlyArray<{ readonly member: PlannedMember; readonly email: string }>;
   },
 ) =>
   Effect.gen(function* () {
@@ -464,6 +527,26 @@ export const importInto = (
     const recorded = (yield* store.find("organization", input.organization))?.status === "imported";
     const userHash = yield* sourceHash(input.email);
     const hash = yield* sourceHash({ into: decided.target.id, mode: input.mode });
+    const others = input.mode === "copy_selected" ? (input.others ?? []) : [];
+    // Each other member's v2 user, which they must already be; their memberships are held below.
+    const joined: Array<{
+      readonly member: PlannedMember;
+      readonly email: string;
+      readonly user: string | undefined;
+      readonly recorded: boolean;
+      readonly membership: boolean;
+    }> = [];
+    for (const other of others) {
+      const found = yield* existingUser(sql, store, other.member.user, other.email);
+      joined.push({
+        ...other,
+        user: found.kind === "found" ? found.user : undefined,
+        recorded: found.kind === "found" && found.recorded,
+        membership:
+          (yield* store.find("membership", other.member.membership))?.status === "imported",
+      });
+    }
+    const users = joined.flatMap((other) => (other.user === undefined ? [] : [other.user]));
     const refusal = yield* sql
       .withTransaction(
         Effect.gen(function* () {
@@ -477,6 +560,41 @@ export const importInto = (
           if (!recorded && input.mode === "copy_into_empty") {
             const set = yield* setUpIn(sql, decided.target.id);
             if (set !== undefined) return `The listed v2 organization is not empty (${set}).`;
+          }
+          const memberships = new Map(
+            (users.length === 0
+              ? []
+              : yield* sql`
+                  select id, "userId" from member
+                  where "organizationId" = ${decided.target.id} and ${sql.in("userId", users)}
+                  for share
+                `.pipe(Effect.flatMap(Schema.decodeUnknownEffect(MemberRows)))
+            ).map((row) => [row.userId, row.id] as const),
+          );
+          const outside = joined.filter(
+            (other) => other.user === undefined || !memberships.has(other.user),
+          ).length;
+          if (outside > 0) return membersOutside(outside, others.length + 1);
+          for (const other of joined) {
+            const user = other.user;
+            const membership = user === undefined ? undefined : memberships.get(user);
+            if (user === undefined || membership === undefined) continue;
+            if (!other.recorded)
+              yield* store.record({
+                organization: input.organization,
+                kind: "user",
+                id: other.member.user,
+                result: { status: "imported", v2Kind: "merged_user", v2Id: user },
+                hash: yield* sourceHash(other.email),
+              });
+            if (!other.membership)
+              yield* store.record({
+                organization: input.organization,
+                kind: "membership",
+                id: other.member.membership,
+                result: { status: "imported", v2Kind: "existing_member", v2Id: membership },
+                hash: yield* sourceHash(other.member.role),
+              });
           }
           if (!userRecorded)
             yield* store.record({
@@ -509,7 +627,12 @@ export const importInto = (
       )
       .pipe(unavailable);
     if (refusal !== undefined) return yield* new ItemFailed({ reason: refusal });
-    return decided;
+    return {
+      ...decided,
+      members: joined.flatMap((other) =>
+        other.user === undefined ? [] : [[other.member.user, other.user] as const],
+      ),
+    };
   });
 
 /**

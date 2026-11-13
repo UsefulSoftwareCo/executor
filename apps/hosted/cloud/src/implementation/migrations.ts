@@ -239,6 +239,17 @@ export const migrateV1ImportInto = Effect.gen(function* () {
 }).pipe(Effect.mapError(migrationFailed("product")));
 
 /**
+ * The v1 integrations a `copy_selected` move copies into the existing v2 organization, by v1 slug
+ * (`notes/v1-import.md`, decision 35), written by direct SQL like the rest of the table. Additive
+ * and nullable, without a default, so adding it rewrites nothing; the running server never reads
+ * it.
+ */
+export const migrateV1ImportIntoIntegrations = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`alter table private_v1_import_allowed add column if not exists into_integrations text[]`;
+}).pipe(Effect.mapError(migrationFailed("product")));
+
+/**
  * The onboarding experiment's assignments (`notes/posthog.md#onboarding-order-experiment`): one
  * row per member who created their first team through team setup and was assigned a variant,
  * and when they first saw it. Additive: the running server never reads it. Drop it in a later
@@ -302,6 +313,7 @@ export const migrateCloudDatabase = Effect.scoped(
         "11_v1_import_billing": migrateV1ImportBilling,
         "12_v1_import_displacement": migrateV1ImportDisplacement,
         "13_v1_import_into": migrateV1ImportInto,
+        "14_v1_import_into_integrations": migrateV1ImportIntoIntegrations,
       });
     });
     yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(

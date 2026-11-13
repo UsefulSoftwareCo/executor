@@ -104,11 +104,31 @@ export type V1StaleCategory = typeof V1StaleCategory.Type;
 
 /**
  * How a v1 organization moves into an existing v2 organization the operator listed
- * (`notes/v1-import.md`, decision 32): with nothing to copy (the default), leaving its v1 data in
- * v1, or copying it into an organization with nothing set up.
+ * (`notes/v1-import.md`, decisions 32 and 35): with nothing to copy (the default), leaving its v1
+ * data in v1, copying it into an organization with nothing set up, or copying only the
+ * integrations the operator listed into an organization its members already work in.
  */
-export const V1IntoMode = Schema.Literals(["nothing_to_copy", "leave_v1_data", "copy_into_empty"]);
+export const V1IntoMode = Schema.Literals([
+  "nothing_to_copy",
+  "leave_v1_data",
+  "copy_into_empty",
+  "copy_selected",
+]);
 export type V1IntoMode = typeof V1IntoMode.Type;
+
+const SelectedIntegration = Schema.Struct({ slug: Schema.String, label: Schema.String });
+
+/**
+ * What a `copy_selected` move does with each v1 integration (decision 35). A listed integration is
+ * refused when v1 has no such integration or an app already in the organization has a name its
+ * app takes; either holds the organization back.
+ */
+export const V1SelectedIntegrations = Schema.Struct({
+  copied: Schema.Array(SelectedIntegration),
+  leftInV1: Schema.Array(SelectedIntegration),
+  refused: Schema.Array(Schema.Struct({ slug: Schema.String, reason: Schema.String })),
+});
+export type V1SelectedIntegrations = typeof V1SelectedIntegrations.Type;
 
 const EmailMatch = Schema.Struct({
   email: Schema.String,
@@ -317,6 +337,12 @@ export const V1OrgReport = Schema.Struct({
       /** The listed mode, null when the allow table names one the import does not know. */
       mode: Schema.NullOr(V1IntoMode),
       refused: Schema.optionalKey(Schema.String),
+      /**
+       * For `copy_selected` (decision 35): the listed integrations it copies (in a dry run, would
+       * copy; nothing, when the organization is held back), the ones it leaves in v1, and the
+       * listed ones it refuses, each by its v1 slug.
+       */
+      integrations: Schema.optionalKey(V1SelectedIntegrations),
     }),
   ),
   integrationFailures: Schema.Array(IntegrationFailure),

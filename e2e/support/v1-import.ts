@@ -66,6 +66,13 @@ export const V1Report = Schema.Struct({
       organization: Schema.String,
       mode: Schema.NullOr(Schema.String),
       refused: Schema.optionalKey(Schema.String),
+      integrations: Schema.optionalKey(
+        Schema.Struct({
+          copied: Schema.Array(Schema.Struct({ slug: Schema.String, label: Schema.String })),
+          leftInV1: Schema.Array(Schema.Struct({ slug: Schema.String, label: Schema.String })),
+          refused: Schema.Array(Schema.Struct({ slug: Schema.String, reason: Schema.String })),
+        }),
+      ),
     }),
   ),
   integrationFailures: Schema.Array(
@@ -262,19 +269,28 @@ export const listV1SlugDisplacement = (organization: string, holder: string) =>
 /**
  * List the existing v2 organization an import of this v1 organization moves into instead of a new
  * one, and how, as a person with database access does: the allow table row's `into_v2_org_id` and
- * `into_mode`, which the import reads as `nothing_to_copy` when unset.
+ * `into_mode`, which the import reads as `nothing_to_copy` when unset, and for `copy_selected` the
+ * v1 integration slugs it copies, `into_integrations`.
  */
-export const listV1Into = (organization: string, target: string, mode?: string) =>
-  writeRows("sso-database.json", [listV1IntoRow(organization, target, mode)]).pipe(Effect.asVoid);
+export const listV1Into = (
+  organization: string,
+  target: string,
+  mode?: string,
+  integrations: readonly string[] = [],
+) =>
+  writeRows("sso-database.json", [listV1IntoRow(organization, target, mode, integrations)]).pipe(
+    Effect.asVoid,
+  );
 
 /** {@link listV1Into}'s statement, after its organization's {@link allowV1ImportRow}. */
 export const listV1IntoRow = (
   organization: string,
   target: string,
   mode?: string,
+  integrations: readonly string[] = [],
 ): RowStatement => ({
-  sql: "update private_v1_import_allowed set into_v2_org_id = $2, into_mode = nullif($3, '') where v1_org_id = $1",
-  params: [organization, target, mode ?? ""],
+  sql: "update private_v1_import_allowed set into_v2_org_id = $2, into_mode = nullif($3, ''), into_integrations = (select array_agg(slug) from jsonb_array_elements_text($4::jsonb) as s(slug)) where v1_org_id = $1",
+  params: [organization, target, mode ?? "", JSON.stringify(integrations)],
 });
 
 /** A run id no other scenario uses. */
