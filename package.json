@@ -111,6 +111,7 @@
     "e2e:deploy-decision": "vitest run --config e2e/deploy-decision.config.ts",
     "e2e:ci-supersede": "vitest run --config e2e/ci-supersede.config.ts",
     "e2e:ci-repeat": "vitest run --config e2e/ci-repeat.config.ts",
+    "e2e:workflow-caches": "vitest run --config e2e/workflow-caches.config.ts",
     "e2e:telemetry-event-lifetime": "vitest run --config e2e/telemetry-event-lifetime.config.ts",
     "e2e:process-identity": "vitest run --config e2e/process-identity.config.ts",
     "e2e:part-results": "vitest run --config e2e/part-results.config.ts",
