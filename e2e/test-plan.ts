@@ -10587,7 +10587,7 @@ export const scenarios = plan({
     legacyStorage: true,
     file: "tool-call-log.spec.ts",
     title:
-      "A lapsed approval reads as expired, the prune marks it, and logged calls older than 30 days are not found before the prune deletes them",
+      "A lapsed approval reads as expired from its deadline and the prune marks it, and logged calls older than 30 days are not found and the prune deletes them",
     targets: {
       "self-host": scheduled,
       cloud: na("Advances the wall clock of a runner-owned product process."),

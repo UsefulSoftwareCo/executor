@@ -398,7 +398,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           expect(run.exitCode, run.log).toBe(0);
           for (const [job, target, names] of [
             ["local", "local", ["1/3", "2/3", "3/3"]],
-            ["self-host", "self-host", ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]],
+            ["self-host", "self-host", Array.from({ length: 12 }, (_, index) => `${index + 1}/12`)],
           ] as const) {
             const parts = shards(run.outputs, job);
             expect(parts.map(({ shard }) => shard)).toEqual(names);

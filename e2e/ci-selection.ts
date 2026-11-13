@@ -133,7 +133,7 @@ const jobs = {
   "self-host": {
     target: "self-host",
     pattern: `^(?!.*(?:${claude}|${inventoryLoad}|${catalogScale}|${harnessPattern}))`,
-    shards: 6,
+    shards: 12,
   },
   "self-host-inventory": { target: "self-host", pattern: inventoryLoad },
   "self-host-catalog": { target: "self-host", pattern: catalogScale },

@@ -323,11 +323,12 @@ scenarios on Linux instead of moving them to a Mac.
 - `e2e-local` and `e2e-self-host` run `bun run e2e:prepare`, then `e2e:local`
   and `e2e:self-host` under `xvfb-run`. The self-host run excludes the Claude
   Code MCP scenario, which needs a model API key that CI does not hold. A full run
-  splits them by spec file over runners (three for local, six for self-host; `shards` in
-  `e2e/ci-selection.ts`), each with the usual number of workers, so each part finishes in
-  about four minutes instead of thirteen and twenty. A selection runs on one runner. The
-  self-host parts keep their 16 vCPUs about 80% busy; the local ones are mostly idle and wait
-  on their longest spec file, so keep local spec files short enough to split.
+  splits them by spec file over runners (three for local, 12 for self-host; `shards` in
+  `e2e/ci-selection.ts`). Local parts run the usual eight workers; self-host parts run four,
+  since eight kept every core busy and slowed scenarios to 1.7 times their time alone (2.6 at
+  p95). Each part finishes in about four to five minutes. A selection runs on one runner with
+  eight workers. The local parts are mostly idle and wait on their longest spec file, so keep
+  local spec files short enough to split.
 - `e2e-self-host-scale` runs the 300-account workload and then the 7,000-tool MCP
   catalog scenario and the slow and stalled tool listing scenarios on its own runner,
   in parallel with the functional jobs. This preserves the four concurrent writers,
