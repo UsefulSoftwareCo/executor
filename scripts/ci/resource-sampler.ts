@@ -19,6 +19,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -48,6 +49,11 @@ interface Sample {
   readonly memAvailableMb: number;
   readonly memUsedMb: number;
   readonly swapUsedMb: number;
+  /**
+   * Resident MB of managed local Cloud's AppData runtime, the workerd process that serves every
+   * app supervisor of the run; absent when there is none.
+   */
+  readonly appdataRssMb?: number;
   /** Busiest command names: share of one core over the interval, process count, resident MB. */
   readonly top: ReadonlyArray<{
     readonly name: string;
@@ -119,6 +125,34 @@ const processTicks = () => {
   return ticks;
 };
 
+/**
+ * Whether a workerd process is local Cloud's AppData runtime: it has its app supervisors' storage
+ * open (`.alchemy/local/<stage>-appdata-<hash>-AppDataSupervisor/…`). Each process is asked once.
+ */
+const appdata = new Map<string, boolean>();
+const isAppData = (pid: string) => {
+  const known = appdata.get(pid);
+  if (known === true) return true;
+  let found = false;
+  try {
+    for (const fd of readdirSync(`/proc/${pid}/fd`)) {
+      try {
+        if (/-appdata-.*AppDataSupervisor/u.test(readlinkSync(`/proc/${pid}/fd/${fd}`))) {
+          found = true;
+          break;
+        }
+      } catch {
+        // Closed while read.
+      }
+    }
+  } catch {
+    return false;
+  }
+  // A runtime that has not yet opened a supervisor is asked again next time.
+  if (found) appdata.set(pid, true);
+  return found;
+};
+
 const memory = () => {
   const values = new Map<string, number>();
   for (const line of (read("/proc/meminfo") ?? "").split("\n")) {
@@ -146,6 +180,7 @@ const sample = (directory: string) => {
   const hz = 100;
   const samples: Array<Sample> = [];
   const totals = new Map<string, { cpuSeconds: number; peakRssMb: number }>();
+  const appdataPeak = { rssMb: 0, at: "", pids: new Set<string>() };
   let cpu = cpuTicks();
   let processes = processTicks();
   let last = Date.now();
@@ -186,6 +221,21 @@ const sample = (directory: string) => {
         total.peakRssMb = Math.max(total.peakRssMb, entry.rss * pageMb);
         totals.set(name, total);
       }
+      const appdataPids = [...nextProcesses]
+        .filter(([pid, value]) => value.name === "workerd" && isAppData(pid))
+        .map(([pid]) => pid);
+      const appdataRssMb =
+        appdataPids.length === 0
+          ? undefined
+          : Math.round(
+              appdataPids.reduce((sum, pid) => sum + (nextProcesses.get(pid)?.rss ?? 0), 0) *
+                pageMb,
+            );
+      for (const pid of appdataPids) appdataPeak.pids.add(pid);
+      if (appdataRssMb !== undefined && appdataRssMb > appdataPeak.rssMb) {
+        appdataPeak.rssMb = appdataRssMb;
+        appdataPeak.at = new Date(now).toISOString();
+      }
       const [one, five, fifteen] = (read("/proc/loadavg") ?? "0 0 0").split(" ").map(Number);
       const row: Sample = {
         t: new Date(now).toISOString(),
@@ -196,6 +246,7 @@ const sample = (directory: string) => {
         steal: round((all.steal - previous.steal) / span),
         coresBusy,
         ...memory(),
+        ...(appdataRssMb === undefined ? {} : { appdataRssMb }),
         top: [...byName]
           .sort((a, b) => b[1].cpu - a[1].cpu)
           .slice(0, topProcesses)
@@ -284,6 +335,18 @@ const sample = (directory: string) => {
             1,
           ),
         },
+        /**
+         * Local Cloud's AppData runtime at its largest, and how many AppData processes the job had:
+         * one per local Cloud it started, and one more for each that replaced one that died.
+         */
+        appdata:
+          appdataPeak.pids.size === 0
+            ? null
+            : {
+                peakRssMb: appdataPeak.rssMb,
+                peakAt: appdataPeak.at,
+                pids: appdataPeak.pids.size,
+              },
         processes: [...totals]
           .sort((a, b) => b[1].cpuSeconds - a[1].cpuSeconds)
           .slice(0, 12)
@@ -335,8 +398,23 @@ try {
       // Wait up to 5 s for the summary, then leave.
       const deadline = Date.now() + 5_000;
       const wait = () => {
-        if (existsSync(join(directory, "summary.json")) || Date.now() > deadline) return;
+        if (existsSync(join(directory, "summary.json"))) return report();
+        if (Date.now() > deadline) return;
         setTimeout(wait, 100);
+      };
+      // The job log says how large local Cloud's AppData runtime grew, passed or failed.
+      const report = () => {
+        const summary = JSON.parse(read(join(directory, "summary.json")) ?? "{}") as {
+          appdata?: { peakRssMb: number; peakAt: string; pids: number } | null;
+        };
+        if (summary.appdata)
+          console.log(
+            `Local Cloud's AppData runtime peaked at ${summary.appdata.peakRssMb} MB resident at ${summary.appdata.peakAt}` +
+              (summary.appdata.pids > 1
+                ? `, across ${summary.appdata.pids} AppData processes in this job (one per local Cloud the job started, and any that replaced one that died)`
+                : "") +
+              ".",
+          );
       };
       wait();
     }
