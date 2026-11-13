@@ -19,7 +19,7 @@ import { RequestFailed, SessionClients } from "../support/api.ts";
 import { EmulatorDeadline, emulatorRequest } from "../support/emulators.ts";
 import { failureText, stepFailureText } from "../support/failure-text.ts";
 import { Target, withCause } from "../support/platform.ts";
-import { CallFailed, parseJson, readResponse } from "../support/request-failure.ts";
+import { CallFailed, connectionOf, parseJson, readResponse } from "../support/request-failure.ts";
 
 const suffix = "0123456789abcdef01234567";
 const token = "emu_resend_SYNTHETICtoken0001";
@@ -190,6 +190,14 @@ const renderings = (error: object & { message: string }) => [
 ];
 
 layer(NodeServices.layer, { excludeTestServices: true })("Request failures", (it) => {
+  it("ETIMEDOUT is a connect failure before a response and a time-out once the body has begun", () => {
+    expect(connectionOf("before response", "ETIMEDOUT")).toBe("connect");
+    expect(connectionOf("reading body", "ETIMEDOUT")).toBe("timeout");
+    // The other codes keep their kind whatever the stage.
+    expect(connectionOf("reading body", "ECONNRESET")).toBe("reset");
+    expect(connectionOf("before response", "ECONNREFUSED")).toBe("connect");
+  });
+
   it.effect("an emulator call says how far it got before it failed", () =>
     Effect.gen(function* () {
       const { origin } = yield* stub;

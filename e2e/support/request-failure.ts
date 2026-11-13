@@ -125,6 +125,9 @@ export const connectionOf = (
   if (stage === "decoding body") return undefined;
   if (stage === "timeout") return "timeout";
   if (code === undefined) return "other";
+  // Before a response, ETIMEDOUT is a connection that was never made. Once headers arrived it is
+  // a socket that went quiet mid-body.
+  if (code === "ETIMEDOUT" && stage !== "before response") return "timeout";
   return connectionCodes.find(([, pattern]) => pattern.test(code))?.[0] ?? "other";
 };
 
