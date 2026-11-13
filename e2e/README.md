@@ -352,9 +352,9 @@ invalidate the load timing. The normal self-host command still includes every
 applicable case. To reproduce the CI split, use separate machines:
 
 ```sh
-bun run e2e:self-host --test-name '^(?!.*(?:Claude Code connects|concurrent owners and admins save every account|MCP execute over 7,000 tools))'
+bun run e2e:self-host --test-name '^(?!.*(?:Claude Code connects|concurrent owners and admins save every account|MCP execute over 7,000 tools|MCP execute beside stalled apps))'
 bun run e2e:self-host --test-name 'concurrent owners and admins save every account'
-bun run e2e:self-host --test-name 'MCP execute over 7,000 tools'
+bun run e2e:self-host --test-name 'MCP execute over 7,000 tools|MCP execute beside stalled apps'
 ```
 
 ## Shared SDK and interactive CLI

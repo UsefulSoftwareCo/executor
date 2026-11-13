@@ -655,8 +655,18 @@ export const scenarios = plan({
   mcpCatalogScale: {
     fixtures: "actors",
     file: "mcp-catalog-scale.spec.ts",
+    title: "MCP execute over 7,000 tools loads only the apps a program uses",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback stalled MCP server; the shared execute path is covered on self-host"),
+      local: na("Hosted version API scenario"),
+    },
+  },
+  mcpCatalogStalledApps: {
+    fixtures: "actors",
+    file: "mcp-catalog-scale.spec.ts",
     title:
-      "MCP execute over 7,000 tools loads only the apps a program uses and isolates stalled apps",
+      "MCP execute beside stalled apps answers programs that do not use them and reports the stalled apps at once",
     targets: {
       "self-host": scheduled,
       cloud: na("Loopback stalled MCP server; the shared execute path is covered on self-host"),

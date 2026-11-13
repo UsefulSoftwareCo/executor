@@ -77,7 +77,7 @@ class SelectionFailed extends Schema.TaggedError<SelectionFailed>()("SelectionFa
 const claude = "Claude Code connects";
 const inventoryLoad = "concurrent owners and admins save every account";
 const catalogScale =
-  "MCP execute over 7,000 tools|MCP execute pays for a slow app|MCP execute remembers a stalled|MCP execute serves a search from rows past|MCP execute reports an app whose aged";
+  "MCP execute over 7,000 tools|MCP execute beside stalled apps|MCP execute pays for a slow app|MCP execute remembers a stalled|MCP execute serves a search from rows past|MCP execute reports an app whose aged";
 
 /**
  * Spec files that test the E2E harness rather than the product, and the paths they exercise:
