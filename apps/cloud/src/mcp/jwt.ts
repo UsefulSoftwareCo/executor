@@ -28,11 +28,27 @@ const identityFromClaims = (payload: unknown): VerifiedToken | null =>
     }),
   });
 
+/**
+ * The WorkOS API key a caller authenticated with. Forwarded to Executor v2 in
+ * the signed forwarding token so v2 can store the key as its own. Never log it
+ * or put it on a span.
+ */
+export type VerifiedApiKey = {
+  /** The WorkOS API key id. */
+  readonly id: string;
+  /** The key's own WorkOS organization id. */
+  readonly organizationId: string;
+  /** Unpadded base64url of the SHA-256 digest of the presented key. */
+  readonly hash: string;
+};
+
 export type VerifiedToken = {
   /** The WorkOS account ID (user ID). */
   accountId: string;
   /** The WorkOS organization ID, if the session has org context. */
   organizationId: string | null;
+  /** Set only when the caller authenticated with a WorkOS API key. */
+  apiKey?: VerifiedApiKey;
 };
 
 export class McpJwtVerificationError extends Data.TaggedError("McpJwtVerificationError")<{

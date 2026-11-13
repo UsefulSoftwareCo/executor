@@ -19,16 +19,24 @@
 // a lookup that succeeds with an org id is `Authenticated`.
 // ---------------------------------------------------------------------------
 
+import { createHash } from "node:crypto";
+
 import { describe, expect, it } from "@effect/vitest";
 import { Data, Effect, Layer, Predicate } from "effect";
 
-import { McpAuthProvider, orgWriteAccessForPrincipal } from "@executor-js/host-mcp";
+import {
+  McpAuthProvider,
+  orgWriteAccessForPrincipal,
+  type AuthOutcome,
+} from "@executor-js/host-mcp";
 
+import { ApiKeyService } from "../auth/api-keys";
 import { WorkOSError } from "../auth/errors";
 import { cloudMcpAuthProviderLayer, type CloudPrincipal } from "./auth-provider";
 import {
   MCP_ORGANIZATION_HEADER,
   McpAuth,
+  McpAuthLive,
   McpOrganizationAuth,
   mcpAuthorized,
   mcpUnauthorized,
@@ -277,6 +285,78 @@ describe("cloud MCP org-authorization classification", () => {
     Effect.gen(function* () {
       const outcome = yield* authenticateWith(stubOrgAuthActive, stubAuthMissingBearer);
       expect(Predicate.isTagged(outcome, "Unauthorized")).toBe(true);
+    }),
+  );
+});
+
+describe("cloud MCP API-key callers", () => {
+  const API_KEY = "sk_test_synthetic_key_value";
+  // The key belongs to another organization than the one the URL selects.
+  const KEY_ORG_ID = "org_key_owner";
+
+  // The real `McpAuthLive` bearer dispatch over a stubbed WorkOS key lookup.
+  const apiKeyAuth = McpAuthLive.pipe(
+    Layer.provide(
+      Layer.succeed(ApiKeyService)({
+        validate: (value) =>
+          Effect.succeed(
+            value === API_KEY
+              ? {
+                  scope: "user" as const,
+                  accountId: ACCOUNT_ID,
+                  organizationId: KEY_ORG_ID,
+                  keyId: "api_key_test",
+                }
+              : null,
+          ),
+        listUserKeys: () => Effect.die("MCP auth test does not list API keys"),
+        createUserKey: () => Effect.die("MCP auth test does not create API keys"),
+        revokeUserKey: () => Effect.die("MCP auth test does not revoke API keys"),
+        listOrgKeys: () => Effect.die("MCP auth test does not list org API keys"),
+        createOrgKey: () => Effect.die("MCP auth test does not create org API keys"),
+        revokeOrgKey: () => Effect.die("MCP auth test does not revoke org API keys"),
+      }),
+    ),
+  );
+
+  const apiKeyRequest = () =>
+    new Request("https://executor.sh/mcp", {
+      method: "POST",
+      headers: {
+        authorization: `Bearer  ${API_KEY} `,
+        [MCP_ORGANIZATION_HEADER]: ORG_ID,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", method: "tools/list", id: 1 }),
+    });
+
+  const apiKeyOf = (outcome: AuthOutcome) =>
+    Predicate.isTagged(outcome, "Authenticated")
+      ? (outcome.principal as CloudPrincipal).apiKey
+      : "not authenticated";
+
+  it.effect("the principal carries the key id, the key's organization and its hash", () =>
+    Effect.gen(function* () {
+      const outcome = yield* authenticateWith(stubOrgAuthActive, apiKeyAuth, apiKeyRequest);
+      const hash = createHash("sha256").update(API_KEY).digest("base64url");
+      expect(hash).toHaveLength(43);
+      expect(apiKeyOf(outcome)).toEqual({
+        id: "api_key_test",
+        organizationId: KEY_ORG_ID,
+        hash,
+      });
+      const principal = Predicate.isTagged(outcome, "Authenticated") ? outcome.principal : null;
+      expect(principal?.organizationId, "the URL selector still picks the organization").toBe(
+        ORG_ID,
+      );
+    }),
+  );
+
+  it.effect("a JWT caller's principal carries no API key", () =>
+    Effect.gen(function* () {
+      const outcome = yield* authenticateWith(stubOrgAuthActive);
+      expect(Predicate.isTagged(outcome, "Authenticated")).toBe(true);
+      expect(apiKeyOf(outcome)).toBeUndefined();
     }),
   );
 });

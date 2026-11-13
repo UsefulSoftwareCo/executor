@@ -1,3 +1,5 @@
+import { createHash, createHmac } from "node:crypto";
+
 import { describe, expect, it, vi } from "@effect/vitest";
 import { Data, Effect, Schema } from "effect";
 
@@ -35,6 +37,30 @@ const outage = (): Promise<never> => Effect.runPromise(Effect.fail(new Simulated
 
 const principal = { accountId: "user_EXAMPLE", organizationId: "org_EXAMPLE" } as const;
 const moved = { v2OrganizationId: V2_ORG } as const;
+
+const API_KEY = "sk_test_synthetic_key_value";
+// Computed independently of the code under test: unpadded base64url SHA-256.
+const API_KEY_HASH = createHash("sha256").update(API_KEY).digest("base64url");
+
+// An API-key caller whose key belongs to a different organization than the one
+// the URL selects: the forwarded `organization` stays the selected one.
+const apiKeyPrincipal = {
+  ...principal,
+  apiKey: { id: "api_key_EXAMPLE", organizationId: "org_KEY_OWNER", hash: API_KEY_HASH },
+} as const;
+
+/** True when `token`'s signature is HMAC-SHA256 over "v1fwd." + payload under `secret`. */
+const signatureVerifies = (token: string, secret: string): boolean => {
+  const [prefix, payload, signature] = token.split(".");
+  return (
+    createHmac("sha256", secret).update(`${prefix}.${payload}`).digest("base64url") === signature
+  );
+};
+
+const rawPayload = (token: string): string => {
+  const payload = token.split(".")[1] ?? "";
+  return Buffer.from(payload, "base64url").toString("utf8");
+};
 
 const makeEnv = (respond: (request: Request) => Response | Promise<Response>) => {
   const seen: Request[] = [];
@@ -84,6 +110,28 @@ describe("forward token", () => {
       toolkit: "tk_row_example",
       connection: "v1-abc",
     });
+  });
+
+  it("puts the API key last, after the toolkit, and still signs the payload", async () => {
+    const token = await mintForwardToken(SECRET, {
+      account: "user_EXAMPLE",
+      organization: "org_EXAMPLE",
+      exp: 2000000000,
+      toolkit: { id: "tk_row_example", connection: "v1-abc" },
+      apiKey: { id: "api_key_EXAMPLE", organization: "org_KEY_OWNER", hash: API_KEY_HASH },
+    });
+    expect(rawPayload(token)).toBe(
+      JSON.stringify({
+        v: 1,
+        account: "user_EXAMPLE",
+        organization: "org_EXAMPLE",
+        exp: 2000000000,
+        toolkit: "tk_row_example",
+        connection: "v1-abc",
+        apiKey: { id: "api_key_EXAMPLE", organization: "org_KEY_OWNER", hash: API_KEY_HASH },
+      }),
+    );
+    expect(signatureVerifies(token, SECRET)).toBe(true);
   });
 });
 
@@ -252,6 +300,44 @@ describe("forwardToV2", () => {
         exp: NOW + FORWARD_TOKEN_TTL_SECONDS,
       }),
     );
+  });
+
+  it("names an API-key caller's key, its own organization and its hash", async () => {
+    const { env, seen } = makeEnv(() => new Response("ok"));
+    await forwardToV2(
+      new Request("https://executor.sh/mcp", { method: "POST", body: "{}" }),
+      apiKeyPrincipal,
+      moved,
+      env,
+      makeDeps(),
+    );
+
+    const token = seen[0]?.headers.get("authorization")?.replace("Bearer ", "") ?? "";
+    expect(API_KEY_HASH).toHaveLength(43);
+    expect(decodePayload(token)).toEqual({
+      v: 1,
+      account: "user_EXAMPLE",
+      organization: "org_EXAMPLE",
+      exp: NOW + FORWARD_TOKEN_TTL_SECONDS,
+      apiKey: { id: "api_key_EXAMPLE", organization: "org_KEY_OWNER", hash: API_KEY_HASH },
+    });
+    expect(signatureVerifies(token, SECRET)).toBe(true);
+    expect(rawPayload(token)).not.toContain(API_KEY);
+  });
+
+  it("sends no API key for a caller without one", async () => {
+    const { env, seen } = makeEnv(() => new Response("ok"));
+    await forwardToV2(
+      new Request("https://executor.sh/mcp", { method: "POST", body: "{}" }),
+      principal,
+      moved,
+      env,
+      makeDeps(),
+    );
+
+    const token = seen[0]?.headers.get("authorization")?.replace("Bearer ", "") ?? "";
+    expect(decodePayload(token)).not.toHaveProperty("apiKey");
+    expect(signatureVerifies(token, SECRET)).toBe(true);
   });
 
   it("sends a GET without a body", async () => {

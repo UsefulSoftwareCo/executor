@@ -61,6 +61,7 @@ import {
   McpOrganizationAuthLive,
   type AuthorizedMcpOrganization,
   type McpAuthResult,
+  type VerifiedApiKey,
   type VerifiedToken,
 } from "./auth";
 import type { MovedToV2 } from "./moved-to-v2";
@@ -107,9 +108,13 @@ const ORGANIZATION_AUTHORIZE_UNAVAILABLE =
 
 /**
  * The principal cloud's auth hands the MCP handler: the shared shape plus the
- * org's moved-to-v2 mark, which only the cloud handler reads.
+ * org's moved-to-v2 mark and, for an API-key caller, the key it presented,
+ * which only the cloud handler reads (to forward them to v2).
  */
-export type CloudPrincipal = Principal & { readonly movedToV2?: MovedToV2 };
+export type CloudPrincipal = Principal & {
+  readonly movedToV2?: MovedToV2;
+  readonly apiKey?: VerifiedApiKey;
+};
 
 /**
  * Enrich a cloud {@link VerifiedToken} (which carries only accountId +
@@ -138,6 +143,7 @@ const principalFromToken = (
   avatarUrl: null,
   roles: [],
   ...(organization.movedToV2 ? { movedToV2: organization.movedToV2 } : {}),
+  ...(token.apiKey ? { apiKey: token.apiKey } : {}),
 });
 
 export const cloudMcpAuthProviderLayer: Layer.Layer<

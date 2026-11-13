@@ -99,6 +99,22 @@ describe("cloud MCP handler v2 forwarding", () => {
     expect(mocks.serveFetch).toHaveBeenCalledTimes(1);
   });
 
+  it("hands an API-key caller's key to the v2 forward", async () => {
+    const apiKey = { id: "api_key_EXAMPLE", organizationId: "org_KEY_OWNER", hash: "h".repeat(43) };
+    mocks.principal = { ...base, movedToV2: { v2OrganizationId: "v2-org" }, apiKey };
+    mocks.forwardToV2.mockClear();
+    mocks.forwardToV2.mockResolvedValue(new Response("from v2", { status: 200 }));
+
+    await makeCloudMcpAgentHandler()(post(), env, ctx);
+
+    expect(mocks.forwardToV2).toHaveBeenCalledTimes(1);
+    expect(mocks.forwardToV2.mock.calls[0]?.[1]).toMatchObject({
+      accountId: "user_EXAMPLE",
+      organizationId: "org_EXAMPLE",
+      apiKey,
+    });
+  });
+
   it("answers OPTIONS before authenticating, even for a moved org", async () => {
     mocks.principal = { ...base, movedToV2: { v2OrganizationId: "v2-org" } };
     mocks.forwardToV2.mockClear();

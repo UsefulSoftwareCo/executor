@@ -261,12 +261,13 @@ export const makeCloudMcpAgentHandler = () => {
     // An organization that has moved to v2 is served by v2 instead of the
     // session Durable Objects. This runs before the session owner check: v2
     // issues its own session ids, which no v1 DO knows.
-    const { movedToV2 } = outcome.principal as CloudPrincipal;
+    const cloudPrincipal = outcome.principal as CloudPrincipal;
+    const { movedToV2 } = cloudPrincipal;
     if (movedToV2) {
       return runTraced(
         request,
         Effect.promise(() =>
-          forwardToV2(request, outcome.principal, movedToV2, env, { resolveToolkitRowId }),
+          forwardToV2(request, cloudPrincipal, movedToV2, env, { resolveToolkitRowId }),
         ).pipe(
           Effect.withSpan("mcp.forward.v2", { attributes: { [FORWARD_SPAN_ATTRIBUTE]: true } }),
         ),

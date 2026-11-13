@@ -10,9 +10,16 @@
 //   Authorization: Bearer v1fwd.<payload>.<sig>
 //
 //   payload  base64url (no padding) of the UTF-8 JSON
-//            {"v":1,"account","organization","exp"[,"toolkit","connection"]}
+//            {"v":1,"account","organization","exp"[,"toolkit","connection"]
+//             [,"apiKey":{"id","organization","hash"}]}
 //   sig      base64url (no padding) of HMAC-SHA256 over "v1fwd." + payload,
 //            keyed by the shared secret's UTF-8 bytes
+//
+// `apiKey` is present only for a caller that authenticated with a WorkOS API
+// key: its id, the key's own organization (which can differ from the forwarded
+// `organization`), and the unpadded base64url SHA-256 of the key, so v2 can
+// store the key as its own. It travels only inside this signed token over the
+// service binding and is never logged.
 //
 // A fresh token is minted per forwarded request and expires after ten
 // minutes. Nothing here falls back to v1 data: when the binding or secret is
@@ -24,7 +31,7 @@ import { readElicitationMode } from "@executor-js/cloudflare/mcp/do-headers";
 import { EXECUTOR_ORG_SELECTOR_HEADER } from "@executor-js/sdk/shared";
 
 import type { MovedToV2 } from "./moved-to-v2";
-import { MCP_ORGANIZATION_HEADER, toolkitSlugFromRequest } from "./auth";
+import { MCP_ORGANIZATION_HEADER, toolkitSlugFromRequest, type VerifiedApiKey } from "./auth";
 
 const TOKEN_PREFIX = "v1fwd";
 const TOKEN_VERSION = 1;
@@ -53,6 +60,12 @@ export interface ForwardTokenClaims {
   readonly exp: number;
   /** The v1 toolkit row id and the v2 connection id, for a toolkit URL. */
   readonly toolkit?: { readonly id: string; readonly connection: string };
+  /** The WorkOS API key the caller authenticated with, for an API-key caller. */
+  readonly apiKey?: {
+    readonly id: string;
+    readonly organization: string;
+    readonly hash: string;
+  };
 }
 
 export const mintForwardToken = async (
@@ -68,6 +81,15 @@ export const mintForwardToken = async (
         exp: claims.exp,
         ...(claims.toolkit
           ? { toolkit: claims.toolkit.id, connection: claims.toolkit.connection }
+          : {}),
+        ...(claims.apiKey
+          ? {
+              apiKey: {
+                id: claims.apiKey.id,
+                organization: claims.apiKey.organization,
+                hash: claims.apiKey.hash,
+              },
+            }
           : {}),
       }),
     ),
@@ -186,6 +208,8 @@ export interface V2ForwardPrincipal {
   readonly accountId: string;
   readonly organizationId: string;
   readonly movedToV2?: MovedToV2;
+  /** Set only when the caller authenticated with a WorkOS API key. */
+  readonly apiKey?: VerifiedApiKey;
 }
 
 export interface V2ForwardDeps {
@@ -247,6 +271,15 @@ export const forwardToV2 = async (
       organization: principal.organizationId,
       exp: nowSeconds + FORWARD_TOKEN_TTL_SECONDS,
       ...(toolkit ? { toolkit } : {}),
+      ...(principal.apiKey
+        ? {
+            apiKey: {
+              id: principal.apiKey.id,
+              organization: principal.apiKey.organizationId,
+              hash: principal.apiKey.hash,
+            },
+          }
+        : {}),
     });
 
     const hasBody = request.method !== "GET" && request.method !== "HEAD";

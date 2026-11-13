@@ -29,6 +29,7 @@ export {
   McpJwtVerificationError,
   verifyMcpAccessToken,
   verifyWorkOSMcpAccessToken,
+  type VerifiedApiKey,
   type VerifiedToken,
 } from "./jwt";
 
@@ -270,6 +271,20 @@ export const McpOrganizationAuthLive = Layer.succeed(McpOrganizationAuth)({
 
 const looksLikeJwt = (token: string): boolean => token.split(".").length === 3;
 
+/**
+ * Unpadded base64url (RFC 4648 §5) of the SHA-256 digest of the API key's UTF-8
+ * bytes: the same value as Better Auth's `defaultKeyHasher`, which Executor v2
+ * stores for its own API keys.
+ */
+export const hashApiKey = (key: string) =>
+  Effect.promise(() => crypto.subtle.digest("SHA-256", new TextEncoder().encode(key))).pipe(
+    Effect.map((digest) => {
+      let binary = "";
+      for (const byte of new Uint8Array(digest)) binary += String.fromCharCode(byte);
+      return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+    }),
+  );
+
 export const McpAuthLive = Layer.effect(
   McpAuth,
   Effect.gen(function* () {
@@ -313,6 +328,11 @@ export const McpAuthLive = Layer.effect(
       return mcpAuthorized({
         accountId: principal.accountId,
         organizationId: principal.organizationId,
+        apiKey: {
+          id: principal.keyId,
+          organizationId: principal.organizationId,
+          hash: yield* hashApiKey(token),
+        },
       });
     });
 
