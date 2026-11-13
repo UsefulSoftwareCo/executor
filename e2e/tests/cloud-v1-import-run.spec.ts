@@ -3254,6 +3254,8 @@ export default defineApp({}, { tools: router({
           ].toSorted((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)),
         );
         // The workspace is recorded against the team; its members are recorded as already there.
+        // The ids are ordered by byte, as the expected list's toSorted() orders them: the default
+        // collation sorts mixed-case ids case-insensitively.
         const MapRow = Schema.Struct({
           v1_kind: Schema.String,
           v2_kind: Schema.NullOr(Schema.String),
@@ -3264,7 +3266,7 @@ export default defineApp({}, { tools: router({
           MapRow,
           `select v1_kind, v2_kind, v2_id, reason as note from private_v1_import_map
             where v1_org_id = $1 and v1_kind in ('organization', 'user', 'membership')
-            order by v1_kind, v2_id`,
+            order by v1_kind, v2_id collate "C"`,
           organization,
         );
         expect(identityRows).toEqual([
