@@ -1,5 +1,6 @@
 import { expect, layer } from "@effect/vitest";
 import { Effect } from "effect";
+import { createHash, randomBytes } from "node:crypto";
 import { Actors, password } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
@@ -172,6 +173,81 @@ layer(HostedLive, { excludeTestServices: true })("Early form submission", (it) =
           page.getByText("Request denied.", { exact: true }).waitFor({ state: "visible" }),
         );
         expect(native()).toEqual([]);
+      }),
+    ),
+  );
+  it.effect(scenarios.oneConsentDecision.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const actors = yield* Actors,
+          browser = yield* Browser,
+          target = yield* Target;
+        const hosts = targetHosts(target);
+        const redirect = "http://127.0.0.1:9/callback";
+        const { client_id } = yield* driver("register a client", () =>
+          fetch(`${hosts.browser}/api/auth/oauth2/register`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              client_name: "Twice decided client",
+              redirect_uris: [redirect],
+              token_endpoint_auth_method: "none",
+              grant_types: ["authorization_code", "refresh_token"],
+              response_types: ["code"],
+            }),
+          }).then((response) => response.json() as Promise<{ client_id: string }>),
+        );
+        const authorization = new URL(`${hosts.browser}/api/auth/oauth2/authorize`);
+        authorization.search = new URLSearchParams({
+          response_type: "code",
+          client_id,
+          redirect_uri: redirect,
+          code_challenge: createHash("sha256")
+            .update(randomBytes(32).toString("base64url"))
+            .digest("base64url"),
+          code_challenge_method: "S256",
+          scope: "mcp offline_access",
+          resource: `${hosts.mcp}/mcp`,
+          state: randomBytes(16).toString("hex"),
+        }).toString();
+        yield* browser.login(actors.owner);
+        yield* browser.omitNetworkTrace;
+        const decisions: unknown[] = [];
+        yield* browser.use("Record consent requests", (page) =>
+          page.route(/\/api\/auth\/oauth2\/consent$/u, (route) => {
+            decisions.push(route.request().postDataJSON());
+            return route.fallback();
+          }),
+        );
+        yield* browser.use("Open the consent page", (page) => page.goto(authorization.href));
+        yield* browser.use("Connect is offered", (page) =>
+          page.getByRole("button", { name: "Connect", exact: true }).waitFor(),
+        );
+        // A replayed early Cancel and a real Connect in the same moment: both buttons are still
+        // enabled, so only the page's one-decision rule can keep the second from being sent.
+        yield* browser.use("Submit Cancel, then Connect, before the page renders again", (page) =>
+          Promise.all([
+            page.waitForRequest((request) => request.url().startsWith(redirect)),
+            page.evaluate(() => {
+              const buttons = [
+                ...document.querySelectorAll<HTMLButtonElement>("form.mcp-consent-actions button"),
+              ];
+              const cancel = buttons.find((button) => button.value === "decline");
+              const connect = buttons.find((button) => button.value === "connect");
+              if (
+                cancel?.form == null ||
+                connect === undefined ||
+                cancel.disabled ||
+                connect.disabled
+              )
+                throw new Error("Both decisions must be enabled");
+              cancel.form.requestSubmit(cancel);
+              cancel.form.requestSubmit(connect);
+            }),
+          ]),
+        );
+        expect(decisions).toEqual([expect.objectContaining({ accept: false })]);
       }),
     ),
   );

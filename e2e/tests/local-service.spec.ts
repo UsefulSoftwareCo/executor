@@ -403,15 +403,22 @@ layer(TestLive, { excludeTestServices: true })("Local background service", (it) 
           // A server no client can find any more stops on its own, and nothing serves its port.
           const removedAt = yield* Clock.currentTimeMillis;
           yield* fs.remove(cli.registrationFile);
+          // How many liveness polls the window held, so a slow poll shows in the evidence.
+          let polls = 0;
           const exited = yield* eventually(
-            cli.alive(registration.pid),
+            cli.alive(registration.pid).pipe(Effect.tap(() => Effect.sync(() => (polls += 1)))),
             (alive) => !alive,
             "10 seconds",
           ).pipe(Effect.option);
           const stoppedAt = yield* Clock.currentTimeMillis;
           const answering = yield* cli.info(cli.url).pipe(Effect.option);
+          // In the log too, so a passing run on a slow runner shows what one poll costs.
+          yield* Effect.logInfo(
+            `Liveness polls: ${polls} in ${stoppedAt - removedAt} ms after server.json was removed`,
+          );
           yield* evidence.json("watchdog.json", {
             stoppedAfterMs: stoppedAt - removedAt,
+            polls,
             exited: Option.isSome(exited),
             answering: Option.getOrUndefined(answering),
           });

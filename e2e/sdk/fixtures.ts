@@ -80,6 +80,8 @@ export const startFixtureControl = (
           // Cloud's dashboard API takes cookie writes only from its browser origin.
           TEST_FIXTURE_BROWSER_ORIGIN: browserOrigin,
           TEST_FIXTURE_OUTPUT: output,
+          // Removals still running when a scenario's clean-up gives up; see removal-evidence.ts.
+          TEST_FIXTURE_STALLS: path.resolve(directory, "removal-stalls.jsonl"),
           TEST_FIXTURE_TOKEN: reveal(token),
         },
         stdout: "pipe",

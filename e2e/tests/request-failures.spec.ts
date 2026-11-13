@@ -19,7 +19,14 @@ import { RequestFailed, SessionClients } from "../support/api.ts";
 import { EmulatorDeadline, emulatorRequest } from "../support/emulators.ts";
 import { failureText, stepFailureText } from "../support/failure-text.ts";
 import { Target, withCause } from "../support/platform.ts";
-import { CallFailed, parseJson, readResponse } from "../support/request-failure.ts";
+import {
+  CallFailed,
+  connectionOf,
+  isLost,
+  parseJson,
+  platformSignatures,
+  readResponse,
+} from "../support/request-failure.ts";
 
 const suffix = "0123456789abcdef01234567";
 const token = "emu_resend_SYNTHETICtoken0001";
@@ -71,6 +78,26 @@ const failing = (request: IncomingMessage, response: ServerResponse): void => {
       response
         .writeHead(200, { "content-type": "text/html", ...edgeHeaders })
         .end(`${bodyStart}<html>not json ${bodyValue}</html>`);
+      return;
+    case "runtime-502":
+      // Cloudflare's Workers runtime answering for a Worker that did not: its own plain text.
+      response
+        .writeHead(502, { "content-type": "text/plain;charset=UTF-8", ...edgeHeaders })
+        .end("Bad Gateway");
+      return;
+    case "runtime-502-html":
+      // The same words as an HTML page: not the runtime's answer.
+      response.writeHead(502, { "content-type": "text/html", ...edgeHeaders }).end("Bad Gateway");
+      return;
+    case "runtime-502-no-ray":
+      // The same answer that did not come through Cloudflare.
+      response.writeHead(502, { "content-type": "text/plain;charset=UTF-8" }).end("Bad Gateway");
+      return;
+    case "our-502":
+      // Our own 502: a JSON error with its tag.
+      response
+        .writeHead(502, { "content-type": "application/json", ...edgeHeaders })
+        .end(JSON.stringify({ _tag: "ToolCallFailed", message: "The upstream failed." }));
       return;
     case "html-odd-ray":
       // The same answer with a `cf-ray` that is not a ray.
@@ -190,6 +217,14 @@ const renderings = (error: object & { message: string }) => [
 ];
 
 layer(NodeServices.layer, { excludeTestServices: true })("Request failures", (it) => {
+  it("ETIMEDOUT is a connect failure before a response and a time-out once the body has begun", () => {
+    expect(connectionOf("before response", "ETIMEDOUT")).toBe("connect");
+    expect(connectionOf("reading body", "ETIMEDOUT")).toBe("timeout");
+    // The other codes keep their kind whatever the stage.
+    expect(connectionOf("reading body", "ECONNRESET")).toBe("reset");
+    expect(connectionOf("before response", "ECONNREFUSED")).toBe("connect");
+  });
+
   it.effect("an emulator call says how far it got before it failed", () =>
     Effect.gen(function* () {
       const { origin } = yield* stub;
@@ -328,6 +363,119 @@ layer(NodeServices.layer, { excludeTestServices: true })("Request failures", (it
       }),
   );
 
+  it.effect(
+    "a product call that failed in Cloudflare's platform says so first, and nothing else does",
+    () =>
+      Effect.gen(function* () {
+        const { origin } = yield* stub;
+        const runtime = yield* productCall(origin, "/api/runtime-502");
+        const reset = yield* productCall(origin, "/api/reset");
+        const closed = yield* productCall(origin, "/api/closed");
+        const html = yield* productCall(origin, "/api/runtime-502-html");
+        const noRay = yield* productCall(origin, "/api/runtime-502-no-ray");
+        const refused = yield* productCall(refusedOrigin, "/api/x");
+        const notJson = yield* productCall(origin, "/api/html");
+        const emulatorReset = yield* emulatorCall(origin, "/reset");
+
+        // Cloudflare's own 502: our Worker did not answer, and the ray says where to look.
+        expect(runtime.failure).toMatchObject({
+          status: 502,
+          ray,
+          colo: "IAD",
+          signature: "runtime-502",
+        });
+        expect(runtime.message.split("\n")[0]).toMatch(
+          /^Cloudflare's Workers runtime answered 502 Bad Gateway itself; our Worker did not answer \(ray 8f0c1a2b3c4d5e6f-IAD\): POST \/api\/runtime-502 returned HTTP 502 without a JSON response/u,
+        );
+        // A request lost before any response: what the client saw, and that nothing arrived.
+        expect(reset.failure?.signature).toBe("lost");
+        expect(reset.message).toMatch(
+          /^Request lost before any response: the client saw the connection reset with no response after \d+ ms: POST \/api\/reset failed \(request\)/u,
+        );
+        expect(closed.failure?.signature).toBe("lost");
+        expect(closed.message).toMatch(
+          /^Request lost before any response: the client saw the connection closed with no response after \d+ ms: /u,
+        );
+        // Anything that is not exactly one of the two keeps its ordinary text.
+        for (const error of [html, noRay, refused, notJson]) {
+          expect(error.failure?.signature).toBeUndefined();
+          for (const label of Object.values(platformSignatures))
+            expect(error.message).not.toContain(label);
+        }
+        expect(refused.message).toMatch(/^POST \/api\/x failed \(request\)/u);
+        // An emulator is not our Worker: its failures are never labelled as ours.
+        for (const label of Object.values(platformSignatures))
+          expect(emulatorReset.message).not.toContain(label);
+        for (const error of [runtime, reset, closed])
+          for (const text of renderings(error)) expect(leaked(text)).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "a request with no response headers before its deadline keeps its ordinary text",
+    () =>
+      Effect.gen(function* () {
+        const { origin } = yield* stub;
+        // As the API client's 60 s deadline would, shortened: the server never answers.
+        const failure = yield* readResponse(
+          Effect.flatMap(HttpClient.HttpClient, (http) =>
+            http.execute(HttpClientRequest.get(`${origin}/stall`)),
+          ),
+          "1 second",
+        ).pipe(Effect.scoped, Effect.flip, Effect.provide(FetchHttpClient.layer));
+        expect(failure).toBeInstanceOf(CallFailed);
+        if (!(failure instanceof CallFailed)) return;
+        expect(failure.failure).toMatchObject({ stage: "timeout", connection: "timeout" });
+        expect(failure.failure.status).toBeUndefined();
+        expect(failure.failure.signature).toBeUndefined();
+        const error = new RequestFailed({
+          method: "GET",
+          path: "/stall",
+          reason: "timeout",
+          failure: failure.failure,
+        });
+        expect(error.message).toMatch(
+          /^GET \/stall failed \(timeout\) before a JSON response was read: timeout, after \d+ ms$/u,
+        );
+        for (const label of Object.values(platformSignatures))
+          expect(error.message).not.toContain(label);
+      }),
+    { timeout: 10_000 },
+  );
+
+  it.effect("our own 502, a JSON error with its tag, is an answer and not a platform failure", () =>
+    Effect.gen(function* () {
+      const { origin } = yield* stub;
+      const answer = yield* Effect.gen(function* () {
+        const sessions = yield* SessionClients;
+        const session = yield* sessions.session();
+        return yield* sessions.request(session, "POST", "/api/our-502", {});
+      }).pipe(
+        Effect.provide(
+          SessionClients.layer.pipe(Layer.provide([targetAt(origin), FetchHttpClient.layer])),
+        ),
+      );
+      expect(answer.status).toBe(502);
+      expect(answer.body).toMatchObject({ _tag: "ToolCallFailed" });
+    }),
+  );
+
+  it("a lost request is one with no response headers whose connection was reset or closed", () => {
+    const base = { elapsedMs: 10 } as const;
+    expect(isLost({ ...base, stage: "before response", connection: "reset" })).toBe(true);
+    expect(isLost({ ...base, stage: "before response", connection: "closed" })).toBe(true);
+    // A deadline is not evidence of the platform: our own Worker hanging looks the same.
+    expect(isLost({ ...base, stage: "before response", connection: "timeout" })).toBe(false);
+    expect(isLost({ ...base, stage: "timeout", connection: "timeout" })).toBe(false);
+    // Headers arrived, or the connection was never made: not lost.
+    expect(isLost({ ...base, stage: "timeout", status: 200, connection: "timeout" })).toBe(false);
+    expect(isLost({ ...base, stage: "reading body", status: 200, connection: "closed" })).toBe(
+      false,
+    );
+    for (const connection of ["connect", "dns", "tls", "other"] as const)
+      expect(isLost({ ...base, stage: "before response", connection })).toBe(false);
+  });
+
   it.effect("a product call says how far it got before it failed", () =>
     Effect.gen(function* () {
       const { origin } = yield* stub;
@@ -355,7 +503,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Request failures", (it
       expect(html.failure).toMatchObject({ stage: "decoding body", status: 200, ray, colo: "IAD" });
       expect(html.status).toBe(200);
       expect(reset.message).toMatch(
-        /^POST \/api\/reset failed \(request\) before a JSON response was read: before response \(reset\), [A-Za-z >]+ ECONNRESET, after \d+ ms/u,
+        /^Request lost before any response: the client saw the connection reset with no response after \d+ ms: POST \/api\/reset failed \(request\) before a JSON response was read: before response \(reset\), [A-Za-z >]+ ECONNRESET, after \d+ ms/u,
       );
       expect(html.message).toContain(
         "POST /api/html returned HTTP 200 without a JSON response (text/html, ",

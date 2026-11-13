@@ -247,7 +247,7 @@ export const readSnapshot = <T extends V1SnapshotTable>(
       ? yield* sql`
           select row_id, owner, subject, integration, name, template, provider, item_ids,
             oauth_client, oauth_client_owner, refresh_item_id, expires_at::float8 as expires_at,
-            oauth_scope, oauth_token_url,
+            oauth_scope, oauth_token_url, last_health,
             (extract(epoch from created_at) * 1000)::float8 as created_ms
           from connection where tenant = ${tenant} and ${visible}
           order by created_at, row_id

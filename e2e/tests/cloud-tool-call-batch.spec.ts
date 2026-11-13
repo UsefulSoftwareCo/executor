@@ -11,15 +11,17 @@
  * the batch, counted on its own. That write runs after the call has answered. When it ends long
  * after the answer, the session object's call still waits for it before exporting its telemetry,
  * so its span reaches the telemetry store with no later request to the object: also for a call
- * that waited for input and was answered by a second request. A call whose response is
+ * that waited for input and was answered by a second request, also when a listen stream, which
+ * is streamed and so does not wait, opened on the object after the answer. A call whose response is
  * streamed, as a native client's approval is, ends its stream without waiting for the write.
  *
  * The scenario holds a table lock in the Cloud database to stop a batch partway through, so it
  * runs on its own local Cloud (`cloud-batch` in e2e/ci-selection.ts).
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Fiber, Schedule, Schema } from "effect";
-import { randomUUID } from "node:crypto";
+import { Effect, Fiber, Redacted, Schedule, Schema } from "effect";
+import { HttpClient, HttpClientRequest } from "effect/http";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -28,12 +30,14 @@ import { cloudLocks } from "../support/cloud-locks.ts";
 import { App, Resource, type SpanQuery } from "../support/contracts.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
+import { Target } from "../support/platform.ts";
 import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 
 /**
  * `token` returns the account's token; `slow` does too, after `ms` milliseconds, and `review` once
- * its call is approved. `ask` returns the name it asks for while it runs.
+ * its call is approved. `ask` returns the name it asks for while it runs; `askThenWait` does too,
+ * `ms` milliseconds after it is answered.
  */
 const source = `import { defineApp, defineProvider, secrets, object, string, number, query, mutation, router } from "apps";
 import { always } from "apps/operations/approval";
@@ -49,6 +53,12 @@ export default defineApp({ user: { accounts: { service } } }, async ctx => ({
     }),
     review: mutation({ input: object({}), output: string(), approval: always() },
       async () => ctx.user.accounts.service.fields.token),
+    askThenWait: mutation({ input: object({ ms: number() }), output: string() }, async ({ elicit }, { ms }) => {
+      const response = await elicit({ mode: "form", message: "Name it",
+        requestedSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } });
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      return response.action === "accept" ? String(response.content?.name) : response.action;
+    }),
     ask: mutation({ input: object({}), output: string() }, async ({ elicit }) => {
       const response = await elicit({ mode: "form", message: "Name it",
         requestedSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] } });
@@ -66,6 +76,10 @@ const Execution = Schema.Struct({
     value: Schema.optional(Schema.Unknown),
     error: Schema.optional(Schema.Unknown),
   }),
+});
+const Paused = Schema.Struct({
+  status: Schema.Literal("approval-required"),
+  requestId: Schema.String,
 });
 const Asked = Schema.Struct({
   status: Schema.Literal("input-required"),
@@ -579,6 +593,28 @@ try {
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
             );
 
+          /**
+           * Wait for the app's own spans, which the app runtime forwards from the app's isolate
+           * once its call ends, to reach Motel in `traces`; return their operations.
+           */
+          const appSpans = (
+            traces: ReadonlyArray<string>,
+            needed: ReadonlyArray<string> = ["app.call"],
+          ) =>
+            Effect.forEach(traces, (trace) => telemetry.query(trace)).pipe(
+              Effect.map((found) =>
+                found
+                  .flatMap((trace) => trace.data)
+                  .filter(({ span }) => span.serviceName === "executor-app")
+                  .map(({ span }) => span.operationName),
+              ),
+              Effect.filterOrFail(
+                (names) => needed.every((name) => names.includes(name)),
+                () => new Error("The app's forwarded spans have not reached Motel"),
+              ),
+              Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
+            );
+
           yield* evidence.step(
             "A log write that ends long after its call answered still reaches Motel",
             Effect.gen(function* () {
@@ -639,6 +675,143 @@ try {
               expect(answeredMs, "The answer does not wait for the call's log write").toBeLessThan(
                 delay,
               );
+              const texts = yield* logStatements(yield* mcpTraces(2), (texts) => texts.length > 0);
+              expect(texts, "The call's one insert").toEqual(["insert"]);
+              // The app's call ended after the answer, in the scope of the call that paused: its
+              // runtime still forwards the app's own spans.
+              expect(yield* appSpans(yield* mcpTraces(2))).toContain("app.call");
+            }),
+          );
+
+          yield* evidence.step(
+            "A call paused for approval and approved by a second request forwards the approved call's own spans",
+            Effect.gen(function* () {
+              const paused = yield* client
+                .use("Call a tool that needs approval", (client, signal) =>
+                  client.callTool(
+                    { name: "call", arguments: { calls: { path: tool("review"), input: {} } } },
+                    undefined,
+                    { signal },
+                  ),
+                )
+                .pipe(
+                  Effect.flatMap((result) =>
+                    Schema.decodeUnknownEffect(Paused)(result.structuredContent),
+                  ),
+                );
+              const approved = yield* client.use("Approve the call", (client, signal) =>
+                client.callTool(
+                  {
+                    name: "resume",
+                    arguments: { requestId: paused.requestId, response: { action: "accept" } },
+                  },
+                  undefined,
+                  { signal },
+                ),
+              );
+              expect(approved.structuredContent).toMatchObject({
+                status: "completed",
+                execution: { ok: true },
+              });
+              // The pause's request already ran the app once, to ask whether the call needs
+              // approval (`app.tool.approval`), and exported that `app.call`. The approved call
+              // runs the tool under the approving request: its own spans, with the tool's execution,
+              // are in that request's trace.
+              const [pausedTrace, approvedTrace] = yield* mcpTraces(2);
+              expect(
+                yield* appSpans([approvedTrace ?? ""], ["app.call", "app.operation.execute"]),
+              ).toContain("app.operation.execute");
+              expect(yield* appSpans([pausedTrace ?? ""])).not.toContain("app.operation.execute");
+            }),
+          );
+
+          yield* evidence.step(
+            "A call answered while a listen stream opens on its session object still exports its slow log write",
+            Effect.gen(function* () {
+              const target = yield* Target,
+                http = HttpClient.withScope(yield* HttpClient.HttpClient);
+              yield* slowLog("insert");
+              const asked = yield* client
+                .use("A call that asks for input, then runs on", (client, signal) =>
+                  client.callTool(
+                    {
+                      name: "execute",
+                      arguments: { code: `return await ${tool("askThenWait")}({ ms: 2000 })` },
+                    },
+                    undefined,
+                    { signal },
+                  ),
+                )
+                .pipe(
+                  Effect.flatMap((result) =>
+                    Schema.decodeUnknownEffect(Asked)(result.structuredContent),
+                  ),
+                );
+              yield* resetRechecks;
+              const answering = yield* Effect.forkChild(
+                client
+                  .use("Answer the call while a listen stream opens", (client, signal) =>
+                    client.callTool(
+                      {
+                        name: "resume",
+                        arguments: {
+                          requestId: asked.requestId,
+                          response: { action: "accept", content: { name: "synthetic-name" } },
+                        },
+                      },
+                      undefined,
+                      { signal },
+                    ),
+                  )
+                  .pipe(
+                    Effect.flatMap((result) =>
+                      Schema.decodeUnknownEffect(Execution)(result.structuredContent),
+                    ),
+                  ),
+              );
+              // The answer has reached the session object once its key was checked; the call then
+              // runs on for 2 s. A listen stream opened now is the object's newest request when
+              // the call ends and offers its log write.
+              yield* rechecks.pipe(
+                Effect.filterOrFail((rows) => (rows[0]?.n ?? 0) >= perRequest),
+                Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 200 }),
+              );
+              const answered = yield* Effect.scoped(
+                Effect.gen(function* () {
+                  const revision = "2026-07-28";
+                  const listen = yield* http.execute(
+                    yield* HttpClientRequest.bodyJson(
+                      HttpClientRequest.post(`${target.metadata.origin}/mcp`).pipe(
+                        HttpClientRequest.bearerToken(Redacted.value(pat.key)),
+                        HttpClientRequest.setHeaders({
+                          accept: "application/json, text/event-stream",
+                          "content-type": "application/json",
+                          "mcp-protocol-version": revision,
+                          "mcp-method": "subscriptions/listen",
+                          "x-executor-organization": actors.organization.id,
+                          traceparent: `00-${randomBytes(16).toString("hex")}-${randomBytes(8).toString("hex")}-01`,
+                        }),
+                      ),
+                      {
+                        jsonrpc: "2.0",
+                        id: 1,
+                        method: "subscriptions/listen",
+                        params: {
+                          notifications: { toolsListChanged: true },
+                          _meta: {
+                            "io.modelcontextprotocol/protocolVersion": revision,
+                            "io.modelcontextprotocol/clientCapabilities": {},
+                          },
+                        },
+                      },
+                    ),
+                  );
+                  expect(listen.status, "The listen stream is held open").toBe(200);
+                  // The client leaves once the call has answered, while its log write still runs.
+                  return yield* Fiber.join(answering);
+                }),
+              ).pipe(Effect.provideService(HttpClient.TracerPropagationEnabled, false));
+              expect(answered.execution).toEqual({ ok: true, value: "synthetic-name" });
               const texts = yield* logStatements(yield* mcpTraces(2), (texts) => texts.length > 0);
               expect(texts, "The call's one insert").toEqual(["insert"]);
             }),

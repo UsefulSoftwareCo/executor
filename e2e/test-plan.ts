@@ -1757,6 +1757,27 @@ export const scenarios = plan({
       local: na("Local has no organization member roles."),
     },
   },
+  localAppRuntimeRestart: {
+    file: "local-app-runtime-restart.spec.ts",
+    title:
+      "local logs a restarted app runtime and reports lost calls and builds as lost connections",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Self-host composes the same workerd app runtime; the local product covers it.",
+      ),
+      cloud: na("Cloudflare runs Cloud's app Workers; there is no workerd process to restart."),
+    },
+  },
+  localRegistryCredentials: {
+    file: "local-registry-credentials.spec.ts",
+    title: "a failed dependency install names the registry's host and path but not its credentials",
+    targets: {
+      local: scheduled,
+      "self-host": na("Self-host builds through the same compiler; the local product covers it."),
+      cloud: na("Cloud's compiler uses the public npm registry; no operator registry URL exists."),
+    },
+  },
   localWorkflowEngineMemory: {
     file: "local-workflow-engine-memory.spec.ts",
     title: "local releases finished workflow runs' engines from memory",
@@ -2806,6 +2827,19 @@ export const scenarios = plan({
         "Self-host serves MCP sessions in its server process, with no session object.",
       ),
       local: na("Local serves MCP sessions in its server process, with no session object."),
+    },
+  },
+  cloudTelemetryIdleFlush: {
+    fixtures: "actors",
+    file: "cloud-telemetry-idle-flush.spec.ts",
+    title:
+      "Cloud's isolate telemetry flush runs nothing for idle listen streams and still exports a held stream's request span while it stays open",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host exports telemetry from its server process, with no isolate flush.",
+      ),
+      local: na("Local exports telemetry from its server process, with no isolate flush."),
     },
   },
   cloudMcpStreamLifetime: {
@@ -4976,10 +5010,33 @@ export const scenarios = plan({
       local: na("Hosted callback routing and saved-client management."),
     },
   },
-  oauthConnectStoryboard: {
+  oauthStoryboardSetup: {
     fixtures: "actors",
     file: "oauth-connect-storyboard.spec.ts",
-    title: "OAuth connect storyboard captures loading, consent, success and recovery frames",
+    title:
+      "OAuth connect storyboard captures setup loading, failure, retry and missing client frames",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer for controlled capture."),
+      local: na("Hosted account dialogs and callback recovery."),
+    },
+  },
+  oauthStoryboardConsent: {
+    fixtures: "actors",
+    file: "oauth-connect-storyboard.spec.ts",
+    title:
+      "OAuth connect storyboard captures consent, callback recovery and connected account frames",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer for controlled capture."),
+      local: na("Hosted account dialogs and callback recovery."),
+    },
+  },
+  oauthStoryboardReconnect: {
+    fixtures: "actors",
+    file: "oauth-connect-storyboard.spec.ts",
+    title:
+      "OAuth connect storyboard captures reconnect, client replacement and expired link frames",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback OAuth issuer for controlled capture."),
@@ -5609,9 +5666,7 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: na("Cloud runs its own early consent scenario, on its role hosts."),
-      local: na(
-        "Local's server sends its consent page with Connect enabled, but Connect pressed before it hydrates still sends no decision after hydration; that is a separate open defect.",
-      ),
+      local: na("Local runs its own early consent scenario."),
     },
   },
   earlyDeviceDecision: {
@@ -5634,6 +5689,17 @@ export const scenarios = plan({
       cloud: scheduled,
       "self-host": na("Self-host runs its own early consent scenario."),
       local: na("Local has no hosted MCP consent page."),
+    },
+  },
+  oneConsentDecision: {
+    fixtures: "actors",
+    file: "early-form-submission.spec.ts",
+    title:
+      "The MCP consent page sends only the first of two decisions submitted before it renders again",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The consent actions are shared; self-host runs this case."),
+      local: na("The consent actions are shared; self-host runs this case."),
     },
   },
   earlyFormSubmission: {
@@ -7134,6 +7200,16 @@ export const scenarios = plan({
       local: na("Local sign-in offers no choices; localSignInPage covers its page."),
     },
   },
+  localEarlyConsentDecision: {
+    file: "local-mcp-sign-in-page.spec.ts",
+    title:
+      "Local's MCP consent page holds Connect pressed before it is interactive and approves the client after hydration",
+    targets: {
+      local: scheduled,
+      "self-host": na("Self-host runs its own early consent scenario."),
+      cloud: na("Cloud runs its own early consent scenario, on its role hosts."),
+    },
+  },
   localSignInPage: {
     file: "local-mcp-sign-in-page.spec.ts",
     title: "Local sign-in shows its access and approvals as plain rows with Cancel and Connect",
@@ -7398,11 +7474,24 @@ export const scenarios = plan({
       local: na("Local has no hosted organization policies."),
     },
   },
+  cloudExportHang: {
+    fixtures: "actors",
+    file: "cloud-export-hang.spec.ts",
+    title:
+      "Cloud requests answer and release their database connections while the telemetry export endpoint hangs",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host serves its database in-process; it holds no connection to release.",
+      ),
+      local: na("Local runs no Worker event pool."),
+    },
+  },
   cloudMcpCallBatch: {
     fixtures: "actors",
     file: "cloud-tool-call-batch.spec.ts",
     title:
-      "Cloud MCP tool calls send their checks and reads in one socket write and one snapshot, alone and in parallel, read again in order when a batch fails, and export a log write that outlasts the call without holding a streamed response",
+      "Cloud MCP tool calls send their checks and reads in one socket write and one snapshot, alone and in parallel, read again in order when a batch fails, and export a log write that outlasts the call without holding a streamed response, also beside a listen stream",
     targets: {
       cloud: managedCloud,
       "self-host": na(
@@ -8231,13 +8320,16 @@ export const scenarios = plan({
   webhookSourceLookup: {
     fixtures: "actors",
     file: "webhook-source-lookup.spec.ts",
-    title: "saving an account beside 100,000 webhook sources reads its own source by index",
+    title:
+      "saving an account beside 100,000 accounts, links and webhook sources reads no table at more than a lookup's cost",
     targets: {
       local: na("Local has no hosted webhook sources linked through members."),
       "self-host": na(
         "The query plans are read from Cloud's Postgres; self-host's PGlite runs inside its server.",
       ),
-      cloud: scheduled,
+      // It seeds and plans through cloudLocks, which reaches only managed local Cloud's database:
+      // a deployed stage gives the suite no connection to its own.
+      cloud: managedCloud,
     },
   },
   accountLinking: {
@@ -9612,6 +9704,12 @@ export const scenarios = plan({
       "Cloud v1 import dry runs skip and report what v1 cannot run either, without blocking the organization: a local MCP server, an API with no absolute base URL or a server variable no server declares, an unreadable specification, a GraphQL endpoint that is not http(s), their connections and rules, an operation on a WebSocket server, a tool the organization's revised specification dropped, connections whose OAuth client, credential or Vault secret is gone, and rules that match no tool; move an API on two services' hosts, an org connection whose secret a member saved, flagging members who saved different values, a token saved on an OAuth method without a client, and OAuth MCP servers with fixed headers, reporting those that repeat the server's own OAuth client",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportFailingInV1: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import moves an organization whose OAuth MCP server does not respond while its sign-in is set up, for its owner to reconnect, when v1's last verdict on that connection was a failure, and still refuses one whose connection v1 last saw healthy or never checked",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   // The bound counts every run's organizations on a Cloud, so this runs on its own local Cloud.
   v1ImportBounded: {
     file: "cloud-v1-import-run.spec.ts",
@@ -10534,7 +10632,7 @@ export const scenarios = plan({
     legacyStorage: true,
     file: "tool-call-log.spec.ts",
     title:
-      "A lapsed approval reads as expired, the prune marks it, and logged calls older than 30 days are not found before the prune deletes them",
+      "A lapsed approval reads as expired from its deadline and the prune marks it, and logged calls older than 30 days are not found and the prune deletes them",
     targets: {
       "self-host": scheduled,
       cloud: na("Advances the wall clock of a runner-owned product process."),

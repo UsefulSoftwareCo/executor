@@ -120,7 +120,7 @@ export const routeTemplates = (templates: Iterable<`/${string}`>) => {
  * probe all record `/api/auth/*`, `/docs/*` or `/api/*`. A handler that serves a fixed set of
  * endpoints under its wildcard names the request's endpoint with `routeTemplates`.
  */
-const allowlistedSpan = (span: Tracer.Span): Tracer.Span => {
+const allowlistedSpan = (span: Tracer.Span, ended: () => void): Tracer.Span => {
   let path = false;
   let route: string | undefined;
   return {
@@ -158,7 +158,7 @@ const allowlistedSpan = (span: Tracer.Span): Tracer.Span => {
     // A successful transport can carry a failed domain operation. The producer
     // explicitly marks that outcome; arbitrary result payloads are never inspected.
     // A failure records the fixed message an error declares in place of an app's text.
-    end: (endTime: bigint, exit: Exit.Exit<unknown, unknown>) =>
+    end: (endTime: bigint, exit: Exit.Exit<unknown, unknown>) => {
       span.end(
         endTime,
         Exit.isSuccess(exit)
@@ -166,7 +166,9 @@ const allowlistedSpan = (span: Tracer.Span): Tracer.Span => {
             ? Exit.fail(new LogicalOperationFailed())
             : exit
           : Exit.failCause(recordedCause(exit.cause)),
-      ),
+      );
+      ended();
+    },
     attribute: (key: string, value: unknown) => {
       if (!spanAttributeAllowed(key)) return;
       if (key === "url.path" && typeof value === "string") {
@@ -199,15 +201,20 @@ const httpSpanNames = Layer.mergeAll(
   Layer.succeed(HttpClient.SpanNameGenerator, (request) => `http.client ${request.method}`),
 );
 
-/** Wrap whichever tracer is already in scope; provide this above the exporter. */
+/**
+ * Wrap whichever tracer is already in scope; provide this above the exporter. `ended` runs after
+ * each span has ended, once the exporter holds it.
+ */
 export const spanAttributes = (
   clock?: "system" | "cloudflare-io",
   recordAll = false,
-): Layer.Layer<never> => Layer.merge(httpSpanNames, tracerWithAllowlist(clock, recordAll));
+  ended: () => void = () => {},
+): Layer.Layer<never> => Layer.merge(httpSpanNames, tracerWithAllowlist(clock, recordAll, ended));
 
 const tracerWithAllowlist = (
   clock: "system" | "cloudflare-io" | undefined,
   recordAll: boolean,
+  ended: () => void,
 ): Layer.Layer<never> =>
   Layer.effect(Tracer.Tracer)(
     Tracer.Tracer.pipe(
@@ -216,6 +223,7 @@ const tracerWithAllowlist = (
         span: (options) => {
           const span = allowlistedSpan(
             tracer.span(recordAll ? { ...options, sampled: true } : options),
+            ended,
           );
           if (
             recordAll &&

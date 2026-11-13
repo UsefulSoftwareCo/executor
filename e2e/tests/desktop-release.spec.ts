@@ -2,17 +2,21 @@ import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   Cause,
+  Clock,
   Config,
+  Duration,
   Effect,
   Exit,
   FileSystem,
   Layer,
+  Option,
   Path,
   Redacted,
   Schedule,
   Schema,
 } from "effect";
 import { FetchHttpClient } from "effect/http";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { _electron, chromium } from "playwright";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
@@ -21,10 +25,13 @@ import { driver } from "../support/platform.ts";
 import { freePort } from "../support/ports.ts";
 import {
   desktopCli,
+  desktopEvents,
+  eventsNamed,
   requestBrowserPairing,
   runnerSession,
   stopBackgroundServers,
 } from "../support/desktop.ts";
+import { captureOutput, closeDesktop, closeLimit, quitBound } from "../support/desktop-quit.ts";
 import { authorizeBrowserMcp } from "../support/mcp-oauth.ts";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -114,14 +121,14 @@ it.live("packaged desktop starts without the workspace and retains apps after re
         yield* checkpoint(first ? "Verify first desktop launch" : "Verify desktop restart");
         yield* Effect.scoped(
           Effect.gen(function* () {
-            const electron = yield* Effect.acquireRelease(
+            // Its stderr is captured from launch, for the close to keep if it does not finish.
+            const { electron } = yield* Effect.acquireRelease(
               driver("launch packaged desktop", () =>
                 // Hosted runners have no usable GPU. Exercise the packaged app
                 // with software rendering instead of repeated GPU startup failures.
                 _electron.launch({ executablePath, cwd: directory, env, args: ["--disable-gpu"] }),
-              ),
-              (electron) =>
-                driver("close packaged desktop", () => electron.close()).pipe(Effect.orDie),
+              ).pipe(Effect.map((electron) => ({ electron, output: captureOutput(electron) }))),
+              ({ electron, output }) => closeDesktop(electron, { data, output }).pipe(Effect.orDie),
             );
             const capture = (chunk: Uint8Array) =>
               diagnostics.push(new TextDecoder().decode(chunk));
@@ -515,11 +522,11 @@ it.live(
           EXECUTOR_NPM_REGISTRY: registry.url,
         };
         yield* Effect.addFinalizer(() => stopBackgroundServers(data, () => []));
-        const electron = yield* Effect.acquireRelease(
+        const { electron } = yield* Effect.acquireRelease(
           driver("launch packaged desktop", () =>
             _electron.launch({ executablePath, cwd: directory, env, args: ["--disable-gpu"] }),
-          ),
-          (electron) => driver("close packaged desktop", () => electron.close()).pipe(Effect.orDie),
+          ).pipe(Effect.map((electron) => ({ electron, output: captureOutput(electron) }))),
+          ({ electron, output }) => closeDesktop(electron, { data, output }).pipe(Effect.orDie),
         );
         const page = yield* driver("desktop window", () => electron.firstWindow());
         yield* driver("paired dashboard", () =>
@@ -630,6 +637,254 @@ it.live(
           expect(text, name).not.toContain(encryptionKey);
           expect(text, name).not.toMatch(/#pair=[0-9a-f]/);
         }
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+);
+
+/**
+ * A packaged desktop's own home for the quit scenarios: its data, profile and cache directories,
+ * synthetic keys, a free port and the local registry. Its background server stops with the scope.
+ */
+const quitScenarioHome = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const executablePath = yield* Config.String("EXECUTOR_E2E_DESKTOP_EXECUTABLE");
+  const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-desktop-quit-" });
+  const registry = yield* localNpmRegistry;
+  const cacheHome = path.join(directory, "cache-home");
+  const data = path.join(directory, "data");
+  const env = {
+    ...runnerSession(),
+    PATH: yield* Config.String("EXECUTOR_E2E_RUNTIME_PATH").pipe(
+      Config.withDefault(process.env.PATH ?? ""),
+    ),
+    HOME: process.platform === "darwin" ? cacheHome : (process.env.HOME ?? ""),
+    ...(process.platform === "win32"
+      ? { LOCALAPPDATA: cacheHome }
+      : process.platform === "darwin"
+        ? {}
+        : { XDG_CACHE_HOME: cacheHome }),
+    DO_NOT_TRACK: "1",
+    EXECUTOR_API_KEY: randomBytes(32).toString("hex"),
+    EXECUTOR_ENCRYPTION_KEY: randomBytes(32).toString("hex"),
+    EXECUTOR_PORT: String(yield* freePort),
+    EXECUTOR_DESKTOP_DATA_DIR: data,
+    EXECUTOR_DESKTOP_PROFILE_DIR: path.join(directory, "profile"),
+    EXECUTOR_NPM_REGISTRY: registry.url,
+  };
+  yield* Effect.addFinalizer(() => stopBackgroundServers(data, () => []));
+  return { executablePath, directory, data, env };
+});
+
+it.live(
+  "packaged desktop that does not exit after quitting fails its close within the bound, naming what kept it",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { executablePath, directory, data, env } = yield* quitScenarioHome;
+        const electron = yield* driver("launch packaged desktop", () =>
+          _electron.launch({ executablePath, cwd: directory, env, args: ["--disable-gpu"] }),
+        );
+        const output = captureOutput(electron);
+        const pid = yield* Effect.fromNullishOr(electron.process().pid);
+        const page = yield* driver("desktop window", () => electron.firstWindow());
+        yield* driver("paired dashboard", () =>
+          page
+            .getByRole("heading", { name: /^Apps/ })
+            .waitFor({ state: "visible", timeout: 60_000 }),
+        );
+        // Something in the main process throws while the desktop quits. Electron then shows its
+        // error box, which blocks the main process, so the desktop never exits.
+        yield* driver("throw while the desktop quits", () =>
+          electron.evaluate(({ app }) => {
+            app.once("before-quit", () => {
+              setTimeout(() => {
+                throw new Error("Synthetic failure while quitting");
+              }, 0);
+            });
+          }),
+        );
+        const started = yield* Clock.currentTimeMillis;
+        const error = yield* Effect.flip(closeDesktop(electron, { data, output }));
+        const seconds = ((yield* Clock.currentTimeMillis) - started) / 1_000;
+        // The bound, then the evidence, whose every step is capped (see `closeLimit`).
+        expect(seconds).toBeGreaterThanOrEqual(Duration.toSeconds(quitBound));
+        expect(seconds).toBeLessThanOrEqual(Duration.toSeconds(closeLimit));
+        expect(error.message).toContain(
+          `did not exit within ${Duration.toSeconds(quitBound)} seconds of being asked to quit`,
+        );
+        expect(error.message).toContain("Main process: still running");
+        expect(error.message).toContain("The desktop's quit records: quitting (before-quit)");
+        expect(error.message).toContain("uncaught exception while closing");
+        expect(error.message).toContain("Error: Synthetic failure while quitting");
+        const evidence = /Evidence: (.+)$/u.exec(error.message)?.[1] ?? "";
+        const quit = yield* fs
+          .readFileString(path.join(evidence, "quit.json"))
+          .pipe(
+            Effect.flatMap(
+              Schema.decodeUnknownEffect(
+                Schema.fromJsonString(
+                  Schema.Struct({ pid: Schema.Number, mainProcessAlive: Schema.Boolean }),
+                ),
+              ),
+            ),
+          );
+        expect(quit).toEqual({ pid, mainProcessAlive: true });
+        expect(yield* fs.readFileString(path.join(evidence, "executor-desktop.jsonl"))).toContain(
+          "Synthetic failure while quitting",
+        );
+        // The failed close ended the desktop, so its scenario's clean-up runs.
+        expect(
+          yield* Effect.try(() => process.kill(pid, 0)).pipe(
+            Effect.as(true),
+            Effect.orElseSucceed(() => false),
+          ),
+        ).toBe(false);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+);
+
+// Not on Windows: the scenario's mechanism, a signal sent to the desktop, a shell that wires its
+// stderr to a pipe and a reader the scenario kills, is POSIX. The quit-record code it proves is the
+// same on every platform.
+it.live.skipIf(process.platform === "win32")(
+  "packaged desktop whose stderr reader has gone quits on SIGINT and records its quit",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const { executablePath, directory, data, env } = yield* quitScenarioHome;
+        const readerFile = path.join(directory, "stderr-reader.pid");
+        // Started directly, not through Playwright, which reads the desktop's output to the end.
+        // Its stderr is a pipe into a reader this scenario ends, as Ctrl-C ends the command a
+        // terminal pipes the desktop's output into, `executor-v2 2>&1 | grep …`, as it quits it.
+        const desktop = yield* processes.spawn(
+          ChildProcess.make(
+            "/bin/bash",
+            [
+              "-c",
+              // The reader writes its own process ID with POSIX `$$`: macOS's Bash 3.2 has no
+              // $BASHPID. It then becomes `cat`, which keeps that ID.
+              `reader=$1; shift; exec 2> >(exec /bin/sh -c 'echo $$ > "$1"; exec /bin/cat > /dev/null' reader "$reader"); exec "$@"`,
+              "desktop",
+              readerFile,
+              executablePath,
+              "--no-sandbox",
+              "--disable-gpu",
+            ],
+            {
+              cwd: directory,
+              env,
+              extendEnv: false,
+              stdin: "ignore",
+              stdout: "ignore",
+              stderr: "inherit",
+              detached: true,
+              forceKillAfter: 1_000,
+            },
+          ),
+        );
+        yield* eventsNamed(data, "Executor desktop ready", 1);
+        const reader = Number((yield* fs.readFileString(readerFile)).trim());
+        expect(reader).toBeGreaterThan(0);
+        yield* Effect.try(() => process.kill(reader, "SIGKILL"));
+        // The reader has exited, and so closed its end, once it is a zombie or gone: the shell
+        // that started it became the desktop, which never reaps it.
+        yield* processes
+          .lines(ChildProcess.make("/bin/ps", ["-o", "stat=", "-p", String(reader)]))
+          .pipe(
+            Effect.orElseSucceed(() => []),
+            Effect.flatMap((lines) => {
+              const state = (lines[0] ?? "").trim();
+              return state === "" || state.startsWith("Z")
+                ? Effect.void
+                : Effect.fail(new Error(`The stderr reader is still running (${state})`));
+            }),
+            Effect.retry({ schedule: Schedule.spaced("20 millis"), times: 100 }),
+          );
+        // At once, so nothing but the quit writes to the pipe whose reader has gone.
+        yield* Effect.try(() => process.kill(desktop.pid, "SIGINT"));
+        const exit = yield* desktop.exitCode.pipe(Effect.timeoutOption(quitBound));
+        expect(
+          Option.getOrUndefined(exit),
+          "the desktop's exit code, within the bound, after SIGINT",
+        ).toBe(0);
+        const events = yield* desktopEvents(data);
+        // Electron turns SIGINT into its own quit, so the desktop records it as `before-quit`.
+        expect(
+          events
+            .filter((event) =>
+              ["Desktop quitting", "Desktop closed", "Desktop uncaught exception"].includes(
+                event.message,
+              ),
+            )
+            .map(({ message, annotations }) => ({
+              message,
+              reason: annotations.reason,
+              outcome: annotations.outcome,
+            })),
+        ).toEqual([
+          { message: "Desktop quitting", reason: "before-quit", outcome: undefined },
+          { message: "Desktop closed", reason: undefined, outcome: "success" },
+        ]);
+      }),
+    ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
+);
+
+it.live(
+  "packaged desktop records any thrown value as an uncaught exception and keeps running",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { executablePath, directory, data, env } = yield* quitScenarioHome;
+        const { electron } = yield* Effect.acquireRelease(
+          driver("launch packaged desktop", () =>
+            _electron.launch({ executablePath, cwd: directory, env, args: ["--disable-gpu"] }),
+          ).pipe(Effect.map((electron) => ({ electron, output: captureOutput(electron) }))),
+          ({ electron, output }) => closeDesktop(electron, { data, output }).pipe(Effect.orDie),
+        );
+        yield* eventsNamed(data, "Starting Executor desktop", 1);
+        // Electron's own box for an uncaught exception would block the main process; it is
+        // replaced by a recorder, so each throw is seen by the desktop and Electron alike.
+        // Values that are not Errors: null, undefined, an object with no prototype and a string.
+        yield* driver("throw values that are not Errors from the main process", () =>
+          electron.evaluate(({ dialog }) => {
+            const shown: Array<string> = [];
+            Object.assign(globalThis, { executorE2EErrorBoxes: shown });
+            Object.assign(dialog, { showErrorBox: (title: string) => shown.push(title) });
+            const values: ReadonlyArray<() => unknown> = [
+              () => null,
+              () => undefined,
+              () => Object.create(null),
+              () => "Synthetic thrown text",
+              () => new Error("Synthetic thrown error"),
+            ];
+            values.forEach((value, index) =>
+              setTimeout(() => {
+                throw value();
+              }, index * 50),
+            );
+          }),
+        );
+        const recorded = yield* eventsNamed(data, "Desktop uncaught exception", 5);
+        const described = recorded.map((event) => event.annotations.error?.split("\n")[0]);
+        expect(described).toEqual(
+          expect.arrayContaining([
+            "null",
+            "undefined",
+            "[object Object]",
+            "Synthetic thrown text",
+            "Error: Synthetic thrown error",
+          ]),
+        );
+        // The desktop still runs and answers.
+        expect(yield* driver("the desktop still answers", () => electron.evaluate(() => 1))).toBe(
+          1,
+        );
       }),
     ).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer))),
 );

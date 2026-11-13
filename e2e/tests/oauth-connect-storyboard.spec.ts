@@ -31,132 +31,210 @@ const App = Schema.Struct({
   }),
 });
 
+/**
+ * The storyboard's shared start: an app deployed against a loopback OAuth issuer, the signed-in
+ * owner on a dark desktop viewport, and the helpers each part uses. Each part writes its own frame
+ * manifest.
+ */
+const storyboard = (part: string) =>
+  Effect.gen(function* () {
+    const api = yield* Api,
+      actors = yield* Actors,
+      browser = yield* Browser,
+      target = yield* Target,
+      evidence = yield* Evidence;
+    const issuer = yield* oauthRecoveryIssuer(target.metadata.origin, true);
+    const prefix = `/api/organizations/${actors.organization.id}`;
+    const paths = (suffix: string) =>
+      [actors.organization.id, actors.organization.slug].map(
+        (organization) => `/api/organizations/${organization}${suffix}`,
+      );
+    const frames: Array<{ number: number; label: string }> = [];
+    const capture = (label: string) =>
+      Effect.gen(function* () {
+        const number = frames.length + 1;
+        frames.push({ number, label });
+        yield* browser.checkpoint(`${String(number).padStart(2, "0")}-${label}`);
+      });
+    yield* Effect.addFinalizer(() =>
+      evidence.json("oauth-frame-manifest.json", {
+        target: "self-host",
+        part,
+        viewport: "1440x960",
+        provider: "synthetic loopback issuer",
+        controlledNetworkHolds: true,
+        frames,
+      }),
+    );
+    const deploy = (name: string) =>
+      Effect.gen(function* () {
+        const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name: `${name} ${randomUUID().slice(0, 8)}`,
+          files: [
+            {
+              path: "index.ts",
+              content: `import { defineApp, defineProvider, oauth2, router } from "apps";
+const service=defineProvider({name:${JSON.stringify(name)},auth:{oauth:oauth2({discover:${JSON.stringify(issuer.origin)},scopes:["reports:read","offline_access"]})}});
+export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
+            },
+            appsManifest,
+          ],
+        });
+        expect(response.status).toBe(200);
+        const app = yield* body(App, response);
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
+        );
+        return app;
+      });
+    const app = yield* deploy("Sample service");
+    const appUrl = `/org/${actors.organization.slug}/apps/${app.id}?view=accounts`;
+    const setupPaths = paths(
+      `/providers/${app.requirements.accounts.service.provider}/oauth/oauth/setup`,
+    );
+    const ready = (name: string) =>
+      browser.use(`Wait for ${name}`, (page) =>
+        page.getByRole("button", { name, exact: true }).waitFor({ state: "visible" }),
+      );
+    const chooseClient = (name: string) =>
+      browser.use(`Choose ${name}`, (page) =>
+        page
+          .getByRole("combobox", { name: "OAuth client" })
+          .click()
+          .then(() => page.getByRole("option", { name, exact: true }).click()),
+      );
+    const click = (name: string) =>
+      browser.use(`Click ${name}`, (page) =>
+        page.getByRole("button", { name, exact: true }).click(),
+      );
+    const heading = (name: string) =>
+      browser.use(`Wait for ${name}`, (page) =>
+        page.getByRole("heading", { name, exact: true }).waitFor({ state: "visible" }),
+      );
+    const link = (name: string) =>
+      browser.use(`Follow ${name}`, (page) =>
+        page.getByRole("link", { name, exact: true }).click(),
+      );
+    const actionSize = (role: "status" | "alert" | "button" | "group", name?: string) =>
+      Effect.gen(function* () {
+        const bounds = yield* browser.use("Measure the stable connection action", (page) => {
+          const dialog = page.getByRole("dialog");
+          const action = dialog.getByRole(role, name === undefined ? {} : { name, exact: true });
+          // A max-width transition can have several identical bounds before it
+          // reaches the viewport width. Wait for the transition, not that plateau.
+          return dialog
+            .evaluate((element) =>
+              Promise.allSettled(element.getAnimations().map((animation) => animation.finished)),
+            )
+            .then(() => action.scrollIntoViewIfNeeded())
+            .then(() => action.boundingBox());
+        });
+        if (bounds === null)
+          return yield* Effect.die(new Error("Connection action must be visible"));
+        return { width: bounds.width, height: bounds.height };
+      });
+    const connectionLayout = () =>
+      browser.use("Measure the stable connection dialog", (page) => {
+        const dialog = page.getByRole("dialog");
+        return dialog
+          .evaluate((element) =>
+            Promise.allSettled(element.getAnimations().map((animation) => animation.finished)),
+          )
+          .then(() => dialog.scrollIntoViewIfNeeded())
+          .then(() =>
+            dialog.boundingBox().then((dialog) => {
+              if (dialog === null) throw new Error("The connection dialog must be visible");
+              return { dialog };
+            }),
+          );
+      });
+    const startPattern = /\/connections\/[^/]+\/oauth\/start$/;
+    const completePattern = /\/connections\/[^/]+\/oauth\/complete$/;
+    /**
+     * Press Connect in the open connection dialog and wait for the provider's consent page. Once
+     * sign-in starts, the action stays busy until the provider page replaces it.
+     */
+    const startSignIn = Effect.gen(function* () {
+      // A page with a pending navigation cannot be inspected, so it reports the action itself.
+      const actionLabels: string[] = [];
+      yield* browser.use("Record the Connect action until the page leaves", (page) => {
+        page.on("console", (message) => {
+          if (message.text().startsWith("oauth-action:"))
+            actionLabels.push(message.text().slice("oauth-action:".length));
+        });
+        return page
+          .getByRole("dialog")
+          .getByRole("group", { name: "Connection options" })
+          .evaluate((group) => {
+            new MutationObserver(() =>
+              console.log(`oauth-action:${group.querySelector("button")?.textContent ?? ""}`),
+            ).observe(group, { childList: true, subtree: true, characterData: true });
+          });
+      });
+      const authorization = yield* holdQuery(["/authorize"], "continue");
+      yield* click("Connect Sample service");
+      yield* authorization.requested;
+      yield* authorization.release;
+      yield* heading("Connect Sample service");
+      yield* ready("Allow access");
+      const departing = actionLabels.indexOf("Preparing sign-in…");
+      expect(departing, "the action showed sign-in progress").toBeGreaterThanOrEqual(0);
+      expect(new Set(actionLabels.slice(departing))).toEqual(new Set(["Preparing sign-in…"]));
+    });
+    yield* browser.omitNetworkTrace;
+    yield* browser.login(actors.owner);
+    yield* browser.use("Use a stable dark viewport", (page) =>
+      page.emulateMedia({ colorScheme: "dark" }),
+    );
+    return {
+      api,
+      actors,
+      browser,
+      evidence,
+      issuer,
+      prefix,
+      paths,
+      capture,
+      deploy,
+      app,
+      appUrl,
+      setupPaths,
+      ready,
+      chooseClient,
+      click,
+      heading,
+      link,
+      actionSize,
+      connectionLayout,
+      startPattern,
+      completePattern,
+      startSignIn,
+    };
+  });
+
 layer(HostedLive, { excludeTestServices: true })("OAuth storyboard", (it) => {
-  it.effect(scenarios.oauthConnectStoryboard.title, (context) =>
+  it.effect(scenarios.oauthStoryboardSetup.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const api = yield* Api,
-          actors = yield* Actors,
-          browser = yield* Browser,
-          target = yield* Target,
-          evidence = yield* Evidence;
-        const issuer = yield* oauthRecoveryIssuer(target.metadata.origin, true);
-        const prefix = `/api/organizations/${actors.organization.id}`;
-        const paths = (suffix: string) =>
-          [actors.organization.id, actors.organization.slug].map(
-            (organization) => `/api/organizations/${organization}${suffix}`,
-          );
-        const frames: Array<{ number: number; label: string }> = [];
-        const capture = (label: string) =>
-          Effect.gen(function* () {
-            const number = frames.length + 1;
-            frames.push({ number, label });
-            yield* browser.checkpoint(`${String(number).padStart(2, "0")}-${label}`);
-          });
-        yield* Effect.addFinalizer(() =>
-          evidence.json("oauth-frame-manifest.json", {
-            target: "self-host",
-            viewport: "1440x960",
-            provider: "synthetic loopback issuer",
-            controlledNetworkHolds: true,
-            frames,
-          }),
-        );
-        const deploy = (name: string) =>
-          Effect.gen(function* () {
-            const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-              name: `${name} ${randomUUID().slice(0, 8)}`,
-              files: [
-                {
-                  path: "index.ts",
-                  content: `import { defineApp, defineProvider, oauth2, router } from "apps";
-const service=defineProvider({name:${JSON.stringify(name)},auth:{oauth:oauth2({discover:${JSON.stringify(issuer.origin)},scopes:["reports:read","offline_access"]})}});
-export default defineApp({user: { accounts:{service} }},async()=>({tools: router({})}));`,
-                },
-                appsManifest,
-              ],
-            });
-            expect(response.status).toBe(200);
-            const app = yield* body(App, response);
-            yield* Effect.addFinalizer(() =>
-              api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`).pipe(Effect.orDie),
-            );
-            return app;
-          });
-        const app = yield* deploy("Sample service");
-        const appUrl = `/org/${actors.organization.slug}/apps/${app.id}?view=accounts`;
-        const setupPaths = paths(
-          `/providers/${app.requirements.accounts.service.provider}/oauth/oauth/setup`,
-        );
-        const ready = (name: string) =>
-          browser.use(`Wait for ${name}`, (page) =>
-            page.getByRole("button", { name, exact: true }).waitFor({ state: "visible" }),
-          );
-        const chooseClient = (name: string) =>
-          browser.use(`Choose ${name}`, (page) =>
-            page
-              .getByRole("combobox", { name: "OAuth client" })
-              .click()
-              .then(() => page.getByRole("option", { name, exact: true }).click()),
-          );
-        const click = (name: string) =>
-          browser.use(`Click ${name}`, (page) =>
-            page.getByRole("button", { name, exact: true }).click(),
-          );
-        const heading = (name: string) =>
-          browser.use(`Wait for ${name}`, (page) =>
-            page.getByRole("heading", { name, exact: true }).waitFor({ state: "visible" }),
-          );
-        const link = (name: string) =>
-          browser.use(`Follow ${name}`, (page) =>
-            page.getByRole("link", { name, exact: true }).click(),
-          );
-        const actionSize = (role: "status" | "alert" | "button" | "group", name?: string) =>
-          Effect.gen(function* () {
-            const bounds = yield* browser.use("Measure the stable connection action", (page) => {
-              const dialog = page.getByRole("dialog");
-              const action = dialog.getByRole(
-                role,
-                name === undefined ? {} : { name, exact: true },
-              );
-              // A max-width transition can have several identical bounds before it
-              // reaches the viewport width. Wait for the transition, not that plateau.
-              return dialog
-                .evaluate((element) =>
-                  Promise.allSettled(
-                    element.getAnimations().map((animation) => animation.finished),
-                  ),
-                )
-                .then(() => action.scrollIntoViewIfNeeded())
-                .then(() => action.boundingBox());
-            });
-            if (bounds === null)
-              return yield* Effect.die(new Error("Connection action must be visible"));
-            return { width: bounds.width, height: bounds.height };
-          });
-        const connectionLayout = () =>
-          browser.use("Measure the stable connection dialog", (page) => {
-            const dialog = page.getByRole("dialog");
-            return dialog
-              .evaluate((element) =>
-                Promise.allSettled(element.getAnimations().map((animation) => animation.finished)),
-              )
-              .then(() => dialog.scrollIntoViewIfNeeded())
-              .then(() =>
-                dialog.boundingBox().then((dialog) => {
-                  if (dialog === null) throw new Error("The connection dialog must be visible");
-                  return { dialog };
-                }),
-              );
-          });
-        const startPattern = /\/connections\/[^/]+\/oauth\/start$/;
-        const completePattern = /\/connections\/[^/]+\/oauth\/complete$/;
-        yield* browser.omitNetworkTrace;
-        yield* browser.login(actors.owner);
-        yield* browser.use("Use a stable dark viewport", (page) =>
-          page.emulateMedia({ colorScheme: "dark" }),
-        );
+        const {
+          actors,
+          browser,
+          evidence,
+          issuer,
+          paths,
+          capture,
+          deploy,
+          app,
+          appUrl,
+          setupPaths,
+          ready,
+          click,
+          actionSize,
+          connectionLayout,
+          startPattern,
+          startSignIn,
+        } = yield* storyboard("oauthStoryboardSetup");
         const loading = yield* holdQuery(paths(`/apps/${app.id}`), "continue");
         const setup = yield* holdQuery(setupPaths, "continue");
         yield* openThroughBrowser("Enter the app", appUrl);
@@ -224,7 +302,27 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         yield* issuer.configure({ discoveryFails: false });
         const retry = yield* holdQuery(setupPaths, "continue");
         yield* click("Try again");
-        yield* retry.requested;
+        // A click here once started no read. If it happens again, record what the button showed.
+        yield* retry.requested.pipe(
+          Effect.tapError(() =>
+            browser
+              .use("Record the setup retry action that started no read", (page) => {
+                const action = page
+                  .getByRole("dialog")
+                  .getByRole("alert")
+                  .getByRole("button")
+                  .first();
+                return Promise.all([action.textContent(), action.isDisabled()]).then(
+                  ([text, disabled]) => ({ text, disabled }),
+                );
+              })
+              .pipe(
+                Effect.flatMap((action) => evidence.json("setup-retry-without-read.json", action)),
+                Effect.andThen(browser.checkpoint("Setup-retry-without-read")),
+                Effect.ignore,
+              ),
+          ),
+        );
         yield* browser.use("Retry keeps the explanation and blocks repeat requests", (page) =>
           page
             .getByRole("status", { name: "Checking connection", exact: true })
@@ -292,32 +390,56 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           page.getByRole("dialog").getByRole("alert").waitFor(),
         );
         yield* capture("Sign-in-start-failed");
-        // A page with a pending navigation cannot be inspected, so it reports the action itself.
-        const actionLabels: string[] = [];
-        yield* browser.use("Record the Connect action until the page leaves", (page) => {
-          page.on("console", (message) => {
-            if (message.text().startsWith("oauth-action:"))
-              actionLabels.push(message.text().slice("oauth-action:".length));
-          });
-          return page
+        // A failed start is tried again from the same dialog, and this time reaches the provider.
+        yield* startSignIn;
+        yield* issuer.configure({ registration: false });
+        // The organization's client registered for this server would serve another of its apps.
+        yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);
+        const manual = yield* deploy("Manual service");
+        yield* browser.use("Open a provider without automatic registration", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps/${manual.id}?view=accounts`),
+        );
+        yield* click("Connect new account");
+        // No client is registered, so the administrator enters one and chooses who can use it.
+        yield* browser.use("Wait for the client details", (page) =>
+          page
             .getByRole("dialog")
-            .getByRole("group", { name: "Connection options" })
-            .evaluate((group) => {
-              new MutationObserver(() =>
-                console.log(`oauth-action:${group.querySelector("button")?.textContent ?? ""}`),
-              ).observe(group, { childList: true, subtree: true, characterData: true });
-            });
-        });
-        const authorization = yield* holdQuery(["/authorize"], "continue");
-        yield* click("Connect Sample service");
-        yield* authorization.requested;
-        yield* authorization.release;
-        yield* heading("Connect Sample service");
-        yield* ready("Allow access");
-        // Once sign-in starts, the action stays busy until the provider page replaces it.
-        const departing = actionLabels.indexOf("Preparing sign-in…");
-        expect(departing, "the action showed sign-in progress").toBeGreaterThanOrEqual(0);
-        expect(new Set(actionLabels.slice(departing))).toEqual(new Set(["Preparing sign-in…"]));
+            .getByRole("combobox", { name: "Who can use this client", exact: true })
+            .waitFor(),
+        );
+        yield* capture("Client-required-first-connection");
+        yield* evidence.json("oauth-protocol-observations.json", yield* issuer.observations);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.oauthStoryboardConsent.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const {
+          api,
+          actors,
+          browser,
+          evidence,
+          issuer,
+          prefix,
+          capture,
+          app,
+          appUrl,
+          ready,
+          chooseClient,
+          click,
+          heading,
+          link,
+          completePattern,
+          startSignIn,
+        } = yield* storyboard("oauthStoryboardConsent");
+        yield* openThroughBrowser("Enter the app", appUrl);
+        yield* ready("Connect new account");
+        yield* click("Connect new account");
+        yield* ready("Connect Sample service");
+        yield* startSignIn;
         yield* capture("Provider-consent");
         const completion = yield* holdQuery(completePattern, "continue", { method: "POST" });
         yield* issuer.configure({ tokenFails: true });
@@ -398,6 +520,56 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         yield* chooseClient("Enter client details");
         yield* capture("Manual-client-dialog");
         yield* click("Close");
+        // The account connected after the callback's Try again is linked to the app it came from.
+        const accountId = (yield* body(
+          Schema.Struct({
+            accounts: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String })),
+          }),
+          yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
+        )).accounts.find((account) => account.label === "Work reports")?.id;
+        if (accountId === undefined) return yield* Effect.die("The saved account is missing");
+        expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${app.id}`)).toContain(
+          accountId,
+        );
+        yield* evidence.json("oauth-protocol-observations.json", yield* issuer.observations);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.oauthStoryboardReconnect.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const {
+          api,
+          actors,
+          browser,
+          evidence,
+          issuer,
+          prefix,
+          paths,
+          capture,
+          app,
+          appUrl,
+          ready,
+          chooseClient,
+          click,
+          heading,
+          link,
+        } = yield* storyboard("oauthStoryboardReconnect");
+        yield* openThroughBrowser("Enter the app", appUrl);
+        yield* ready("Connect new account");
+        yield* click("Connect new account");
+        yield* click("Connect Sample service");
+        yield* ready("Allow access");
+        yield* click("Allow access");
+        yield* heading("Name this account");
+        yield* browser.use("Name the connected account", (page) =>
+          nameConnectedAccount(page, "Work reports"),
+        );
+        yield* browser.use("Wait for the saved account", (page) =>
+          linkedChoice(page, "Sample service", "Work reports").waitFor({ state: "visible" }),
+        );
         const accountId = (yield* body(
           Schema.Struct({
             accounts: Schema.Array(Schema.Struct({ id: Schema.String, label: Schema.String })),
@@ -563,22 +735,6 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
         );
         yield* heading("Account not connected");
         yield* capture("Expired-or-other-tab");
-        yield* issuer.configure({ registration: false });
-        // The organization's client registered for this server would serve another of its apps.
-        yield* removeRegisteredClients(actors.owner, actors.organization.id, issuer.origin);
-        const manual = yield* deploy("Manual service");
-        yield* browser.use("Open a provider without automatic registration", (page) =>
-          page.goto(`/org/${actors.organization.slug}/apps/${manual.id}?view=accounts`),
-        );
-        yield* click("Connect new account");
-        // No client is registered, so the administrator enters one and chooses who can use it.
-        yield* browser.use("Wait for the client details", (page) =>
-          page
-            .getByRole("dialog")
-            .getByRole("combobox", { name: "Who can use this client", exact: true })
-            .waitFor(),
-        );
-        yield* capture("Client-required-first-connection");
         yield* evidence.json("oauth-protocol-observations.json", yield* issuer.observations);
       }),
     ),

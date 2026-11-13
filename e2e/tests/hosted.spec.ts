@@ -43,14 +43,14 @@ const submitStatements = 36;
  * stores them, and the exporter the self-host server has always shipped drops what it holds, and
  * every span for 60 seconds, once an export fails after its retries. A trace read during or just
  * after the other saves may never arrive. That a later save does the same work is checked in
- * webhook-source-lookup.spec.ts, by the query plans of a save beside 100,000 sources.
+ * webhook-source-lookup.spec.ts, by the query plans of a save beside 100,000 accounts.
  */
 const sampledSaves = 8;
 /**
  * A loose bound on the saves, for the same statements run much more slowly, such as a lost index.
- * The statements are checked by the traces, not by this. In CI 1,000 accounts took 26 s to save, so
- * 300 take about 8 s; on the desktop runner, at load 12 to 20, 20 runs took 15 to 37 s (median
- * 18 s). 60 s is about 7 times the CI time and 1.6 times the slowest desktop run.
+ * The statements are checked by the traces, not by this. In CI the 300 saves took 15.8 s on the
+ * merged head; on the desktop runner, at load 12 to 20, 20 runs took 15 to 37 s (median 18 s).
+ * 60 s is about 3.8 times the CI time and 1.6 times the slowest desktop run.
  */
 const saveBoundMs = 60_000;
 /** The SQL statements of one request's trace, in the order they ran. */

@@ -36,7 +36,7 @@ import {
 } from "../contracts/shared.ts";
 import { SelectedAccounts } from "../contracts/apps.ts";
 import type { Credentials } from "../contracts/storage.ts";
-import type { Runtime } from "../contracts/runtime.ts";
+import { RuntimeProtocolFailed, type Runtime } from "../contracts/runtime.ts";
 import type { ExecutorDatabase } from "./storage.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { database, query, transaction } from "./database.ts";
@@ -49,6 +49,65 @@ import { accountAuthority } from "./selection.ts";
 import type { Declarations } from "./declarations.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
 import { declarationLimits } from "../contracts/declarations.ts";
+
+/**
+ * Why a delivery ended without the app's answer, recorded on `sdk.webhooks.deliver` as
+ * `executor.webhook.refusal`. Each failure `deliver` can end with has its own label, keyed by its
+ * tag, so a new failure fails the typecheck until it is named here. Two are labelled where they
+ * arise instead: `AppProviderFailed`, which only the handler call fails with here (`provider`), and
+ * `WebhookFailed`: `inactive`, and `delivery`, which covers the handler's other failures
+ * (`handler`), an unreadable response (`invalid-response`) and the time limit (`timeout`).
+ */
+const deliveryRefusals = {
+  RequestInvalid: "request-invalid",
+  WebhookNotFound: "not-found",
+  StorageError: "storage",
+  AppNotFound: "app-not-found",
+  AppNotDeployed: "app-not-deployed",
+  VersionNotFound: "version-not-found",
+  AccountNotFound: "account-not-found",
+  AccountRequired: "account-required",
+  AccountSelectionInvalid: "account-selection-invalid",
+  CredentialsError: "credentials",
+  OAuthReconnectRequired: "oauth-reconnect-required",
+  OAuthRenewalFailed: "oauth-renewal-failed",
+  // Only the handler call fails with it here, labelled `provider` where it arises.
+  AppProviderFailed: undefined,
+} as const;
+/**
+ * The kind of failure the app's handler call ended with, by tag. Every tag here comes from a closed
+ * schema union in Executor's contracts, so none of it is the app's text. A new kind fails the
+ * typecheck until it is listed.
+ */
+const handlerErrors = {
+  OpenapiResponseError: true,
+  WorkflowFailure: true,
+  ProviderError: true,
+  McpError: true,
+  SkillLoadFailed: true,
+  HostRequestInvalid: true,
+  HostDeclarationInvalid: true,
+  HostAccountsInvalid: true,
+  HostEvaluationFailed: true,
+  HostToolNotFound: true,
+  HostOperationNotFound: true,
+  HostKindMismatch: true,
+  HostOperationFailed: true,
+  DatabaseLimitExceeded: true,
+  HostInputInvalid: true,
+  HostOutputInvalid: true,
+  HostToolBlocked: true,
+  HostToolApprovalRequired: true,
+  HostToolPolicyFailed: true,
+  ElicitationFailed: true,
+  RuntimeBuildUnavailable: true,
+  RuntimeProtocolFailed: true,
+  RuntimeProtocolUnsupported: true,
+} as const;
+/** A handler failure's tag; the typecheck refuses one `handlerErrors` does not list. */
+const handlerError = (tag: keyof typeof handlerErrors) => tag;
+const refused = (refusal: string, attributes: Record<string, string> = {}) =>
+  Effect.annotateCurrentSpan({ "executor.webhook.refusal": refusal, ...attributes });
 
 const StoredWebhook = Schema.Struct({
   ...WebhookSubscriptionFields.fields,
@@ -448,6 +507,18 @@ export const makeWebhooks = (
         command,
       })
       .pipe(
+        // A delivery's span says how the handler call failed: `provider` when the handler's provider
+        // call failed, otherwise `handler`, with the failure's kind and a runtime failure's reason.
+        Effect.tapError((error) =>
+          command.operation === "webhook-handle"
+            ? refused(Schema.is(ProviderError)(error) ? "provider" : "handler", {
+                "executor.webhook.handler_error": handlerError(error._tag),
+                ...(Schema.is(RuntimeProtocolFailed)(error)
+                  ? { "executor.webhook.runtime_failure": error.reason ?? "unreported" }
+                  : {}),
+              })
+            : Effect.void,
+        ),
         Effect.mapError((error) =>
           Schema.is(ProviderError)(error)
             ? // Registering, completing, removing and handling a webhook may change the service.
@@ -991,8 +1062,10 @@ export const makeWebhooks = (
           Effect.mapError(() => new RequestInvalid()),
         );
         const row = yield* read(parsed);
-        if (row.status === "stopping" || row.status === "disabled" || row.status === "stopped")
+        if (row.status === "stopping" || row.status === "disabled" || row.status === "stopped") {
+          yield* refused("inactive");
           return yield* new WebhookFailed({ reason: "inactive" });
+        }
         const saved = yield* decrypt(row);
         const url = new URL(row.callbackUrl);
         url.search = new URL(parsed.request.url).search;
@@ -1007,12 +1080,29 @@ export const makeWebhooks = (
           callbackUrl: row.callbackUrl,
           request: { ...parsed.request, url: url.href },
         });
-        return yield* Schema.decodeUnknownEffect(WebhookResponseData)(value).pipe(
+        const response = yield* Schema.decodeUnknownEffect(WebhookResponseData)(value).pipe(
+          Effect.tapError(() => refused("invalid-response")),
           Effect.mapError(() => new WebhookFailed({ reason: "delivery" })),
         );
+        // The status the app answered with, a number its contract bounds; no header or body.
+        yield* Effect.annotateCurrentSpan("executor.webhook.response_status", response.status);
+        return response;
       }).pipe(
         Effect.timeout(defaultWebhookLifecycleLimits.deliveryTimeoutMs),
-        Effect.catchTag("TimeoutError", () => new WebhookFailed({ reason: "delivery" })),
+        Effect.catchTag("TimeoutError", () =>
+          refused("timeout").pipe(Effect.andThen(new WebhookFailed({ reason: "delivery" }))),
+        ),
+        // Failures labelled where they arose keep their label; every other one is labelled by tag.
+        Effect.tapError((error) => {
+          if (error._tag !== "WebhookFailed") {
+            const refusal = deliveryRefusals[error._tag];
+            return refusal === undefined ? Effect.void : refused(refusal);
+          }
+          // `inactive` and `delivery` are labelled where they arise; any other reason by its own.
+          return error.reason === "inactive" || error.reason === "delivery"
+            ? Effect.void
+            : refused(`webhook-${error.reason}`);
+        }),
         Effect.withSpan("sdk.webhooks.deliver"),
       ),
   };

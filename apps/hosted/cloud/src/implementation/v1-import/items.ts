@@ -59,6 +59,7 @@ import { V1StaleCategory } from "../../contracts/v1-import-run.ts";
 import { V1ImportUnavailable } from "../../contracts/v1-import.ts";
 import {
   credentialLike,
+  failingInV1,
   itemOwner,
   mcpToolName,
   policyResolver,
@@ -1720,16 +1721,29 @@ export const checkFixedAccount = (
 
 /**
  * Why a copied sign-in could not be set up, in the words of what to do next. An outage clears up
- * by itself, so support can retry it; the rest need a new sign-in.
+ * by itself, so support can retry it, unless v1's last verdict on the connection was already a
+ * failure (decision 36): then it is not expected to, and it needs a new sign-in like the rest.
  */
-const oauthSetupReason = (reason: OAuthSetupFailed["reason"]) =>
-  reason === "service_unavailable" || reason === "rate_limited"
-    ? "The service did not respond while its sign-in was set up. Contact support if you need it."
-    : reason === "discovery_missing" ||
-        reason === "discovery_invalid" ||
-        reason === "discovery_blocked"
-      ? "The service no longer says how to sign in to it. Reconnect it in v2."
-      : "Its sign-in could not be carried over to v2. Reconnect it in v2.";
+const oauthSetupRefusal = (reason: OAuthSetupFailed["reason"], row: ConnectionRow) =>
+  reason === "service_unavailable" && failingInV1(row)
+    ? new ItemFailed({
+        reason:
+          "The service did not respond while its sign-in was set up, and it was failing in v1 too. Reconnect it in v2.",
+      })
+    : reason === "service_unavailable" || reason === "rate_limited"
+      ? new ItemFailed({
+          reason:
+            "The service did not respond while its sign-in was set up. Contact support if you need it.",
+          outage: true,
+        })
+      : new ItemFailed({
+          reason:
+            reason === "discovery_missing" ||
+            reason === "discovery_invalid" ||
+            reason === "discovery_blocked"
+              ? "The service no longer says how to sign in to it. Reconnect it in v2."
+              : "Its sign-in could not be carried over to v2. Reconnect it in v2.",
+        });
 
 /** Why a first-party sign-in cannot move to v2's client of the same name, as the user reads it. */
 const firstPartyRefusal = (
@@ -2001,17 +2015,10 @@ const accountWrite = (
   });
 
 /** Why v2 refused to save a connection's grant, as the user reads it, for an import and a check. */
-const grantRefusals = (write: Extract<AccountWrite, { kind: "grant" }>) =>
+const grantRefusals = (write: Extract<AccountWrite, { kind: "grant" }>, row: ConnectionRow) =>
   Effect.catchTags({
     OAuthSetupFailed: (error: OAuthSetupFailed) =>
-      Effect.fail(
-        new ItemFailed({
-          reason: oauthSetupReason(error.reason),
-          ...(error.reason === "service_unavailable" || error.reason === "rate_limited"
-            ? { outage: true as const }
-            : {}),
-        }),
-      ),
+      Effect.fail(oauthSetupRefusal(error.reason, row)),
     AuthMethodInvalid: () => fail("Its sign-in method is not in the imported app."),
     OAuthGrantNotImportable: (error: OAuthGrantNotImportable) =>
       write.firstParty === undefined
@@ -2078,7 +2085,7 @@ const saveAccount = (
       );
     const account = yield* context.executor[OAuthGrantImport]
       .importOAuthGrant(write.input)
-      .pipe(creation, grantRefusals(write));
+      .pipe(creation, grantRefusals(write, plan.row));
     // Discovery ran outside a transaction; the account is recorded as soon as it exists.
     yield* record(imported("account", account.id));
     return account.id;
@@ -2247,7 +2254,7 @@ export const checkAccount = (
       });
     return yield* host
       .checkOAuthGrant({ ...write.input, definition: write.requirement.definition })
-      .pipe(grantRefusals(write));
+      .pipe(grantRefusals(write, plan.row));
   });
 
 /**

@@ -12,7 +12,7 @@ import { Api, body, type Session } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Inventory } from "../support/contracts.ts";
 import { connectionsPath } from "../support/app-accounts.ts";
-import { Evidence } from "../support/evidence.ts";
+import { Evidence, Telemetry } from "../support/evidence.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Target } from "../support/platform.ts";
 import { targetHosts } from "../support/role-hosts.ts";
@@ -400,6 +400,11 @@ const slowWrite = <E, R>(
       });
     }
   });
+
+/** No prune pass of the tool call log finished since the IDs a scenario recorded. */
+class PruneNotFinished extends Schema.TaggedError<PruneNotFinished>()("PruneNotFinished", {}) {}
+/** The span a finished prune pass of the tool call log records, from `pruneToolCallLog`. */
+const prunePass = "product.tool_call_log.prune";
 
 layer(HostedLive, { excludeTestServices: true })("Tool call log", (it) => {
   it.effect(scenarios.toolCallLogReference.title, (context) =>
@@ -1208,18 +1213,66 @@ return "done";`,
           )).body,
         ).toEqual({ status: "unavailable", reference: lapsed });
 
-        // The prune, which self-host runs at each start, marks the row itself.
+        // The prune passes that have finished, by their span: the server forks one at each start,
+        // and its span ends only once the pass has marked and deleted what it will.
+        const telemetry = yield* Telemetry;
+        const passes = telemetry
+          .searchWholeEnvironment(prunePass, {})
+          .pipe(
+            Effect.map(
+              ({ data }) =>
+                new Set(
+                  data.filter(({ span }) => span.status === "ok").map(({ span }) => span.spanId),
+                ),
+            ),
+          );
+        /**
+         * Wait for a prune pass that had not finished at `before`, and fail at 30 seconds whatever
+         * the cause, an unreadable collector included.
+         */
+        const nextPass = (before: ReadonlySet<string>) =>
+          passes.pipe(
+            Effect.flatMap((after) =>
+              [...after].some((id) => !before.has(id))
+                ? Effect.void
+                : Effect.fail(new PruneNotFinished()),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("250 millis") }),
+            Effect.timeoutOrElse({
+              duration: "30 seconds",
+              orElse: () => Effect.fail(new PruneNotFinished()),
+            }),
+          );
+
+        // A reader sees it expired from its deadline, whatever the stored row says: the prune that
+        // marks the row is forked at start, and a reader never waits for it. So after a restart too.
+        const beforeRestart = yield* passes;
         yield* serverControl("restart");
+        expect(yield* findCall(actors.owner, lapsed)).toMatchObject({
+          status: "expired",
+          approval: { decision: "expired", decidedBy: null },
+        });
+        // Once the start's prune pass has finished, the stored row is marked expired, decided at
+        // its deadline.
+        yield* nextPass(beforeRestart);
         expect(
           yield* legacyStorage([
-            { sql: "select status from hosted_tool_calls where id = $1", params: [lapsed] },
+            {
+              sql: `select status, decided_at = approval_expires_at as decided_at_deadline
+                from hosted_tool_calls where id = $1`,
+              params: [lapsed],
+            },
           ]),
-        ).toEqual([[{ status: "expired" }]]);
+        ).toEqual([[{ status: "expired", decided_at_deadline: true }]]);
         yield* serverControl("start");
-        expect(yield* findCall(actors.owner, lapsed)).toMatchObject({ status: "expired" });
+        // A reader sees the stored, marked row as expired too.
+        expect(yield* findCall(actors.owner, lapsed)).toMatchObject({
+          status: "expired",
+          approval: { decision: "expired", decidedBy: null },
+        });
 
         // On day 29 a newer call is made. On day 31 the calls past 30 days are no longer found, even
-        // by their reference, though nothing has deleted them yet: the prune runs at each start.
+        // by their reference, though they are still stored: the read leaves them out itself.
         const signIn = () =>
           api
             .request(actors.owner, "POST", "/api/auth/sign-in/email", {
@@ -1250,14 +1303,20 @@ return "done";`,
               params: [`{${[lapsed, old ?? "", recent ?? ""].join(",")}}`],
             },
           ]);
+        // The passes so far, read while the server and its collector run: reading storage stops
+        // them both.
+        const beforeStart = yield* passes;
         expect(yield* stored()).toEqual([
           [lapsed, old ?? "", recent ?? ""].sort().map((id) => ({ id })),
         ]);
-        // The prune, which starts with the server before it serves a request, deletes only the
-        // calls past 30 days.
+        // After a restart, however far the prune has got, a reader still finds only the recent call.
         yield* serverControl("start");
         yield* signIn();
+        for (const id of [lapsed, old ?? ""])
+          expect((yield* readLog(actors.owner, { search: id })).page.total, id).toBe(0);
         expect(yield* findCall(actors.owner, recent ?? "")).toMatchObject({ status: "failed" });
+        // Once the start's prune pass has finished, only the calls past 30 days are deleted.
+        yield* nextPass(beforeStart);
         expect(yield* stored()).toEqual([[{ id: recent ?? "" }]]);
         yield* serverControl("start");
       }),

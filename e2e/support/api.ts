@@ -11,6 +11,7 @@ import {
   readResponse,
   RequestFailure,
   requestFailureText,
+  signatureText,
 } from "./request-failure.ts";
 import { isMcpPath, targetHosts } from "./role-hosts.ts";
 
@@ -55,7 +56,7 @@ export class RequestFailed extends Schema.TaggedError<RequestFailed>()("RequestF
   override get message() {
     const detail = keptCauseText(this);
     const failure = this.failure === undefined ? "" : `: ${requestFailureText(this.failure)}`;
-    return `${this.method} ${this.path} ${this.status === undefined ? `failed (${this.reason}) before a JSON response was read` : `returned HTTP ${this.status} without a JSON response`}${this.response ? ` (${this.response.contentType}, ${this.response.characters} characters, final path ${this.response.path})` : ""}${failure}${detail === undefined ? "" : `\n  ${indented(detail)}`}`;
+    return `${signatureText(this.failure)}${this.method} ${this.path} ${this.status === undefined ? `failed (${this.reason}) before a JSON response was read` : `returned HTTP ${this.status} without a JSON response`}${this.response ? ` (${this.response.contentType}, ${this.response.characters} characters, final path ${this.response.path})` : ""}${failure}${detail === undefined ? "" : `\n  ${indented(detail)}`}`;
   }
 }
 /** A server response may be decoded only against its public contract. */
@@ -168,7 +169,13 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
                         text,
                       ).pipe(
                         Effect.catch((cause) =>
-                          decodeFailure(response.status, started, cause, response.headers).pipe(
+                          decodeFailure(
+                            response.status,
+                            started,
+                            cause,
+                            response.headers,
+                            text,
+                          ).pipe(
                             Effect.flatMap((failure) =>
                               Effect.fail(
                                 new RequestFailed({

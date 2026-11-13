@@ -176,7 +176,11 @@ full when the tree's copy differs from main's (`fileGuards`): a new host protoco
 A changed spec file's Cloud scenarios that otherwise first run in Cloud tests on main, after
 merge, run in the `cloud-product` job when managed local Cloud can run them. The ones that need a
 deployed stage (`runtime: "attached"`) get a warning with the `e2e:deployed` command that runs
-them; run it before merging. Write `none` for a change no scenario exercises, such as documentation. Write each name as it appears in
+them; run it before merging. A scenario new to the deployed suite (one main's `e2e/test-plan.ts`
+does not name) first runs on a deployed stage after merge even when managed local Cloud runs it
+here, so the `select` job fails until the description has a line `Verified on a deployed stage:`
+saying what ran and its result, for example the `bun run e2e:deployed --database planetscale
+--test-name '…'` command the failure prints. Write `none` for a change no scenario exercises, such as documentation. Write each name as it appears in
 `e2e/tests/`, optionally prefixed with `e2e/tests/`. The `select` job fails when the
 description has no block, a name is not a spec file there, or a named file is one these
 jobs never run: the release, desktop, billing and PGlite suites have their own
@@ -228,10 +232,12 @@ the evidence of every earlier attempt, so push instead when an attempt failed.
 
 ### Adding to a Cloud Worker's upload
 
-Cloudflare compiles every module a Worker uploads when an isolate starts, about
-40 ms for each megabyte on every cold request. The `site` job compares each Cloud
-Worker's upload with `main` and fails a pull request that adds more than 50 KB to
-one, about 2 ms, unless the description allows it:
+Cloudflare compiles and evaluates the modules a Worker's entry imports statically
+when an isolate starts, about 40 ms for each megabyte on every cold request, and
+refuses an upload whose startup takes more than a second of CPU. The `site` job
+compares each Cloud Worker's upload, and the bytes its entry imports statically,
+with `main`, and fails a pull request that adds more than 50 KB to either, about
+2 ms, unless the description allows it:
 
 ````md
 ```worker-growth
@@ -280,9 +286,11 @@ longer deadlines or skips to make a run pass.
 It finishes the active run and coalesces pending pushes, so one run can test several
 merges. Its `coverage` job lists them in the run summary and adds a notice when a
 run tests more than one commit. It counts from the nearest earlier ancestor whose run
-uploaded `deployed-neon-results`, which exists only when the scenarios ran, so a
+uploaded `deployed-planetscale-results` (`deployed-neon-results` before November 13, 2026), which exists only when the scenarios ran, so a
 setup failure or a rerun of an older commit cannot hide a gap. Manual deployed jobs share
-the same non-cancelling concurrency group. Each job owns a disposable Neon staging environment.
+the same non-cancelling concurrency group. Each main run owns a disposable PlanetScale staging environment whose Workers reach
+the branch through their own Hyperdrive configuration, as production does. Manual
+`deployed-tests.yml` dispatches still default to Neon, and pull request previews stay on Neon.
 Scenarios retain 60-second deadlines. The job owns its teardown and evidence artifacts. These post-merge
 checks are not required PR checks. Agents can run targeted deployments through
 the same SDK and CLI on demand.
@@ -321,11 +329,12 @@ scenarios on Linux instead of moving them to a Mac.
 - `e2e-local` and `e2e-self-host` run `bun run e2e:prepare`, then `e2e:local`
   and `e2e:self-host` under `xvfb-run`. The self-host run excludes the Claude
   Code MCP scenario, which needs a model API key that CI does not hold. A full run
-  splits them by spec file over runners (three for local, six for self-host; `shards` in
-  `e2e/ci-selection.ts`), each with the usual number of workers, so each part finishes in
-  about four minutes instead of thirteen and twenty. A selection runs on one runner. The
-  self-host parts keep their 16 vCPUs about 80% busy; the local ones are mostly idle and wait
-  on their longest spec file, so keep local spec files short enough to split.
+  splits them by spec file over runners (three for local, 12 for self-host; `shards` in
+  `e2e/ci-selection.ts`). Local parts run the usual eight workers; self-host parts run four,
+  since eight kept every core busy and slowed scenarios to 1.7 times their time alone (2.6 at
+  p95). Each part finishes in about four to five minutes. A selection runs on one runner with
+  eight workers. The local parts are mostly idle and wait on their longest spec file, so keep
+  local spec files short enough to split.
 - `e2e-self-host-scale` runs the 300-account workload and then the 7,000-tool MCP
   catalog scenario and the slow and stalled tool listing scenarios on its own runner,
   in parallel with the functional jobs. This preserves the four concurrent writers,

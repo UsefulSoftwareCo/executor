@@ -27,8 +27,7 @@ setup and key-loss refusal, and runs the native Docker scenarios on amd64 and
 arm64. It also produces the checksum-pinned Git companion source archive.
 Every job runs on Blacksmith. macOS builds use Apple Silicon runners; the Intel
 job uses x64 Node and Bun under Rosetta and tests the x64 runtime and desktop.
-It uses the 12-vCPU Mac runner to give emulation more capacity while preserving
-the same startup and scenario deadlines; Apple Silicon uses the 6-vCPU runner.
+Both macOS targets run on the 6-vCPU Mac runner (`scripts/releases/config.ts`).
 The pinned Bun installer patch keeps its selected binary architecture under
 Rosetta, matching the optional dependencies installed by the package manager.
 Windows installers are currently unsigned.

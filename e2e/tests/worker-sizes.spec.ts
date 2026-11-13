@@ -9,11 +9,15 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/** One Worker's upload: its bytes, its budget and the sources the bytes come from. */
+/**
+ * One Worker's upload: its bytes, its budget, the sources the bytes come from, and the bytes its
+ * entry imports statically.
+ */
 interface Upload {
   readonly bytes: number;
   readonly budget?: number;
   readonly sources?: Readonly<Record<string, number>>;
+  readonly staticBytes?: number;
 }
 
 const main: Readonly<Record<string, Upload>> = {
@@ -49,6 +53,7 @@ const check = (input: {
               worker,
               bytes: upload.bytes,
               budget: upload.budget ?? 10_000_000,
+              ...(upload.staticBytes === undefined ? {} : { staticBytes: upload.staticBytes }),
               sources: upload.sources ?? { [`apps/hosted/cloud/src/${worker}.ts`]: upload.bytes },
             }),
           );
@@ -270,6 +275,98 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker upload growth",
       expect(result.exitCode, result.log).toBe(0);
       expect(result.summary).toContain("| api | 5,400,000 | 0 | 6,500,000 (main: 6,000,000) |");
       expect(result.summary).toContain("| dashboard | 3,900,000 | 0 | 4,300,000 |");
+    }),
+  );
+});
+
+/** Main's dashboard Worker, whose entry imports only its runtime and loads the renderer on use. */
+const lazyDashboard: Readonly<Record<string, Upload>> = {
+  dashboard: { bytes: 3_900_000, budget: 4_300_000, staticBytes: 240_000 },
+};
+
+layer(NodeServices.layer, { excludeTestServices: true })("Worker static imports", (it) => {
+  it.effect(
+    "an entry that imports 50,001 more bytes statically fails though its upload is the same",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* check({
+          uploads: { dashboard: { ...lazyDashboard.dashboard!, staticBytes: 290_001 } },
+          base: lazyDashboard,
+          description: "Shares Effect between the dashboard and its renderer.",
+        });
+        expect(result.exitCode, result.log).toBe(1);
+        expect(result.errors).toEqual([
+          expect.stringContaining(
+            "title=dashboard Worker grew without an allowance::+50,001 bytes of static imports over main",
+          ),
+        ]);
+        expect(result.summary).toContain("| dashboard | 290,001 | +50,001 |");
+        expect(result.summary).toContain("```worker-growth\ndashboard +50,001:\n```");
+      }),
+  );
+
+  it.effect(
+    "pulling the dashboard renderer back into the entry fails though the upload grows 1,904 bytes",
+    () =>
+      Effect.gen(function* () {
+        // Real figures: the dashboard Worker with its renderer behind import() (the base), and the
+        // same Worker after Effect 4.1 pulled the renderer into the entry's chunk.
+        const result = yield* check({
+          uploads: { dashboard: { bytes: 3_778_051, budget: 4_300_000, staticBytes: 3_778_051 } },
+          base: { dashboard: { bytes: 3_776_147, budget: 4_300_000, staticBytes: 394_571 } },
+          description: "Shares Effect between the dashboard and its renderer.",
+        });
+        expect(result.exitCode, result.log).toBe(1);
+        expect(result.errors).toEqual([
+          expect.stringContaining(
+            "title=dashboard Worker grew without an allowance::+3,383,480 bytes of static imports over main",
+          ),
+        ]);
+        expect(result.summary).toContain(
+          "| dashboard | 3,778,051 | +1,904 **needs an allowance** | 4,300,000 |",
+        );
+        expect(result.summary).toContain("| dashboard | 3,778,051 | +3,383,480 |");
+      }),
+  );
+
+  it.effect("50,000 more bytes of static imports need no allowance", () =>
+    Effect.gen(function* () {
+      const result = yield* check({
+        uploads: { dashboard: { ...lazyDashboard.dashboard!, staticBytes: 290_000 } },
+        base: lazyDashboard,
+        description: "Imports a small helper at startup.",
+      });
+      expect(result.exitCode, result.log).toBe(0);
+      expect(result.errors).toEqual([]);
+      expect(result.summary).toContain("| dashboard | 290,000 | +50,000 |");
+    }),
+  );
+
+  it.effect("a worker-growth line allows static imports as it allows an upload", () =>
+    Effect.gen(function* () {
+      const result = yield* check({
+        uploads: { dashboard: { ...lazyDashboard.dashboard!, staticBytes: 3_780_000 } },
+        base: lazyDashboard,
+        description: description(
+          "dashboard +3,540,000: the renderer, which every dashboard isolate loads on its first render",
+        ),
+      });
+      expect(result.exitCode, result.log).toBe(0);
+      expect(result.summary).toContain(
+        "- dashboard: +3,540,000 bytes of static imports, about 142 ms. Allowed up to 3,540,000",
+      );
+    }),
+  );
+
+  it.effect("main's uploads from before static imports were recorded show no change", () =>
+    Effect.gen(function* () {
+      const result = yield* check({
+        uploads: { dashboard: { ...lazyDashboard.dashboard!, staticBytes: 3_780_000 } },
+        base: { dashboard: { bytes: 3_900_000, budget: 4_300_000 } },
+        description: "Shares Effect between the dashboard and its renderer.",
+      });
+      expect(result.exitCode, result.log).toBe(0);
+      expect(result.summary).toContain("| dashboard | 3,780,000 | n/a |");
     }),
   );
 });

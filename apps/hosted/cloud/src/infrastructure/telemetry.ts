@@ -239,9 +239,11 @@ export const cloudTelemetry = Layer.unwrap(
     const config = yield* Schema.decodeUnknownEffect(
       Schema.Union([Schema.fromJsonString(TelemetryConfig), TelemetryConfig]),
     )(value).pipe(Effect.catch(() => Effect.die(new Error("Invalid telemetry configuration"))));
-    // Each event flushes for its entire lifetime, including streamed bodies, and
-    // periodically, so long-lived streams remain observable before disconnect.
-    const exporters = yield* isolateTelemetry({ ...config, clock: "cloudflare-io" });
+    // Each event exports what is buffered when it closes, including after a streamed body. Between
+    // closes, the first item buffered arms one flush a second later, which keeps the event that
+    // buffered it alive until it has exported, so long-lived streams remain observable.
+    const { waitUntil } = yield* Effect.promise(() => import("cloudflare:workers"));
+    const exporters = yield* isolateTelemetry({ ...config, clock: "cloudflare-io" }, waitUntil);
     return Telemetry.layer(Layer.mergeAll(exporters, sqlTracing));
   }),
 );

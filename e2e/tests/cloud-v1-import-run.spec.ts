@@ -109,6 +109,22 @@ const mcpSignInServers = (names: readonly string[]) =>
     return `127.0.0.1:${server.address.port}`;
   });
 
+/**
+ * A service on loopback that is down: it answers every request with 503, as the customer-owned MCP
+ * servers behind an import's outages did.
+ */
+const unavailableServer = Effect.gen(function* () {
+  const built = yield* Layer.build(
+    HttpRouter.serve(
+      HttpRouter.add("*", "/*", Effect.succeed(HttpServerResponse.empty({ status: 503 }))),
+      { disableLogger: true, disableListenLog: true },
+    ).pipe(Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 }))),
+  );
+  const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(built));
+  if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
+  return `127.0.0.1:${server.address.port}`;
+});
+
 const row = (sql: string, ...params: string[]): RowStatement => ({ sql, params });
 const Rows = Schema.Array(Schema.Array(Schema.Unknown));
 
@@ -4593,6 +4609,152 @@ export default defineApp({}, { tools: router({
         expect(aggregate.staleItems.items).toHaveLength(12);
         expect(aggregate.droppedCredentials).toHaveLength(2);
         expect(aggregate.memberSecretMismatches).toHaveLength(1);
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
+  it.effect(scenarios.v1ImportFailingInV1.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators;
+        const operator = yield* v1ImportOperator;
+        const down = yield* unavailableServer;
+        // 2026-10-26, when v1 last checked them.
+        const checkedAt = 1_792_972_800_000;
+        // v1's verdicts on a connection, as v1 writes `last_health`: a tool listing that failed,
+        // and a check that passed.
+        const failing = JSON.stringify({
+          status: "degraded",
+          checkedAt,
+          detail: "Tool sync failing: the MCP server answered 503",
+          reason: "tool_sync_failed",
+        });
+        const healthy = JSON.stringify({ status: "healthy", checkedAt });
+        /**
+         * A single-member workspace with one OAuth MCP integration on the server that is down, and
+         * an org connection for each of `verdicts`, its name and v1's last verdict on it (null
+         * when v1 never checked it).
+         */
+        const workspace = (
+          label: string,
+          verdicts: ReadonlyArray<readonly [name: string, verdict: string | null]>,
+        ) =>
+          Effect.gen(function* () {
+            const created = yield* emulators.v1Workspace([syntheticEmail(label)]);
+            const organization = created.organization;
+            const integration = `down_${randomUUID().slice(0, 6)}`;
+            const item = (name: string) => `connection:org:${integration}:${name}:token`;
+            for (const [name] of verdicts)
+              yield* emulators.v1VaultObject(
+                `${vaultScope(organization)}/secrets/${encodeURIComponent(item(name))}`,
+                `synthetic-${label}-${name}-token`,
+              );
+            yield* writeRows("v1-database.json", [
+              row(
+                "insert into organizations (id, name, slug) values ($1, $2, $3)",
+                organization,
+                `Synthetic ${label} workspace`,
+                `v1-${randomUUID().slice(0, 8)}`,
+              ),
+              row(
+                "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'mcp', 'Down MCP', $3::json)",
+                organization,
+                integration,
+                JSON.stringify({
+                  transport: "remote",
+                  endpoint: `http://${down}/mcp`,
+                  remoteTransport: "auto",
+                  authenticationTemplate: [{ slug: "oauth", kind: "oauth2" }],
+                }),
+              ),
+              row(
+                "insert into oauth_client (tenant, owner, subject, slug, token_url, client_id, origin_kind) values ($1, 'org', '', 'down-client', 'https://signin.example.com/token', 'synthetic-down-client', 'manual')",
+                organization,
+              ),
+              ...verdicts.map(([name, verdict]) =>
+                row(
+                  "insert into connection (tenant, owner, subject, integration, name, template, item_ids, oauth_client, oauth_client_owner, last_health) values ($1, 'org', '', $2, $3, 'oauth', $4::json, 'down-client', 'org', nullif($5, '')::json)",
+                  organization,
+                  integration,
+                  name,
+                  JSON.stringify({ token: item(name) }),
+                  verdict ?? "",
+                ),
+              ),
+            ]);
+            yield* allowV1Import(organization);
+            return organization;
+          });
+        const run = (mode: "dry-run" | "import", label: string, organization: string) =>
+          Effect.gen(function* () {
+            const id = v1RunId(label);
+            const started = yield* operator.start({
+              mode,
+              runId: id,
+              organizations: [organization],
+            });
+            expect(started.status, JSON.stringify(started.body)).toBe(200);
+            return yield* operator.waitForReport(id, organization);
+          });
+        const failures = (report: V1Report) =>
+          report.connectionFailures.map((failure) => ({
+            reason: failure.reason,
+            reconnect: failure.reconnect ?? false,
+            connections: failure.connections.map((connection) => connection.label).toSorted(),
+          }));
+
+        // v1's last verdict on the connection was a failure, so the service not answering is not
+        // taken for an outage during the move: the workspace moves, and its owner reconnects it.
+        const wasFailing = yield* workspace("failing", [["signin", failing]]);
+        const reconnect = {
+          reason:
+            "The service did not respond while its sign-in was set up, and it was failing in v1 too. Reconnect it in v2.",
+          reconnect: true,
+          connections: ["signin"],
+        };
+        const planned = yield* run("dry-run", "failing-dry", wasFailing);
+        expect(planned.status, JSON.stringify(planned.connectionFailures)).toBe("planned");
+        expect(failures(planned)).toEqual([reconnect]);
+        const moved = yield* run("import", "failing", wasFailing);
+        expect(moved.status, JSON.stringify(moved.items ?? [])).toBe("imported");
+        expect(moved.cutover).toBe(true);
+        expect((yield* movedFlag(wasFailing))[0]?.state).toBe("moved");
+        expect(failures(moved)).toEqual([reconnect]);
+        expect(
+          (moved.items ?? [])
+            .filter((entry) => entry.kind === "integration" || entry.kind === "connection")
+            .map((entry) => [entry.kind, entry.label, entry.status])
+            .toSorted(),
+        ).toEqual([
+          ["connection", "signin", "skipped"],
+          ["integration", "Down MCP", "imported"],
+        ]);
+
+        // v1 last saw the connection healthy, or never checked it: the service not answering is
+        // an outage during the move, which another attempt can get past, so the workspace does
+        // not move.
+        const wasHealthy = yield* workspace("healthy", [
+          ["checked", healthy],
+          ["unchecked", null],
+        ]);
+        const outage = {
+          reason:
+            "The service did not respond while its sign-in was set up. Contact support if you need it.",
+          reconnect: false,
+          connections: ["checked", "unchecked"],
+        };
+        const blocked = yield* run("dry-run", "healthy-dry", wasHealthy);
+        expect(blocked.status).toBe("blocked");
+        expect(failures(blocked)).toEqual([outage]);
+        const refused = yield* run("import", "healthy", wasHealthy);
+        expect(refused.status).toBe("failed");
+        expect(refused.cutover).not.toBe(true);
+        expect(failures(refused)).toEqual([outage]);
+        expect((yield* movedFlag(wasHealthy))[0]?.state).not.toBe("moved");
+
+        for (const report of [planned, moved, blocked, refused])
+          expect(JSON.stringify(report)).not.toContain("-token");
       }).pipe(Effect.provide(services)),
     ),
   );

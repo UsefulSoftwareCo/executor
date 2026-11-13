@@ -10,6 +10,7 @@ import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { releaseSuiteConfigs } from "../release-lanes.ts";
+import { closureOf } from "../save-path.ts";
 import { scenarios } from "../test-plan.ts";
 
 const jobs = [
@@ -24,8 +25,10 @@ const jobs = [
   "cloud-locks",
   "cloud-removal-recovery",
   "cloud-batch",
+  "cloud-export-hang",
   "cloud-autumn",
   "cloud-isolate",
+  "cloud-telemetry-flush",
   "cloud-connections",
   "cloud-v1-bound",
   "cloud-rate-limit",
@@ -191,6 +194,9 @@ const fixture = (files: Readonly<Record<string, string>> = {}) =>
     yield* fs.copyFile("package.json", path.join(root, "package.json"));
     yield* fs.copy(path.join(".github", "workflows"), path.join(root, ".github", "workflows"));
     yield* fs.symlink(path.resolve("node_modules"), path.join(root, "node_modules"));
+    // The selection reads the source a save runs (e2e/save-path.ts).
+    for (const tree of ["apps", "packages", "playground"])
+      yield* fs.symlink(path.resolve(tree), path.join(root, tree));
     for (const [file, text] of Object.entries(files))
       yield* fs.writeFileString(path.join(root, file), text);
     return root;
@@ -204,6 +210,8 @@ interface SavedRun {
   readonly target: "local" | "self-host" | "cloud";
   readonly status?: (title: string) => string;
   readonly files?: (file: string) => boolean;
+  /** A failed scenario's failure message, as Vitest saves it. */
+  readonly failure?: (title: string) => string | undefined;
 }
 
 /**
@@ -217,7 +225,10 @@ const verify = (suite: string, saved: ReadonlyArray<SavedRun>) =>
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-ci-coverage-" });
     for (const [index, run] of saved.entries()) {
-      const files = new Map<string, Array<{ title: string; status: string }>>();
+      const files = new Map<
+        string,
+        Array<{ title: string; status: string; failureMessages: ReadonlyArray<string> }>
+      >();
       for (const scenario of Object.values(scenarios))
         if (
           scenario.targets[run.target].status === "scheduled" &&
@@ -225,7 +236,13 @@ const verify = (suite: string, saved: ReadonlyArray<SavedRun>) =>
         )
           files.set(scenario.file, [
             ...(files.get(scenario.file) ?? []),
-            { title: scenario.title, status: run.status?.(scenario.title) ?? "passed" },
+            {
+              title: scenario.title,
+              status: run.status?.(scenario.title) ?? "passed",
+              failureMessages: [run.failure?.(scenario.title)].filter(
+                (message) => message !== undefined,
+              ),
+            },
           ]);
       const report = path.join(
         directory,
@@ -342,6 +359,21 @@ const gate = (
 /** This suite's own config, rewritten only in a fixture tree. */
 const ownConfig = "e2e/ci-selection.config.ts";
 
+/** Files `fileGuards` in e2e/ci-selection.ts watches; main lists each in its directory. */
+const guardedFiles = ["packages/sdk/src/implementation/app-protocols.ts"];
+/**
+ * Main's listings of the guarded files' directories, with each file's blob ID in this checkout
+ * unless `changed` gives another.
+ */
+const guardedListings = (blobs: ReadonlyArray<string>, changed: Record<string, string> = {}) => {
+  const listings: Record<string, string> = {};
+  guardedFiles.forEach((file, index) => {
+    const directory = file.slice(0, file.lastIndexOf("/"));
+    listings[directory] = `${listings[directory] ?? ""}${changed[file] ?? blobs[index]} ${file}\n`;
+  });
+  return listings;
+};
+
 layer(NodeServices.layer)("CI E2E selection", (it) => {
   it.effect("a push to main runs every job's full pattern", () =>
     Effect.gen(function* () {
@@ -376,7 +408,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           expect(run.exitCode, run.log).toBe(0);
           for (const [job, target, names] of [
             ["local", "local", ["1/3", "2/3", "3/3"]],
-            ["self-host", "self-host", ["1/6", "2/6", "3/6", "4/6", "5/6", "6/6"]],
+            ["self-host", "self-host", Array.from({ length: 12 }, (_, index) => `${index + 1}/12`)],
           ] as const) {
             const parts = shards(run.outputs, job);
             expect(parts.map(({ shard }) => shard)).toEqual(names);
@@ -408,14 +440,14 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           expect(productParts).toBeGreaterThan(1);
           expect(runners.map(({ name }) => name)).toEqual([
             "cloud",
-            "cloud-isolate, cloud-connections",
+            "cloud-isolate, cloud-telemetry-flush, cloud-connections",
             ...Array.from(
               { length: productParts },
               (_, index) => `cloud-product ${index + 1}/${productParts}`,
             ),
             "cloud-workers, cloud-locks, cloud-batch, cloud-autumn",
             "cloud-domains, cloud-v1-bound, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview",
-            "cloud-removal-recovery",
+            "cloud-removal-recovery, cloud-export-hang",
           ]);
           // Each Cloud job's pattern is on exactly one runner and empty on the others. The runner
           // runs it unchanged, except cloud-product past what one local Cloud holds: each of its
@@ -781,17 +813,18 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-        const protocols = "packages/sdk/src/implementation/app-protocols.ts";
         const names = yield* fs.readDirectory("patches");
-        const [current = "", ...blobs] = (yield* processes.string(
+        const hashed = (yield* processes.string(
           ChildProcess.make("git", [
             "hash-object",
-            protocols,
+            ...guardedFiles,
             ...names.map((name) => `patches/${name}`),
           ]),
         ))
           .trim()
           .split("\n");
+        const guarded = hashed.slice(0, guardedFiles.length),
+          blobs = hashed.slice(guardedFiles.length);
         // Main as this checkout, except for the blob ID it lists for effect's patch.
         const patches = names
           .map(
@@ -804,7 +837,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           main: {
             "package.json": yield* fs.readFileString("package.json"),
             patches,
-            "packages/sdk/src/implementation": `${current} ${protocols}\n`,
+            ...guardedListings(guarded),
           },
         });
         expect(run.exitCode, run.log).toBe(0);
@@ -825,22 +858,25 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         const protocols = "packages/sdk/src/implementation/app-protocols.ts";
         const names = yield* fs.readDirectory("patches");
         // Git's own blob IDs for the working tree, as the contents API lists main's.
-        const [current = "", ...patchBlobs] = (yield* processes.string(
+        const hashed = (yield* processes.string(
           ChildProcess.make("git", [
             "hash-object",
-            protocols,
+            ...guardedFiles,
             ...names.map((name) => `patches/${name}`),
           ]),
         ))
           .trim()
           .split("\n");
+        const guarded = hashed.slice(0, guardedFiles.length),
+          patchBlobs = hashed.slice(guardedFiles.length),
+          current = guarded[0] ?? "";
         const patches = names.map((name, index) => `${patchBlobs[index]} ${name}`);
         const manifest = yield* fs.readFileString("package.json");
         // Main as this checkout, except for the blob ID it lists for the host's protocols.
         const main = (protocolsBlob: string) => ({
           "package.json": manifest,
           patches: patches.join("\n"),
-          "packages/sdk/src/implementation": `${protocolsBlob} ${protocols}\n`,
+          ...guardedListings(guarded, { [protocols]: protocolsBlob }),
         });
         const [same, changed] = yield* Effect.all(
           [
@@ -861,6 +897,81 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         );
         expect(changed.outputs["self-host"]).toContain(
           "App builds retain their selected npm framework across rebuilds",
+        );
+      }),
+  );
+
+  it.effect(
+    "a scenario new to the deployed suite needs the description to say how it was verified on a deployed stage",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const names = yield* fs.readDirectory("patches");
+        const hashed = (yield* processes.string(
+          ChildProcess.make("git", [
+            "hash-object",
+            ...guardedFiles,
+            ...names.map((name) => `patches/${name}`),
+          ]),
+        ))
+          .trim()
+          .split("\n");
+        const plan = yield* fs.readFileString("e2e/test-plan.ts");
+        const manifest = yield* fs.readFileString("package.json");
+        // Main as this checkout, with the plan main had: a deployed scenario's title is one main
+        // does not have, so this pull request adds it to the deployed suite.
+        const title = "Cloud product links follow the deployment origin";
+        expect(plan).toContain(JSON.stringify(title));
+        const main = (mainPlan: string | undefined) => ({
+          "package.json": manifest,
+          patches: names
+            .map((name, index) => `${hashed[guardedFiles.length + index]} ${name}`)
+            .join("\n"),
+          ...guardedListings(hashed.slice(0, guardedFiles.length)),
+          ...(mainPlan === undefined ? {} : { "e2e/test-plan.ts": mainPlan }),
+        });
+        const without = plan.replace(
+          JSON.stringify(title),
+          JSON.stringify("Cloud product links followed an earlier origin"),
+        );
+        const changed = ["e2e/tests/deployment-links.spec.ts"];
+        const verified =
+          "Verified on a deployed stage: bun run e2e:deployed --database planetscale --test-name 'Cloud product links' passed on a synthetic stage";
+        const [refused, stated, emptyStatement, known, unreadable] = yield* Effect.all(
+          [
+            select({ body: block("none"), changed, main: main(without) }),
+            select({ body: `${block("none")}\n${verified}\n`, changed, main: main(without) }),
+            select({
+              body: `${block("none")}\nVerified on a deployed stage:\n`,
+              changed,
+              main: main(without),
+            }),
+            select({ body: block("none"), changed, main: main(plan) }),
+            select({ body: block("none"), changed, main: main(undefined) }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(refused.exitCode).toBe(1);
+        expect(refused.log).toContain("These scenarios are new to the deployed suite.");
+        expect(refused.log).toContain(`- deployment-links.spec.ts: ${title}`);
+        expect(refused.log).toContain(
+          `bun run e2e:deployed --database planetscale --test-name '^(?:${title})$'`,
+        );
+        expect(refused.log).toContain(
+          '"Verified on a deployed stage: <command, run or stage, and result>"',
+        );
+        // A statement of how it was verified lets it through; a bare heading does not.
+        expect(stated.exitCode, stated.log).toBe(0);
+        expect(emptyStatement.exitCode).toBe(1);
+        expect(emptyStatement.log).toContain("These scenarios are new to the deployed suite.");
+        // A changed scenario main already has is not new, so an ordinary change passes.
+        expect(known.exitCode, known.log).toBe(0);
+        expect(known.log).not.toContain("new to the deployed suite");
+        // Main's plan unreadable: the check says it was skipped and does not fail the run.
+        expect(unreadable.exitCode, unreadable.log).toBe(0);
+        expect(unreadable.log).toContain(
+          "Could not read main's e2e/test-plan.ts, so whether this pull request adds scenarios to the deployed suite was not checked.",
         );
       }),
   );
@@ -962,6 +1073,115 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         }).pipe(Effect.scoped),
       { discard: true },
     ),
+  );
+
+  it.effect(
+    "the save path reads imports with a parser: wildcard exports, dynamic imports after a regular expression, no method calls or template text, and it fails closed",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-save-path-" });
+        const write = (file: string, text: string) =>
+          fs
+            .makeDirectory(path.dirname(path.join(root, file)), { recursive: true })
+            .pipe(Effect.andThen(fs.writeFileString(path.join(root, file), text)));
+        yield* write("package.json", JSON.stringify({ workspaces: ["packages/*"] }));
+        yield* write(
+          "packages/lib/package.json",
+          JSON.stringify({ name: "@example/lib", exports: { "./parts/*": "./src/parts/*.ts" } }),
+        );
+        yield* write("packages/lib/src/parts/a.ts", "export const a = 1;\n");
+        yield* write(
+          "entry.ts",
+          [
+            'import { a } from "@example/lib/parts/a";',
+            // An app's source a template writes imports its own files.
+            'const app = `import x from "./generated.ts";\n${a ? `import y from "./other.ts"` : ""}`;',
+            "export { a, app };",
+          ].join("\n"),
+        );
+        // Method calls named `from` are not imports, and a regular expression with a quote and a
+        // backtick does not hide the dynamic import after it.
+        yield* write(
+          "calls.ts",
+          [
+            'const bytes = Buffer.from("./missing");',
+            'const letters = Array.from(".");',
+            'const quoted = /["`]/;',
+            'const later = await import("./later.ts");',
+            "export { bytes, letters, quoted, later };",
+          ].join("\n"),
+        );
+        yield* write("later.ts", "export const later = 1;\n");
+        yield* write("broken.ts", 'import { gone } from "./gone.ts";\nexport { gone };\n');
+        yield* write("unparsable.ts", "export const = ;\n");
+        expect([...(yield* closureOf(root, ["entry.ts"]))].sort()).toEqual([
+          "entry.ts",
+          "packages/lib/src/parts/a.ts",
+        ]);
+        expect([...(yield* closureOf(root, ["calls.ts"]))].sort()).toEqual([
+          "calls.ts",
+          "later.ts",
+        ]);
+        // A file the parser cannot read fails the computation, naming it.
+        const unparsed = yield* closureOf(root, ["entry.ts", "unparsable.ts"]).pipe(Effect.flip);
+        expect(unparsed.message).toContain("unparsable.ts");
+        const failed = yield* closureOf(root, ["entry.ts", "broken.ts"]).pipe(Effect.flip);
+        expect(failed.message).toContain("cannot follow these imports");
+        expect(failed.message).toContain("broken.ts: ./gone.ts");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "the webhook source lookup runs when a file a save runs or reads changed, or when nothing says it did not",
+    () =>
+      Effect.gen(function* () {
+        const lookup = scenarios.webhookSourceLookup.title;
+        const runs = yield* Effect.all(
+          {
+            route: select({
+              body: block("none"),
+              compared: ["apps/hosted/server/src/implementation/accounts.ts"],
+            }),
+            // Reached only through the SDK's exports, not named anywhere by hand.
+            storage: select({
+              body: block("none"),
+              compared: ["packages/fumadb-effect/src/implementation/sql/query.ts"],
+            }),
+            schema: select({
+              body: block("none"),
+              compared: ["apps/hosted/server/src/implementation/resource-schema.ts"],
+            }),
+            elsewhere: select({ body: block("none"), compared: ["apps/marketing/src/pages.ts"] }),
+            manual: select({ body: block("none"), compared: "unknown" }),
+            // GitHub lists at most 300 files of a comparison; a longer one may hide a save's file.
+            tooLongToList: select({
+              body: block("none"),
+              compared: Array.from({ length: 300 }, (_, index) => `apps/file-${index}.ts`),
+            }),
+          },
+          { concurrency: 4 },
+        );
+        const ran = Object.fromEntries(
+          Object.entries(runs).map(([name, run]) => {
+            expect(run.exitCode, `${name}: ${run.log}`).toBe(0);
+            const selected = run.outputs["cloud-locks"] ?? "";
+            return [name, selected !== "" && new RegExp(selected).test(lookup)];
+          }),
+        );
+        expect(ran).toEqual({
+          route: true,
+          storage: true,
+          schema: true,
+          elsewhere: false,
+          manual: true,
+          tooLongToList: true,
+        });
+        expect(runs.storage.summary).toContain(
+          "A file a save runs or reads differs from main (e2e/save-path.ts), so these run in cloud-locks: webhook-source-lookup.spec.ts",
+        );
+      }),
   );
 
   it.effect(
@@ -1154,6 +1374,47 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
     }),
   );
 
+  it.effect("a deployed run counts its scenario runs that failed on each platform signature", () =>
+    Effect.gen(function* () {
+      const cloud = Object.values(scenarios)
+        .filter((scenario) => scenario.targets.cloud.status === "scheduled")
+        .map((scenario) => scenario.title);
+      const [first, second, third, fourth] = cloud;
+      const messages: Record<string, string> = {
+        [first!]:
+          "RequestFailed: Cloudflare's Workers runtime answered 502 Bad Gateway itself; our Worker did not answer (ray 8f0c1a2b3c4d5e6f-AMS): POST /api/x returned HTTP 502 without a JSON response",
+        [second!]:
+          "RequestFailed: Cloudflare's Workers runtime answered 502 Bad Gateway itself; our Worker did not answer (ray 0f0c1a2b3c4d5e6f-AMS): GET /api/y returned HTTP 502 without a JSON response",
+        [third!]:
+          "RequestFailed: Request lost before any response: the client saw the connection reset with no response after 41 ms: POST /api/z failed (request)",
+        // Our own 502 failing a scenario is not a platform signature.
+        [fourth!]: "AssertionError: expected 502 to be 200 // Object.is equality",
+      };
+      const [counted, none] = yield* Effect.all(
+        [
+          verify("deployed", [
+            {
+              target: "cloud",
+              status: (title) => (title in messages ? "failed" : "passed"),
+              failure: (title) => messages[title],
+            },
+          ]),
+          verify("deployed", [{ target: "cloud" }]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(counted.exitCode, counted.log).toBe(0);
+      expect(counted.log).toContain(
+        "Scenario runs that failed on a platform signature: 2 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 1 on a request lost before any response.",
+      );
+      // Zero is reported too, so a rise shows against it.
+      expect(none.exitCode, none.log).toBe(0);
+      expect(none.log).toContain(
+        "Scenario runs that failed on a platform signature: 0 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 0 on a request lost before any response.",
+      );
+    }),
+  );
+
   it.effect("a sharded job's parts count together, and a missing part fails the full run", () =>
     Effect.gen(function* () {
       // Three parts by spec file, as e2e-self-host's runners save them.
@@ -1211,8 +1472,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-locks",
         "cloud-removal-recovery",
         "cloud-batch",
+        "cloud-export-hang",
         "cloud-autumn",
         "cloud-isolate",
+        "cloud-telemetry-flush",
         "cloud-connections",
         "cloud-v1-bound",
         "cloud-rate-limit",
@@ -1380,11 +1643,6 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           'import { defineConfig } from "vitest/config";\nexport default defineConfig({ test: { include: ["e2e/tests/docker-release.spec.ts"] } });\n',
         "e2e/tests/docker-release.spec.ts": 'import { it } from "vitest";\nit("runs", () => {});\n',
       });
-      // The artifacts' workspace packages, which the lanes read and the case never writes.
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      for (const directory of ["apps", "packages", "playground"])
-        yield* fs.symlink(path.resolve(directory), path.join(root, directory));
       const run = yield* select({ body: block("none"), root });
       expect(run.exitCode, run.log).toBe(1);
       expect(run.log).toContain(
@@ -1399,7 +1657,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       const path = yield* Path.Path;
       const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-release-matrix-" });
-      const targets = (channel: string) =>
+      const targets = (channel: string, notarize = false, ref = "refs/heads/main") =>
         Effect.gen(function* () {
           const output = path.join(directory, channel);
           yield* fs.writeFileString(output, "");
@@ -1408,8 +1666,9 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               env: {
                 GITHUB_OUTPUT: output,
                 GITHUB_EVENT_NAME: "workflow_dispatch",
-                GITHUB_REF: "refs/heads/main",
+                GITHUB_REF: ref,
                 RELEASE_CHANNEL: channel,
+                RELEASE_NOTARIZE: String(notarize),
               },
               extendEnv: true,
             }),
@@ -1432,21 +1691,82 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               )
               .sort();
           return {
+            publish: values.publish,
             local: names("matrix"),
+            checks: names("checks_matrix"),
+            recovery: names("recovery_matrix"),
+            notarized: names("notarized_recovery_matrix"),
             cli: names("cli_matrix"),
             docker: names("docker_matrix"),
           };
         }).pipe(Effect.scoped);
+      // The CLI suite runs in two parts and desktop crash recovery in three, each on its own runner.
+      const parts = (names: ReadonlyArray<string>, count: number) =>
+        names.flatMap((name) => Array.from({ length: count }, () => name));
       expect(yield* targets("check")).toEqual({
+        publish: "false",
         local: ["linux-x64"],
-        cli: ["linux-x64"],
+        checks: ["linux-x64"],
+        recovery: parts(["linux-x64"], 3),
+        notarized: [],
+        cli: parts(["linux-x64"], 2),
         docker: ["amd64", "arm64"],
       });
       expect(yield* targets("build")).toEqual({
+        publish: "false",
         local: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
-        cli: ["linux-x64", "win32-x64"],
+        checks: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        recovery: parts(["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"], 3),
+        notarized: [],
+        cli: parts(["linux-x64", "win32-x64"], 2),
         docker: ["amd64", "arm64"],
       });
+      // A publishing run, in the channel the CLI's version names, tests the macOS app it
+      // notarizes, after local has built it.
+      const { version } = JSON.parse(yield* fs.readFileString("apps/cli/package.json")) as {
+        readonly version: string;
+      };
+      const notarized = {
+        local: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        checks: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        recovery: parts(["linux-arm64", "linux-x64", "win32-x64"], 3),
+        notarized: parts(["darwin-arm64"], 3),
+        cli: parts(["linux-x64", "win32-x64"], 2),
+        docker: ["amd64", "arm64"],
+      };
+      expect(yield* targets(version.includes("-beta.") ? "beta" : "latest")).toEqual({
+        publish: "true",
+        ...notarized,
+      });
+      // A build asked to notarize tests the notarized macOS app the same way, and publishes nothing.
+      expect(yield* targets("build", true)).toEqual({ publish: "false", ...notarized });
+      // Notarizing signs and notarizes the desktop app with the company's Developer ID, so only main may ask.
+      const refused = yield* Effect.gen(function* () {
+        const output = path.join(directory, "branch-notarize");
+        yield* fs.writeFileString(output, "");
+        const child = yield* processes.spawn(
+          ChildProcess.make("node", ["scripts/releases/workflow.ts"], {
+            env: {
+              GITHUB_OUTPUT: output,
+              GITHUB_EVENT_NAME: "workflow_dispatch",
+              GITHUB_REF: "refs/heads/some-branch",
+              RELEASE_CHANNEL: "build",
+              RELEASE_NOTARIZE: "true",
+            },
+            extendEnv: true,
+          }),
+        );
+        const [log, exitCode] = yield* Effect.all(
+          [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+          { concurrency: "unbounded" },
+        );
+        return { log, exitCode, written: yield* fs.readFileString(output) };
+      }).pipe(Effect.scoped);
+      expect(refused.exitCode, refused.log).not.toBe(0);
+      expect(refused.log).toContain("Notarize from main: it signs and notarizes the desktop app.");
+      expect(refused.written, "a refused run decides no matrix").toBe("");
+      // A build from a branch without notarize still runs.
+      expect((yield* targets("build", false, "refs/heads/some-branch")).publish).toBe("false");
     }),
   );
 
@@ -1467,6 +1787,17 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               .flatMap((line) => /^ {6}- name: (.+)$/.exec(line)?.[1] ?? []);
           });
         const own = "Read the release identity";
+        /**
+         * The local release job's steps with the checks job's tests where local ran them, after
+         * staging the apps package: release-local runs both jobs' steps for Linux x64, in one job.
+         */
+        const localAndChecks = Effect.gen(function* () {
+          const local = yield* steps(".github/workflows/release-artifacts.yml", "local");
+          const checks = yield* steps(".github/workflows/release-artifacts.yml", "checks");
+          const staged = local.indexOf("Stage the apps package") + 1;
+          const tests = checks.slice(checks.indexOf("Stage the apps package") + 1);
+          return [...local.slice(0, staged), ...tests, ...local.slice(staged)];
+        });
         const lanes = [
           ["release-docker", "docker", ["Push the tested architecture without moving a channel"]],
           [
@@ -1482,17 +1813,21 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               "Verify the macOS update archive keeps a valid signature",
               "Verify Windows long-path support survives both packages",
               "Verify Apple signing and notarization",
-              // After merge only.
-              "Verify packaged desktop crash recovery and reset",
-              // For publication: the archives job compares it with the cli job's.
+              "Wait for Apple to accept the CLI's notarization",
+              // For publication: the archives job compares it with the cli and checks jobs'.
               "Record the published archive's digest",
+              // The archives job compares it with the recovery parts' apps, which this lane lacks.
+              "Record the packaged desktop app's digest",
             ],
           ],
         ] as const;
         for (const [lane, job, omitted] of lanes) {
           const ran = yield* steps(".github/workflows/checks.yml", lane);
           expect(ran, lane).toContain(own);
-          const released = yield* steps(".github/workflows/release-artifacts.yml", job);
+          const released =
+            job === "local"
+              ? yield* localAndChecks
+              : yield* steps(".github/workflows/release-artifacts.yml", job);
           for (const name of omitted) expect(released, `${job} still has ${name}`).toContain(name);
           expect(
             ran.filter((name) => name !== own),
@@ -1776,8 +2111,7 @@ layer(NodeServices.layer)("Release check after a push to main", (it) => {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const root = yield* fixture({ "e2e/release-new-helper.ts": "export const helper = 1;\n" });
-      for (const directory of ["apps", "packages", "playground", "scripts"])
-        yield* fs.symlink(path.resolve(directory), path.join(root, directory));
+      yield* fs.symlink(path.resolve("scripts"), path.join(root, "scripts"));
       for (const directory of ["support", "sdk"])
         yield* fs.symlink(path.resolve("e2e", directory), path.join(root, "e2e", directory));
       for (const name of yield* fs.readDirectory("e2e/tests"))

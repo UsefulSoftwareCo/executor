@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
 import type { ApprovalMode, GrantAccessChoice, GrantTarget } from "@executor-js/mcp-auth/grants";
@@ -447,7 +447,8 @@ const declineDecision = "decline",
  * Only the button pressed decides, and one page sends at most one decision: a replayed submission
  * from a button that is now disabled is ignored (the replay submits it regardless), and so is any
  * submission while a decision is being sent or after one succeeded. A decision that fails can be
- * made again. Each callback resolves `true` once its decision was delivered.
+ * made again. Each callback resolves `true` once its decision was delivered; both buttons then stay
+ * disabled, with the chosen one showing progress, while the page leaves for the client.
  */
 export function McpConsentActions({
   decline = "Cancel",
@@ -464,6 +465,9 @@ export function McpConsentActions({
   readonly connectDisabled?: boolean;
 }) {
   const deciding = useRef(false);
+  // A delivered decision is final: the page leaves for the client, and if it cannot (a custom
+  // scheme, a blocked navigation) the buttons stay disabled rather than look ready and do nothing.
+  const [delivered, setDelivered] = useState<string>();
   return (
     <form
       className="mcp-consent-actions grid grid-cols-2 gap-2.5"
@@ -482,8 +486,9 @@ export function McpConsentActions({
         if (decide === undefined) return;
         deciding.current = true;
         void decide().then(
-          (delivered) => {
-            if (!delivered) deciding.current = false;
+          (sent) => {
+            if (sent) setDelivered(submitter.value);
+            else deciding.current = false;
           },
           () => {
             deciding.current = false;
@@ -496,7 +501,8 @@ export function McpConsentActions({
         name="decision"
         value={declineDecision}
         variant="outline"
-        disabled={waiting}
+        disabled={waiting || delivered !== undefined}
+        loading={delivered === declineDecision}
       >
         {decline}
       </Button>
@@ -505,8 +511,8 @@ export function McpConsentActions({
           type="submit"
           name="decision"
           value={connectDecision}
-          disabled={connectDisabled || waiting}
-          loading={waiting}
+          disabled={connectDisabled || waiting || delivered !== undefined}
+          loading={waiting || delivered === connectDecision}
         >
           Connect
         </Button>

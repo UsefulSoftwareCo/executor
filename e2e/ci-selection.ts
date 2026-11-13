@@ -56,7 +56,10 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createHash } from "node:crypto";
 import { lanesFor, releaseSources } from "./release-lanes.ts";
+import { savePathFiles } from "./save-path.ts";
 import { Target } from "./report-model.ts";
+import { exactly, split } from "./scenario-parts.ts";
+import { platformSignatures } from "./platform-signatures.ts";
 import { deployedSuitePattern, scenarios, scenariosForSuite, type CloudMode } from "./test-plan.ts";
 
 class SelectionFailed extends Schema.TaggedError<SelectionFailed>()("SelectionFailed", {
@@ -106,6 +109,16 @@ const harnessScenarios = {
 const harnessTitles = scenariosForSuite("all")
   .filter((scenario) => (harnessScenarios.files as ReadonlyArray<string>).includes(scenario.file))
   .map((scenario) => scenario.title);
+/**
+ * Scenarios that check what saving an account executes. They run in `cloud-locks` when a pull
+ * request changes a file a save can run or read (`e2e/save-path.ts`), since main, so the top of a
+ * stack counts every layer; a manual run, or a comparison GitHub cannot list in full, runs them.
+ * Main's full runs run them always.
+ */
+const saveScenarios = { job: "cloud-locks", files: ["webhook-source-lookup.spec.ts"] } as const;
+const saveTitles = scenariosForSuite("all")
+  .filter((scenario) => (saveScenarios.files as ReadonlyArray<string>).includes(scenario.file))
+  .map((scenario) => scenario.title);
 const harnessPattern = harnessTitles
   .map((title) => title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
   .join("|");
@@ -133,7 +146,7 @@ const jobs = {
   "self-host": {
     target: "self-host",
     pattern: `^(?!.*(?:${claude}|${inventoryLoad}|${catalogScale}|${harnessPattern}))`,
-    shards: 6,
+    shards: 12,
   },
   "self-host-inventory": { target: "self-host", pattern: inventoryLoad },
   "self-host-catalog": { target: "self-host", pattern: catalogScale },
@@ -174,13 +187,14 @@ const jobs = {
   },
   // These hold row locks in the shared Cloud database, which would stall other scenarios' SQL.
   // The app link role check holds an uncommitted demotion on a member row, and the account check
-  // scenario an uncommitted check row.
+  // scenario an uncommitted check row. The webhook source lookup seeds 100,000 rows and analyzes
+  // their tables, which would change other scenarios' query plans while it runs.
   "cloud-locks": {
     target: "cloud",
     runner: 4,
 
     pattern:
-      "A Better Auth query|an app link that waits for the admin.s membership while a demotion commits|two first checks of an account that write its check row",
+      "A Better Auth query|an app link that waits for the admin.s membership while a demotion commits|two first checks of an account that write its check row|saving an account beside 100,000 accounts, links and webhook sources",
   },
   // Removal recovery needs the Cloud's one recovery alarm and its removal job to itself: the job
   // starts every pending removal on the Cloud, and the scenario locks the start records' table to
@@ -201,6 +215,13 @@ const jobs = {
     runner: 4,
     pattern: "Cloud MCP tool calls send their checks and reads",
   },
+  // This holds every export the Cloud sends to the suite's collector, which every other
+  // scenario on the Cloud reads its spans from.
+  "cloud-export-hang": {
+    target: "cloud",
+    runner: 6,
+    pattern: "Cloud requests answer and release their database connections while the telemetry",
+  },
   // Autumn faults match every caller of a route on a Cloud's Autumn emulator, and other jobs'
   // scenarios read billing and v1 plans, so this slows Autumn on its own local Cloud.
   "cloud-autumn": {
@@ -211,6 +232,13 @@ const jobs = {
   // This counts every request in local Cloud's single session object isolate, so another
   // scenario's MCP request in flight would change its count.
   "cloud-isolate": { target: "cloud", runner: 2, pattern: "Cloud MCP session objects report" },
+  // This counts the telemetry flushes of local Cloud's session object isolate over an idle wait,
+  // so another scenario's request in that isolate would add flushes of its own.
+  "cloud-telemetry-flush": {
+    target: "cloud",
+    runner: 2,
+    pattern: "Cloud's isolate telemetry flush",
+  },
   // This waits out its session object's 120-second idle window, about three minutes in all. In
   // the cloud job's local Cloud it and its file's coordinator scenario, about two minutes, ran one
   // after the other and set that job's length, so it starts a local Cloud of its own.
@@ -265,8 +293,6 @@ const specFiles: ReadonlySet<string> = new Set(
   scenariosForSuite("all").map((scenario) => scenario.file),
 );
 const escape = (title: string) => title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-/** A pattern that matches exactly these titles. */
-const exactly = (titles: ReadonlyArray<string>) => `^(?:${titles.map(escape).join("|")})$`;
 /** The titles of the scenarios a plan schedules on a target whose title a pattern matches. */
 const runs = (
   plan: ReturnType<typeof scenariosForSuite>,
@@ -293,34 +319,6 @@ const deployedRuns = runs(scenariosForSuite("all", "attached"), "cloud", deploye
 const fileOf: ReadonlyMap<string, string> = new Map(
   Object.values(scenarios).map((scenario) => [scenario.title, scenario.file]),
 );
-/**
- * Scenarios split into at most `count` parts, by spec file: a file's scenarios share its setup, so
- * they stay in one part. Each file goes, most scenarios first, to the part with the least weight
- * so far, weighing a file as its scenarios plus one for its setup. Over four full self-host runs,
- * the slowest of three parts took 2-9% longer than an even split of the measured time; Vitest's
- * --shard, which splits by a hash of the path, left one part up to 33% over. With five parts the
- * suite has fewer files per part, so a few slow files decide more: in two full runs the slowest
- * part ran 22% more test time than the next slowest, and 49% more than one with as many scenarios.
- */
-const split = (titles: ReadonlyArray<string>, count: number) => {
-  const byFile = new Map<string, Array<string>>();
-  for (const title of titles) {
-    const file = fileOf.get(title)!;
-    byFile.set(file, [...(byFile.get(file) ?? []), title]);
-  }
-  const parts = Array.from({ length: Math.min(count, byFile.size) }, () => ({
-    weight: 0,
-    titles: new Array<string>(),
-  }));
-  for (const [, scenarios] of [...byFile].sort(
-    ([a, x], [b, y]) => y.length - x.length || a.localeCompare(b),
-  )) {
-    const lightest = parts.reduce((least, part) => (part.weight < least.weight ? part : least));
-    lightest.weight += scenarios.length + 1;
-    lightest.titles.push(...scenarios);
-  }
-  return parts.map((part) => part.titles);
-};
 /** Spec files with a scenario that one of these jobs runs on a full run. */
 const jobFiles: ReadonlySet<string> = new Set([
   ...jobRuns.flatMap(({ titles }) => [...titles].map((title) => fileOf.get(title)!)),
@@ -334,6 +332,19 @@ const deployedOnly = [...deployedRuns].filter((title) =>
   jobRuns.every(({ target, titles }) => target !== "cloud" || !titles.has(title)),
 );
 const deployedOnlyJob = "cloud-product" satisfies keyof typeof jobs;
+
+/**
+ * A line in the pull request's description that says how a scenario new to the deployed suite was
+ * verified on a deployed stage, such as the `e2e:deployed` command that ran it and its result.
+ */
+const deployedVerification = /^Verified on a deployed stage:[ \t]*(\S.{9,})$/mu;
+
+/**
+ * Whether main's `e2e/test-plan.ts` names a scenario: every title there is a string literal, so a
+ * title its text does not hold is a scenario main does not have. A scenario main has under the same
+ * title but does not schedule on deployed Cloud counts as known.
+ */
+const namedIn = (plan: string, title: string) => plan.includes(JSON.stringify(title));
 /**
  * The most scenarios the cloud-product job runs on one local Cloud. Local workerd never
  * unloads a Worker Loader entry, and Cloud keeps no residency of its own (see "Loaded app Workers
@@ -437,7 +448,11 @@ const Results = Schema.fromJsonString(
       Schema.Struct({
         name: Schema.String,
         assertionResults: Schema.Array(
-          Schema.Struct({ title: Schema.String, status: Schema.String }),
+          Schema.Struct({
+            title: Schema.String,
+            status: Schema.String,
+            failureMessages: Schema.optional(Schema.Array(Schema.String)),
+          }),
         ),
       }),
     ),
@@ -456,6 +471,8 @@ const executed = (directory: string) =>
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const ran = new Set<string>();
+    // Failed scenario runs whose failure names each platform signature (`platformSignatures`).
+    const signatures = { "runtime-502": 0, lost: 0 };
     const reports = (yield* fs.exists(directory))
       ? (yield* fs.readDirectory(directory, { recursive: true })).filter(
           (file) => path.basename(file) === "results.json",
@@ -476,10 +493,14 @@ const executed = (directory: string) =>
         .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Results)));
       for (const file of results.testResults)
         for (const test of file.assertionResults)
-          if (test.status === "passed" || test.status === "failed")
+          if (test.status === "passed" || test.status === "failed") {
             ran.add(pair(target, path.basename(file.name), test.title));
+            const messages = (test.failureMessages ?? []).join("\n");
+            for (const signature of ["runtime-502", "lost"] as const)
+              if (messages.includes(platformSignatures[signature])) signatures[signature] += 1;
+          }
     }
-    return ran;
+    return { ran, signatures };
   });
 
 /**
@@ -495,7 +516,7 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
       return yield* new SelectionFailed({
         message: "Usage: node e2e/ci-selection.ts verify <ci|deployed> <directory of saved runs>",
       });
-    const ran = yield* executed(directory);
+    const { ran, signatures } = yield* executed(directory);
     const paths =
       suite === "ci"
         ? jobRuns.map(({ name, target, titles }) => ({ name: `the ${name} job`, target, titles }))
@@ -523,7 +544,12 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
           "A job or step that was skipped, cancelled or never started saves no result. Check this run's jobs. If a scenario cannot run in CI, list it in notRunInCi in e2e/ci-selection.ts with the reason.",
         ].join("\n"),
       });
-    const report = `## E2E coverage\n\nEvery one of the ${expected} scenario runs ${suite === "ci" ? "the jobs here schedule" : "Cloud tests on main schedules"} executed. ${Object.keys(notRunInCi).length} scenarios are in notRunInCi.\n`;
+    // Counted on every deployed run, zero included, so a rise shows without reading logs.
+    const platform =
+      suite === "deployed"
+        ? `\nScenario runs that failed on a platform signature: ${signatures["runtime-502"]} on Cloudflare's runtime answering 502 itself (our Worker did not answer), ${signatures.lost} on a request lost before any response.\n`
+        : "";
+    const report = `## E2E coverage\n\nEvery one of the ${expected} scenario runs ${suite === "ci" ? "the jobs here schedule" : "Cloud tests on main schedules"} executed. ${Object.keys(notRunInCi).length} scenarios are in notRunInCi.\n${platform}`;
     yield* Console.log(report);
     const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
     if (Option.isSome(summary))
@@ -663,6 +689,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "billing.config.ts": () => import("./billing.config.ts"),
   "ci-selection.config.ts": () => import("./ci-selection.config.ts"),
   "ci-supersede.config.ts": () => import("./ci-supersede.config.ts"),
+  "telemetry-event-lifetime.config.ts": () => import("./telemetry-event-lifetime.config.ts"),
   "cli-startup-imports.config.ts": () => import("./cli-startup-imports.config.ts"),
   "cloud-deploy-origin.config.ts": () => import("./cloud-deploy-origin.config.ts"),
   "dashboard-file-names.config.ts": () => import("./dashboard-file-names.config.ts"),
@@ -683,11 +710,15 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "posthog-experiment-lifecycle.config.ts": () =>
     import("./posthog-experiment-lifecycle.config.ts"),
   "prepare-cache.config.ts": () => import("./prepare-cache.config.ts"),
+  "part-results.config.ts": () => import("./part-results.config.ts"),
+  "process-identity.config.ts": () => import("./process-identity.config.ts"),
   "release-archives.config.ts": () => import("./release-archives.config.ts"),
+  "removal-evidence.config.ts": () => import("./removal-evidence.config.ts"),
   "request-failures.config.ts": () => import("./request-failures.config.ts"),
   "run-retention.config.ts": () => import("./run-retention.config.ts"),
   "standalone-lockdown.config.ts": () => import("./standalone-lockdown.config.ts"),
   "subrequest-depth.config.ts": () => import("./subrequest-depth.config.ts"),
+  "test-stage-orphans.config.ts": () => import("./test-stage-orphans.config.ts"),
   "test-stage-unreadable.config.ts": () => import("./test-stage-unreadable.config.ts"),
   "typecheck-runner.config.ts": () => import("./typecheck-runner.config.ts"),
   "welcome-email.config.ts": () => import("./welcome-email.config.ts"),
@@ -868,7 +899,7 @@ const readPullRequest = (input: {
           yield* Console.log(
             `Waited ${Math.round(Duration.toSeconds(elapsed))} s for ${waitedFor.join(", then ")}${missing === undefined ? "." : `; there is still no ${missing.replace(/^an? /, "")}.`}`,
           );
-        return { parsed, above };
+        return { parsed, above, body };
       }
       if (waitedFor.at(-1) !== missing) {
         waitedFor.push(missing);
@@ -1056,6 +1087,38 @@ NodeRuntime.runMain(
     );
     const deployedOnlyRun = new Set(changedDeployedOnly.filter((title) => managedCloud.has(title)));
     const deployedOnlyUnrun = changedDeployedOnly.filter((title) => !deployedOnlyRun.has(title));
+    // A scenario the deployed suite gains with this pull request first runs on a deployed stage
+    // after merge, where no job here can run it, even when managed local Cloud runs it here: one
+    // that needed files only managed local Cloud has reddened Cloud tests on main on three runs.
+    // It merges once the description says how it was verified on a deployed stage.
+    const changedDeployed = [...deployedRuns].filter((title) =>
+      changedSpecs.includes(fileOf.get(title)!),
+    );
+    if (read !== undefined && defaultBranch !== "" && changedDeployed.length > 0) {
+      const mainPlan = yield* gh([
+        "api",
+        `repos/${repository}/contents/e2e/test-plan.ts?ref=${defaultBranch}`,
+        "-H",
+        "Accept: application/vnd.github.raw+json",
+      ]).pipe(Effect.option);
+      if (Option.isNone(mainPlan) || !mainPlan.value.includes("export const scenarios"))
+        yield* Console.log(
+          "Could not read main's e2e/test-plan.ts, so whether this pull request adds scenarios to the deployed suite was not checked.",
+        );
+      else {
+        const added = changedDeployed.filter((title) => !namedIn(mainPlan.value, title));
+        if (added.length > 0 && !deployedVerification.test(read.body))
+          return yield* new SelectionFailed({
+            message: [
+              "These scenarios are new to the deployed suite. Cloud tests on main runs them on a deployed stage after merge, and no job here can run them there:",
+              ...added.toSorted().map((title) => `- ${fileOf.get(title)}: ${title}`),
+              "Run them on a deployed stage before merging, for example:",
+              `    bun run e2e:deployed --database planetscale --test-name '^(?:${added.map(escape).join("|")})$'`,
+              'Then add a line to the description saying what ran and its result: "Verified on a deployed stage: <command, run or stage, and result>".',
+            ].join("\n"),
+          });
+      }
+    }
     const named = Array.isArray(block)
       ? yield* checkNamed(
           block,
@@ -1123,6 +1186,17 @@ NodeRuntime.runMain(
           prefix.endsWith("/") ? file.startsWith(prefix) : file === prefix,
         ),
       );
+    // The save scenarios, from the same comparison: a change to any file a save runs or reads.
+    // How many files the save path has, when it was read; the summary reports it.
+    let savePathSize: number | undefined;
+    const saveChanged =
+      compared === undefined ||
+      compared.length >= compareFileLimit ||
+      (yield* savePathFiles.pipe(
+        Effect.tap((files) => Effect.sync(() => (savePathSize = files.size))),
+        Effect.map((files) => compared.some((file) => files.has(file))),
+        Effect.mapError((error) => new SelectionFailed({ message: error.message })),
+      ));
     // The release lanes, from the same comparison: a pull request's changes since main, so the
     // top of a stack runs them for every layer. A comparison GitHub cannot list in full runs both.
     const lanes =
@@ -1152,6 +1226,7 @@ NodeRuntime.runMain(
               (title) => harnessChanged || files?.has(fileOf.get(title)!) === true,
             )
           : []),
+        ...(job === saveScenarios.job && saveChanged && files !== undefined ? saveTitles : []),
       ]);
       const titles = planFor(definition)
         .filter(
@@ -1288,6 +1363,15 @@ NodeRuntime.runMain(
       ...(guardedByFile.length === 0
         ? []
         : ["", `A guarded file differs from main, so its guards run: ${guardedByFile.join(", ")}`]),
+      ...(saveChanged && files !== undefined
+        ? [
+            "",
+            `A file a save runs or reads differs from main (e2e/save-path.ts), so these run in ${saveScenarios.job}: ${saveScenarios.files.join(", ")}`,
+          ]
+        : []),
+      ...(savePathSize === undefined
+        ? []
+        : ["", `The save path (e2e/save-path.ts) has ${savePathSize} files.`]),
       "",
       ...(lanes === undefined
         ? ["Release lanes: none on main, where Executor releases runs the full matrix after merge."]
