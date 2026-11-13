@@ -168,7 +168,7 @@ export class SessionClients extends Context.Service<SessionClients, Sessions>()(
                         text,
                       ).pipe(
                         Effect.catch((cause) =>
-                          decodeFailure(response.status, started, cause).pipe(
+                          decodeFailure(response.status, started, cause, response.headers).pipe(
                             Effect.flatMap((failure) =>
                               Effect.fail(
                                 new RequestFailed({

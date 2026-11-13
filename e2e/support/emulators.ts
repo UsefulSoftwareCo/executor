@@ -367,7 +367,7 @@ export const emulatorRequest = (
           ray: Option.getOrUndefined(decodeRay(response.headers["cf-ray"])),
           report: reportOf(text, { target, method, path }),
         });
-      return yield* parseJson(text, response.status, started);
+      return yield* parseJson(text, response.status, started, response.headers);
     }),
   ).pipe(
     Effect.mapError((error) =>

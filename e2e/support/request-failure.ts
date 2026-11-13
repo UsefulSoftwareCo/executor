@@ -4,8 +4,10 @@
  * the body was streaming, a body that is not JSON, or no answer before the deadline.
  *
  * It records only identifier-shaped facts: the stage, the response status once headers were read,
- * the tags and names along the error's cause chain, the first low-level error `code`, and the time
- * the call ran. Never a URL, a header, a body or an error message: those can hold credentials, and
+ * Cloudflare's `cf-ray` and edge location once headers were read (one ray names one request in
+ * Cloudflare's logs), what the client saw when no answer completed (DNS, connect, TLS, a reset, a
+ * closed socket or a time-out), the tags and names along the error's cause chain, the first
+ * low-level error `code`, and the time the call ran. Never a URL, a header, a body or an error message: those can hold credentials, and
  * `failure-text.ts` gives a masked message where one is wanted.
  */
 import { Clock, Duration, Effect, Option, Redacted, Result, Schema } from "effect";
@@ -25,9 +27,31 @@ export const RequestStage = Schema.Literals([
 ]);
 export type RequestStage = typeof RequestStage.Type;
 
+/**
+ * What the client saw when the call did not complete: a name lookup that failed, a connection
+ * that was refused or never made, a TLS handshake that failed, a connection reset or closed by
+ * the other side, or no answer before a deadline. `other` is a transport failure with none of
+ * those codes. A body that arrived whole but is not JSON has none.
+ */
+export const RequestConnection = Schema.Literals([
+  "dns",
+  "connect",
+  "tls",
+  "reset",
+  "closed",
+  "timeout",
+  "other",
+]);
+export type RequestConnection = typeof RequestConnection.Type;
+
 export const RequestFailure = Schema.Struct({
   stage: RequestStage,
   status: Schema.optional(Schema.Number),
+  connection: Schema.optional(RequestConnection),
+  /** Cloudflare's ray id from the response's `cf-ray` header, when one arrived. */
+  ray: Schema.optional(Schema.String),
+  /** The Cloudflare location that answered, the ray's suffix (`IAD`), when one arrived. */
+  colo: Schema.optional(Schema.String),
   /** Tags and names along the cause chain, outermost first: `TransportError > TypeError > SocketError`. */
   errors: Schema.optional(Schema.String),
   /** The first low-level error code on the chain: `ECONNRESET`, `UND_ERR_SOCKET`, `ENOTFOUND`. */
@@ -66,16 +90,63 @@ export const causeChain = (cause: unknown): { errors?: string; code?: string } =
   };
 };
 
-/** One line: `before response, TransportError > TypeError > SocketError UND_ERR_SOCKET, after 412 ms`. */
+// `cf-ray` is 16 hex digits and, on a response, a dash and the three-letter location.
+const rayShape = /^([0-9a-f]{16})(?:-([A-Z]{3}))?$/u;
+
+/** The ray and location of a response that came through Cloudflare. Anything else is not kept. */
+export const edgeOf = (
+  headers: Readonly<Record<string, string | undefined>> | undefined,
+): { ray?: string; colo?: string } => {
+  const [, ray, colo] = rayShape.exec(headers?.["cf-ray"]?.trim() ?? "") ?? [];
+  if (ray === undefined) return {};
+  return { ray, ...(colo !== undefined && { colo }) };
+};
+
+const connectionCodes: ReadonlyArray<readonly [RequestConnection, RegExp]> = [
+  ["dns", /^(?:ENOTFOUND|EAI_AGAIN|EAI_NONAME|EAI_FAIL)$/u],
+  [
+    "connect",
+    /^(?:ECONNREFUSED|EHOSTUNREACH|ENETUNREACH|EADDRNOTAVAIL|ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT)$/u,
+  ],
+  [
+    "tls",
+    /^(?:EPROTO|ERR_TLS_\w+|ERR_SSL_\w+|CERT_\w+|UNABLE_TO_\w+|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN)$/u,
+  ],
+  ["reset", /^(?:ECONNRESET|EPIPE)$/u],
+  ["closed", /^(?:UND_ERR_SOCKET|UND_ERR_CLOSED|ECONNABORTED|ERR_STREAM_PREMATURE_CLOSE)$/u],
+  ["timeout", /^(?:UND_ERR_HEADERS_TIMEOUT|UND_ERR_BODY_TIMEOUT)$/u],
+];
+
+/** What the client saw, from the stage and the low-level code. A decoded body has none. */
+export const connectionOf = (
+  stage: RequestStage,
+  code: string | undefined,
+): RequestConnection | undefined => {
+  if (stage === "decoding body") return undefined;
+  if (stage === "timeout") return "timeout";
+  if (code === undefined) return "other";
+  return connectionCodes.find(([, pattern]) => pattern.test(code))?.[0] ?? "other";
+};
+
+/**
+ * One line: `before response (reset), TransportError > TypeError > SocketError ECONNRESET, after
+ * 412 ms`, with `ray 8f0c1a2b3c4d5e6f-IAD` when a response came through Cloudflare.
+ */
 export const requestFailureText = (failure: RequestFailure) =>
   [
-    failure.status === undefined
+    (failure.status === undefined
       ? failure.stage
       : failure.stage === "timeout"
         ? `timeout after the headers of HTTP ${failure.status}`
-        : `${failure.stage} of HTTP ${failure.status}`,
+        : `${failure.stage} of HTTP ${failure.status}`) +
+      (failure.connection === undefined || failure.connection === failure.stage
+        ? ""
+        : ` (${failure.connection})`),
     [failure.errors, failure.code].filter((part) => part !== undefined).join(" ") || undefined,
     `after ${failure.elapsedMs} ms`,
+    failure.ray === undefined
+      ? undefined
+      : `ray ${failure.ray}${failure.colo === undefined ? "" : `-${failure.colo}`}`,
   ]
     .filter((part) => part !== undefined)
     .join(", ");
@@ -101,29 +172,35 @@ export const readResponse = <R>(
 ) =>
   Effect.suspend(() => {
     let status: number | undefined;
+    let edge: { ray?: string; colo?: string } = {};
     return Effect.gen(function* () {
       const started = yield* Clock.currentTimeMillis;
       const fail = (stage: RequestStage, cause: unknown) =>
         Clock.currentTimeMillis.pipe(
-          Effect.flatMap((now) =>
-            Effect.fail(
+          Effect.flatMap((now) => {
+            const chain = causeChain(cause);
+            const connection = connectionOf(stage, chain.code);
+            return Effect.fail(
               new CallFailed({
                 failure: {
                   stage,
                   ...(status !== undefined && { status }),
-                  ...causeChain(cause),
+                  ...(connection !== undefined && { connection }),
+                  ...edge,
+                  ...chain,
                   elapsedMs: now - started,
                 },
                 ...(cause !== undefined && { cause: Redacted.make(cause) }),
               }),
-            ),
-          ),
+            );
+          }),
         );
       const read = Effect.gen(function* () {
         const response = yield* execute.pipe(
           Effect.catch((cause) => fail("before response", cause)),
         );
         status = response.status;
+        edge = edgeOf(response.headers);
         const text = yield* response.text.pipe(
           Effect.catch((cause) => fail("reading body", cause)),
         );
@@ -143,11 +220,17 @@ export const readResponse = <R>(
   });
 
 /** The failure of a body that arrived whole and is not JSON. */
-export const decodeFailure = (status: number, started: number, cause: unknown) =>
+export const decodeFailure = (
+  status: number,
+  started: number,
+  cause: unknown,
+  headers?: Readonly<Record<string, string | undefined>>,
+) =>
   Clock.currentTimeMillis.pipe(
     Effect.map((now): RequestFailure => ({
       stage: "decoding body",
       status,
+      ...edgeOf(headers),
       ...causeChain(cause),
       elapsedMs: now - started,
     })),
@@ -158,14 +241,19 @@ export const decodeFailure = (status: number, started: number, cause: unknown) =
  * parser's error name only: its message quotes the body, which can hold tokens and secrets, so the
  * parser's error is neither kept nor passed on as a cause.
  */
-export const parseJson = (text: string, status: number, started: number) =>
+export const parseJson = (
+  text: string,
+  status: number,
+  started: number,
+  headers?: Readonly<Record<string, string | undefined>>,
+) =>
   Effect.suspend(() => {
     // An empty body is no value, as before, not a decode failure.
     if (text === "") return Effect.succeed(null as unknown);
     const parsed = Result.try((): unknown => JSON.parse(text));
     return Result.isSuccess(parsed)
       ? Effect.succeed(parsed.success)
-      : decodeFailure(status, started, parsed.failure).pipe(
+      : decodeFailure(status, started, parsed.failure, headers).pipe(
           Effect.flatMap((failure) => Effect.fail(new CallFailed({ failure }))),
         );
   });
