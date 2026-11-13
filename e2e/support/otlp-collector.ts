@@ -1,6 +1,6 @@
 /** Run the shipped collector as separate processes; query only their public HTTP API. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Deferred, Effect, FileSystem, Layer, Path, Schema, Stream } from "effect";
+import { Deferred, Effect, FileSystem, Layer, Option, Path, Ref, Schema, Stream } from "effect";
 import {
   HttpBody,
   HttpClient,
@@ -299,7 +299,25 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
           ]);
       return parts;
     };
+    // While a scenario holds exports, each one is accepted and left unanswered until it releases
+    // them, as an endpoint that hangs; the exporter's own deadline gives up on it first.
+    const held = yield* Ref.make(Option.none<Deferred.Deferred<void>>());
+    const hold = Effect.gen(function* () {
+      const released = yield* Deferred.make<void>();
+      yield* Ref.set(held, Option.some(released));
+      return HttpServerResponse.empty({ status: 204 });
+    });
+    const release = Effect.gen(function* () {
+      const current = yield* Ref.getAndSet(held, Option.none());
+      if (Option.isSome(current)) yield* Deferred.succeed(current.value, undefined);
+      return HttpServerResponse.empty({ status: 204 });
+    });
     const exported = Effect.gen(function* () {
+      const holding = yield* Ref.get(held);
+      if (Option.isSome(holding)) {
+        yield* Deferred.await(holding.value);
+        return HttpServerResponse.empty({ status: 503 });
+      }
       const request = yield* HttpServerRequest.HttpServerRequest;
       const bytes = new Uint8Array(yield* request.arrayBuffer);
       const text = new TextDecoder().decode(bytes);
@@ -408,6 +426,8 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
           HttpRouter.add("GET", "/api/spans/search", search),
           HttpRouter.add("GET", "/api/logs/search", search),
           HttpRouter.add("GET", "/api/ingest", ingestStatus),
+          HttpRouter.add("POST", "/api/e2e/exports/hold", hold),
+          HttpRouter.add("POST", "/api/e2e/exports/release", release),
         ),
         { disableLogger: true, disableListenLog: true },
       ).pipe(

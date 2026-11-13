@@ -7430,11 +7430,24 @@ export const scenarios = plan({
       local: na("Local has no hosted organization policies."),
     },
   },
+  cloudExportHang: {
+    fixtures: "actors",
+    file: "cloud-export-hang.spec.ts",
+    title:
+      "Cloud requests answer and release their database connections while the telemetry export endpoint hangs",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host serves its database in-process; it holds no connection to release.",
+      ),
+      local: na("Local runs no Worker event pool."),
+    },
+  },
   cloudMcpCallBatch: {
     fixtures: "actors",
     file: "cloud-tool-call-batch.spec.ts",
     title:
-      "Cloud MCP tool calls send their checks and reads in one socket write and one snapshot, alone and in parallel, read again in order when a batch fails, and export a log write that outlasts the call without holding a streamed response",
+      "Cloud MCP tool calls send their checks and reads in one socket write and one snapshot, alone and in parallel, read again in order when a batch fails, and export a log write that outlasts the call without holding a streamed response, also beside a listen stream",
     targets: {
       cloud: managedCloud,
       "self-host": na(

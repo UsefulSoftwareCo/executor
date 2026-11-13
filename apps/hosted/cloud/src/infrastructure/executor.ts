@@ -34,7 +34,8 @@ import { cloudWorkflows } from "./workflow-runtime.ts";
 import { cloudRuntime } from "./runtime.ts";
 import { durableDeclarations } from "./durable-declarations.ts";
 import { InvocationDatabase } from "./invocation-database.ts";
-import { backgroundWait, CurrentRequest } from "./served-request.ts";
+import { backgroundWait, CurrentRequest, ownTelemetryScope } from "./served-request.ts";
+import { TelemetryDrainScope } from "@executor-js/telemetry";
 import { cloudSecrets } from "./secrets.ts";
 import { cloudOrigin, cloudResourceOrigins, productionStage, stageName } from "./stage.ts";
 import { cloudEmulators } from "./emulators.ts";
@@ -119,7 +120,9 @@ export const cloudExecutor = Effect.fn(function* (
   // the scope is closing is refused, so its caller releases what it holds or does it itself. The
   // event's database is resolved first, so its connection closes after this work ends. When that
   // scope is nested in the request's, such as an MCP tool call's operation, the request's close
-  // waits for the work too, so the event exports its spans (`served-request.ts`).
+  // waits for the work too, so the event exports its spans (`served-request.ts`). That wait runs
+  // before the request scope's other finalizers, so while nested work still runs they release
+  // what they hold, such as the API Worker's event pool and executor, up to `nestedWait` later.
   const backgroundWork = yield* makeExecutionMemo(
     Effect.gen(function* () {
       yield* database;
@@ -135,7 +138,7 @@ export const cloudExecutor = Effect.fn(function* (
           Effect.andThen(
             // The request's own work shares the bound of every wait its close makes.
             served?.scope === scope
-              ? served.bounded(drained)
+              ? served.bounded(drained, "background")
               : Effect.asVoid(Effect.timeoutOption(drained, backgroundWait)),
           ),
         ),
@@ -174,7 +177,11 @@ export const cloudExecutor = Effect.fn(function* (
         git: appSources(background),
         markdown,
         blobs: yield* cachedVersionSources(origin, blobs),
-        runtime: yield* makeRuntime,
+        // The runtime's telemetry forwarder joins the request's telemetry scope only when this
+        // executor is the request's own (`ownTelemetryScope`).
+        runtime: yield* makeRuntime.pipe(
+          Effect.provideService(TelemetryDrainScope, yield* ownTelemetryScope),
+        ),
         workflows,
         registry: {
           storage: yield* Effect.flatMap(organizationPublishers, makeRegistryStorage).pipe(

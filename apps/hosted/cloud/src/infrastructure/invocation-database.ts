@@ -48,6 +48,8 @@ export const cloudInvocationDatabase = Layer.effect(
             url,
             route: connection.route,
             maxConnections: invocationConnectionLimit,
+            // Names the event's connections in the database, apart from session objects' pools.
+            applicationName: "executor event",
           }),
         );
         return Context.add(sql, ConnectionReservations, {

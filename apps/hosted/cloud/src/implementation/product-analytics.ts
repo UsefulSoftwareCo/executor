@@ -1,6 +1,6 @@
 /** Request-owned analytics and explicitly submitted feedback sent to PostHog. */
 import { readSiteVisitor, siteVisitorCookie } from "@executor-js/marketing/site-visitor";
-import { recordRoute } from "@executor-js/telemetry";
+import { recordRoute, TelemetryDrainScope } from "@executor-js/telemetry";
 import { FeedbackUnavailable } from "@executor-js/telemetry/product-analytics";
 import {
   ProductAnalytics,
@@ -8,7 +8,7 @@ import {
   type UsageProperties,
 } from "@executor-js/hosted-server";
 import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
-import { Context, Effect, Option, Redacted, Schema } from "effect";
+import { Context, Effect, Option, Redacted, Schema, Scope } from "effect";
 import {
   Cookies,
   FetchHttpClient,
@@ -194,22 +194,28 @@ export const withProductAnalytics = <A, E, R>(
           Effect.timeout("3 seconds"),
           Effect.asVoid,
         );
-    yield* Effect.addFinalizer(() =>
-      events.length === 0
-        ? Effect.void
-        : send(
-            dropped === 0
-              ? events
-              : [
-                  ...events,
-                  {
-                    event: "analytics_events_dropped",
-                    distinct_id: "analytics-exporter",
-                    timestamp: new Date().toISOString(),
-                    properties: { dropped_events: dropped },
-                  },
-                ],
-          ).pipe(Effect.catch(() => Effect.logWarning("PostHog batch export failed"))),
+    // The batch is sent after the request has released its database connections when the host
+    // gives it a telemetry scope (`served-request.ts`), and as the handler's scope closes otherwise.
+    const flushScope = (yield* TelemetryDrainScope) ?? (yield* Effect.scope);
+    yield* Scope.addFinalizer(
+      flushScope,
+      Effect.suspend(() =>
+        events.length === 0
+          ? Effect.void
+          : send(
+              dropped === 0
+                ? events
+                : [
+                    ...events,
+                    {
+                      event: "analytics_events_dropped",
+                      distinct_id: "analytics-exporter",
+                      timestamp: new Date().toISOString(),
+                      properties: { dropped_events: dropped },
+                    },
+                  ],
+            ).pipe(Effect.catch(() => Effect.logWarning("PostHog batch export failed"))),
+      ),
     );
     return yield* handler.pipe(
       Effect.provideService(Analytics, {

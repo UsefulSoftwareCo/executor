@@ -120,39 +120,44 @@ export const telemetryHttpClient = Layer.effect(
       client.pipe(
         HttpClient.filterStatusOk,
         HttpClient.transform((response, request) =>
-          response.pipe(
-            Effect.tap(acknowledge),
-            Effect.timeout(telemetryRequestTimeout),
-            Effect.catchTag("TimeoutError", () =>
-              Effect.fail(
-                new HttpClientError.HttpClientError({
-                  reason: new HttpClientError.TransportError({
-                    request,
-                    description: "Telemetry collector acknowledgement timed out",
+          Effect.flatMap(Clock.currentTimeMillis, (started) => {
+            const path = new URL(request.url).pathname;
+            const elapsed = Effect.map(Clock.currentTimeMillis, (now) => now - started);
+            return response.pipe(
+              Effect.tap(acknowledge),
+              Effect.timeout(telemetryRequestTimeout),
+              Effect.catchTag("TimeoutError", () =>
+                Effect.fail(
+                  new HttpClientError.HttpClientError({
+                    reason: new HttpClientError.TransportError({
+                      request,
+                      description: "Telemetry collector acknowledgement timed out",
+                    }),
                   }),
-                }),
+                ),
               ),
-            ),
-            Effect.tapError((error) =>
-              recordExportFailure(
-                new URL(request.url).pathname,
-                HttpClientError.isHttpClientError(error) &&
+              Effect.tapError((error) => {
+                const reason =
+                  HttpClientError.isHttpClientError(error) &&
                   error.reason instanceof HttpClientError.DecodeError
-                  ? "acknowledgement"
-                  : "transport",
-              ).pipe(
-                Effect.annotateLogs({
-                  "executor.telemetry.http_status": error.response?.status ?? 0,
-                  "executor.telemetry.timed_out":
-                    error.reason instanceof HttpClientError.TransportError &&
-                    error.reason.description === "Telemetry collector acknowledgement timed out",
-                }),
+                    ? "acknowledgement"
+                    : "transport";
+                return Effect.flatMap(elapsed, (ms) =>
+                  recordExportFailure(path, reason, 0, ms),
+                ).pipe(
+                  Effect.annotateLogs({
+                    "executor.telemetry.http_status": error.response?.status ?? 0,
+                    "executor.telemetry.timed_out":
+                      error.reason instanceof HttpClientError.TransportError &&
+                      error.reason.description === "Telemetry collector acknowledgement timed out",
+                  }),
+                );
+              }),
+              Effect.onInterrupt(() =>
+                Effect.flatMap(elapsed, (ms) => recordExportFailure(path, "interrupted", 0, ms)),
               ),
-            ),
-            Effect.onInterrupt(() =>
-              recordExportFailure(new URL(request.url).pathname, "interrupted"),
-            ),
-          ),
+            );
+          }),
         ),
         HttpClient.withScope,
         HttpClient.transformResponse(Effect.scoped),

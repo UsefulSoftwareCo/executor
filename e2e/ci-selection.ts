@@ -202,6 +202,13 @@ const jobs = {
     runner: 4,
     pattern: "Cloud MCP tool calls send their checks and reads",
   },
+  // This holds every export the Cloud sends to the suite's collector, which every other
+  // scenario on the Cloud reads its spans from.
+  "cloud-export-hang": {
+    target: "cloud",
+    runner: 6,
+    pattern: "Cloud requests answer and release their database connections while the telemetry",
+  },
   // Autumn faults match every caller of a route on a Cloud's Autumn emulator, and other jobs'
   // scenarios read billing and v1 plans, so this slows Autumn on its own local Cloud.
   "cloud-autumn": {

@@ -24,6 +24,7 @@ const jobs = [
   "cloud-locks",
   "cloud-removal-recovery",
   "cloud-batch",
+  "cloud-export-hang",
   "cloud-autumn",
   "cloud-isolate",
   "cloud-telemetry-flush",
@@ -436,7 +437,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
             ),
             "cloud-workers, cloud-locks, cloud-batch, cloud-autumn",
             "cloud-domains, cloud-v1-bound, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview",
-            "cloud-removal-recovery",
+            "cloud-removal-recovery, cloud-export-hang",
           ]);
           // Each Cloud job's pattern is on exactly one runner and empty on the others. The runner
           // runs it unchanged, except cloud-product past what one local Cloud holds: each of its
@@ -1252,6 +1253,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-locks",
         "cloud-removal-recovery",
         "cloud-batch",
+        "cloud-export-hang",
         "cloud-autumn",
         "cloud-isolate",
         "cloud-telemetry-flush",
