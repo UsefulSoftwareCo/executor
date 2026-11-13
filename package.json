@@ -120,6 +120,7 @@
     "e2e:test-stage-unreadable": "vitest run --config e2e/test-stage-unreadable.config.ts",
     "e2e:worker-sizes": "vitest run --config e2e/worker-sizes.config.ts",
     "e2e:cli-startup-imports": "vitest run --config e2e/cli-startup-imports.config.ts",
+    "e2e:process-output-exit": "vitest run --config e2e/process-output-exit.config.ts",
     "e2e:release-archives": "vitest run --config e2e/release-archives.config.ts",
     "e2e:emulator-failures": "vitest run --config e2e/emulator-failures.config.ts",
     "e2e:removal-evidence": "vitest run --config e2e/removal-evidence.config.ts",

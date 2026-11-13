@@ -697,6 +697,57 @@ const exportableSchemaPattern = defineRule({
   }),
 });
 
+/** `process.stdout.fd` or `process.stderr.fd`. */
+const isStdioFd = (node: ESTree.Node) =>
+  node.type === "MemberExpression" &&
+  !node.computed &&
+  node.property.type === "Identifier" &&
+  node.property.name === "fd" &&
+  node.object.type === "MemberExpression" &&
+  !node.object.computed &&
+  node.object.property.type === "Identifier" &&
+  (node.object.property.name === "stdout" || node.object.property.name === "stderr") &&
+  node.object.object.type === "Identifier" &&
+  node.object.object.name === "process";
+
+/** A descriptor or path that names stdout or stderr: 1, 2, `process.stdout.fd`, `/dev/stderr`. */
+const namesStdio = (node: ESTree.Node | undefined) =>
+  node !== undefined &&
+  ((node.type === "Literal" &&
+    (node.value === 1 ||
+      node.value === 2 ||
+      node.value === "/dev/stdout" ||
+      node.value === "/dev/stderr")) ||
+    isStdioFd(node));
+
+const syncWrites = new Set(["writeSync", "writeFileSync", "appendFileSync"]);
+
+const noSyncStdioWrite = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Write stdout and stderr through a stream, never synchronously." },
+    messages: {
+      syncStdio:
+        "{{call}} to stdout or stderr waits for its reader. A pipe nobody reads blocks it for good: on Windows always, and on Linux and macOS when the process never opened that stream. The process then cannot answer or exit, as the local server's exit line once did. Write through the process's output stream (processOutput in the local CLI), which waits without blocking.",
+    },
+  },
+  create: (context) => ({
+    CallExpression(node) {
+      const callee = node.callee;
+      const name =
+        callee.type === "Identifier"
+          ? callee.name
+          : callee.type === "MemberExpression" &&
+              !callee.computed &&
+              callee.property.type === "Identifier"
+            ? callee.property.name
+            : undefined;
+      if (name !== undefined && syncWrites.has(name) && namesStdio(node.arguments[0]))
+        context.report({ node, messageId: "syncStdio", data: { call: name } });
+    },
+  }),
+});
+
 export default definePlugin({
   meta: { name: "executor" },
   rules: {
@@ -708,5 +759,6 @@ export default definePlugin({
     "exportable-schema-pattern": exportableSchemaPattern,
     "authored-code-through-adapter": authoredCodeThroughAdapter,
     "no-secure-context-api": noSecureContextApi,
+    "no-sync-stdio-write": noSyncStdioWrite,
   },
 });

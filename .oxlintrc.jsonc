@@ -39,6 +39,11 @@
       "rules": { "executor/no-module-level-mutable-state": "error" },
     },
     {
+      // Product code: a synchronous write to stdout or stderr can hold the process open.
+      "files": ["apps/**/src/**", "packages/*/src/**"],
+      "rules": { "executor/no-sync-stdio-write": "error" },
+    },
+    {
       // Worker entry points: initialization runs once per isolate, for every request it serves.
       "files": ["apps/hosted/cloud/src/**"],
       "rules": { "executor/no-shared-wait-in-worker-initialization": "error" },

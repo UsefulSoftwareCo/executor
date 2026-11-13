@@ -695,6 +695,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "ci-repeat.config.ts": () => import("./ci-repeat.config.ts"),
   "telemetry-event-lifetime.config.ts": () => import("./telemetry-event-lifetime.config.ts"),
   "cli-startup-imports.config.ts": () => import("./cli-startup-imports.config.ts"),
+  "process-output-exit.config.ts": () => import("./process-output-exit.config.ts"),
   "cloud-deploy-origin.config.ts": () => import("./cloud-deploy-origin.config.ts"),
   "deploy-decision.config.ts": () => import("./deploy-decision.config.ts"),
   "dashboard-file-names.config.ts": () => import("./dashboard-file-names.config.ts"),
