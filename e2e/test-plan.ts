@@ -8276,7 +8276,8 @@ export const scenarios = plan({
   webhookSourceLookup: {
     fixtures: "actors",
     file: "webhook-source-lookup.spec.ts",
-    title: "saving an account beside 100,000 webhook sources reads its own source by index",
+    title:
+      "saving an account beside 100,000 accounts, links and webhook sources reads no table at more than a lookup's cost",
     targets: {
       local: na("Local has no hosted webhook sources linked through members."),
       "self-host": na(

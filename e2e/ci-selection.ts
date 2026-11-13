@@ -181,7 +181,7 @@ const jobs = {
     runner: 4,
 
     pattern:
-      "A Better Auth query|an app link that waits for the admin.s membership while a demotion commits|two first checks of an account that write its check row|saving an account beside 100,000 webhook sources",
+      "A Better Auth query|an app link that waits for the admin.s membership while a demotion commits|two first checks of an account that write its check row|saving an account beside 100,000 accounts, links and webhook sources",
   },
   // Removal recovery needs the Cloud's one recovery alarm and its removal job to itself: the job
   // starts every pending removal on the Cloud, and the scenario locks the start records' table to
