@@ -61,6 +61,11 @@ import { savePathFiles } from "./save-path.ts";
 import { Target } from "./report-model.ts";
 import { exactly, split } from "./scenario-parts.ts";
 import { platformSignatures } from "./platform-signatures.ts";
+import {
+  connectionLatencyLevels,
+  DatabaseConnections,
+  databaseConnectionsFile,
+} from "./database-connections.ts";
 import { deployedSuitePattern, scenarios, scenariosForSuite, type CloudMode } from "./test-plan.ts";
 
 class SelectionFailed extends Schema.TaggedError<SelectionFailed>()("SelectionFailed", {
@@ -511,8 +516,40 @@ const executed = (directory: string) =>
               if (messages.includes(platformSignatures[signature])) signatures[signature] += 1;
           }
     }
-    return { ran, signatures };
+    // Each deployed stage's connection latency (e2e/sdk/database-connections.ts), by level.
+    const connections: Array<DatabaseConnections> = [];
+    const readings = (yield* fs.exists(directory))
+      ? (yield* fs.readDirectory(directory, { recursive: true })).filter(
+          (file) => path.basename(file) === databaseConnectionsFile,
+        )
+      : [];
+    for (const reading of readings)
+      connections.push(
+        yield* fs
+          .readFileString(path.join(directory, reading))
+          .pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(DatabaseConnections))),
+          ),
+      );
+    return { ran, signatures, connections };
   });
+
+/**
+ * The `database-connections` signature: how long deployed stages waited for a database connection.
+ * It informs and never fails a run; it is counted beside the platform signatures.
+ */
+const connectionsLine = (connections: ReadonlyArray<DatabaseConnections>) => {
+  const count = (level: DatabaseConnections["level"]) =>
+    connections.filter((reading) => reading.level === level).length;
+  const worst = connections
+    .filter((reading) => reading.worstMinuteMs !== undefined)
+    .toSorted((a, b) => b.worstMinuteMs! - a.worstMinuteMs!)[0];
+  const { severe, elevated } = connectionLatencyLevels;
+  const sources = [...new Set(connections.map((reading) => reading.source))]
+    .toSorted()
+    .join(" and ");
+  return `Database connection latency of deployed stages: ${count("severe")} severe (averaging ${severe.averageMs} ms or a minute at ${severe.worstMinuteMs} ms), ${count("elevated")} elevated (${elevated.averageMs} ms or ${elevated.worstMinuteMs} ms), ${count("normal")} normal, ${count("unknown")} unread${worst === undefined ? "" : `; the highest averaged ${worst.averageMs} ms with a worst minute of ${worst.worstMinuteMs} ms`}${connections.length === 0 ? "; no stage recorded a reading" : `, read from ${sources}`}.`;
+};
 
 /**
  * Which scheduled scenarios a full run did not execute, from the reports its jobs saved under
@@ -527,7 +564,7 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
       return yield* new SelectionFailed({
         message: "Usage: node e2e/ci-selection.ts verify <ci|deployed> <directory of saved runs>",
       });
-    const { ran, signatures } = yield* executed(directory);
+    const { ran, signatures, connections } = yield* executed(directory);
     const paths =
       suite === "ci"
         ? jobRuns.map(({ name, target, titles }) => ({ name: `the ${name} job`, target, titles }))
@@ -558,7 +595,7 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
     // Counted on every deployed run, zero included, so a rise shows without reading logs.
     const platform =
       suite === "deployed"
-        ? `\nScenario runs that failed on a platform signature: ${signatures["runtime-502"]} on Cloudflare's runtime answering 502 itself (our Worker did not answer), ${signatures.lost} on a request lost before any response, ${signatures["origin-unreachable"]} on an app origin no HTTPS connection reached within preparation's wait.\n`
+        ? `\nScenario runs that failed on a platform signature: ${signatures["runtime-502"]} on Cloudflare's runtime answering 502 itself (our Worker did not answer), ${signatures.lost} on a request lost before any response, ${signatures["origin-unreachable"]} on an app origin no HTTPS connection reached within preparation's wait.\n${connectionsLine(connections)}\n`
         : "";
     const report = `## E2E coverage\n\nEvery one of the ${expected} scenario runs ${suite === "ci" ? "the jobs here schedule" : "Cloud tests on main schedules"} executed. ${Object.keys(notRunInCi).length} scenarios are in notRunInCi.\n${platform}`;
     yield* Console.log(report);
@@ -710,6 +747,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "cloud-deploy-origin.config.ts": () => import("./cloud-deploy-origin.config.ts"),
   "deploy-decision.config.ts": () => import("./deploy-decision.config.ts"),
   "dashboard-file-names.config.ts": () => import("./dashboard-file-names.config.ts"),
+  "database-connections.config.ts": () => import("./database-connections.config.ts"),
   "effect-mcp.config.ts": () => import("./effect-mcp.config.ts"),
   "desktop-next-server.config.ts": () => import("./desktop-next-server.config.ts"),
   "desktop-recovery.config.ts": () => import("./desktop-recovery.config.ts"),

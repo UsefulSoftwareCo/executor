@@ -220,7 +220,12 @@ interface SavedRun {
  * `node e2e/ci-selection.ts verify <suite>` over runs saved as the E2E jobs save them, each with
  * every scenario the plan schedules on its target. `status` says how one ended; passed by default.
  */
-const verify = (suite: string, saved: ReadonlyArray<SavedRun>) =>
+const verify = (
+  suite: string,
+  saved: ReadonlyArray<SavedRun>,
+  /** Database connection readings, saved as a deployed run's stage writes them. */
+  connections: ReadonlyArray<Record<string, unknown>> = [],
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -263,6 +268,14 @@ const verify = (suite: string, saved: ReadonlyArray<SavedRun>) =>
             assertionResults,
           })),
         }),
+      );
+    }
+    for (const [index, reading] of connections.entries()) {
+      const stage = path.join(directory, "deployed-planetscale-connection-results", `e2e-${index}`);
+      yield* fs.makeDirectory(stage, { recursive: true });
+      yield* fs.writeFileString(
+        path.join(stage, "database-connections.json"),
+        JSON.stringify(reading),
       );
     }
     const child = yield* processes.spawn(
@@ -1507,6 +1520,72 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(none.exitCode, none.log).toBe(0);
       expect(none.log).toContain(
         "Scenario runs that failed on a platform signature: 0 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 0 on a request lost before any response, 0 on an app origin no HTTPS connection reached within preparation's wait.",
+      );
+    }),
+  );
+
+  it.effect("a deployed run counts its stages by database connection latency", () =>
+    Effect.gen(function* () {
+      const [read, unread, none] = yield* Effect.all(
+        [
+          verify(
+            "deployed",
+            [{ target: "cloud" }],
+            [
+              {
+                source: "hyperdrive",
+                level: "normal",
+                averageMs: 4.2,
+                worstMinuteMs: 31,
+                minutes: 12,
+                queries: 9000,
+              },
+              {
+                source: "hyperdrive",
+                level: "elevated",
+                averageMs: 12.3,
+                worstMinuteMs: 71,
+                minutes: 11,
+                queries: 8000,
+              },
+              {
+                source: "spans",
+                level: "severe",
+                averageMs: 92.6,
+                worstMinuteMs: 362,
+                minutes: 13,
+                queries: 8500,
+                note: "Cloudflare's Hyperdrive analytics could not be read",
+              },
+            ],
+          ),
+          verify(
+            "deployed",
+            [{ target: "cloud" }],
+            [
+              {
+                source: "unavailable",
+                level: "unknown",
+                note: "The run has no credentials to read it",
+              },
+            ],
+          ),
+          verify("deployed", [{ target: "cloud" }]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      // It informs and never fails a run.
+      expect(read.exitCode, read.log).toBe(0);
+      expect(read.log).toContain(
+        "Database connection latency of deployed stages: 1 severe (averaging 50 ms or a minute at 300 ms), 1 elevated (10 ms or 100 ms), 1 normal, 0 unread; the highest averaged 92.6 ms with a worst minute of 362 ms, read from hyperdrive and spans.",
+      );
+      expect(unread.exitCode, unread.log).toBe(0);
+      expect(unread.log).toContain(
+        "Database connection latency of deployed stages: 0 severe (averaging 50 ms or a minute at 300 ms), 0 elevated (10 ms or 100 ms), 0 normal, 1 unread, read from unavailable.",
+      );
+      expect(none.exitCode, none.log).toBe(0);
+      expect(none.log).toContain(
+        "Database connection latency of deployed stages: 0 severe (averaging 50 ms or a minute at 300 ms), 0 elevated (10 ms or 100 ms), 0 normal, 0 unread; no stage recorded a reading.",
       );
     }),
   );

@@ -124,6 +124,7 @@
     "e2e:process-output-exit": "vitest run --config e2e/process-output-exit.config.ts",
     "e2e:release-archives": "vitest run --config e2e/release-archives.config.ts",
     "e2e:emulator-failures": "vitest run --config e2e/emulator-failures.config.ts",
+    "e2e:database-connections": "vitest run --config e2e/database-connections.config.ts",
     "e2e:removal-evidence": "vitest run --config e2e/removal-evidence.config.ts",
     "e2e:request-failures": "vitest run --config e2e/request-failures.config.ts",
     "e2e:test-stage-orphans": "vitest run --config e2e/test-stage-orphans.config.ts",

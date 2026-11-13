@@ -7,6 +7,7 @@ import { createEmulatorFixture, emulatorRequest } from "../support/emulators.ts"
 
 import { startFixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
 import { captureRemovalStalls } from "./removal-evidence.ts";
+import { confirmBranchDeleted } from "./branch-deleted.ts";
 import { heldValue, reveal, secretConfig } from "../support/failure-text.ts";
 
 class DeployedTestFailed extends Schema.TaggedError<DeployedTestFailed>()("DeployedTestFailed", {
@@ -81,6 +82,12 @@ export const startDeployment = ({
       ).pipe(
         Effect.andThen(fs.writeFileString(path.join(directory, "destroyed.json"), "{}")),
         Effect.timeout("12 minutes"),
+        // Whether or not the destroy succeeded, a branch it left must fail the run by name.
+        Effect.ensuring(
+          database === "planetscale"
+            ? confirmBranchDeleted(slug).pipe(Effect.timeout("3 minutes"), Effect.orDie)
+            : Effect.void,
+        ),
         Effect.orDie,
       ),
     );
@@ -202,6 +209,7 @@ export const startDeployment = ({
       origin,
       directory,
       slug,
+      startedAt: new Date(started),
       appUiBaseUrl,
       fixtures,
       emulators,

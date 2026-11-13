@@ -28,7 +28,6 @@ import AppDomainControllerLive from "./src/app-domains.ts";
 import { AppDomainController } from "./src/infrastructure/app-domain-controller-worker.ts";
 import InvocationTelemetryLive from "./src/invocation-telemetry.ts";
 import { databaseInfrastructure } from "./src/infrastructure/database.ts";
-import { previewPoolSize } from "./src/infrastructure/preview-database.ts";
 import { developmentWeb } from "./src/infrastructure/development.ts";
 import { authEmailInfrastructure } from "./src/infrastructure/email.ts";
 import { uploadCloudSourceMaps } from "./src/infrastructure/sentry.ts";
@@ -88,7 +87,6 @@ export default Alchemy.Stack(
     yield* mcpSessionRetirementGate.pipe(Effect.orDie);
     // Provisioning settings resolve outside Worker initialization and are not bound into it.
     yield* databaseInfrastructure;
-    if (!(yield* AlchemyContext).dev) yield* previewPoolSize;
     yield* authEmailInfrastructure.pipe(Effect.orDie);
     const api = yield* Api;
     if (!(yield* AlchemyContext).dev) {
