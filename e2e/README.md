@@ -630,7 +630,7 @@ printing how many and the space freed: it keeps runs from the last three days, t
 passed ones and every other one, up to 3 GB (passed runs go first), and any run another process
 is writing or rendering; copy evidence you must keep outside any `.local/e2e`.
 
-Every CI e2e job, passed or failed, also uploads `<job>-resources-evidence-<index>-attempt-<N>`, and the `tooling` job `tooling-resources-evidence-attempt-<N>`: the runner's load, CPU (busy, iowait, steal, cores busy), memory and busiest command names every 5 s in `samples.ndjson`, with totals in `summary.json` (`scripts/ci/resource-sampler.ts`; read with `ci-evidence.ts --file summary.json --artifact <name>`).
+Every CI e2e job, passed or failed, also uploads `<job>-resources-evidence-<index>-attempt-<N>`, and the `tooling` and `tooling-cloud` jobs `tooling-resources-evidence-attempt-<N>` and `tooling-cloud-resources-evidence-attempt-<N>`: the runner's load, CPU (busy, iowait, steal, cores busy), memory and busiest command names every 5 s in `samples.ndjson`, with totals in `summary.json` (`scripts/ci/resource-sampler.ts`; read with `ci-evidence.ts --file summary.json --artifact <name>`).
 
 When evidence needs review, render the retained run, then serve the report on
 loopback. Rendering needs Playwright Chromium installed, plus ffmpeg and ffprobe

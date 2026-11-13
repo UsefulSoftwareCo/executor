@@ -345,8 +345,11 @@ scenarios on Linux instead of moving them to a Mac.
   allowance (see "Adding to a Cloud Worker's upload"); the job summary shows each
   Worker's size, its change from `main` and the packages and files that grew. `apps-package` checks the apps npm
   tarball, and `tooling` checks the dependency patches and the scripts that run CI,
-  releases, the public export and deploys. Put a new static check in the job it fits, or
-  in a new job that `check` needs.
+  releases, the public export and deploys. `tooling-cloud` runs the checks that start a
+  browser or a database or read recorded Cloud APIs: test stages, the patched Playwright,
+  emulator and request failures, PostHog and the deployed origin. Put a new static check
+  in the job it fits, keeping each under the E2E jobs' usual time, or in a new job that
+  `check` needs.
 - `select` runs [`e2e/ci-selection.ts`](e2e/ci-selection.ts) and gives each e2e job
   its `--test-name` pattern, or skips the job when none of its scenarios is selected.
   Its job patterns hold the exclusions and splits below.

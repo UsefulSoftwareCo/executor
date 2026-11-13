@@ -42,8 +42,8 @@ did while a route was registered. The edit is in `lib/coreBundle.js`, the built
 file 1.63.0 publishes. Upstream's source is
 `packages/playwright-core/src/server/chromium/crNetworkManager.ts`.
 
-`playwright-routes.spec.ts` (`bun run e2e:playwright-routes`, in CI's `tooling`
-job) runs real Playwright and Chromium against a local server. It checks a
+`playwright-routes.spec.ts` (`bun run e2e:playwright-routes`, in CI's
+`tooling-cloud` job) runs real Playwright and Chromium against a local server. It checks a
 `{ times: 1 }` route that expires, and a route its handler `unroute`s, while the
 page sends four reads on the answer; each case runs 3,000 rounds. It also checks
 that the HTTP cache is off only while a route is registered. Unpatched, a read

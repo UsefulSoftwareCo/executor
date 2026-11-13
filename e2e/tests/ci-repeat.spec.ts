@@ -423,6 +423,7 @@ layer(NodeServices.layer)("CI repeat", (it) => {
         "site",
         "apps-package",
         "tooling",
+        "tooling-cloud",
         "self-host-native",
         "apps-version",
       ])
@@ -434,5 +435,42 @@ layer(NodeServices.layer)("CI repeat", (it) => {
           "    if: ${{ always() && needs.select.outputs.skip != 'true' }}\n",
         );
     }),
+  );
+
+  it.effect(
+    "check fails when any job it stands for did not pass, the tooling and collector jobs included",
+    () =>
+      Effect.gen(function* () {
+        const job = jobOf(yield* checks, "check");
+        const needs = [
+          "select",
+          "static",
+          "site",
+          "apps-package",
+          "tooling",
+          "tooling-cloud",
+          "collector-native",
+        ];
+        expect(job).toContain(`    needs: [${needs.join(", ")}]\n`);
+        const script = scriptOf(job, "Require every static check to pass");
+        const { bin } = yield* stub({});
+        const run = (results: Record<string, string>) =>
+          spawn("bash", ["-e", "-c", script], bin, {
+            REPEAT_OF: "",
+            NEEDS: JSON.stringify(
+              Object.fromEntries(
+                needs.map((name) => [name, { result: results[name] ?? "success", outputs: {} }]),
+              ),
+            ),
+          });
+        expect((yield* run({})).exitCode).toBe(0);
+        // A job that failed, was cancelled, or was skipped by mistake fails the check.
+        for (const name of ["tooling", "tooling-cloud", "collector-native"])
+          for (const result of ["failure", "cancelled", "skipped"]) {
+            const failed = yield* run({ [name]: result });
+            expect(failed.exitCode, `${name} ${result}`).toBe(1);
+            expect(failed.log, `${name} ${result}`).toContain(`::error::${name}: ${result}`);
+          }
+      }).pipe(Effect.scoped),
   );
 });
