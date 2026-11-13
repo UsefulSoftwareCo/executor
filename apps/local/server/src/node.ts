@@ -219,6 +219,8 @@ export const reportStartupFailure = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       const annotations = Schema.is(StartupFailed)(error)
         ? {
             "startup.stage": error.stage,
+            ...(error.database === undefined ? {} : { "startup.database": error.database }),
+            ...(error.step === undefined ? {} : { "startup.step": error.step }),
             "error.type": "StartupFailed",
             ...(error.code === undefined ? {} : { "error.code": error.code }),
           }

@@ -1,6 +1,6 @@
 /** Telemetry uses a host-selected HTTP client without changing product HTTP requests. */
 import { BinaryReader, WireType } from "@bufbuild/protobuf/wire";
-import { Clock, Context, Duration, Effect, Layer, Schedule, Schema } from "effect";
+import { Clock, Context, Duration, Effect, Layer, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientError, type HttpClientResponse } from "effect/http";
 import { recordExportFailure } from "./measurements.ts";
 import { telemetryRequestTimeout } from "./config.ts";
@@ -189,19 +189,46 @@ const retryDelay = (error: unknown) =>
     return Duration.millis(Math.max(date - (yield* Clock.currentTimeMillis), 1));
   });
 
+/** The attempts an export makes after its first, at most. */
+const retries = 3;
+
+/**
+ * How long one export may take, its retries included. Cloudflare keeps an event's `waitUntil` work
+ * 30 seconds after its response, and an event's close waits a second for its flush before the
+ * response of a streamed request ends (`closeWait` in isolate.ts); 27 seconds leaves both, and
+ * every export, the timer's included, runs inside some event's `waitUntil`.
+ */
+const exportBudget = Duration.seconds(27);
+
 /**
  * Resend an export the collector refused for now, as OTLP requires and Effect's own
- * exporters do: lost connections, 429 and 5xx overload, at most three more times. A
- * collector shedding load answers 429 or 503 with Retry-After, which sets the wait. A
- * wait longer than the caller's budget ends with the budget, without sending again.
+ * exporters do: lost connections, timeouts, 429 and 5xx overload, at most three more times. A
+ * collector shedding load answers 429 or 503 with Retry-After, which sets the wait, as long as the
+ * next attempt, with its own time-out, still ends within `exportBudget`; a longer wait is shortened
+ * to that, so the last attempt runs before the runtime would cut it off. When no attempt fits, the
+ * export ends with its last failure.
  */
 export const retryTelemetryExport = (client: HttpClient.HttpClient) =>
   client.pipe(
-    HttpClient.retryTransient({
-      times: 3,
-      schedule: Schedule.forever.pipe(
-        Schedule.passthrough,
-        Schedule.addDelay(({ output }) => retryDelay(output)),
-      ),
-    }),
+    HttpClient.transformResponse((response) =>
+      Effect.flatMap(Clock.currentTimeMillis, (started) => {
+        const attemptMs = Duration.toMillis(Duration.fromInputUnsafe(telemetryRequestTimeout));
+        const deadline = started + Duration.toMillis(exportBudget);
+        const attempt = (made: number): typeof response =>
+          response.pipe(
+            Effect.catchIf(
+              (error) => made < retries && HttpClient.isTransientError(error),
+              (error) =>
+                Effect.gen(function* () {
+                  const wanted = Duration.toMillis(yield* retryDelay(error));
+                  const left = deadline - (yield* Clock.currentTimeMillis) - attemptMs;
+                  if (left < 0) return yield* Effect.fail(error);
+                  yield* Effect.sleep(Duration.millis(Math.min(wanted, left)));
+                  return yield* attempt(made + 1);
+                }),
+            ),
+          );
+        return attempt(0);
+      }),
+    ),
   );

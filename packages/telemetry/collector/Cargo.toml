@@ -1,0 +1,41 @@
+[package]
+name = "executor-collector"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.100"
+publish = false
+license = "MIT"
+description = "The telemetry collector bundled with Executor: OTLP/HTTP JSON in, SQLite store."
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "executor-collector"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
+flate2 = { version = "=1.1.11", default-features = false, features = ["rust_backend"] }
+http-body-util = "=0.1.5"
+rusqlite = { version = "=0.41.1", features = ["bundled"] }
+ryu-js = "=1.0.3"
+serde = { version = "=1.0.229", features = ["derive"] }
+# float_roundtrip: read a JSON number with a fraction or exponent as the nearest double, so a
+# whole number such as 9007199254740991.0 keeps its value. It roughly halves the speed of parsing
+# such numbers, which OTLP/JSON uses only for doubles.
+serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+tokio = { version = "=1.54.1", features = [
+  "rt-multi-thread",
+  "net",
+  "signal",
+  "sync",
+  "macros",
+  "time",
+] }
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+panic = "abort"

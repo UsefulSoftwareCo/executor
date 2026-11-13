@@ -9,7 +9,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { releaseSuiteConfigs } from "../release-lanes.ts";
+import { lanesFor, releaseSources, releaseSuiteConfigs } from "../release-lanes.ts";
 import { closureOf } from "../save-path.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -1379,7 +1379,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       const cloud = Object.values(scenarios)
         .filter((scenario) => scenario.targets.cloud.status === "scheduled")
         .map((scenario) => scenario.title);
-      const [first, second, third, fourth] = cloud;
+      const [first, second, third, fourth, fifth, sixth] = cloud;
       const messages: Record<string, string> = {
         [first!]:
           "RequestFailed: Cloudflare's Workers runtime answered 502 Bad Gateway itself; our Worker did not answer (ray 8f0c1a2b3c4d5e6f-AMS): POST /api/x returned HTTP 502 without a JSON response",
@@ -1389,6 +1389,11 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "RequestFailed: Request lost before any response: the client saw the connection reset with no response after 41 ms: POST /api/z failed (request)",
         // Our own 502 failing a scenario is not a platform signature.
         [fourth!]: "AssertionError: expected 502 to be 200 // Object.is equality",
+        [fifth!]:
+          "ScenarioPreparationFailed: No HTTPS connection to the scenario's app origin completed within the infrastructure wait (149 attempts in 299 s); 25 of the run's 26 app origins became ready, the slowest after 191 s. The domain coordinator last saw its certificate pending_validation since 2026-01-01T00:00:00.000Z.",
+        // An origin that answered and was not reported ready may be ours: not counted.
+        [sixth!]:
+          "ScenarioPreparationFailed: The scenario's HTTPS app origin did not answer, or was not reported ready, within the infrastructure deadline",
       };
       const [counted, none] = yield* Effect.all(
         [
@@ -1405,12 +1410,12 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       );
       expect(counted.exitCode, counted.log).toBe(0);
       expect(counted.log).toContain(
-        "Scenario runs that failed on a platform signature: 2 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 1 on a request lost before any response.",
+        "Scenario runs that failed on a platform signature: 2 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 1 on a request lost before any response, 1 on an app origin no HTTPS connection reached within preparation's wait.",
       );
       // Zero is reported too, so a rise shows against it.
       expect(none.exitCode, none.log).toBe(0);
       expect(none.log).toContain(
-        "Scenario runs that failed on a platform signature: 0 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 0 on a request lost before any response.",
+        "Scenario runs that failed on a platform signature: 0 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 0 on a request lost before any response, 0 on an app origin no HTTPS connection reached within preparation's wait.",
       );
     }),
   );
@@ -1525,14 +1530,16 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
 
   it.effect("a pull request runs each release lane for the files it reads, since main", () =>
     Effect.gen(function* () {
-      const lanes = (compared: ReadonlyArray<string> | "unknown") =>
-        select({ body: block("none"), compared }).pipe(
-          Effect.tap((run) => Effect.sync(() => expect(run.exitCode, run.log).toBe(0))),
-          Effect.map((run) => [run.outputs["release-docker"], run.outputs["release-local"]]),
+      // The lanes for a comparison, as the select job writes them from `lanesFor`: the job reads
+      // the release sources once and decides each lane from the changed files. Deciding the
+      // comparisons here, in one process, keeps this case to the few select runs below; each
+      // run starts the selection program and reads the save path again (about 2 s in CI).
+      const sources = yield* releaseSources;
+      const lanes = (compared: ReadonlyArray<string>) =>
+        Object.values(lanesFor(sources, compared)).map((matched) =>
+          matched.length > 0 ? "true" : "",
         );
-      const cases: ReadonlyArray<
-        readonly [ReadonlyArray<string> | "unknown", readonly [string, string]]
-      > = [
+      const cases: ReadonlyArray<readonly [ReadonlyArray<string>, readonly [string, string]]> = [
         // A file the released-image suite imports, and the image's own inputs.
         [["e2e/support/docker-release-server.ts"], ["true", ""]],
         // A support file both a local suite and the released-image suite import.
@@ -1582,22 +1589,33 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           ["apps/hosted/cloud/src/worker.ts", "apps/marketing/src/index.ts"],
           ["", ""],
         ],
-        // Without a comparison, or with one GitHub cut short, both run.
-        ["unknown", ["true", "true"]],
-        [Array.from({ length: 300 }, (_, index) => `notes/file-${index}.md`), ["true", "true"]],
       ];
-      const results = yield* Effect.forEach(cases, ([compared]) => lanes(compared), {
-        concurrency: 4,
-      });
-      for (const [index, [compared, expected]] of cases.entries())
-        expect(results[index], JSON.stringify(compared).slice(0, 120)).toEqual(expected);
+      for (const [compared, expected] of cases)
+        expect(lanes(compared), JSON.stringify(compared).slice(0, 120)).toEqual(expected);
 
-      const summary = (yield* select({
-        body: block("none"),
-        compared: ["e2e/support/docker-release-server.ts"],
-      })).summary;
-      expect(summary).toContain("release-docker: runs, for e2e/support/docker-release-server.ts.");
-      expect(summary).toContain("release-local: skipped, no file it reads changed.");
+      // The select job itself: it writes the lanes `lanesFor` gives, and runs both without a
+      // comparison or with one GitHub cut short.
+      const runs = yield* Effect.forEach(
+        [
+          ["e2e/support/docker-release-server.ts"],
+          "unknown",
+          Array.from({ length: 300 }, (_, index) => `notes/file-${index}.md`),
+        ] as const,
+        (compared) => select({ body: block("none"), compared }),
+        { concurrency: "unbounded" },
+      );
+      for (const run of runs) expect(run.exitCode, run.log).toBe(0);
+      expect(
+        runs.map((run) => [run.outputs["release-docker"], run.outputs["release-local"]]),
+      ).toEqual([
+        ["true", ""],
+        ["true", "true"],
+        ["true", "true"],
+      ]);
+      expect(runs[0]!.summary).toContain(
+        "release-docker: runs, for e2e/support/docker-release-server.ts.",
+      );
+      expect(runs[0]!.summary).toContain("release-local: skipped, no file it reads changed.");
     }),
   );
 
@@ -1692,7 +1710,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               .sort();
           return {
             publish: values.publish,
+            macosArm64: values.macos_arm64,
             local: names("matrix"),
+            localJob: names("local_matrix"),
+            localMacosArm64: names("local_macos_arm64_matrix"),
             checks: names("checks_matrix"),
             recovery: names("recovery_matrix"),
             notarized: names("notarized_recovery_matrix"),
@@ -1703,9 +1724,14 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       // The CLI suite runs in two parts and desktop crash recovery in three, each on its own runner.
       const parts = (names: ReadonlyArray<string>, count: number) =>
         names.flatMap((name) => Array.from({ length: count }, () => name));
+      // macOS arm64 packages in local-macos-arm64, which the notarized recovery parts wait for
+      // alone; the other targets stay in local.
       expect(yield* targets("check")).toEqual({
         publish: "false",
+        macosArm64: "false",
         local: ["linux-x64"],
+        localJob: ["linux-x64"],
+        localMacosArm64: [],
         checks: ["linux-x64"],
         recovery: parts(["linux-x64"], 3),
         notarized: [],
@@ -1714,7 +1740,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       });
       expect(yield* targets("build")).toEqual({
         publish: "false",
+        macosArm64: "true",
         local: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        localJob: ["darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        localMacosArm64: ["darwin-arm64"],
         checks: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
         recovery: parts(["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"], 3),
         notarized: [],
@@ -1727,7 +1756,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         readonly version: string;
       };
       const notarized = {
+        macosArm64: "true",
         local: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        localJob: ["darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        localMacosArm64: ["darwin-arm64"],
         checks: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
         recovery: parts(["linux-arm64", "linux-x64", "win32-x64"], 3),
         notarized: parts(["darwin-arm64"], 3),
@@ -1818,6 +1850,8 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               "Record the published archive's digest",
               // The archives job compares it with the recovery parts' apps, which this lane lacks.
               "Record the packaged desktop app's digest",
+              // Runs only when the job failed; the lane's own e2e evidence covers CI.
+              "Gather the failed scenarios' evidence",
             ],
           ],
         ] as const;

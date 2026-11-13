@@ -1,3 +1,4 @@
+import { expect } from "@effect/vitest";
 import { _electron, type ElectronApplication } from "playwright";
 import {
   type Cause,
@@ -129,7 +130,8 @@ export const launchDesktop = (options: {
 /**
  * Keep a failed scenario's evidence, which would go with its directory: a screenshot of each
  * desktop window, and the desktop's and its servers' logs from `data`, in a new folder under
- * EXECUTOR_E2E_DESKTOP_SCREENSHOTS (by default `.local/desktop-recovery`), which it names.
+ * EXECUTOR_E2E_DESKTOP_SCREENSHOTS (by default `.local/desktop-recovery`), which it names, with a
+ * `scenario.json` naming the scenario (`e2e/release-evidence.ts` reads it).
  */
 const keepEvidence = (electron: ElectronApplication, data: string) =>
   Effect.gen(function* () {
@@ -141,6 +143,12 @@ const keepEvidence = (electron: ElectronApplication, data: string) =>
     const stamp = DateTime.formatIso(yield* DateTime.now).replace(/[:.]/g, "-");
     const directory = path.resolve(screenshots, `failed-${stamp}-${process.pid}`);
     yield* fs.makeDirectory(directory, { recursive: true });
+    // Which scenario failed, so the release workflow's evidence step files the folder under it.
+    const { currentTestName, testPath } = expect.getState();
+    yield* fs.writeFileString(
+      path.join(directory, "scenario.json"),
+      JSON.stringify({ title: currentTestName ?? "", file: testPath ?? "" }),
+    );
     yield* Effect.forEach(
       electron.windows(),
       (page, index) =>

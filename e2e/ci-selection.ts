@@ -156,7 +156,7 @@ const jobs = {
     runner: 1,
 
     pattern:
-      "Cloud app queries read current authorization|Cloud onboarding|Cloud sign-in (?:keeps a new v1|skips the v1 check|admits members of only empty free or moved v1)|Cloud OAuth callbacks|Cloud OAuth token requests record|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser failures reach error collectors|browser error reports reach Sentry while|Browser connection failures explain|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer|refuses every stored state Better Auth refuses|Billing reconciles only while visible|A dashboard read refreshed while in flight|Cloud finishes a slow app's tool listing|Cloud remembers a stalled tool listing|Cloud keeps serving aged search rows when it stops their renewal|Cloud keeps each JSON Schema definition a tool listing repeats once|definitions share a name and length but not their JSON|definition names are long and of one length|Cloud MCP session objects make|Cloud MCP request spans say whether|database failure while verifying an API key|use one API key together|Cloud cron wakes the schedule coordinator|schedule coordinator closes its database connections|Cloud runs a due schedule and requested webhook source setup while|app evaluation failures explain the likely cause|runtime limit matched from an app Worker|client request rejections are recorded on their request span|failure text reaches its caller|scheduled runs record whether the app's code|an app request Executor's network failed to send|an app's fetch receives a Brotli-encoded response|MCP tool calls deliver their tool name and outcome|Executor time|Cloud serves a tool listing its isolate cannot keep|Cloud writes the background refresh of a stale tool listing|Owners delete an organization with every app|Hosted MCP negotiates older protocol versions|Hosted MCP ends a cancelled call|Cloud lists each build's browser files|Hosted dashboard runs of approval-gated tools|Hosted dashboard approval",
+      "Cloud app queries read current authorization|Cloud onboarding|Cloud sign-in (?:keeps a new v1|skips the v1 check|admits members of only empty free or moved v1)|Cloud OAuth callbacks|Cloud OAuth token requests record|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser failures reach error collectors|browser error reports reach Sentry while|browser telemetry stays quiet on an idle page|Browser connection failures explain|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer|refuses every stored state Better Auth refuses|Billing reconciles only while visible|A dashboard read refreshed while in flight|Cloud finishes a slow app's tool listing|Cloud remembers a stalled tool listing|Cloud keeps serving aged search rows when it stops their renewal|Cloud keeps each JSON Schema definition a tool listing repeats once|definitions share a name and length but not their JSON|definition names are long and of one length|Cloud MCP session objects make|Cloud MCP request spans say whether|database failure while verifying an API key|use one API key together|Cloud cron wakes the schedule coordinator|schedule coordinator closes its database connections|Cloud runs a due schedule and requested webhook source setup while|app evaluation failures explain the likely cause|runtime limit matched from an app Worker|client request rejections are recorded on their request span|failure text reaches its caller|scheduled runs record whether the app's code|an app request Executor's network failed to send|an app's fetch receives a Brotli-encoded response|MCP tool calls deliver their tool name and outcome|Executor time|Cloud serves a tool listing its isolate cannot keep|Cloud writes the background refresh of a stale tool listing|Owners delete an organization with every app|Hosted MCP negotiates older protocol versions|Hosted MCP ends a cancelled call|Cloud lists each build's browser files|Hosted dashboard runs of approval-gated tools|Hosted dashboard approval",
   },
   // The scenarios above share one local Cloud and collector, and their span and latency checks
   // stall when more scenarios load it. These assert no such bound, so they start their own. The
@@ -472,7 +472,7 @@ const executed = (directory: string) =>
     const path = yield* Path.Path;
     const ran = new Set<string>();
     // Failed scenario runs whose failure names each platform signature (`platformSignatures`).
-    const signatures = { "runtime-502": 0, lost: 0 };
+    const signatures = { "runtime-502": 0, lost: 0, "origin-unreachable": 0 };
     const reports = (yield* fs.exists(directory))
       ? (yield* fs.readDirectory(directory, { recursive: true })).filter(
           (file) => path.basename(file) === "results.json",
@@ -496,7 +496,7 @@ const executed = (directory: string) =>
           if (test.status === "passed" || test.status === "failed") {
             ran.add(pair(target, path.basename(file.name), test.title));
             const messages = (test.failureMessages ?? []).join("\n");
-            for (const signature of ["runtime-502", "lost"] as const)
+            for (const signature of ["runtime-502", "lost", "origin-unreachable"] as const)
               if (messages.includes(platformSignatures[signature])) signatures[signature] += 1;
           }
     }
@@ -547,7 +547,7 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
     // Counted on every deployed run, zero included, so a rise shows without reading logs.
     const platform =
       suite === "deployed"
-        ? `\nScenario runs that failed on a platform signature: ${signatures["runtime-502"]} on Cloudflare's runtime answering 502 itself (our Worker did not answer), ${signatures.lost} on a request lost before any response.\n`
+        ? `\nScenario runs that failed on a platform signature: ${signatures["runtime-502"]} on Cloudflare's runtime answering 502 itself (our Worker did not answer), ${signatures.lost} on a request lost before any response, ${signatures["origin-unreachable"]} on an app origin no HTTPS connection reached within preparation's wait.\n`
         : "";
     const report = `## E2E coverage\n\nEvery one of the ${expected} scenario runs ${suite === "ci" ? "the jobs here schedule" : "Cloud tests on main schedules"} executed. ${Object.keys(notRunInCi).length} scenarios are in notRunInCi.\n${platform}`;
     yield* Console.log(report);
@@ -684,14 +684,18 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "alchemy-first-builds.config.ts": () => import("./alchemy-first-builds.config.ts"),
   "chatgpt-sign-in.config.ts": () => import("./chatgpt-sign-in.config.ts"),
   "cloud-proxy-keep-alive.config.ts": () => import("./cloud-proxy-keep-alive.config.ts"),
+  "apps-bumped.config.ts": () => import("./apps-bumped.config.ts"),
+  "apps-job.config.ts": () => import("./apps-job.config.ts"),
   "apps-published.config.ts": () => import("./apps-published.config.ts"),
   "beta-due.config.ts": () => import("./beta-due.config.ts"),
   "billing.config.ts": () => import("./billing.config.ts"),
   "ci-selection.config.ts": () => import("./ci-selection.config.ts"),
   "ci-supersede.config.ts": () => import("./ci-supersede.config.ts"),
+  "ci-repeat.config.ts": () => import("./ci-repeat.config.ts"),
   "telemetry-event-lifetime.config.ts": () => import("./telemetry-event-lifetime.config.ts"),
   "cli-startup-imports.config.ts": () => import("./cli-startup-imports.config.ts"),
   "cloud-deploy-origin.config.ts": () => import("./cloud-deploy-origin.config.ts"),
+  "deploy-decision.config.ts": () => import("./deploy-decision.config.ts"),
   "dashboard-file-names.config.ts": () => import("./dashboard-file-names.config.ts"),
   "effect-mcp.config.ts": () => import("./effect-mcp.config.ts"),
   "desktop-next-server.config.ts": () => import("./desktop-next-server.config.ts"),
@@ -713,6 +717,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "part-results.config.ts": () => import("./part-results.config.ts"),
   "process-identity.config.ts": () => import("./process-identity.config.ts"),
   "release-archives.config.ts": () => import("./release-archives.config.ts"),
+  "release-evidence.config.ts": () => import("./release-evidence.config.ts"),
   "removal-evidence.config.ts": () => import("./removal-evidence.config.ts"),
   "request-failures.config.ts": () => import("./request-failures.config.ts"),
   "run-retention.config.ts": () => import("./run-retention.config.ts"),

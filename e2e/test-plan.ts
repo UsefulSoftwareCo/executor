@@ -2247,6 +2247,28 @@ export const scenarios = plan({
       local: na("Cloud Sentry receiver"),
     },
   },
+  browserReportsWhileQuotaFull: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title:
+      "browser error reports reach Sentry while another sender's keepalive request fills the page's quota",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserIdleWhileQuotaHeld: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title:
+      "browser telemetry stays quiet on an idle page while another sender holds its keepalive quota",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
   browserReportsWhileReplaying: {
     fixtures: "actors",
     file: "browser-observability.spec.ts",
@@ -6337,7 +6359,9 @@ export const scenarios = plan({
       "A tool listing whose definition names are long and of one length evaluates as fast as one whose names differ in length",
     targets: {
       cloud: managedCloud,
-      "self-host": scheduled,
+      "self-host": na(
+        "E2E self-host runs the listing code on Bun, whose engine hashes long strings in full; V8's length-only hash is in Cloud's and the released image's workerd.",
+      ),
       local: na("Hosted app deploy fixture; self-host runs the same listing code in process."),
     },
   },

@@ -8,6 +8,7 @@ export const StartupCode = Schema.Literals([
   "EADDRINUSE",
   "EACCES",
   "EPERM",
+  "EBUSY",
   "ENOENT",
   "ENOSPC",
   "ENOTDIR",
@@ -18,9 +19,28 @@ export const StartupCode = Schema.Literals([
   "ETIMEDOUT",
 ]);
 
-/** One explicit startup stage failed without exposing its raw input. */
+/** The local server's PGlite databases, by the names of their directories. */
+export const LocalDatabaseName = Schema.Literals([
+  "browser-auth.pglite",
+  "executor.pglite",
+  "mcp-auth.pglite",
+]);
+
+/** The step of creating a local database that failed (`PgliteCreationFailed` in fumadb-effect). */
+const creationSteps = {
+  clear: "remove the unfinished copy left beside",
+  create: "create a new copy beside",
+  "set aside": "move aside the unrecognised contents of",
+  "move into place": "move the new copy into place as",
+} as const;
+
+/**
+ * One explicit startup stage failed without exposing its raw input. A `database` failure names the
+ * database and the step of creating it that failed.
+ */
 export class StartupFailed extends Schema.TaggedError<StartupFailed>()("StartupFailed", {
   stage: Schema.Literals([
+    "database",
     "authentication",
     "storage",
     "runtime",
@@ -32,9 +52,14 @@ export class StartupFailed extends Schema.TaggedError<StartupFailed>()("StartupF
     "dev-server",
   ]),
   code: Schema.optional(StartupCode),
+  database: Schema.optional(LocalDatabaseName),
+  step: Schema.optional(Schema.Literals(["clear", "create", "set aside", "move into place"])),
 }) {
   get message() {
-    return `Local startup failed at ${this.stage}${this.code === undefined ? "" : ` (${this.code})`}`;
+    const code = this.code === undefined ? "" : ` (${this.code})`;
+    return this.stage === "database" && this.step !== undefined
+      ? `Local startup could not ${creationSteps[this.step]} the database ${this.database ?? "it opens"}${code}`
+      : `Local startup failed at ${this.stage}${code}`;
   }
 }
 /**

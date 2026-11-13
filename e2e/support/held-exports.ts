@@ -35,6 +35,28 @@ export const holdExports = Effect.gen(function* () {
   yield* Effect.acquireRelease(control("hold"), () => control("release"));
 });
 
+/**
+ * Refuse every export with 503 and `Retry-After: retryAfterSeconds` until the scope closes, as a
+ * collector shedding load does.
+ */
+export const refuseExports = (retryAfterSeconds: number) =>
+  Effect.gen(function* () {
+    const http = yield* HttpClient.HttpClient;
+    const url = yield* collectorUrl;
+    const control = (path: string) =>
+      Effect.scoped(http.post(`${url}/api/e2e/exports/${path}`)).pipe(
+        Effect.flatMap((response) =>
+          response.status === 204
+            ? Effect.void
+            : Effect.die(`The collector did not change refusals: ${response.status}`),
+        ),
+        Effect.orDie,
+      );
+    yield* Effect.acquireRelease(control(`refuse?retryAfter=${retryAfterSeconds}`), () =>
+      control("accept"),
+    );
+  });
+
 /** Count the spans the collector receives for `trace` from now on. */
 export const watchTrace = (trace: string) =>
   Effect.gen(function* () {

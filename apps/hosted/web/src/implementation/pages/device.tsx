@@ -106,7 +106,7 @@ function EnterCode({
 function DeviceLookup({ code }: { readonly code: string }) {
   const request = useAtomValue(deviceRequestAtom(code));
   return AsyncResult.builder(request)
-    .onInitial(() => <McpConsentLoading />)
+    .onInitial(() => <McpConsentLoading rows={4} noteLines={1} />)
     .onFailure((cause) => {
       const failure = Cause.squash(cause);
       return (
@@ -153,7 +153,7 @@ function DeviceReview({ code, view }: { readonly code: string; readonly view: De
       </McpConsentLayout>
     );
   if (!AsyncResult.isSuccess(client) || !AsyncResult.isSuccess(organizations))
-    return <McpConsentLoading />;
+    return <McpConsentLoading rows={4} noteLines={1} />;
   return (
     <DeviceDecision
       code={code}

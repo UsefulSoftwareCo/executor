@@ -104,8 +104,9 @@ const laneDefinition = ".github/workflows/checks.yml";
 /**
  * The configs of each release suite, as literal imports so e2e/check-boundary.ts can check them.
  * `test.include` and `test.globalSetup` start each walk. `local` runs in the `release-local` lane
- * and after merge; `matrix` only after merge (desktop crash recovery). The installed CLI suite
- * after merge runs the scenarios CI's E2E jobs run on source, which CI already selects.
+ * and after merge; `matrix` only after merge (desktop crash recovery, and the PGlite checks on
+ * Windows). The installed CLI suite after merge runs the scenarios CI's E2E jobs run on source,
+ * which CI already selects.
  */
 const suites = {
   docker: { "e2e/docker-release.config.ts": () => import("./docker-release.config.ts") },
@@ -116,7 +117,10 @@ const suites = {
     "e2e/standalone-lockdown.config.ts": () => import("./standalone-lockdown.config.ts"),
     "e2e/installer.config.ts": () => import("./installer.config.ts"),
   },
-  matrix: { "e2e/desktop-recovery.config.ts": () => import("./desktop-recovery.config.ts") },
+  matrix: {
+    "e2e/desktop-recovery.config.ts": () => import("./desktop-recovery.config.ts"),
+    "e2e/pglite.config.ts": () => import("./pglite.config.ts"),
+  },
 } as const satisfies Record<string, Record<string, () => Promise<unknown>>>;
 
 /** Every release suite's config, which the release workflows must not run without listing here. */

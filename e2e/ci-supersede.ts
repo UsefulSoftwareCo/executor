@@ -4,8 +4,8 @@
  * `ci.yml` groups a pull request's runs by head commit and cancels none of them, because a stack
  * push can start two `pull_request` runs on one head within a second. A cancelled run's required
  * checks fail, GitHub decides a check reported twice on a commit by the newer check suite, and the
- * cancelled run's can be the newer one, which blocked the merge. Runs on one head now queue and
- * each reports a real result. The cancelling a new push did is done here instead: a run on the
+ * cancelled run's can be the newer one, which blocked the merge. Runs on one head now queue, and
+ * the second reports the first's result (`e2e/ci-repeat.ts`). The cancelling a new push did is done here instead: a run on the
  * pull request's current head cancels its runs on any other head. A run whose head the pull
  * request has since left cancels nothing, so a late run cannot cancel the current head's.
  */

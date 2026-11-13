@@ -100,7 +100,7 @@ export const startAnalytics = () => {
         // which the Sentry SDK does not record, so analytics never becomes a report's breadcrumb.
         try {
           const body = new Blob([JSON.stringify(event)], { type: "application/json" });
-          void budgetedFetch()(`${path}/push`, {
+          void budgetedFetch("analytics")(`${path}/push`, {
             method: "POST",
             body,
             keepalive: true,

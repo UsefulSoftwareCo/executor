@@ -46,7 +46,7 @@ export function LocalMcpAuthorizePage() {
         <p role="alert">Start again from your MCP client.</p>
       </McpConsentLayout>
     );
-  if (!AsyncResult.isSuccess(client)) return <McpConsentLoading />;
+  if (!AsyncResult.isSuccess(client)) return <McpConsentLoading rows={2} />;
   return (
     <McpConsentLayout
       description={

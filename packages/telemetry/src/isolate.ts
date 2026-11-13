@@ -16,8 +16,9 @@
  * call's event is kept alive until the fiber ends (`keepAlive`, the runtime's `waitUntil`). Without
  * that, a Worker event that ended first would never run the timer, and one that ended while the
  * timer's flush was posting would cut the post off, losing everything that flush took. A Durable
- * Object runs both on its own, but is kept alive the same way. An event's close therefore waits at
- * most `flushDelay` and the one export it may have started.
+ * Object runs both on its own, but is kept alive the same way. An event's close waits for its own
+ * flush at most `closeWait`; the flush goes on past that, held by the event's `waitUntil`, within
+ * the export budget of its retries (`exportBudget` in transport.ts).
  *
  * A timer disarms itself before it flushes, so a healthy one stays armed only `flushDelay`: a slow
  * export and its retries never make it look old. An event cancelled before its timer fires stops
@@ -285,8 +286,10 @@ export const isolateTelemetry = (
     // Built before the metric exporter, so this final flush runs after its last snapshot. The
     // flush runs on its own, held by the event like the timer's, and the close waits for it at
     // most `closeWait`: a streamed response ends only after its event's close, and an export
-    // against an endpoint that does not answer retries for up to 23 s. Past the wait, the flush
-    // goes on with its usual retries; nothing it took is dropped or sent twice.
+    // against an endpoint that does not answer retries for most of its budget. Past the wait, the
+    // flush goes on with its usual retries, so the close's wait drops nothing. A batch is sent
+    // twice only as before: when an attempt times out after the collector has in fact stored it,
+    // the next retry sends it again.
     const flushing = Layer.effectDiscard(
       Effect.addFinalizer(() =>
         Effect.gen(function* () {

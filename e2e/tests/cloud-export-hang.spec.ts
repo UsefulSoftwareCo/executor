@@ -22,7 +22,7 @@ import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { cloudLocks } from "../support/cloud-locks.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
-import { holdExports, receivedSpans, watchTrace } from "../support/held-exports.ts";
+import { holdExports, receivedSpans, refuseExports, watchTrace } from "../support/held-exports.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Target } from "../support/platform.ts";
 import { targetHosts } from "../support/role-hosts.ts";
@@ -282,6 +282,56 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
             );
           expect(received.spans, "The collector counted the programs' spans").toBeGreaterThan(0);
           expect(received.duplicated, "No span was exported twice").toBe(0);
+
+          // An export's retries, the waits Retry-After asks for included, end within the time the
+          // runtime keeps an event's work after its response (`exportBudget` in the telemetry
+          // package): the spans of a program whose exports could not get out at its close still
+          // arrive within it, measured from the program's answer, when its event's export starts. Motel
+          // is read every 500 ms, so a span is seen up to that late.
+          const exportBudgetMs = 27_000;
+          const arrives = <R>(label: string, trouble: Effect.Effect<void, never, R>) =>
+            Effect.gen(function* () {
+              const run = yield* Effect.scoped(
+                Effect.gen(function* () {
+                  yield* trouble;
+                  const answered = yield* execute(label);
+                  return { ...answered, at: performance.now() };
+                }),
+              );
+              yield* telemetry.query(run.trace).pipe(
+                Effect.filterOrFail(
+                  (found) => found.data.some(({ span }) => span.operationName === "mcp.tool.call"),
+                  () => new Error("The program's spans have not reached Motel"),
+                ),
+                Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 80 }),
+              );
+              return { tookMs: run.tookMs, arrivedMs: performance.now() - run.at };
+            });
+          // The endpoint hangs long enough for attempts to reach their own time-out, then answers.
+          const afterHang = yield* arrives(
+            "A program while the endpoint hangs for twelve seconds",
+            Effect.andThen(
+              holdExports,
+              Effect.addFinalizer(() => Effect.sleep("12 seconds")),
+            ),
+          );
+          // The collector sheds load for a few seconds and asks for a wait longer than the budget.
+          const afterRetryAfter = yield* arrives(
+            "A program while the collector asks for a 30 s Retry-After",
+            Effect.andThen(
+              refuseExports(30),
+              Effect.addFinalizer(() => Effect.sleep("3 seconds")),
+            ),
+          );
+          yield* evidence.json("cloud-export-hang-budget.json", { afterHang, afterRetryAfter });
+          for (const timing of [afterHang, afterRetryAfter]) {
+            expect(timing.arrivedMs, "The spans arrive within the export's budget").toBeLessThan(
+              exportBudgetMs + 500,
+            );
+            expect(timing.tookMs, "The result does not wait for the export").toBeLessThan(
+              normalMs + 2_000,
+            );
+          }
 
           const warm = [
             yield* call("A call from the API while exports are answered", fromApi),

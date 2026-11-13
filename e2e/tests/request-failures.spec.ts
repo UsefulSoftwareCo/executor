@@ -14,7 +14,8 @@ import { Cause, Effect, Layer, Redacted } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { preparationFailure } from "../sdk/prepare-scenarios.ts";
+import { originUnreachable, preparationFailure } from "../sdk/prepare-scenarios.ts";
+import { ScenarioPreparationFailed } from "../sdk/scenario.ts";
 import { RequestFailed, SessionClients } from "../support/api.ts";
 import { EmulatorDeadline, emulatorRequest } from "../support/emulators.ts";
 import { failureText, stepFailureText } from "../support/failure-text.ts";
@@ -474,6 +475,79 @@ layer(NodeServices.layer, { excludeTestServices: true })("Request failures", (it
     );
     for (const connection of ["connect", "dns", "tls", "other"] as const)
       expect(isLost({ ...base, stage: "before response", connection })).toBe(false);
+  });
+
+  it("an app origin no HTTPS connection reached says so first, with the run's other origins", () => {
+    const run = { origins: 26, readyElapsedMs: [104_259, 147_191, 191_160] };
+    const neverAnswered = {
+      attempts: 149,
+      ready: false,
+      elapsedMs: 298_994,
+      lastFailure: { reason: "transport" as const },
+      coordinator: {
+        status: "pending" as const,
+        certificate: "pending_validation",
+        since: "2026-01-01T00:00:00.000Z",
+      },
+    };
+    const unreachable = originUnreachable(neverAnswered, run);
+    expect(unreachable).toEqual({
+      attempts: 149,
+      waitedMs: 298_994,
+      readyOrigins: 3,
+      origins: 26,
+      slowestReadyMs: 191_160,
+      certificate: "pending_validation",
+      since: "2026-01-01T00:00:00.000Z",
+    });
+    const failed = new ScenarioPreparationFailed({ reason: "domain_unavailable", unreachable });
+    expect(failed.message).toBe(
+      "No HTTPS connection to the scenario's app origin completed within the infrastructure wait (149 attempts in 299 s); 3 of the run's 26 app origins became ready, the slowest after 191 s. The domain coordinator last saw its certificate pending_validation since 2026-01-01T00:00:00.000Z.",
+    );
+    // Without the coordinator's record, and with no other origin ready.
+    const { coordinator: _none, ...unrecorded } = neverAnswered;
+    expect(
+      new ScenarioPreparationFailed({
+        reason: "domain_unavailable",
+        unreachable: originUnreachable(unrecorded, { origins: 1, readyElapsedMs: [] }),
+      }).message,
+    ).toBe(
+      "No HTTPS connection to the scenario's app origin completed within the infrastructure wait (149 attempts in 299 s); none of the run's 1 app origins became ready.",
+    );
+
+    // A stage whose coordinator reports a status but no certificate state: the same, no clause.
+    expect(
+      new ScenarioPreparationFailed({
+        reason: "domain_unavailable",
+        unreachable: originUnreachable(
+          { ...unrecorded, coordinator: { status: "pending" as const } },
+          run,
+        ),
+      }).message,
+    ).toBe(
+      "No HTTPS connection to the scenario's app origin completed within the infrastructure wait (149 attempts in 299 s); 3 of the run's 26 app origins became ready, the slowest after 191 s.",
+    );
+
+    // An origin that answered and was not reported ready may be ours: it keeps its own text.
+    const answered = {
+      attempts: 40,
+      ready: false,
+      elapsedMs: 298_000,
+      httpsMs: 90_000,
+      reported: "pending" as const,
+    };
+    // So does one whose last failure was an HTTP status or the per-attempt deadline.
+    const refused = { ...neverAnswered, lastFailure: { reason: "http" as const, status: 502 } };
+    const slow = { ...neverAnswered, lastFailure: { reason: "timeout" as const } };
+    for (const observation of [answered, refused, slow, undefined]) {
+      expect(originUnreachable(observation, run)).toBeUndefined();
+    }
+    const ordinary = new ScenarioPreparationFailed({ reason: "domain_unavailable" });
+    expect(ordinary.message).toBe(
+      "The scenario's HTTPS app origin did not answer, or was not reported ready, within the infrastructure deadline",
+    );
+    for (const label of Object.values(platformSignatures))
+      expect(ordinary.message).not.toContain(label);
   });
 
   it.effect("a product call says how far it got before it failed", () =>

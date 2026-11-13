@@ -18,7 +18,7 @@ import { Actors } from "../support/actors.ts";
 import { RequestFailed, SessionClients } from "../support/api.ts";
 import { errorCode, keptCauseParts } from "../support/failure-text.ts";
 import { Target } from "../support/platform.ts";
-import { PreparedScenarios } from "./contracts.ts";
+import { OriginUnreachable, PreparedScenarios } from "./contracts.ts";
 import { startScenario } from "./scenario.ts";
 import { awaitCompiler } from "./compiler-readiness.ts";
 import { FixtureFailed, fixtureRequest, type FixtureControl } from "./fixtures.ts";
@@ -90,9 +90,45 @@ interface DomainObservation {
     readonly status?: number | undefined;
     readonly code?: string | undefined;
   };
+  /** What the domain coordinator last recorded, read once for an origin that never answered. */
+  readonly coordinator?: DomainReport;
 }
+
+/**
+ * The origin unreachable shape: no HTTPS connection completed within the wait (every attempt
+ * failed in transport, so the product was never asked), with how the run's other origins did.
+ * An origin that answered but was not reported ready, or that failed otherwise, is not this.
+ */
+export const originUnreachable = (
+  observation: DomainObservation | undefined,
+  run: { readonly origins: number; readonly readyElapsedMs: ReadonlyArray<number> },
+): typeof OriginUnreachable.Type | undefined => {
+  if (
+    observation === undefined ||
+    observation.ready ||
+    observation.reported !== undefined ||
+    observation.httpsMs !== undefined ||
+    observation.lastFailure?.reason !== "transport"
+  )
+    return undefined;
+  return {
+    attempts: observation.attempts,
+    waitedMs: observation.elapsedMs,
+    readyOrigins: run.readyElapsedMs.length,
+    origins: run.origins,
+    slowestReadyMs: run.readyElapsedMs.length === 0 ? null : Math.max(...run.readyElapsedMs),
+    ...(observation.coordinator?.certificate === undefined
+      ? {}
+      : { certificate: observation.coordinator.certificate }),
+    ...(observation.coordinator?.since === undefined
+      ? {}
+      : { since: observation.coordinator.since }),
+  };
+};
 const DomainReport = Schema.Struct({
   status: Schema.Literals(["absent", "pending", "ready", "failed"]),
+  certificate: Schema.optional(Schema.String),
+  since: Schema.optional(Schema.String),
 });
 type DomainReport = typeof DomainReport.Type;
 class DomainNotReported extends Schema.TaggedError<DomainNotReported>()("DomainNotReported", {
@@ -278,6 +314,26 @@ export const prepareCloudScenarios = (input: {
         Effect.gen(function* () {
           const finished = yield* Clock.currentTimeMillis;
           const readyDomains = (yield* Ref.get(ready)).size;
+          // For an origin no HTTPS connection reached, ask once what the coordinator last saw.
+          yield* Effect.forEach(
+            [...(yield* Ref.get(observations))].filter(
+              ([, observation]) =>
+                originUnreachable(observation, { origins: 0, readyElapsedMs: [] }) !== undefined,
+            ),
+            ([id, observation]) =>
+              fixtureRequest(input.fixtures, "/domain", { id }).pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(DomainReport)),
+                Effect.timeout("5 seconds"),
+                Effect.flatMap((coordinator) =>
+                  Ref.update(
+                    observations,
+                    (values) => new Map([...values, [id, { ...observation, coordinator }]]),
+                  ),
+                ),
+                Effect.ignore,
+              ),
+            { concurrency: "unbounded", discard: true },
+          );
           const domainObservations = yield* Ref.get(observations);
           yield* writePreparation(input.target.directory, {
             organizations: prepared.length,
@@ -310,12 +366,28 @@ export const prepareCloudScenarios = (input: {
       `Scenario infrastructure: ${Math.round((finished - started) / 1000)}s (${prepared.length} organizations, ${(yield* Ref.get(ready)).size}/${domains.length} HTTPS domains verified).`,
     );
     const readyIds = yield* Ref.get(ready);
+    const finalObservations = yield* Ref.get(observations);
+    const run = {
+      origins: domains.length,
+      readyElapsedMs: domains
+        .filter(({ id }) => readyIds.has(id))
+        .map(({ id }) => finalObservations.get(id)?.elapsedMs)
+        .filter((elapsed) => elapsed !== undefined),
+    };
     return PreparedScenarios.make(
       Object.fromEntries([
-        ...prepared.map(({ title, id, appOrigin }) => [
-          title,
-          { id, status: !appOrigin || readyIds.has(id) ? "ready" : "domain_unavailable" },
-        ]),
+        ...prepared.map(({ title, id, appOrigin }) => {
+          if (!appOrigin || readyIds.has(id)) return [title, { id, status: "ready" }];
+          const unreachable = originUnreachable(finalObservations.get(id), run);
+          return [
+            title,
+            {
+              id,
+              status: "domain_unavailable",
+              ...(unreachable === undefined ? {} : { unreachable }),
+            },
+          ];
+        }),
         ...unavailable.map(({ title, id }) => [title, { id, status: "organization_unavailable" }]),
       ]),
     );

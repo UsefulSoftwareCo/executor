@@ -7,4 +7,11 @@ export const platformSignatures = {
   "runtime-502":
     "Cloudflare's Workers runtime answered 502 Bad Gateway itself; our Worker did not answer",
   lost: "Request lost before any response",
+  /**
+   * Preparation: a team origin with which no HTTPS connection completed within the wait, so its
+   * certificate never became usable in time. Not an origin that answered and was not reported
+   * ready by the domain coordinator, which may be ours and keeps its own text.
+   */
+  "origin-unreachable":
+    "No HTTPS connection to the scenario's app origin completed within the infrastructure wait",
 } as const;

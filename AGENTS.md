@@ -52,10 +52,30 @@ are banned: do not add `*.test.*`, `*.spec.*`, type tests, `test/` or
 and do not import application implementations into tests. `bun run check` fails
 on any test outside `e2e/`.
 
-The one exception is the Go host in `apps/hosted/self-host/native`. Its
-`go test` suite covers timing races between the host's proxy and workerd, and
-response compression cases such as streamed chunks, that a real image cannot hit
-reliably. CI runs it in the `self-host-native` job.
+There are two exceptions. The first is the Go host in
+`apps/hosted/self-host/native`. Its `go test` suite covers timing races between
+the host's proxy and workerd, and response compression cases such as streamed
+chunks, that a real image cannot hit reliably. CI runs it in the `self-host-native` job.
+
+The second is the telemetry collector crate in `packages/telemetry/collector`.
+Its `cargo test` suite in `tests/` is limited to four files:
+
+- `otlp_mapping.rs`: the OTLP/JSON field mapping, through the crate's library.
+- `store.rs`: the store's handling of resent and changed spans, trace summaries
+  and resource references, that an export is all or nothing, and which files it
+  refuses, through the crate's library. A failure part way through a transaction
+  cannot be caused from outside the process.
+- `lifecycle.rs`: that the shutdown drain ends however the stop and the drain
+  are ordered, through the crate's library. The order cannot be forced from
+  outside the process.
+- `process.rs`: the built binary as a process, over HTTP and its socket. It
+  covers stop signals and the shutdown deadline, a socket path that already
+  exists, not acknowledging an export it did not store, gzip bodies, a first
+  start cut off while creating the store, and resident memory returned after a
+  burst. These would be E2E scenarios, but nothing in `e2e/` builds the binary
+  yet.
+
+CI runs it in the `collector-native` job when the crate changes.
 
 Tests are not sacred. Delete a scenario when it no longer proves behavior a user
 or public API caller depends on, or when other scenarios already cover it. Say
@@ -295,7 +315,11 @@ Scenarios retain 60-second deadlines. The job owns its teardown and evidence art
 checks are not required PR checks. Agents can run targeted deployments through
 the same SDK and CLI on demand.
 
-Every push to `main` deploys production directly, without a deployed-test gate.
+Every push to `main` deploys production directly, without a deployed-test gate. Deploy skips its deploy job for
+a push that changes only paths no deploy reads (tests, notes, other workflows; see
+`notes/ci.md`, "Deploy decision"): the run's `decide` job summary gives the decision and its
+reason. A skipped merge has nothing new live to verify. A manual dispatch or "Re-run all
+jobs" always deploys; "Re-run failed jobs" keeps `decide`'s earlier answer.
 The deployed suite remains available for manual dispatch with Neon or PlanetScale.
 
 Blacksmith Linux runners run every check job. Local and self-host E2E jobs use

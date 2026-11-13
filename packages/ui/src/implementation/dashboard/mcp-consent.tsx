@@ -14,8 +14,13 @@ import {
 import { Skeleton } from "../components/skeleton.tsx";
 import type { ConsentConnection } from "../../contracts/scoped-connections.ts";
 
-/** A summary line: the term on the left, its value against the right edge. */
-const row = "grid min-h-12 grid-cols-[7.5rem_1fr] items-center gap-x-4 py-1 max-[740px]:min-h-13";
+/**
+ * A summary line: the term on the left, its value against the right edge. Every line has the
+ * same height: on phones a menu is 44px tall, so the padding narrows to keep it and the hairline
+ * inside the line's height.
+ */
+const row =
+  "grid min-h-12 grid-cols-[7.5rem_1fr] items-center gap-x-4 py-1 max-[740px]:min-h-13 max-[740px]:py-0.5";
 /** Hairlines between the lines, and above and below them, instead of a boxed card. */
 const list = "mcp-consent-summary m-0 divide-y divide-foreground/10 border-y border-foreground/10";
 
@@ -46,10 +51,31 @@ export function McpConsentLayout({
   );
 }
 
-/** Loading keeps the same shape as the consent form without flashing a full-page spinner. */
-export function McpConsentLoading() {
+/** One line of text still loading: the line's own height, with a bar where the words will be. */
+function LineLoading({ className }: { readonly className: string }) {
   return (
-    <McpConsentLayout description={<Skeleton className="h-5 w-3/4" />}>
+    <span className="flex h-lh items-center">
+      <Skeleton className={`h-4 ${className}`} />
+    </span>
+  );
+}
+
+const rowWidths = ["w-20", "w-16", "w-32", "w-24"];
+
+/**
+ * Loading has the consent form's height, so nothing below moves when it arrives: one line of
+ * description, a summary row for each row the form will show, the note's lines (two for the usual
+ * "Access is sent to…" destination), and buttons at their size on each screen.
+ */
+export function McpConsentLoading({
+  rows = 3,
+  noteLines = 2,
+}: {
+  readonly rows?: number;
+  readonly noteLines?: number;
+}) {
+  return (
+    <McpConsentLayout description={<LineLoading className="w-3/4" />}>
       <div
         role="status"
         aria-label="Loading connection"
@@ -58,18 +84,24 @@ export function McpConsentLoading() {
         <span className="sr-only">Loading connection…</span>
         <div className="flex flex-col gap-3.5">
           <div className={list}>
-            {["w-20", "w-16", "w-32"].map((width) => (
+            {rowWidths.slice(0, rows).map((width) => (
               <div key={width} className={row}>
                 <Skeleton className="h-4 w-20" />
                 <Skeleton className={`h-4 justify-self-end ${width}`} />
               </div>
             ))}
           </div>
-          <Skeleton className="h-4 w-3/4" />
+          {noteLines > 0 && (
+            <div className="mcp-consent-note text-[14px]">
+              {Array.from({ length: noteLines }, (_, line) => (
+                <LineLoading key={line} className={line === noteLines - 1 ? "w-1/3" : "w-full"} />
+              ))}
+            </div>
+          )}
         </div>
         <div className="mcp-consent-actions grid grid-cols-2 gap-2.5">
-          <Skeleton className="h-9 w-full" />
-          <Skeleton className="h-9 w-full" />
+          <Skeleton className="h-9 w-full max-[740px]:h-11" />
+          <Skeleton className="h-9 w-full max-[740px]:h-11" />
         </div>
       </div>
     </McpConsentLayout>
@@ -169,6 +201,12 @@ export interface ConsentOption {
   readonly detail?: string | undefined;
 }
 
+/** An entry's padding, as `SelectItem` lays out a menu entry with a detail line, on each screen. */
+const entry =
+  "flex items-start rounded-sm py-2 pr-8 pl-2 text-sm max-[740px]:min-h-11 max-[740px]:py-2.5";
+/** An entry's title and detail lines, as `McpConsentSelect` sets them. */
+const entryLines = "flex flex-col gap-0.5";
+
 /** A row's value as a menu. It reads as the value until it is opened. */
 export function McpConsentSelect({
   id,
@@ -201,7 +239,7 @@ export function McpConsentSelect({
       <SelectContent align="end" className="min-w-64">
         {options.map((option) => (
           <SelectItem key={option.value} value={option.value} className="items-start py-2">
-            <span className="flex flex-col gap-0.5 text-left">
+            <span className={`${entryLines} text-left`}>
               <span className="font-medium">{option.label}</span>
               {option.detail !== undefined && (
                 <span className="text-[13px] text-muted-foreground">{option.detail}</span>
@@ -293,16 +331,44 @@ export type ConsentConnectionList =
   | { readonly kind: "failed"; readonly retry: () => void }
   | { readonly kind: "loaded"; readonly connections: readonly ConsentConnection[] };
 
+/** Two entries' worth of bars, line for line the size of real entries. */
+function EntriesLoading() {
+  return ["w-28", "w-20"].map((width) => (
+    <div key={width} className={entry}>
+      <span className={entryLines}>
+        <span className="flex h-lh items-center">
+          <Skeleton className={`h-3.5 ${width}`} />
+        </span>
+        <span className="flex h-lh items-center text-[13px]">
+          <Skeleton className="h-3 w-40" />
+        </span>
+      </span>
+    </div>
+  ));
+}
+
 /** Where the connections will be listed, shaped like two of their entries. */
 function ConnectionsLoading() {
   return (
     <div role="status" aria-label="Loading connections" className="flex flex-col">
-      {["w-28", "w-20"].map((width) => (
-        <div key={width} className="flex flex-col gap-1.5 px-2 py-2.5">
-          <Skeleton className={`h-3.5 ${width}`} />
-          <Skeleton className="h-3 w-40" />
-        </div>
-      ))}
+      <EntriesLoading />
+    </div>
+  );
+}
+
+/** The list's failure and its retry, in the space the loading entries held so the menu keeps its size. */
+function ConnectionsFailed() {
+  return (
+    <div className="grid">
+      <div aria-hidden className="invisible col-start-1 row-start-1 flex flex-col">
+        <EntriesLoading />
+      </div>
+      <div className="col-start-1 row-start-1 flex flex-col justify-center">
+        <p role="alert" className="m-0 px-2 py-1.5 text-[13px] text-destructive">
+          Could not load your connections.
+        </p>
+        <SelectItem value={retryList}>Retry</SelectItem>
+      </div>
     </div>
   );
 }
@@ -376,14 +442,7 @@ export function McpConsentAccess({
         }}
       >
         {list.kind === "loading" && <ConnectionsLoading />}
-        {list.kind === "failed" && (
-          <>
-            <p role="alert" className="m-0 px-2 py-1.5 text-[13px] text-destructive">
-              Could not load your connections.
-            </p>
-            <SelectItem value={retryList}>Retry</SelectItem>
-          </>
-        )}
+        {list.kind === "failed" && <ConnectionsFailed />}
         <SelectSeparator />
         {/* It opens the connection editor elsewhere; the arrow says so before it is chosen. */}
         <SelectItem value={newConnection} disabled={list.kind !== "loaded"}>
