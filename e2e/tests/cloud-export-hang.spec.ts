@@ -22,7 +22,8 @@ import { appsManifest } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { cloudLocks } from "../support/cloud-locks.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
-import { holdExports } from "../support/held-exports.ts";
+import { holdExports, receivedSpans, watchTrace } from "../support/held-exports.ts";
+import { McpClient } from "../support/mcp-client.ts";
 import { Target } from "../support/platform.ts";
 import { targetHosts } from "../support/role-hosts.ts";
 import { scenarios } from "../test-plan.ts";
@@ -43,7 +44,7 @@ const drainMs = 3_000;
 /** How long each call's tool runs. */
 const toolMs = 800;
 
-const App = Schema.Struct({ id: Schema.String, activeVersion: Schema.String });
+const App = Schema.Struct({ id: Schema.String, slug: Schema.String, activeVersion: Schema.String });
 const Location = Schema.Struct({ status: Schema.Literal("ready"), url: Schema.String });
 const Count = Schema.Array(Schema.Struct({ n: Schema.Number }));
 const LogRecords = Schema.fromJsonString(
@@ -209,6 +210,79 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
               }),
             );
 
+          // An MCP program's result reaches its client through the gateway's streamed response,
+          // which ends only after the gateway's event has closed. An event's close waits for its
+          // telemetry export at most a second, so the result is not held for the export's retries
+          // against an endpoint that does not answer, and the export still finishes afterwards.
+          const pat = yield* body(
+            Schema.Struct({ key: Schema.RedactedFromValue(Schema.String), id: Schema.String }),
+            yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+              name: "Export hang",
+            }),
+          );
+          yield* Effect.addFinalizer(() =>
+            api
+              .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: pat.id })
+              .pipe(Effect.orDie),
+          );
+          const mcpClient = yield* (yield* McpClient).connect(pat.key, "export-hang", {
+            organization: actors.organization.id,
+          });
+          const program = `return await tools[${JSON.stringify(app.slug)}].slow({ ms: 0 })`;
+          /** Run the program once; return how long its result took to reach the client, and its trace. */
+          const execute = (label: string) =>
+            Effect.gen(function* () {
+              const started = performance.now();
+              const result = yield* mcpClient.use(label, (client, signal) =>
+                client.callTool({ name: "execute", arguments: { code: program } }, undefined, {
+                  signal,
+                }),
+              );
+              const tookMs = performance.now() - started;
+              expect(result.structuredContent, label).toMatchObject({
+                status: "completed",
+                execution: { ok: true },
+              });
+              const trace = (yield* evidence.requests)
+                .filter((request) => request.path === "/mcp")
+                .at(-1)?.traceId;
+              if (trace === undefined) return yield* Effect.die("MCP request evidence missing");
+              return { tookMs, trace };
+            });
+          // Answered: the exports arrive once each.
+          yield* watchTrace("*");
+          const answered = [
+            yield* execute("A program while exports are answered"),
+            yield* execute("Another program while exports are answered"),
+          ];
+          const normalMs = Math.max(...answered.map(({ tookMs }) => tookMs));
+          const hung = yield* Effect.scoped(
+            Effect.gen(function* () {
+              yield* holdExports;
+              return [
+                yield* execute("A program while the endpoint hangs"),
+                yield* execute("Another program while the endpoint hangs"),
+              ];
+            }),
+          );
+          // Once the endpoint answers again, the exports the closes stopped waiting for arrive.
+          for (const { trace } of [...answered, ...hung])
+            yield* telemetry.query(trace).pipe(
+              Effect.filterOrFail(
+                (found) => found.data.some(({ span }) => span.operationName === "mcp.tool.call"),
+                () => new Error("The program's spans have not reached Motel"),
+              ),
+              Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
+            );
+          const received = yield* receivedSpans("*");
+          yield* evidence.json("cloud-export-hang-mcp.json", { answered, hung, received });
+          for (const { tookMs } of hung)
+            expect(tookMs, "The result does not wait for the export's retries").toBeLessThan(
+              normalMs + 2_000,
+            );
+          expect(received.spans, "The collector counted the programs' spans").toBeGreaterThan(0);
+          expect(received.duplicated, "No span was exported twice").toBe(0);
+
           const warm = [
             yield* call("A call from the API while exports are answered", fromApi),
             yield* call("A call from the app's page while exports are answered", fromPage),
@@ -231,8 +305,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
                 });
               }
               // The endpoint stays hung past the forwarder's bound, so every held call's drain
-              // reaches it before the endpoint answers again.
-              yield* Effect.sleep(drainMs);
+              // reaches it before the endpoint answers again. A close starts after its answer, a
+              // page call's later than an API call's, so the hang outlasts the bound by as much.
+              yield* Effect.sleep(drainMs * 2);
               return calls;
             }),
           );
@@ -280,8 +355,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
               `A ${timing.from} call's connections close before its telemetry gives up`,
             ).toBeLessThan(drainMs / 2);
           }
-        }),
+        }).pipe(Effect.provide(McpClient.layer)),
       ),
-    { timeout: 180_000 },
+    { timeout: 240_000 },
   );
 });

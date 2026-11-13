@@ -27,7 +27,18 @@
  * Metrics stay per event. Their delta histograms report each event's own
  * minimum and maximum, which an isolate-wide registry cannot reconstruct.
  */
-import { Clock, Context, Duration, Effect, Layer, Logger, Metric, Redacted, Scope } from "effect";
+import {
+  Clock,
+  Context,
+  Deferred,
+  Duration,
+  Effect,
+  Layer,
+  Logger,
+  Metric,
+  Redacted,
+  Scope,
+} from "effect";
 import { HttpBody, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import {
   OtlpExporter,
@@ -50,6 +61,13 @@ interface Pending {
   logs: Array<ResourceLogs>;
   metrics: Array<ResourceMetrics>;
 }
+
+/**
+ * How long an event's close waits for its flush. Healthy closes, export included, took 192 to 309
+ * ms at the 99th percentile in production (12 November 2026, 00:00 to 12:00 UTC); a close that waits
+ * longer only stops waiting, and its flush carries on.
+ */
+const closeWait = Duration.seconds(1);
 
 /** How long the isolate's flush waits after the first item buffered since the last flush. */
 const flushDelay = Duration.seconds(1);
@@ -264,8 +282,22 @@ export const isolateTelemetry = (
       );
     };
 
-    // Built before the metric exporter, so this final flush runs after its last snapshot.
-    const flushing = Layer.effectDiscard(Effect.addFinalizer(() => flush));
+    // Built before the metric exporter, so this final flush runs after its last snapshot. The
+    // flush runs on its own, held by the event like the timer's, and the close waits for it at
+    // most `closeWait`: a streamed response ends only after its event's close, and an export
+    // against an endpoint that does not answer retries for up to 23 s. Past the wait, the flush
+    // goes on with its usual retries; nothing it took is dropped or sent twice.
+    const flushing = Layer.effectDiscard(
+      Effect.addFinalizer(() =>
+        Effect.gen(function* () {
+          const flushed = yield* Deferred.make<void>();
+          keepAlive(
+            Effect.runPromise(flush.pipe(Effect.ensuring(Deferred.succeed(flushed, undefined)))),
+          );
+          yield* Deferred.await(flushed).pipe(Effect.timeoutOption(closeWait));
+        }),
+      ),
+    );
     return Layer.mergeAll(
       Layer.succeedContext(isolate),
       config.metrics === undefined
