@@ -472,7 +472,7 @@ const executed = (directory: string) =>
     const path = yield* Path.Path;
     const ran = new Set<string>();
     // Failed scenario runs whose failure names each platform signature (`platformSignatures`).
-    const signatures = { "runtime-502": 0, lost: 0 };
+    const signatures = { "runtime-502": 0, lost: 0, "origin-unreachable": 0 };
     const reports = (yield* fs.exists(directory))
       ? (yield* fs.readDirectory(directory, { recursive: true })).filter(
           (file) => path.basename(file) === "results.json",
@@ -496,7 +496,7 @@ const executed = (directory: string) =>
           if (test.status === "passed" || test.status === "failed") {
             ran.add(pair(target, path.basename(file.name), test.title));
             const messages = (test.failureMessages ?? []).join("\n");
-            for (const signature of ["runtime-502", "lost"] as const)
+            for (const signature of ["runtime-502", "lost", "origin-unreachable"] as const)
               if (messages.includes(platformSignatures[signature])) signatures[signature] += 1;
           }
     }
@@ -547,7 +547,7 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
     // Counted on every deployed run, zero included, so a rise shows without reading logs.
     const platform =
       suite === "deployed"
-        ? `\nScenario runs that failed on a platform signature: ${signatures["runtime-502"]} on Cloudflare's runtime answering 502 itself (our Worker did not answer), ${signatures.lost} on a request lost before any response.\n`
+        ? `\nScenario runs that failed on a platform signature: ${signatures["runtime-502"]} on Cloudflare's runtime answering 502 itself (our Worker did not answer), ${signatures.lost} on a request lost before any response, ${signatures["origin-unreachable"]} on an app origin no HTTPS connection reached within preparation's wait.\n`
         : "";
     const report = `## E2E coverage\n\nEvery one of the ${expected} scenario runs ${suite === "ci" ? "the jobs here schedule" : "Cloud tests on main schedules"} executed. ${Object.keys(notRunInCi).length} scenarios are in notRunInCi.\n${platform}`;
     yield* Console.log(report);

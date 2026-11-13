@@ -256,7 +256,11 @@ const main = Effect.gen(function* () {
     const result = yield* Effect.tryPromise({
       try: () =>
         database.query(
-          `select domain.status from cloud_app_domain domain
+          // Read through the row's JSON so a stage whose schema predates the coordinator's
+          // certificate columns answers with its status alone instead of failing.
+          `select domain.status, to_jsonb(domain) ->> 'certificate' as certificate,
+              to_jsonb(domain) ->> 'status_since' as status_since
+            from cloud_app_domain domain
             join organization on organization.id = domain.organization_id
             where organization.slug = $1 and domain.slug = organization.slug`,
           [organizationSlug(id)],
@@ -264,9 +268,24 @@ const main = Effect.gen(function* () {
       catch: () => new TestAccountFailed({ stage: "database" }),
     });
     const rows = yield* Schema.decodeUnknownEffect(
-      Schema.Array(Schema.Struct({ status: Schema.Literals(["pending", "ready", "failed"]) })),
+      Schema.Array(
+        Schema.Struct({
+          status: Schema.Literals(["pending", "ready", "failed"]),
+          certificate: Schema.NullOr(Schema.String),
+          status_since: Schema.NullOr(Schema.String),
+        }),
+      ),
     )(result.rows);
-    return { status: rows[0]?.status ?? ("absent" as const) };
+    const row = rows[0];
+    // The certificate's label and when the coordinator's status last changed, for a failure
+    // to say what the origin was waiting on; a test stage's own records, never exported. Both are
+    // absent where the stage does not record them.
+    const since = row?.status_since == null ? Number.NaN : Date.parse(row.status_since);
+    return {
+      status: row?.status ?? ("absent" as const),
+      ...(row?.certificate == null ? {} : { certificate: row.certificate }),
+      ...(Number.isNaN(since) ? {} : { since: new Date(since).toISOString() }),
+    };
   });
   const remove = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;

@@ -1379,7 +1379,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       const cloud = Object.values(scenarios)
         .filter((scenario) => scenario.targets.cloud.status === "scheduled")
         .map((scenario) => scenario.title);
-      const [first, second, third, fourth] = cloud;
+      const [first, second, third, fourth, fifth, sixth] = cloud;
       const messages: Record<string, string> = {
         [first!]:
           "RequestFailed: Cloudflare's Workers runtime answered 502 Bad Gateway itself; our Worker did not answer (ray 8f0c1a2b3c4d5e6f-AMS): POST /api/x returned HTTP 502 without a JSON response",
@@ -1389,6 +1389,11 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "RequestFailed: Request lost before any response: the client saw the connection reset with no response after 41 ms: POST /api/z failed (request)",
         // Our own 502 failing a scenario is not a platform signature.
         [fourth!]: "AssertionError: expected 502 to be 200 // Object.is equality",
+        [fifth!]:
+          "ScenarioPreparationFailed: No HTTPS connection to the scenario's app origin completed within the infrastructure wait (149 attempts in 299 s); 25 of the run's 26 app origins became ready, the slowest after 191 s. The domain coordinator last saw its certificate pending_validation since 2026-01-01T00:00:00.000Z.",
+        // An origin that answered and was not reported ready may be ours: not counted.
+        [sixth!]:
+          "ScenarioPreparationFailed: The scenario's HTTPS app origin did not answer, or was not reported ready, within the infrastructure deadline",
       };
       const [counted, none] = yield* Effect.all(
         [
@@ -1405,12 +1410,12 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       );
       expect(counted.exitCode, counted.log).toBe(0);
       expect(counted.log).toContain(
-        "Scenario runs that failed on a platform signature: 2 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 1 on a request lost before any response.",
+        "Scenario runs that failed on a platform signature: 2 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 1 on a request lost before any response, 1 on an app origin no HTTPS connection reached within preparation's wait.",
       );
       // Zero is reported too, so a rise shows against it.
       expect(none.exitCode, none.log).toBe(0);
       expect(none.log).toContain(
-        "Scenario runs that failed on a platform signature: 0 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 0 on a request lost before any response.",
+        "Scenario runs that failed on a platform signature: 0 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 0 on a request lost before any response, 0 on an app origin no HTTPS connection reached within preparation's wait.",
       );
     }),
   );

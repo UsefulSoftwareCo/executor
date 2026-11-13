@@ -4,12 +4,30 @@ import { heldValue } from "../support/failure-text.ts";
 /** Collision-free scenario identity; safe for paths, slugs and synthetic email addresses. */
 export const ScenarioId = Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u));
 
+/**
+ * A team origin with which no HTTPS connection completed within preparation's wait, with what the
+ * run's other origins did and what the stage's domain coordinator last recorded for it.
+ */
+export const OriginUnreachable = Schema.Struct({
+  attempts: Schema.Number,
+  waitedMs: Schema.Number,
+  readyOrigins: Schema.Number,
+  origins: Schema.Number,
+  /** How long the slowest origin that did become ready took; null when none did. */
+  slowestReadyMs: Schema.NullOr(Schema.Number),
+  /** Cloudflare's label for the origin's certificate, as the coordinator last saw it. */
+  certificate: Schema.optional(Schema.String),
+  /** When the coordinator's status for the origin last changed (ISO 8601, UTC). */
+  since: Schema.optional(Schema.String),
+});
+
 /** Preparation failures belong to their scenario and remain native setup failures. */
 export const PreparedScenarios = Schema.Record(
   Schema.NonEmptyString,
   Schema.Struct({
     id: ScenarioId,
     status: Schema.Literals(["ready", "organization_unavailable", "domain_unavailable"]),
+    unreachable: Schema.optional(OriginUnreachable),
   }),
 );
 
