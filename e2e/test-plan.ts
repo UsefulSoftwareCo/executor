@@ -5609,9 +5609,7 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: na("Cloud runs its own early consent scenario, on its role hosts."),
-      local: na(
-        "Local's server sends its consent page with Connect enabled, but Connect pressed before it hydrates still sends no decision after hydration; that is a separate open defect.",
-      ),
+      local: na("Local runs its own early consent scenario."),
     },
   },
   earlyDeviceDecision: {
@@ -5634,6 +5632,17 @@ export const scenarios = plan({
       cloud: scheduled,
       "self-host": na("Self-host runs its own early consent scenario."),
       local: na("Local has no hosted MCP consent page."),
+    },
+  },
+  oneConsentDecision: {
+    fixtures: "actors",
+    file: "early-form-submission.spec.ts",
+    title:
+      "The MCP consent page sends only the first of two decisions submitted before it renders again",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The consent actions are shared; self-host runs this case."),
+      local: na("The consent actions are shared; self-host runs this case."),
     },
   },
   earlyFormSubmission: {
@@ -7132,6 +7141,16 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: scheduled,
       local: na("Local sign-in offers no choices; localSignInPage covers its page."),
+    },
+  },
+  localEarlyConsentDecision: {
+    file: "local-mcp-sign-in-page.spec.ts",
+    title:
+      "Local's MCP consent page holds Connect pressed before it is interactive and approves the client after hydration",
+    targets: {
+      local: scheduled,
+      "self-host": na("Self-host runs its own early consent scenario."),
+      cloud: na("Cloud runs its own early consent scenario, on its role hosts."),
     },
   },
   localSignInPage: {

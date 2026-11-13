@@ -13,8 +13,8 @@ import { consentValue } from "../support/consent-page.ts";
 import { Evidence } from "../support/evidence.ts";
 import { pairLocalOperator } from "../support/mcp-consent.ts";
 import { revokeClientGrants } from "../support/mcp-connections.ts";
-import { oauthCallback } from "../support/mcp-oauth.ts";
-import { Target } from "../support/platform.ts";
+import { authorizeBrowserMcp, oauthCallback } from "../support/mcp-oauth.ts";
+import { Target, driver } from "../support/platform.ts";
 
 layer(TestLive, { excludeTestServices: true })("Local MCP sign-in page", (it) => {
   it.effect(scenarios.localSignInPage.title, (context) =>
@@ -100,6 +100,33 @@ layer(TestLive, { excludeTestServices: true })("Local MCP sign-in page", (it) =>
           page.getByRole("button", { name: "Connect", exact: true }).click(),
         );
         yield* receiver.code;
+      }),
+    ),
+  );
+  // The local page is sent complete, Connect included, so a click can land before it hydrates.
+  it.effect(scenarios.localEarlyConsentDecision.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const browser = yield* Browser,
+          target = yield* Target;
+        const operator = yield* pairLocalOperator;
+        yield* browser.omitNetworkTrace;
+        yield* browser.login(operator);
+        const token = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const tab = yield* Effect.acquireRelease(
+              browser.use("Open the assistant's sign-in tab", (page) => page.context().newPage()),
+              (tab) =>
+                driver("Close the assistant's sign-in tab", () => tab.close()).pipe(Effect.orDie),
+            );
+            return yield* authorizeBrowserMcp(tab, target.metadata.origin, {
+              client: "Early local assistant",
+              beforeHydration: true,
+            });
+          }),
+        );
+        expect(token).toBeDefined();
       }),
     ),
   );
