@@ -5001,10 +5001,33 @@ export const scenarios = plan({
       local: na("Hosted callback routing and saved-client management."),
     },
   },
-  oauthConnectStoryboard: {
+  oauthStoryboardSetup: {
     fixtures: "actors",
     file: "oauth-connect-storyboard.spec.ts",
-    title: "OAuth connect storyboard captures loading, consent, success and recovery frames",
+    title:
+      "OAuth connect storyboard captures setup loading, failure, retry and missing client frames",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer for controlled capture."),
+      local: na("Hosted account dialogs and callback recovery."),
+    },
+  },
+  oauthStoryboardConsent: {
+    fixtures: "actors",
+    file: "oauth-connect-storyboard.spec.ts",
+    title:
+      "OAuth connect storyboard captures consent, callback recovery and connected account frames",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer for controlled capture."),
+      local: na("Hosted account dialogs and callback recovery."),
+    },
+  },
+  oauthStoryboardReconnect: {
+    fixtures: "actors",
+    file: "oauth-connect-storyboard.spec.ts",
+    title:
+      "OAuth connect storyboard captures reconnect, client replacement and expired link frames",
     targets: {
       "self-host": scheduled,
       cloud: na("Uses a scoped loopback OAuth issuer for controlled capture."),
