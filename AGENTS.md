@@ -295,7 +295,11 @@ Scenarios retain 60-second deadlines. The job owns its teardown and evidence art
 checks are not required PR checks. Agents can run targeted deployments through
 the same SDK and CLI on demand.
 
-Every push to `main` deploys production directly, without a deployed-test gate.
+Every push to `main` deploys production directly, without a deployed-test gate. Deploy skips its deploy job for
+a push that changes only paths no deploy reads (tests, notes, other workflows; see
+`notes/ci.md`, "Deploy decision"): the run's `decide` job summary gives the decision and its
+reason. A skipped merge has nothing new live to verify. A manual dispatch or "Re-run all
+jobs" always deploys; "Re-run failed jobs" keeps `decide`'s earlier answer.
 The deployed suite remains available for manual dispatch with Neon or PlanetScale.
 
 Blacksmith Linux runners run every check job. Local and self-host E2E jobs use

@@ -106,6 +106,7 @@
     "e2e:apps-bumped": "vitest run --config e2e/apps-bumped.config.ts",
     "e2e:apps-published": "vitest run --config e2e/apps-published.config.ts",
     "e2e:ci-selection": "vitest run --config e2e/ci-selection.config.ts",
+    "e2e:deploy-decision": "vitest run --config e2e/deploy-decision.config.ts",
     "e2e:ci-supersede": "vitest run --config e2e/ci-supersede.config.ts",
     "e2e:telemetry-event-lifetime": "vitest run --config e2e/telemetry-event-lifetime.config.ts",
     "e2e:process-identity": "vitest run --config e2e/process-identity.config.ts",

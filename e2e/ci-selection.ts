@@ -693,6 +693,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "telemetry-event-lifetime.config.ts": () => import("./telemetry-event-lifetime.config.ts"),
   "cli-startup-imports.config.ts": () => import("./cli-startup-imports.config.ts"),
   "cloud-deploy-origin.config.ts": () => import("./cloud-deploy-origin.config.ts"),
+  "deploy-decision.config.ts": () => import("./deploy-decision.config.ts"),
   "dashboard-file-names.config.ts": () => import("./dashboard-file-names.config.ts"),
   "effect-mcp.config.ts": () => import("./effect-mcp.config.ts"),
   "desktop-next-server.config.ts": () => import("./desktop-next-server.config.ts"),
