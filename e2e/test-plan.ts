@@ -9310,6 +9310,12 @@ export const scenarios = plan({
     title: "Cloud onboarding with GitHub retains edited team details through a failed confirmation",
     targets: cloudOnboarding,
   },
+  onboardingGuideRevisit: {
+    file: "cloud-onboarding.spec.ts",
+    title:
+      "Cloud onboarding's Claude guide on a phone keeps its screen and connection check through reloads, history and links",
+    targets: cloudOnboarding,
+  },
   onboardingEmail: {
     file: "cloud-onboarding.spec.ts",
     title:

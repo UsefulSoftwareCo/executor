@@ -136,7 +136,12 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
           ),
         );
         yield* interact();
-        yield* recordedAfter(0);
+        // The stylesheet's recording is the first delivery; the checks after it read it.
+        yield* browser.use("Wait for the embedded stylesheet recording", () =>
+          expect
+            .poll(() => JSON.stringify(snapshots()), { timeout: 30000 })
+            .toContain("--replay-stylesheet-probe"),
+        );
         expect(capture.requests.filter((path) => path.includes("recorder"))).toEqual([]);
         // No browser file names the build; the page reads its release from the document.
         // Replay snapshots carry no event properties; every other browser event does.
@@ -146,11 +151,6 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
         expect(browserEvents.map((event) => event.event)).toContain("$identify");
         expect(browserEvents.map((event) => event.properties.release)).toEqual(
           browserEvents.map(() => target.metadata.commit),
-        );
-        yield* browser.use("Wait for the embedded stylesheet recording", () =>
-          expect
-            .poll(() => JSON.stringify(snapshots()), { timeout: 30000 })
-            .toContain("--replay-stylesheet-probe"),
         );
         const initialReplay = [...snapshots()];
         const liveLayout = yield* browser.use("Read live dashboard layout", (page) =>
@@ -165,7 +165,6 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
         expect(liveLayout.display).toBe("grid");
         expect(liveLayout.linkedStyle).toBe("linked");
         yield* browser.checkpoint("live-dashboard");
-        const first = snapshots().length;
         yield* browser.use("Insert ordinary content and synthetic secrets", (page) =>
           page.evaluate(() => {
             const region = document.createElement("section");
@@ -176,8 +175,7 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
             console.log("PRIVATE_CONSOLE");
           }),
         );
-        yield* interact();
-        yield* recordedAfter(first);
+        // One delivery after the insertion and the edits carries both.
         yield* browser.use("Update ordinary and secret fields, then reveal a token", (page) =>
           page
             .getByLabel("Replay password")
@@ -230,7 +228,6 @@ export default defineApp({}, async () => ({ tools: router({
             .then(() => page.getByRole("region", { name: "Tool result" }).innerText())
             .then((result) => expect(result).toContain("PRIVATE_TOOL_RESULT")),
         );
-        yield* recordedAfter(snapshots().length);
         yield* browser.checkpoint("tool-result-live");
         const toolError = yield* browser.use("Run a failing tool", (page) =>
           page
@@ -239,6 +236,8 @@ export default defineApp({}, async () => ({ tools: router({
             .then(() => page.getByRole("button", { name: "Run tool", exact: true }).click())
             .then(() => page.getByRole("alert").innerText()),
         );
+        // A delivery made after the failing run carries it, and whatever the passing run left
+        // buffered, before the page is left.
         yield* recordedAfter(snapshots().length);
         yield* browser.checkpoint("tool-error-live");
         yield* open(`/account/tokens?organization=${actors.organization.slug}`);
@@ -399,16 +398,8 @@ export default defineApp({}, async () => ({ tools: router({
             expect(opened).toBe(path);
           });
 
-        yield* onboarding.emailSignIn(yield* onboarding.freshEmail);
-        yield* browser.use("Decline passkey enrollment when it is offered", (page) => {
-          const decline = page.getByRole("button", { name: "Not now", exact: true });
-          return decline
-            .or(page.getByLabel("Team name", { exact: true }))
-            .first()
-            .waitFor()
-            .then(() => decline.count())
-            .then((offered) => (offered > 0 ? decline.click() : undefined));
-        });
+        // Sign-in is walked by the sign-in scenarios; this one records what follows it.
+        yield* onboarding.signInByApi;
         yield* browser.use("Team creation is open", (page) =>
           page
             .getByLabel("Team name", { exact: true })
@@ -456,7 +447,6 @@ export default defineApp({}, async () => ({ tools: router({
             document.body.append(region);
           }),
         );
-        yield* recordedAfter(accounts);
         yield* browser.use("Wait for the inserted setup content", () =>
           expect.poll(() => recorded(accounts), { timeout: 30000 }).toContain("VISIBLE_SETUP_TEXT"),
         );
