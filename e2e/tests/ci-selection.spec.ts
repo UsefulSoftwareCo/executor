@@ -1556,6 +1556,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         [["playground/demo-apps/live-inbox/package.json"], ["true", ""]],
         [[".github/actions/e2e-tools/action.yml"], ["true", "true"]],
         [["apps/hosted/self-host/Dockerfile"], ["true", ""]],
+        // The scripts the image lane's steps run to pull its bases and build it; the local lane
+        // reads every release script.
+        [["scripts/releases/pull-image-bases.sh"], ["true", "true"]],
+        [["scripts/releases/background.sh"], ["true", "true"]],
         // The image's server, which the fixtures' scenario server also runs on.
         [["apps/hosted/server/src/index.ts"], ["true", "true"]],
         [["apps/hosted/testing/src/scenario-server.ts"], ["true", "true"]],
