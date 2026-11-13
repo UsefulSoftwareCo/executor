@@ -342,6 +342,26 @@ const gate = (
 /** This suite's own config, rewritten only in a fixture tree. */
 const ownConfig = "e2e/ci-selection.config.ts";
 
+/** Files `fileGuards` in e2e/ci-selection.ts watches; main lists each in its directory. */
+const guardedFiles = [
+  "packages/sdk/src/implementation/app-protocols.ts",
+  "packages/sdk/src/implementation/webhook-sources.ts",
+  "apps/hosted/server/src/implementation/app-accounts.ts",
+  "apps/hosted/server/src/implementation/app-account-schema.ts",
+];
+/**
+ * Main's listings of the guarded files' directories, with each file's blob ID in this checkout
+ * unless `changed` gives another.
+ */
+const guardedListings = (blobs: ReadonlyArray<string>, changed: Record<string, string> = {}) => {
+  const listings: Record<string, string> = {};
+  guardedFiles.forEach((file, index) => {
+    const directory = file.slice(0, file.lastIndexOf("/"));
+    listings[directory] = `${listings[directory] ?? ""}${changed[file] ?? blobs[index]} ${file}\n`;
+  });
+  return listings;
+};
+
 layer(NodeServices.layer)("CI E2E selection", (it) => {
   it.effect("a push to main runs every job's full pattern", () =>
     Effect.gen(function* () {
@@ -781,17 +801,18 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-        const protocols = "packages/sdk/src/implementation/app-protocols.ts";
         const names = yield* fs.readDirectory("patches");
-        const [current = "", ...blobs] = (yield* processes.string(
+        const hashed = (yield* processes.string(
           ChildProcess.make("git", [
             "hash-object",
-            protocols,
+            ...guardedFiles,
             ...names.map((name) => `patches/${name}`),
           ]),
         ))
           .trim()
           .split("\n");
+        const guarded = hashed.slice(0, guardedFiles.length),
+          blobs = hashed.slice(guardedFiles.length);
         // Main as this checkout, except for the blob ID it lists for effect's patch.
         const patches = names
           .map(
@@ -804,7 +825,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           main: {
             "package.json": yield* fs.readFileString("package.json"),
             patches,
-            "packages/sdk/src/implementation": `${current} ${protocols}\n`,
+            ...guardedListings(guarded),
           },
         });
         expect(run.exitCode, run.log).toBe(0);
@@ -825,30 +846,49 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         const protocols = "packages/sdk/src/implementation/app-protocols.ts";
         const names = yield* fs.readDirectory("patches");
         // Git's own blob IDs for the working tree, as the contents API lists main's.
-        const [current = "", ...patchBlobs] = (yield* processes.string(
+        const hashed = (yield* processes.string(
           ChildProcess.make("git", [
             "hash-object",
-            protocols,
+            ...guardedFiles,
             ...names.map((name) => `patches/${name}`),
           ]),
         ))
           .trim()
           .split("\n");
+        const guarded = hashed.slice(0, guardedFiles.length),
+          patchBlobs = hashed.slice(guardedFiles.length),
+          current = guarded[0] ?? "";
         const patches = names.map((name, index) => `${patchBlobs[index]} ${name}`);
         const manifest = yield* fs.readFileString("package.json");
         // Main as this checkout, except for the blob ID it lists for the host's protocols.
         const main = (protocolsBlob: string) => ({
           "package.json": manifest,
           patches: patches.join("\n"),
-          "packages/sdk/src/implementation": `${protocolsBlob} ${protocols}\n`,
+          ...guardedListings(guarded, { [protocols]: protocolsBlob }),
         });
-        const [same, changed] = yield* Effect.all(
+        const [same, changed, saves] = yield* Effect.all(
           [
             select({ body: block("none"), main: main(current) }),
             select({ body: block("none"), main: main("0".repeat(40)) }),
+            // A change to how a save links its account plans the save beside 100,000 accounts.
+            select({
+              body: block("none"),
+              main: {
+                "package.json": manifest,
+                patches: patches.join("\n"),
+                ...guardedListings(guarded, {
+                  "apps/hosted/server/src/implementation/app-accounts.ts": "0".repeat(40),
+                }),
+              },
+            }),
           ],
           { concurrency: "unbounded" },
         );
+        expect(saves.exitCode, saves.log).toBe(0);
+        expect(saves.summary).toContain(
+          "A guarded file differs from main, so its guards run: webhook-source-lookup.spec.ts",
+        );
+        expect(saves.outputs["cloud-locks"]).toContain("saving an account beside 100,000");
         expect(same.exitCode, same.log).toBe(0);
         expect(same.summary).toContain("No E2E scenarios");
         expect(same.summary).not.toContain("guards run");

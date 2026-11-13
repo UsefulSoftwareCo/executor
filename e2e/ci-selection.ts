@@ -174,13 +174,14 @@ const jobs = {
   },
   // These hold row locks in the shared Cloud database, which would stall other scenarios' SQL.
   // The app link role check holds an uncommitted demotion on a member row, and the account check
-  // scenario an uncommitted check row.
+  // scenario an uncommitted check row. The webhook source lookup seeds 100,000 rows and analyzes
+  // their tables, which would change other scenarios' query plans while it runs.
   "cloud-locks": {
     target: "cloud",
     runner: 4,
 
     pattern:
-      "A Better Auth query|an app link that waits for the admin.s membership while a demotion commits|two first checks of an account that write its check row",
+      "A Better Auth query|an app link that waits for the admin.s membership while a demotion commits|two first checks of an account that write its check row|saving an account beside 100,000 webhook sources",
   },
   // Removal recovery needs the Cloud's one recovery alarm and its removal job to itself: the job
   // starts every pending removal on the Cloud, and the scenario locks the start records' table to
@@ -615,6 +616,11 @@ const fileGuards: Readonly<Record<string, ReadonlyArray<string>>> = {
     "app-package.spec.ts",
     "app-older-protocols.spec.ts",
   ],
+  // A save's statements on the tables that grow with an app's accounts. The scenario plans them
+  // beside 100,000 accounts on managed local Cloud, which only runs it when it is selected.
+  "apps/hosted/server/src/implementation/app-accounts.ts": ["webhook-source-lookup.spec.ts"],
+  "apps/hosted/server/src/implementation/app-account-schema.ts": ["webhook-source-lookup.spec.ts"],
+  "packages/sdk/src/implementation/webhook-sources.ts": ["webhook-source-lookup.spec.ts"],
 };
 
 /**

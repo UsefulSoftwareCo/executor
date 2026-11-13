@@ -8237,7 +8237,9 @@ export const scenarios = plan({
       "self-host": na(
         "The query plans are read from Cloud's Postgres; self-host's PGlite runs inside its server.",
       ),
-      cloud: scheduled,
+      // It seeds and plans through cloudLocks, which reaches only managed local Cloud's database:
+      // a deployed stage gives the suite no connection to its own.
+      cloud: managedCloud,
     },
   },
   accountLinking: {
