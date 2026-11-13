@@ -338,7 +338,7 @@ export const serveAppRunner = (
 export const runnerResult = <E>(effect: Effect.Effect<string, E>, hostApi?: string) =>
   effect.pipe(
     // A rejected RPC carries the platform's text, such as a size or memory limit, only here.
-    Effect.catch(failedFrom(false)),
+    Effect.catch(failedFrom(false, "runner")),
     Effect.flatMap((reply) =>
       Schema.decodeUnknownEffect(RemoteResult)(reply).pipe(
         Effect.catch(() => Effect.fail(new RuntimeProtocolFailed({ reason: "invalid-reply" }))),

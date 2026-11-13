@@ -1757,6 +1757,18 @@ export const scenarios = plan({
       local: na("Local has no organization member roles."),
     },
   },
+  localAppRuntimeRestart: {
+    file: "local-app-runtime-restart.spec.ts",
+    title:
+      "local logs a restarted app runtime and reports lost calls and builds as lost connections",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Self-host composes the same workerd app runtime; the local product covers it.",
+      ),
+      cloud: na("Cloudflare runs Cloud's app Workers; there is no workerd process to restart."),
+    },
+  },
   localWorkflowEngineMemory: {
     file: "local-workflow-engine-memory.spec.ts",
     title: "local releases finished workflow runs' engines from memory",

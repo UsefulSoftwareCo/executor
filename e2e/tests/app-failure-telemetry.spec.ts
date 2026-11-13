@@ -32,7 +32,8 @@ const thrownMessage = (marker: string) =>
  * The app throws its own error class, named for the marker, with the marker as its code, a field,
  * its message and an eval frame in its stack, from a function named for the marker. Outside its
  * error handling, the RPC bridge reads each reply through `Response.prototype.json` and the
- * framework answers through `Response.json`: one reply then rejects the call with the app's text,
+ * framework answers through `Response.json`: one reply then rejects the call with the app's text
+ * in an error the app named,
  * one fails decoding, one names an MCP failure whose status is the numeric marker, and one fails
  * after the tool returned, in the framework's request handler. After one successful call, the
  * runtime's cancel of the finished call throws the app's text from `AbortController#abort`.
@@ -54,7 +55,7 @@ const json = Response.prototype.json;
 Response.prototype.json = async function () {
   const value = await json.call(this);
   const text = JSON.stringify(value);
-  if (text.includes("reply-" + "rejected")) throw new Error(marker);
+  if (text.includes("reply-" + "rejected")) throw Object.assign(new Error(marker), { name: marker });
   if (text.includes("reply-" + "malformed"))
     return { ok: false, error: { _tag: "HostOperationFailed", source: marker, errorName: marker, message: marker } };
   if (text.includes("reply-" + "mcp"))
@@ -690,7 +691,16 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             expect(Object.keys(attributes).filter((key) => !resource.includes(key))).toEqual([]);
 
         if (cloud) {
-          // Cloud's runner records the kind of each failed call, not its text.
+          // Cloud's runner records the kind of each failed call, not its text. A cause it does
+          // not recognize is recorded by its shape: the app's Worker rejected the call with an
+          // error whose message is as long as the marker, and its name only when it is a standard
+          // one. The release's error is a plain Error; the rejected call's is named by the app.
+          const unrecognizedShape = (name: string) => ({
+            "executor.runtime.cause.call": "app",
+            "executor.runtime.cause.kind": "error",
+            "executor.runtime.cause.name": name,
+            "executor.runtime.cause.message_length": String(marker.length),
+          });
           const classified = (spans: typeof rejected.spans) =>
             spans.find(({ span }) => span.tags["executor.runtime.failure"] !== undefined)?.span
               .tags;
@@ -698,6 +708,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             "executor.runtime.failure": "unrecognized",
             "executor.runtime.cause":
               "The app's Worker failed for a reason the runtime did not recognize",
+            ...unrecognizedShape("other"),
           });
           expect(classified(malformed.spans)).toMatchObject({
             "executor.runtime.failure": "invalid-reply",
@@ -710,6 +721,7 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
             "executor.runtime.failure": "unrecognized",
             "executor.runtime.cause":
               "The app's Worker failed for a reason the runtime did not recognize",
+            ...unrecognizedShape("Error"),
           });
           const releaseFailure = release?.events.find(({ name }) => name === "exception");
           expect(

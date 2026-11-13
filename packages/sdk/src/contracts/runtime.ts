@@ -248,7 +248,8 @@ export const boundBuildMessage = (message: string) =>
     : `${message.slice(0, maxBuildMessageLength - 1)}…`;
 /**
  * Describe an underlying failure as `Name: message`, bounded. Executor's own wrappers of an
- * underlying failure contribute only their message.
+ * underlying failure contribute only their message; a runtime failure without one, its kind's
+ * fixed description.
  */
 export const describeBuildCause = (cause: unknown) =>
   boundBuildMessage(
@@ -257,7 +258,9 @@ export const describeBuildCause = (cause: unknown) =>
         ? Schema.is(RuntimeProtocolFailed)(cause) || Schema.is(HostDeclarationInvalid)(cause)
           ? cause.message
           : `${cause.name}: ${cause.message}`
-        : cause.name
+        : Schema.is(RuntimeProtocolFailed)(cause) && cause.reason !== undefined
+          ? runtimeFailures[cause.reason]
+          : cause.name
       : typeof cause === "string"
         ? cause
         : (JSON.stringify(cause) ?? String(cause)),

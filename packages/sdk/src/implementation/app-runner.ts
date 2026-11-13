@@ -223,6 +223,8 @@ const platformFailures: ReadonlyArray<readonly [RegExp, RuntimeFailure]> = [
  * failure names paths in the app's output, so a cause's text is matched here and goes no further.
  */
 export const classify = (cause: unknown): RuntimeFailure => {
+  // The host's transport names a failure it saw itself, such as a broken session.
+  if (Schema.is(RuntimeProtocolFailed)(cause) && cause.reason !== undefined) return cause.reason;
   if (Schema.isSchemaError(cause)) return "invalid-reply";
   if (failedColdStart(cause)) return "cold-start";
   const text = describeBuildCause(cause);
@@ -231,13 +233,66 @@ export const classify = (cause: unknown): RuntimeFailure => {
   return platformFailures.find(([pattern]) => pattern.test(text))?.[1] ?? "unrecognized";
 };
 /**
- * Fail a call with its kind, the only part telemetry records. `explain` keeps the cause in the
- * app's own terms for a deploy's declaration step, whose caller is the app's deployer.
+ * Where a rejected call was going: the trusted runner, which runs no app code, so its rejection is
+ * the host's or the platform's; or the app's own Worker or data facet, whose rejection can be the
+ * platform's or anything the app's code threw. A broken session is classified before it gets here.
  */
-const failed = (reason: RuntimeFailure, cause?: unknown, explain = false) =>
+export type RejectedCall = "runner" | "app";
+/** Error names the platform and the language define. Any other name can be the app's own text. */
+const standardErrorNames: ReadonlySet<string> = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "EvalError",
+  "URIError",
+  "AggregateError",
+  "AbortError",
+  "TimeoutError",
+  "DataCloneError",
+  "InvalidStateError",
+  "NetworkError",
+]);
+/**
+ * The shape of a cause no pattern matched, so an unrecognized failure can still be told apart:
+ * what kind of value it is, its name when that is a standard one, and its message's length. None
+ * of its characters are kept, whoever produced them.
+ */
+const causeShape = (cause: unknown, rejected: RejectedCall) => {
+  const message =
+    cause instanceof Error ? cause.message : typeof cause === "string" ? cause : undefined;
+  return {
+    "executor.runtime.cause.call": rejected,
+    "executor.runtime.cause.kind":
+      cause instanceof Error
+        ? "error"
+        : cause === null || cause === undefined
+          ? "empty"
+          : typeof cause === "string" || typeof cause === "object"
+            ? typeof cause
+            : "other",
+    ...(cause instanceof Error
+      ? { "executor.runtime.cause.name": standardErrorNames.has(cause.name) ? cause.name : "other" }
+      : {}),
+    ...(message === undefined ? {} : { "executor.runtime.cause.message_length": message.length }),
+  };
+};
+/**
+ * Fail a call with its kind, the only part telemetry records, and for an unrecognized cause its
+ * shape. `explain` keeps the cause in the app's own terms for a deploy's declaration step, whose
+ * caller is the app's deployer.
+ */
+const failed = (
+  reason: RuntimeFailure,
+  cause?: unknown,
+  explain = false,
+  rejected?: RejectedCall,
+) =>
   Effect.annotateCurrentSpan({
     "executor.runtime.failure": reason,
     "executor.runtime.cause": runtimeFailures[reason],
+    ...(reason === "unrecognized" && rejected !== undefined ? causeShape(cause, rejected) : {}),
   }).pipe(
     Effect.andThen(
       Effect.fail(
@@ -248,8 +303,10 @@ const failed = (reason: RuntimeFailure, cause?: unknown, explain = false) =>
       ),
     ),
   );
-export const failedFrom = (explain: boolean) => (cause: unknown) =>
-  failed(classify(cause), cause, explain);
+export const failedFrom =
+  (explain: boolean, rejected: RejectedCall = "app") =>
+  (cause: unknown) =>
+    failed(classify(cause), cause, explain, rejected);
 /** Reading a build is the host's own work; its failure is Executor's text and recorded as it is. */
 const failedBuild = (cause: unknown) =>
   Effect.annotateCurrentSpan({

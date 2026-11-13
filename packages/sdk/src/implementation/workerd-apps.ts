@@ -48,7 +48,7 @@ import type { Executor } from "../contracts/executor.ts";
 import type { DurableDeclarations } from "../contracts/declarations.ts";
 import { runtimeAdapter } from "./runtime.ts";
 
-import { connectedWorkerdApps, workerdHostHandler } from "./workerd-client.ts";
+import { connectedWorkerdApps, TransportClosed, workerdHostHandler } from "./workerd-client.ts";
 import { workerdHostModules } from "./workerd-bundle.ts";
 import { appWorkerIdleSeconds, appWorkerLimit } from "./app-worker-residency.ts";
 
@@ -213,6 +213,26 @@ export const workerdApps = (options: {
       ),
     );
     const engine = yield* LocalRuntime.pipe(Effect.provideContext(runtimeContext));
+    // A workerd that exits on its own, such as when V8 runs out of heap, is replaced on the same
+    // ports, and every RPC session into it breaks. Record each replacement so a failed call can be
+    // matched to one. Only the exit's code and signal are kept: its stderr can quote app output.
+    const services = yield* Effect.context<never>();
+    let restarts = 0;
+    const restarted = (exit: {
+      readonly exitCode: number | null;
+      readonly signal: string | null;
+    }) => {
+      restarts += 1;
+      Effect.runForkWith(services)(
+        Effect.logWarning("App runtime restarted").pipe(
+          Effect.annotateLogs({
+            restarts,
+            ...(exit.exitCode === null ? {} : { exitCode: exit.exitCode }),
+            ...(exit.signal === null ? {} : { signal: exit.signal }),
+          }),
+        ),
+      );
+    };
     const secret = crypto.randomUUID();
     const privateAppFetch = options.allowPrivateAppFetch === true;
     const origin = yield* engine
@@ -253,6 +273,7 @@ export const workerdApps = (options: {
         ],
         // Raw authored console output is not a host log. Apps return bounded telemetry through their protocol.
         logging: { onOutput: () => {} },
+        onRestart: restarted,
       })
       .pipe(Effect.provideContext(runtimeContext));
     const headers = { authorization: `Bearer ${secret}` };
@@ -277,14 +298,23 @@ export const workerdApps = (options: {
           );
           const peer = yield* Effect.acquireRelease(
             Effect.sync(() => {
+              const socket = connect("/rpc");
+              // Registered before Cap'n Web's own listeners, so the session knows its socket
+              // closed by the time it breaks; see `TransportClosed`.
+              let closed = false;
+              const close = () => {
+                closed = true;
+              };
+              socket.on("close", close);
+              socket.on("error", close);
               // SAFETY: ws implements the WebSocket methods used by Cap'n Web's transport;
               // its Node-specific constructor only supplies the private authorization header.
               const peer = newWebSocketRpcSession<WorkerdAppApi>(
-                connect("/rpc") as unknown as WebSocket,
+                socket as unknown as WebSocket,
                 undefined,
                 { onSendError: () => new Error("App host callback failed") },
               );
-              peer.onRpcBroken(() => lifetime.abort());
+              peer.onRpcBroken(() => lifetime.abort(closed ? TransportClosed : undefined));
               return peer;
             }),
             (peer) =>
