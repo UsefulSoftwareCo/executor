@@ -9,7 +9,7 @@ import { Evidence } from "../support/evidence.ts";
 import { startManagedServer } from "../support/managed-server.ts";
 import { Target } from "../support/platform.ts";
 import { freePort } from "../support/ports.ts";
-import { serverControl } from "../support/server-control.ts";
+import { serverControl, stopProductTimed } from "../support/server-control.ts";
 
 const App = Schema.Struct({ id: Schema.String, name: Schema.String });
 const source = `import { defineApp, object, query, router } from "apps";
@@ -40,11 +40,15 @@ layer(TestLive, { excludeTestServices: true })("Local shutdown", (it) => {
         );
         expect(deployed.status).toBe(200);
         const { app } = yield* body(Schema.Struct({ app: App }), deployed);
-        // The runner stops the product by signalling its whole process group, as a terminal's
-        // Ctrl+C and the desktop's quit do. The telemetry collector is in that group too.
-        const [elapsed] = yield* Effect.timed(serverControl("stop"));
-        yield* evidence.json("shutdown.json", { milliseconds: Duration.toMillis(elapsed) });
-        expect(Duration.toMillis(elapsed)).toBeLessThan(1_500);
+        // The runner asks the product alone to stop, as a terminal's Ctrl+C and the desktop's quit
+        // do; the product stops the telemetry collector it started. The time runs until the product
+        // writes its exit line, after its final telemetry flush: a flush that waited out its
+        // export budget on a collector already gone took over 3 seconds. It excludes the coverage
+        // the suite collects as the product exits, which no user waits for.
+        const milliseconds = yield* stopProductTimed;
+        yield* evidence.json("shutdown.json", { milliseconds });
+        yield* evidence.measure("Product stop", milliseconds);
+        expect(milliseconds).toBeLessThan(1_500);
         yield* serverControl("start");
         yield* Effect.addFinalizer(() =>
           session.send("DELETE", `/v1/apps/${app.id}`, undefined, headers).pipe(Effect.orDie),
@@ -88,6 +92,10 @@ layer(TestLive, { excludeTestServices: true })("Local shutdown", (it) => {
         expect((yield* api.request(yield* api.session(), "GET", "/auth/session")).status).toBe(200);
         const [elapsed] = yield* Effect.timed(Scope.close(product, Exit.void));
         const exports = yield* collector.exports;
+        yield* evidence.measure(
+          "Product stop with a slow metrics collector",
+          Duration.toMillis(elapsed),
+        );
         yield* evidence.json("remote-metrics.json", {
           milliseconds: Duration.toMillis(elapsed),
           exports: exports.map(({ path, outcome }) => ({ path, outcome })),

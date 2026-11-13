@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import { randomBytes } from "node:crypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import {
+  Clock,
   Config,
   Deferred,
   Effect,
@@ -162,6 +163,11 @@ export const startManagedServer = (
     let current: Scope.Closeable | undefined;
     /** The running product process, for an abrupt kill that runs none of its shutdown. */
     let running: ChildProcessSpawner.ChildProcessHandle | undefined;
+    /**
+     * Completes when the running generation writes its exit line ("Local server exited"), the last
+     * thing it does before its process ends. Its coverage profile is written after that line.
+     */
+    let exitLine: Deferred.Deferred<void> | undefined;
     /** Writes the running generation's workerd coverage; see `workerd-coverage.ts`. */
     let saveWorkerdCoverage: Effect.Effect<void> = Effect.void;
     const env = {
@@ -207,11 +213,36 @@ export const startManagedServer = (
     // budget retrying. On Windows the scope's tree kill awaits only the product, so a collector still
     // terminating held the data directory open when the scenario removed it. Releasing the process
     // scope afterwards ends anything it left behind.
+    /**
+     * Stop the running product and say how long it took, in milliseconds: from the request until
+     * the product wrote its exit line or ended, whichever came first. The time excludes what only
+     * the suite does after that: the product's coverage profile, written as its process exits, and
+     * its workerd's coverage, saved here once it has stopped.
+     */
     const shutdown = Effect.suspend(() => {
       const child = running;
-      if (child === undefined) return Effect.void;
-      // workerd's function logs are complete once it has stopped with the product.
-      return stopProduct(child).pipe(Effect.andThen(saveWorkerdCoverage));
+      if (child === undefined) return Effect.succeed(undefined);
+      const exited = exitLine;
+      return Effect.gen(function* () {
+        const started = yield* Clock.currentTimeMillis;
+        const [stopped] = yield* Effect.all(
+          [
+            Effect.raceFirst(
+              child.exitCode.pipe(Effect.ignore),
+              exited === undefined ? Effect.never : Deferred.await(exited),
+            ).pipe(
+              Effect.andThen(Clock.currentTimeMillis),
+              Effect.map((now) => now - started),
+              Effect.timeoutOption("15 seconds"),
+            ),
+            stopProduct(child),
+          ],
+          { concurrency: "unbounded" },
+        );
+        // workerd's function logs are complete once it has stopped with the product.
+        yield* saveWorkerdCoverage;
+        return Option.getOrUndefined(stopped);
+      });
     });
     const stopProduct = (child: ChildProcessSpawner.ChildProcessHandle) => {
       // The request goes through a pipe only the product holds (see stop-request.mjs), not to its
@@ -232,18 +263,19 @@ export const startManagedServer = (
         Effect.ignore,
       );
     };
-    const stop = Effect.suspend(() =>
-      current === undefined
-        ? Effect.void
+    const stop = Effect.suspend(() => {
+      const closing = current;
+      return closing === undefined
+        ? Effect.succeed(undefined)
         : shutdown.pipe(
-            Effect.andThen(Scope.close(current, Exit.succeed(undefined))),
+            Effect.tap(() => Scope.close(closing, Exit.succeed(undefined))),
             Effect.tap(() =>
               Effect.sync(() => {
                 current = undefined;
               }),
             ),
-          ),
-    );
+          );
+    });
     yield* Effect.addFinalizer(() => stop);
     const start = Effect.gen(function* () {
       if (current !== undefined) return;
@@ -340,6 +372,8 @@ export const startManagedServer = (
           );
         }
         const ready = yield* Deferred.make<void>();
+        const exited = yield* Deferred.make<void>();
+        exitLine = exited;
         // This generation's last lines, quoted when it exits before readiness: the job log keeps
         // them when a rerun has replaced the failed attempt's evidence artifact.
         const lastLines: Array<string> = [];
@@ -348,6 +382,9 @@ export const startManagedServer = (
           Stream.splitLines,
           Stream.runForEach((line) =>
             Effect.gen(function* () {
+              // Before the line's write to disk, so a stop is timed by the product alone.
+              if (line.includes('"message":"Local server exited"'))
+                yield* Deferred.succeed(exited, undefined);
               const redacted = line.replace(/#pair=[a-f0-9]{64}/g, "#pair=<redacted>");
               lastLines.push(redacted);
               if (lastLines.length > startupLinesQuoted) lastLines.shift();
@@ -425,18 +462,24 @@ export const startManagedServer = (
         const request = yield* HttpServerRequest.HttpServerRequest;
         if (request.headers.authorization !== `Bearer ${reveal(target.apiKey)}`)
           return HttpServerResponse.empty({ status: 401 });
-        yield* gate.withPermits(1)(
+        const stopped = yield* gate.withPermits(1)(
           Effect.gen(function* () {
             // A kill models a crash or out-of-memory stop: the whole process group ends at once.
             if (action === "kill" && running !== undefined) {
               yield* running.kill({ killSignal: "SIGKILL" });
               yield* saveWorkerdCoverage;
             }
-            if (action !== "start") yield* stop;
+            const stopped = action === "start" ? undefined : yield* stop;
             if (action === "start" || action === "restart") yield* start;
+            return stopped;
           }),
         );
-        return HttpServerResponse.jsonUnsafe({ ok: true });
+        // How long the product took to stop, when it was running and the action stopped it.
+        return HttpServerResponse.jsonUnsafe(
+          action === "stop" && stopped !== undefined
+            ? { ok: true, stoppedMs: stopped }
+            : { ok: true },
+        );
       }).pipe(Effect.catch(() => Effect.succeed(HttpServerResponse.empty({ status: 500 }))));
     const routes = Layer.mergeAll(
       HttpRouter.add(

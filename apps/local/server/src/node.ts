@@ -5,6 +5,7 @@
  * data directory's lifetime lock, and only then opens storage and composes the product. Every
  * other request answers 503 until the product is ready, and again once it starts closing.
  */
+import { writeSync } from "node:fs";
 import { createServer } from "node:http";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -57,6 +58,26 @@ const unavailable = () =>
   HttpServerResponse.empty({ status: 503, headers: { ...noStore, "retry-after": "1" } });
 const forbidden = () => Effect.succeed(HttpServerResponse.empty({ status: 403 }));
 const at = (url: string, path: string) => url === path || url.startsWith(`${path}?`);
+
+/**
+ * Write the server's last line as its process exits: how long its close took, from the moment it
+ * started to close. "Local server stopped" is logged before the final telemetry flush, the step a
+ * collector that is already gone can hold, and the diagnostics log has closed by the exit, so a
+ * terminal or a supervisor reading stderr learns the whole stop's length only from this line.
+ */
+const reportExit = (began: number) => {
+  const line = JSON.stringify({
+    message: "Local server exited",
+    level: "INFO",
+    timestamp: new Date().toISOString(),
+    annotations: { "executor.shutdown_ms": Math.round(performance.now() - began) },
+  });
+  try {
+    writeSync(2, `${line}\n`);
+  } catch {
+    // No reader, or stderr is closed: the server has stopped either way.
+  }
+};
 
 /**
  * Listen on 127.0.0.1:`port` for the current scope and serve the service routes at once.
@@ -154,9 +175,14 @@ export const listenLocal = (options: {
         Effect.gen(function* () {
           yield* Ref.set(product, Option.some(handler));
           // Close active connections before the adapter's final shutdown. Requests receive
-          // cancellation through Effect; an idle MCP stream cannot hold the process open.
+          // cancellation through Effect; an idle MCP stream cannot hold the process open. The
+          // close starts here, and the process's exit reports how long it took (`reportExit`).
           yield* Effect.addFinalizer(() =>
-            Ref.set(closing, true).pipe(
+            Effect.sync(() => {
+              const began = performance.now();
+              process.once("exit", () => reportExit(began));
+            }).pipe(
+              Effect.andThen(Ref.set(closing, true)),
               Effect.andThen(Ref.set(product, Option.none())),
               Effect.andThen(Effect.sync(() => socket.closeAllConnections())),
             ),
