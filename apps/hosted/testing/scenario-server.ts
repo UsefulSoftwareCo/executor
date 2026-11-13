@@ -6,6 +6,7 @@ import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import {
+  Clock,
   Config,
   Console,
   Effect,
@@ -76,6 +77,9 @@ const main = Effect.gen(function* () {
   const browserOrigin = yield* Config.NonEmptyString("TEST_FIXTURE_BROWSER_ORIGIN");
   const token = yield* Config.Redacted("TEST_FIXTURE_TOKEN");
   const output = yield* Config.NonEmptyString("TEST_FIXTURE_OUTPUT");
+  // Where to note a removal still running when a clean-up gives up, so the runner that owns the
+  // stage can save its Workflow instance before destroying it (e2e/sdk/removal-evidence.ts).
+  const stalls = yield* Config.NonEmptyString("TEST_FIXTURE_STALLS").pipe(Config.option);
   const configured = yield* Semaphore.make(1);
   let auth: ReturnType<typeof testAccountAuth> | undefined;
   let pool: Pool | undefined;
@@ -285,6 +289,32 @@ const main = Effect.gen(function* () {
         ).rows,
       )[0];
     let cleanupPhase = "start-removal";
+    let organizationId = scenario.organization;
+    /** Note the removal this clean-up stopped waiting for; never fails the clean-up's report. */
+    const noteStall = (organization: string) =>
+      Effect.gen(function* () {
+        if (Option.isNone(stalls)) return;
+        const row = yield* Effect.tryPromise(
+          async () =>
+            (
+              await database.query(
+                "select instance_id, status from hosted_organization_removal where organization_id = $1",
+                [organization],
+              )
+            ).rows[0] as { instance_id?: unknown; status?: unknown } | undefined,
+        );
+        const now = yield* Clock.currentTimeMillis;
+        const line = JSON.stringify({
+          organization,
+          instance: typeof row?.instance_id === "string" ? row.instance_id : null,
+          status: typeof row?.status === "string" ? row.status : null,
+          phase: cleanupPhase,
+          at: new Date(now).toISOString(),
+        });
+        yield* fs.writeFileString(stalls.value, `${line}\n`, { flag: "a", mode: 0o600 });
+        // Bounded well inside the runner's 60 s deadline for /remove, so a slow database cannot
+        // turn the clean-up's 400 into a runner time-out.
+      }).pipe(Effect.timeout("500 millis"), Effect.ignore);
     // Keep the name and message of the last failed step; its request details stay out of the log.
     let cleanupCause: string | undefined;
     const cleanupFailed = (cause: unknown) => {
@@ -293,7 +323,6 @@ const main = Effect.gen(function* () {
     };
     yield* scenario.gate.withPermits(1)(
       Effect.gen(function* () {
-        let organizationId = scenario.organization;
         const cleanup = yield* Effect.tryPromise({
           try: async () => {
             const ctx = await current.$context;
@@ -383,6 +412,11 @@ const main = Effect.gen(function* () {
       }).pipe(
         // Leave time to report the error before the runner's 60-second cleanup deadline.
         Effect.timeout("55 seconds"),
+        Effect.tapError(() =>
+          cleanupPhase === "wait-for-removal" && organizationId !== undefined
+            ? noteStall(organizationId)
+            : Effect.void,
+        ),
         Effect.tapError((error) =>
           Console.error({
             message: "Fixture cleanup did not complete",

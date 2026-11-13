@@ -6,6 +6,7 @@ import { randomBytes } from "node:crypto";
 import { createEmulatorFixture, emulatorRequest } from "../support/emulators.ts";
 
 import { startFixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
+import { captureRemovalStalls } from "./removal-evidence.ts";
 import { heldValue, reveal, secretConfig } from "../support/failure-text.ts";
 
 class DeployedTestFailed extends Schema.TaggedError<DeployedTestFailed>()("DeployedTestFailed", {
@@ -81,6 +82,17 @@ export const startDeployment = ({
         Effect.andThen(fs.writeFileString(path.join(directory, "destroyed.json"), "{}")),
         Effect.timeout("12 minutes"),
         Effect.orDie,
+      ),
+    );
+    // Runs before the destroy above (finalizers run last-registered first), after the fixture
+    // process has stopped: a stalled organization removal's Workflow instance is deleted with
+    // the stage, so its record is read now. It never fails or holds up the teardown.
+    yield* Effect.addFinalizer(() =>
+      captureRemovalStalls(slug, directory).pipe(
+        Effect.timeout("3 minutes"),
+        Effect.catchCause(() =>
+          Console.error("Could not save the stalled organization removals' records."),
+        ),
       ),
     );
     const fixture = yield* createEmulatorFixture(origin);
