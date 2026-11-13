@@ -3,6 +3,7 @@
   "private": true,
   "workspaces": [
     "packages/*",
+    "packages/telemetry/viewer",
     "apps/local/server",
     "apps/local/web",
     "apps/hosted/server",
