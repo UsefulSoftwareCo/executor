@@ -1,11 +1,12 @@
 /** Local product sessions survive host restarts without entering the SDK schema. */
-import { localDatabase } from "./storage.ts";
+import { localDatabase } from "./local-database.ts";
 import { Context, Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { fumadb } from "fumadb-effect";
 import { sqlAdapter } from "fumadb-effect/sql";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
 import { AuthStorageError, StoredBrowserSession, type BrowserSessions } from "../contracts/auth.ts";
+import { StartupFailed } from "../contracts/startup.ts";
 
 const sessionSchema = schema({
   version: "1.1.0",
@@ -73,4 +74,7 @@ export const openBrowserSessions = (directory: string) =>
       revoke: (hash) => query(orm.deleteMany("sessions", { where: (b) => b("hash", "=", hash) })),
     };
     return store;
-  }).pipe(Effect.mapError(() => new AuthStorageError()));
+  }).pipe(
+    // A database that could not be created says why; any other failure is the store's.
+    Effect.mapError((error) => (Schema.is(StartupFailed)(error) ? error : new AuthStorageError())),
+  );

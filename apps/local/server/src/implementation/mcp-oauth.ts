@@ -14,7 +14,7 @@ import {
 } from "@executor-js/mcp-auth";
 import { makeAuthDatabase } from "@executor-js/mcp-auth/node-database";
 import type { ConnectionId, ConnectionPolicy } from "@executor-js/mcp-auth/connections";
-import { localDatabase } from "./storage.ts";
+import { localDatabase } from "./local-database.ts";
 import {
   Effect,
   Layer,
