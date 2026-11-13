@@ -62,5 +62,7 @@ export default defineConfig({
     ...(selected === undefined
       ? {}
       : { testNamePattern: exactly(selected.map((key) => scenarios[key].title)) }),
+    // Prints each desktop close's duration in the job's log.
+    globalSetup: ["e2e/desktop-close-durations.ts"],
   },
 });

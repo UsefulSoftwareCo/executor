@@ -52,6 +52,7 @@ import {
 import { makeResetAction } from "./implementation/reset.ts";
 import { legacyPort, makePortAction, portSource } from "./implementation/settings.ts";
 import { makeExportDiagnosticsAction } from "./implementation/diagnostics.ts";
+import { makeQuitRecord } from "./implementation/quitting.ts";
 import { announceRotation, makeRotateKeyAction, rotateKey } from "./implementation/rotation.ts";
 
 const root = app.isPackaged
@@ -67,6 +68,13 @@ else
       ? resolve(app.getPath("appData"), release.desktop.dataName)
       : resolve(root, ".local/desktop-shell"),
   );
+
+/**
+ * The desktop's record of its quit. Its uncaught exceptions are recorded for the whole life of the
+ * process, also while the desktop's scope closes, after its own logger has stopped.
+ */
+const quitting = makeQuitRecord();
+process.on("uncaughtExceptionMonitor", quitting.exception);
 
 /** Renderer crashes reload the window this many times per window before the app gives up. */
 const rendererReloads = 3;
@@ -193,22 +201,24 @@ const desktop = Effect.gen(function* () {
   const diagnostics = path.join(directory, "diagnostics");
   // Beside the data directory, so a reset or the migration is a same-volume rename.
   const backups = path.join(path.dirname(directory), "backups");
-  const stop = () => {
+  const stop = (reason: string) => {
+    quitting.began(reason);
     Effect.runSync(Deferred.succeed(quit, undefined));
   };
   // From before the data moves: quitting meanwhile ends the app once the move is done.
   const beforeQuit = (event: Electron.Event) => {
     event.preventDefault();
-    stop();
+    stop("before-quit");
   };
+  const onSignal = (signal: NodeJS.Signals) => stop(signal);
   app.on("before-quit", beforeQuit);
-  process.on("SIGTERM", stop);
-  process.on("SIGINT", stop);
+  process.on("SIGTERM", onSignal);
+  process.on("SIGINT", onSignal);
   yield* Effect.addFinalizer(() =>
     Effect.sync(() => {
       app.removeListener("before-quit", beforeQuit);
-      process.removeListener("SIGTERM", stop);
-      process.removeListener("SIGINT", stop);
+      process.removeListener("SIGTERM", onSignal);
+      process.removeListener("SIGINT", onSignal);
     }),
   );
   yield* Effect.tryPromise({
@@ -280,13 +290,21 @@ const desktop = Effect.gen(function* () {
   const log = Result.isSuccess(migration)
     ? Option.some(yield* rotatingJsonLogger(diagnostics, "executor-desktop"))
     : Option.none();
+  if (Option.isSome(log)) quitting.useLog(path.join(diagnostics, "executor-desktop.jsonl"));
+  // Finalizers run in reverse, so each marker runs just before the finalizers of what was set up
+  // before it, and a quit that does not finish says which ones it waits on.
+  const closing = (name: string) =>
+    Effect.addFinalizer(() => Effect.sync(() => quitting.closing(name)));
+  yield* closing("its log and quit listeners");
   const environmentPort = yield* Config.String("EXECUTOR_PORT").pipe(Config.option);
   return yield* Effect.gen(function* () {
     yield* startProcessMetrics("executor-desktop");
+    yield* closing("its process metrics");
     // Menu, window and recovery actions run in the desktop's scope, with its platform services.
     const run = yield* FiberSet.makeRuntime<
       FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
     >();
+    yield* closing("its running menu, window and recovery actions");
     yield* Effect.logInfo("Starting Executor desktop").pipe(Effect.annotateLogs({ directory }));
     if (Result.isFailure(migration))
       yield* Effect.logError("Executor could not move the desktop's data", migration.failure).pipe(
@@ -296,25 +314,19 @@ const desktop = Effect.gen(function* () {
       yield* Effect.logInfo("Moved the desktop's data").pipe(
         Effect.annotateLogs({ ...migration.success, ...moved }),
       );
-    const onException = (error: Error) => {
-      run(Effect.logError("Desktop uncaught exception", Cause.die(error)));
-    };
-    process.on("uncaughtExceptionMonitor", onException);
-    yield* Effect.addFinalizer(() =>
-      Effect.sync(() => process.removeListener("uncaughtExceptionMonitor", onException)),
-    );
     // Installing an update or relaunching runs once every window has closed. Each is the final
     // synchronous step that ends this process; the background server keeps running.
     const afterStop = yield* Ref.make(Option.none<() => void>());
     const after = (step: () => void) => {
       Effect.runSync(Ref.set(afterStop, Option.some(step)));
-      stop();
+      stop("restart");
     };
     const relaunch = () => {
       app.relaunch();
       app.exit(0);
     };
     const failed = (stage: (typeof DesktopFailed.Type)["stage"]) => {
+      quitting.began(`failed at ${stage}`);
       Effect.runSync(Deferred.fail(quit, new DesktopFailed({ stage })));
     };
     // Quitting while the data moved ends the app now, before any server starts.
@@ -518,6 +530,7 @@ const desktop = Effect.gen(function* () {
               staging: path.join(app.getPath("userData"), "runtime"),
             })
           : yield* developmentRuntime(root);
+        yield* closing("its server runtime");
         const connection: Connection | undefined = Result.isFailure(migration)
           ? undefined
           : yield* makeConnection({
@@ -575,6 +588,7 @@ const desktop = Effect.gen(function* () {
                 }),
               onRecovery: showRecovery,
             });
+        yield* closing("its background server connection");
 
         /**
          * The server keeps the callback of an OAuth authorization that returns to this window's
@@ -648,7 +662,7 @@ const desktop = Effect.gen(function* () {
             case "reset":
               return reset === undefined ? undefined : run(reset);
             case "quit":
-              return stop();
+              return stop("recovery page");
           }
         };
 
@@ -686,7 +700,7 @@ const desktop = Effect.gen(function* () {
           current.once("closed", () => {
             if (window === current) window = undefined;
             // Closing the window before the dashboard was ever ready ends the launch.
-            if (!everReady) stop();
+            if (!everReady) stop("window closed before ready");
           });
           current.webContents.on("will-attach-webview", (event) => event.preventDefault());
           const navigate = (event: Electron.Event, url: string) => {
@@ -740,7 +754,7 @@ const desktop = Effect.gen(function* () {
         };
         // Closing the last window quits the app on Windows and Linux; the server keeps running.
         const allClosed = () => {
-          if (process.platform !== "darwin") stop();
+          if (process.platform !== "darwin") stop("last window closed");
         };
         app.on("activate", createWindow);
         app.on("second-instance", createWindow);
@@ -753,8 +767,10 @@ const desktop = Effect.gen(function* () {
             for (const current of BrowserWindow.getAllWindows()) current.destroy();
           }),
         );
+        yield* closing("its windows");
 
         const checkForUpdates = yield* makeUpdater(after);
+        yield* closing("its updater");
         const openBrowser = yield* makeOpenBrowserAction(browserSession, origin);
         const exportDiagnostics = yield* makeExportDiagnosticsAction({
           directory,
@@ -857,6 +873,7 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else
   void Effect.runPromiseExit(Effect.scoped(desktop).pipe(Effect.provide(NodeServices.layer))).then(
     (result) => {
+      quitting.closed(Exit.isFailure(result) ? "failure" : "success");
       if (Exit.isFailure(result)) {
         const error = Cause.findErrorOption(result.cause);
         const stage =

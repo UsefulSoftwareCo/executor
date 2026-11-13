@@ -24,6 +24,7 @@ import {
   ServiceRegistration,
   windowsStartTime,
 } from "./background-service.ts";
+import { captureOutput, closeDesktop, redactLinks } from "./desktop-quit.ts";
 import { driver } from "./platform.ts";
 import { reveal } from "./failure-text.ts";
 
@@ -92,6 +93,9 @@ export const launchDesktop = (options: {
         args: [desktop, "--disable-gpu"],
       };
     }
+    const data = options.env.EXECUTOR_DESKTOP_DATA_DIR;
+    // A quit that does not end the desktop fails the scenario with what it was doing (see
+    // `closeDesktop`), instead of hanging until the test limit.
     const electron = yield* Effect.acquireRelease(
       driver("launch desktop", () =>
         _electron.launch({
@@ -100,13 +104,15 @@ export const launchDesktop = (options: {
           cwd: options.cwd,
           env: { ...options.env },
         }),
-      ),
-      (electron) => driver("close desktop", () => electron.close()).pipe(Effect.orDie),
-    );
+      ).pipe(Effect.map((electron) => ({ electron, output: captureOutput(electron) }))),
+      ({ electron, output }) =>
+        closeDesktop(electron, { ...(data === undefined ? {} : { data }), output }).pipe(
+          Effect.orDie,
+        ),
+    ).pipe(Effect.map(({ electron }) => electron));
     // A failed or timed-out scenario, as one whose dashboard never shows, prints the desktop's
     // own record of its connections, losses and recoveries before the window closes, which shows
     // the step it stopped at, and keeps what its windows show and its logs (see `keepEvidence`).
-    const data = options.env.EXECUTOR_DESKTOP_DATA_DIR;
     if (data !== undefined)
       yield* Effect.addFinalizer((exit) =>
         Exit.isSuccess(exit)
@@ -119,9 +125,6 @@ export const launchDesktop = (options: {
       );
     return electron;
   });
-
-/** Pairing links carry a one-use credential; kept evidence holds only their shape. */
-const redactLinks = (text: string) => text.replace(/#pair=[a-f0-9]{64}/g, "#pair=<redacted>");
 
 /**
  * Keep a failed scenario's evidence, which would go with its directory: a screenshot of each
@@ -182,6 +185,10 @@ const lifecycleMessages = new Set([
   "Moved Executor data to a backup",
   "Executor data reset failed",
   "Desktop stopped",
+  "Desktop quitting",
+  "Desktop still quitting",
+  "Desktop closed",
+  "Desktop uncaught exception",
 ]);
 
 /**
@@ -191,12 +198,14 @@ const lifecycleMessages = new Set([
  */
 const lifecycleLog = (events: ReadonlyArray<DesktopEvent>) => {
   const lifecycle = events.filter((event) => lifecycleMessages.has(event.message));
-  const lines = lifecycle.map(({ annotations: { detail, ...annotations }, ...event }) =>
+  const lines = lifecycle.map(({ annotations: { detail, error, ...annotations }, ...event }) =>
     JSON.stringify({
       ...event,
       annotations: {
         ...annotations,
         ...(detail === undefined ? {} : { detailCharacters: detail.length }),
+        // An uncaught exception's first line names it; its stack stays in the kept logs.
+        ...(error === undefined ? {} : { error: redactLinks(error.split("\n")[0] ?? "") }),
       },
     }),
   );
@@ -239,6 +248,14 @@ const LogLine = Schema.fromJsonString(
       ),
       failure: Schema.optional(Schema.String),
       attempt: Schema.optional(Schema.Number),
+      /** How the desktop quit: why, which finalizers ran, for how long and how it ended. */
+      reason: Schema.optional(Schema.String),
+      closing: Schema.optional(Schema.String),
+      seconds: Schema.optional(Schema.Number),
+      outcome: Schema.optional(Schema.String),
+      resources: Schema.optional(Schema.Array(Schema.String)),
+      /** An uncaught exception the desktop recorded, as it described the thrown value. */
+      error: Schema.optional(Schema.String),
     }),
   }),
 );
