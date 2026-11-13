@@ -1692,7 +1692,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               .sort();
           return {
             publish: values.publish,
+            intel: values.intel,
             local: names("matrix"),
+            localJob: names("local_matrix"),
+            localIntel: names("local_intel_matrix"),
             checks: names("checks_matrix"),
             recovery: names("recovery_matrix"),
             notarized: names("notarized_recovery_matrix"),
@@ -1703,9 +1706,13 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       // The CLI suite runs in two parts and desktop crash recovery in three, each on its own runner.
       const parts = (names: ReadonlyArray<string>, count: number) =>
         names.flatMap((name) => Array.from({ length: count }, () => name));
+      // Intel macOS packages in local-intel, so the jobs that need local do not wait for it.
       expect(yield* targets("check")).toEqual({
         publish: "false",
+        intel: "false",
         local: ["linux-x64"],
+        localJob: ["linux-x64"],
+        localIntel: [],
         checks: ["linux-x64"],
         recovery: parts(["linux-x64"], 3),
         notarized: [],
@@ -1714,7 +1721,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       });
       expect(yield* targets("build")).toEqual({
         publish: "false",
+        intel: "true",
         local: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        localJob: ["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"],
+        localIntel: ["darwin-x64"],
         checks: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
         recovery: parts(["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"], 3),
         notarized: [],
@@ -1727,7 +1737,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         readonly version: string;
       };
       const notarized = {
+        intel: "true",
         local: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        localJob: ["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"],
+        localIntel: ["darwin-x64"],
         checks: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
         recovery: parts(["linux-arm64", "linux-x64", "win32-x64"], 3),
         notarized: parts(["darwin-arm64"], 3),
@@ -1818,6 +1831,8 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               "Record the published archive's digest",
               // The archives job compares it with the recovery parts' apps, which this lane lacks.
               "Record the packaged desktop app's digest",
+              // Runs only when the job failed; the lane's own e2e evidence covers CI.
+              "Gather the failed scenarios' evidence",
             ],
           ],
         ] as const;

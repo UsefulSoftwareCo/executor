@@ -715,6 +715,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "part-results.config.ts": () => import("./part-results.config.ts"),
   "process-identity.config.ts": () => import("./process-identity.config.ts"),
   "release-archives.config.ts": () => import("./release-archives.config.ts"),
+  "release-evidence.config.ts": () => import("./release-evidence.config.ts"),
   "removal-evidence.config.ts": () => import("./removal-evidence.config.ts"),
   "request-failures.config.ts": () => import("./request-failures.config.ts"),
   "run-retention.config.ts": () => import("./run-retention.config.ts"),
