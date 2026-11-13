@@ -2164,10 +2164,82 @@ export const scenarios = plan({
       cloud: na("Hosted links run in the organization-scoped scenario."),
     },
   },
-  browserObservability: {
+  browserFailureSchema: {
     fixtures: "actors",
     file: "browser-observability.spec.ts",
-    title: "browser decode and startup failures reach correlated error collectors",
+    title: "browser failures reach error collectors: a response that fails its schema",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserFailureJson: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title:
+      "browser failures reach error collectors: a response that is not JSON, each document under its own page",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserFailureServer: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title: "browser failures reach error collectors: a server's failure response",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserFailureEntryModule: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title: "browser failures reach error collectors: a dashboard entry module that does not load",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserFailureBoot: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title:
+      "browser failures reach error collectors: a dashboard document without its bootstrap data",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserFailureDocs: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title: "browser failures reach error collectors: a documentation script failure",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserReportsWhileReplaying: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title: "browser error reports reach Sentry while session replay chunks are held",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserReportsWhileExporting: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title: "browser error reports reach Sentry while the page's own telemetry exports are held",
     targets: {
       cloud: managedCloud,
       "self-host": na("Cloud Sentry receiver"),
