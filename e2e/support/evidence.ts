@@ -460,6 +460,7 @@ export const scenarioEvidence = (
                 target: target.metadata.target,
                 origin: target.metadata.origin,
                 status: cause === undefined ? "passed" : "failed",
+                startedAt: started,
                 duration: ended - started,
                 errors: cause === undefined ? [] : [Cause.pretty(cause)],
                 annotations,

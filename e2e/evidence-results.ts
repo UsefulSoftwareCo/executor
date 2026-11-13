@@ -1,6 +1,13 @@
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Config, Console, Effect, FileSystem, Option, Path, Schema } from "effect";
 import { createHash } from "node:crypto";
 import { EvidenceEntry, RunMetadata, type EvidenceReport } from "./report-model.ts";
+import {
+  crashMarginMs,
+  RuntimeCrashes,
+  runtimeCrashesFile,
+  runtimeCrashNote,
+  runtimeCrashNotesFor,
+} from "./support/runtime-crashes.ts";
 
 const TestResults = Schema.Struct({
   testResults: Schema.Array(
@@ -48,7 +55,7 @@ export const readEvidence = (directory: string) =>
     // Scope exit cannot know about later cleanup failures or native hook timeouts.
     // Vitest is authoritative when present; interactive SDK sessions have no report.
     const diagnostics = path.join(directory, "report/diagnostics/results.json");
-    if (!(yield* fs.exists(diagnostics))) return entries;
+    if (!(yield* fs.exists(diagnostics))) return yield* withRuntimeCrashNotes(directory, entries);
     const results = yield* fs
       .readFileString(diagnostics)
       .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(TestResults))));
@@ -80,7 +87,34 @@ export const readEvidence = (directory: string) =>
         });
       }
     }
-    return [...reconciled.values()];
+    return yield* withRuntimeCrashNotes(directory, [...reconciled.values()]);
+  });
+
+/**
+ * Add, to each failed case that ran while one of local Cloud's runtimes had crashed, a line naming
+ * the crash (`support/runtime-crashes.ts`), so the failure does not read as the case's own.
+ */
+const withRuntimeCrashNotes = (
+  directory: string,
+  entries: ReadonlyArray<typeof EvidenceEntry.Type>,
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem,
+      path = yield* Path.Path;
+    const file = path.join(directory, runtimeCrashesFile);
+    if (!(yield* fs.exists(file))) return entries;
+    const crashes = yield* fs
+      .readFileString(file)
+      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(RuntimeCrashes))));
+    return entries.map((entry) => {
+      const added = runtimeCrashNotesFor(entry, crashes);
+      return added.length === 0
+        ? entry
+        : {
+            ...entry,
+            errors: [...added, ...entry.errors.filter((error) => !added.includes(error))],
+          };
+    });
   });
 
 /** Combine target reports with links relative to their shared manifest or rendered report. */
@@ -99,3 +133,37 @@ export const combineEvidenceReports = (
     })),
   ),
 });
+
+/**
+ * Print each of local Cloud's runtime crashes in `directory` and the failed cases caught in it, in
+ * the job log and, in CI, the job's summary, where the count sits beside the run's other totals. A
+ * run without a crash prints nothing.
+ */
+export const reportRuntimeCrashes = (
+  directory: string,
+  entries: ReadonlyArray<typeof EvidenceEntry.Type>,
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem,
+      path = yield* Path.Path;
+    const file = path.join(directory, runtimeCrashesFile);
+    if (!(yield* fs.exists(file))) return;
+    const crashes = yield* fs
+      .readFileString(file)
+      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(RuntimeCrashes))));
+    if (crashes.length === 0) return;
+    const lines = crashes.map((crash) => {
+      const caught = entries
+        .filter((entry) => runtimeCrashNotesFor(entry, [crash]).length > 0)
+        .map((entry) => `${entry.file} > ${entry.title}`);
+      return `${runtimeCrashNote(crash).replace(" while this case ran", "")} Failed cases in or within ${crashMarginMs / 1000} s of it: ${caught.length === 0 ? "none" : caught.join("; ")}.`;
+    });
+    for (const line of lines) yield* Console.log(line);
+    const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
+    if (Option.isSome(summary))
+      yield* fs.writeFileString(
+        summary.value,
+        `Local Cloud runtime crashes: ${crashes.length}\n\n${lines.map((line) => `- ${line}`).join("\n")}\n`,
+        { flag: "a" },
+      );
+  });

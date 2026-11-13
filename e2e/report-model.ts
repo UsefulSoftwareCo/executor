@@ -39,6 +39,8 @@ export const EvidenceEntry = Schema.Struct({
   target: Target,
   origin: Schema.optional(Schema.String),
   status: Schema.String,
+  /** When the case started, in milliseconds since the epoch; runs before it was kept have none. */
+  startedAt: Schema.optional(Schema.Number),
   duration: Schema.Number,
   errors: Schema.Array(Schema.String),
   annotations: Schema.Array(Schema.Struct({ type: Schema.String, description: Schema.String })),

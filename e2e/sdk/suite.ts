@@ -8,7 +8,7 @@ import {
   type CloudMode,
   type TestPlan,
 } from "../test-plan.ts";
-import { readEvidence, combineEvidenceReports } from "../evidence-results.ts";
+import { readEvidence, combineEvidenceReports, reportRuntimeCrashes } from "../evidence-results.ts";
 import { type EvidenceReport, type RunMetadata } from "../report-model.ts";
 import { startCloudEnvironment } from "../support/cloud-environment.ts";
 import { lockedNpmRegistry } from "../support/npm-registry.ts";
@@ -436,6 +436,7 @@ export const runSuite = ({
       const results = yield* Effect.forEach(captures, ({ target, code, metadata, directory }) =>
         Effect.gen(function* () {
           const entries = yield* readEvidence(directory);
+          yield* reportRuntimeCrashes(directory, entries);
           const report: EvidenceReport = { runs: [metadata], entries, plan };
           return { target, code, report };
         }),
