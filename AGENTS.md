@@ -280,9 +280,11 @@ longer deadlines or skips to make a run pass.
 It finishes the active run and coalesces pending pushes, so one run can test several
 merges. Its `coverage` job lists them in the run summary and adds a notice when a
 run tests more than one commit. It counts from the nearest earlier ancestor whose run
-uploaded `deployed-neon-results`, which exists only when the scenarios ran, so a
+uploaded `deployed-planetscale-results` (`deployed-neon-results` before November 13, 2026), which exists only when the scenarios ran, so a
 setup failure or a rerun of an older commit cannot hide a gap. Manual deployed jobs share
-the same non-cancelling concurrency group. Each job owns a disposable Neon staging environment.
+the same non-cancelling concurrency group. Each main run owns a disposable PlanetScale staging environment whose Workers reach
+the branch through their own Hyperdrive configuration, as production does. Manual
+`deployed-tests.yml` dispatches still default to Neon, and pull request previews stay on Neon.
 Scenarios retain 60-second deadlines. The job owns its teardown and evidence artifacts. These post-merge
 checks are not required PR checks. Agents can run targeted deployments through
 the same SDK and CLI on demand.
