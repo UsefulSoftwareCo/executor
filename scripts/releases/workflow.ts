@@ -78,8 +78,8 @@ NodeRuntime.runMain(
       };
     };
     const matrix = targets.map(entry);
-    const intel = (target: { readonly platform: string; readonly arch: string }) =>
-      target.platform === "darwin" && target.arch === "x64";
+    const macosArm64 = (target: { readonly platform: string; readonly arch: string }) =>
+      target.platform === "darwin" && target.arch === "arm64";
     const publishing = requested !== "build" && requested !== "check";
     // A build run asked to notarize signs, notarizes and tests the macOS apps as a publishing run
     // does, and publishes nothing.
@@ -104,12 +104,12 @@ NodeRuntime.runMain(
       desktop_package: release.desktop.executableName,
       desktop_update_feed: desktopUpdateFeed.tag,
       matrix: JSON.stringify({ include: matrix }),
-      // Intel macOS packages under Rosetta and takes about four minutes longer than any other
-      // target, so it is a job of its own (local-intel): the jobs that need local, such as the
-      // notarized arm64 recovery parts, do not wait for it.
-      local_matrix: JSON.stringify({ include: matrix.filter((entry) => !intel(entry)) }),
-      local_intel_matrix: JSON.stringify({ include: matrix.filter(intel) }),
-      intel: matrix.some(intel) ? "true" : "false",
+      // macOS arm64 builds, signs and notarizes the app the notarized recovery parts test, so it
+      // is a job of its own (local-macos-arm64): those parts wait for it alone, whatever the
+      // other targets' local legs are still doing.
+      local_matrix: JSON.stringify({ include: matrix.filter((entry) => !macosArm64(entry)) }),
+      local_macos_arm64_matrix: JSON.stringify({ include: matrix.filter(macosArm64) }),
+      macos_arm64: matrix.some(macosArm64) ? "true" : "false",
       // Every part of the installed CLI suite runs on its own runner (e2e/run.ts --part).
       cli_matrix: JSON.stringify({
         include: targets.flatMap((target) =>

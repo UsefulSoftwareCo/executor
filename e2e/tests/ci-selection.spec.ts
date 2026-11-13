@@ -1692,10 +1692,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               .sort();
           return {
             publish: values.publish,
-            intel: values.intel,
+            macosArm64: values.macos_arm64,
             local: names("matrix"),
             localJob: names("local_matrix"),
-            localIntel: names("local_intel_matrix"),
+            localMacosArm64: names("local_macos_arm64_matrix"),
             checks: names("checks_matrix"),
             recovery: names("recovery_matrix"),
             notarized: names("notarized_recovery_matrix"),
@@ -1706,13 +1706,14 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       // The CLI suite runs in two parts and desktop crash recovery in three, each on its own runner.
       const parts = (names: ReadonlyArray<string>, count: number) =>
         names.flatMap((name) => Array.from({ length: count }, () => name));
-      // Intel macOS packages in local-intel, so the jobs that need local do not wait for it.
+      // macOS arm64 packages in local-macos-arm64, which the notarized recovery parts wait for
+      // alone; the other targets stay in local.
       expect(yield* targets("check")).toEqual({
         publish: "false",
-        intel: "false",
+        macosArm64: "false",
         local: ["linux-x64"],
         localJob: ["linux-x64"],
-        localIntel: [],
+        localMacosArm64: [],
         checks: ["linux-x64"],
         recovery: parts(["linux-x64"], 3),
         notarized: [],
@@ -1721,10 +1722,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       });
       expect(yield* targets("build")).toEqual({
         publish: "false",
-        intel: "true",
+        macosArm64: "true",
         local: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
-        localJob: ["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"],
-        localIntel: ["darwin-x64"],
+        localJob: ["darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        localMacosArm64: ["darwin-arm64"],
         checks: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
         recovery: parts(["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"], 3),
         notarized: [],
@@ -1737,10 +1738,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         readonly version: string;
       };
       const notarized = {
-        intel: "true",
+        macosArm64: "true",
         local: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
-        localJob: ["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"],
-        localIntel: ["darwin-x64"],
+        localJob: ["darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        localMacosArm64: ["darwin-arm64"],
         checks: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
         recovery: parts(["linux-arm64", "linux-x64", "win32-x64"], 3),
         notarized: parts(["darwin-arm64"], 3),
