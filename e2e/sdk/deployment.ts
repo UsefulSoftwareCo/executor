@@ -3,7 +3,11 @@ import { Clock, Config, Console, Effect, FileSystem, Path, Schedule, Schema } fr
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
-import { createEmulatorFixture, emulatorRequest } from "../support/emulators.ts";
+import {
+  createEmulatorFixture,
+  emulatorRequest,
+  EmulatorRetryRecords,
+} from "../support/emulators.ts";
 
 import { startFixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
 import { captureRemovalStalls } from "./removal-evidence.ts";
@@ -102,13 +106,16 @@ export const startDeployment = ({
         ),
       ),
     );
-    const fixture = yield* createEmulatorFixture(origin);
+    const fixture = yield* createEmulatorFixture(origin).pipe(
+      Effect.provideService(EmulatorRetryRecords, { directory }),
+    );
     yield* Effect.addFinalizer(() =>
       Effect.forEach(
         Object.values(reveal(fixture).services),
         (service) =>
           emulatorRequest(service.baseUrl, "/_emulate/reset", {}).pipe(
             Effect.catch(() => Console.error("Could not reset one external test emulator.")),
+            Effect.provideService(EmulatorRetryRecords, { directory }),
           ),
         { concurrency: 5, discard: true },
       ),

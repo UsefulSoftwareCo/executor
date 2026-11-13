@@ -214,6 +214,8 @@ interface SavedRun {
   readonly files?: (file: string) => boolean;
   /** A failed scenario's failure message, as Vitest saves it. */
   readonly failure?: (title: string) => string | undefined;
+  /** Hosted emulator calls that needed a retry, saved as `emulatorRequest` saves them. */
+  readonly emulatorRetries?: ReadonlyArray<unknown>;
 }
 
 /**
@@ -260,6 +262,11 @@ const verify = (
         "diagnostics",
       );
       yield* fs.makeDirectory(report, { recursive: true });
+      const retries = path.join(report, "..", "emulator-retries");
+      for (const [number, record] of (run.emulatorRetries ?? []).entries()) {
+        yield* fs.makeDirectory(retries, { recursive: true });
+        yield* fs.writeFileString(path.join(retries, `${number}.json`), JSON.stringify(record));
+      }
       yield* fs.writeFileString(
         path.join(report, "results.json"),
         JSON.stringify({
@@ -1586,6 +1593,80 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(none.exitCode, none.log).toBe(0);
       expect(none.log).toContain(
         "Database connection latency of deployed stages: 0 severe (averaging 50 ms or a minute at 300 ms), 0 elevated (10 ms or 100 ms), 0 normal, 0 unread; no stage recorded a reading.",
+      );
+    }),
+  );
+
+  it.effect("a full run counts the hosted emulator calls that needed a retry", () =>
+    Effect.gen(function* () {
+      const retry = (scenario: string | undefined, outcome: string, attempts: number) => ({
+        ...(scenario === undefined ? {} : { scenario }),
+        operation: "POST /_emulate/seed",
+        emulator: "workos/executor-onboarding-… #0123456789ab",
+        failures: Array.from(
+          { length: outcome === "answered" ? attempts - 1 : attempts },
+          () => "HTTP 500, cf-ray 0a1b2c3d4e5f6071-LAX",
+        ),
+        outcome,
+        attempts,
+        elapsedMs: attempts * 1_000,
+      });
+      const [counted, none] = yield* Effect.all(
+        [
+          verify("ci", [
+            { target: "local" },
+            { target: "self-host", emulatorRetries: [retry("Seeded dashboard", "answered", 2)] },
+            {
+              target: "cloud",
+              emulatorRetries: [
+                retry(undefined, "answered", 2),
+                retry("Cloud v1 import", "failed", 3),
+                retry("Cloud v1 import", "answered", 2),
+              ],
+            },
+          ]),
+          verify("deployed", [{ target: "cloud" }]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(counted.exitCode, counted.log).toBe(0);
+      expect(counted.log).toContain(
+        "Hosted emulator calls that needed a retry: 4 (2 scenarios, 1 while setting up); 1 still failed after retrying. Worst: POST /_emulate/seed on workos/executor-onboarding-… #0123456789ab, 3 attempts over 3.0 s (failed; HTTP 500, cf-ray 0a1b2c3d4e5f6071-LAX; HTTP 500, cf-ray 0a1b2c3d4e5f6071-LAX; HTTP 500, cf-ray 0a1b2c3d4e5f6071-LAX).",
+      );
+      // Zero is reported too, beside the platform signatures.
+      expect(none.exitCode, none.log).toBe(0);
+      expect(none.log).toContain("Hosted emulator calls that needed a retry: 0.");
+      // A record that cannot be read is reported; it never fails the coverage check.
+      const unreadable = yield* verify("deployed", [
+        { target: "cloud", emulatorRetries: [{ operation: "POST /_emulate/seed" }] },
+      ]);
+      expect(unreadable.exitCode, unreadable.log).toBe(0);
+      expect(unreadable.log).toContain(
+        "The hosted emulator calls that needed a retry could not be counted.",
+      );
+    }),
+  );
+
+  it.effect("an unreadable database connection record is reported, never failed on", () =>
+    Effect.gen(function* () {
+      const run = yield* verify(
+        "deployed",
+        [{ target: "cloud" }],
+        [
+          { source: "hyperdrive", level: "unlisted-level" },
+          {
+            source: "hyperdrive",
+            level: "normal",
+            averageMs: 4.2,
+            worstMinuteMs: 31,
+            minutes: 12,
+            queries: 9000,
+          },
+        ],
+      );
+      expect(run.exitCode, run.log).toBe(0);
+      expect(run.log).toContain(
+        "Database connection latency of deployed stages: 0 severe (averaging 50 ms or a minute at 300 ms), 0 elevated (10 ms or 100 ms), 1 normal, 0 unread; the highest averaged 4.2 ms with a worst minute of 31 ms, read from hyperdrive. 1 database connection record could not be read.",
       );
     }),
   );

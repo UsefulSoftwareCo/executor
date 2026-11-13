@@ -66,6 +66,7 @@ import {
   DatabaseConnections,
   databaseConnectionsFile,
 } from "./database-connections.ts";
+import { countEmulatorRetries, emulatorRetryLine } from "./emulator-retries.ts";
 import { deployedSuitePattern, scenarios, scenariosForSuite, type CloudMode } from "./test-plan.ts";
 
 class SelectionFailed extends Schema.TaggedError<SelectionFailed>()("SelectionFailed", {
@@ -516,22 +517,26 @@ const executed = (directory: string) =>
               if (messages.includes(platformSignatures[signature])) signatures[signature] += 1;
           }
     }
-    // Each deployed stage's connection latency (e2e/sdk/database-connections.ts), by level.
+    // Each deployed stage's connection latency (e2e/sdk/database-connections.ts), by level. Like
+    // the retry count, it never decides the check: a file it cannot read is counted, not failed on.
     const connections: Array<DatabaseConnections> = [];
+    let unreadableConnections = 0;
     const readings = (yield* fs.exists(directory))
       ? (yield* fs.readDirectory(directory, { recursive: true })).filter(
           (file) => path.basename(file) === databaseConnectionsFile,
         )
       : [];
-    for (const reading of readings)
-      connections.push(
-        yield* fs
-          .readFileString(path.join(directory, reading))
-          .pipe(
-            Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(DatabaseConnections))),
-          ),
-      );
-    return { ran, signatures, connections };
+    for (const reading of readings) {
+      const decoded = yield* fs
+        .readFileString(path.join(directory, reading))
+        .pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(DatabaseConnections))),
+          Effect.option,
+        );
+      if (Option.isSome(decoded)) connections.push(decoded.value);
+      else unreadableConnections += 1;
+    }
+    return { ran, signatures, connections, unreadableConnections };
   });
 
 /**
@@ -564,7 +569,7 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
       return yield* new SelectionFailed({
         message: "Usage: node e2e/ci-selection.ts verify <ci|deployed> <directory of saved runs>",
       });
-    const { ran, signatures, connections } = yield* executed(directory);
+    const { ran, signatures, connections, unreadableConnections } = yield* executed(directory);
     const paths =
       suite === "ci"
         ? jobRuns.map(({ name, target, titles }) => ({ name: `the ${name} job`, target, titles }))
@@ -595,9 +600,17 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
     // Counted on every deployed run, zero included, so a rise shows without reading logs.
     const platform =
       suite === "deployed"
-        ? `\nScenario runs that failed on a platform signature: ${signatures["runtime-502"]} on Cloudflare's runtime answering 502 itself (our Worker did not answer), ${signatures.lost} on a request lost before any response, ${signatures["origin-unreachable"]} on an app origin no HTTPS connection reached within preparation's wait.\n${connectionsLine(connections)}\n`
+        ? `\nScenario runs that failed on a platform signature: ${signatures["runtime-502"]} on Cloudflare's runtime answering 502 itself (our Worker did not answer), ${signatures.lost} on a request lost before any response, ${signatures["origin-unreachable"]} on an app origin no HTTPS connection reached within preparation's wait.\n${connectionsLine(connections)}${unreadableConnections === 0 ? "" : ` ${unreadableConnections} database connection ${unreadableConnections === 1 ? "record" : "records"} could not be read.`}\n`
         : "";
-    const report = `## E2E coverage\n\nEvery one of the ${expected} scenario runs ${suite === "ci" ? "the jobs here schedule" : "Cloud tests on main schedules"} executed. ${Object.keys(notRunInCi).length} scenarios are in notRunInCi.\n${platform}`;
+    // Likewise the hosted emulators' bad moments that a retry absorbed, from every job's records.
+    // Counting never decides the check: a record it cannot read is reported, not failed on.
+    const emulators = `\n${yield* countEmulatorRetries([directory]).pipe(
+      Effect.map(emulatorRetryLine),
+      Effect.orElseSucceed(
+        () => "The hosted emulator calls that needed a retry could not be counted.",
+      ),
+    )}\n`;
+    const report = `## E2E coverage\n\nEvery one of the ${expected} scenario runs ${suite === "ci" ? "the jobs here schedule" : "Cloud tests on main schedules"} executed. ${Object.keys(notRunInCi).length} scenarios are in notRunInCi.\n${platform}${emulators}`;
     yield* Console.log(report);
     const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
     if (Option.isSome(summary))

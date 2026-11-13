@@ -861,6 +861,36 @@ Provider emulation does not claim coverage of Google's/GitHub's live UI or nativ
 Cloudflare mail delivery. The separate interactive Claude journey still takes
 its model-endpoint configuration documented above; onboarding does not need it.
 
+### Hosted emulators
+
+The harness's own calls to emulators.dev, which set an emulator up, read or reset its state, or
+read what it recorded, go through `emulatorRequest` in `e2e/support/emulators.ts`. When the
+service fails to answer one (a 5xx that is not a fault the harness armed, a refused, reset or
+closed connection, or no answer in time), the call is sent again: at most three attempts, each
+within 10 s, 1 s and then 3 s apart, all within the call's 30 s deadline. A 4xx is never retried.
+In CI on 10-13 November 2026, 14 red jobs failed on such a harness call, each a single bad
+answer that the same service did not repeat seconds later.
+
+Only calls whose second copy cannot change what a scenario observes are retried; `repeatability`
+lists each route and why. Arming or clearing a fault, the harness's writes through a provider's
+own API (WorkOS Vault, invitations, organization and membership changes, Autumn balances) and
+seeds of services not checked there are sent once. A WorkOS seed that creates an organization is
+sent again only after reading back shows the first copy did not apply, within what is left of the
+same 30 s. Every fault the harness arms answers with the `x-executor-e2e-armed-fault` header, and
+such an answer is never retried; while a fault the harness armed may still be live on an emulator,
+every call to that emulator is sent once, so a delayed fault cannot pass for an outage.
+
+Calls the product makes to its providers are not affected: how the product behaves when a
+provider fails is what scenarios test.
+
+Each retried call is saved in the run's `report/emulator-retries/`, passed scenarios included,
+and logged. The jobs that call hosted emulators (`e2e-cloud`, `e2e-self-host`, the deployed
+suite) add a "Hosted emulators" section to their summary: how many calls needed a retry, in how
+many scenarios, how many still failed, and the worst one. A job that passed only after retrying
+says so, and adds a warning annotation to the run. Counting never fails a job. The deployed suite
+uploads the records in their own artifact, so `deployed-*-results` still means its scenarios ran. The coverage summaries of full runs count them beside the platform signatures. When the
+attempts run out, `EmulatorFailed` lists every attempt with its status, ray or how far it got.
+
 ### Signed-in actors for other hosted tests
 
 Use `bun run e2e:deployed --test-name 'Testing SDK|hosted roles' --workers 2`.

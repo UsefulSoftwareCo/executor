@@ -15,7 +15,12 @@ import { HttpClient } from "effect/http";
 import { startAnalyticsCollector } from "./analytics-collector.ts";
 import { serveShardedOtlpCollector } from "./otlp-collector.ts";
 import { randomBytes } from "node:crypto";
-import { createEmulatorFixture, EmulatorFixture, emulatorRequest } from "./emulators.ts";
+import {
+  createEmulatorFixture,
+  EmulatorFixture,
+  emulatorRequest,
+  EmulatorRetryRecords,
+} from "./emulators.ts";
 import {
   createV1Database,
   startCloudPostgres,
@@ -165,7 +170,9 @@ export const startCloudEnvironment = (input: {
     const container = `executor-${stage}`;
     const fixture =
       input.signInThrough === undefined
-        ? yield* createEmulatorFixture(input.origin)
+        ? yield* createEmulatorFixture(input.origin).pipe(
+            Effect.provideService(EmulatorRetryRecords, { directory }),
+          )
         : secret(
             EmulatorFixture.make({
               version: 4,
@@ -183,6 +190,7 @@ export const startCloudEnvironment = (input: {
         (service) =>
           emulatorRequest(service.baseUrl, "/_emulate/reset", {}).pipe(
             Effect.catch(() => Console.error("Could not reset one external test emulator.")),
+            Effect.provideService(EmulatorRetryRecords, { directory }),
           ),
         { concurrency: 5, discard: true },
       ),
