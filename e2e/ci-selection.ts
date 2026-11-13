@@ -55,6 +55,7 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createHash } from "node:crypto";
+import { collectorChanged } from "./collector-inputs.ts";
 import { lanesFor, releaseSources } from "./release-lanes.ts";
 import { savePathFiles } from "./save-path.ts";
 import { Target } from "./report-model.ts";
@@ -1210,6 +1211,11 @@ NodeRuntime.runMain(
         : compared === undefined || compared.length >= compareFileLimit
           ? { "release-docker": ["(every file)"], "release-local": ["(every file)"] }
           : lanesFor(yield* releaseSources, compared);
+    // The collector's own job, from the same comparison: for a pull request everything since it
+    // left main, so a stack's top layer covers every layer; for a push the pushed range. Without a
+    // comparison, as on a manual run, or with one GitHub cut short, it runs.
+    const collector =
+      compared === undefined || compared.length >= compareFileLimit || collectorChanged(compared);
     const files =
       named === undefined || "all" in named
         ? undefined
@@ -1325,6 +1331,7 @@ NodeRuntime.runMain(
       ...Object.entries(lanes ?? { "release-docker": [], "release-local": [] }).map(
         ([lane, matched]) => `${lane}=${matched.length > 0 ? "true" : ""}`,
       ),
+      `collector=${collector ? "true" : ""}`,
       // Line coverage is comparable only between runs of every scenario.
       `full=${files === undefined}`,
     ].join("\n");
@@ -1385,6 +1392,10 @@ NodeRuntime.runMain(
               ? `${lane}: skipped, no file it reads changed.`
               : `${lane}: runs, for ${matched.slice(0, 5).join(", ")}${matched.length > 5 ? ` and ${matched.length - 5} more` : ""}.`,
           )),
+      "",
+      collector
+        ? "collector-native: runs (e2e/collector-inputs.ts)."
+        : "collector-native: skipped, no collector input changed (e2e/collector-inputs.ts).",
       "",
       "| Job | Scenarios | Runners |",
       "| --- | --- | --- |",
