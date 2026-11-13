@@ -176,7 +176,11 @@ full when the tree's copy differs from main's (`fileGuards`): a new host protoco
 A changed spec file's Cloud scenarios that otherwise first run in Cloud tests on main, after
 merge, run in the `cloud-product` job when managed local Cloud can run them. The ones that need a
 deployed stage (`runtime: "attached"`) get a warning with the `e2e:deployed` command that runs
-them; run it before merging. Write `none` for a change no scenario exercises, such as documentation. Write each name as it appears in
+them; run it before merging. A scenario new to the deployed suite (one main's `e2e/test-plan.ts`
+does not name) first runs on a deployed stage after merge even when managed local Cloud runs it
+here, so the `select` job fails until the description has a line `Verified on a deployed stage:`
+saying what ran and its result, for example the `bun run e2e:deployed --database planetscale
+--test-name '…'` command the failure prints. Write `none` for a change no scenario exercises, such as documentation. Write each name as it appears in
 `e2e/tests/`, optionally prefixed with `e2e/tests/`. The `select` job fails when the
 description has no block, a name is not a spec file there, or a named file is one these
 jobs never run: the release, desktop, billing and PGlite suites have their own

@@ -890,6 +890,81 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       }),
   );
 
+  it.effect(
+    "a scenario new to the deployed suite needs the description to say how it was verified on a deployed stage",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const names = yield* fs.readDirectory("patches");
+        const hashed = (yield* processes.string(
+          ChildProcess.make("git", [
+            "hash-object",
+            ...guardedFiles,
+            ...names.map((name) => `patches/${name}`),
+          ]),
+        ))
+          .trim()
+          .split("\n");
+        const plan = yield* fs.readFileString("e2e/test-plan.ts");
+        const manifest = yield* fs.readFileString("package.json");
+        // Main as this checkout, with the plan main had: a deployed scenario's title is one main
+        // does not have, so this pull request adds it to the deployed suite.
+        const title = "Cloud product links follow the deployment origin";
+        expect(plan).toContain(JSON.stringify(title));
+        const main = (mainPlan: string | undefined) => ({
+          "package.json": manifest,
+          patches: names
+            .map((name, index) => `${hashed[guardedFiles.length + index]} ${name}`)
+            .join("\n"),
+          ...guardedListings(hashed.slice(0, guardedFiles.length)),
+          ...(mainPlan === undefined ? {} : { "e2e/test-plan.ts": mainPlan }),
+        });
+        const without = plan.replace(
+          JSON.stringify(title),
+          JSON.stringify("Cloud product links followed an earlier origin"),
+        );
+        const changed = ["e2e/tests/deployment-links.spec.ts"];
+        const verified =
+          "Verified on a deployed stage: bun run e2e:deployed --database planetscale --test-name 'Cloud product links' passed on a synthetic stage";
+        const [refused, stated, emptyStatement, known, unreadable] = yield* Effect.all(
+          [
+            select({ body: block("none"), changed, main: main(without) }),
+            select({ body: `${block("none")}\n${verified}\n`, changed, main: main(without) }),
+            select({
+              body: `${block("none")}\nVerified on a deployed stage:\n`,
+              changed,
+              main: main(without),
+            }),
+            select({ body: block("none"), changed, main: main(plan) }),
+            select({ body: block("none"), changed, main: main(undefined) }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(refused.exitCode).toBe(1);
+        expect(refused.log).toContain("These scenarios are new to the deployed suite.");
+        expect(refused.log).toContain(`- deployment-links.spec.ts: ${title}`);
+        expect(refused.log).toContain(
+          `bun run e2e:deployed --database planetscale --test-name '^(?:${title})$'`,
+        );
+        expect(refused.log).toContain(
+          '"Verified on a deployed stage: <command, run or stage, and result>"',
+        );
+        // A statement of how it was verified lets it through; a bare heading does not.
+        expect(stated.exitCode, stated.log).toBe(0);
+        expect(emptyStatement.exitCode).toBe(1);
+        expect(emptyStatement.log).toContain("These scenarios are new to the deployed suite.");
+        // A changed scenario main already has is not new, so an ordinary change passes.
+        expect(known.exitCode, known.log).toBe(0);
+        expect(known.log).not.toContain("new to the deployed suite");
+        // Main's plan unreadable: the check says it was skipped and does not fail the run.
+        expect(unreadable.exitCode, unreadable.log).toBe(0);
+        expect(unreadable.log).toContain(
+          "Could not read main's e2e/test-plan.ts, so whether this pull request adds scenarios to the deployed suite was not checked.",
+        );
+      }),
+  );
+
   it.effect("a changed spec file that no plan or config includes fails", () =>
     Effect.gen(function* () {
       const name = "ci-selection-unregistered.spec.ts";

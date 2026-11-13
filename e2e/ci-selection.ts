@@ -331,6 +331,19 @@ const deployedOnly = [...deployedRuns].filter((title) =>
   jobRuns.every(({ target, titles }) => target !== "cloud" || !titles.has(title)),
 );
 const deployedOnlyJob = "cloud-product" satisfies keyof typeof jobs;
+
+/**
+ * A line in the pull request's description that says how a scenario new to the deployed suite was
+ * verified on a deployed stage, such as the `e2e:deployed` command that ran it and its result.
+ */
+const deployedVerification = /^Verified on a deployed stage:[ \t]*(\S.{9,})$/mu;
+
+/**
+ * Whether main's `e2e/test-plan.ts` names a scenario: every title there is a string literal, so a
+ * title its text does not hold is a scenario main does not have. A scenario main has under the same
+ * title but does not schedule on deployed Cloud counts as known.
+ */
+const namedIn = (plan: string, title: string) => plan.includes(JSON.stringify(title));
 /**
  * The most scenarios the cloud-product job runs on one local Cloud. Local workerd never
  * unloads a Worker Loader entry, and Cloud keeps no residency of its own (see "Loaded app Workers
@@ -870,7 +883,7 @@ const readPullRequest = (input: {
           yield* Console.log(
             `Waited ${Math.round(Duration.toSeconds(elapsed))} s for ${waitedFor.join(", then ")}${missing === undefined ? "." : `; there is still no ${missing.replace(/^an? /, "")}.`}`,
           );
-        return { parsed, above };
+        return { parsed, above, body };
       }
       if (waitedFor.at(-1) !== missing) {
         waitedFor.push(missing);
@@ -1058,6 +1071,38 @@ NodeRuntime.runMain(
     );
     const deployedOnlyRun = new Set(changedDeployedOnly.filter((title) => managedCloud.has(title)));
     const deployedOnlyUnrun = changedDeployedOnly.filter((title) => !deployedOnlyRun.has(title));
+    // A scenario the deployed suite gains with this pull request first runs on a deployed stage
+    // after merge, where no job here can run it, even when managed local Cloud runs it here: one
+    // that needed files only managed local Cloud has reddened Cloud tests on main on three runs.
+    // It merges once the description says how it was verified on a deployed stage.
+    const changedDeployed = [...deployedRuns].filter((title) =>
+      changedSpecs.includes(fileOf.get(title)!),
+    );
+    if (read !== undefined && defaultBranch !== "" && changedDeployed.length > 0) {
+      const mainPlan = yield* gh([
+        "api",
+        `repos/${repository}/contents/e2e/test-plan.ts?ref=${defaultBranch}`,
+        "-H",
+        "Accept: application/vnd.github.raw+json",
+      ]).pipe(Effect.option);
+      if (Option.isNone(mainPlan) || !mainPlan.value.includes("export const scenarios"))
+        yield* Console.log(
+          "Could not read main's e2e/test-plan.ts, so whether this pull request adds scenarios to the deployed suite was not checked.",
+        );
+      else {
+        const added = changedDeployed.filter((title) => !namedIn(mainPlan.value, title));
+        if (added.length > 0 && !deployedVerification.test(read.body))
+          return yield* new SelectionFailed({
+            message: [
+              "These scenarios are new to the deployed suite. Cloud tests on main runs them on a deployed stage after merge, and no job here can run them there:",
+              ...added.toSorted().map((title) => `- ${fileOf.get(title)}: ${title}`),
+              "Run them on a deployed stage before merging, for example:",
+              `    bun run e2e:deployed --database planetscale --test-name '^(?:${added.map(escape).join("|")})$'`,
+              'Then add a line to the description saying what ran and its result: "Verified on a deployed stage: <command, run or stage, and result>".',
+            ].join("\n"),
+          });
+      }
+    }
     const named = Array.isArray(block)
       ? yield* checkNamed(
           block,
