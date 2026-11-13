@@ -407,6 +407,14 @@ export const closeDesktop = (
     yield* fs.makeDirectory(directory, { recursive: true });
     const write = (name: string, text: string) =>
       fs.writeFileString(path.join(directory, name), redactLinks(text), { mode: 0o600 });
+    // Which scenario's close hung, so the release workflow's evidence step
+    // (`e2e/release-evidence.ts`) files the folder under that scenario, as it files a failed
+    // scenario's `failed-…` folder (`keepEvidence` in `desktop.ts`).
+    const { currentTestName, testPath } = expect.getState();
+    yield* write(
+      "scenario.json",
+      JSON.stringify({ title: currentTestName ?? "", file: testPath ?? "" }),
+    );
     yield* write(
       "quit.json",
       JSON.stringify(
