@@ -1,8 +1,7 @@
 /** Find previews deployed by older checkouts so they cannot escape the current lifetime policy. */
 import { Config, Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
-import { TestStageSlug } from "../infrastructure/stage.ts";
-import { TestStageFailed } from "../contracts/test-stage-lifetime.ts";
+import { TestStageFailed, TestStageSlug } from "../contracts/test-stage-lifetime.ts";
 
 const CreatedAt = Schema.String.check(
   Schema.makeFilter((value) => Number.isFinite(Date.parse(value))),

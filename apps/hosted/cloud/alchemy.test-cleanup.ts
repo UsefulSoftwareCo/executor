@@ -7,7 +7,7 @@ import * as Planetscale from "alchemy/Planetscale";
 import * as Neon from "alchemy/Neon";
 import { Effect, Layer, Schema } from "effect";
 import { Stage } from "alchemy/Stage";
-import { TestStageSlug } from "./src/infrastructure/stage.ts";
+import { TestStageSlug } from "./src/contracts/test-stage-lifetime.ts";
 import { PreviousTestDatabaseCleanup } from "./src/infrastructure/previous-test-database-cleanup.ts";
 import {
   TestStageBuildCleanup,

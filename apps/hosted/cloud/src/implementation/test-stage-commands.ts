@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { Clock, Config, Console, Effect, FileSystem, Option, Path, Result, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { TestStageSlug, testStagePrefix } from "../infrastructure/stage.ts";
+import { testStagePrefix } from "../infrastructure/stage.ts";
 import {
   canDeployTestStage,
   isTestStageDue,
@@ -13,6 +13,7 @@ import {
   testStageDeployMilliseconds,
   testStageLifetimeMilliseconds,
   TestStageFailed,
+  TestStageSlug,
 } from "../contracts/test-stage-lifetime.ts";
 import { ReleaseRefusal, releaseRefusalReport } from "../contracts/release-guard.ts";
 import { withStageAdmin } from "./test-stage-inventory.ts";

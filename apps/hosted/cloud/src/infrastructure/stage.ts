@@ -4,6 +4,7 @@ import { Stage } from "alchemy/Stage";
 import { singleResourceOrigin, type ResourceOrigins } from "@executor-js/hosted-server";
 import { isLoopbackHostname } from "@executor-js/utils/url-policy";
 import { Config, Effect, Option, Schema } from "effect";
+import { TestStageSlug } from "../contracts/test-stage-lifetime.ts";
 
 export const testStagePrefix = "test-";
 
@@ -15,13 +16,6 @@ export const productionStage = "v2";
  * existing Worker identity when the public site moves to its separate marketing gateway.
  */
 export const productionApiWorkerName = "executor-next-hosted-api-v2-qs32brgjwvt7ytx4";
-
-/** Slugs map one-to-one to the stage's logical database name. */
-export const TestStageSlug = Schema.String.check(
-  Schema.makeFilter((value) => /^[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?$/.test(value), {
-    message: "A test stage slug is 1-42 lowercase letters, digits and hyphens",
-  }),
-);
 
 export interface TestStage {
   readonly name: string;
