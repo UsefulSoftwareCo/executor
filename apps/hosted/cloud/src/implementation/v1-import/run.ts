@@ -606,8 +606,8 @@ const assessCarryOver = (
  * with no pending invitation, which WorkOS lists as a pending membership; `nothing_to_copy` also
  * needs it to have nothing to copy, no item of any kind the import moves. `copy_into_empty` takes
  * any workspace an import takes, paid, Enterprise or shared, into an organization with nothing set
- * up (`setUpIn`), or the one an earlier run recorded. `copy_selected` (decision 35) takes a free,
- * grandfathered or Enterprise workspace of any size whose active members are all already in the
+ * up (`setUpIn`), or the one an earlier run recorded. `copy_selected` (decision 35) takes any
+ * workspace an import takes, of any size, whose active members are all already in the
  * organization, and copies only the integrations listed (`selection`), each one v1 has whose apps
  * take no name an app in the organization has. Only `copy_selected` takes listed integrations. An
  * import reads it under the freeze, as the rest of the assessment.
@@ -663,15 +663,8 @@ const intoPlan = (
       );
       if (toCopy.length > 0) return refused(`It has items to copy (${toCopy.join(", ")}).`);
     }
-    if (mode === "copy_selected") {
-      // It carries no billing over; a live v1 subscription would keep billing a moved workspace.
-      if (input.billing.kind === "paid")
-        return refused(
-          `It has a paid v1 plan (${input.billing.plans.join(", ")}), which copying selected integrations does not carry over.`,
-        );
-      if (input.integrations.length === 0)
-        return refused("The allow table lists no integrations to copy.");
-    }
+    if (mode === "copy_selected" && input.integrations.length === 0)
+      return refused("The allow table lists no integrations to copy.");
     const store = makeImportStore(sql);
     const decided = yield* intoOwner(sql, store, {
       organization: input.organization,
@@ -825,11 +818,11 @@ const selectedItems = (
 /**
  * Read the organization's members, plan and rows, and decide whether it moves now. Enterprise
  * organizations move by hand (decision 15): only when the operator lists one to copy into an
- * existing v2 organization, with nothing carried over (decisions 34 and 35). A paid organization
- * moves with its v1 subscription (decision 5) when it can carry over (`assessCarryOver`); an import
- * holds it back otherwise. One on a grandfathered Hobby or Professional plan moves to v2's Free
- * plan, as a free one does. A `copy_selected` move carries nothing over and plans only what it
- * copies (`selectedItems`).
+ * existing v2 organization, with nothing carried over (decision 34). A paid organization moves
+ * with its v1 subscription (decision 5) when it can carry over (`assessCarryOver`), also into an
+ * existing organization; an import holds it back otherwise. One on a grandfathered Hobby or
+ * Professional plan moves to v2's Free plan, as a free one does. A `copy_selected` move plans only
+ * what it copies (`selectedItems`).
  */
 const assess = (params: V1ImportParams) =>
   Effect.gen(function* () {
@@ -972,9 +965,9 @@ const assess = (params: V1ImportParams) =>
     // A copy into an existing organization carries billing over as into a copy: its own customer
     // must bill nothing. Only a paid organization carries over; an Enterprise one carries nothing,
     // so its copy never holds, renames or deletes a v2 customer (decision 34). A selective copy
-    // carries nothing either, and refuses a paid one (decision 35).
+    // carries a paid plan over the same way (decision 35).
     const carry =
-      billing.kind === "paid" && listed?.mode !== "copy_selected"
+      billing.kind === "paid"
         ? yield* assessCarryOver(
             source,
             organization,

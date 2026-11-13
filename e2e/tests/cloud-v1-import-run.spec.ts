@@ -3046,8 +3046,8 @@ export default defineApp({}, { tools: router({
         expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
         const handMadeApp = (yield* Schema.decodeUnknownEffect(IdRow)(deployed.body)).id;
 
-        // Their shared v1 workspace has the shared seed's integration, connections, rules and
-        // toolkits, and another integration with a rule of its own, which stays in v1.
+        // Their paid, shared v1 workspace has the shared seed's integration, connections, rules
+        // and toolkits, and another integration with a rule of its own, which stays in v1.
         const workspace = yield* emulators.v1Workspace([identity.email, teammate]);
         const organization = workspace.organization;
         const teammateUser = yield* emulators.v1User(teammate);
@@ -3075,6 +3075,8 @@ export default defineApp({}, { tools: router({
             `${left}.*.*.search`,
           ),
         ]);
+        // What the workspace pays for in v1 carries over (decision 35).
+        yield* emulators.v1TeamSubscription(organization, { version: 3, seats: 2 });
         yield* allowV1Import(organization);
         yield* listV1Into(organization, team.id, "copy_selected", [tracker]);
 
@@ -3161,7 +3163,7 @@ export default defineApp({}, { tools: router({
           skippedPolicies: 1,
           mcpConnections: 0,
         });
-        expect(planned.billing).toBeUndefined();
+        expect(planned.billing).toMatchObject({ subscription: { plan: "team" }, problem: null });
         expect(yield* contents).toEqual(before.contents);
 
         const run = v1RunId("selected");
@@ -3182,7 +3184,7 @@ export default defineApp({}, { tools: router({
           passed: true,
         });
         expect(report.cutover).toBe(true);
-        expect(report.billing).toBeUndefined();
+        expect(report.billing).toMatchObject({ carried: true });
         expect(yield* movedFlag(organization)).toEqual([
           { state: "moved", v2_org_id: team.id, v2_org_slug: team.slug },
         ]);
@@ -3215,7 +3217,8 @@ export default defineApp({}, { tools: router({
           [...before.apps, { id: app, name: "Shared Tracker" }].toSorted(byName),
         );
         expect(yield* teamMembers).toEqual(before.members);
-        expect(yield* holds).toEqual([]);
+        // Its Team subscription is the team's now.
+        expect(yield* holds).toEqual([{ id: team.id }]);
         // The app is shared with everyone; the workspace connection's account is the owner's,
         // linked for everyone, and each member's own is linked for them.
         expect(
@@ -3345,8 +3348,13 @@ export default defineApp({}, { tools: router({
         ).toEqual([]);
         expect({ contents: yield* contents, apps: yield* teamApps }).toEqual(afterImport);
 
-        // A rollback needs no billing return and removes only what the import added: the team's
-        // own apps and members stay.
+        // A rollback waits for the billing to go back, then removes only what the import added:
+        // the team's own apps and members stay.
+        const early = yield* operator.rollback(organization);
+        expect(early.status).toBe(409);
+        expect(JSON.stringify(early.body)).toContain("return-billing");
+        const returned = yield* operator.returnBilling(organization);
+        expect(returned.status, JSON.stringify(returned.body)).toBe(200);
         const rolledBack = yield* operator.rollback(organization);
         expect(rolledBack.status, JSON.stringify(rolledBack.body)).toBe(200);
         expect(rolledBack.body).toEqual({
@@ -3463,7 +3471,7 @@ export default defineApp({}, { tools: router({
         yield* emulators.v1Plan(leaveEnterprise.organization, "enterprise");
         const unlisted = yield* ownWorkspace("mode", "everything");
         // Copying selected integrations needs every active member in the organization already, a
-        // listed integration v1 has, at least one listed, and a workspace that does not pay.
+        // listed integration v1 has, and at least one listed.
         const strangerOwner = email("selected-stranger");
         // The teammate has a v2 account, but is not in the owner's team.
         const strangerMate = email("stranger");
@@ -3490,15 +3498,10 @@ export default defineApp({}, { tools: router({
         const unknownSlug = `missing_${randomUUID().slice(0, 6)}`;
         const selectedUnknown = yield* ownWorkspace("selected-unknown", "copy_selected");
         const selectedNone = yield* ownWorkspace("selected-none", "copy_selected");
-        const selectedPaid = yield* ownWorkspace("selected-paid", "copy_selected");
-        yield* emulators.v1Plan(selectedPaid.organization, "team");
         const copyListing = yield* ownWorkspace("copy-listing", "copy_into_empty");
         rows.cloud.push(
           listV1IntoRow(stranger.organization, stranger.into, "copy_selected", [strangerTracker]),
           listV1IntoRow(selectedUnknown.organization, selectedUnknown.into, "copy_selected", [
-            unknownSlug,
-          ]),
-          listV1IntoRow(selectedPaid.organization, selectedPaid.into, "copy_selected", [
             unknownSlug,
           ]),
           listV1IntoRow(copyListing.organization, copyListing.into, "copy_into_empty", [
@@ -3546,11 +3549,6 @@ export default defineApp({}, { tools: router({
             },
           ],
           [selectedNone, "copy_selected", "The allow table lists no integrations to copy."],
-          [
-            selectedPaid,
-            "copy_selected",
-            "It has a paid v1 plan (team), which copying selected integrations does not carry over.",
-          ],
           [
             copyListing,
             "copy_into_empty",
