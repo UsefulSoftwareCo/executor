@@ -29,6 +29,7 @@ import {
   sessionOrganizationHeader,
   signMcpSessionId,
 } from "../implementation/mcp-session-id.ts";
+import { isolateTelemetryFlushes } from "@executor-js/telemetry/isolate";
 import { makeAnswer } from "../implementation/mcp-session-timing.ts";
 import { observeMcpStream } from "../implementation/mcp-stream-observability.ts";
 import { cloudAnalytics } from "../implementation/product-analytics.ts";
@@ -85,6 +86,7 @@ export const makeMcpSession = Effect.fn(function* ({
         "executor.mcp.isolate.programs": runningPrograms(),
         "executor.mcp.isolate.kept_entries": kept.entries,
         "executor.mcp.isolate.kept_bytes": kept.bytes,
+        "executor.telemetry.isolate.flushes": isolateTelemetryFlushes(),
       };
     });
     // What each caller's last tool call read, by app and named accounts (CallStateCache).

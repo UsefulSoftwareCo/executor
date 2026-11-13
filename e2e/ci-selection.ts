@@ -212,6 +212,13 @@ const jobs = {
   // This counts every request in local Cloud's single session object isolate, so another
   // scenario's MCP request in flight would change its count.
   "cloud-isolate": { target: "cloud", runner: 2, pattern: "Cloud MCP session objects report" },
+  // This counts the telemetry flushes of local Cloud's session object isolate over an idle wait,
+  // so another scenario's request in that isolate would add flushes of its own.
+  "cloud-telemetry-flush": {
+    target: "cloud",
+    runner: 2,
+    pattern: "Cloud's isolate telemetry flush",
+  },
   // This waits out its session object's 120-second idle window, about three minutes in all. In
   // the cloud job's local Cloud it and its file's coordinator scenario, about two minutes, ran one
   // after the other and set that job's length, so it starts a local Cloud of its own.
@@ -669,6 +676,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "billing.config.ts": () => import("./billing.config.ts"),
   "ci-selection.config.ts": () => import("./ci-selection.config.ts"),
   "ci-supersede.config.ts": () => import("./ci-supersede.config.ts"),
+  "telemetry-event-lifetime.config.ts": () => import("./telemetry-event-lifetime.config.ts"),
   "cli-startup-imports.config.ts": () => import("./cli-startup-imports.config.ts"),
   "cloud-deploy-origin.config.ts": () => import("./cloud-deploy-origin.config.ts"),
   "dashboard-file-names.config.ts": () => import("./dashboard-file-names.config.ts"),

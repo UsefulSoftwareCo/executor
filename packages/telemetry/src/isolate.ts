@@ -1,13 +1,22 @@
 /**
- * Cloudflare Workers exporters: built once per isolate, flushed by each event.
+ * Cloudflare Workers exporters: built once per isolate, flushed on demand and by each event.
  *
- * A Worker pins timers and fetches to the event that started them, so a batch
- * cannot wait for an isolate-wide timer. Building Effect's exporters for every
- * event costs more CPU than most requests' own spans, however. The span and log
- * exporters are therefore built once per isolate and only buffer. Each event
- * exports everything buffered so far from its own scope: every second while a
- * streamed response keeps it open, and when it closes. A span leaves with the
- * first flush after it ends, which may belong to a concurrent event.
+ * Building Effect's exporters for every event costs more CPU than most requests' own spans, so
+ * the span and log exporters are built once per isolate and only buffer. Each event exports
+ * everything buffered so far when it closes. Between those, the isolate holds at most one timer:
+ * the first span, log or measurement buffered after a flush arms it, and it exports everything
+ * buffered within `flushDelay`. A span therefore leaves within `flushDelay` of its end, or with an
+ * earlier event's close. While nothing is buffered no timer runs, so an open stream that sends
+ * nothing costs no telemetry work.
+ *
+ * A Worker pins a timer and a fetch to the event whose code started them, and workerd refuses to
+ * resume or interrupt a fiber from another request (patches/effect-otlp-exporter-loop.md). The
+ * timer is therefore a fiber of its own, started by the call that buffered the item, and that
+ * call's event is kept alive until the fiber ends (`keepAlive`, the runtime's `waitUntil`). Without
+ * that, a Worker event that ended first would never run the timer, and one that ended while the
+ * timer's flush was posting would cut the post off, losing everything that flush took. A Durable
+ * Object runs both on its own, but is kept alive the same way. An event's close therefore waits at
+ * most `flushDelay` and the one export it may have started.
  *
  * Metrics stay per event. Their delta histograms report each event's own
  * minimum and maximum, which an isolate-wide registry cannot reconstruct.
@@ -36,12 +45,24 @@ interface Pending {
   metrics: Array<ResourceMetrics>;
 }
 
+/** How long the isolate's flush waits after the first item buffered since the last flush. */
+const flushDelay = Duration.seconds(1);
+
+/**
+ * Flushes this isolate has run, on demand or at an event's close. Module state lives as long as
+ * the isolate, and every exporter built in it counts here.
+ */
+const counted = { flushes: 0 };
+export const isolateTelemetryFlushes = () => counted.flushes;
+
 /**
  * Effect's exporters serialize each batch immediately before posting it. Here
  * serialization keeps the batch object and the post goes nowhere, so a flush
- * can merge every buffered batch into one encoded request per signal.
+ * can merge every buffered batch into one encoded request per signal. A metric
+ * exporter serializes on its own interval, so a batch with measurements asks
+ * for a flush.
  */
-const buffering = (pending: Pending) =>
+const buffering = (pending: Pending, onBuffered: () => void) =>
   Layer.mergeAll(
     Layer.succeed(OtlpSerialization.OtlpSerialization, {
       traces: (data) => {
@@ -54,6 +75,7 @@ const buffering = (pending: Pending) =>
       },
       metrics: (data) => {
         pending.metrics.push(...data.resourceMetrics);
+        if (data.resourceMetrics.some(measured)) onBuffered();
         return HttpBody.empty;
       },
     }),
@@ -65,6 +87,10 @@ const buffering = (pending: Pending) =>
     ),
   );
 
+/** An event that recorded no measurement exports an empty batch; it carries nothing. */
+const measured = (batch: ResourceMetrics) =>
+  batch.scopeMetrics.some((scope) => scope.metrics.length > 0);
+
 /** The buffering exporters never post, so their URL only names the signal. */
 const buffered = (signal: string) => `https://buffer.invalid/v1/${signal}`;
 
@@ -74,18 +100,30 @@ const buffered = (signal: string) => `https://buffer.invalid/v1/${signal}`;
  */
 export const isolateTelemetry = (
   config: TelemetryConfig,
+  /** Keep the current event alive until `work` settles: the runtime's `waitUntil`. */
+  keepAlive: (work: Promise<unknown>) => void,
   logger: Logger.Logger<unknown, void> = Logger.withConsoleError(Logger.formatJson),
 ) =>
   Effect.gen(function* () {
     const pending: Pending = { traces: [], logs: [], metrics: [] };
+    /** Whether anything was buffered since the last flush began. */
+    let dirty = false;
+    /** Whether a flush timer is waiting; its event is kept alive until it has flushed. */
+    let armed = false;
+    // Assigned once `flush` exists; nothing is buffered while the exporters are being built.
+    let arm = () => {};
+    const onBuffered = () => {
+      dirty = true;
+      if (!armed) arm();
+    };
     const resource = {
       serviceName: config.service,
       serviceVersion: config.version,
       attributes: { "deployment.environment.name": config.environment },
     };
     const console = Logger.layer([logger]);
-    const buffers = buffering(pending);
-    // Export happens only when an event flushes, so no isolate timer ever runs. With no interval
+    const buffers = buffering(pending, onBuffered);
+    // The exporters export only when flushed, so they run no timer of their own. With no interval
     // the exporter also runs no loop (patches/effect-otlp-exporter-loop.md): the exporters outlive
     // every event, and workerd refuses to resume a fiber that last ran in another request.
     const exporter = (signal: string) => ({
@@ -99,13 +137,17 @@ export const isolateTelemetry = (
         config.traces === undefined
           ? Layer.empty
           : // As in telemetryLayer: every span is recorded and HTTP attributes are allowlisted.
-            spanAttributes(config.clock, true).pipe(
+            spanAttributes(config.clock, true, onBuffered).pipe(
               Layer.provideMerge(OtlpTracer.layer(exporter("traces"))),
             ),
         config.logs === undefined
           ? console
-          : OtlpLogger.layer({ ...exporter("logs"), mergeWithExisting: true }).pipe(
-              Layer.provideMerge(console),
+          : Logger.layer([Logger.make(onBuffered)], { mergeWithExisting: true }).pipe(
+              Layer.provideMerge(
+                OtlpLogger.layer({ ...exporter("logs"), mergeWithExisting: true }).pipe(
+                  Layer.provideMerge(console),
+                ),
+              ),
             ),
       ).pipe(
         Layer.provideMerge(OtlpExporter.layerFlusher),
@@ -149,13 +191,12 @@ export const isolateTelemetry = (
     // Uninterruptible: batches leave `pending` before the requests, so a flush must finish.
     const flush = Effect.uninterruptible(
       Effect.gen(function* () {
+        counted.flushes += 1;
+        dirty = false;
         yield* flusher.flush;
         const traces = pending.traces.splice(0);
         const logs = pending.logs.splice(0);
-        // An event that recorded no measurement exports an empty batch; it carries nothing.
-        const metrics = pending.metrics
-          .splice(0)
-          .filter((batch) => batch.scopeMetrics.some((scope) => scope.metrics.length > 0));
+        const metrics = pending.metrics.splice(0).filter(measured);
         yield* Effect.all(
           [
             config.traces === undefined || traces.length === 0
@@ -177,15 +218,27 @@ export const isolateTelemetry = (
       }),
     ).pipe(Effect.withTracerEnabled(false));
 
+    // A root fiber: it belongs to no event's scope, so no other request resumes or interrupts it.
+    // It is disarmed before it flushes, so an item buffered during the export arms the next one,
+    // and it exports nothing when an event's close already took what was buffered.
+    arm = () => {
+      armed = true;
+      keepAlive(
+        Effect.runPromise(
+          Effect.sleep(flushDelay).pipe(
+            Effect.andThen(
+              Effect.suspend(() => {
+                armed = false;
+                return dirty ? flush : Effect.void;
+              }),
+            ),
+          ),
+        ),
+      );
+    };
+
     // Built before the metric exporter, so this final flush runs after its last snapshot.
-    const flushing = Layer.effectDiscard(
-      Effect.gen(function* () {
-        yield* Effect.addFinalizer(() => flush);
-        yield* Effect.forkScoped(
-          Effect.forever(Effect.sleep("1 second").pipe(Effect.andThen(flush))),
-        );
-      }),
-    );
+    const flushing = Layer.effectDiscard(Effect.addFinalizer(() => flush));
     return Layer.mergeAll(
       Layer.succeedContext(isolate),
       config.metrics === undefined

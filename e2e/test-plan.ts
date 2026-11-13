@@ -2808,6 +2808,19 @@ export const scenarios = plan({
       local: na("Local serves MCP sessions in its server process, with no session object."),
     },
   },
+  cloudTelemetryIdleFlush: {
+    fixtures: "actors",
+    file: "cloud-telemetry-idle-flush.spec.ts",
+    title:
+      "Cloud's isolate telemetry flush runs nothing for idle listen streams and still exports a held stream's request span while it stays open",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na(
+        "Self-host exports telemetry from its server process, with no isolate flush.",
+      ),
+      local: na("Local exports telemetry from its server process, with no isolate flush."),
+    },
+  },
   cloudMcpStreamLifetime: {
     fixtures: "actors",
     file: "cloud-mcp-stream-lifetime.spec.ts",

@@ -26,6 +26,7 @@ const jobs = [
   "cloud-batch",
   "cloud-autumn",
   "cloud-isolate",
+  "cloud-telemetry-flush",
   "cloud-connections",
   "cloud-v1-bound",
   "cloud-rate-limit",
@@ -428,7 +429,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           expect(productParts).toBeGreaterThan(1);
           expect(runners.map(({ name }) => name)).toEqual([
             "cloud",
-            "cloud-isolate, cloud-connections",
+            "cloud-isolate, cloud-telemetry-flush, cloud-connections",
             ...Array.from(
               { length: productParts },
               (_, index) => `cloud-product ${index + 1}/${productParts}`,
@@ -1253,6 +1254,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-batch",
         "cloud-autumn",
         "cloud-isolate",
+        "cloud-telemetry-flush",
         "cloud-connections",
         "cloud-v1-bound",
         "cloud-rate-limit",
