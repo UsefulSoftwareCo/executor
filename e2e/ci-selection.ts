@@ -1331,7 +1331,7 @@ NodeRuntime.runMain(
       ...Object.entries(lanes ?? { "release-docker": [], "release-local": [] }).map(
         ([lane, matched]) => `${lane}=${matched.length > 0 ? "true" : ""}`,
       ),
-      `collector=${collector ? "true" : ""}`,
+      `collector=${collector}`,
       // Line coverage is comparable only between runs of every scenario.
       `full=${files === undefined}`,
     ].join("\n");

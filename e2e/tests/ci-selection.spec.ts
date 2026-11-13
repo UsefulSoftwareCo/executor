@@ -9,6 +9,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { collectorChanged, collectorInputs } from "../collector-inputs.ts";
 import { lanesFor, releaseSources, releaseSuiteConfigs } from "../release-lanes.ts";
 import { closureOf } from "../save-path.ts";
 import { scenarios } from "../test-plan.ts";
@@ -380,7 +381,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       const run = yield* select({});
       expect(run.exitCode).toBe(0);
       expect(Object.keys(run.outputs).sort()).toEqual(
-        [...jobs, ...runnerOutputs, ...laneOutputs, "full"].sort(),
+        [...jobs, ...runnerOutputs, ...laneOutputs, "collector", "full"].sort(),
       );
       for (const job of [...jobs, ...runnerOutputs]) expect(run.outputs[job], job).not.toBe("");
       // Executor releases runs the whole release matrix on main after merge instead.
@@ -1617,6 +1618,84 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       );
       expect(runs[0]!.summary).toContain("release-local: skipped, no file it reads changed.");
     }),
+  );
+
+  it.effect(
+    "collector-native runs for a change to each collector input, and for nothing else",
+    () =>
+      Effect.sync(() => {
+        // One line per entry of collectorInputs (e2e/collector-inputs.ts): a file the entry covers.
+        const inputs: Record<string, string> = {
+          "packages/telemetry/collector/": "packages/telemetry/collector/src/main.rs",
+        };
+        expect(Object.keys(inputs).sort()).toEqual([...collectorInputs].sort());
+        for (const [input, file] of Object.entries(inputs))
+          expect(collectorChanged([file]), input).toBe(true);
+        for (const file of [
+          "packages/telemetry/src/isolate.ts",
+          "packages/telemetry/collector-notes.md",
+          "e2e/tests/collector.spec.ts",
+        ])
+          expect(collectorChanged([file]), file).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "the select job starts collector-native when a collector input changed, and only then",
+    () =>
+      Effect.gen(function* () {
+        const crate = "packages/telemetry/collector/src/store.rs";
+        // A pull request, everything since main; a push to main, the pushed range.
+        const runs = yield* Effect.forEach(
+          [
+            { body: block("none"), compared: [crate, "notes/collector.md"] },
+            { body: block("none"), compared: ["apps/cli/src/main.ts"] },
+            { compared: [crate] },
+            { compared: ["apps/cli/src/main.ts"] },
+          ],
+          (input) => select(input),
+          { concurrency: "unbounded" },
+        );
+        for (const run of runs) expect(run.exitCode, run.log).toBe(0);
+        expect(runs.map((run) => run.outputs.collector)).toEqual([
+          "true",
+          "false",
+          "true",
+          "false",
+        ]);
+        expect(runs[0]!.summary).toContain("collector-native: runs (e2e/collector-inputs.ts).");
+        expect(runs[1]!.summary).toContain(
+          "collector-native: skipped, no collector input changed (e2e/collector-inputs.ts).",
+        );
+      }),
+  );
+
+  it.effect(
+    "collector-native runs without a comparison, or one cut short, and for a stack's top layer",
+    () =>
+      Effect.gen(function* () {
+        const crate = "packages/telemetry/collector/src/ingest.rs";
+        const runs = yield* Effect.forEach(
+          [
+            { body: block("none"), compared: "unknown" as const },
+            {
+              body: block("none"),
+              compared: Array.from({ length: 300 }, (_, index) => `notes/file-${index}.md`),
+            },
+            // The lower layer changed the crate and skips; the top layer compares with main, so
+            // its comparison holds the lower layer's change too.
+            { body: block("skip"), stackedAbove: "12", compared: [crate] },
+            { body: block("none"), compared: [crate, "e2e/tests/example.spec.ts"] },
+          ],
+          (input) => select(input),
+          { concurrency: "unbounded" },
+        );
+        for (const run of runs) expect(run.exitCode, run.log).toBe(0);
+        expect(runs[0]!.outputs.collector).toBe("true");
+        expect(runs[1]!.outputs.collector).toBe("true");
+        expect(runs[2]!.outputs).toEqual({ skip: "true" });
+        expect(runs[3]!.outputs.collector).toBe("true");
+      }),
   );
 
   it.effect("a file renamed out of a lane's path starts that lane by its old name", () =>

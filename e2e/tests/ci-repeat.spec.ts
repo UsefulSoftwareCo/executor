@@ -424,11 +424,12 @@ layer(NodeServices.layer)("CI repeat", (it) => {
         "apps-package",
         "tooling",
         "tooling-cloud",
+        "collector-native",
         "self-host-native",
         "apps-version",
       ])
         expect(jobOf(text, job), job).toMatch(
-          /\n {4}if: .*needs\.select\.outputs\.skip != 'true' && needs\.select\.outputs\.repeat-of == ''\n/,
+          /\n {4}if: .*needs\.select\.outputs\.skip != 'true' && needs\.select\.outputs\.repeat-of == ''( && [^\n]*)?\n/,
         );
       for (const job of ["check", "e2e"])
         expect(jobOf(text, job), job).toContain(
@@ -454,23 +455,39 @@ layer(NodeServices.layer)("CI repeat", (it) => {
         expect(job).toContain(`    needs: [${needs.join(", ")}]\n`);
         const script = scriptOf(job, "Require every static check to pass");
         const { bin } = yield* stub({});
-        const run = (results: Record<string, string>) =>
+        const run = (results: Record<string, string>, collector: string | null = "true") =>
           spawn("bash", ["-e", "-c", script], bin, {
             REPEAT_OF: "",
             NEEDS: JSON.stringify(
               Object.fromEntries(
-                needs.map((name) => [name, { result: results[name] ?? "success", outputs: {} }]),
+                needs.map((name) => [
+                  name,
+                  {
+                    result: results[name] ?? "success",
+                    outputs: name === "select" && collector !== null ? { collector } : {},
+                  },
+                ]),
               ),
             ),
           });
         expect((yield* run({})).exitCode).toBe(0);
-        // A job that failed, was cancelled, or was skipped by mistake fails the check.
+        // A job that failed, was cancelled, or was skipped by mistake fails the check. Select says
+        // a collector input changed here, so collector-native's skip is a mistake too.
         for (const name of ["tooling", "tooling-cloud", "collector-native"])
           for (const result of ["failure", "cancelled", "skipped"]) {
             const failed = yield* run({ [name]: result });
             expect(failed.exitCode, `${name} ${result}`).toBe(1);
             expect(failed.log, `${name} ${result}`).toContain(`::error::${name}: ${result}`);
           }
+        // collector-native skipped because select said no collector input changed passes; failed
+        // or cancelled still fails, and so does any other job's skip. A select that wrote no
+        // answer at all has not said the job is not needed.
+        expect((yield* run({ "collector-native": "skipped" }, "false")).exitCode).toBe(0);
+        for (const result of ["failure", "cancelled"])
+          expect((yield* run({ "collector-native": result }, "false")).exitCode, result).toBe(1);
+        expect((yield* run({ tooling: "skipped" }, "false")).exitCode).toBe(1);
+        expect((yield* run({ "collector-native": "skipped" }, "")).exitCode).toBe(1);
+        expect((yield* run({ "collector-native": "skipped" }, null)).exitCode).toBe(1);
       }).pipe(Effect.scoped),
   );
 });
