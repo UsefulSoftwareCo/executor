@@ -101,6 +101,125 @@ const decideInBrowser = (input: {
     yield* browser.checkpoint("Device connected");
   });
 
+/**
+ * A device client registered through discovery, as RFC 8628 section 4 describes, with the token
+ * endpoint's polls and the owner's review and decision of a user code.
+ */
+const deviceProtocol = Effect.gen(function* () {
+  const api = yield* Api,
+    actors = yield* Actors,
+    evidence = yield* Evidence,
+    http = yield* HttpClient.HttpClient;
+  const hosts = targetHosts(yield* Target);
+  const resource = `${hosts.api}/api`;
+  yield* Effect.addFinalizer(() => revokeOwnerGrants);
+  const send = (request: HttpClientRequest.HttpClientRequest, label: string) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const response = yield* http.execute(request);
+        const value: unknown = yield* response.json;
+        // Record only outcomes; bodies hold codes and tokens.
+        yield* evidence.json(`${label}-${response.status}.json`, {
+          status: response.status,
+        });
+        return { status: response.status, body: value };
+      }),
+    ).pipe(Effect.orDie);
+  const form = (url: string, fields: Record<string, string>, label: string) =>
+    send(HttpClientRequest.post(url).pipe(HttpClientRequest.bodyUrlParams(fields)), label);
+
+  // Discovery advertises the endpoint and the grant, as RFC 8628 section 4 describes.
+  const protectedResource = yield* body(
+    Schema.Struct({ authorization_servers: Schema.NonEmptyArray(Schema.String) }),
+    yield* send(
+      HttpClientRequest.get(`${hosts.api}/.well-known/oauth-protected-resource/api`),
+      "resource-metadata",
+    ),
+  );
+  const issuer = new URL(protectedResource.authorization_servers[0]);
+  const metadata = yield* body(
+    Schema.Struct({
+      device_authorization_endpoint: Schema.String,
+      token_endpoint: Schema.String,
+      registration_endpoint: Schema.String,
+      grant_types_supported: Schema.Array(Schema.String),
+    }),
+    yield* send(
+      HttpClientRequest.get(
+        `${issuer.origin}/.well-known/oauth-authorization-server${issuer.pathname}`,
+      ),
+      "authorization-server-metadata",
+    ),
+  );
+  expect(metadata.device_authorization_endpoint).toBe(
+    `${hosts.browser}/api/auth/oauth2/device-authorization`,
+  );
+  expect(metadata.grant_types_supported).toContain(deviceGrant);
+
+  const registered = yield* send(
+    yield* HttpClientRequest.bodyJson(HttpClientRequest.post(metadata.registration_endpoint), {
+      client_name: "Device protocol client",
+      token_endpoint_auth_method: "none",
+      grant_types: [deviceGrant, "refresh_token"],
+      response_types: [],
+      scope: "executor offline_access",
+    }).pipe(Effect.orDie),
+    "register",
+  );
+  expect(registered.status).toBe(201);
+  const { client_id } = yield* body(Schema.Struct({ client_id: Schema.String }), registered);
+  const Started = Schema.Struct({
+    device_code: Schema.String,
+    user_code: Schema.String,
+    verification_uri: Schema.String,
+    verification_uri_complete: Schema.String,
+    expires_in: Schema.Number,
+    interval: Schema.Number,
+  });
+  const start = form(
+    metadata.device_authorization_endpoint,
+    { client_id, scope: "executor offline_access", resource },
+    "device-authorization",
+  ).pipe(Effect.flatMap((response) => body(Started, response)));
+  const poll = (deviceCode: string, label: string) =>
+    form(
+      metadata.token_endpoint,
+      { grant_type: deviceGrant, device_code: deviceCode, client_id },
+      label,
+    );
+  const OAuthError = Schema.Struct({ error: Schema.String });
+  const errorOf = (response: { readonly status: number; readonly body: unknown }) =>
+    body(OAuthError, response).pipe(Effect.map((value) => value.error));
+  const lookup = (userCode: string) =>
+    api.request(
+      actors.owner,
+      "GET",
+      `/api/auth/device/request?user_code=${encodeURIComponent(userCode)}`,
+    );
+  const decide = (userCode: string, accept: boolean) =>
+    api.request(
+      actors.owner,
+      "POST",
+      "/api/auth/device/decide",
+      { user_code: userCode, accept },
+      { "x-executor-organization": actors.organization.id },
+    );
+  return {
+    actors,
+    hosts,
+    resource,
+    send,
+    form,
+    metadata,
+    client_id,
+    start,
+    poll,
+    errorOf,
+    lookup,
+    decide,
+  };
+});
+
 layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
   it.effect(scenarios.deviceLoginCli.title, (context) =>
     withHostedCase(
@@ -232,108 +351,20 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const api = yield* Api,
-          actors = yield* Actors,
-          evidence = yield* Evidence,
-          http = yield* HttpClient.HttpClient;
-        const hosts = targetHosts(yield* Target);
-        const resource = `${hosts.api}/api`;
-        yield* Effect.addFinalizer(() => revokeOwnerGrants);
-        const send = (request: HttpClientRequest.HttpClientRequest, label: string) =>
-          Effect.scoped(
-            Effect.gen(function* () {
-              const response = yield* http.execute(request);
-              const value: unknown = yield* response.json;
-              // Record only outcomes; bodies hold codes and tokens.
-              yield* evidence.json(`${label}-${response.status}.json`, {
-                status: response.status,
-              });
-              return { status: response.status, body: value };
-            }),
-          ).pipe(Effect.orDie);
-        const form = (url: string, fields: Record<string, string>, label: string) =>
-          send(HttpClientRequest.post(url).pipe(HttpClientRequest.bodyUrlParams(fields)), label);
-
-        // Discovery advertises the endpoint and the grant, as RFC 8628 section 4 describes.
-        const protectedResource = yield* body(
-          Schema.Struct({ authorization_servers: Schema.NonEmptyArray(Schema.String) }),
-          yield* send(
-            HttpClientRequest.get(`${hosts.api}/.well-known/oauth-protected-resource/api`),
-            "resource-metadata",
-          ),
-        );
-        const issuer = new URL(protectedResource.authorization_servers[0]);
-        const metadata = yield* body(
-          Schema.Struct({
-            device_authorization_endpoint: Schema.String,
-            token_endpoint: Schema.String,
-            registration_endpoint: Schema.String,
-            grant_types_supported: Schema.Array(Schema.String),
-          }),
-          yield* send(
-            HttpClientRequest.get(
-              `${issuer.origin}/.well-known/oauth-authorization-server${issuer.pathname}`,
-            ),
-            "authorization-server-metadata",
-          ),
-        );
-        expect(metadata.device_authorization_endpoint).toBe(
-          `${hosts.browser}/api/auth/oauth2/device-authorization`,
-        );
-        expect(metadata.grant_types_supported).toContain(deviceGrant);
-
-        const registered = yield* send(
-          yield* HttpClientRequest.bodyJson(
-            HttpClientRequest.post(metadata.registration_endpoint),
-            {
-              client_name: "Device protocol client",
-              token_endpoint_auth_method: "none",
-              grant_types: [deviceGrant, "refresh_token"],
-              response_types: [],
-              scope: "executor offline_access",
-            },
-          ).pipe(Effect.orDie),
-          "register",
-        );
-        expect(registered.status).toBe(201);
-        const { client_id } = yield* body(Schema.Struct({ client_id: Schema.String }), registered);
-        const Started = Schema.Struct({
-          device_code: Schema.String,
-          user_code: Schema.String,
-          verification_uri: Schema.String,
-          verification_uri_complete: Schema.String,
-          expires_in: Schema.Number,
-          interval: Schema.Number,
-        });
-        const start = form(
-          metadata.device_authorization_endpoint,
-          { client_id, scope: "executor offline_access", resource },
-          "device-authorization",
-        ).pipe(Effect.flatMap((response) => body(Started, response)));
-        const poll = (deviceCode: string, label: string) =>
-          form(
-            metadata.token_endpoint,
-            { grant_type: deviceGrant, device_code: deviceCode, client_id },
-            label,
-          );
-        const OAuthError = Schema.Struct({ error: Schema.String });
-        const errorOf = (response: { readonly status: number; readonly body: unknown }) =>
-          body(OAuthError, response).pipe(Effect.map((value) => value.error));
-        const lookup = (userCode: string) =>
-          api.request(
-            actors.owner,
-            "GET",
-            `/api/auth/device/request?user_code=${encodeURIComponent(userCode)}`,
-          );
-        const decide = (userCode: string, accept: boolean) =>
-          api.request(
-            actors.owner,
-            "POST",
-            "/api/auth/device/decide",
-            { user_code: userCode, accept },
-            { "x-executor-organization": actors.organization.id },
-          );
-
+        const {
+          actors,
+          hosts,
+          resource,
+          send,
+          form,
+          metadata,
+          client_id,
+          start,
+          poll,
+          errorOf,
+          lookup,
+          decide,
+        } = yield* deviceProtocol;
         // A request the person denies.
         const denied = yield* start;
         expect(denied.user_code).toMatch(/^[BCDFGHJKLMNPQRSTVWXZ]{4}-[BCDFGHJKLMNPQRSTVWXZ]{4}$/u);
@@ -412,7 +443,15 @@ layer(HostedLive, { excludeTestServices: true })("Device login", (it) => {
 
         // A code nobody issued is not found.
         expect((yield* decide("BBBB-BBBB", true)).status).toBe(404);
+      }),
+    ),
+  );
 
+  it.effect(scenarios.deviceAuthorizationPolling.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { start, poll, errorOf } = yield* deviceProtocol;
         // A person may take the full ten minutes to approve: 120 polls at the advertised interval.
         // The per-address limit's count resets only after a quiet window, so steady polling
         // counts as these back-to-back polls do. Each poll answers with RFC 8628's errors, never

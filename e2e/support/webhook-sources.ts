@@ -1,6 +1,6 @@
 /** Hosted webhook sources and subscriptions through the public API. */
 import { expect } from "@effect/vitest";
-import { Clock, Effect, Schema } from "effect";
+import { Clock, Deferred, Effect, Schema } from "effect";
 import { Api, body, type Session } from "./api.ts";
 
 /**
@@ -120,5 +120,42 @@ export const removeAppWhenStopped = (actor: Session, appPath: string) =>
       if (removed.status !== 409) return removed.status;
       expect(yield* Clock.currentTimeMillis, JSON.stringify(removed.body)).toBeLessThan(deadline);
       yield* Effect.sleep("100 millis");
+    }
+  });
+
+const isConflict = Schema.is(Schema.Struct({ _tag: Schema.Literal("WebhookConflict") }));
+
+/** How often, and for how long, confirming a removal waits out a pass that holds the subscription. */
+const confirmRetry = { spacingMs: 500, leaseMs: 60_000 } as const;
+
+/**
+ * Confirm that a disabled subscription was removed at its provider. While a removal pass holds the
+ * subscription, or it changed since it was read, the API answers `WebhookConflict` (409), whose
+ * documented answer is to read again and retry. This retries on that alone, every 500 ms for at
+ * most one webhook lease (60 s), as organization removal does for `webhooks.remove`; a
+ * subscription that never becomes confirmable still fails the caller's assertion. `conflicted`,
+ * when given, completes on the first conflict. Returns the last response and the conflicts taken.
+ */
+export const confirmWebhookRemoval = (
+  actor: Session,
+  appPath: string,
+  subscription: string,
+  conflicted?: Deferred.Deferred<void>,
+) =>
+  Effect.gen(function* () {
+    const api = yield* Api;
+    let conflicts = 0;
+    while (true) {
+      const response = yield* api.request(
+        actor,
+        "POST",
+        `${appPath}/webhooks/${subscription}/confirm-removal`,
+      );
+      const conflict = response.status === 409 && isConflict(response.body);
+      if (!conflict || conflicts >= confirmRetry.leaseMs / confirmRetry.spacingMs)
+        return { response, conflicts };
+      conflicts += 1;
+      if (conflicted !== undefined) yield* Deferred.succeed(conflicted, undefined);
+      yield* Effect.sleep(confirmRetry.spacingMs);
     }
   });
