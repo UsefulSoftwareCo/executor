@@ -15,10 +15,14 @@
  *   before the stall until now.
  *
  * For test stages only: it runs in the deployed runner, against the stage that runner owns. What
- * it saves goes into the run's evidence artifact, so every string in it is masked first
- * (`mask` in `failure-text.ts`): the secrets the runner holds, such as the emulator instance
- * URLs and keys, URL queries and fragments, and long opaque values. Step causes and log events
- * can carry any of these.
+ * it saves goes into the run's evidence artifact, so it is masked first (`mask` in
+ * `failure-text.ts`): the secrets the runner holds, such as the emulator instance URLs and keys,
+ * URL queries and fragments, values under credential-like field names (`"apiKey": …`), and long
+ * opaque values. Step causes and log events can carry any of these. Each record is masked twice:
+ * every raw string first, which catches a secret inside a string that is itself JSON (escaped
+ * once there, twice in the record's JSON text), then as JSON text, so the field-name rules see the
+ * field names. It is cut only after both, so a cut cannot split a secret before `mask` sees it
+ * whole; the whole file is masked the same way once more.
  *
  * It changes nothing: no retry, no longer wait. A removal that stalled still fails its scenario
  * as before. A failed read is recorded with its HTTP status and the capture carries on; it never
@@ -64,20 +68,34 @@ const logLead = 2 * 60_000;
 /** One record is cut beyond this, so a large step output cannot grow the artifact unbounded. */
 const recordLimit = 256 * 1024;
 
-/** Every string in a value masked; keys are code-defined and kept. */
-const masked = (value: unknown): unknown =>
+/** Every raw string in a value masked; keys are code-defined and kept. */
+const maskedStrings = (value: unknown): unknown =>
   typeof value === "string"
     ? mask(value)
     : Array.isArray(value)
-      ? value.map(masked)
+      ? value.map(maskedStrings)
       : typeof value === "object" && value !== null
-        ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, masked(item)]))
+        ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, maskedStrings(item)]))
         : value;
 
+/**
+ * Raw strings masked, then the JSON text masked; when the masked text no longer parses, only its
+ * masked text is kept.
+ */
+const maskedJson = (value: unknown, indent?: number) => {
+  const text = mask(JSON.stringify(maskedStrings(value), null, indent) ?? "null");
+  try {
+    return { text, value: JSON.parse(text) as unknown };
+  } catch {
+    return { text, value: { unparsable: true, start: text.slice(0, recordLimit) } as unknown };
+  }
+};
+
+/** One Cloudflare record, masked as a whole and then cut to `recordLimit` characters. */
 const bounded = (value: unknown) => {
-  const text = JSON.stringify(value) ?? "null";
+  const { text, value: masked } = maskedJson(value);
   return text.length <= recordLimit
-    ? value
+    ? masked
     : { truncated: true, characters: text.length, start: text.slice(0, recordLimit) };
 };
 
@@ -213,19 +231,22 @@ export const captureRemovalStalls = (
         }),
       { concurrency: 2 },
     );
+    const document = maskedJson({ slug, apiScript: apiScript ?? null, removals: records }, 2);
     yield* fs.writeFileString(
       path.join(directory, removalEvidenceFile),
-      JSON.stringify(masked({ slug, apiScript: apiScript ?? null, removals: records }), null, 2),
+      JSON.stringify(document.value, null, 2),
       { mode: 0o600 },
     );
     for (const record of records) {
       const state = record.instance as { status?: unknown; error?: unknown };
       yield* Console.log(
-        `Organization removal not finished within its clean-up's wait (database: ${
-          record.stall.status ?? "no record"
-        }; Workflow instance: ${
-          typeof state.status === "string" ? state.status : `unread, ${String(state.error)}`
-        }); saved to ${removalEvidenceFile}`,
+        mask(
+          `Organization removal not finished within its clean-up's wait (database: ${
+            record.stall.status ?? "no record"
+          }; Workflow instance: ${
+            typeof state.status === "string" ? state.status : `unread, ${String(state.error)}`
+          }); saved to ${removalEvidenceFile}`,
+        ),
       );
     }
   });
