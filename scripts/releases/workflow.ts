@@ -23,13 +23,18 @@ NodeRuntime.runMain(
           new Error("Publish from main and select the channel recorded in apps/cli/package.json."),
         );
     }
-    // macOS runners cost 5-20x as much as Linux runners, so pull requests skip the darwin
-    // targets. Manual build and publish runs still build, sign and test them on macOS.
+    // A push to main runs the paced check every two hours or so: Linux x64 packaging and its
+    // installed CLI suite, and the image on both architectures, at about USD 1 a run. macOS
+    // runners cost 20 times as much as Linux x64 and Windows 8 to 16 times, so Linux arm64,
+    // Windows and macOS packaging run in the publishing runs, which test every target before
+    // they publish, and in manual build runs. CI's release lanes skip darwin too.
     const event = yield* Config.String("GITHUB_EVENT_NAME");
     const targets =
-      event === "pull_request"
-        ? platforms.filter((target) => target.platform !== "darwin")
-        : platforms;
+      event === "push"
+        ? platforms.filter((target) => target.platform === "linux" && target.arch === "x64")
+        : event === "pull_request"
+          ? platforms.filter((target) => target.platform !== "darwin")
+          : platforms;
     // Each job's matrix entry names the runner it runs on: `cli` overrides the platform's runner.
     const entry = (target: (typeof targets)[number]) => {
       const { cli, ...fields } = target;

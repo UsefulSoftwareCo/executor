@@ -342,26 +342,32 @@ scenarios on Linux instead of moving them to a Mac.
 Cloud scenarios verify
 API/MCP outcomes, workflow correlation, browser failures, app traces and analytics.
 Deployed tests run through `bun run e2e:deployed`; the runner owns provisioning
-and teardown. The release workflow builds and tests Docker images on release PRs
-and manual dispatch. Publication requires an explicit channel dispatch from main.
+and teardown. The release workflow builds and tests Docker images after merge and on
+manual dispatch. Publication requires an explicit channel dispatch from main.
 The Beta workflow (`beta.yml`) makes that dispatch, on each push to main and on a
 backstop schedule GitHub delivers hours late, when main has commits the last beta
 lacks and npm published that beta at least six hours ago, and retries a failed one
 with a bounded back-off; see [Releasing](RELEASING.md#publish-beta).
-Release PRs build and test the Linux and Windows targets only. The macOS targets run
-on manual dispatch, where they are built, signed, notarized and tested. macOS runners
-cost 5-20x as much as Linux runners, so keep them off pull requests.
+Pull requests do not run "Executor releases". CI runs two short release lanes
+instead, chosen like the E2E jobs from the pull request's changes since its merge
+base with `main` (`e2e/release-lanes.ts`): `release-docker` builds the self-host
+image on amd64 and runs the released-image scenarios when the image's source (the
+workspace packages it is built from), its build inputs or a file that suite imports
+changed, and `release-local` packages linux-x64 and runs its install, launcher,
+lockdown, credential store and desktop startup checks when the CLI's or the desktop
+app's source, their build inputs or a packaging script changed. The required `checks / e2e` check covers both, so wait
+for CI only (`ci-wait --pr N --workflow CI`); a lower stack layer runs neither.
 
-Every pull request also runs "Executor releases". Its `changes` job compares the
-pull request's head with its merge base with `main` and runs the release jobs only
-when that diff touches the release paths (the job's filters in
-`.github/workflows/release-artifacts.yml`). A lower stack layer, one another open
-pull request is based on, runs none of them: the top layer's run builds and tests
-the combined change, so a stack is gated on its top layer's run. The workflow's
-`releases` job passes when every job the run needed passed and the others were
-skipped. Gate a merge on that workflow as on CI: wait for both on the pull request,
-or on a stack's top layer (`ci-wait --workflow CI --workflow "Executor releases"`),
-and do not merge while either fails.
+After merge, "Executor releases" runs a paced check on pushes to `main` that change
+a release path, at most once every two hours: Linux x64 packaging with desktop
+crash recovery, its installed CLI suite and the image on both architectures. Linux
+arm64, Windows and macOS run in each beta's publishing run, which tests every
+platform before it publishes, and in manual build runs. A failed run opens or
+updates one issue labelled `release-matrix-red`, which the next green run closes,
+and holds every beta until a later run passes. Fix a failure; do not
+re-run it to make it green. To check a release change before merge, dispatch the
+workflow on the branch with channel `build`. macOS runners cost 5-20x as much as
+Linux runners, so keep them off pull requests.
 
 A failed e2e job uploads raw reports and server logs. Product database files,
 runtime dependencies and private `actors.json` sessions are excluded.

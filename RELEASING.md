@@ -33,6 +33,12 @@ The pinned Bun installer patch keeps its selected binary architecture under
 Rosetta, matching the optional dependencies installed by the package manager.
 Windows installers are currently unsigned.
 
+A Bun runtime release built from a pull request's branch, as one that changes the
+lockdown patch needs, is the one main's publishing runs use from then on. If that
+branch's `scripts/releases/bun-runtime/` changed after the build and before merge,
+delete the release before merging so main builds it again; see
+[the release scripts](scripts/releases/README.md).
+
 ## Desktop update channels
 
 Executor 2 desktop installs update from their own channel feed. The channel is
@@ -107,6 +113,17 @@ on every push to `main` and on a schedule at minutes 8 and 38, and
 history. A push and a scheduled tick decide alike:
 
 - While any **Executor releases** dispatch is queued or running, it waits.
+- It starts no beta and no further attempt while the release matrix on `main` is
+  red. The matrix runs are the **Executor releases** push runs on `main`, paced
+  to one build every two hours, and the build dispatches from `main`. The newest
+  finished one must have passed its `releases` job. A run that tested nothing is
+  skipped: a cancelled one, a push run whose `pace` job did not pass, and a
+  dispatch that is not a build. A failed one holds every beta, with a warning,
+  until a later run passes. To clear a hold once the cause is fixed, merge the fix,
+  or, when it changes no release path, run
+  `gh workflow run release-artifacts.yml --ref main -f channel=build`. A run still
+  pacing or building holds nothing, since the publishing run tests every platform
+  on the commit it publishes and publishes only when all pass.
 - When npm lists the committed version, main has commits after that version's
   `Release 2.0.0-beta.N` commit, and npm published it at least six hours ago,
   it commits `Release 2.0.0-beta.N+1` to `main` and dispatches **Executor

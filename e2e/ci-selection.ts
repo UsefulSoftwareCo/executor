@@ -29,6 +29,10 @@
  * A changed spec file's Cloud scenarios that would otherwise first run on deployed Cloud after
  * merge run in the `cloud-product` job when managed local Cloud can run them, and are reported otherwise.
  *
+ * A pull request also runs the release lanes its changes since main start (e2e/release-lanes.ts):
+ * the released image on amd64, and linux-x64 packaging without desktop crash recovery. Main runs
+ * none; the full release matrix runs there after merge, in Executor releases.
+ *
  * Every run also checks that each scenario the plan schedules runs in CI, in a job here or in
  * Cloud tests on main, unless notRunInCi says why it cannot. That check reads only the job table
  * here. `node e2e/ci-selection.ts verify <ci|deployed> <directory>` checks after a full run that
@@ -51,6 +55,7 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createHash } from "node:crypto";
+import { lanesFor, releaseSources } from "./release-lanes.ts";
 import { Target } from "./report-model.ts";
 import { deployedSuitePattern, scenarios, scenariosForSuite, type CloudMode } from "./test-plan.ts";
 
@@ -1103,7 +1108,8 @@ NodeRuntime.runMain(
             "api",
             `repos/${repository}/compare/${compareBase}...${compareHead}`,
             "--jq",
-            ".files[].filename",
+            // A renamed file counts by its old name too: moving it out of a path changes that path.
+            ".files[] | .filename, (.previous_filename // empty)",
           ]))
             .split("\n")
             .filter((file) => file !== "");
@@ -1115,6 +1121,14 @@ NodeRuntime.runMain(
           prefix.endsWith("/") ? file.startsWith(prefix) : file === prefix,
         ),
       );
+    // The release lanes, from the same comparison: a pull request's changes since main, so the
+    // top of a stack runs them for every layer. A comparison GitHub cannot list in full runs both.
+    const lanes =
+      read === undefined
+        ? undefined
+        : compared === undefined || compared.length >= compareFileLimit
+          ? { "release-docker": ["(every file)"], "release-local": ["(every file)"] }
+          : lanesFor(yield* releaseSources, compared);
     const files =
       named === undefined || "all" in named
         ? undefined
@@ -1226,6 +1240,9 @@ NodeRuntime.runMain(
           : [],
       ),
       `cloud-runners=${cloudRunners.length === 0 ? "" : JSON.stringify(cloudRunners)}`,
+      ...Object.entries(lanes ?? { "release-docker": [], "release-local": [] }).map(
+        ([lane, matched]) => `${lane}=${matched.length > 0 ? "true" : ""}`,
+      ),
       // Line coverage is comparable only between runs of every scenario.
       `full=${files === undefined}`,
     ].join("\n");
@@ -1269,6 +1286,14 @@ NodeRuntime.runMain(
       ...(guardedByFile.length === 0
         ? []
         : ["", `A guarded file differs from main, so its guards run: ${guardedByFile.join(", ")}`]),
+      "",
+      ...(lanes === undefined
+        ? ["Release lanes: none on main, where Executor releases runs the full matrix after merge."]
+        : Object.entries(lanes).map(([lane, matched]) =>
+            matched.length === 0
+              ? `${lane}: skipped, no file it reads changed.`
+              : `${lane}: runs, for ${matched.slice(0, 5).join(", ")}${matched.length > 5 ? ` and ${matched.length - 5} more` : ""}.`,
+          )),
       "",
       "| Job | Scenarios | Runners |",
       "| --- | --- | --- |",
