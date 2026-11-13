@@ -326,7 +326,7 @@ scenarios on Linux instead of moving them to a Mac.
   about four minutes instead of thirteen and twenty. A selection runs on one runner. The
   self-host parts keep their 16 vCPUs about 80% busy; the local ones are mostly idle and wait
   on their longest spec file, so keep local spec files short enough to split.
-- `e2e-self-host-scale` runs the 1,000-account workload and then the 7,000-tool MCP
+- `e2e-self-host-scale` runs the 300-account workload and then the 7,000-tool MCP
   catalog scenario and the slow and stalled tool listing scenarios on its own runner,
   in parallel with the functional jobs. This preserves the four concurrent writers,
   the catalog and listing latency bounds and the inventory case's 120-second limit without

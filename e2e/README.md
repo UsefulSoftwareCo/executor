@@ -51,7 +51,7 @@ E2E_ROWS=12 bun run e2e:self-host
 bun run e2e:self-host --test-name 'password login'
 ```
 
-The default data-volume scenario remains 1,000 accounts with four concurrent
+The default data-volume scenario saves 300 accounts with four concurrent
 writers. Smaller runs use the same assertions. `--test-name` is a regular expression
 matched against scenario titles, without the enclosing Vitest suite name.
 Filtered cases are not counted as executed cases in the evidence view.
@@ -176,7 +176,7 @@ E2E_ROWS=12 bun run e2e:self-host
 bun run e2e:self-host --test-name 'password login'
 ```
 
-The default data-volume scenario remains 1,000 accounts with four concurrent
+The default data-volume scenario saves 300 accounts with four concurrent
 writers. Smaller runs use the same assertions. `--test-name` is a regular expression
 matched against scenario titles, without the enclosing Vitest suite name.
 Filtered cases are not counted as executed cases in the evidence view.
@@ -343,7 +343,7 @@ inventory case, which has 120 seconds. Cleanup hooks retain a separate
 Within a scenario, use `Effect.all` or `Effect.forEach` with a concurrency bound
 when operations are independent. Keep dependent actions ordered.
 
-The self-host load case creates 1,000 accounts through four concurrent API
+The self-host load case creates 300 accounts through four concurrent API
 writers. The MCP catalog scale case deploys 29 apps with 7,000 tools and about
 46 MB of input schemas, plus nine MCP apps whose server never answers, and bounds
 execute and search latency. CI gives both cases their own 16-vCPU Linux runner, one

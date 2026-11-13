@@ -8156,6 +8156,18 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
+  webhookSourceLookup: {
+    fixtures: "actors",
+    file: "webhook-source-lookup.spec.ts",
+    title: "saving an account beside 100,000 webhook sources reads its own source by index",
+    targets: {
+      local: na("Local has no hosted webhook sources linked through members."),
+      "self-host": na(
+        "The query plans are read from Cloud's Postgres; self-host's PGlite runs inside its server.",
+      ),
+      cloud: scheduled,
+    },
+  },
   accountLinking: {
     fixtures: "actors",
     file: "app-account-links.spec.ts",
@@ -10734,7 +10746,7 @@ export const scenarios = plan({
   scale: {
     fixtures: "actors",
     file: "hosted.spec.ts",
-    title: "concurrent owners and admins save every account in a large inventory",
+    title: "concurrent owners and admins save every account of a 300-account inventory",
     targets: {
       "self-host": scheduled,
       cloud: {
