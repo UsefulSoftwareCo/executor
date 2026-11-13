@@ -8672,7 +8672,62 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "app-account-webhooks.spec.ts",
     title:
-      "an app-linked account is the app's webhook source without an actor, serving the webhooks of the requirements it is linked to, also while its owner links it for themselves, and hands the source to the owner's user link when its last app link goes",
+      "an app-linked account is the app's webhook source without an actor, serving the webhooks of the requirements it is linked to",
+    targets: {
+      local: na("Hosted managers and members; Local app-account webhooks have their own scenario."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppAccountWebhookUnlinkOne: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "unlinking an app's account from one of its requirements stops only that requirement's webhook and keeps the other's",
+    targets: {
+      local: na("Hosted managers and members; Local app-account webhooks have their own scenario."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppAccountWebhookBothScopes: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "an account linked for the app and by its owner for themselves stays one source serving its app link, and only its owner may link it for themselves",
+    targets: {
+      local: na("Hosted managers and members; Local app-account webhooks have their own scenario."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppAccountWebhookMovesSource: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "linking the owner's own account for the app moves its webhook source to the app link, and unlinking it hands the source back to the owner",
+    targets: {
+      local: na("Hosted managers and members; Local app-account webhooks have their own scenario."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppAccountWebhookCommandSpans: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "each app-account webhook command's runtime span names its app and the part of the webhook's life it ran",
+    targets: {
+      local: na("Hosted managers and members; Local app-account webhooks have their own scenario."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppAccountWebhookHandBack: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "an app's account hands its source to the owner's user link when its last app link goes, and unlinking that link removes the source",
     targets: {
       local: na("Hosted managers and members; Local app-account webhooks have their own scenario."),
       "self-host": scheduled,
