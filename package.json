@@ -106,6 +106,7 @@
     "e2e:apps-published": "vitest run --config e2e/apps-published.config.ts",
     "e2e:ci-selection": "vitest run --config e2e/ci-selection.config.ts",
     "e2e:ci-supersede": "vitest run --config e2e/ci-supersede.config.ts",
+    "e2e:desktop-next-server": "vitest run --config e2e/desktop-next-server.config.ts",
     "e2e:pr-preview-selection": "vitest run --config e2e/pr-preview-selection.config.ts",
     "e2e:test-stage-unreadable": "vitest run --config e2e/test-stage-unreadable.config.ts",
     "e2e:worker-sizes": "vitest run --config e2e/worker-sizes.config.ts",

@@ -28,6 +28,7 @@ import {
   registeredServer,
   reportReplacedLoadFailuresLate,
   runnerSession,
+  serverExited,
   serverStarts,
   stallStarter,
   stopBackgroundServers,
@@ -140,9 +141,9 @@ const desktopHome = (
       port,
       origin: `http://127.0.0.1:${port}`,
       cli,
-      /** Wait for a server for `directory` other than `pids`; it is stopped with the scope. */
-      nextServer: (pids: ReadonlyArray<number>, directory = data) =>
-        nextServer(directory, pids).pipe(
+      /** Wait for a server for `directory` other than `servers`; it is stopped with the scope. */
+      nextServer: (servers: ReadonlyArray<ServiceRegistration>, directory = data) =>
+        nextServer(directory, servers).pipe(
           Effect.tap((server) => Effect.sync(() => seen.push(server))),
         ),
     };
@@ -213,7 +214,7 @@ it.live(scenarios.desktopCrashRecovery.title, () =>
       yield* dashboard(page);
       expect(new URL(page.url()).origin).toBe(origin);
       const first = yield* nextServer([]);
-      const pids = [first.pid];
+      const servers = [first];
 
       // Stopping the shared server on purpose, as `executor service stop` does, is not a crash,
       // and the desktop does not start another by itself: it says the server was stopped.
@@ -233,8 +234,8 @@ it.live(scenarios.desktopCrashRecovery.title, () =>
       const begun = yield* cli.run(["service", "start"]);
       expect(begun.code, begun.stderr).toBe(0);
       expect(begun.stderr).toContain(startingInCli);
-      const fromCli = yield* nextServer(pids);
-      pids.push(fromCli.pid);
+      const fromCli = yield* nextServer(servers);
+      servers.push(fromCli);
       yield* dashboard(page);
       expect(yield* pairedSession(page)).toEqual({ authenticated: true });
       expect((yield* eventsNamed(data, "Background Executor ready", 2))[1]?.annotations.pid).toBe(
@@ -244,8 +245,8 @@ it.live(scenarios.desktopCrashRecovery.title, () =>
       // `executor service restart` replaces it, and the desktop follows to the new one.
       const restart = yield* cli.run(["service", "restart"]);
       expect(restart.code, restart.stderr).toBe(0);
-      const replacement = yield* nextServer(pids);
-      pids.push(replacement.pid);
+      const replacement = yield* nextServer(servers);
+      servers.push(replacement);
       expect((yield* eventsNamed(data, "Background Executor ready", 3))[2]?.annotations.pid).toBe(
         replacement.pid,
       );
@@ -259,8 +260,8 @@ it.live(scenarios.desktopCrashRecovery.title, () =>
       yield* driver("start from the stopped page", () =>
         page.getByRole("button", { name: "Start", exact: true }).click(),
       );
-      const fromDesktop = yield* nextServer(pids);
-      pids.push(fromDesktop.pid);
+      const fromDesktop = yield* nextServer(servers);
+      servers.push(fromDesktop);
       expect(fromDesktop.url).toBe(origin);
       yield* dashboard(page);
       expect(yield* pairedSession(page)).toEqual({ authenticated: true });
@@ -275,17 +276,17 @@ it.live(scenarios.desktopCrashRecovery.title, () =>
       // A server that crashes leaves its registration behind and stops answering. The desktop
       // replaces it and pairs the window with the new one.
       for (const _ of [1, 2]) {
-        yield* crashServer(pids[pids.length - 1]!);
-        const next = yield* nextServer(pids);
+        yield* crashServer(servers[servers.length - 1]!.pid);
+        const next = yield* nextServer(servers);
         expect(next.url).toBe(origin);
-        pids.push(next.pid);
+        servers.push(next);
         yield* dashboard(page);
         expect(yield* pairedSession(page)).toEqual({ authenticated: true });
       }
       const crashStarts = yield* serverStarts(data);
 
       // A third crash within a minute stops reconnecting and shows recovery; no server starts.
-      yield* crashServer(pids[pids.length - 1]!);
+      yield* crashServer(servers[servers.length - 1]!.pid);
       yield* driver("crash-loop recovery", () =>
         page
           .getByRole("heading", { name: "Executor keeps stopping", exact: true })
@@ -301,13 +302,13 @@ it.live(scenarios.desktopCrashRecovery.title, () =>
       ).toEqual(["unanswered", "unanswered", "unanswered"]);
       expect(yield* serverStarts(data)).toBe(crashStarts);
       const left = yield* registeredServer(data);
-      expect(Option.isNone(left) || !(yield* processAlive(left.value.pid))).toBe(true);
+      expect(Option.isNone(left) || (yield* serverExited(left.value))).toBe(true);
 
       // Restart from the recovery page starts a server and pairs the window again.
       yield* driver("restart from recovery", () =>
         page.getByRole("button", { name: "Restart", exact: true }).click(),
       );
-      const restarted = yield* nextServer(pids);
+      const restarted = yield* nextServer(servers);
       yield* dashboard(page);
       expect(new URL(page.url()).origin).toBe(origin);
       expect(yield* pairedSession(page)).toEqual({ authenticated: true });
@@ -335,7 +336,7 @@ it.live(scenarios.desktopLateLoadFailure.title, () =>
       ).pipe(Effect.forkScoped({ startImmediately: true }));
       const first = yield* nextServer([]);
       yield* crashServer(first.pid);
-      yield* nextServer([first.pid]);
+      yield* nextServer([first]);
       yield* Fiber.join(startupPage);
 
       // That failure was the dashboard's, not the startup page's: the desktop keeps its window
@@ -367,7 +368,7 @@ it.live(scenarios.desktopDashboardRetry.title, () =>
       // again with a fresh pairing link, since the one it used is spent, and the window is paired.
       yield* failDashboardLoads(electron, origin, 2);
       yield* crashServer(first.pid);
-      const second = yield* nextServer([first.pid]);
+      const second = yield* nextServer([first]);
       yield* dashboard(page);
       expect(yield* pairedSession(page)).toEqual({ authenticated: true });
       expect(yield* dashboardLoads(electron)).toEqual({ failed: 2, links: 3 });
@@ -388,7 +389,7 @@ it.live(scenarios.desktopDashboardRetry.title, () =>
       const starts = yield* serverStarts(data);
       yield* failDashboardLoads(electron, origin, "all");
       yield* crashServer(second.pid);
-      const third = yield* nextServer([first.pid, second.pid]);
+      const third = yield* nextServer([first, second]);
       yield* recoveryHeading(page, "Executor could not load its dashboard");
       yield* screenshot(page, "recovery-dashboard");
       expect(
@@ -397,9 +398,14 @@ it.live(scenarios.desktopDashboardRetry.title, () =>
       expect(yield* driver("the failure", () => page.locator("pre").textContent())).toBe(
         `The Executor window could not load the dashboard from ${origin} 3 times in a row. The last time: ERR_BLOCKED_BY_CLIENT (-20).`,
       );
-      expect((yield* failures).slice(2).map(({ annotations }) => annotations.attempt)).toEqual([
-        1, 2, 3,
-      ]);
+      // The desktop logs each failure before it shows the page, but its logger buffers lines and
+      // writes them to the file every 250 ms (rotatingJsonLogger in packages/telemetry/src/files.ts),
+      // so the page can show before the file holds the third; wait for all five.
+      expect(
+        (yield* eventsNamed(data, dashboardFailed, 5))
+          .slice(2)
+          .map(({ annotations }) => annotations.attempt),
+      ).toEqual([1, 2, 3]);
       const [shown] = yield* eventsNamed(data, "Showing desktop recovery", 1);
       expect(shown?.annotations.recovery).toEqual({ stage: "dashboard" });
       expect(yield* dashboardLoads(electron)).toEqual({ failed: 5, links: 6 });
@@ -469,7 +475,8 @@ it.live(
         yield* driver("restart from recovery", () =>
           page.getByRole("button", { name: "Restart", exact: true }).click(),
         );
-        yield* nextServer([stalled.attempt]);
+        // No server is registered, so any that answers is the one Restart started.
+        yield* nextServer([]);
         yield* dashboard(page);
         expect(yield* pairedSession(page)).toEqual({ authenticated: true });
         expect(yield* serverStarts(data)).toBe(2);
@@ -514,12 +521,12 @@ it.live(scenarios.desktopSharedService.title, () =>
       // A server the CLI starts is the one the desktop joins: it starts none of its own.
       const stopped = yield* cli.run(["service", "stop"]);
       expect(stopped.code, stopped.stderr).toBe(0);
-      expect(yield* processAlive(started.pid)).toBe(false);
+      expect(yield* serverExited(started)).toBe(true);
       expect((yield* cli.run(["service", "status"])).stdout.trim()).toBe("stopped");
       const begun = yield* cli.run(["service", "start"]);
       expect(begun.code, begun.stderr).toBe(0);
       expect(begun.stdout.trim()).toBe(origin);
-      const fromCli = yield* nextServer([started.pid]);
+      const fromCli = yield* nextServer([started]);
       const starts = yield* serverStarts(data);
       const electron = yield* launchDesktop({ cwd: home, env });
       const page = yield* driver("desktop window", () => electron.firstWindow());
@@ -636,7 +643,7 @@ it.live(scenarios.desktopMigrationMoved.title, () =>
           yield* dashboard(page);
           // The server runs on the moved data, on the old desktop's port.
           expect(new URL(page.url()).origin).toBe(`http://127.0.0.1:${desktopPort}`);
-          const server = yield* nextServer([old.server.pid]);
+          const server = yield* nextServer([old.server]);
           expect(server.url).toBe(`http://127.0.0.1:${desktopPort}`);
           expect(yield* pairedSession(page)).toEqual({ authenticated: true });
         }),
@@ -727,8 +734,8 @@ const replacedData = (home: ReplacedHome, page: Page) =>
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     expect(new URL(page.url()).origin).toBe(`http://127.0.0.1:${home.desktopPort}`);
-    yield* home.nextServer([home.desktopData.server.pid, home.cliData.server.pid]);
-    expect(yield* processAlive(home.cliData.server.pid)).toBe(false);
+    yield* home.nextServer([home.desktopData.server, home.cliData.server]);
+    expect(yield* serverExited(home.cliData.server)).toBe(true);
     const [replaced] = yield* eventsNamed(home.data, "Moved the desktop's data", 1);
     expect(replaced?.annotations.kind).toBe("replaced");
     const archived = replaced?.annotations.archived ?? "";
@@ -1005,7 +1012,7 @@ it.live(scenarios.desktopMigrationSettings.title, () =>
           const page = yield* driver("desktop window", () => electron.firstWindow());
           yield* dashboard(page);
           expect(new URL(page.url()).origin).toBe(`http://127.0.0.1:${desktopPort}`);
-          const server = yield* home.nextServer([desktopData.server.pid]);
+          const server = yield* home.nextServer([desktopData.server]);
           expect(server.url).toBe(`http://127.0.0.1:${desktopPort}`);
           expect(yield* pairedSession(page)).toEqual({ authenticated: true });
           const [moved] = yield* eventsNamed(home.data, "Moved the desktop's data", 1);
@@ -1121,7 +1128,7 @@ it.live(scenarios.desktopSlowStop.title, () =>
       const begun = yield* cli.run(["service", "start"]);
       expect(begun.code, begun.stderr).toBe(0);
       expect(begun.stderr).toContain(startingInCli);
-      const fromCli = yield* nextServer([server.pid]);
+      const fromCli = yield* nextServer([server]);
       yield* dashboard(page);
       expect(yield* pairedSession(page)).toEqual({ authenticated: true });
       expect((yield* eventsNamed(data, "Background Executor ready", 2))[1]?.annotations.pid).toBe(
@@ -1306,8 +1313,8 @@ it.live(scenarios.desktopReset.title, () =>
         "Executor data reset",
       ]);
       yield* dashboard(page);
-      const third = yield* nextServer([fresh.pid]);
-      expect(yield* processAlive(fresh.pid)).toBe(false);
+      const third = yield* nextServer([fresh]);
+      expect(yield* serverExited(fresh)).toBe(true);
       const second = (yield* fs.readDirectory(backups)).find((name) => name !== moved[0]);
       expect(second).toBeDefined();
       expect(again[1]?.detail).toContain(path.join(backups, second!));
@@ -1350,7 +1357,7 @@ it.live(scenarios.desktopReset.title, () =>
         "Executor data reset",
       ]);
       yield* dashboard(page);
-      yield* nextServer([fresh.pid, third.pid]);
+      yield* nextServer([fresh, third]);
       expect(yield* pairedSession(page)).toEqual({ authenticated: true });
       const crashedBackup = (yield* fs.readDirectory(backups)).find(
         (name) => name !== moved[0] && name !== second,

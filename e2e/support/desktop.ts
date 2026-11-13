@@ -22,6 +22,7 @@ import {
   crashServer,
   ServiceInfo,
   ServiceRegistration,
+  windowsStartTime,
 } from "./background-service.ts";
 import { driver } from "./platform.ts";
 import { reveal } from "./failure-text.ts";
@@ -542,13 +543,15 @@ export const processAlive = (pid: number) =>
   }).pipe(Effect.match({ onSuccess: () => true, onFailure: (exists) => exists }));
 
 /**
- * Wait until `directory`'s registered server is a process other than those in `seen` and answers
+ * Wait until `directory`'s registered server is a server other than those in `seen` and answers
  * ready, and return it. A desktop or CLI that starts one detaches it, so it is found by its file.
+ * Servers are told apart by the id each registers: Windows soon gives a new server the pid of one
+ * that has exited.
  */
-export const nextServer = (directory: string, seen: ReadonlyArray<number>) =>
+export const nextServer = (directory: string, seen: ReadonlyArray<ServiceRegistration>) =>
   registeredServer(directory).pipe(
     Effect.flatMap((found) =>
-      Option.isSome(found) && !seen.includes(found.value.pid)
+      Option.isSome(found) && !seen.some((server) => server.id === found.value.id)
         ? answersReady(found.value).pipe(Effect.map((ready) => (ready ? found : Option.none())))
         : Effect.succeed(Option.none<ServiceRegistration>()),
     ),
@@ -560,7 +563,43 @@ export const nextServer = (directory: string, seen: ReadonlyArray<number>) =>
       }),
     ),
     Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 1200 }),
+    // Say when the new server has an earlier one's pid, so a passing run shows the reuse it met.
+    Effect.tap((server) => {
+      const earlier = seen.find((other) => other.pid === server.pid);
+      return earlier === undefined
+        ? Effect.void
+        : Effect.logInfo(
+            `Server ${server.id} has process ID ${server.pid}, which earlier server ${earlier.id} had`,
+          );
+    }),
+    // It just answered as itself, so its pid names it: record when it started, for `serverExited`.
+    Effect.tap((server) =>
+      process.platform === "win32"
+        ? windowsStartTime(server.pid).pipe(
+            Effect.map(Option.map((start) => windowsStarts.set(server.id, start))),
+          )
+        : Effect.void,
+    ),
   );
+
+/** On Windows, when each server `nextServer` returned started, by its id. */
+const windowsStarts = new Map<string, string>();
+
+/**
+ * Whether `server`, one `nextServer` returned, has exited: its pid names no process or, on Windows,
+ * names a process that started after it did. Windows soon gives a freed pid to the next server.
+ * When the start time cannot be read, only the pid naming no process counts as exited.
+ */
+export const serverExited = (server: ServiceRegistration) =>
+  Effect.gen(function* () {
+    if (!(yield* processAlive(server.pid))) return true;
+    const start = windowsStarts.get(server.id);
+    if (process.platform !== "win32" || start === undefined) return false;
+    // A start time that cannot be read is no proof of another process: the pid's liveness decides.
+    const now = yield* windowsStartTime(server.pid);
+    if (Option.isNone(now)) return !(yield* processAlive(server.pid));
+    return now.value !== start;
+  });
 
 /**
  * Stop every background server this scenario's desktop or CLI left for `directory`: the one
