@@ -19,20 +19,40 @@ const script = "apps/hosted/cloud/scripts/deploy-decision.ts";
 /** The deploy step's name, which the deploy history looks for. */
 const deployStep = "Deploy analytics and the v2 stage";
 
+/** The root manifest, as this repository's is laid out: workspaces, scripts, dependencies. */
+const rootManifest = (
+  change: {
+    readonly scripts?: Record<string, string>;
+    readonly devDependencies?: Record<string, string>;
+  } = {},
+) =>
+  JSON.stringify(
+    {
+      name: "root",
+      workspaces: [
+        "packages/*",
+        "apps/hosted/cloud",
+        "apps/hosted/cloud/web",
+        "apps/marketing",
+        "apps/docs",
+        "apps/local",
+        "e2e/viewer",
+        "apps/hosted/testing",
+      ],
+      scripts: {
+        build: "node scripts/build.ts",
+        "e2e:one": "vitest run --config e2e/one.config.ts",
+        ...change.scripts,
+      },
+      devDependencies: { typescript: "5.9.3", ...change.devDependencies },
+    },
+    null,
+    2,
+  );
+
 /** A small repository laid out as this one is: packages, and the paths no deploy reads. */
 const files: Record<string, string> = {
-  "package.json": JSON.stringify({
-    name: "root",
-    workspaces: [
-      "packages/*",
-      "apps/hosted/cloud",
-      "apps/hosted/cloud/web",
-      "apps/marketing",
-      "apps/docs",
-      "apps/local",
-      "e2e/viewer",
-    ],
-  }),
+  "package.json": rootManifest(),
   "bun.lock": "lock 1\n",
   "tsconfig.json": "{}\n",
   "README.md": "Synthetic readme.\n",
@@ -57,6 +77,8 @@ const files: Record<string, string> = {
   "e2e/tests/example.spec.ts": "export {};\n",
   "e2e/viewer/package.json": JSON.stringify({ name: "viewer" }),
   "e2e/viewer/main.tsx": "export {};\n",
+  "apps/hosted/testing/package.json": JSON.stringify({ name: "testing" }),
+  "apps/hosted/testing/cli.ts": "export {};\n",
   "notes/ci.md": "Synthetic note.\n",
   "patches/example.patch": "patch 1\n",
   ".github/workflows/checks.yml": "name: Checks\n",
@@ -152,7 +174,12 @@ const jobsOf = (run: Run, attempt: Attempt) => {
 };
 
 /** GitHub's Actions API for these runs: the workflow, its runs by creation time, each run's jobs. */
-const stubGitHub = (runs: ReadonlyArray<Run>, down: boolean) =>
+const stubGitHub = (
+  runs: ReadonlyArray<Run>,
+  down: boolean,
+  /** The root manifest at each commit, for GitHub's contents API. */
+  manifests: Readonly<Record<string, string>>,
+) =>
   Effect.gen(function* () {
     const workflowCreated = new Date(Date.now() - 20 * 86_400_000).toISOString();
     const routes = HttpRouter.add(
@@ -165,6 +192,17 @@ const stubGitHub = (runs: ReadonlyArray<Run>, down: boolean) =>
         const path = url.pathname.replace(/^\//, "");
         if (path === `repos/${repository}/actions/workflows/deploy.yml`)
           return HttpServerResponse.jsonUnsafe({ created_at: workflowCreated });
+        if (path === `repos/${repository}/contents/package.json`) {
+          const manifest = manifests[url.searchParams.get("ref") ?? ""];
+          return manifest === undefined
+            ? HttpServerResponse.empty({ status: 404 })
+            : HttpServerResponse.jsonUnsafe({
+                content: Buffer.from(manifest)
+                  .toString("base64")
+                  .replace(/(.{60})/g, "$1\n"),
+                encoding: "base64",
+              });
+        }
         if (path === `repos/${repository}/actions/workflows/deploy.yml/runs`) {
           const [from = "", to = ""] = (url.searchParams.get("created") ?? "").split("..");
           const listed = runs.filter(
@@ -235,6 +273,8 @@ const decide = (input: {
   readonly attempt?: number;
   /** Point the job summary at a path that cannot be written. */
   readonly unwritableSummary?: boolean;
+  /** GitHub answers 404 for the root manifest at every commit but the pushed one. */
+  readonly noBaseManifest?: boolean;
 }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -288,7 +328,11 @@ const decide = (input: {
     const head = yield* commit("Head");
     if (input.rerun === true) record(head, { deployed: "success" });
     if (input.unknownBase === true) record("0".repeat(40), { deployed: "success" });
-    const api = yield* stubGitHub(runs, input.down === true);
+    const manifests: Record<string, string> = {};
+    for (const sha of [...runs.map((run) => run.sha), head])
+      if (sha === head || input.noBaseManifest !== true)
+        manifests[sha] = yield* git("show", `${sha}:package.json`);
+    const api = yield* stubGitHub(runs, input.down === true, manifests);
     const output = path.join(directory, "output");
     const summary = path.join(directory, "summary");
     yield* fs.writeFileString(output, "");
@@ -514,7 +558,8 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
         "scripts/releases/published.ts",
         "tools/unknown/file.ts",
         "LICENSE",
-        "e2e/viewer/main.tsx",
+        "apps/hosted/testing/package.json",
+        "apps/hosted/testing/binding.gyp",
       ]) {
         const run = yield* decide({
           history: [],
@@ -765,6 +810,139 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
       });
       expect(unlisted.deploy).toBe("true");
       expect(unlisted.summary).toContain("did not succeed");
+    }),
+  );
+
+  it.effect("a change to e2e: scripts alone is not a deploy input, and anything more is", () =>
+    Effect.gen(function* () {
+      const tests = { "e2e/tests/example.spec.ts": "export const changed = 1;\n" };
+      // A new spec registers its command; changing or removing one is the same.
+      for (const scripts of [
+        { "e2e:two": "vitest run --config e2e/two.config.ts" },
+        { "e2e:one": "vitest run --config e2e/one-renamed.config.ts" },
+      ]) {
+        const run = yield* decide({
+          history: [],
+          change: { ...tests, "package.json": rootManifest({ scripts }) },
+        });
+        expect(run.deploy, JSON.stringify(scripts)).toBe("false");
+        expect(run.summary).toContain(
+          "The root `package.json` changed only in `e2e:*` scripts, which no deploy step runs, so it is not counted.",
+        );
+      }
+      // The unsafe direction: anything else in the manifest changes with it.
+      const unsafe = {
+        "a dependency": rootManifest({
+          scripts: { "e2e:two": "vitest run" },
+          devDependencies: { typescript: "5.9.4" },
+        }),
+        "another script": rootManifest({
+          scripts: { "e2e:two": "vitest run", build: "node scripts/build-all.ts" },
+        }),
+        "a new script that is not e2e:": rootManifest({ scripts: { e2e2: "vitest run" } }),
+        "a key order that changed": (() => {
+          const { name, workspaces, scripts, devDependencies } = JSON.parse(rootManifest());
+          return JSON.stringify({ name, workspaces, devDependencies, scripts }, null, 2);
+        })(),
+        "a manifest that does not parse": `${rootManifest({ scripts: { "e2e:two": "vitest run" } })},`,
+      };
+      for (const [name, manifest] of Object.entries(unsafe)) {
+        const run = yield* decide({ history: [], change: { ...tests, "package.json": manifest } });
+        expect(run.deploy, name).toBe("true");
+        expect(run.summary, name).toMatch(/- `package\.json`|Could not decide, so deploying/);
+      }
+      // JSON.parse keeps a duplicated key's last copy, Bun its first: a first `scripts` object that
+      // Bun runs must not hide behind an unchanged second one with a new e2e: script.
+      const duplicated = (first: Record<string, string>) =>
+        rootManifest({ scripts: { "e2e:two": "vitest run" } }).replace(
+          '  "scripts": {',
+          `  "scripts": ${JSON.stringify(first)},\n  "scripts": {`,
+        );
+      const hidden = {
+        "a duplicated scripts object that changes prepare": duplicated({ prepare: "node evil.ts" }),
+        "a duplicated scripts object whose build runs an e2e: script": duplicated({
+          build: "bun run e2e:one",
+        }),
+      };
+      for (const [name, manifest] of Object.entries(hidden)) {
+        const run = yield* decide({ history: [], change: { ...tests, "package.json": manifest } });
+        expect(run.deploy, name).toBe("true");
+        expect(run.summary, name).toContain("**Could not decide, so deploying:**");
+        expect(run.summary, name).toContain("the root package.json does not read faithfully");
+      }
+      // The base read the same way: a duplicate there, and a canonical head with only an e2e:
+      // change, still counts the manifest.
+      const baseDuplicate = yield* decide({
+        history: [
+          { change: { "package.json": duplicated({ build: "node a.ts" }) }, deployed: "success" },
+        ],
+        change: {
+          ...tests,
+          "package.json": rootManifest({ scripts: { "e2e:three": "vitest run" } }),
+        },
+      });
+      expect(baseDuplicate.deploy).toBe("true");
+      expect(baseDuplicate.summary).toContain("- `package.json`");
+      // A base manifest GitHub does not return cannot be compared: the decision deploys.
+      const noBase = yield* decide({
+        history: [],
+        change: {
+          ...tests,
+          "package.json": rootManifest({ scripts: { "e2e:two": "vitest run" } }),
+        },
+        noBaseManifest: true,
+      });
+      expect(noBase.deploy).toBe("true");
+      expect(noBase.summary).toContain("**Could not decide, so deploying:**");
+    }),
+  );
+
+  it.effect("a root script that runs an e2e: script fails the decision, which deploys", () =>
+    Effect.gen(function* () {
+      // Were a deploy step to run `build`, a change to `e2e:one` would change what it runs.
+      const run = yield* decide({
+        history: [
+          {
+            change: { "package.json": rootManifest({ scripts: { build: "bun run e2e:one" } }) },
+            deployed: "success",
+          },
+        ],
+        change: { "e2e/tests/example.spec.ts": "export const changed = 1;\n" },
+      });
+      expect(run.exitCode).toBe(0);
+      expect(run.deploy).toBe("true");
+      expect(run.summary).toContain("**Could not decide, so deploying:**");
+      expect(run.summary).toContain("root scripts build name an e2e: script");
+    }),
+  );
+
+  it.effect("a workspace package under a listed path counts only where bun install reads it", () =>
+    Effect.gen(function* () {
+      // The test accounts and Cloud devtools, and the E2E viewer: no production step reads them.
+      for (const file of ["apps/hosted/testing/cli.ts", "e2e/viewer/main.tsx"]) {
+        const run = yield* decide({
+          history: [],
+          change: { [file]: "export const changed = 1;\n" },
+        });
+        expect(run.deploy, file).toBe("false");
+      }
+      // A package that runs a script when installed counts in full.
+      const installs = yield* decide({
+        history: [
+          {
+            change: {
+              "apps/hosted/testing/package.json": JSON.stringify({
+                name: "testing",
+                scripts: { postinstall: "node setup.ts" },
+              }),
+            },
+            deployed: "success",
+          },
+        ],
+        change: { "apps/hosted/testing/setup.ts": "export const changed = 1;\n" },
+      });
+      expect(installs.deploy).toBe("true");
+      expect(installs.summary).toContain("- `apps/hosted/testing/setup.ts`");
     }),
   );
 });

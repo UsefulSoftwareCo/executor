@@ -36,15 +36,25 @@ import {
   Schema,
   Stream,
 } from "effect";
+import { Base64 } from "effect/encoding";
 import { FetchHttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { runAttemptUrl } from "../src/infrastructure/deploy-events.ts";
 import {
+  githubGet,
   lostRequest,
   makeDeployHistory,
   newestDeployStart,
 } from "../src/infrastructure/deploy-history.ts";
-import { isDeployInput, workspaceDirectories } from "../src/infrastructure/deploy-inputs.ts";
+import {
+  installScripts,
+  isDeployInput,
+  readManifest,
+  rootManifestChangeIsE2eOnly,
+  scriptsNamingE2e,
+  workspaceDirectories,
+  type WorkspaceDirectory,
+} from "../src/infrastructure/deploy-inputs.ts";
 
 class DeployDecisionFailed extends Schema.TaggedError<DeployDecisionFailed>()(
   "DeployDecisionFailed",
@@ -60,6 +70,8 @@ interface Decision {
   readonly base?: { readonly sha: string; readonly url: string };
   readonly matched: ReadonlyArray<string>;
   readonly changed: number;
+  /** The root package.json changed, but only in `e2e:*` scripts. */
+  readonly e2eScriptsOnly?: boolean;
 }
 const deploy = (reason: string, fields: Partial<Decision> = {}): Decision => ({
   deploy: true,
@@ -69,20 +81,51 @@ const deploy = (reason: string, fields: Partial<Decision> = {}): Decision => ({
   ...fields,
 });
 
-const RootManifest = Schema.fromJsonString(
-  Schema.Struct({ workspaces: Schema.optional(Schema.Array(Schema.String)) }),
-);
+const RootManifest = Schema.Struct({ workspaces: Schema.optional(Schema.Array(Schema.String)) });
+const PackageScripts = Schema.Struct({
+  scripts: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
+});
 
-/** The workspace patterns of the checkout at `root`. */
-const workspacePatterns = (root: string) =>
+/**
+ * The checkout's workspace directories, each with whether `bun install` runs scripts there: a
+ * manifest that does not read faithfully (`readManifest`) counts as one that does.
+ */
+const workspacesOf = (root: string, manifest: unknown) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const manifest = yield* fs
-      .readFileString(path.join(root, "package.json"))
-      .pipe(Effect.flatMap(Schema.decodeUnknownEffect(RootManifest)));
-    return manifest.workspaces ?? [];
+    const { workspaces = [] } = yield* Schema.decodeUnknownEffect(RootManifest)(manifest);
+    return yield* Effect.forEach(
+      workspaceDirectories(workspaces),
+      (workspace): Effect.Effect<WorkspaceDirectory, never, FileSystem.FileSystem> =>
+        fs.readFileString(path.join(root, workspace.directory, "package.json")).pipe(
+          Effect.map(readManifest),
+          Effect.flatMap(Schema.decodeUnknownEffect(PackageScripts)),
+          Effect.map(({ scripts = {} }) => installScripts.some((name) => name in scripts)),
+          Effect.orElseSucceed(() => true),
+          Effect.map((installs) => ({ ...workspace, installs })),
+        ),
+    );
   });
+
+const Contents = Schema.Struct({ content: Schema.String, encoding: Schema.String });
+
+/**
+ * The root manifest at `sha`, read through GitHub: the decide job's checkout holds no file
+ * contents but this commit's.
+ */
+const manifestAt = (repository: string, sha: string) =>
+  githubGet(Contents, `repos/${repository}/contents/package.json?ref=${sha}`).pipe(
+    Effect.flatMap(({ content, encoding }) =>
+      Effect.gen(function* () {
+        if (encoding !== "base64")
+          return yield* new DeployDecisionFailed({
+            message: `GitHub returned package.json at ${sha} encoded as ${encoding}`,
+          });
+        return yield* Effect.fromResult(Base64.decodeString(content.replace(/\s/g, "")));
+      }),
+    ),
+  );
 
 /**
  * One git command's standard output. Any exit status but 0 fails, so a commit git does not hold
@@ -159,14 +202,36 @@ const decide = Effect.gen(function* () {
   const changed = (yield* git("diff", "-z", "--name-only", "--no-renames", base.sha, head))
     .split("\0")
     .filter((file) => file !== "");
-  const workspaces = workspaceDirectories(yield* workspacePatterns(root));
-  const matched = changed.filter((file) => isDeployInput(file, workspaces));
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const manifest = yield* fs.readFileString(path.join(root, "package.json"));
+  // Everything below reads the root manifest, so it must have one reading: the one Bun takes.
+  const parsed = readManifest(manifest);
+  if (parsed === undefined)
+    return yield* new DeployDecisionFailed({
+      message:
+        "the root package.json does not read faithfully (a duplicated key, a rewritten escape or a non-canonical number), so what Bun reads from it cannot be shown",
+    });
+  // Only a change to `e2e:*` scripts leaves the root manifest out, and only while no other script
+  // runs one: the decision fails, and so deploys, while one does.
+  const naming = scriptsNamingE2e(manifest);
+  if (naming.length > 0)
+    return yield* new DeployDecisionFailed({
+      message: `root scripts ${naming.join(", ")} name an e2e: script, so a change to one may change what a deploy runs`,
+    });
+  const e2eOnly =
+    changed.includes("package.json") &&
+    rootManifestChangeIsE2eOnly(yield* manifestAt(repository, base.sha), manifest);
+  const workspaces = yield* workspacesOf(root, parsed);
+  const matched = changed.filter(
+    (file) => !(file === "package.json" && e2eOnly) && isDeployInput(file, workspaces),
+  );
   return matched.length > 0 || changed.length === 0
     ? deploy(
         matched.length > 0
           ? "files a deploy may depend on changed since the last deploy"
           : "git lists no change since the last deploy, which a different commit should not have",
-        { base, matched, changed: changed.length },
+        { base, matched, changed: changed.length, e2eScriptsOnly: e2eOnly },
       )
     : ({
         deploy: false,
@@ -174,6 +239,7 @@ const decide = Effect.gen(function* () {
         base,
         matched,
         changed: changed.length,
+        e2eScriptsOnly: e2eOnly,
       } satisfies Decision);
 });
 
@@ -210,6 +276,12 @@ const summaryOf = (decision: Decision) => {
               ? [`- and ${decision.matched.length - shown} more`]
               : []),
           ]),
+    ...(decision.e2eScriptsOnly === true
+      ? [
+          "",
+          "The root `package.json` changed only in `e2e:*` scripts, which no deploy step runs, so it is not counted.",
+        ]
+      : []),
   ].join("\n");
 };
 
