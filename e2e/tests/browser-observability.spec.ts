@@ -400,9 +400,12 @@ layer(HostedLive, { excludeTestServices: true })("Browser observability", (it) =
             .click()
             .then(() => page.waitForURL(/\/groups$/)),
         );
-        // A refused export's records, if any, go with the exporter's next export, a second later.
+        // The Groups page's own exports, refused and resent, end once its work does, sooner or
+        // later on a busy runner: wait until it has started none for 2 seconds. A page that
+        // exported records of its own exports never goes quiet; after the wait's 20 seconds the
+        // window below counts them.
+        yield* exports.idle("2 seconds").pipe(Effect.orElseSucceed(() => undefined));
         // Absence can only be watched over time: several export intervals pass with nothing to send.
-        yield* Effect.sleep("3 seconds");
         const settled = (yield* exports.bodies).length;
         yield* Effect.sleep("5 seconds");
         const idle = (yield* exports.bodies).slice(settled);
@@ -431,7 +434,7 @@ layer(HostedLive, { excludeTestServices: true })("Browser observability", (it) =
             .length,
           exportsCarryingResends: carried.length,
         });
-        expect(quiet).toBe(0);
+        expect(quiet, "exports the idle page started").toBe(0);
         expect(carried.length).toBeGreaterThan(0);
       }).pipe(Effect.scoped),
     ),
