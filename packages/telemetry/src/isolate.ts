@@ -5,9 +5,10 @@
  * the span and log exporters are built once per isolate and only buffer. Each event exports
  * everything buffered so far when it closes. Between those, the isolate holds at most one timer:
  * the first span, log or measurement buffered after a flush arms it, and it exports everything
- * buffered within `flushDelay`. A span therefore leaves within `flushDelay` of its end, or with an
- * earlier event's close. While nothing is buffered no timer runs, so an open stream that sends
- * nothing costs no telemetry work.
+ * buffered within `flushDelay`. A span therefore leaves within `flushDelay` of its end, or sooner
+ * with another event's close. After a lost timer (below) it waits instead for an event's close, or
+ * for the next item buffered once that timer is `staleAfter` old, which arms another. While
+ * nothing is buffered no timer runs, so an open stream that sends nothing costs no telemetry work.
  *
  * A Worker pins a timer and a fetch to the event whose code started them, and workerd refuses to
  * resume or interrupt a fiber from another request (patches/effect-otlp-exporter-loop.md). The
@@ -18,10 +19,15 @@
  * Object runs both on its own, but is kept alive the same way. An event's close therefore waits at
  * most `flushDelay` and the one export it may have started.
  *
+ * A timer disarms itself before it flushes, so a healthy one stays armed only `flushDelay`: a slow
+ * export and its retries never make it look old. An event cancelled before its timer fires stops
+ * the timer without disarming it. A timer armed longer ago than `staleAfter` has therefore been
+ * lost, and the next item buffered arms another.
+ *
  * Metrics stay per event. Their delta histograms report each event's own
  * minimum and maximum, which an isolate-wide registry cannot reconstruct.
  */
-import { Context, Duration, Effect, Layer, Logger, Metric, Redacted, Scope } from "effect";
+import { Clock, Context, Duration, Effect, Layer, Logger, Metric, Redacted, Scope } from "effect";
 import { HttpBody, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import {
   OtlpExporter,
@@ -47,6 +53,14 @@ interface Pending {
 
 /** How long the isolate's flush waits after the first item buffered since the last flush. */
 const flushDelay = Duration.seconds(1);
+/**
+ * How long a timer may stay armed before it is taken for lost. A healthy timer is armed for
+ * `flushDelay`, and longer only while the isolate's event loop is held past its due time; five
+ * times that leaves the room. A timer taken for lost too early costs one more timer, which exports
+ * what is buffered or nothing: each flush takes everything pending, so no batch is lost or sent
+ * twice.
+ */
+const staleAfter = Duration.seconds(5);
 
 /**
  * Flushes this isolate has run, on demand or at an event's close. Module state lives as long as
@@ -106,15 +120,23 @@ export const isolateTelemetry = (
 ) =>
   Effect.gen(function* () {
     const pending: Pending = { traces: [], logs: [], metrics: [] };
+    const clock = yield* Clock.Clock;
     /** Whether anything was buffered since the last flush began. */
     let dirty = false;
-    /** Whether a flush timer is waiting; its event is kept alive until it has flushed. */
-    let armed = false;
+    /**
+     * The waiting flush timer, by when it was armed; its event is kept alive until it has flushed.
+     * Undefined when none waits.
+     */
+    let armed: { readonly at: number } | undefined;
     // Assigned once `flush` exists; nothing is buffered while the exporters are being built.
     let arm = () => {};
     const onBuffered = () => {
       dirty = true;
-      if (!armed) arm();
+      if (
+        armed === undefined ||
+        clock.currentTimeMillisUnsafe() - armed.at > Duration.toMillis(staleAfter)
+      )
+        arm();
     };
     const resource = {
       serviceName: config.service,
@@ -220,15 +242,20 @@ export const isolateTelemetry = (
 
     // A root fiber: it belongs to no event's scope, so no other request resumes or interrupts it.
     // It is disarmed before it flushes, so an item buffered during the export arms the next one,
-    // and it exports nothing when an event's close already took what was buffered.
+    // and it exports nothing when an event's close already took what was buffered. A timer taken
+    // for lost that fires after all disarms only itself.
     arm = () => {
-      armed = true;
+      const timer = { at: clock.currentTimeMillisUnsafe() };
+      armed = timer;
       keepAlive(
         Effect.runPromise(
           Effect.sleep(flushDelay).pipe(
             Effect.andThen(
               Effect.suspend(() => {
-                armed = false;
+                // A timer taken for lost that fires after all clears only its own arming. With
+                // Worker timers in workerd this cannot happen: a lost timer's event has ended,
+                // and its timer never fires. It covers a timer that fires late.
+                if (armed === timer) armed = undefined;
                 return dirty ? flush : Effect.void;
               }),
             ),

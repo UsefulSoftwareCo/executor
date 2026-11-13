@@ -12,8 +12,16 @@
  * as with spans buffered after an event's close took the rest:
  *
  * - "timer": the request answers 100 ms after buffering a span, before the flush timer is due.
- * - "post": the request answers 1.3 s after buffering a span, while the timer's export, which the
- *   collector holds open, is in flight.
+ * - "post": the request answers 2.5 s after buffering a span, while the timer's export, which the
+ *   collector holds open, is in flight: the export starts at 1 s, so it has 1.5 s to leave.
+ * - "stale": one Worker request leaves its timer unkept, so it never settles; a second request on
+ *   the same exporters, after the 5 s that make a timer stale, still gets both spans exported.
+ * - "pair": one request buffers a second span 300 ms after the first, while the first's timer is
+ *   armed: that timer exports both, and no second timer starts.
+ *
+ * A timer taken for lost that fires after all clears only its own arming. With Worker timers in
+ * workerd that cannot happen, since a lost timer's event has ended and its timer never fires, so no
+ * case here reaches it.
  *
  * When workerd is upgraded these cases say whether the platform's behaviour moved: a Worker that
  * started to keep timers or fetches past its event would fail the cases without the hook, and a
@@ -21,7 +29,7 @@
  */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, FileSystem, Path, Schedule, Schema } from "effect";
+import { Effect, Fiber, FileSystem, Path, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createServer, type IncomingMessage } from "node:http";
@@ -33,29 +41,53 @@ import { DurableObject, waitUntil } from "cloudflare:workers";
 import { Effect, Layer, Scope } from "effect";
 import { isolateTelemetry } from ${JSON.stringify(isolate)};
 
-/** Build one case's exporters, with the runtime's waitUntil as the keepAlive hook or with none. */
-const exporters = (collector, kept) =>
-  Effect.runPromise(
-    isolateTelemetry(
-      {
-        service: "telemetry-lifetime-probe",
-        version: "0",
-        environment: "probe",
-        clock: "cloudflare-io",
-        traces: { url: collector + "/v1/traces" },
-      },
-      kept ? waitUntil : () => {},
+/** Each group's exporters, and whether its current request keeps its event alive for the timer. */
+const groups = new Map();
+const exporters = (collector, group) => {
+  const found = groups.get(group);
+  if (found !== undefined) return found;
+  const built = {
+    keep: false,
+    // Calls of the keepAlive hook: one for each timer the exporters started.
+    calls: 0,
+    layer: Effect.runPromise(
+      isolateTelemetry(
+        {
+          service: "telemetry-lifetime-probe",
+          version: "0",
+          environment: "probe",
+          clock: "cloudflare-io",
+          traces: { url: collector + "/v1/traces" },
+        },
+        // The runtime's waitUntil as the keepAlive hook, or none.
+        (work) => {
+          built.calls += 1;
+          if (built.keep) waitUntil(work);
+        },
+      ),
     ),
-  );
+  };
+  groups.set(group, built);
+  return built;
+};
 
 async function run(env, url) {
   const id = url.searchParams.get("id");
-  const layer = await exporters(env.COLLECTOR, url.searchParams.get("keep") === "yes");
+  const group = exporters(env.COLLECTOR, url.searchParams.get("group"));
+  const layer = await group.layer;
+  group.keep = url.searchParams.get("keep") === "yes";
   // Never closed: the case's request ends with only the timer left to export its span.
   const scope = Effect.runSync(Scope.make());
   const context = await Effect.runPromise(Layer.buildWithScope(layer, scope));
   await Effect.runPromise(Effect.provideContext(Effect.withSpan(Effect.void, "probe " + id), context));
-  await new Promise((resolve) => setTimeout(resolve, url.searchParams.get("mode") === "post" ? 1300 : 100));
+  const mode = url.searchParams.get("mode");
+  if (mode === "pair") {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await Effect.runPromise(
+      Effect.provideContext(Effect.withSpan(Effect.void, "probe " + id + "-second"), context),
+    );
+  }
+  await new Promise((resolve) => setTimeout(resolve, mode === "timer" ? 100 : mode === "pair" ? 2200 : 2500));
   return new Response("answered " + id);
 }
 
@@ -69,6 +101,7 @@ export default {
   fetch(request, env) {
     const url = new URL(request.url);
     if (url.pathname === "/health") return new Response("ok");
+    if (url.pathname === "/calls") return new Response(String(groups.get(url.searchParams.get("group"))?.calls ?? 0));
     if (url.searchParams.get("in") === "object") return env.PROBE.get(env.PROBE.idFromName(url.searchParams.get("id"))).fetch(request);
     return run(env, url);
   },
@@ -264,12 +297,19 @@ it.live(
         Effect.retry({ times: 100, schedule: Schedule.spaced("100 millis") }),
       );
 
-      /** Send one case and wait for its answer. */
-      const request = (input: { in: "worker" | "object"; mode: "timer" | "post"; keep: boolean }) =>
+      /** Send one case and wait for its answer. A case's exporters are its group's, by default its own. */
+      const request = (input: {
+        in: "worker" | "object";
+        mode: "timer" | "post" | "pair";
+        keep: boolean;
+        id?: string;
+        group?: string;
+      }) =>
         Effect.gen(function* () {
-          const id = `${input.in}-${input.mode}-${input.keep ? "kept" : "unkept"}`;
+          const id = input.id ?? `${input.in}-${input.mode}-${input.keep ? "kept" : "unkept"}`;
           const url = new URL(origin);
           url.searchParams.set("id", id);
+          url.searchParams.set("group", input.group ?? id);
           url.searchParams.set("in", input.in);
           url.searchParams.set("mode", input.mode);
           url.searchParams.set("keep", input.keep ? "yes" : "no");
@@ -306,6 +346,31 @@ it.live(
           return { meanwhile, after: outcomes(id) };
         });
 
+      /**
+       * A timer whose event ended before it fired, as a cancelled event leaves it: a later item on
+       * the same exporters, once the timer is 5 s old, arms another, which exports both. Runs beside
+       * the other cases.
+       */
+      const stale = yield* Effect.gen(function* () {
+        const first = yield* request({
+          in: "worker",
+          mode: "timer",
+          keep: false,
+          id: "stale-first",
+          group: "stale",
+        });
+        yield* Effect.sleep("7 seconds");
+        const second = yield* request({
+          in: "worker",
+          mode: "timer",
+          keep: true,
+          id: "stale-second",
+          group: "stale",
+        });
+        yield* Effect.sleep("2500 millis");
+        return { first: outcomes(first), second: outcomes(second) };
+      }).pipe(Effect.forkChild);
+
       const results = {
         workerTimerUnkept: yield* timer("worker", false),
         workerTimerKept: yield* timer("worker", true),
@@ -315,6 +380,12 @@ it.live(
         objectTimerKept: yield* timer("object", true),
         objectPostUnkept: yield* post("object", false),
         objectPostKept: yield* post("object", true),
+        stale: yield* Fiber.join(stale),
+        pair: yield* Effect.gen(function* () {
+          const id = yield* request({ in: "worker", mode: "pair", keep: true, id: "pair" });
+          const calls = yield* text(`${origin}/calls?group=${id}`);
+          return { calls, first: outcomes(id), second: outcomes(`${id}-second`) };
+        }),
       };
 
       // Each case is checked on its own, so a failure names every case that changed.
@@ -332,6 +403,15 @@ it.live(
         meanwhile: ["held"],
         after: ["delivered"],
       });
+      // An item buffered while a healthy timer is armed starts no second timer; that timer exports
+      // both items in one batch.
+      expect
+        .soft(results.pair, "An item buffered while a timer is armed starts no second timer")
+        .toEqual({ calls: "1", first: ["delivered"], second: ["delivered"] });
+      // A timer left unsettled is replaced once stale, and the item it held leaves with the next.
+      expect
+        .soft(results.stale, "A stale timer is replaced, and both spans leave")
+        .toEqual({ first: ["delivered"], second: ["delivered"] });
       // A Durable Object event keeps both running either way.
       for (const [name, outcome] of [
         ["objectTimerUnkept", results.objectTimerUnkept],
@@ -344,5 +424,6 @@ it.live(
       ] as const)
         expect.soft(outcome, name).toEqual({ meanwhile: ["held"], after: ["delivered"] });
     }).pipe(Effect.scoped, Effect.provide([NodeServices.layer, FetchHttpClient.layer])),
-  60_000,
+  // The cases take about 30 s in all; the stale one runs beside the others.
+  90_000,
 );
