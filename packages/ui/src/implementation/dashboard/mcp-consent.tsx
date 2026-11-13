@@ -176,6 +176,7 @@ export function McpConsentSelect({
   options,
   onChange,
   disabled = false,
+  busy = false,
   children,
 }: {
   readonly id: string;
@@ -183,6 +184,8 @@ export function McpConsentSelect({
   readonly options: readonly ConsentOption[];
   readonly onChange: (value: string) => void;
   readonly disabled?: boolean | undefined;
+  /** The menu's entries are still being read; its value can already be shown and kept. */
+  readonly busy?: boolean | undefined;
   /** Further menu entries, after the options. */
   readonly children?: ReactNode;
 }) {
@@ -190,6 +193,7 @@ export function McpConsentSelect({
     <Select value={value} onValueChange={onChange} disabled={disabled}>
       <SelectTrigger
         id={id}
+        aria-busy={busy || undefined}
         className="-mr-2 h-8 gap-1.5 border-0 bg-transparent px-2 text-[14px] font-normal shadow-none hover:bg-muted data-[state=open]:bg-muted max-[740px]:text-[14px] dark:bg-transparent"
       >
         <SelectValue>{options.find((option) => option.value === value)?.label}</SelectValue>
@@ -277,30 +281,54 @@ export function McpConsentTargetRows({ target }: { readonly target: GrantTarget 
 /** Menu values that no connection ID can equal. */
 const everyApp = "*";
 const newConnection = "+";
+const retryList = "!";
 const appsLabel = (apps: readonly string[]) => {
   const shown = apps.slice(0, 3).join(", ");
   return apps.length > 3 ? `${shown} and ${apps.length - 3} more` : shown;
 };
 
+/** The person's connections behind the Access menu, as far as they have been read. */
+export type ConsentConnectionList =
+  | { readonly kind: "loading" }
+  | { readonly kind: "failed"; readonly retry: () => void }
+  | { readonly kind: "loaded"; readonly connections: readonly ConsentConnection[] };
+
+/** Where the connections will be listed, shaped like two of their entries. */
+function ConnectionsLoading() {
+  return (
+    <div role="status" aria-label="Loading connections" className="flex flex-col">
+      {["w-28", "w-20"].map((width) => (
+        <div key={width} className="flex flex-col gap-1.5 px-2 py-2.5">
+          <Skeleton className={`h-3.5 ${width}`} />
+          <Skeleton className="h-3 w-40" />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /**
- * Which apps the grant reaches, chosen from the person's connections. A chosen connection missing
- * from the list, such as one revoked since, stays chosen and says so; the server refuses it.
+ * Which apps the grant reaches, chosen from the person's connections. The menu shows its value
+ * while the connections are read; the list loads, or fails with a retry, inside the open menu. A
+ * chosen connection missing from the list, such as one revoked since, stays chosen and says so;
+ * the server refuses it.
  */
 export function McpConsentAccess({
-  connections,
+  list,
   value,
   onChange,
   onNewConnection,
   disabled,
 }: {
-  readonly connections: readonly ConsentConnection[];
+  readonly list: ConsentConnectionList;
   readonly value: GrantAccessChoice;
   readonly onChange: (value: GrantAccessChoice) => void;
-  /** Opens the connection editor; the page decides where. */
-  readonly onNewConnection: () => void;
+  /** Opens the connection editor; the page decides where. Offered once the list has loaded. */
+  readonly onNewConnection: (connections: readonly ConsentConnection[]) => void;
   readonly disabled?: boolean | undefined;
 }) {
-  const missing =
+  const connections = list.kind === "loaded" ? list.connections : [];
+  const chosen =
     value.kind === "connection" && !connections.some((item) => item.id === value.id)
       ? value.id
       : undefined;
@@ -310,6 +338,7 @@ export function McpConsentAccess({
         id="mcp-consent-access"
         value={value.kind === "all" ? everyApp : value.id}
         disabled={disabled}
+        busy={list.kind === "loading"}
         options={[
           {
             value: everyApp,
@@ -321,28 +350,43 @@ export function McpConsentAccess({
             label: item.name,
             detail: appsLabel(item.apps),
           })),
-          ...(missing === undefined
+          ...(chosen === undefined
             ? []
-            : [
-                {
-                  value: missing,
-                  label: "Unavailable connection",
-                  detail: "This connection no longer exists. Choose another.",
-                },
-              ]),
+            : list.kind === "loaded"
+              ? [
+                  {
+                    value: chosen,
+                    label: "Unavailable connection",
+                    detail: "This connection no longer exists. Choose another.",
+                  },
+                ]
+              : // Until the list is read, the chosen connection is known only by its ID.
+                [{ value: chosen, label: "One of your connections" }]),
         ]}
-        onChange={(chosen) => {
-          if (chosen === newConnection) onNewConnection();
-          else if (chosen === everyApp) onChange({ kind: "all" });
+        onChange={(next) => {
+          if (next === newConnection) {
+            if (list.kind === "loaded") onNewConnection(list.connections);
+          } else if (next === retryList) {
+            if (list.kind === "failed") list.retry();
+          } else if (next === everyApp) onChange({ kind: "all" });
           else {
-            const found = connections.find((item) => item.id === chosen);
+            const found = connections.find((item) => item.id === next);
             if (found !== undefined) onChange({ kind: "connection", id: found.id });
           }
         }}
       >
+        {list.kind === "loading" && <ConnectionsLoading />}
+        {list.kind === "failed" && (
+          <>
+            <p role="alert" className="m-0 px-2 py-1.5 text-[13px] text-destructive">
+              Could not load your connections.
+            </p>
+            <SelectItem value={retryList}>Retry</SelectItem>
+          </>
+        )}
         <SelectSeparator />
         {/* It opens the connection editor elsewhere; the arrow says so before it is chosen. */}
-        <SelectItem value={newConnection}>
+        <SelectItem value={newConnection} disabled={list.kind !== "loaded"}>
           <span className="flex items-center gap-1.5">
             New connection
             <HugeiconsIcon

@@ -18,13 +18,19 @@ export const consentValue = (page: Page, label: ConsentRow) =>
       .then((text) => text.trim()),
   );
 
-/** Rows read in the browser show a status while they load. */
+/**
+ * Rows read in the browser show a status while they load; the Access menu shows its value at once
+ * and is busy until its connections are read.
+ */
 export const consentSettled = (page: Page) =>
-  Promise.all(
-    ["Loading organization", "Loading access"].map((name) =>
-      page.getByRole("status", { name, exact: true }).waitFor({ state: "detached" }),
-    ),
-  ).then(() => undefined);
+  Promise.all([
+    page
+      .getByRole("status", { name: "Loading organization", exact: true })
+      .waitFor({ state: "detached" }),
+    consentMenu(page, "Access")
+      .and(page.locator('[aria-busy="true"]'))
+      .waitFor({ state: "detached" }),
+  ]).then(() => undefined);
 
 /** The menu that sets a row, when the person may change it. */
 export const consentMenu = (page: Page, label: ConsentRow) =>
@@ -33,6 +39,14 @@ export const consentMenu = (page: Page, label: ConsentRow) =>
 /** An entry of the open menu, by its title; entries also carry a one-line description. */
 export const consentOption = (page: Page, title: string) =>
   page.getByRole("option").filter({ has: page.getByText(title, { exact: true }) });
+
+/** Open a row's menu, wait for what it shows, then close it without choosing. */
+export const peekConsent = (page: Page, label: ConsentRow, shown: (page: Page) => Promise<void>) =>
+  consentMenu(page, label)
+    .click()
+    .then(() => shown(page))
+    .then(() => page.keyboard.press("Escape"))
+    .then(() => page.getByRole("listbox").waitFor({ state: "hidden" }));
 
 /** Open a row's menu and choose the entry with this title. */
 export const chooseConsent = (page: Page, label: ConsentRow, title: string) =>

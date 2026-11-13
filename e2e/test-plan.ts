@@ -7055,7 +7055,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "mcp-sign-in-page.spec.ts",
     title:
-      "The sign-in page keeps its frame while connections load, shows a failure with retry in the Access row, keeps choices and still connects with the preselected access",
+      "The sign-in page shows the Access value while connections load in its menu, shows a failure with retry in the menu, keeps choices and still connects with the preselected access",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
