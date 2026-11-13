@@ -24,7 +24,14 @@ serde = { version = "=1.0.229", features = ["derive"] }
 # float_roundtrip: read a JSON number with a fraction or exponent as the nearest double, so a
 # whole number such as 9007199254740991.0 keeps its value. It roughly halves the speed of parsing
 # such numbers, which OTLP/JSON uses only for doubles.
-serde_json = { version = "=1.0.154", features = ["float_roundtrip"] }
+# raw_value: keep an attribute value's text to decode it on its own (see `otlp::parse`).
+# unbounded_depth: lets that reader replace serde_json's 128-level limit with the collector's own
+# value depth, `otlp::VALUE_DEPTH`. The export's reader keeps the 128-level limit.
+serde_json = { version = "=1.0.154", features = [
+  "float_roundtrip",
+  "raw_value",
+  "unbounded_depth",
+] }
 tokio = { version = "=1.54.1", features = [
   "rt-multi-thread",
   "net",

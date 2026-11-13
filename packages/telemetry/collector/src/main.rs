@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 
 use executor_collector::args::{self, Listen};
 use executor_collector::lifecycle::{self, Stop};
-use executor_collector::{http, log, store};
+use executor_collector::{http, log, otlp, store};
 
 /// The whole shutdown, from the stop signal until the process exits. The local host kills the
 /// collector 3 s after asking it to stop (the self-host supervisor waits 15 s); this leaves half a
@@ -36,6 +36,9 @@ fn main() -> ExitCode {
     };
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
+        // Exports decode on this runtime's blocking threads. Left unset, their stack would be
+        // whatever `RUST_MIN_STACK` says in the environment the collector is started in.
+        .thread_stack_size(otlp::DECODE_STACK)
         .enable_all()
         .build()
     {

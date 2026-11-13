@@ -16,8 +16,8 @@ cargo test --release --locked
 The tests in `tests/` are the narrow exception to the repository's E2E-only rule described in
 `AGENTS.md`. `otlp_mapping.rs`, `store.rs` and `lifecycle.rs` test the field mapping, the store and
 the shutdown drain through the library. `process.rs` runs the built binary: stop signals, its
-socket, acknowledging only stored exports, gzip bodies, an interrupted first start and resident
-memory after a burst (Linux with glibc only).
+socket, acknowledging only stored exports, gzip bodies, deep nesting at the size limit, an
+interrupted first start and resident memory after a burst (Linux with glibc only).
 CI runs them in the `collector-native` job when the crate changes.
 
 `rust-toolchain.toml` pins the toolchain. Every dependency is pinned to an exact version in
@@ -101,10 +101,18 @@ The mapping follows what Motel stored, so the same exports read back the same wa
 - Attribute values are stored as strings: arrays joined with a space, key-value lists as JSON,
   bytes as base64. `intValue` keeps all its digits. `doubleValue` may be a number or a ProtoJSON
   string: `"NaN"`, `"Infinity"`, `"-Infinity"` or a quoted number.
+- Values may nest to any depth the size limit allows. Inside up to 64 arrays and key-value lists
+  they are stored as Motel stored them. A value inside more is kept as its `AnyValue`'s JSON text,
+  exactly as the export spelled it, where its value would have been: in an array it is joined
+  with a space, in a key-value list it is a JSON string. Decoding uses at most about 91 KiB of
+  stack in a release build (544 KiB in a debug build) of the 2 MiB the collector gives each
+  decoding thread, whatever `RUST_MIN_STACK` is set to, and stays linear in the export's size. Unknown fields are skipped at any depth. Nesting where
+  OTLP has no nested value, such as `"resourceSpans": [[[...`, still meets serde_json's
+  128-level limit and is refused with 400.
 - Integer fields (`intValue`, every `*TimeUnixNano`, `kind` and `status.code`) take any ProtoJSON
   integer form: a JSON number or a string, with or without an exponent or a fraction part, as long
   as the value is whole and in the field's range (`1e2`, `"1e2"`, `"100.0"`, `1.7e18`). Strings
-  are read exactly; numbers with an exponent or fraction are read as doubles. A missing or empty
+  are read exactly, however long their digits and exponent; numbers with an exponent or fraction are read as doubles. A missing or empty
   timestamp is 0, as in Motel.
 - Span ids are hex of the right length, in either case, or canonical base64; the product sends
   hex, and the e2e harness's sharded collector reads both. A span with any other id makes its

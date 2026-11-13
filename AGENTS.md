@@ -70,9 +70,9 @@ Its `cargo test` suite in `tests/` is limited to four files:
   outside the process.
 - `process.rs`: the built binary as a process, over HTTP and its socket. It
   covers stop signals and the shutdown deadline, a socket path that already
-  exists, not acknowledging an export it did not store, gzip bodies, a first
-  start cut off while creating the store, and resident memory returned after a
-  burst. These would be E2E scenarios, but nothing in `e2e/` builds the binary
+  exists, not acknowledging an export it did not store, gzip bodies, deep nesting
+  at the size limit and with a small stack in the environment, a first start cut off while creating the store, and
+  resident memory returned after a burst. These would be E2E scenarios, but nothing in `e2e/` builds the binary
   yet.
 
 CI runs it in the `collector-native` job when the crate changes.
