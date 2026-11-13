@@ -23,22 +23,65 @@ const systemCode = (error: unknown): string | undefined => {
   return undefined;
 };
 
+const heldCodes = ["EPERM", "EBUSY", "EACCES"];
+
 /**
  * Antivirus scanners and the indexer on Windows briefly hold files just written, so removing or
  * renaming their directory fails with EPERM, EBUSY or EACCES for a moment. There such a step is
  * tried again for up to five seconds, as the desktop's `whileHeld` does, before it fails.
+ *
+ * A step that is retried logs one warning when it is first refused and one when it goes through or
+ * gives up, with the database's directory name, the step, the code and how long it was held. They
+ * reach the local server's diagnostics log, which a diagnostics export includes; no path is logged.
  */
-const whileHeld = <A, E, R>(step: Effect.Effect<A, E, R>) =>
-  process.platform === "win32"
-    ? step.pipe(
-        Effect.retry({
-          while: (error) => ["EPERM", "EBUSY", "EACCES"].includes(systemCode(error) ?? ""),
-          schedule: Schedule.exponential("50 millis").pipe(
-            Schedule.upTo({ duration: "5 seconds" }),
-          ),
-        }),
-      )
-    : step;
+const whileHeld =
+  (database: string, step: PgliteCreationFailed["step"]) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    process.platform !== "win32"
+      ? effect
+      : Effect.suspend(() => {
+          let refused: { readonly code: string; readonly at: number } | undefined;
+          const held = (error: E) => heldCodes.includes(systemCode(error) ?? "");
+          const annotations = (code: string | undefined) =>
+            Effect.annotateLogs({
+              database,
+              step,
+              ...(code === undefined ? {} : { code }),
+              ...(refused === undefined ? {} : { heldMs: Date.now() - refused.at }),
+            });
+          return effect.pipe(
+            Effect.tapError((error) =>
+              refused !== undefined || !held(error)
+                ? Effect.void
+                : Effect.suspend(() => {
+                    refused = { code: systemCode(error) ?? "", at: Date.now() };
+                    return Effect.logWarning(
+                      "A database step was refused while another process held its files; retrying",
+                    ).pipe(Effect.annotateLogs({ database, step, code: refused.code }));
+                  }),
+            ),
+            Effect.retry({
+              while: held,
+              schedule: Schedule.exponential("50 millis").pipe(
+                Schedule.upTo({ duration: "5 seconds" }),
+              ),
+            }),
+            Effect.tap(() =>
+              refused === undefined
+                ? Effect.void
+                : Effect.logWarning(
+                    "A database step went through once its files were released",
+                  ).pipe(annotations(refused.code)),
+            ),
+            Effect.tapError((error) =>
+              refused === undefined
+                ? Effect.void
+                : Effect.logWarning(
+                    "A database step gave up while another process still held its files",
+                  ).pipe(annotations(systemCode(error))),
+            ),
+          );
+        });
 
 /**
  * Create the database at `dataDir` unless it holds one. PGlite takes a directory with PG_VERSION
@@ -62,9 +105,10 @@ export const createPgliteDatabase = (dataDir: string, options: Omit<Options, "da
     const exists = (file: string) => fs.exists(file).pipe(Effect.mapError(failed("create")));
     if (yield* exists(path.join(dataDir, "PG_VERSION"))) return;
     const staging = `${dataDir}.new`;
-    yield* whileHeld(fs.remove(staging, { recursive: true, force: true })).pipe(
-      Effect.mapError(failed("clear")),
-    );
+    yield* whileHeld(
+      database,
+      "clear",
+    )(fs.remove(staging, { recursive: true, force: true })).pipe(Effect.mapError(failed("clear")));
     yield* fs
       .makeDirectory(staging, { recursive: true, mode: 0o700 })
       .pipe(Effect.mapError(failed("create")));
@@ -77,17 +121,26 @@ export const createPgliteDatabase = (dataDir: string, options: Omit<Options, "da
       const entries = yield* fs.readDirectory(dataDir).pipe(Effect.mapError(failed("set aside")));
       if (entries.length === 0)
         yield* whileHeld(
-          Effect.tryPromise({ try: () => rmdir(dataDir), catch: (error) => error }),
-        ).pipe(Effect.mapError(failed("move into place")));
+          database,
+          "move into place",
+        )(Effect.tryPromise({ try: () => rmdir(dataDir), catch: (error) => error })).pipe(
+          Effect.mapError(failed("move into place")),
+        );
       else {
         const aside = `${dataDir}.unrecognised-${Date.now()}-${crypto.randomUUID()}`;
-        yield* whileHeld(fs.rename(dataDir, aside)).pipe(Effect.mapError(failed("set aside")));
+        yield* whileHeld(
+          database,
+          "set aside",
+        )(fs.rename(dataDir, aside)).pipe(Effect.mapError(failed("set aside")));
         yield* Effect.logWarning(
           "A database directory without PG_VERSION held files; they were moved aside",
         ).pipe(Effect.annotateLogs({ database, aside: path.basename(aside) }));
       }
     }
-    yield* whileHeld(fs.rename(staging, dataDir)).pipe(Effect.mapError(failed("move into place")));
+    yield* whileHeld(
+      database,
+      "move into place",
+    )(fs.rename(staging, dataDir)).pipe(Effect.mapError(failed("move into place")));
   });
 
 /**

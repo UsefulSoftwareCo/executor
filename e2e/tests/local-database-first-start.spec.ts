@@ -13,7 +13,7 @@
  */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, FileSystem, Path, Scope, Stream } from "effect";
+import { Effect, Fiber, FileSystem, Path, Schedule, Scope, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /** Kill this process the first time anything opens a pg_hba.conf for writing. */
@@ -107,12 +107,17 @@ const setup = Effect.gen(function* () {
               }),
         };
         // Node runs the local server's layer, which Node runs in the CLI; Bun the self-hosted one.
-        const [command, preloadFlag] =
-          options.product === "local" ? ["node", "--import"] : ["bun", "--preload"];
+        // Node's --import takes a URL, which a Windows path is not.
+        const preloads =
+          options.kill !== true
+            ? []
+            : options.product === "local"
+              ? ["--import", (yield* path.toFileUrl(preload)).href]
+              : ["--preload", preload];
         const child = yield* processes.spawn(
           ChildProcess.make(
-            command,
-            [...(options.kill === true ? [preloadFlag, preload] : []), script, options.dataDir],
+            options.product === "local" ? "node" : "bun",
+            [...preloads, script, options.dataDir],
             { cwd, env, extendEnv: true },
           ),
         );
@@ -261,3 +266,188 @@ test(
     }),
   ),
 );
+
+/**
+ * Open the local server's database at argv[2] with `localDatabase`, logging to DIAGNOSTICS'
+ * `executor-local.jsonl` as the local server does, and print the rows or the failure.
+ */
+const loggedStart = `
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { Effect, Logger } from "effect";
+import { SqlClient } from "effect/sql";
+import { pathToFileURL } from "node:url";
+const { localDatabase } = await import(pathToFileURL(process.env.LAYER).href);
+const { rotatingJsonLogger } = await import("@executor-js/telemetry/files");
+const result = await Effect.runPromise(
+  Effect.scoped(
+    Effect.gen(function* () {
+      const log = yield* rotatingJsonLogger(process.env.DIAGNOSTICS, "executor-local");
+      return yield* Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        return yield* sql.unsafe("select 1 as one");
+      }).pipe(
+        Effect.provide(localDatabase(process.argv[2])),
+        Effect.provide(Logger.layer([log.logger])),
+        Effect.catch((error) =>
+          Effect.succeed({
+            failed: { tag: error._tag, stage: error.stage, step: error.step, code: error.code },
+          }),
+        ),
+      );
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
+);
+console.log(JSON.stringify(result));
+`;
+
+/** Holds its working directory, which Windows then refuses to remove or rename, until killed. */
+const holder = `process.stdout.write("holding\\n"); setInterval(() => {}, 1000);`;
+
+const refused = "A database step was refused while another process held its files; retrying";
+const wentThrough = "A database step went through once its files were released";
+const gaveUp = "A database step gave up while another process still held its files";
+
+/**
+ * Start the local server's database in an empty `browser-auth.pglite` that another process holds
+ * as its working directory. With `release`, the holder ends once the first refusal is in the
+ * diagnostics log, so the retry has been seen and then goes through; without, it holds until the
+ * start has ended. Nothing waits a fixed time.
+ */
+const heldStart = (release: boolean) =>
+  Effect.gen(function* () {
+    const { fs, path, scratch } = yield* setup;
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const local = path.resolve("apps/local/server");
+    const dataDir = path.join(scratch, "browser-auth.pglite");
+    const diagnostics = path.join(scratch, "diagnostics");
+    const logFile = path.join(diagnostics, "executor-local.jsonl");
+    yield* fs.makeDirectory(dataDir, { mode: 0o700 });
+
+    const holding = yield* processes.spawn(
+      ChildProcess.make("node", ["--eval", holder], { cwd: dataDir }),
+    );
+    // The holder has the directory once it says so.
+    yield* holding.stdout.pipe(
+      Stream.decodeText(),
+      Stream.splitLines,
+      Stream.filter((line) => line === "holding"),
+      Stream.runHead,
+    );
+
+    const script = path.join(local, `.first-start-${crypto.randomUUID()}.mjs`);
+    yield* Effect.acquireRelease(fs.writeFileString(script, loggedStart), () =>
+      fs.remove(script, { force: true }).pipe(Effect.ignore),
+    );
+    const starting = yield* processes.spawn(
+      ChildProcess.make("node", [script, dataDir], {
+        cwd: local,
+        env: {
+          LAYER: path.join(local, "src/implementation/local-database.ts"),
+          DIAGNOSTICS: diagnostics,
+        },
+        extendEnv: true,
+      }),
+    );
+    const output = yield* Effect.all(
+      [
+        starting.stdout.pipe(Stream.decodeText(), Stream.mkString),
+        starting.stderr.pipe(Stream.decodeText(), Stream.mkString),
+        Effect.exit(starting.exitCode),
+      ],
+      { concurrency: "unbounded" },
+    ).pipe(Effect.forkScoped);
+    const log = fs
+      .exists(logFile)
+      .pipe(Effect.flatMap((exists) => (exists ? fs.readFileString(logFile) : Effect.succeed(""))));
+    if (release) {
+      // Poll the log until the first refusal is written, or the start ends without one.
+      yield* log.pipe(
+        Effect.repeat({
+          until: (text) => text.includes(refused),
+          schedule: Schedule.spaced("25 millis"),
+        }),
+        Effect.raceFirst(Fiber.await(output)),
+      );
+      yield* holding.kill().pipe(Effect.ignore);
+    }
+    const [stdout, stderr] = yield* Fiber.join(output);
+    yield* holding.kill().pipe(Effect.ignore);
+    // The retry's lines in the job's log, so a passing run shows them too.
+    for (const line of (yield* log).split("\n"))
+      if (line.includes("A database step")) yield* Effect.logInfo(`diagnostics: ${line}`);
+    const lines = (yield* log)
+      .split("\n")
+      .filter((line) => line !== "")
+      .map(
+        (line) =>
+          JSON.parse(line) as {
+            readonly message: unknown;
+            readonly annotations: Record<string, unknown>;
+          },
+      );
+    const message = (entry: { readonly message: unknown }) =>
+      [entry.message].flat().map(String).join(" ");
+    return {
+      result: stdout.trim().split("\n").at(-1) ?? "",
+      stderr,
+      text: yield* log,
+      /** The scratch directory's own name, which no log line may contain. */
+      scratchName: path.basename(scratch),
+      line: (text: string) => lines.find((entry) => message(entry).includes(text))?.annotations,
+    };
+  });
+
+const heldCodes = ["EPERM", "EBUSY", "EACCES"];
+
+// Only Windows refuses to remove or rename a directory another process holds.
+if (process.platform === "win32") {
+  test(
+    "a local database whose directory another process holds for a moment is created once it is released, and the retry is logged",
+    run(
+      Effect.gen(function* () {
+        const started = yield* heldStart(true);
+        expect(started.result, `${started.stderr}\n${started.text}`).toBe(one);
+        const first = started.line(refused);
+        expect(first, started.text).toMatchObject({
+          database: "browser-auth.pglite",
+          step: "move into place",
+        });
+        expect(heldCodes, started.text).toContain(first?.code);
+        const through = started.line(wentThrough);
+        expect(through, started.text).toMatchObject({
+          database: "browser-auth.pglite",
+          step: "move into place",
+          code: first?.code,
+        });
+        expect(through?.heldMs, started.text).toBeTypeOf("number");
+        // No path reaches the log.
+        expect(started.text).not.toContain(started.scratchName);
+      }),
+    ),
+  );
+
+  test(
+    "a local database whose directory another process holds past the retry fails at the database stage with the code, and the give-up is logged",
+    run(
+      Effect.gen(function* () {
+        const started = yield* heldStart(false);
+        const first = started.line(refused);
+        expect(heldCodes, started.text).toContain(first?.code);
+        expect(JSON.parse(started.result), `${started.stderr}\n${started.text}`).toEqual({
+          failed: {
+            tag: "StartupFailed",
+            stage: "database",
+            step: "move into place",
+            code: first?.code,
+          },
+        });
+        expect(started.line(gaveUp), started.text).toMatchObject({
+          database: "browser-auth.pglite",
+          step: "move into place",
+          code: first?.code,
+        });
+        expect(started.line(wentThrough), started.text).toBeUndefined();
+      }),
+    ),
+  );
+}
