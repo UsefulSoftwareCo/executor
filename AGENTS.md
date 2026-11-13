@@ -228,10 +228,12 @@ the evidence of every earlier attempt, so push instead when an attempt failed.
 
 ### Adding to a Cloud Worker's upload
 
-Cloudflare compiles every module a Worker uploads when an isolate starts, about
-40 ms for each megabyte on every cold request. The `site` job compares each Cloud
-Worker's upload with `main` and fails a pull request that adds more than 50 KB to
-one, about 2 ms, unless the description allows it:
+Cloudflare compiles and evaluates the modules a Worker's entry imports statically
+when an isolate starts, about 40 ms for each megabyte on every cold request, and
+refuses an upload whose startup takes more than a second of CPU. The `site` job
+compares each Cloud Worker's upload, and the bytes its entry imports statically,
+with `main`, and fails a pull request that adds more than 50 KB to either, about
+2 ms, unless the description allows it:
 
 ````md
 ```worker-growth

@@ -89,15 +89,25 @@ export const uploadedModulesPlugin = "executor-uploaded-modules";
 const uploadedModules = (worker: WorkerName) => ({
   name: uploadedModulesPlugin,
   async generateBundle(options: { readonly dir?: string }, bundle: OutputBundle) {
-    const reachable = new Set<string>();
-    const visit = (name: string) => {
-      const output = bundle[name];
-      if (reachable.has(name) || output?.type !== "chunk") return;
-      reachable.add(name);
-      for (const imported of [...output.imports, ...output.dynamicImports]) visit(imported);
+    const reach = (dynamic: boolean) => {
+      const reached = new Set<string>();
+      const visit = (name: string) => {
+        const output = bundle[name];
+        if (reached.has(name) || output?.type !== "chunk") return;
+        reached.add(name);
+        for (const imported of [...output.imports, ...(dynamic ? output.dynamicImports : [])])
+          visit(imported);
+      };
+      for (const [name, output] of Object.entries(bundle))
+        if (output.type === "chunk" && output.isEntry) visit(name);
+      return reached;
     };
-    for (const [name, output] of Object.entries(bundle))
-      if (output.type === "chunk" && output.isEntry) visit(name);
+    const reachable = reach(true);
+    let staticBytes = 0;
+    for (const name of reach(false)) {
+      const output = bundle[name];
+      if (output?.type === "chunk") staticBytes += Buffer.byteLength(output.code);
+    }
     let bytes = 0;
     const sources = new Map<string, number>();
     for (const [name, output] of Object.entries(bundle)) {
@@ -125,6 +135,7 @@ const uploadedModules = (worker: WorkerName) => ({
       worker,
       bytes,
       budget: uploadBudgets[worker],
+      staticBytes,
       sources: Object.fromEntries([...sources].toSorted((a, b) => b[1] - a[1])),
     };
     await writeWorkerUpload(upload);
@@ -212,8 +223,17 @@ export const workerBuild = (
           strictExecutionOrder: false,
           // Re-chunking the prebuilt dashboard graph by entry reach can evaluate a chunk that reads a
           // binding before the chunk that initializes it. One chunk keeps that graph's own module order.
+          // The dashboard build imports this Worker's Effect, and a group also takes its modules'
+          // dependencies: without a group of its own, Effect joins the dashboard chunk, and the
+          // entry, which imports Effect too, then loads the whole renderer at startup instead of on
+          // the first render. Groups are plain strings: Alchemy keeps these props as JSON.
           codeSplitting: {
-            groups: [{ name: "dashboard", test: "/web/dist/server/" }],
+            groups: [
+              ...(worker === "dashboard"
+                ? [{ name: "effect", test: "/node_modules/effect/", priority: 1 }]
+                : []),
+              { name: "dashboard", test: "/web/dist/server/" },
+            ],
           },
           keepNames: false,
           sourcemap: "hidden",

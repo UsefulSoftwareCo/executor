@@ -8,6 +8,12 @@ export interface WorkerUpload {
   readonly worker: string;
   readonly bytes: number;
   readonly budget: number;
+  /**
+   * Bytes of the modules the Worker's entry reaches through static imports. Cloudflare compiles and
+   * evaluates these when an isolate starts, and refuses an upload whose startup takes more than a
+   * second of CPU; a module only a dynamic `import()` loads waits for the request that needs it.
+   */
+  readonly staticBytes?: number;
   /** Uploaded bytes per source, keyed by its path from the repository root. */
   readonly sources: Readonly<Record<string, number>>;
 }

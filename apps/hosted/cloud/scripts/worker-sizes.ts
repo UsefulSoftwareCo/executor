@@ -14,7 +14,8 @@
  * With `--base`, each Worker is compared with main's uploads, and the packages and files that
  * grew are named. A budget is a backstop with room under it, so the comparison is what keeps a
  * Worker from growing unnoticed: with `--description`, the pull request's description, a Worker
- * that adds more than `growthLimit` fails unless the description allows it in a block like
+ * that adds more than `growthLimit` to its upload, or to the modules its entry imports statically
+ * (what Cloudflare evaluates at startup), fails unless the description allows it in a block like
  *
  *   ```worker-growth
  *   api +120,000: the SAML sign-in library, which every enterprise sign-in loads
@@ -91,6 +92,8 @@ const WorkerUploadSchema = Schema.Struct({
   worker: Schema.String,
   bytes: Schema.Number,
   budget: Schema.Number,
+  // Main's uploads from before static imports were recorded have none.
+  staticBytes: Schema.optionalKey(Schema.Number),
   sources: Schema.Record(Schema.String, Schema.Number),
 });
 
@@ -161,10 +164,15 @@ interface Measured {
   readonly stages: ReadonlyArray<string>;
 }
 
-/** A Worker that added more than `growthLimit` to main's upload, and what the description allows it. */
+/**
+ * A Worker that added more than `growthLimit` to main's upload or to the modules its entry
+ * imports statically, the larger of the two, and what the description allows it.
+ */
 interface Growth {
   readonly worker: string;
   readonly added: number;
+  /** Which grew more: what the Worker uploads, or what its entry imports at startup. */
+  readonly what: "upload" | "static imports";
   readonly allowance: Allowance | undefined;
 }
 
@@ -186,9 +194,23 @@ const report = (
   const allowed = description === undefined ? undefined : allowancesIn(description);
   const grown: Array<Growth> = [...uploads.values()].flatMap((upload) => {
     const before = base?.get(upload.worker);
-    const added = before === undefined ? 0 : upload.bytes - before.bytes;
+    const uploaded = before === undefined ? 0 : upload.bytes - before.bytes;
+    // A module moved from a dynamic import into the entry's static graph uploads the same bytes
+    // but runs at every startup, which Cloudflare limits.
+    const imported =
+      before?.staticBytes === undefined || upload.staticBytes === undefined
+        ? 0
+        : upload.staticBytes - before.staticBytes;
+    const added = Math.max(uploaded, imported);
     return added > growthLimit
-      ? [{ worker: upload.worker, added, allowance: allowed?.allowances.get(upload.worker) }]
+      ? [
+          {
+            worker: upload.worker,
+            added,
+            what: imported > uploaded ? ("static imports" as const) : ("upload" as const),
+            allowance: allowed?.allowances.get(upload.worker),
+          },
+        ]
       : [];
   });
   const unallowed =
@@ -267,17 +289,35 @@ const report = (
       ...table("File", changes(upload.sources, before.sources, sourceFile).slice(0, 10)),
     );
   }
+  lines.push(
+    "### Static imports",
+    "",
+    "What each Worker's entry imports statically, which Cloudflare compiles and evaluates when an " +
+      "isolate starts. A module only a dynamic `import()` loads is uploaded but waits for the " +
+      "request that needs it.",
+    "",
+    "| Worker | Static imports | Change from main |",
+    "|---|---:|---:|",
+    ...[...uploads.values()].map((upload) => {
+      const before = base?.get(upload.worker)?.staticBytes;
+      return (
+        `| ${upload.worker} | ${upload.staticBytes === undefined ? "n/a" : bytes(upload.staticBytes)} | ` +
+        `${before === undefined || upload.staticBytes === undefined ? "n/a" : signed(upload.staticBytes - before)} |`
+      );
+    }),
+    "",
+  );
   if (grown.length > 0)
     lines.push(
       `### Growth past ${bytes(growthLimit)} bytes`,
       "",
-      `A pull request may add ${bytes(growthLimit)} bytes to a Worker's upload, about ` +
-        `${compileMs(growthLimit)} ms on each of its cold starts. More has to be allowed in its ` +
-        "description, with the reason it is worth the time.",
+      `A pull request may add ${bytes(growthLimit)} bytes to a Worker's upload, and as many to the ` +
+        `modules its entry imports statically, about ${compileMs(growthLimit)} ms on each of its ` +
+        "cold starts. More has to be allowed in its description, with the reason it is worth the time.",
       "",
       ...grown.map(
-        ({ worker, added, allowance }) =>
-          `- ${worker}: ${signed(added)} bytes, about ${compileMs(added)} ms.` +
+        ({ worker, added, what, allowance }) =>
+          `- ${worker}: ${signed(added)} bytes${what === "upload" ? "" : ` of ${what}`}, about ${compileMs(added)} ms.` +
           (allowance === undefined
             ? ""
             : allowance.bytes < added
@@ -311,10 +351,11 @@ const report = (
     lines.push(
       "### Making room",
       "",
-      "Cloudflare compiles every uploaded module when an isolate starts, whether or not it runs: " +
-        "about 40 ms for each megabyte, on every cold request. A dynamic `import()` does not help: " +
-        "its chunk is still uploaded. A budget is a backstop, not room to fill; one changes only in " +
-        "a pull request of its own that says what the added cold-start time buys.",
+      "Cloudflare compiles and evaluates the modules a Worker's entry imports statically when an " +
+        "isolate starts, on every cold request, and refuses an upload whose startup takes more than a " +
+        "second of CPU. A dynamic `import()` keeps a module out of startup, but its chunk is still " +
+        "uploaded and counts toward the budget. A budget is a backstop, not room to fill; one changes " +
+        "only in a pull request of its own that says what the added cold-start time buys.",
       "",
       "- Move rarely used code to another Worker behind a service binding, as `dashboard`, " +
         "`formatter`, `authoring` and `mcp-server` do for the API Worker.",
@@ -425,9 +466,9 @@ const program = Effect.gen(function* () {
     yield* Console.log(
       `::warning title=${worker.worker} Worker near its upload budget::${bytes(worker.budget - worker.bytes)} bytes left on ${worker.stages.join(" and ")} (${percent((worker.budget - worker.bytes) / worker.budget)}).`,
     );
-  for (const { worker, added, allowance } of unallowed)
+  for (const { worker, added, what, allowance } of unallowed)
     yield* Console.log(
-      `::error title=${worker} Worker grew without an allowance::${signed(added)} bytes over main, about ${compileMs(added)} ms on each cold start; ` +
+      `::error title=${worker} Worker grew without an allowance::${signed(added)} bytes${what === "upload" ? "" : ` of ${what}`} over main, about ${compileMs(added)} ms on each cold start; ` +
         (allowance === undefined
           ? `a pull request may add ${bytes(growthLimit)}.`
           : `the description allows ${bytes(allowance.bytes)}.`) +
