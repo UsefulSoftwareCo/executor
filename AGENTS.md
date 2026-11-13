@@ -108,6 +108,22 @@ npm comparator ranges such as `^16.11.0`. Its fixtures are in
 `scripts/check-exact-versions-fixtures.ts`. `bunfig.toml` makes `bun install`
 and `bun add` skip versions published less than a day ago.
 
+`bun install --frozen-lockfile` accepts a lock that records an old version of a
+workspace package, so after changing any `package.json`, including a version
+bump, run `bun install` and commit bun.lock. The `apps-version` job runs
+`scripts/check-lockfile.ts --base` on pull requests, against where the pull
+request meets `main` (the merge base for an upper stack layer), and fails one
+whose own changes leave bun.lock different from what `bun install` writes; a
+lock already stale on `main` fails no pull request. On `main`, the Beta workflow refreshes a
+stale lock with `scripts/releases/lock-repair.sh` and pushes it as
+`Refresh bun.lock [skip ci]`, but only when every changed line is a workspace
+package's own `version` set to what its `package.json` says
+(`scripts/releases/lock-repair-scope.ts`). It pushes no other change, such as a
+dependency resolved differently: it warns in the Beta run's summary and keeps an
+issue labelled `lock-repair-refused` open instead, and that change needs a pull
+request. `bun run lockfile:check` checks a checkout by
+hand.
+
 The typecheck runs `tsc-rs`, a Rust port of the TypeScript 7 compiler that is
 about twice as fast as Go's `tsc` here and has the Effect language service
 diagnostics built in. It reports the Effect diagnostics configured in
@@ -181,6 +197,8 @@ suite takes about eight and holds the runners other PRs wait for. Reserve `all` 
 changes that every scenario runs through: the e2e harness (`e2e/sdk`, `e2e/support`,
 `e2e/setup.ts`), the toolchain, the lockfile or the workflows. Write the reason after
 it, such as `all: changes the lockfile`; `all` without a reason fails the `select` job.
+A lockfile change that only updates a workspace package's own `version`, as `bun install`
+writes after a version bump, installs nothing different: write `none` for it.
 A change to shared code such as the runtime, storage, auth or the MCP server is not
 by itself a reason: list the spec files for the features whose behavior it changes. [`e2e/ci-selection.ts`](e2e/ci-selection.ts) turns the block
 into each job's scenario list; the run summary shows it.

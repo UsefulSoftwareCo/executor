@@ -41,7 +41,7 @@ NodeRuntime.runMain(
       return yield* Effect.log(`The apps package is unchanged from the base (${theirs}).`);
     if (ours === theirs)
       return yield* new AppsReleaseMismatch({
-        message: `packages/apps changed from the base but keeps apps@${ours}; bump the version in packages/apps/package.json. See notes/apps-publishing.md. ${listFiles(differing)}`,
+        message: `packages/apps changed from the base but keeps apps@${ours}; bump the version in packages/apps/package.json and run \`bun install\` to record it in bun.lock. See notes/apps-publishing.md. ${listFiles(differing)}`,
       });
     yield* Effect.log(`The apps package changed and its version moves from ${theirs} to ${ours}.`);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),

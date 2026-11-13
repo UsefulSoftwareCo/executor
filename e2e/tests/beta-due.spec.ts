@@ -189,6 +189,20 @@ const world = Effect.gen(function* () {
       return yield* git("rev-parse", "HEAD");
     });
 
+  /** Lands the bun.lock refresh `lock-repair.sh` pushes, and returns its commit. */
+  const lockRefresh = Effect.gen(function* () {
+    yield* git(
+      "commit",
+      "--quiet",
+      "--allow-empty",
+      "-m",
+      "Refresh bun.lock [skip ci]",
+      "-m",
+      '"packages/apps": "0.0.1-beta.1" -> "0.0.1-beta.2"',
+    );
+    return yield* git("rev-parse", "HEAD");
+  });
+
   /** Runs the script on this event, with npm and the release runs in this state. */
   const decide = (input: {
     readonly event?: "push" | "schedule" | "workflow_dispatch" | "pull_request";
@@ -390,6 +404,7 @@ const world = Effect.gen(function* () {
     refusePushes,
     git,
     file,
+    lockRefresh,
   };
 });
 
@@ -426,6 +441,45 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
       expect(result.exitCode, result.output).toBe(0);
       expect(result.outputs.decision).toBe("none");
       expect(result.outputs.reason).toBe(`No commits on main since ${version}.`);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a bun.lock refresh alone after the last beta makes no beta due", () =>
+    Effect.gen(function* () {
+      const { decide, lockRefresh, merge } = yield* world;
+      yield* lockRefresh;
+      const result = yield* decide({ published: 30 });
+      expect(result.exitCode, result.output).toBe(0);
+      expect(result.outputs.decision).toBe("none");
+      expect(result.outputs.reason).toBe(`No commits on main since ${version}.`);
+      yield* merge;
+      expect((yield* decide({ published: 30 })).outputs.decision).toBe("bump");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a bun.lock refresh does not move main for the retry back-off", () =>
+    Effect.gen(function* () {
+      const { decide, lockRefresh, merge, released, previous } = yield* world;
+      const failed = (hoursAgo: number, headSha: string): ReadonlyArray<ReleaseRun> => [
+        { id: 3, hoursAgo, headSha },
+        { id: 2, conclusion: "cancelled", hoursAgo: hoursAgo + 1, headSha },
+        { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+      ];
+      // A refresh after the last attempt's commit.
+      yield* lockRefresh;
+      const after = yield* decide({ runs: failed(6.5, released) });
+      expect(after.outputs.decision, after.output).toBe("none");
+      expect(after.outputs.reason).toContain("after two or more failed attempts in a row");
+      // The last attempt ran on a refresh, then another refresh landed.
+      const refreshed = yield* lockRefresh;
+      expect((yield* decide({ runs: failed(6.5, refreshed) })).outputs.decision).toBe("none");
+      yield* lockRefresh;
+      expect((yield* decide({ runs: failed(6.5, refreshed) })).outputs.decision).toBe("none");
+      // A merge moves it.
+      yield* merge;
+      const moved = yield* decide({ runs: failed(6.5, refreshed) });
+      expect(moved.outputs.decision, moved.output).toBe("dispatch");
+      expect(moved.outputs.reason).toContain("main has moved");
     }).pipe(Effect.scoped),
   );
 

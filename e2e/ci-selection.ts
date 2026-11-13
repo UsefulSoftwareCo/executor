@@ -675,6 +675,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "docker-release.config.ts": () => import("./docker-release.config.ts"),
   "installer.config.ts": () => import("./installer.config.ts"),
   "local-bootstrap.config.ts": () => import("./local-bootstrap.config.ts"),
+  "lockfile-sync.config.ts": () => import("./lockfile-sync.config.ts"),
   "npm-launcher.config.ts": () => import("./npm-launcher.config.ts"),
   "pglite.config.ts": () => import("./pglite.config.ts"),
   "pr-preview-selection.config.ts": () => import("./pr-preview-selection.config.ts"),

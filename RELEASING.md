@@ -110,7 +110,15 @@ not.
 The **Beta** workflow (`.github/workflows/beta.yml`) publishes betas. It checks
 on every push to `main` and on a schedule at minutes 8 and 38, and
 `scripts/releases/beta-due.ts` decides from npm, the release runs and main's
-history. A push and a scheduled tick decide alike:
+history. Before deciding, each tick runs `scripts/releases/lock-repair.sh`, which
+pushes `Refresh bun.lock [skip ci]` when main's bun.lock is not what
+`bun install` writes and the only difference is workspace packages' own versions.
+Any other difference is only reported: a warning in the run summary and one open
+issue labelled `lock-repair-refused` (`scripts/releases/lock-repair-issue.sh`),
+which a later tick closes when it finds the lock fresh. The repair never holds a
+beta. That commit follows the merge that left the lock stale, so it
+never makes a beta due by itself, and its `[skip ci]` starts no Executor releases
+run. A push and a scheduled tick decide alike:
 
 - While any **Executor releases** dispatch is queued or running, it waits.
 - It starts no beta and no further attempt while the release matrix on `main` is

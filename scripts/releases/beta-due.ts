@@ -211,6 +211,20 @@ NodeRuntime.runMain(
       "--json",
     ]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Registry)));
     const head = yield* succeed("git", ["rev-parse", "HEAD"]);
+    /**
+     * Commits on main after `from`, without the `Refresh bun.lock [skip ci]` commits that
+     * `lock-repair.sh` pushes: a lock refresh follows the merge that left the lock stale, and on its
+     * own it neither makes a beta due nor moves main for the retry back-off.
+     */
+    const commitsSince = (from: string) =>
+      succeed("git", [
+        "rev-list",
+        "--count",
+        "-E",
+        "--invert-grep",
+        "--grep=^Refresh bun\\.lock \\[skip ci\\]$",
+        `${from}..HEAD`,
+      ]);
     /** The `Release <version>` commit on main, or "" when main has none. */
     const releaseCommit = succeed("git", [
       "log",
@@ -263,10 +277,7 @@ NodeRuntime.runMain(
             message: `npm lists executor@${version}, but its beta tag names ${registry["dist-tags"].beta}. Inspect the last release before publishing another.`,
           });
         const release = yield* releaseCommit;
-        if (
-          release !== "" &&
-          (yield* succeed("git", ["rev-list", "--count", `${release}..HEAD`])) === "0"
-        )
+        if (release !== "" && (yield* commitsSince(release)) === "0")
           return wait(`No commits on main since ${version}.`);
         const age = now - Date.parse(published);
         if (!manual && age < gap)
@@ -339,10 +350,11 @@ NodeRuntime.runMain(
           "dispatch",
           `executor@${version} is not on npm; ${last.url} failed, so it is published again.`,
         );
-      if (since >= backOff && (head !== last.headSha || since >= stale))
+      const moved = head !== last.headSha && (yield* commitsSince(last.headSha)) !== "0";
+      if (since >= backOff && (moved || since >= stale))
         return act(
           "dispatch",
-          `executor@${version} is not on npm after two or more failed attempts in a row; the last, ${last.url}, started ${ago(since)}${head === last.headSha ? "" : " and main has moved since"}.`,
+          `executor@${version} is not on npm after two or more failed attempts in a row; the last, ${last.url}, started ${ago(since)}${moved ? " and main has moved since" : ""}.`,
         );
       return hold(
         `executor@${version} is not on npm after two or more failed attempts in a row; the last is ${last.url}, ${ago(since)}. The next attempt waits for six hours after it and for a new commit on main, or a day; dispatch this workflow to retry now.`,
