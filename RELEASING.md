@@ -120,15 +120,20 @@ beta. That commit follows the merge that left the lock stale, so it
 never makes a beta due by itself, and its `[skip ci]` starts no Executor releases
 run. A push and a scheduled tick decide alike:
 
-- While any **Executor releases** dispatch is queued or running, it waits.
+- While any build or publication of **Executor releases** is queued or running,
+  it waits. A check, which publishes nothing, does not hold it.
 - It starts no beta and no further attempt while the release matrix on `main` is
-  red. The matrix runs are the **Executor releases** push runs on `main`, paced
-  to one build every two hours, and the build dispatches from `main`. The newest
-  finished one must have passed its `releases` job. A run that tested nothing is
-  skipped: a cancelled one, a push run whose `pace` job did not pass, and a
-  dispatch that is not a build. A failed one holds every beta, with a warning,
-  until a later run passes. To clear a hold once the cause is fixed, merge the fix,
-  or, when it changes no release path, run
+  red. The matrix runs are the checks, the **Executor releases** runs that the
+  **Release check** workflow starts with a repository dispatch after main
+  changed what a release lane builds or runs, paced to one build every two
+  hours, and the runs titled `(build)`, dispatched from `main` by hand. Checks
+  list apart from builds and publications, so they never crowd the publishing
+  attempts out of what the decision reads. The newest finished one must have
+  passed its `releases` job. A run that tested nothing is skipped: a cancelled
+  one, and a check whose `pace` job did not pass or whose matrix did not run. A push that changed
+  nothing a release lane reads starts no check, so it neither holds a beta nor
+  lets one through. A failed run holds every beta, with a warning, until a later
+  run passes. To clear a hold once the cause is fixed, merge the fix, or run
   `gh workflow run release-artifacts.yml --ref main -f channel=build`. A run still
   pacing or building holds nothing, since the publishing run tests every platform
   on the commit it publishes and publishes only when all pass.

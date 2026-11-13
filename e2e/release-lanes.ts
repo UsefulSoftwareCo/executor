@@ -10,12 +10,12 @@
  *   and desktop startup checks, without desktop crash recovery, when the CLI's or the desktop
  *   app's source, their build inputs or a packaging path changed.
  *
- * After merge, a push to main that changes a path in `mainPushPaths` runs the paced check in
- * `.github/workflows/release-artifacts.yml`, at most every two hours: Linux x64 packaging with
- * desktop crash recovery, its installed CLI suite and the image on both architectures. Publishing
- * and manual build runs test every platform. GitHub reads that trigger's `paths` as a literal
- * list, so the workflow states it in full and `e2e/tests/ci-selection.spec.ts` fails `checks /
- * check` when it differs from `mainPushPaths` here.
+ * After merge, `.github/workflows/release-check.yml` runs e2e/release-check.ts on every push to
+ * main and hourly, which starts the paced check in `.github/workflows/release-artifacts.yml` when a path
+ * in `mainPushPaths` changed since the last check: Linux x64 packaging with desktop crash recovery,
+ * its installed CLI suite and the image on both architectures, at most every two hours. Build and
+ * publishing runs test every platform. Every list here is computed from the checkout when a run
+ * needs it, so none is kept by hand and none can fall behind the suites' imports.
  *
  * Each artifact's source is the workspace packages it is built from: its own, and every
  * workspace package those depend on, transitively, read from their package.json files. The CLI
@@ -59,6 +59,27 @@ const packagingPaths = [
 const matrixOnlyPaths = [".github/workflows/release-artifacts.yml"] as const;
 
 /**
+ * Workspace packages the suites start at run time rather than import: e2e/sdk/fixtures.ts runs
+ * the scenario server in `apps/hosted/testing` for the fixtures the scenarios use.
+ */
+const harnessRoots = ["apps/hosted/testing"] as const;
+
+/**
+ * The installed CLI suite after merge runs `bun run e2e:local` and stages its pinned packages, so
+ * the files that command and that script load, and the pins it reads, change its result. Vitest
+ * loads the setup file by name. Its spec files are the local scenarios CI's E2E jobs run on source
+ * and select themselves, so they are left to CI.
+ */
+const cliSuiteEntries = [
+  "e2e/check-boundary.ts",
+  "e2e/run.ts",
+  "e2e/vitest.config.ts",
+  "e2e/setup.ts",
+  "scripts/e2e-npm-packages.ts",
+] as const;
+const cliSuiteData = ["e2e/npm-packages.json"] as const;
+
+/**
  * What else the image's build reads, besides its workspace packages: the Dockerfile installs with
  * the playground's and the viewer's manifests present, builds the live inbox demo app, and runs
  * Bun with the root bunfig.toml. Then the release identity that names it, and the action that
@@ -98,6 +119,13 @@ const suites = {
   matrix: { "e2e/desktop-recovery.config.ts": () => import("./desktop-recovery.config.ts") },
 } as const satisfies Record<string, Record<string, () => Promise<unknown>>>;
 
+/** Every release suite's config, which the release workflows must not run without listing here. */
+export const releaseSuiteConfigs: ReadonlyArray<string> = Object.keys({
+  ...suites.docker,
+  ...suites.local,
+  ...suites.matrix,
+}).sort();
+
 /**
  * Files the release suites import that cannot change what they do, and why. The released-image
  * suite must still import each, or the selection fails until the exception is removed.
@@ -122,7 +150,11 @@ const globExpression = (glob: string) =>
     `^${glob
       .split(/(\*\*|\*)/)
       .map((part) =>
-        part === "**" ? ".*" : part === "*" ? "[^/]*" : part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"),
+        part === "**"
+          ? "[\\s\\S]*"
+          : part === "*"
+            ? "[^/]*"
+            : part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"),
       )
       .join("")}$`,
   );
@@ -143,12 +175,16 @@ const specifiers = (text: string) =>
  * specifier that resolves to no file, such as one inside an app's source a scenario writes, is not
  * followed.
  */
-const suiteFiles = (root: string, configs: Readonly<Record<string, () => Promise<unknown>>>) =>
+const suiteFiles = (
+  root: string,
+  configs: Readonly<Record<string, () => Promise<unknown>>>,
+  entries: ReadonlyArray<string> = [],
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const found = new Set<string>();
-    const pending: Array<string> = [];
+    const pending: Array<string> = [...entries];
     for (const [config, load] of Object.entries(configs)) {
       const { include, globalSetup = [] } = (yield* Effect.tryPromise({
         try: load,
@@ -265,6 +301,8 @@ export interface ReleaseSources {
   readonly localSuites: ReadonlyArray<string>;
   /** The files the suites only the matrix after merge runs load. */
   readonly matrixSuites: ReadonlyArray<string>;
+  /** The packages the suites start at run time, as globs over their workspace packages. */
+  readonly harness: ReadonlyArray<string>;
 }
 
 export const releaseSources = Effect.gen(function* () {
@@ -284,7 +322,8 @@ export const releaseSources = Effect.gen(function* () {
     image: yield* workspaceClosure(root, artifactRoots.image),
     docker: inputs(docker),
     localSuites: inputs(yield* suiteFiles(root, suites.local)),
-    matrixSuites: inputs(yield* suiteFiles(root, suites.matrix)),
+    matrixSuites: inputs(yield* suiteFiles(root, suites.matrix, cliSuiteEntries)),
+    harness: yield* workspaceClosure(root, harnessRoots),
   } satisfies ReleaseSources;
 });
 
@@ -296,6 +335,7 @@ export const lanePaths = (sources: ReleaseSources) => ({
       ...sources.image,
       ...imagePaths,
       ...sources.docker,
+      ...sources.harness,
       laneDefinition,
     ]),
   ],
@@ -305,6 +345,7 @@ export const lanePaths = (sources: ReleaseSources) => ({
       ...sources.local,
       ...packagingPaths,
       ...sources.localSuites,
+      ...sources.harness,
       laneDefinition,
     ]),
   ],
@@ -321,7 +362,7 @@ export const lanesFor = (sources: ReleaseSources, changed: ReadonlyArray<string>
   };
 };
 
-/** The `paths` of release-artifacts.yml's push trigger, in the order the workflow lists them. */
+/** What any release check builds or runs: a push that changes one of these needs the paced check. */
 export const mainPushPaths = (sources: ReleaseSources) => [
   ...new Set([
     ...buildInputs,
@@ -331,6 +372,8 @@ export const mainPushPaths = (sources: ReleaseSources) => [
     ...sources.localSuites,
     ...matrixOnlyPaths,
     ...sources.matrixSuites,
+    ...cliSuiteData,
+    ...sources.harness,
     // The installed CLI suite's OAuth scenarios start this issuer.
     "e2e/support/oauth-setup-issuer.ts",
     ...imagePaths,

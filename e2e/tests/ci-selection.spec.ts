@@ -8,7 +8,8 @@ import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { lanePaths, mainPushPaths, releaseSources } from "../release-lanes.ts";
+
+import { releaseSuiteConfigs } from "../release-lanes.ts";
 import { scenarios } from "../test-plan.ts";
 
 const jobs = [
@@ -1284,7 +1285,9 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         [["playground/demo-apps/live-inbox/package.json"], ["true", ""]],
         [[".github/actions/e2e-tools/action.yml"], ["true", "true"]],
         [["apps/hosted/self-host/Dockerfile"], ["true", ""]],
-        [["apps/hosted/server/src/index.ts"], ["true", ""]],
+        // The image's server, which the fixtures' scenario server also runs on.
+        [["apps/hosted/server/src/index.ts"], ["true", "true"]],
+        [["apps/hosted/testing/src/scenario-server.ts"], ["true", "true"]],
         // The CLI's and the desktop app's source: their own packages, as pull request #4028's
         // startup change was, and packaging.
         [["apps/local/server/src/bin.ts"], ["", "true"]],
@@ -1390,95 +1393,60 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
     }),
   );
 
-  it.effect(
-    "a push to main checks Linux x64 and the image; publishing and builds test everything",
-    () =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-release-matrix-" });
-        const targets = (event: string) =>
-          Effect.gen(function* () {
-            const output = path.join(directory, event);
-            yield* fs.writeFileString(output, "");
-            const child = yield* processes.spawn(
-              ChildProcess.make("node", ["scripts/releases/workflow.ts"], {
-                env: {
-                  GITHUB_OUTPUT: output,
-                  GITHUB_EVENT_NAME: event,
-                  GITHUB_REF: "refs/heads/main",
-                  RELEASE_CHANNEL: "build",
-                },
-                extendEnv: true,
-              }),
-            );
-            const [log, exitCode] = yield* Effect.all(
-              [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
-              { concurrency: "unbounded" },
-            );
-            expect(exitCode, log).toBe(0);
-            const values = Object.fromEntries(
-              (yield* fs.readFileString(output))
-                .split("\n")
-                .filter((line) => line !== "")
-                .map((line) => [
-                  line.slice(0, line.indexOf("=")),
-                  line.slice(line.indexOf("=") + 1),
-                ]),
-            );
-            const names = (key: string) =>
-              (
-                JSON.parse(values[key]!) as { include: ReadonlyArray<Record<string, string>> }
-              ).include
-                .map((entry) =>
-                  entry.platform === undefined ? entry.arch : `${entry.platform}-${entry.arch}`,
-                )
-                .sort();
-            return {
-              local: names("matrix"),
-              cli: names("cli_matrix"),
-              docker: names("docker_matrix"),
-            };
-          }).pipe(Effect.scoped);
-        expect(yield* targets("push")).toEqual({
-          local: ["linux-x64"],
-          cli: ["linux-x64"],
-          docker: ["amd64", "arm64"],
-        });
-        expect(yield* targets("workflow_dispatch")).toEqual({
-          local: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
-          cli: ["linux-x64", "win32-x64"],
-          docker: ["amd64", "arm64"],
-        });
-      }),
-  );
-
-  it.effect("the matrix after merge starts on exactly the paths the release lanes name", () =>
+  it.effect("a check tests Linux x64 and the image; publishing and builds test everything", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      const lines = (yield* fs.readFileString(".github/workflows/release-artifacts.yml")).split(
-        "\n",
-      );
-      const start = lines.indexOf("    paths:");
-      expect(lines.slice(start - 2, start)).toEqual(["  push:", "    branches: [main]"]);
-      const listed = lines
-        .slice(start + 1)
-        .filter((line, index, rest) =>
-          rest.slice(0, index + 1).every((l) => l.startsWith("      - ")),
-        )
-        .map((line) =>
-          JSON.parse(line.slice(8).startsWith('"') ? line.slice(8) : `"${line.slice(8)}"`),
-        );
-      const expected = mainPushPaths(yield* releaseSources);
-      expect(
-        listed,
-        `Replace the push trigger's paths in release-artifacts.yml with:\n${expected.map((path) => `      - ${path.includes("*") ? JSON.stringify(path) : path}`).join("\n")}`,
-      ).toEqual(expected);
-      // Every lane's paths start the matrix, apart from the lanes' own definition.
-      for (const globs of Object.values(lanePaths(yield* releaseSources)))
-        for (const glob of globs)
-          if (glob !== ".github/workflows/checks.yml") expect(listed, glob).toContain(glob);
+      const path = yield* Path.Path;
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-release-matrix-" });
+      const targets = (channel: string) =>
+        Effect.gen(function* () {
+          const output = path.join(directory, channel);
+          yield* fs.writeFileString(output, "");
+          const child = yield* processes.spawn(
+            ChildProcess.make("node", ["scripts/releases/workflow.ts"], {
+              env: {
+                GITHUB_OUTPUT: output,
+                GITHUB_EVENT_NAME: "workflow_dispatch",
+                GITHUB_REF: "refs/heads/main",
+                RELEASE_CHANNEL: channel,
+              },
+              extendEnv: true,
+            }),
+          );
+          const [log, exitCode] = yield* Effect.all(
+            [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+            { concurrency: "unbounded" },
+          );
+          expect(exitCode, log).toBe(0);
+          const values = Object.fromEntries(
+            (yield* fs.readFileString(output))
+              .split("\n")
+              .filter((line) => line !== "")
+              .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+          );
+          const names = (key: string) =>
+            (JSON.parse(values[key]!) as { include: ReadonlyArray<Record<string, string>> }).include
+              .map((entry) =>
+                entry.platform === undefined ? entry.arch : `${entry.platform}-${entry.arch}`,
+              )
+              .sort();
+          return {
+            local: names("matrix"),
+            cli: names("cli_matrix"),
+            docker: names("docker_matrix"),
+          };
+        }).pipe(Effect.scoped);
+      expect(yield* targets("check")).toEqual({
+        local: ["linux-x64"],
+        cli: ["linux-x64"],
+        docker: ["amd64", "arm64"],
+      });
+      expect(yield* targets("build")).toEqual({
+        local: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        cli: ["linux-x64", "win32-x64"],
+        docker: ["amd64", "arm64"],
+      });
     }),
   );
 
@@ -1607,5 +1575,363 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "::error::select: failure, so the E2E jobs did not run its selection",
         );
       }),
+  );
+});
+
+/**
+ * A `gh` for e2e/release-check.ts: `run list` answers the runs in `runs.json` with the event its
+ * `-e` names, as GitHub filters, `run view N` answers
+ * `jobs-N.json`, and `api <compare path> --jq <filter>` applies the filter to `compared.json` with
+ * jq, as gh does. A `fails` file beside it makes `run list` fail.
+ */
+const stubCheckGh = `#!/bin/sh
+dir=$(dirname "$0")
+case "$1 $2" in
+  "run list") [ -f "$dir/fails" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
+    while [ $# -gt 0 ]; do [ "$1" = -e ] && event=$2; shift; done
+    exec jq --arg event "$event" '[.[] | select(.event == $event)] | map(del(.event))' "$dir/runs.json" ;;
+  "run view") exec cat "$dir/jobs-$3.json" ;;
+  api*) exec jq -r "$4" "$dir/compared.json" ;;
+esac
+echo "stub gh: unsupported: $*" >&2
+exit 2
+`;
+
+/** A dispatched Executor releases run on main, newest first in `checks`. */
+interface DispatchedRun {
+  readonly id: number;
+  readonly sha: string;
+  readonly title?: string;
+  readonly status?: "queued" | "in_progress" | "completed";
+  readonly conclusion?: "success" | "failure" | "cancelled";
+  readonly pace?: "success" | "failure";
+  /** The metadata job; skipped when the matrix did not run. */
+  readonly metadata?: "success" | "skipped";
+}
+
+const head = "f".repeat(40);
+
+/**
+ * `node e2e/release-check.ts` for a push of `head`, with these dispatched runs on main and these
+ * files changed since the base it picks, in the checkout or a fixture tree `root`.
+ */
+const decideCheck = (input: {
+  readonly checks: ReadonlyArray<DispatchedRun>;
+  readonly changed?: ReadonlyArray<string>;
+  readonly renamed?: ReadonlyArray<{ readonly from: string; readonly to: string }>;
+  readonly status?: string;
+  readonly fails?: boolean;
+  readonly root?: string;
+}) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-release-check-" });
+    const bin = path.join(directory, "bin");
+    yield* fs.makeDirectory(bin);
+    yield* fs.writeFileString(path.join(bin, "gh"), stubCheckGh);
+    yield* fs.chmod(path.join(bin, "gh"), 0o755);
+    if (input.fails === true) yield* fs.writeFileString(path.join(bin, "fails"), "");
+    yield* fs.writeFileString(
+      path.join(bin, "runs.json"),
+      JSON.stringify(
+        input.checks.map((check) => ({
+          databaseId: check.id,
+          // A check is a repository dispatch; a build or a publication is a workflow dispatch.
+          event: check.title === undefined ? "repository_dispatch" : "workflow_dispatch",
+          status: check.status ?? "completed",
+          conclusion:
+            (check.status ?? "completed") === "completed" ? (check.conclusion ?? "success") : "",
+          headSha: check.sha,
+          url: `https://github.com/owner/repository/actions/runs/${check.id}`,
+        })),
+      ),
+    );
+    for (const check of input.checks)
+      yield* fs.writeFileString(
+        path.join(bin, `jobs-${check.id}.json`),
+        JSON.stringify({
+          jobs: [
+            { name: "pace", conclusion: check.pace ?? "success" },
+            { name: "metadata", conclusion: check.metadata ?? "success" },
+          ],
+        }),
+      );
+    yield* fs.writeFileString(
+      path.join(bin, "compared.json"),
+      JSON.stringify({
+        status: input.status ?? "ahead",
+        files: [
+          ...(input.changed ?? []).map((filename) => ({ filename })),
+          ...(input.renamed ?? []).map(({ from, to }) => ({
+            filename: to,
+            previous_filename: from,
+          })),
+        ],
+      }),
+    );
+    const output = path.join(directory, "output");
+    const summary = path.join(directory, "summary");
+    yield* fs.writeFileString(output, "");
+    yield* fs.writeFileString(summary, "");
+    const child = yield* processes.spawn(
+      ChildProcess.make("node", ["e2e/release-check.ts"], {
+        cwd: input.root,
+        env: {
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          GITHUB_REPOSITORY: "owner/repository",
+          RELEASE_CHECK_HEAD: head,
+          GITHUB_OUTPUT: output,
+          GITHUB_STEP_SUMMARY: summary,
+        },
+        extendEnv: true,
+      }),
+    );
+    const [log, exitCode] = yield* Effect.all(
+      [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+      { concurrency: "unbounded" },
+    );
+    return {
+      exitCode,
+      log,
+      output: yield* fs.readFileString(output),
+      summary: yield* fs.readFileString(summary),
+    };
+  }).pipe(Effect.scoped);
+
+const tested: DispatchedRun = { id: 70, sha: "a".repeat(40) };
+
+layer(NodeServices.layer)("Release check after a push to main", (it) => {
+  it.effect("a change to what a release lane builds or runs starts the check", () =>
+    Effect.gen(function* () {
+      for (const changed of [
+        ["apps/local/server/src/bin.ts"],
+        ["packages/sdk/src/index.ts"],
+        ["e2e/support/docker-release-server.ts"],
+        ["e2e/tests/desktop-recovery.spec.ts"],
+        [".github/workflows/release-artifacts.yml"],
+        ["bun.lock"],
+      ]) {
+        const result = yield* decideCheck({ checks: [tested], changed });
+        expect(result.exitCode, result.log).toBe(0);
+        expect(result.output, changed[0]).toBe("run=true\n");
+        expect(result.summary).toContain(`these changed: \`"${changed[0]}"\``);
+      }
+      const renamed = yield* decideCheck({
+        checks: [tested],
+        renamed: [{ from: "e2e/support/docker-release-server.ts", to: "notes/server.ts" }],
+      });
+      expect(renamed.output, renamed.log).toBe("run=true\n");
+    }),
+  );
+
+  it.effect("a change nothing in a release lane reads skips it, saying why", () =>
+    Effect.gen(function* () {
+      const result = yield* decideCheck({
+        checks: [tested],
+        changed: ["notes/ci.md", "apps/hosted/cloud/src/worker.ts", "e2e/support/billing.ts"],
+      });
+      expect(result.exitCode, result.log).toBe(0);
+      expect(result.output).toBe("run=false\n");
+      expect(result.summary).toContain(
+        `Skipped: no file a release lane builds or runs changed since ${"a".repeat(40)}`,
+      );
+      const same = yield* decideCheck({ checks: [{ id: 71, sha: head }] });
+      expect(same.output, same.log).toBe("run=false\n");
+    }),
+  );
+
+  it.effect("the comparison starts at the last check that tested main, or will", () =>
+    Effect.gen(function* () {
+      const base = (checks: ReadonlyArray<DispatchedRun>) =>
+        decideCheck({ checks, changed: ["notes/ci.md"] }).pipe(
+          Effect.map((result) => result.summary),
+        );
+      // Builds, cancelled checks and checks that tested nothing are passed over.
+      expect(
+        yield* base([
+          { id: 75, sha: "1".repeat(40), title: "Executor releases (build)" },
+          { id: 74, sha: "2".repeat(40), conclusion: "cancelled" },
+          {
+            id: 73,
+            sha: "3".repeat(40),
+            pace: "failure",
+            conclusion: "failure",
+            metadata: "skipped",
+          },
+          { id: 72, sha: "4".repeat(40), title: "Executor releases (beta)" },
+          tested,
+        ]),
+      ).toContain(`runs/70 tests`);
+      // A check still queued or pacing will test its commit.
+      expect(
+        yield* base([{ id: 76, sha: "5".repeat(40), status: "in_progress" }, tested]),
+      ).toContain("runs/76 tests");
+    }),
+  );
+
+  it.effect("a file a release suite starts importing counts without editing a list", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fixture({ "e2e/release-new-helper.ts": "export const helper = 1;\n" });
+      for (const directory of ["apps", "packages", "playground", "scripts"])
+        yield* fs.symlink(path.resolve(directory), path.join(root, directory));
+      for (const directory of ["support", "sdk"])
+        yield* fs.symlink(path.resolve("e2e", directory), path.join(root, "e2e", directory));
+      for (const name of yield* fs.readDirectory("e2e/tests"))
+        yield* fs.copyFile(path.join("e2e/tests", name), path.join(root, "e2e/tests", name));
+      const changed = ["e2e/release-new-helper.ts"];
+      const before = yield* decideCheck({ checks: [tested], changed, root });
+      expect(before.output, before.log).toBe("run=false\n");
+      const spec = path.join(root, "e2e/tests/docker-release.spec.ts");
+      yield* fs.writeFileString(
+        spec,
+        `import { helper } from "../release-new-helper.ts";\nvoid helper;\n${yield* fs.readFileString(spec)}`,
+      );
+      const after = yield* decideCheck({ checks: [tested], changed, root });
+      expect(after.output, after.log).toBe("run=true\n");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("without a base, a full comparison or GitHub, it runs or fails, never skips", () =>
+    Effect.gen(function* () {
+      const none = yield* decideCheck({
+        checks: [{ id: 77, sha: "6".repeat(40), conclusion: "cancelled" }],
+      });
+      expect(none.output, none.log).toBe("run=true\n");
+      expect(none.summary).toContain("no earlier check on main tested a commit");
+      const diverged = yield* decideCheck({
+        checks: [tested],
+        status: "diverged",
+        changed: ["notes/ci.md"],
+      });
+      expect(diverged.output, diverged.log).toBe("run=true\n");
+      const long = yield* decideCheck({
+        checks: [tested],
+        changed: Array.from({ length: 300 }, (_, index) => `notes/${index}.md`),
+      });
+      expect(long.output, long.log).toBe("run=true\n");
+      const failed = yield* decideCheck({
+        checks: [tested],
+        fails: true,
+        changed: ["notes/ci.md"],
+      });
+      expect(failed.exitCode).not.toBe(0);
+      expect(failed.output).toBe("");
+      expect(failed.log).toContain("HTTP 502: Bad Gateway");
+    }),
+  );
+
+  it.effect("the workflow starts the check unless the decision passed and said to skip it", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const text = yield* fs.readFileString(".github/workflows/release-check.yml");
+      expect(text).toContain("  push:\n    branches: [main]\n");
+      expect(text).toContain("  schedule:\n");
+      expect(text).not.toContain("paths:");
+      const decide = text.slice(text.indexOf("\n  decide:\n"), text.indexOf("\n  dispatch:\n"));
+      const dispatch = text.slice(text.indexOf("\n  dispatch:\n"));
+      // The job that runs the checkout's code holds no write token; the one that starts the
+      // check checks nothing out.
+      expect(decide).toContain("run: node e2e/release-check.ts");
+      expect(decide).not.toMatch(/^ {6}[\w-]+: write$/m);
+      expect(dispatch).toMatch(/^ {6}contents: write$/m);
+      expect(dispatch).not.toContain("actions/checkout");
+      expect(dispatch).not.toContain("./.github/actions");
+      expect(dispatch).toContain(
+        "if: ${{ !cancelled() && (needs.decide.result != 'success' || needs.decide.outputs.run != 'false') }}",
+      );
+      expect(dispatch).toContain(
+        'gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" -f event_type=release-check',
+      );
+    }),
+  );
+
+  it.effect(
+    "the names the gate, the pace job and the issue script look up are in the workflow",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const text = yield* fs.readFileString(".github/workflows/release-artifacts.yml");
+        // A check is the repository dispatch release-check.yml sends, and runs on main alone.
+        expect(text).toContain("  repository_dispatch:\n    types: [release-check]\n");
+        // beta-due.ts and matrix-issue.sh tell a build by its title.
+        expect(text).toContain(
+          "run-name: Executor releases (${{ github.event_name == 'repository_dispatch' && 'check' || inputs.channel }})",
+        );
+        expect(text).toContain("        options: [build, beta, latest]");
+        for (const job of ["pace", "metadata", "releases", "report"])
+          expect(text, job).toContain(`\n  ${job}:\n`);
+        // beta-due.ts tells a publishing run from a build by this metadata step.
+        expect(text).toContain("      - name: Check the apps release is published unchanged\n");
+      }),
+  );
+
+  it.effect("every suite the release workflows run is a release suite the lanes follow", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const configs = (file: string) =>
+        fs
+          .readFileString(file)
+          .pipe(
+            Effect.map((text) => [
+              ...new Set(
+                [...text.matchAll(/--config (e2e\/[\w.-]+\.config\.ts)/g)].map(
+                  (match) => match[1]!,
+                ),
+              ),
+            ]),
+          );
+      const released = yield* configs(".github/workflows/release-artifacts.yml");
+      expect([...released].sort()).toEqual(releaseSuiteConfigs);
+      for (const config of yield* configs(".github/workflows/checks.yml"))
+        expect(releaseSuiteConfigs, config).toContain(config);
+    }),
+  );
+
+  it.effect(
+    "the CLI suite's runner, its pinned packages and the scenario server start a check",
+    () =>
+      Effect.gen(function* () {
+        for (const changed of [
+          ["scripts/e2e-npm-packages.ts"],
+          ["e2e/npm-packages.json"],
+          ["e2e/run.ts"],
+          ["e2e/setup.ts"],
+          ["e2e/check-boundary.ts"],
+          ["apps/hosted/testing/src/scenario-server.ts"],
+        ]) {
+          const result = yield* decideCheck({ checks: [tested], changed });
+          expect(result.output, changed[0]).toBe("run=true\n");
+        }
+      }),
+  );
+
+  it.effect("a check whose pace passed but whose matrix did not run is no base", () =>
+    Effect.gen(function* () {
+      const result = yield* decideCheck({
+        checks: [
+          { id: 78, sha: "7".repeat(40), conclusion: "success", metadata: "skipped" },
+          tested,
+        ],
+        changed: ["notes/ci.md"],
+      });
+      expect(result.output, result.log).toBe("run=false\n");
+      expect(result.summary).toContain("runs/70 tests");
+    }),
+  );
+
+  it.effect("a file name reaches the summary and the log quoted, whatever it holds", () =>
+    Effect.gen(function* () {
+      const result = yield* decideCheck({
+        checks: [tested],
+        changed: ["apps/cli/`x`\n::error::@someone.ts"],
+      });
+      expect(result.output, result.log).toBe("run=true\n");
+      expect(result.summary).toContain('`"apps/cli/\\u0060x\\u0060\\n::error::@someone.ts"`');
+      expect(result.log.split("\n").some((line) => line.startsWith("::"))).toBe(false);
+    }),
   );
 });

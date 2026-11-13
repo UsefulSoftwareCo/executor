@@ -23,20 +23,22 @@ cat "$FAKE_NPM/$2.json"
 `;
 
 /**
- * Answers `gh run list` for push runs from `$FAKE_GITHUB/pushes.json`, the finished ones alone
- * when it asks for completed runs, and for dispatches from
- * `$FAKE_GITHUB/runs.json`, and `gh run view <id> --json jobs` from `$FAKE_GITHUB/jobs-<id>.json`,
- * and appends every call to `$FAKE_GITHUB/calls`.
+ * Answers `gh run list` as GitHub does: the runs of `$FAKE_GITHUB/runs.json`, newest first, with
+ * the event `-e` names, at most `-L` of them. Fails it when `$FAKE_GITHUB/list-fails` exists.
+ * Answers `gh run view <id> --json jobs` from `$FAKE_GITHUB/jobs-<id>.json`. Appends every call
+ * to `$FAKE_GITHUB/calls`.
  */
 const stubGh = `#!/bin/sh
 echo "$*" >> "$FAKE_GITHUB/calls"
+if [ "$1 $2" = "run list" ]; then
+  [ -f "$FAKE_GITHUB/list-fails" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
+  while [ $# -gt 0 ]; do
+    case "$1" in -e) event=$2 ;; -L) limit=$2 ;; esac
+    shift
+  done
+  exec jq --arg event "$event" --argjson limit "$limit" '[.[] | select(.event == $event)][:$limit] | map(del(.event))' "$FAKE_GITHUB/runs.json"
+fi
 case "$1 $2 $*" in
-  "run list "*" -e push "*) if [ -f "$FAKE_GITHUB/push-list-fails" ]; then echo "HTTP 502: Bad Gateway" >&2; exit 1; fi ;;
-esac
-case "$1 $2 $*" in
-  "run list "*" -e push "*" -s completed "*) jq '[.[] | select(.status == "completed")]' "$FAKE_GITHUB/pushes.json" ;;
-  "run list "*" -e push "*) cat "$FAKE_GITHUB/pushes.json" ;;
-  "run list "*) cat "$FAKE_GITHUB/runs.json" ;;
   "run view "*) cat "$FAKE_GITHUB/jobs-$3.json" ;;
   *) echo "stub gh: unsupported: $*" >&2; exit 2 ;;
 esac
@@ -55,11 +57,13 @@ interface ReleaseRun {
   readonly channel?: "beta" | "build";
   /** The metadata job's conclusion. When it fails, the run's channel is unknown. */
   readonly metadata?: "success" | "failure";
+  /** Its title, when not the one its channel gives (`Executor releases (beta)` by default). */
+  readonly title?: string;
   /** The name of the metadata step that runs only when publishing, if the workflow renamed it. */
   readonly publishingStep?: string;
 }
 
-/** A push run of the release matrix on main, which release-artifacts.yml starts after merge. */
+/** A paced check on main, which the Release check workflow dispatches after a relevant push. */
 interface MatrixRun {
   readonly id: number;
   readonly status?: "queued" | "in_progress" | "completed";
@@ -70,6 +74,8 @@ interface MatrixRun {
   readonly pace?: "success" | "failure" | "cancelled";
   /** Its releases job, which judges the matrix; by default as the run concluded. */
   readonly releases?: "success" | "failure" | "skipped" | "missing";
+  /** Its metadata job; skipped when the matrix did not run. Passed by default. */
+  readonly metadata?: "success" | "skipped";
 }
 
 const run = (
@@ -211,10 +217,10 @@ const world = Effect.gen(function* () {
     readonly betaTag?: string;
     readonly appsPublished?: boolean;
     readonly runs?: ReadonlyArray<ReleaseRun>;
-    /** The matrix's push runs on main; by default one that passed on `Start` just now. */
+    /** The paced checks on main; by default one that passed on `Start` just now. */
     readonly matrix?: ReadonlyArray<MatrixRun>;
-    /** GitHub fails the listing of push runs. */
-    readonly pushListFails?: boolean;
+    /** GitHub fails the listing of release runs. */
+    readonly listFails?: boolean;
   }) =>
     Effect.gen(function* () {
       const time: Record<string, string> = { "2.0.0-beta.4": ago(30) };
@@ -236,65 +242,82 @@ const world = Effect.gen(function* () {
           "dist-tags": { beta: apps },
         }),
       );
-      yield* fs.writeFileString(
-        path.join(github, "pushes.json"),
-        JSON.stringify(
-          (
-            input.matrix ?? [{ id: 900, conclusion: "success", hoursAgo: 0.05, headSha: previous }]
-          ).map((push) => ({
-            databaseId: push.id,
-            status: push.status ?? "completed",
-            conclusion:
-              push.status === undefined || push.status === "completed"
-                ? (push.conclusion ?? "failure")
-                : "",
-            headSha: push.headSha,
-            createdAt: ago(push.hoursAgo),
-            attempt: 1,
-            url: `https://github.com/${repository}/actions/runs/${push.id}`,
-          })),
-        ),
-      );
-      for (const push of input.matrix ?? [
+      const checks = input.matrix ?? [
         { id: 900, conclusion: "success", hoursAgo: 0.05, headSha: previous },
-      ])
+      ];
+      for (const check of checks)
         yield* fs.writeFileString(
-          path.join(github, `jobs-${push.id}.json`),
+          path.join(github, `jobs-${check.id}.json`),
           JSON.stringify({
             jobs: [
-              { name: "pace", conclusion: push.pace ?? "success", steps: [] },
-              ...(push.releases === "missing"
+              { name: "pace", conclusion: check.pace ?? "success", steps: [] },
+              { name: "metadata", conclusion: check.metadata ?? "success", steps: [] },
+              ...(check.releases === "missing"
                 ? []
                 : [
                     {
                       name: "releases",
                       conclusion:
-                        push.releases ?? (push.conclusion === "success" ? "success" : "failure"),
+                        check.releases ?? (check.conclusion === "success" ? "success" : "failure"),
                       steps: [],
                     },
                   ]),
             ],
           }),
         );
-      if (input.pushListFails === true)
-        yield* fs.writeFileString(path.join(github, "push-list-fails"), "");
-      else yield* fs.remove(path.join(github, "push-list-fails"), { force: true });
+      if (input.listFails === true) yield* fs.writeFileString(path.join(github, "list-fails"), "");
+      else yield* fs.remove(path.join(github, "list-fails"), { force: true });
       const runs = input.runs ?? [];
+      const listed = (run: {
+        readonly id: number;
+        readonly status?: string;
+        readonly conclusion?: string;
+        readonly headSha: string;
+        readonly hoursAgo: number;
+        readonly attempt?: number;
+      }) => ({
+        databaseId: run.id,
+        status: run.status ?? "completed",
+        conclusion:
+          run.status === undefined || run.status === "completed"
+            ? (run.conclusion ?? "failure")
+            : "",
+        headSha: run.headSha,
+        createdAt: ago(run.hoursAgo),
+        attempt: run.attempt ?? 1,
+        url: `https://github.com/${repository}/actions/runs/${run.id}`,
+      });
+      // A check's event is the one release-check.yml starts it with.
+      const checkEvent = (yield* fs.readFileString(
+        path.resolve(".github/workflows/release-check.yml"),
+      )).includes("/dispatches")
+        ? "repository_dispatch"
+        : "workflow_dispatch";
       yield* fs.writeFileString(
         path.join(github, "runs.json"),
         JSON.stringify(
-          runs.map((release) => ({
-            databaseId: release.id,
-            status: release.status ?? "completed",
-            conclusion:
-              release.status === undefined || release.status === "completed"
-                ? (release.conclusion ?? "failure")
-                : "",
-            headSha: release.headSha,
-            createdAt: ago(release.hoursAgo),
-            attempt: release.attempt ?? 1,
-            url: `https://github.com/${repository}/actions/runs/${release.id}`,
-          })),
+          [
+            ...checks.map((check) => ({
+              hoursAgo: check.hoursAgo,
+              run: {
+                ...listed(check),
+                event: checkEvent,
+                displayTitle: "Executor releases (check)",
+              },
+            })),
+            ...runs.map((release) => ({
+              hoursAgo: release.hoursAgo,
+              run: {
+                ...listed(release),
+                event: "workflow_dispatch",
+                displayTitle:
+                  release.title ??
+                  `Executor releases (${release.channel === "build" ? "build" : "beta"})`,
+              },
+            })),
+          ]
+            .sort((a, b) => a.hoursAgo - b.hoursAgo)
+            .map(({ run }) => run),
         ),
       );
       for (const release of runs) {
@@ -837,7 +860,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
       }).pipe(Effect.scoped),
   );
 
-  it.effect("a run that gave way to a newer push tested nothing and never counts", () =>
+  it.effect("a check that gave way to a newer one tested nothing and never counts", () =>
     Effect.gen(function* () {
       const { decide, change, previous } = yield* world;
       const head = yield* change(["apps/cli/src/main.ts"]);
@@ -857,7 +880,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
     }).pipe(Effect.scoped),
   );
 
-  it.effect("a dispatch whose channel cannot be told never counts, passed or not", () =>
+  it.effect("a run whose title names no channel never counts, passed or not", () =>
     Effect.gen(function* () {
       const { decide, change, previous } = yield* world;
       const head = yield* change(["apps/cli/src/main.ts"]);
@@ -866,7 +889,8 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         const result = yield* decide({
           published: 7,
           matrix: [red],
-          runs: [{ id: 5, metadata: "failure", conclusion, hoursAgo: 1, headSha: head }],
+          // As the runs before titles named their channel were.
+          runs: [{ id: 5, title: "Executor releases", conclusion, hoursAgo: 1, headSha: head }],
         });
         expect(result.outputs.decision, result.output).toBe("none");
         expect(result.outputs.reason).toContain("runs/901, failed its releases job");
@@ -874,7 +898,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
     }).pipe(Effect.scoped),
   );
 
-  it.effect("a push run whose pace job failed tested nothing and never counts", () =>
+  it.effect("a check whose pace job failed tested nothing and never counts", () =>
     Effect.gen(function* () {
       const { decide, change, previous } = yield* world;
       const head = yield* change(["apps/cli/src/main.ts"]);
@@ -933,7 +957,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
     }).pipe(Effect.scoped),
   );
 
-  it.effect("the gate reads finished push runs past a busy day of runs that gave way", () =>
+  it.effect("the gate reads checks past a busy day of checks that gave way", () =>
     Effect.gen(function* () {
       const { decide, change, previous } = yield* world;
       const head = yield* change(["apps/cli/src/main.ts"]);
@@ -954,7 +978,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
       expect(result.outputs.decision, result.output).toBe("none");
       expect(result.outputs.reason).toContain("runs/901, failed its releases job");
       expect(result.calls).toContain(
-        `run list -R ${repository} -w release-artifacts.yml -e push -b main -s completed -L 100 --json databaseId,status,conclusion,headSha,createdAt,attempt,url`,
+        `run list -R ${repository} -w release-artifacts.yml -e repository_dispatch -b main -L 100 --json databaseId,status,conclusion,headSha,createdAt,attempt,url,displayTitle`,
       );
     }).pipe(Effect.scoped),
   );
@@ -963,7 +987,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
     Effect.gen(function* () {
       const { decide, merge, previous } = yield* world;
       yield* merge;
-      const failed = yield* decide({ published: 7, pushListFails: true });
+      const failed = yield* decide({ published: 7, listFails: true });
       expect(failed.exitCode, failed.output).not.toBe(0);
       expect(failed.output).toContain("HTTP 502: Bad Gateway");
       expect(failed.outputs.decision).toBeUndefined();
@@ -976,6 +1000,93 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
       expect(unjudged.exitCode, unjudged.output).not.toBe(0);
       expect(unjudged.output).toContain("runs/907 has no releases job");
       expect(unjudged.outputs.decision).toBeUndefined();
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a check pacing or building holds no tick, unlike a build or a publication", () =>
+    Effect.gen(function* () {
+      const { decide, merge, previous } = yield* world;
+      const head = yield* merge;
+      const pacing = yield* decide({
+        published: 7,
+        matrix: [
+          { id: 908, status: "in_progress", hoursAgo: 0.1, headSha: head },
+          { id: 900, conclusion: "success", hoursAgo: 1, headSha: previous },
+        ],
+      });
+      expect(pacing.outputs.decision, pacing.output).toBe("bump");
+      const building = yield* decide({
+        published: 7,
+        runs: [{ id: 9, channel: "build", status: "in_progress", hoursAgo: 0.1, headSha: head }],
+      });
+      expect(building.outputs.decision, building.output).toBe("none");
+      expect(building.outputs.reason).toContain("A release run is in_progress");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a busy day of checks never hides the last publishing attempts", () =>
+    Effect.gen(function* () {
+      const { decide, merge, released } = yield* world;
+      const head = yield* merge;
+      // 120 checks, every one after the publishing run that failed after its re-run.
+      const checks = Array.from({ length: 120 }, (_, index): MatrixRun => ({
+        id: 2000 + index,
+        conclusion: index % 2 === 0 ? "success" : "cancelled",
+        hoursAgo: 0.05 + index * 0.05,
+        headSha: head,
+      }));
+      const held = yield* decide({
+        matrix: checks,
+        runs: [{ id: 7, publish: "failure", attempt: 2, hoursAgo: 9, headSha: released }],
+      });
+      expect(held.exitCode, held.output).toBe(0);
+      expect(held.outputs.decision, held.output).toBe("none");
+      expect(held.outputs.reason).toContain("runs/7 failed to publish");
+      // And the two-failure back-off still sees both failed attempts.
+      const backOff = yield* decide({
+        matrix: checks,
+        runs: [
+          { id: 3, hoursAgo: 5, headSha: released },
+          { id: 2, hoursAgo: 6, headSha: released },
+        ],
+      });
+      expect(backOff.outputs.decision, backOff.output).toBe("none");
+      expect(backOff.outputs.reason).toContain("after two or more failed attempts in a row");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a bun.lock refresh at the head of main neither clears nor causes a hold", () =>
+    Effect.gen(function* () {
+      const { decide, merge, lockRefresh, previous } = yield* world;
+      const merged = yield* merge;
+      yield* lockRefresh;
+      const green = yield* decide({
+        published: 7,
+        matrix: [{ id: 910, conclusion: "success", hoursAgo: 0.1, headSha: merged }],
+      });
+      expect(green.outputs.decision, green.output).toBe("bump");
+      const red = yield* decide({
+        published: 7,
+        matrix: [{ id: 911, hoursAgo: 0.1, headSha: previous }],
+      });
+      expect(red.outputs.decision, red.output).toBe("none");
+      expect(red.outputs.reason).toContain("runs/911, failed its releases job");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a check whose matrix did not run tested nothing, though its pace passed", () =>
+    Effect.gen(function* () {
+      const { decide, merge, previous } = yield* world;
+      const head = yield* merge;
+      const result = yield* decide({
+        published: 7,
+        matrix: [
+          { id: 912, conclusion: "success", metadata: "skipped", hoursAgo: 0.1, headSha: head },
+          { id: 901, hoursAgo: 1, headSha: previous },
+        ],
+      });
+      expect(result.outputs.decision, result.output).toBe("none");
+      expect(result.outputs.reason).toContain("runs/901, failed its releases job");
     }).pipe(Effect.scoped),
   );
 
@@ -1075,6 +1186,8 @@ interface PushRun {
   readonly conclusion?: "success" | "failure" | "cancelled";
   /** Hours since its pace job passed, when it did. */
   readonly built?: number;
+  /** Its title, when it is not a check. */
+  readonly title?: string;
 }
 
 const pace = (self: number, runs: ReadonlyArray<PushRun>) =>
@@ -1096,15 +1209,18 @@ const pace = (self: number, runs: ReadonlyArray<PushRun>) =>
     const file = (api: string) => path.join(github, `${api.replace(/[^A-Za-z0-9]/g, "_")}.json`);
     const iso = (hours: number) =>
       new Date(Date.now() - hours * hour).toISOString().replace(/\.\d+/, "");
-    const listed = runs.map((push) => ({
-      id: push.id,
-      created_at: iso(push.created),
-      status: push.status ?? "completed",
-      conclusion:
-        (push.status ?? "completed") === "completed" ? (push.conclusion ?? "success") : null,
-    }));
-    const list = `repos/${repository}/actions/workflows/release-artifacts.yml/runs?branch=main&event=push`;
-    // The script reads finished runs for the last build, and every run for a newer push.
+    // The repository dispatches: the checks alone, as GitHub filters by event.
+    const listed = runs
+      .filter((push) => push.title === undefined)
+      .map((push) => ({
+        id: push.id,
+        created_at: iso(push.created),
+        status: push.status ?? "completed",
+        conclusion:
+          (push.status ?? "completed") === "completed" ? (push.conclusion ?? "success") : null,
+      }));
+    const list = `repos/${repository}/actions/workflows/release-artifacts.yml/runs?branch=main&event=repository_dispatch`;
+    // The script reads finished runs for the last build, and every run for a newer check.
     yield* fs.writeFileString(
       file(`${list}&status=completed&per_page=100`),
       JSON.stringify({ workflow_runs: listed.filter((push) => push.status === "completed") }),
@@ -1153,11 +1269,11 @@ const pace = (self: number, runs: ReadonlyArray<PushRun>) =>
 layer(NodeServices.layer, { excludeTestServices: true })("Release matrix pacing", (it) => {
   const self: PushRun = { id: 10, created: 0, status: "in_progress" };
 
-  it.effect("a push builds at once when no build started in the last two hours", () =>
+  it.effect("a check builds at once when no build started in the last two hours", () =>
     Effect.gen(function* () {
       const first = yield* pace(10, [self]);
       expect(first.exitCode, first.output).toBe(0);
-      expect(first.output).toContain("No earlier push run on main built");
+      expect(first.output).toContain("No earlier check on main built");
       const later = yield* pace(10, [self, { id: 9, created: 3, built: 2.9 }]);
       expect(later.exitCode, later.output).toBe(0);
       expect(later.output).toContain("so this run builds now");
@@ -1168,18 +1284,18 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release matrix pacing"
     }).pipe(Effect.scoped),
   );
 
-  it.effect("a push soon after a build waits for the two-hour mark, then builds", () =>
+  it.effect("a check soon after a build waits for the two-hour mark, then builds", () =>
     Effect.gen(function* () {
       const result = yield* pace(10, [self, { id: 9, created: 0.6, built: 0.5 }]);
       expect(result.exitCode, result.output).toBe(0);
-      expect(result.output).toContain("No newer push is waiting, so this run builds.");
+      expect(result.output).toContain("No newer check is waiting, so this check builds.");
       expect(result.sleeps.length).toBe(1);
       expect(result.sleeps[0]).toBeGreaterThan(1.5 * 3600 - 60);
       expect(result.sleeps[0]).toBeLessThanOrEqual(1.5 * 3600);
     }).pipe(Effect.scoped),
   );
 
-  it.effect("a waiting push gives way to a newer one by cancelling itself", () =>
+  it.effect("a waiting check gives way to a newer one by cancelling itself", () =>
     Effect.gen(function* () {
       const result = yield* pace(10, [
         { id: 11, created: -0.2, status: "pending" },
@@ -1192,6 +1308,19 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release matrix pacing"
       expect(result.output).toContain(
         "::error::This run asked to be cancelled, yet is still running",
       );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a newer build or publication is not a newer check to give way to", () =>
+    Effect.gen(function* () {
+      const result = yield* pace(10, [
+        { id: 11, created: -0.2, status: "pending", title: "Executor releases (build)" },
+        self,
+        { id: 9, created: 0.6, built: 0.5 },
+      ]);
+      expect(result.exitCode, result.output).toBe(0);
+      expect(result.output).toContain("No newer check is waiting, so this check builds.");
+      expect(result.calls.some((call) => call.startsWith("run cancel"))).toBe(false);
     }).pipe(Effect.scoped),
   );
 
@@ -1248,13 +1377,12 @@ interface MainRun {
   readonly id: number;
   /** Hours before this run was created; negative when created after it. */
   readonly created: number;
-  readonly event?: "push" | "workflow_dispatch";
+  /** A check by default; a build or a publication was dispatched by hand or by Beta. */
+  readonly kind?: "check" | "build" | "beta";
   readonly sha: string;
   readonly conclusion?: "success" | "failure" | "cancelled";
-  /** Its pace job, for a push run. */
+  /** Its pace job, for a check. */
   readonly pace?: "success" | "failure";
-  /** A dispatch that published rather than built. */
-  readonly publishing?: boolean;
   /** Its releases job; by default as the run concluded. */
   readonly releases?: "success" | "failure";
 }
@@ -1298,7 +1426,8 @@ const issueWorld = (input: {
         workflow_runs: runs.map((main) => ({
           id: main.id,
           created_at: iso(main.created),
-          event: main.event ?? "push",
+          event: (main.kind ?? "check") === "check" ? "repository_dispatch" : "workflow_dispatch",
+          display_title: `Executor releases (${main.kind ?? "check"})`,
           head_sha: main.sha,
           conclusion: main.conclusion ?? "success",
           html_url: `https://github.com/${repository}/actions/runs/${main.id}`,
@@ -1316,7 +1445,7 @@ const issueWorld = (input: {
             steps: [
               {
                 name: "Check the apps release is published unchanged",
-                conclusion: main.publishing === true ? "success" : "skipped",
+                conclusion: main.kind === "beta" ? "success" : "skipped",
               },
             ],
           },
@@ -1499,7 +1628,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it
     Effect.gen(function* () {
       for (const newer of [
         { id: 60, created: -0.5, sha: "e".repeat(40) },
-        { id: 61, created: -0.5, sha: "e".repeat(40), event: "workflow_dispatch" as const },
+        { id: 61, created: -0.5, sha: "e".repeat(40), kind: "build" as const },
       ]) {
         const result = yield* issueWorld({
           needs: { ...passed, local: "failure" },
@@ -1520,8 +1649,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it
             id: 63,
             created: -0.4,
             sha: "e".repeat(40),
-            event: "workflow_dispatch",
-            publishing: true,
+            kind: "beta",
           },
         ],
         failed: [{ id: 7006, name: "local", log: "" }],

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Keeps one issue for a red release matrix on main. `.github/workflows/release-artifacts.yml` runs
-# it in the `report` job of each push run on main and each build dispatch from main, with NEEDS
+# it in the `report` job of each check and each build dispatched from main, with NEEDS
 # holding the jobs' results. The job continues on error, so this script never makes a run red.
 #
 # - The run's pace job did not pass: the matrix never ran, so it does nothing.
-# - A newer matrix run on main has finished, by the rule scripts/releases/beta-due.ts uses (a push
-#   run whose pace job passed, or a build dispatch from main, not cancelled): that result decides,
-#   so it does nothing.
+# - A newer matrix run on main has finished, by the rule scripts/releases/beta-due.ts uses (a
+#   check, a repository dispatch, whose pace job passed, or a build, not cancelled): that result
+#   decides, so it does nothing.
 # - Every matrix job passed: closes the open issue, noting the green run in its body.
 # - A matrix job failed: opens the issue, or rewrites its body, with this run's failed jobs and the
 #   scenarios their logs name as failed, the first failed run and the last green one before it.
@@ -25,24 +25,21 @@ if [[ "$pace" != success && "$pace" != skipped ]]; then
   exit 0
 fi
 
-# Whether a finished run on main tested the matrix: a push run whose pace passed, or a dispatch
-# whose metadata passed and skipped the publishing step. Prints its releases job's conclusion.
+# Whether a finished check or build on main tested the matrix: a check whose pace job passed, or
+# any build. Prints its releases job's conclusion, or nothing when it tested nothing.
 verdict() {
-  local id=$1 event=$2 jobs
+  local id=$1 kind=$2 jobs
   jobs="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs?per_page=100")"
-  if [[ "$event" == push ]]; then
+  if [[ "$kind" == check ]]; then
     jq -e '.jobs[] | select(.name == "pace" and .conclusion == "success")' <<< "$jobs" > /dev/null || return 0
-  else
-    jq -e '.jobs[] | select(.name == "metadata" and .conclusion == "success")
-      | .steps[] | select(.name == "Check the apps release is published unchanged" and .conclusion == "skipped")' \
-      <<< "$jobs" > /dev/null || return 0
   fi
   jq -r '[.jobs[] | select(.name == "releases") | .conclusion][0] // "missing"' <<< "$jobs"
 }
 
 created="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" --jq .created_at)"
 finished="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-artifacts.yml/runs?branch=main&status=completed&per_page=100" \
-  --jq '[.workflow_runs[] | select(.conclusion != "cancelled" and (.event == "push" or .event == "workflow_dispatch")) | {id, created_at, event, head_sha, html_url}]')"
+  --jq '[.workflow_runs[] | select(.conclusion != "cancelled" and (.event == "repository_dispatch" or .display_title == "Executor releases (build)"))
+    | {id, created_at, event: (if .event == "repository_dispatch" then "check" else "build" end), head_sha, html_url}]')"
 for id in $(jq -r --arg created "$created" '.[] | select(.created_at > $created) | "\(.id):\(.event)"' <<< "$finished"); do
   if [[ -n "$(verdict "${id%%:*}" "${id##*:}")" ]]; then
     echo "Matrix run ${id%%:*} on main, created after this one, has finished, so its result decides the issue."
@@ -115,7 +112,7 @@ done
     read -r green_sha green_url <<< "$green"
     echo "- Last green run before it: $green_url on $green_sha. The first failure came from a commit in $server_repo/compare/$green_sha...$first_sha"
   else
-    echo "- The matrix run on main before the first failure did not pass, or is not among the last 100 finished runs."
+    echo "- The check or build on main before the first failure did not pass, or is not among the last 100 finished runs."
   fi
   echo
   echo "Failed jobs in the latest failure:"

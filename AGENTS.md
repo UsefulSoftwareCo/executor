@@ -376,9 +376,14 @@ lockdown, credential store and desktop startup checks when the CLI's or the desk
 app's source, their build inputs or a packaging script changed. The required `checks / e2e` check covers both, so wait
 for CI only (`ci-wait --pr N --workflow CI`); a lower stack layer runs neither.
 
-After merge, "Executor releases" runs a paced check on pushes to `main` that change
-a release path, at most once every two hours: Linux x64 packaging with desktop
-crash recovery, its installed CLI suite and the image on both architectures. Linux
+After merge, the "Release check" workflow decides on every push to `main`, and
+hourly as a backstop, whether main, with every commit since the last check,
+changed what a release lane builds or runs. The paths are computed from the
+checkout (`e2e/release-check.ts`), so nothing is kept by hand. When they changed,
+it starts "Executor releases" with a repository dispatch, a paced check that
+builds at most once every two hours:
+Linux x64 packaging with desktop crash recovery, its installed CLI suite and the
+image on both architectures. Linux
 arm64, Windows and macOS run in each beta's publishing run, which tests every
 platform before it publishes, and in manual build runs. A failed run opens or
 updates one issue labelled `release-matrix-red`, which the next green run closes,
