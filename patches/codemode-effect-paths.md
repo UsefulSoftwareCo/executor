@@ -8,7 +8,7 @@ unstable modules to top-level paths and removed `effect/unstable/*`. The root
 override runs codemode on the project's Effect, and its root entry re-exports
 `OpenAPI`, so importing the package failed to resolve that path. Executor does
 not call codemode's `OpenAPI` helpers; every other Effect API the package uses
-exists unchanged in 4.0.1.
+exists unchanged in 4.1.4.
 
 The patch changes only import specifiers in the published JavaScript and
 declarations. Remove it when a codemode release imports Effect 4's public paths.

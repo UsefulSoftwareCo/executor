@@ -2164,10 +2164,82 @@ export const scenarios = plan({
       cloud: na("Hosted links run in the organization-scoped scenario."),
     },
   },
-  browserObservability: {
+  browserFailureSchema: {
     fixtures: "actors",
     file: "browser-observability.spec.ts",
-    title: "browser decode and startup failures reach correlated error collectors",
+    title: "browser failures reach error collectors: a response that fails its schema",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserFailureJson: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title:
+      "browser failures reach error collectors: a response that is not JSON, each document under its own page",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserFailureServer: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title: "browser failures reach error collectors: a server's failure response",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserFailureEntryModule: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title: "browser failures reach error collectors: a dashboard entry module that does not load",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserFailureBoot: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title:
+      "browser failures reach error collectors: a dashboard document without its bootstrap data",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserFailureDocs: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title: "browser failures reach error collectors: a documentation script failure",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserReportsWhileReplaying: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title: "browser error reports reach Sentry while session replay chunks are held",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Cloud Sentry receiver"),
+      local: na("Cloud Sentry receiver"),
+    },
+  },
+  browserReportsWhileExporting: {
+    fixtures: "actors",
+    file: "browser-observability.spec.ts",
+    title: "browser error reports reach Sentry while the page's own telemetry exports are held",
     targets: {
       cloud: managedCloud,
       "self-host": na("Cloud Sentry receiver"),
@@ -3742,6 +3814,32 @@ export const scenarios = plan({
     file: "credential-placement.spec.ts",
     title:
       "the operator's OAuth client signs in, renews and revokes only at the operator's endpoints",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedTelemetry: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "the operator's OAuth client's exchange, renewal and revocation spans name the client and its endpoint's host, and record no secret",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedServiceWords: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "a sign-in with the operator's OAuth client keeps none of the service's own words, so no part or encoding of its secret, or a token the service minted, reaches the failure",
     targets: {
       "self-host": scheduled,
       cloud: na(
@@ -5503,6 +5601,41 @@ export const scenarios = plan({
       local: na("Local has no hosted organization membership."),
     },
   },
+  earlyConsentDecision: {
+    fixtures: "actors",
+    file: "early-form-submission.spec.ts",
+    title:
+      "Connect pressed on the MCP consent page before it is interactive is held and approves the client after hydration",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud runs its own early consent scenario, on its role hosts."),
+      local: na(
+        "Local's server sends its consent page with Connect enabled, but Connect pressed before it hydrates still sends no decision after hydration; that is a separate open defect.",
+      ),
+    },
+  },
+  earlyDeviceDecision: {
+    fixtures: "actors",
+    file: "early-form-submission.spec.ts",
+    title:
+      "Deny pressed on the device sign-in page before it is interactive is held and denies the request after hydration",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The device page and the early-submission guard are shared and run on self-host."),
+      local: na("Local signs the CLI in with an API key, not a device sign-in."),
+    },
+  },
+  earlyConsentDecisionCloud: {
+    fixtures: "actors",
+    file: "early-form-submission.spec.ts",
+    title:
+      "Cloud's MCP consent page holds Connect pressed before it is interactive and approves the client after hydration",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Self-host runs its own early consent scenario."),
+      local: na("Local has no hosted MCP consent page."),
+    },
+  },
   earlyFormSubmission: {
     fixtures: "actors",
     file: "early-form-submission.spec.ts",
@@ -6994,7 +7127,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "mcp-sign-in-page.spec.ts",
     title:
-      "The sign-in page keeps its frame while connections load, shows a failure with retry in the Access row, keeps choices and still connects with the preselected access",
+      "The sign-in page shows the Access value while connections load in its menu, shows a failure with retry in the menu, keeps choices and still connects with the preselected access",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -7269,7 +7402,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "cloud-tool-call-batch.spec.ts",
     title:
-      "Cloud MCP tool calls send their checks and reads in one socket write and one snapshot, alone and in parallel, and read again in order when a batch fails",
+      "Cloud MCP tool calls send their checks and reads in one socket write and one snapshot, alone and in parallel, read again in order when a batch fails, and export a log write that outlasts the call without holding a streamed response",
     targets: {
       cloud: managedCloud,
       "self-host": na(
@@ -8092,6 +8225,18 @@ export const scenarios = plan({
     targets: {
       local: na("Local has no organization members."),
       "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  webhookSourceLookup: {
+    fixtures: "actors",
+    file: "webhook-source-lookup.spec.ts",
+    title: "saving an account beside 100,000 webhook sources reads its own source by index",
+    targets: {
+      local: na("Local has no hosted webhook sources linked through members."),
+      "self-host": na(
+        "The query plans are read from Cloud's Postgres; self-host's PGlite runs inside its server.",
+      ),
       cloud: scheduled,
     },
   },
@@ -9165,6 +9310,12 @@ export const scenarios = plan({
     title: "Cloud onboarding with GitHub retains edited team details through a failed confirmation",
     targets: cloudOnboarding,
   },
+  onboardingGuideRevisit: {
+    file: "cloud-onboarding.spec.ts",
+    title:
+      "Cloud onboarding's Claude guide on a phone keeps its screen and connection check through reloads, history and links",
+    targets: cloudOnboarding,
+  },
   onboardingEmail: {
     file: "cloud-onboarding.spec.ts",
     title:
@@ -9431,10 +9582,16 @@ export const scenarios = plan({
       "Cloud v1 import copies an Enterprise v1 workspace into the empty v2 team on v2's Enterprise plan that its owner owns when the operator lists it to copy: the dry run plans it with no billing and still flags SSO, the import copies its items, its newcomer joins, a member already in the team keeps their membership and role, the team's and v1's billing stay as they were with no hold, a rollback needs no billing return and removes only what the import added, and an Enterprise workspace the operator did not list is still held back",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ImportIntoSelected: {
+    file: "cloud-v1-import-run.spec.ts",
+    title:
+      "Cloud v1 import copies only the listed integration of a paid, shared v1 workspace into the v2 team its members already work in, beside the team's own apps, when the operator lists it to copy selected integrations: the dry run plans that app and its accounts and lists the integration it leaves in v1, the import adds the app with the workspace connection's account linked for everyone and each member's own, no toolkit copy, rule of another integration or member, carries its Team plan over to the team, records the workspace against the team and marks it moved at the team's slug, a later dry run finds the team through its map row, a workspace whose integration's app would take a name one of the team's apps has is refused and left in v1, and once its billing goes back a rollback removes only what the import added",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportIntoRefused: {
     file: "cloud-v1-import-run.spec.ts",
     title:
-      "Cloud v1 import refuses to move a v1 workspace into a listed existing v2 organization when it has items to copy, a second active member, a pending invitation or a paid plan, Enterprise included, also when it would leave its data behind, when its owner has no v2 account or does not own the organization, also to copy into it, when the organization does not exist, and when the listed mode is unknown: the dry run says why, and the import holds it back and gives it to v1 again without writing its import map or changing the organization",
+      "Cloud v1 import refuses to move a v1 workspace into a listed existing v2 organization when it has items to copy, a second active member, a pending invitation or a paid plan, Enterprise included, also when it would leave its data behind, when its owner has no v2 account or does not own the organization, also to copy into it, when the organization does not exist, when the listed mode is unknown, and to copy selected integrations when a member is not in the organization, a listed integration is not in v1 or none is listed, or when integrations are listed for another mode: the dry run says why, and the import holds it back and gives it to v1 again without writing its import map or changing the organization",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportAllowed: {
@@ -10667,7 +10824,7 @@ export const scenarios = plan({
   scale: {
     fixtures: "actors",
     file: "hosted.spec.ts",
-    title: "concurrent owners and admins save every account in a large inventory",
+    title: "concurrent owners and admins save every account of a 300-account inventory",
     targets: {
       "self-host": scheduled,
       cloud: {

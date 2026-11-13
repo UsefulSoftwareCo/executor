@@ -43,7 +43,7 @@ export class Target extends Context.Service<
       const observeUI = yield* Config.Boolean("E2E_UI_OBSERVE").pipe(Config.withDefault(false));
       const fixtures = yield* Config.String("E2E_FIXTURES").pipe(Config.withDefault(""));
       const rows = yield* Config.Number("E2E_ROWS").pipe(
-        Config.withDefault(1000),
+        Config.withDefault(300),
         Effect.flatMap(
           Schema.decodeUnknownEffect(
             Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10000 })),

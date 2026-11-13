@@ -1,7 +1,8 @@
 /**
  * A call that gets no usable response says how far it got: whether a response began, with which
  * status, whether it failed in transport or while decoding the body, the error tags and low-level
- * code, and how long it ran. Calls to emulators.dev (`emulatorRequest`) and to the product or a
+ * code, how long it ran, what the client saw (DNS, connect, TLS, reset, closed, time-out), and the
+ * Cloudflare ray and location of any response that carried one. Calls to emulators.dev (`emulatorRequest`) and to the product or a
  * stage (`SessionClients`) each report it. A local server stands in for both and fails one way per
  * path: it resets the connection, stalls, closes mid-body, or answers HTML. Nothing it was sent or
  * answered, a query, a header value or a body, appears in any rendering of the failure, nor does a
@@ -30,6 +31,10 @@ const bodyStart = "SYNTHMK7Q2";
 const secrets = [suffix, token, queryValue, bodyValue, bodyStart];
 // Wording from Node's and Schema's JSON parse errors, which quote the body they refused.
 const parserWords = ["not valid JSON", "Unexpected token", "Unexpected end"];
+// A response that came through Cloudflare names its ray and location; nothing else in the header
+// is kept, so a value that is not ray-shaped is dropped whole.
+const ray = "8f0c1a2b3c4d5e6f";
+const edgeHeaders = { "cf-ray": `${ray}-IAD` };
 const leaked = (text: string) =>
   [...secrets, ...parserWords].filter((secret) => text.includes(secret));
 
@@ -52,6 +57,7 @@ const failing = (request: IncomingMessage, response: ServerResponse): void => {
       response.writeHead(kind === "mid-body" ? 200 : 404, {
         "content-type": "application/json",
         "content-length": "4096",
+        ...edgeHeaders,
       });
       response.flushHeaders();
       setTimeout(() => {
@@ -63,7 +69,13 @@ const failing = (request: IncomingMessage, response: ServerResponse): void => {
     case "html":
       // A whole answer that is not JSON, as an edge error page is.
       response
-        .writeHead(200, { "content-type": "text/html" })
+        .writeHead(200, { "content-type": "text/html", ...edgeHeaders })
+        .end(`${bodyStart}<html>not json ${bodyValue}</html>`);
+      return;
+    case "html-odd-ray":
+      // The same answer with a `cf-ray` that is not a ray.
+      response
+        .writeHead(200, { "content-type": "text/html", "cf-ray": `${ray}-IAD ${bodyValue}` })
         .end(`${bodyStart}<html>not json ${bodyValue}</html>`);
       return;
     case "empty":
@@ -104,6 +116,8 @@ const stub = Effect.acquireRelease(
  * runner, so connecting is refused.
  */
 const refusedOrigin = "http://localhost:3";
+/** A reserved name that never resolves (RFC 6761), so its lookup fails. */
+const unresolvableOrigin = "http://executor-e2e.invalid";
 
 const emulatorCall = (origin: string, path: string) =>
   emulatorRequest(
@@ -185,6 +199,10 @@ layer(NodeServices.layer, { excludeTestServices: true })("Request failures", (it
       const midBody = yield* emulatorCall(origin, "/mid-body");
       const html = yield* emulatorCall(origin, "/html");
       const refusedBody = yield* emulatorCall(origin, "/mid-body-404");
+      const oddRay = yield* emulatorCall(origin, "/html-odd-ray");
+      const unresolvable = yield* emulatorCall(unresolvableOrigin, "/x");
+      // TLS to a server that speaks plain HTTP: the handshake fails.
+      const tls = yield* emulatorCall(origin.replace("http:", "https:"), "/x");
       const empty = yield* emulatorRequest(`${origin}/resend/kind-${suffix}`, "/empty").pipe(
         Effect.provide(FetchHttpClient.layer),
       );
@@ -202,6 +220,25 @@ layer(NodeServices.layer, { excludeTestServices: true })("Request failures", (it
       expect(midBody.failure?.code).toMatch(/^(?:UND_ERR_SOCKET|ECONNRESET|ABORT_ERR)$/u);
       expect(html.failure).toMatchObject({ stage: "decoding body", status: 200 });
       expect(html.failure?.errors).toContain("SyntaxError");
+      // What the client saw, for each call that got no whole answer.
+      expect(refused.failure?.connection).toBe("connect");
+      expect(reset.failure?.connection).toBe("reset");
+      expect(closed.failure?.connection).toBe("closed");
+      expect(midBody.failure?.connection).toMatch(/^(?:closed|reset|other)$/u);
+      expect(unresolvable.failure).toMatchObject({ stage: "before response", connection: "dns" });
+      expect(tls.failure).toMatchObject({ stage: "before response", connection: "tls" });
+      expect(html.failure?.connection).toBeUndefined();
+      // The ray and location of every response that carried one, and only a ray-shaped one.
+      expect(html.failure).toMatchObject({ ray, colo: "IAD" });
+      expect(midBody.failure).toMatchObject({ ray, colo: "IAD" });
+      expect(refusedBody.failure).toMatchObject({ ray, colo: "IAD" });
+      expect(oddRay.failure).toMatchObject({ stage: "decoding body", status: 200 });
+      expect(oddRay.failure?.ray).toBeUndefined();
+      expect(oddRay.failure?.colo).toBeUndefined();
+      for (const error of [refused, reset, closed, unresolvable, tls])
+        expect(error.failure?.ray).toBeUndefined();
+      for (const error of [oddRay, unresolvable, tls])
+        for (const text of renderings(error)) expect(leaked(text)).toEqual([]);
       for (const error of [refused, reset, closed, midBody, html]) {
         expect(error.reason).toBe("request");
         expect(error.failure?.errors).toMatch(/^[A-Za-z]+(?: > [A-Za-z]+)*$/u);
@@ -214,10 +251,14 @@ layer(NodeServices.layer, { excludeTestServices: true })("Request failures", (it
       );
       expect(new Set(kinds).size).toBe(5);
       expect(reset.message).toMatch(
-        /^External emulator failed: POST \/reset on resend\/kind-… #[0-9a-f]{12} \(request: before response, [A-Za-z >]+ ECONNRESET, after \d+ ms\)$/u,
+        /^External emulator failed: POST \/reset on resend\/kind-… #[0-9a-f]{12} \(request: before response \(reset\), [A-Za-z >]+ ECONNRESET, after \d+ ms\)$/u,
       );
-      expect(midBody.message).toContain("(request: reading body of HTTP 200, ");
-      expect(html.message).toContain("(request: decoding body of HTTP 200, SyntaxError, after ");
+      expect(midBody.message).toMatch(
+        /\(request: reading body of HTTP 200 \((?:closed|reset|other)\), .*, ray 8f0c1a2b3c4d5e6f-IAD\)$/u,
+      );
+      expect(html.message).toMatch(
+        /\(request: decoding body of HTTP 200, SyntaxError, after \d+ ms, ray 8f0c1a2b3c4d5e6f-IAD\)$/u,
+      );
     }),
   );
 
@@ -232,10 +273,14 @@ layer(NodeServices.layer, { excludeTestServices: true })("Request failures", (it
           { concurrency: 2 },
         ).pipe(Effect.provideService(EmulatorDeadline, "1 second"));
         expect(stalled.reason).toBe("timeout");
-        expect(stalled.failure).toMatchObject({ stage: "timeout" });
+        expect(stalled.failure).toMatchObject({ stage: "timeout", connection: "timeout" });
         expect(stalled.failure?.status).toBeUndefined();
         expect(headersOnly.reason).toBe("timeout");
-        expect(headersOnly.failure).toMatchObject({ stage: "timeout", status: 200 });
+        expect(headersOnly.failure).toMatchObject({
+          stage: "timeout",
+          status: 200,
+          connection: "timeout",
+        });
         expect(stalled.failure?.elapsedMs).toBeGreaterThanOrEqual(950);
         expect(stalled.message).toMatch(/\(timeout, after \d+ ms\)$/u);
         expect(headersOnly.message).toContain("(timeout after the headers of HTTP 200, after ");
@@ -291,19 +336,34 @@ layer(NodeServices.layer, { excludeTestServices: true })("Request failures", (it
       const midBody = yield* productCall(origin, "/api/mid-body");
       const html = yield* productCall(origin, "/api/html");
 
-      expect(refused.failure).toMatchObject({ stage: "before response", code: "ECONNREFUSED" });
-      expect(reset.failure).toMatchObject({ stage: "before response", code: "ECONNRESET" });
-      expect(midBody.failure).toMatchObject({ stage: "reading body", status: 200 });
-      expect(html.failure).toMatchObject({ stage: "decoding body", status: 200 });
+      expect(refused.failure).toMatchObject({
+        stage: "before response",
+        code: "ECONNREFUSED",
+        connection: "connect",
+      });
+      expect(reset.failure).toMatchObject({
+        stage: "before response",
+        code: "ECONNRESET",
+        connection: "reset",
+      });
+      expect(midBody.failure).toMatchObject({
+        stage: "reading body",
+        status: 200,
+        ray,
+        colo: "IAD",
+      });
+      expect(html.failure).toMatchObject({ stage: "decoding body", status: 200, ray, colo: "IAD" });
       expect(html.status).toBe(200);
       expect(reset.message).toMatch(
-        /^POST \/api\/reset failed \(request\) before a JSON response was read: before response, [A-Za-z >]+ ECONNRESET, after \d+ ms/u,
+        /^POST \/api\/reset failed \(request\) before a JSON response was read: before response \(reset\), [A-Za-z >]+ ECONNRESET, after \d+ ms/u,
       );
       expect(html.message).toContain(
         "POST /api/html returned HTTP 200 without a JSON response (text/html, ",
       );
       // The product client decodes with Schema, so the parser's error is a SchemaError.
-      expect(html.message).toMatch(/: decoding body of HTTP 200, SchemaError, after \d+ ms/u);
+      expect(html.message).toMatch(
+        /: decoding body of HTTP 200, SchemaError, after \d+ ms, ray 8f0c1a2b3c4d5e6f-IAD/u,
+      );
       for (const error of [refused, reset, midBody, html])
         for (const text of renderings(error)) expect(leaked(text)).toEqual([]);
     }),

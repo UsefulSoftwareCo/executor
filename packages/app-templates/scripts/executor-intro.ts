@@ -8,9 +8,11 @@
  * router is longer than its limit in `lineLimits`. Before reading the skills it reads the fixture
  * trees in executor-intro-fixtures.ts, which it must publish or refuse.
  */
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Crypto, Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Path, Schema } from "effect";
+import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
 import apps from "apps/package.json" with { type: "json" };
 import { fromMarkdown } from "mdast-util-from-markdown";
@@ -97,7 +99,7 @@ NodeRuntime.runMain(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const crypto = yield* Crypto.Crypto;
+    const digest = yield* Digest.Digest;
     const root = yield* path.fromFileUrl(new URL("../", import.meta.url));
     const skill = yield* fs.readFileString(path.join(root, "executor/skills/executor/SKILL.md"));
     const body = /^---\n[\s\S]*?\n---\n([\s\S]+)$/.exec(skill)?.[1]?.trim();
@@ -160,9 +162,9 @@ NodeRuntime.runMain(
       // Code-point order, so the output does not depend on the machine's locale.
       [...documents].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
       ([file, content]) =>
-        crypto
-          .digest("SHA-256", new TextEncoder().encode(content))
-          .pipe(Effect.map((digest) => [file.replace(/^skills\//, ""), Hex.encode(digest)])),
+        digest
+          .digest(Digest.sha256, new TextEncoder().encode(content))
+          .pipe(Effect.map((bytes) => [file.replace(/^skills\//, ""), Hex.encode(bytes)])),
     );
     const outputs = [
       {
@@ -194,5 +196,5 @@ export const executorSkillDigests: Readonly<Record<string, string>> = ${JSON.str
           reason: `${file} is stale. Run: bun run executor:intro`,
         });
     }
-  }).pipe(Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide([NodeServices.layer, NodeCrypto.layerDigest])),
 );

@@ -7,6 +7,6 @@
   },
   "dependencies": {
     "@executor-js/hosted-server": "workspace:*",
-    "effect": "4.0.1"
+    "effect": "4.1.4"
   }
 }

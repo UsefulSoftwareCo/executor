@@ -106,6 +106,7 @@
     "e2e:apps-published": "vitest run --config e2e/apps-published.config.ts",
     "e2e:ci-selection": "vitest run --config e2e/ci-selection.config.ts",
     "e2e:ci-supersede": "vitest run --config e2e/ci-supersede.config.ts",
+    "e2e:desktop-next-server": "vitest run --config e2e/desktop-next-server.config.ts",
     "e2e:pr-preview-selection": "vitest run --config e2e/pr-preview-selection.config.ts",
     "e2e:test-stage-unreadable": "vitest run --config e2e/test-stage-unreadable.config.ts",
     "e2e:worker-sizes": "vitest run --config e2e/worker-sizes.config.ts",
@@ -118,6 +119,7 @@
     "e2e:run-retention": "vitest run --config e2e/run-retention.config.ts",
     "e2e:export-public": "vitest run --config e2e/export-public.config.ts",
     "e2e:beta-due": "vitest run --config e2e/beta-due.config.ts",
+    "e2e:lockfile-sync": "vitest run --config e2e/lockfile-sync.config.ts",
     "e2e:alchemy-first-builds": "vitest run --config e2e/alchemy-first-builds.config.ts",
     "e2e:alchemy-dev-output": "vitest run --config e2e/alchemy-dev-output.config.ts",
     "e2e:cloud-proxy-keep-alive": "vitest run --config e2e/cloud-proxy-keep-alive.config.ts",
@@ -141,6 +143,7 @@
     "v1-import:access": "node apps/hosted/cloud/scripts/check-v1-import-access.ts",
     "patches:check": "node scripts/check-patches.ts",
     "versions:check": "node scripts/check-exact-versions.ts",
+    "lockfile:check": "node scripts/check-lockfile.ts",
     "release:cli": "node scripts/releases/package.ts",
     "release:wrapper": "node scripts/releases/wrapper.ts",
     "release:desktop": "node scripts/releases/desktop.ts"
@@ -148,9 +151,9 @@
   "devDependencies": {
     "@alchemy.run/cloudflare-runtime": "2.0.0-beta.80",
     "@changesets/cli": "2.31.1",
-    "@effect/platform-node": "4.0.1",
+    "@effect/platform-node": "4.1.4",
     "@effect/tsgo": "0.51.1",
-    "@effect/vitest": "4.0.1",
+    "@effect/vitest": "4.1.4",
     "@electric-sql/pglite": "0.5.8",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/utils": "workspace:*",
@@ -164,7 +167,7 @@
     "@vitest/ui": "5.0.1",
     "autumn-js": "1.2.28",
     "dugite": "3.2.3",
-    "effect": "4.0.1",
+    "effect": "4.1.4",
     "esbuild": "0.28.2",
     "fflate": "0.8.3",
     "miniflare": "4.20260730.0",
@@ -179,11 +182,12 @@
     "yaml": "2.9.1"
   },
   "overrides": {
-    "@effect/platform-browser": "4.0.1",
-    "@effect/platform-bun": "4.0.1",
-    "@effect/platform-node": "4.0.1",
-    "@effect/platform-node-shared": "4.0.1",
-    "effect": "4.0.1"
+    "@effect/platform-bun": "4.1.4",
+    "@effect/platform-node": "4.1.4",
+    "@effect/platform-node-shared": "4.1.4",
+    "@effect/sql-d1": "4.1.4",
+    "@effect/sql-sqlite-do": "4.1.4",
+    "effect": "4.1.4"
   },
   "patchedDependencies": {
     "@cfworker/json-schema@4.1.1": "patches/@cfworker%2Fjson-schema@4.1.1.patch",
@@ -199,16 +203,16 @@
     "pg-cloudflare@1.4.0": "patches/pg-cloudflare@1.4.0.patch",
     "@better-auth/passkey@1.7.20": "patches/@better-auth%2Fpasskey@1.7.20.patch",
     "@electric-sql/pglite@0.5.8": "patches/@electric-sql%2Fpglite@0.5.8.patch",
-    "effect@4.0.1": "patches/effect@4.0.1.patch",
-    "@effect/platform-node-shared@4.0.1": "patches/@effect%2Fplatform-node-shared@4.0.1.patch",
-    "@effect/sql-pg@4.0.1": "patches/@effect%2Fsql-pg@4.0.1.patch",
-    "@effect/sql-pglite@4.0.1": "patches/@effect%2Fsql-pglite@4.0.1.patch",
     "@opencode-ai/codemode@0.0.0-dev-19272": "patches/@opencode-ai%2Fcodemode@0.0.0-dev-19272.patch",
     "alchemy@2.0.0-beta.80": "patches/alchemy@2.0.0-beta.80.patch",
     "@alchemy.run/cloudflare-runtime@2.0.0-beta.80": "patches/@alchemy.run%2Fcloudflare-runtime@2.0.0-beta.80.patch",
     "@distilled.cloud/cloudflare@1.0.0-rc.13": "patches/@distilled.cloud%2Fcloudflare@1.0.0-rc.13.patch",
     "@better-auth/api-key@1.7.20": "patches/@better-auth%2Fapi-key@1.7.20.patch",
-    "playwright-core@1.63.0": "patches/playwright-core@1.63.0.patch"
+    "playwright-core@1.63.0": "patches/playwright-core@1.63.0.patch",
+    "@distilled.cloud/aws@1.0.0-rc.13": "patches/@distilled.cloud%2Faws@1.0.0-rc.13.patch",
+    "effect@4.1.4": "patches/effect@4.1.4.patch",
+    "@effect/sql-pg@4.1.4": "patches/@effect%2Fsql-pg@4.1.4.patch",
+    "@effect/sql-pglite@4.1.4": "patches/@effect%2Fsql-pglite@4.1.4.patch"
   },
   "trustedDependencies": [
     "dugite",

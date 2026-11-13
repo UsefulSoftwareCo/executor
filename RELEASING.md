@@ -33,6 +33,12 @@ The pinned Bun installer patch keeps its selected binary architecture under
 Rosetta, matching the optional dependencies installed by the package manager.
 Windows installers are currently unsigned.
 
+A Bun runtime release built from a pull request's branch, as one that changes the
+lockdown patch needs, is the one main's publishing runs use from then on. If that
+branch's `scripts/releases/bun-runtime/` changed after the build and before merge,
+delete the release before merging so main builds it again; see
+[the release scripts](scripts/releases/README.md).
+
 ## Desktop update channels
 
 Executor 2 desktop installs update from their own channel feed. The channel is
@@ -104,9 +110,33 @@ not.
 The **Beta** workflow (`.github/workflows/beta.yml`) publishes betas. It checks
 on every push to `main` and on a schedule at minutes 8 and 38, and
 `scripts/releases/beta-due.ts` decides from npm, the release runs and main's
-history. A push and a scheduled tick decide alike:
+history. Before deciding, each tick runs `scripts/releases/lock-repair.sh`, which
+pushes `Refresh bun.lock [skip ci]` when main's bun.lock is not what
+`bun install` writes and the only difference is workspace packages' own versions.
+Any other difference is only reported: a warning in the run summary and one open
+issue labelled `lock-repair-refused` (`scripts/releases/lock-repair-issue.sh`),
+which a later tick closes when it finds the lock fresh. The repair never holds a
+beta. That commit follows the merge that left the lock stale, so it
+never makes a beta due by itself, and its `[skip ci]` starts no Executor releases
+run. A push and a scheduled tick decide alike:
 
-- While any **Executor releases** dispatch is queued or running, it waits.
+- While any build or publication of **Executor releases** is queued or running,
+  it waits. A check, which publishes nothing, does not hold it.
+- It starts no beta and no further attempt while the release matrix on `main` is
+  red. The matrix runs are the checks, the **Executor releases** runs that the
+  **Release check** workflow starts with a repository dispatch after main
+  changed what a release lane builds or runs, paced to one build every two
+  hours, and the runs titled `(build)`, dispatched from `main` by hand. Checks
+  list apart from builds and publications, so they never crowd the publishing
+  attempts out of what the decision reads. The newest finished one must have
+  passed its `releases` job. A run that tested nothing is skipped: a cancelled
+  one, and a check whose `pace` job did not pass or whose matrix did not run. A push that changed
+  nothing a release lane reads starts no check, so it neither holds a beta nor
+  lets one through. A failed run holds every beta, with a warning, until a later
+  run passes. To clear a hold once the cause is fixed, merge the fix, or run
+  `gh workflow run release-artifacts.yml --ref main -f channel=build`. A run still
+  pacing or building holds nothing, since the publishing run tests every platform
+  on the commit it publishes and publishes only when all pass.
 - When npm lists the committed version, main has commits after that version's
   `Release 2.0.0-beta.N` commit, and npm published it at least six hours ago,
   it commits `Release 2.0.0-beta.N+1` to `main` and dispatches **Executor

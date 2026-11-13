@@ -347,7 +347,7 @@ export const eventFixtures = Effect.gen(function* () {
           }),
         ),
       );
-      return yield* parseJson(text, response.status, started);
+      return yield* parseJson(text, response.status, started, response.headers);
     }).pipe(
       Effect.scoped,
       Effect.mapError((error) =>

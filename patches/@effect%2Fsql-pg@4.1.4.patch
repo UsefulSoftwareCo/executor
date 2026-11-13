@@ -1,11 +1,11 @@
 diff --git a/dist/PgClient.d.ts b/dist/PgClient.d.ts
-index 7fb7deff01dd84f56e94b472e6333d1b17986122..19c13fd49fc61f44f546586311fd6880c326064e 100644
+index fb118ca4d52a63150283eca0dfca8595d47acd30..ce20ad89569c0605d2972ba32080bf7ea809b3e5 100644
 --- a/dist/PgClient.d.ts
 +++ b/dist/PgClient.d.ts
-@@ -77,6 +77,13 @@ export interface PgClientConfig {
-      */
-     readonly password?: Redacted.Redacted | Effect.Effect<Redacted.Redacted> | undefined;
+@@ -92,6 +92,13 @@ export interface PgClientConfig<R = never> {
      readonly connectTimeout?: Duration.Input | undefined;
+     /** Idle time before TCP keepalive probes start. See `PgConnection.Config.keepAlive`. */
+     readonly keepAlive?: Duration.Input | undefined;
 +    /**
 +     * How many times a failed connection attempt is made again. Only retryable
 +     * failures are retried, such as a transport error or `connectTimeout`; an
@@ -17,10 +17,10 @@ index 7fb7deff01dd84f56e94b472e6333d1b17986122..19c13fd49fc61f44f546586311fd6880
      /**
       * Overrides `startupParameters.application_name`, the URL's `application_name`,
 diff --git a/dist/PgClient.js b/dist/PgClient.js
-index 69086dea397ba44c2ba726c913a2b5dbf1cac136..ca72f3fe76c0d76de25b119d47a604f19ad643f4 100644
+index 96e36fb525acde450151fbbe90b8bd39ab6d3f89..55dca47a3e1bfa677edd58a5fa178486fbacc529 100644
 --- a/dist/PgClient.js
 +++ b/dist/PgClient.js
-@@ -31,13 +31,20 @@ export const PgClient = /*#__PURE__*/Context.Service("@effect/sql-pg/PgClient");
+@@ -36,14 +36,23 @@ export const PgClient = /*#__PURE__*/Context.Service("@effect/sql-pg/PgClient");
   * @category constructors
   * @since 4.0.0
   */
@@ -29,7 +29,8 @@ index 69086dea397ba44c2ba726c913a2b5dbf1cac136..ca72f3fe76c0d76de25b119d47a604f1
 -  borrower: f => pool.use(connection => f(makeConnection(connection))),
 -  transactionAcquirer: Effect.map(pool.reserve, makeConnection),
 -  listenAcquirer: pool.reserve,
--  config: options
+-  config: options,
+-  poolStats: pool.stats
 -}));
 +export const make = options => Effect.flatMap(PgPool.make(options), pool => {
 +  const borrow = f => pool.use(f);
@@ -39,23 +40,35 @@ index 69086dea397ba44c2ba726c913a2b5dbf1cac136..ca72f3fe76c0d76de25b119d47a604f1
 +    // A multiplexed pool hands a statement that `PgConnection.pipelined` claims
 +    // to its batch instead of leasing a connection for it; the batch leases one
 +    // connection for all of them.
-+    borrower: options.multiplex === true ? f => Effect.flatMap(PgConnection.PipelineCapture, capture => capture !== undefined && capture.claim() ? f(makeConnection(PgConnection.heldConnection(capture, borrow))) : lease(f)) : lease,
++    borrower: options.multiplex === true ? f => Effect.flatMap(PgConnection.PipelineCapture, capture => capture !== undefined && capture.claim()
++    // A held connection runs statements only; the client sends nothing else through it.
++    ? f(makeConnection(PgConnection.heldConnection(capture, borrow))) : lease(f)) : lease,
 +    transactionAcquirer: Effect.map(pool.reserve, makeConnection),
 +    listenAcquirer: pool.reserve,
-+    config: options
++    config: options,
++    poolStats: pool.stats
 +  });
 +});
  /**
   * Creates a scoped PostgreSQL client backed by one connection.
   *
 diff --git a/dist/PgConnection.d.ts b/dist/PgConnection.d.ts
-index 20ffe147c475deec24664641d4e76fb99764c838..7eff435377a27cb0a0872e64aa89771b82327bd4 100644
+index 25c6fbe0c019cc0c5cd8160a517c6162c86214ea..dd1aa90ac93e9b8fe5b7b93c62ffabbf09bf6a21 100644
 --- a/dist/PgConnection.d.ts
 +++ b/dist/PgConnection.d.ts
-@@ -66,6 +66,13 @@ export interface Config {
+@@ -1,6 +1,7 @@
+ import * as Context from "effect/Context";
+-import type * as Duration from "effect/Duration";
++import * as Duration from "effect/Duration";
+ import * as Effect from "effect/Effect";
++import * as Exit from "effect/Exit";
+ import * as Queue from "effect/Queue";
+ import type * as Redacted from "effect/Redacted";
+ import * as Scope from "effect/Scope";
+@@ -83,6 +84,13 @@ export interface Config {
+      * acknowledgement, so use `Effect.timeout` to bound a write to a dead peer.
       */
-     readonly password?: Redacted.Redacted | Effect.Effect<Redacted.Redacted> | undefined;
-     readonly connectTimeout?: Duration.Input | undefined;
+     readonly keepAlive?: Duration.Input | undefined;
 +    /**
 +     * How many times a failed connection attempt is made again. Only retryable
 +     * failures are retried, such as a transport error or `connectTimeout`; an
@@ -66,59 +79,84 @@ index 20ffe147c475deec24664641d4e76fb99764c838..7eff435377a27cb0a0872e64aa89771b
      /**
       * Overrides `startupParameters.application_name`, the URL's `application_name`,
       * and the default `"@effect/sql-pg"`, in that order.
-@@ -199,6 +206,24 @@ export interface PgConnection {
+@@ -230,6 +238,46 @@ export interface PgConnection {
   * @since 4.0.0
   */
  export declare const PgConnection: Context.Service<PgConnection, PgConnection>;
-+/** Held-statement capture for {@link pipelined}; read by a multiplexed pool's borrower. Internal. */
-+export declare const PipelineCapture: Context.Reference<unknown>;
-+/** The connection a statement claimed by {@link pipelined} runs on. Internal. */
-+export declare const heldConnection: (capture: unknown, borrow: unknown) => unknown;
 +/**
-+ * Runs `leaves` concurrently and sends the first statement of each in one socket write on one
-+ * connection of a multiplexed pool: leaves before index `outside` first, each in its own implicit
-+ * transaction, then the rest between `BEGIN <begin>` and `COMMIT`. A leaf's later statements, and
-+ * statements outside a multiplexed pool, run as usual. Only statements on the first leaf's client
-+ * share the batch: a leaf on another database client runs alone on that client, outside the
-+ * snapshot, without an error. Leaves must not wait for one another. Returns each leaf's exit, in
-+ * order; a batch that cannot get a connection fails each held statement, and its leaf's exit
-+ * carries that error.
++ * Runs `leaves` concurrently and sends the first statement of each in one
++ * socket write on one connection of a multiplexed pool.
++ *
++ * - A leaf's first statement is held, without a pool lease, until every leaf
++ *   has issued one or finished. The batch then borrows one connection, queues
++ *   all held statements on it contiguously under the connection's `owner`
++ *   permit, in leaf order, and flushes once. No other statement, and no
++ *   transaction, can be queued between them.
++ * - Leaves before index `outside` run first, each in its own implicit
++ *   transaction. With `begin`, the rest run between `BEGIN <begin>` and
++ *   `COMMIT`, queued in the same step, so they read one snapshot and the
++ *   connection never stays inside the transaction. If `BEGIN` fails, every
++ *   statement after it fails with that error rather than running outside the
++ *   snapshot. A statement that fails inside the transaction aborts it, so every
++ *   later one fails too.
++ * - A leaf's later statements, statements in a transaction, streams, and
++ *   clients without multiplexing run as usual.
++ * - The batch holds its lease until its last statement answers. If it cannot
++ *   borrow a connection, or the connection dies, every held statement fails
++ *   with that error: the leaves' exits carry it and the batch itself succeeds.
++ * - Only statements on the first leaf's client share the batch. A leaf on
++ *   another database client is sent alone on that client, with no `BEGIN`:
++ *   it runs outside the snapshot, without an error (the span counts these as
++ *   `db.pipeline.apart`). A leaf's first statement that does not go through
++ *   the pool's borrower (`reserve`, `withTransaction`) and every later
++ *   statement of a leaf also run outside the batch and its snapshot,
++ *   unrecorded.
++ *
++ * Leaves must be independent: a leaf that waits for another leaf before its
++ * first statement would wait for itself. Returns each leaf's exit, in order.
++ * The `sql.pipeline` span records how many statements went out and in how many
++ * socket writes.
++ *
++ * @since 4.0.0
 + */
-+export declare const pipelined: (
-+  leaves: ReadonlyArray<Effect.Effect<unknown, unknown, never>>,
-+  options?: { readonly outside?: number | undefined; readonly begin?: string | undefined }
-+) => Effect.Effect<Array<import("effect/Exit").Exit<unknown, unknown>>>;
++export declare const pipelined: (leaves: ReadonlyArray<Effect.Effect<unknown, unknown, never>>, options?: {
++    readonly outside?: number | undefined;
++    readonly begin?: string | undefined;
++}) => Effect.Effect<Array<Exit.Exit<unknown, unknown>>>;
  /**
   * Connects and authenticates a single PostgreSQL session.
   *
-@@ -207,7 +232,12 @@ export declare const PgConnection: Context.Service<PgConnection, PgConnection>;
-  * Password resolution, transport, optional `SSLRequest`, startup, and
-  * authentication run under `connectTimeout` (5 seconds by default). The effect
+@@ -240,7 +288,12 @@ export declare const PgConnection: Context.Service<PgConnection, PgConnection>;
   * resolves when the backend sends `ReadyForQuery`. Closing the scope sends
-- * `Terminate` and ends the socket.
-+ * `Terminate` and ends the socket. A retryable failure is retried up to
-+ * `connectRetries` times; each attempt's `sql.connect` span records its
-+ * `db.connect.attempt`, and a retry records the previous failure as
+  * `Terminate`, ends the socket, and destroys the transport (a custom `stream`
+  * included) once the message has flushed, or after one second if the flush
+- * stalls. Release does not wait for the peer.
++ * stalls. Release does not wait for the peer. A retryable failure is
++ * retried up to `connectRetries` times; each attempt's `sql.connect` span
++ * records its `db.connect.attempt`, and a retry records the previous failure as
 + * `db.connect.retry_reason`. A failed attempt, including one that reaches
-+ * `connectTimeout`, fails its span and records why as `db.connect.failure`:
-+ * `timeout`, `refused`, `auth` or `other`.
++ * `connectTimeout`, fails its span and records why as `db.connect.failure`
++ * (see {@link ConnectFailure}).
   *
   * Use `sslmode=require` or explicit `ssl: true` to require encryption.
   * Unix sockets and custom streams should set `ssl.servername` explicitly.
 diff --git a/dist/PgConnection.js b/dist/PgConnection.js
-index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f0468c8a1 100644
+index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..2405ab181f181586c88346adb2b19dca8c242623 100644
 --- a/dist/PgConnection.js
 +++ b/dist/PgConnection.js
-@@ -5,6 +5,8 @@ import * as Deferred from "effect/Deferred";
- import * as Duration from "effect/Duration";
+@@ -2,8 +2,11 @@ import * as Cause from "effect/Cause";
+ import * as Channel from "effect/Channel";
+ import * as Context from "effect/Context";
+ import * as Deferred from "effect/Deferred";
++import * as Duration from "effect/Duration";
  import * as Effect from "effect/Effect";
  import * as Exit from "effect/Exit";
 +import * as Fiber from "effect/Fiber";
 +import * as Option from "effect/Option";
  import * as Queue from "effect/Queue";
- import * as Redacted from "effect/Redacted";
  import * as EffectResult from "effect/Result";
-@@ -45,6 +47,167 @@ const preparedCacheFor = config => {
+ import * as Scheduler from "effect/Scheduler";
+@@ -47,6 +50,179 @@ const preparedCacheFor = config => {
   * @since 4.0.0
   */
  export const PgConnection = /*#__PURE__*/Context.Service("@effect/sql-pg/PgConnection");
@@ -140,10 +178,7 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
 +  })
 +});
 +/**
-+ * The `PgPool` `use` callback the current statements belong to, if any: whether any statement of
-+ * it, or of a `use` nested in it, has been queued or sent. A pool reruns a callback whose
-+ * statement was refused only while this is unset, so a callback is never run twice once it has
-+ * sent anything.
++ * The `PgPool` `use` callback the current statements belong to, if any.
 + *
 + * @internal
 + */
@@ -158,6 +193,8 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
 + * borrower asks it to `claim` a leaf's first statement; a claimed statement is
 + * held, without a pool lease, and leaves the client with the batch. Unset
 + * everywhere else.
++ *
++ * @internal
 + */
 +export const PipelineCapture = /*#__PURE__*/Context.Reference("@effect/sql-pg/PipelineCapture", {
 +  defaultValue: () => undefined
@@ -165,6 +202,8 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
 +/**
 + * The connection a claimed statement runs on, as the client sees it: running
 + * a statement hands it to the batch and waits for the batch's answer.
++ *
++ * @internal
 + */
 +export const heldConnection = (capture, borrow) => ({
 +  query: (sql, params) => Effect.map(capture.submit(borrow, sql, params ?? emptyParams, true), takeResult),
@@ -203,6 +242,8 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
 + * first statement would wait for itself. Returns each leaf's exit, in order.
 + * The `sql.pipeline` span records how many statements went out and in how many
 + * socket writes.
++ *
++ * @since 4.0.0
 + */
 +export const pipelined = (leaves, options = {}) => Effect.suspend(() => {
 +  if (leaves.length === 0) return Effect.succeed([]);
@@ -234,7 +275,14 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
 +      },
 +      submit: (borrow, sql, params, wantRows) => Effect.suspend(() => {
 +        const deferred = Deferred.makeUnsafe();
-+        items.push({ borrow, sql, params, wantRows, deferred, index });
++        items.push({
++          borrow,
++          sql,
++          params,
++          wantRows,
++          deferred,
++          index
++        });
 +        once();
 +        return Deferred.await(deferred);
 +      })
@@ -244,19 +292,21 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
 +  const fail = (batch, cause) => Effect.sync(() => {
 +    for (const item of batch) Deferred.doneUnsafe(item.deferred, Exit.failCause(cause));
 +  });
++  // A pool lends the base connection (`PgConnectionImpl`), which queues the batch.
++  const impl = connection => connection;
 +  const send = batch => Effect.gen(function* () {
 +    const borrow = batch[0].borrow;
 +    const together = batch.filter(item => item.borrow === borrow);
 +    // Leaves on another client cannot share the connection: each goes alone.
 +    const apart = batch.filter(item => item.borrow !== borrow);
-+    const sent = yield* borrow(conn => Effect.flatMap(conn.pipelineBatch(together.filter(item => item.index < outside), together.filter(item => item.index >= outside), options.begin), entries => Effect.as(Effect.forEach(together, item => Effect.exit(Deferred.await(item.deferred)), {
++    const sent = yield* borrow(connection => Effect.flatMap(impl(connection).pipelineBatch(together.filter(item => item.index < outside), together.filter(item => item.index >= outside), options.begin), entries => Effect.as(Effect.forEach(together, item => Effect.exit(Deferred.await(item.deferred)), {
 +      discard: true
 +    }), entries))).pipe(
 +    // A batch that cannot borrow a connection, or whose connection dies, fails every held
-+    // statement with that error; the leaves' exits carry it, and the batch itself still returns
-+    // them, as its type says.
++    // statement with that error; the leaves' exits carry it, and the batch itself still
++    // returns them, as its type says.
 +    Effect.onError(cause => fail(together, cause)), Effect.catch(() => Effect.succeed([])));
-+    yield* Effect.forEach(apart, item => item.borrow(conn => Effect.andThen(conn.pipelineBatch([item], [], undefined), Effect.exit(Deferred.await(item.deferred)))).pipe(Effect.onError(cause => fail([item], cause)), Effect.catch(() => Effect.void)), {
++    yield* Effect.forEach(apart, item => item.borrow(connection => Effect.andThen(impl(connection).pipelineBatch([item], [], undefined), Effect.exit(Deferred.await(item.deferred)))).pipe(Effect.onError(cause => fail([item], cause)), Effect.catch(() => Effect.void)), {
 +      concurrency: "unbounded",
 +      discard: true
 +    });
@@ -286,7 +336,21 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
  /**
   * Connects and authenticates a single PostgreSQL session.
   *
-@@ -61,22 +224,49 @@ export const PgConnection = /*#__PURE__*/Context.Service("@effect/sql-pg/PgConne
+@@ -57,7 +233,12 @@ export const PgConnection = /*#__PURE__*/Context.Service("@effect/sql-pg/PgConne
+  * resolves when the backend sends `ReadyForQuery`. Closing the scope sends
+  * `Terminate`, ends the socket, and destroys the transport (a custom `stream`
+  * included) once the message has flushed, or after one second if the flush
+- * stalls. Release does not wait for the peer.
++ * stalls. Release does not wait for the peer. A retryable failure is
++ * retried up to `connectRetries` times; each attempt's `sql.connect` span
++ * records its `db.connect.attempt`, and a retry records the previous failure as
++ * `db.connect.retry_reason`. A failed attempt, including one that reaches
++ * `connectTimeout`, fails its span and records why as `db.connect.failure`
++ * (see {@link ConnectFailure}).
+  *
+  * Use `sslmode=require` or explicit `ssl: true` to require encryption.
+  * Unix sockets and custom streams should set `ssl.servername` explicitly.
+@@ -66,22 +247,49 @@ export const PgConnection = /*#__PURE__*/Context.Service("@effect/sql-pg/PgConne
   * @category constructors
   * @since 4.0.0
   */
@@ -349,15 +413,15 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
  const abortDrainTimeoutMillis = 5000;
  const abortDrainGraceMillis = 10;
  /** PostgreSQL `query_canceled` SQLSTATE. */
-@@ -106,6 +296,7 @@ class PgConnectionImpl {
-   deadWith;
-   closed = false;
+@@ -115,6 +323,7 @@ class PgConnectionImpl {
    cancelPending = false;
+   /** Reported by the latest `ReadyForQuery`. */
+   transactionStatus = "I";
 +  retired = false;
    channels = /*#__PURE__*/new Map();
    retireHooks = /*#__PURE__*/new Set();
    /** Queued but not yet written; drained into `pipelineInFlight` on flush. */
-@@ -114,7 +305,18 @@ class PgConnectionImpl {
+@@ -123,7 +332,18 @@ class PgConnectionImpl {
    pipelineInFlight = [];
    pipelineHead = 0;
    pipelineFlushScheduled = false;
@@ -373,10 +437,10 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
 +  exclusive = false;
 +  /** How many `PgPool` holds have this connection. */
 +  held = 0;
-   pinnedView;
    [internalsKey];
    constructor(config, resolved, session, registry) {
-@@ -130,7 +332,24 @@ class PgConnectionImpl {
+     this.config = config;
+@@ -137,7 +357,24 @@ class PgConnectionImpl {
      this[internalsKey] = {
        base: this,
        deadError: () => this.deadWith,
@@ -400,9 +464,9 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
 +        for (const entry of this.outstanding()) entry.abandoned = true;
 +      }
      };
-     this.pinnedView = new PinnedPgConnection(this);
+     session.parser.onFieldError = this.onFieldError;
      session.socket.on("data", this.onData);
-@@ -205,6 +424,7 @@ class PgConnectionImpl {
+@@ -223,6 +460,7 @@ class PgConnectionImpl {
      }
    }
    retire() {
@@ -410,7 +474,7 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
      if (this.closed) return;
      for (const hook of this.retireHooks) hook();
    }
-@@ -260,7 +480,20 @@ class PgConnectionImpl {
+@@ -295,7 +533,20 @@ class PgConnectionImpl {
    };
    pipelineDepth = () => this.pipelineInFlight.length - this.pipelineHead;
    pipelineIsIdle = () => this.pipelineDepth() === 0 && this.pipelinePending.length === 0;
@@ -431,7 +495,7 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
      if (!this.pipelineIsIdle()) return;
      this.consumer = undefined;
      this.session.parser.readField = undefined;
-@@ -288,6 +521,7 @@ class PgConnectionImpl {
+@@ -323,6 +574,7 @@ class PgConnectionImpl {
        this.pipelineInFlight.length = 0;
        this.pipelineHead = 0;
      }
@@ -439,7 +503,7 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
    };
    /** Writes everything queued since the last flush as one batch. */
    flushPipeline = () => {
-@@ -317,6 +551,8 @@ class PgConnectionImpl {
+@@ -352,6 +604,8 @@ class PgConnectionImpl {
      }
      if (wasEmpty) this.session.parser.readField = batch[0].machine.readField;
      const frame = batch.length === 1 ? batch[0].plan.frame : concat(batch.map(entry => entry.plan.frame));
@@ -448,7 +512,7 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
      try {
        this.session.socket.write(frame);
      } catch (cause) {
-@@ -329,13 +565,88 @@ class PgConnectionImpl {
+@@ -364,13 +618,88 @@ class PgConnectionImpl {
      // A microtask is what lets fibers submitted in the same tick share a write.
      queueMicrotask(this.flushPipeline);
    };
@@ -538,7 +602,7 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
      let plan;
      try {
        plan = this.encodeQuery(sql, params, cache);
-@@ -352,15 +663,14 @@ class PgConnectionImpl {
+@@ -387,21 +716,23 @@ class PgConnectionImpl {
        abandoned: false
      };
      this.pipelinePending.push(entry);
@@ -556,8 +620,6 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
 +    return retryStale(entry.plan, cache, awaited, () => this.pipelineQueue(sql, params, wantRows, undefined, use));
    });
    /**
-    * One extended-query cycle for a caller that shares the session with others:
-@@ -372,7 +682,10 @@ class PgConnectionImpl {
     * Runs one cycle for a caller that owns the session. No wire permit is needed
     * because competing pinned work and streams must acquire `owner` first.
     */
@@ -569,7 +631,7 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
    /**
     * Runs one cycle. A reused statement the backend has since dropped, or whose
     * plan no longer matches its columns, is parsed again on a second attempt;
-@@ -414,6 +727,73 @@ class PgConnectionImpl {
+@@ -461,6 +792,81 @@ class PgConnectionImpl {
      const cache = prepare ? this.prepared : undefined;
      return this.multiplex ? this.pipelineCycle(sql, params, wantRows, cache) : this.owner.withPermit(this.cycleOwned(sql, params, wantRows, cache));
    };
@@ -617,9 +679,15 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
 +      const machine = new QueryMachine(this, plan, wantRows, result => {
 +        onDone?.(result);
 +        // A statement behind a failed BEGIN would run outside the snapshot.
-+        this.finishPipelineEntry(entry, gated && began !== undefined && Exit.isFailure(began) ? began : result);
++        this.finishPipelineEntry(entry, gated && began !== undefined && Exit.isExit(began) && Exit.isFailure(began) ? began : result);
 +      });
-+      entry = { plan, deferred, machine, abandoned: false, write: undefined };
++      entry = {
++        plan,
++        deferred,
++        machine,
++        abandoned: false,
++        write: undefined
++      };
 +      this.pipelinePending.push(entry);
 +      entries.push(entry);
 +      return true;
@@ -629,7 +697,9 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
 +    if (wrap && !enqueue(`BEGIN ${begin}`, emptyParams, false, Deferred.makeUnsafe(), false, result => {
 +      began = result;
 +    })) {
-+      for (const item of inside) Deferred.doneUnsafe(item.deferred, Effect.fail(this.deadWith ?? queryError(new Error("BEGIN could not be queued"), "PgConnection: BEGIN could not be queued")));
++      for (const item of inside) {
++        Deferred.doneUnsafe(item.deferred, Effect.fail(this.deadWith ?? queryError(new Error("BEGIN could not be queued"), "PgConnection: BEGIN could not be queued")));
++      }
 +      this.consumer = this.pipelineConsumer;
 +      this.schedulePipelineFlush();
 +      return entries;
@@ -643,7 +713,7 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
    query = (sql, params, prepare = true) => Effect.map(this.run(sql, params ?? emptyParams, true, prepare), takeResult);
    queryValues = (sql, params, prepare = true) => Effect.map(this.run(sql, params ?? emptyParams, false, prepare), takeValues);
    stream = (sql, params) => streamRows(this, this.pin, sql, params ?? emptyParams);
-@@ -1050,8 +1430,13 @@ const drainAborted = (conn, timeoutMessage, abort) => {
+@@ -1132,8 +1538,15 @@ const drainAborted = (conn, timeoutMessage, abort) => {
    const cancelAndDrain = Effect.andThen(conn.cancel, Deferred.await(drained));
    return Effect.andThen(Effect.raceFirst(Deferred.await(drained), grace), Effect.suspend(() => Deferred.isDoneUnsafe(drained) ? Effect.void : cancelAndDrain));
  };
@@ -654,12 +724,14 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
 + * under its own `sql.execute` span records its wire timing there; a statement without one,
 + * such as transaction control, records it on a `sql.wire` span of its own.
 + */
-+const runQuery = (conn, plan, wantRows) => Effect.flatMap(Effect.option(Effect.currentSpan), current => Option.isSome(current) && current.value.name === "sql.execute" ? wireCycle(conn, plan, wantRows, current.value) : Effect.useSpan("sql.wire", { kind: "client" }, span => wireCycle(conn, plan, wantRows, span)));
++const runQuery = (conn, plan, wantRows) => Effect.flatMap(Effect.option(Effect.currentSpan), current => Option.isSome(current) && current.value.name === "sql.execute" ? wireCycle(conn, plan, wantRows, current.value) : Effect.useSpan("sql.wire", {
++  kind: "client"
++}, span => wireCycle(conn, plan, wantRows, span)));
 +const wireCycle = (conn, plan, wantRows, span) => Effect.callback(resume => {
    if (conn.deadWith !== undefined) {
      resume(Effect.fail(conn.deadWith));
      return;
-@@ -1060,12 +1445,30 @@ const runQuery = (conn, plan, wantRows) => Effect.callback(resume => {
+@@ -1142,12 +1555,31 @@ const runQuery = (conn, plan, wantRows) => Effect.callback(resume => {
      conn.consumer = undefined;
      resume(effect);
    });
@@ -679,6 +751,7 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
 +      if (message._tag === "ReadyForQuery") span.attribute("db.wire.ready_ms", elapsed);
 +      machine.onMessage(message);
 +    },
++    onDecodeFailure: error => machine.onDecodeFailure(error),
 +    onFatal: error => machine.onFatal(error)
 +  };
    // A reused statement has no `RowDescription` coming, so its reader has to
@@ -692,23 +765,11 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
    } catch (cause) {
      conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"));
    }
-@@ -1408,33 +1811,55 @@ const sendCancelRequest = (config, session) => Effect.callback(resume => {
+@@ -1525,33 +1957,43 @@ const sendCancelRequest = (config, session) => Effect.callback(resume => {
    if (config.stream !== undefined) begin();else socket.once("connect", begin);
    return Effect.sync(finish);
  });
-+/**
-+ * Fail a connection attempt, recording why on the current span, the attempt's `sql.connect`, as
-+ * `db.connect.failure`:
-+ *
-+ * - `timeout`: the attempt reached `connectTimeout`.
-+ * - `refused`: the connection was not accepted. The transport failed before it connected (a
-+ *   refused, unreachable or unresolvable host), or the server answered the startup with an error
-+ *   that is not about authentication, such as too many connections.
-+ * - `auth`: authentication failed: the server rejected the credentials (SQLSTATE class 28), no
-+ *   password was configured, or the exchange could not complete.
-+ * - `other`: anything else, such as a password provider that dies, a connected socket that failed
-+ *   or closed during startup, TLS negotiation, or a server response the driver could not read.
-+ */
++/** Fail a connection attempt, recording why on the current span, the attempt's `sql.connect`. */
 +const connectFailed = (failure, reason) => Effect.andThen(Effect.annotateCurrentSpan("db.connect.failure", failure), Effect.fail(new SqlError({
 +  reason
 +})));
@@ -754,7 +815,7 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
    const onError = cause => failConnect(cause, "PgConnection: Failed to connect");
    const onClose = () => failConnect(new Error("Connection closed unexpectedly"), "PgConnection: Connection closed during startup");
    const password = () => {
-@@ -1532,7 +1957,7 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
+@@ -1649,7 +2091,7 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
          secretKey = message.secret;
          return;
        case "ErrorResponse":
@@ -763,7 +824,7 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
        case "ReadyForQuery":
          if (scram !== undefined) {
            return failAuth(new Error("The server completed authentication without proving its identity"), "PgConnection: SCRAM exchange did not complete");
-@@ -1591,7 +2016,7 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
+@@ -1708,7 +2150,7 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
        if (messages.length !== 1 || message._tag !== "ErrorResponse") {
          return failConnect(new Error("Expected one ErrorResponse after SSLRequest"), "PgConnection: Invalid SSLRequest response");
        }
@@ -772,8 +833,8 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
      }
      socket.off("data", onSslResponse);
      if (chunk.length !== 1) {
-@@ -1638,12 +2063,10 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
-       noDelay: true
+@@ -1759,12 +2201,10 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
+       })
      });
    } catch (cause) {
 -    resume(Effect.fail(new SqlError({
@@ -789,7 +850,7 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
      })));
      return;
    }
-@@ -1652,7 +2075,10 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
+@@ -1773,7 +2213,10 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
    if (config.stream !== undefined) {
      begin();
    } else {
@@ -802,10 +863,19 @@ index 2cb7481bd2ef827ea48f69fa8d8b28aeeb255114..43fc7e49072be686170950de746e0f2f
    return Effect.sync(() => {
      if (done) return;
 diff --git a/dist/PgPool.d.ts b/dist/PgPool.d.ts
-index 5a13d373d1b5a6f3a7e754b6970e5a8c5f122b89..172fc397947d89fdfd86d1a71039526e7adde410 100644
+index 1b8881f1717666f7434fe6ac6245671523ec0619..6c4c1fb8181192068b63b658e60ac6b0838faf9a 100644
 --- a/dist/PgPool.d.ts
 +++ b/dist/PgPool.d.ts
-@@ -80,6 +80,12 @@ export interface PgPool {
+@@ -1,6 +1,8 @@
+ import * as Context from "effect/Context";
+ import * as Duration from "effect/Duration";
+ import * as Effect from "effect/Effect";
++import * as Deferred from "effect/Deferred";
++import * as Exit from "effect/Exit";
+ import * as Pool from "effect/Pool";
+ import * as Scope from "effect/Scope";
+ import { SqlError } from "effect/sql/SqlError";
+@@ -96,6 +98,12 @@ export interface PgPool {
       *
       * For work that finishes with the effect that runs it. A lease that has to
       * outlive its effect - a stream, a transaction - takes `get` or `reserve`.
@@ -818,7 +888,7 @@ index 5a13d373d1b5a6f3a7e754b6970e5a8c5f122b89..172fc397947d89fdfd86d1a71039526e
       */
      readonly use: <A, E, R>(f: (connection: PgConnection.PgConnection) => Effect.Effect<A, E, R>) => Effect.Effect<A, E | SqlError, R>;
      readonly invalidate: (connection: PgConnection.PgConnection) => Effect.Effect<void>;
-@@ -91,6 +97,75 @@ export interface PgPool {
+@@ -114,6 +122,86 @@ export interface PgPool {
   * @since 4.0.0
   */
  export declare const PgPool: Context.Service<PgPool, PgPool>;
@@ -830,9 +900,20 @@ index 5a13d373d1b5a6f3a7e754b6970e5a8c5f122b89..172fc397947d89fdfd86d1a71039526e
 + * @since 4.0.0
 + */
 +export interface StatementGroup {
-+    readonly leases: Map<object, unknown>;
++    readonly leases: Map<object, GroupLease>;
 +    /** Set by {@link held}: the group keeps its connection until it ends, and never moves. */
 +    readonly held: boolean;
++}
++interface GroupLease {
++    /** Statements of the group in flight on, or waiting for, this lease. */
++    refs: number;
++    readonly scope: Scope.Closeable;
++    /** How opening went; `undefined` when the opener gave up first and a waiter should try again. */
++    readonly connection: Deferred.Deferred<Exit.Exit<PgConnection.PgConnection, SqlError> | undefined>;
++    /** Set once the lease has its connection. */
++    opened: PgConnection.PgConnection | undefined;
++    /** A held group's end: gives the lease back once its statements are done. */
++    end: ((interrupted: boolean) => Effect.Effect<void>) | undefined;
 +}
 +/**
 + * The group the current statements belong to, if any. Set by {@link grouped}.
@@ -894,23 +975,27 @@ index 5a13d373d1b5a6f3a7e754b6970e5a8c5f122b89..172fc397947d89fdfd86d1a71039526e
  /**
   * Creates a scoped PostgreSQL session pool.
   *
+@@ -131,4 +219,5 @@ export declare const PgPool: Context.Service<PgPool, PgPool>;
+  * @since 4.0.0
+  */
+ export declare const make: (options: Config) => Effect.Effect<PgPool, SqlError, Scope.Scope>;
++export {};
+ //# sourceMappingURL=PgPool.d.ts.map
+\ No newline at end of file
 diff --git a/dist/PgPool.js b/dist/PgPool.js
-index 24adc65edc8cac2ef4ab8d5f98f809068acff574..6e3ec942ad922aa29765d26a9f91331e987ae55b 100644
+index 4b9c73361f97db293299bbfa379712fe63d6aafb..388a0d91b8006b38f11539174105fc2c4bf59f00 100644
 --- a/dist/PgPool.js
 +++ b/dist/PgPool.js
-@@ -7,7 +7,11 @@ import * as Clock from "effect/Clock";
+@@ -8,6 +8,8 @@ import * as Clock from "effect/Clock";
  import * as Context from "effect/Context";
  import * as Duration from "effect/Duration";
  import * as Effect from "effect/Effect";
 +import * as Cause from "effect/Cause";
 +import * as Deferred from "effect/Deferred";
-+import * as Exit from "effect/Exit";
+ import * as Exit from "effect/Exit";
+ import * as Option from "effect/Option";
  import * as Pool from "effect/Pool";
-+import * as Scope from "effect/Scope";
- import { connectionInternals } from "./internal/connection.js";
- import * as PgConnection from "./PgConnection.js";
- const defaultMultiplexConcurrency = 32;
-@@ -25,6 +29,80 @@ export const TypeId = "~@effect/sql-pg/PgPool";
+@@ -35,6 +37,80 @@ export const TypeId = "~@effect/sql-pg/PgPool";
   * @since 4.0.0
   */
  export const PgPool = /*#__PURE__*/Context.Service("@effect/sql-pg/PgPool");
@@ -991,7 +1076,7 @@ index 24adc65edc8cac2ef4ab8d5f98f809068acff574..6e3ec942ad922aa29765d26a9f91331e
  /**
   * Creates a scoped PostgreSQL session pool.
   *
-@@ -41,6 +119,11 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (options) {
+@@ -55,6 +131,11 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (options) {
    const clock = yield* Clock.Clock;
    const runFork = Effect.runForkWith(yield* Effect.context());
    const multiplex = options.multiplex ?? false;
@@ -1001,16 +1086,17 @@ index 24adc65edc8cac2ef4ab8d5f98f809068acff574..6e3ec942ad922aa29765d26a9f91331e
 +  // what is outstanding on it.
 +  const exclusive = multiplex && concurrency === 1;
    const connectionTTL = options.connectionTTL !== undefined ? Duration.toMillis(Duration.fromInputUnsafe(options.connectionTTL)) : undefined;
+   const acquireTimeout = options.acquireTimeout !== undefined ? Duration.fromInputUnsafe(options.acquireTimeout) : undefined;
    const deadConnections = new Set();
-   const createdAt = new WeakMap();
-@@ -61,13 +144,14 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (options) {
-     // Pinning a shared session has to take it out of circulation, or a
-     // second checkout lands on the connection its own stream is holding.
-     if (multiplex) internals.reserve = Pool.reserve(pool, connection);
-+    if (exclusive) internals.setExclusive();
-   }));
+@@ -111,6 +192,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (options) {
+       // Pinning a shared session has to take it out of circulation, or a
+       // second checkout lands on the connection its own stream is holding.
+       if (multiplex) internals.reserve = Pool.reserve(pool, connection);
++      if (exclusive) internals.setExclusive();
+     }));
+   });
    const maxConnections = options.maxConnections ?? 10;
-   pool = yield* Pool.makeWithTTL({
+@@ -118,7 +200,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (options) {
      acquire,
      min: options.minConnections ?? 0,
      max: maxConnections,
@@ -1019,19 +1105,20 @@ index 24adc65edc8cac2ef4ab8d5f98f809068acff574..6e3ec942ad922aa29765d26a9f91331e
      timeToLive: options.idleTimeout ?? Duration.seconds(60),
      timeToLiveStrategy: "usage"
    });
-@@ -104,10 +188,103 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (options) {
-   const get = Effect.suspend(() => deadConnections.size > 0 ? retry : Effect.flatMap(Pool.get(pool), connection => expired(connection) ? Effect.andThen(Pool.invalidate(pool, connection), retry) : Effect.succeed(connection)));
-   // `pin` reserves the pool item itself, so this needs no help.
-   const reserve = Effect.flatMap(get, connection => connection.pin);
+@@ -172,11 +254,104 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (options) {
+   // `pin` reserves the pool item itself. On a multiplexed pool it also waits
+   // for shared statements to drain, so the acquire timeout covers it too.
+   const reserve = withAcquireTimeout(Effect.flatMap(handedOut, connection => connection.pin));
 +  // An exclusive lease goes back only once nothing is outstanding on its connection: what its
 +  // holder abandoned is cancelled and drained, as an interrupted statement is on a connection that
 +  // runs one at a time, and the connection is kept (`settle`).
 +  const lent = exclusive ? Effect.tap(get, connection => Effect.addFinalizer(() => connectionInternals(connection).settle)) : get;
-   // `Pool.use` cannot pre-check a session. Use it only when no TTL applies and
-   // no connection awaits retirement. Checking inside its callback can deadlock
-   // a size-one pool while acquiring a replacement.
--  const use = f => Effect.suspend(() => connectionTTL === undefined && deadConnections.size === 0 ? Pool.use(pool, f) : Effect.scoped(Effect.flatMap(get, f)));
-+  const useAny = f => Effect.suspend(() => !exclusive && connectionTTL === undefined && deadConnections.size === 0 ? Pool.use(pool, f) : Effect.scoped(Effect.flatMap(lent, f)));
+   // `Pool.use` cannot pre-check a session or bound its wait. Use it only when
+   // no TTL or acquire timeout applies and no connection awaits retirement.
+   // Checking inside its callback can deadlock a size-one pool while acquiring
+   // a replacement.
+-  const use = f => Effect.suspend(() => connectionTTL === undefined && acquireTimeout === undefined && deadConnections.size === 0 ? Pool.use(pool, connection => connects.has(connection) ? Effect.andThen(reportConnect(connection), f(connection)) : f(connection)) : Effect.scoped(Effect.flatMap(get, f)));
++  const useAny = f => Effect.suspend(() => !exclusive && connectionTTL === undefined && acquireTimeout === undefined && deadConnections.size === 0 ? Pool.use(pool, connection => connects.has(connection) ? Effect.andThen(reportConnect(connection), f(connection)) : f(connection)) : Effect.scoped(Effect.flatMap(lent, f)));
 +  // Identifies this pool among the leases a group holds.
 +  const groupKey = {};
 +  // Closing an exclusive lease settles its connection first (`lent`). When something is still
@@ -1125,13 +1212,13 @@ index 24adc65edc8cac2ef4ab8d5f98f809068acff574..6e3ec942ad922aa29765d26a9f91331e
      [TypeId]: TypeId,
      config: options,
 diff --git a/src/PgClient.ts b/src/PgClient.ts
-index 458df7fb428d6851d307da883dca050df145f92b..6b3e66c7b95be450d1165bfdd53d3d88024a7566 100644
+index 0892ccb889bf3a03b13490e4c5680a1b6989e9b6..501ca57b1e4f2c1bf9f5079ae37e956745451c60 100644
 --- a/src/PgClient.ts
 +++ b/src/PgClient.ts
-@@ -96,6 +96,13 @@ export interface PgClientConfig {
-   readonly password?: Redacted.Redacted | Effect.Effect<Redacted.Redacted> | undefined
- 
+@@ -114,6 +114,13 @@ export interface PgClientConfig<R = never> {
    readonly connectTimeout?: Duration.Input | undefined
+   /** Idle time before TCP keepalive probes start. See `PgConnection.Config.keepAlive`. */
+   readonly keepAlive?: Duration.Input | undefined
 +  /**
 +   * How many times a failed connection attempt is made again. Only retryable
 +   * failures are retried, such as a transport error or `connectTimeout`; an
@@ -1142,10 +1229,10 @@ index 458df7fb428d6851d307da883dca050df145f92b..6b3e66c7b95be450d1165bfdd53d3d88
  
    readonly stream?: (() => Duplex) | undefined
  
-@@ -167,14 +174,27 @@ export interface PgPoolConfig extends PgClientConfig {
-  * @since 4.0.0
-  */
- export const make = (options: PgPoolConfig): Effect.Effect<PgClient, SqlError, Scope.Scope | Reactivity.Reactivity> =>
+@@ -228,15 +235,28 @@ export interface PgPoolConfig<R = never> extends PgClientConfig<R> {
+ export const make = <R = never>(
+   options: PgPoolConfig<R>
+ ): Effect.Effect<PgClient & Client.SqlClient, SqlError, Scope.Scope | Reactivity.Reactivity | R> =>
 -  Effect.flatMap(PgPool.make(options), (pool) =>
 -    makeImpl({
 +  Effect.flatMap(PgPool.make(options), (pool) => {
@@ -1167,7 +1254,8 @@ index 458df7fb428d6851d307da883dca050df145f92b..6b3e66c7b95be450d1165bfdd53d3d88
 +        : lease,
        transactionAcquirer: Effect.map(pool.reserve, makeConnection),
        listenAcquirer: pool.reserve,
-       config: options
+       config: options,
+       poolStats: pool.stats
 -    }))
 +    })
 +  })
@@ -1175,19 +1263,23 @@ index 458df7fb428d6851d307da883dca050df145f92b..6b3e66c7b95be450d1165bfdd53d3d88
  /**
   * Creates a scoped PostgreSQL client backed by one connection.
 diff --git a/src/PgConnection.ts b/src/PgConnection.ts
-index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b0d0addb3 100644
+index c0740bc46059cf1e21c2783a04cc48000fc7906e..c72cbeb25060266a3ae73769dcf7a509276cdbe4 100644
 --- a/src/PgConnection.ts
 +++ b/src/PgConnection.ts
-@@ -16,6 +16,8 @@ import * as Deferred from "effect/Deferred"
- import * as Duration from "effect/Duration"
+@@ -14,9 +14,11 @@ import * as Cause from "effect/Cause"
+ import * as Channel from "effect/Channel"
+ import * as Context from "effect/Context"
+ import * as Deferred from "effect/Deferred"
+-import type * as Duration from "effect/Duration"
++import * as Duration from "effect/Duration"
  import * as Effect from "effect/Effect"
  import * as Exit from "effect/Exit"
 +import * as Fiber from "effect/Fiber"
 +import * as Option from "effect/Option"
  import * as Queue from "effect/Queue"
- import * as Redacted from "effect/Redacted"
+ import type * as Redacted from "effect/Redacted"
  import * as EffectResult from "effect/Result"
-@@ -23,6 +25,7 @@ import * as Scope from "effect/Scope"
+@@ -25,6 +27,7 @@ import * as Scope from "effect/Scope"
  import * as Semaphore from "effect/Semaphore"
  import { AuthenticationError, ConnectionError, SqlError, type SqlErrorReason, UnknownError } from "effect/sql/SqlError"
  import * as Stream from "effect/Stream"
@@ -1195,10 +1287,10 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
  import { Buffer } from "node:buffer"
  import { randomBytes } from "node:crypto"
  import * as Net from "node:net"
-@@ -95,6 +98,13 @@ export interface Config {
+@@ -115,6 +118,13 @@ export interface Config {
+    * acknowledgement, so use `Effect.timeout` to bound a write to a dead peer.
     */
-   readonly password?: Redacted.Redacted | Effect.Effect<Redacted.Redacted> | undefined
-   readonly connectTimeout?: Duration.Input | undefined
+   readonly keepAlive?: Duration.Input | undefined
 +  /**
 +   * How many times a failed connection attempt is made again. Only retryable
 +   * failures are retried, such as a transport error or `connectTimeout`; an
@@ -1209,7 +1301,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
    /**
     * Overrides `startupParameters.application_name`, the URL's `application_name`,
     * and the default `"@effect/sql-pg"`, in that order.
-@@ -258,6 +268,263 @@ export interface PgConnection {
+@@ -292,6 +302,263 @@ export interface PgConnection {
   */
  export const PgConnection = Context.Service<PgConnection>("@effect/sql-pg/PgConnection")
  
@@ -1473,21 +1565,21 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
  /**
   * Connects and authenticates a single PostgreSQL session.
   *
-@@ -266,7 +533,12 @@ export const PgConnection = Context.Service<PgConnection>("@effect/sql-pg/PgConn
-  * Password resolution, transport, optional `SSLRequest`, startup, and
-  * authentication run under `connectTimeout` (5 seconds by default). The effect
+@@ -302,7 +569,12 @@ export const PgConnection = Context.Service<PgConnection>("@effect/sql-pg/PgConn
   * resolves when the backend sends `ReadyForQuery`. Closing the scope sends
-- * `Terminate` and ends the socket.
-+ * `Terminate` and ends the socket. A retryable failure is retried up to
-+ * `connectRetries` times; each attempt's `sql.connect` span records its
-+ * `db.connect.attempt`, and a retry records the previous failure as
+  * `Terminate`, ends the socket, and destroys the transport (a custom `stream`
+  * included) once the message has flushed, or after one second if the flush
+- * stalls. Release does not wait for the peer.
++ * stalls. Release does not wait for the peer. A retryable failure is
++ * retried up to `connectRetries` times; each attempt's `sql.connect` span
++ * records its `db.connect.attempt`, and a retry records the previous failure as
 + * `db.connect.retry_reason`. A failed attempt, including one that reaches
 + * `connectTimeout`, fails its span and records why as `db.connect.failure`
 + * (see {@link ConnectFailure}).
   *
   * Use `sslmode=require` or explicit `ssl: true` to require encryption.
   * Unix sockets and custom streams should set `ssl.servername` explicitly.
-@@ -275,30 +547,53 @@ export const PgConnection = Context.Service<PgConnection>("@effect/sql-pg/PgConn
+@@ -312,30 +584,53 @@ export const PgConnection = Context.Service<PgConnection>("@effect/sql-pg/PgConn
   * @since 4.0.0
   */
  export const make = (options: Config): Effect.Effect<PgConnection, SqlError, Scope.Scope> =>
@@ -1565,7 +1657,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
  
  interface Session {
    readonly socket: Duplex
-@@ -324,8 +619,20 @@ interface PipelineEntry {
+@@ -363,8 +658,20 @@ interface PipelineEntry {
    readonly deferred: Deferred.Deferred<QueryOutput, SqlError>
    readonly machine: QueryMachine
    abandoned: boolean
@@ -1586,15 +1678,15 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
  const abortDrainTimeoutMillis = 5000
  const abortDrainGraceMillis = 10
  /** PostgreSQL `query_canceled` SQLSTATE. */
-@@ -356,6 +663,7 @@ class PgConnectionImpl implements PgConnection {
-   deadWith: SqlError | undefined
-   closed = false
+@@ -399,6 +706,7 @@ class PgConnectionImpl implements PgConnection {
    cancelPending = false
+   /** Reported by the latest `ReadyForQuery`. */
+   transactionStatus: PgProtocol.TransactionStatus = "I"
 +  retired = false
    readonly channels = new Map<string, Set<Queue.Queue<Notification, SqlError>>>()
    readonly retireHooks = new Set<() => void>()
    /** Queued but not yet written; drained into `pipelineInFlight` on flush. */
-@@ -364,7 +672,18 @@ class PgConnectionImpl implements PgConnection {
+@@ -407,7 +715,18 @@ class PgConnectionImpl implements PgConnection {
    readonly pipelineInFlight: Array<PipelineEntry> = []
    pipelineHead = 0
    pipelineFlushScheduled = false
@@ -1610,10 +1702,10 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
 +  exclusive = false
 +  /** How many `PgPool` holds have this connection. */
 +  held = 0
-   readonly pinnedView: PgConnection
    readonly [internalsKey]: ConnectionInternals
  
-@@ -381,7 +700,24 @@ class PgConnectionImpl implements PgConnection {
+   constructor(config: Config, resolved: ResolvedConfig, session: Session, registry: PgTypes.Registry | undefined) {
+@@ -422,7 +741,24 @@ class PgConnectionImpl implements PgConnection {
      this[internalsKey] = {
        base: this,
        deadError: () => this.deadWith,
@@ -1637,9 +1729,9 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
 +        for (const entry of this.outstanding()) entry.abandoned = true
 +      }
      }
-     this.pinnedView = new PinnedPgConnection(this)
+     session.parser.onFieldError = this.onFieldError
      session.socket.on("data", this.onData)
-@@ -474,6 +810,7 @@ class PgConnectionImpl implements PgConnection {
+@@ -527,6 +863,7 @@ class PgConnectionImpl implements PgConnection {
    }
  
    private retire(): void {
@@ -1647,7 +1739,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
      if (this.closed) return
      for (const hook of this.retireHooks) hook()
    }
-@@ -548,7 +885,22 @@ class PgConnectionImpl implements PgConnection {
+@@ -618,7 +955,22 @@ class PgConnectionImpl implements PgConnection {
  
    private readonly pipelineIsIdle = (): boolean => this.pipelineDepth() === 0 && this.pipelinePending.length === 0
  
@@ -1670,7 +1762,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
      if (!this.pipelineIsIdle()) return
      this.consumer = undefined
      this.session.parser.readField = undefined
-@@ -584,6 +936,7 @@ class PgConnectionImpl implements PgConnection {
+@@ -654,6 +1006,7 @@ class PgConnectionImpl implements PgConnection {
        this.pipelineInFlight.length = 0
        this.pipelineHead = 0
      }
@@ -1678,7 +1770,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
    }
  
    /** Writes everything queued since the last flush as one batch. */
-@@ -616,6 +969,8 @@ class PgConnectionImpl implements PgConnection {
+@@ -686,6 +1039,8 @@ class PgConnectionImpl implements PgConnection {
      const frame = batch.length === 1
        ? batch[0].plan.frame
        : concat(batch.map((entry) => entry.plan.frame))
@@ -1687,7 +1779,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
      try {
        this.session.socket.write(frame)
      } catch (cause) {
-@@ -630,6 +985,128 @@ class PgConnectionImpl implements PgConnection {
+@@ -700,6 +1055,128 @@ class PgConnectionImpl implements PgConnection {
      queueMicrotask(this.flushPipeline)
    }
  
@@ -1816,7 +1908,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
    /**
     * One cycle on a multiplexed connection. The `owner` permit is only taken to
     * queue the statement, so a pin still orders against submissions without
-@@ -640,10 +1117,22 @@ class PgConnectionImpl implements PgConnection {
+@@ -710,10 +1187,22 @@ class PgConnectionImpl implements PgConnection {
      params: ReadonlyArray<unknown>,
      wantRows: boolean,
      cache: PreparedCache | undefined
@@ -1839,7 +1931,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
          let plan: Plan
          try {
            plan = this.encodeQuery(sql, params, cache)
-@@ -655,20 +1144,17 @@ class PgConnectionImpl implements PgConnection {
+@@ -725,20 +1214,17 @@ class PgConnectionImpl implements PgConnection {
          const machine = new QueryMachine(this, plan, wantRows, (result) => this.finishPipelineEntry(entry, result))
          entry = { plan, deferred, machine, abandoned: false }
          this.pipelinePending.push(entry)
@@ -1863,7 +1955,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
        }
      )
  
-@@ -693,7 +1179,11 @@ class PgConnectionImpl implements PgConnection {
+@@ -751,7 +1237,11 @@ class PgConnectionImpl implements PgConnection {
      params: ReadonlyArray<unknown>,
      wantRows: boolean,
      cache: PreparedCache | undefined
@@ -1876,7 +1968,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
  
    /**
     * Runs one cycle. A reused statement the backend has since dropped, or whose
-@@ -764,6 +1254,104 @@ class PgConnectionImpl implements PgConnection {
+@@ -846,6 +1336,104 @@ class PgConnectionImpl implements PgConnection {
        : this.owner.withPermit(this.cycleOwned(sql, params, wantRows, cache))
    }
  
@@ -1981,7 +2073,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
    readonly query = (sql: string, params?: ReadonlyArray<unknown>, prepare = true): Effect.Effect<Result, SqlError> =>
      Effect.map(this.run(sql, params ?? emptyParams, true, prepare), takeResult)
  
-@@ -1512,11 +2100,26 @@ const drainAborted = (
+@@ -1648,11 +2236,26 @@ const drainAborted = (
    )
  }
  
@@ -2009,7 +2101,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
  ): Effect.Effect<QueryOutput, SqlError> =>
    Effect.callback<QueryOutput, SqlError>((resume) => {
      if (conn.deadWith !== undefined) {
-@@ -1527,12 +2130,30 @@ const runQuery = (
+@@ -1663,12 +2266,31 @@ const runQuery = (
        conn.consumer = undefined
        resume(effect)
      })
@@ -2029,6 +2121,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
 +        if (message._tag === "ReadyForQuery") span.attribute("db.wire.ready_ms", elapsed)
 +        machine.onMessage(message)
 +      },
++      onDecodeFailure: (error) => machine.onDecodeFailure(error),
 +      onFatal: (error) => machine.onFatal(error)
 +    }
      // A reused statement has no `RowDescription` coming, so its reader has to
@@ -2042,7 +2135,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
      } catch (cause) {
        conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"))
      }
-@@ -1924,10 +2545,34 @@ const sendCancelRequest = (config: ResolvedConfig, session: Session): Effect.Eff
+@@ -2109,10 +2731,34 @@ const sendCancelRequest = (config: ResolvedConfig, session: Session): Effect.Eff
      return Effect.sync(finish)
    })
  
@@ -2077,7 +2170,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
      let encrypted = false
      let parser: PgProtocol.Parser<unknown> | undefined
      let sslErrorParser: PgProtocol.Parser | undefined
-@@ -1935,16 +2580,21 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
+@@ -2120,16 +2766,21 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
      let processId = 0
      let secretKey = 0
  
@@ -2103,7 +2196,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
  
      const onError = (cause: Error) => failConnect(cause, "PgConnection: Failed to connect")
      const onClose = () =>
-@@ -2037,7 +2687,7 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
+@@ -2222,7 +2873,7 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
            secretKey = message.secret
            return
          case "ErrorResponse":
@@ -2112,7 +2205,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
          case "ReadyForQuery":
            if (scram !== undefined) {
              return failAuth(
-@@ -2098,7 +2748,7 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
+@@ -2283,7 +2934,7 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
              "PgConnection: Invalid SSLRequest response"
            )
          }
@@ -2121,9 +2214,9 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
        }
        socket.off("data", onSslResponse)
        if (chunk.length !== 1) {
-@@ -2147,10 +2797,9 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
-         // nothing to coalesce and only holds the write back.
-         : Net.connect({ host: config.host, port: config.port, noDelay: true })
+@@ -2337,10 +2988,9 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
+           ...(config.keepAlive !== undefined && { keepAlive: true, keepAliveInitialDelay: config.keepAlive })
+         })
      } catch (cause) {
 -      resume(Effect.fail(
 -        new SqlError({
@@ -2135,7 +2228,7 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
        ))
        return
      }
-@@ -2159,7 +2808,10 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
+@@ -2349,7 +2999,10 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
      if (config.stream !== undefined) {
        begin()
      } else {
@@ -2148,23 +2241,19 @@ index 1b01a1d07dba9c258f69fb7b9ee56c9c2dd66894..2f362a487502f225acebd8fdaf5f4e4b
  
      return Effect.sync(() => {
 diff --git a/src/PgPool.ts b/src/PgPool.ts
-index c3d75942c1c1e8a03b3876160a2830983af9113e..72200f290aeef967b4b38f65d014b2d4724f1840 100644
+index 1fb1de888e1bfbc17e051949716952d284c110e3..c340f72e939f5745d3d79c5213df792b4aaa5980 100644
 --- a/src/PgPool.ts
 +++ b/src/PgPool.ts
-@@ -7,8 +7,11 @@ import * as Clock from "effect/Clock"
+@@ -8,6 +8,8 @@ import * as Clock from "effect/Clock"
  import * as Context from "effect/Context"
  import * as Duration from "effect/Duration"
  import * as Effect from "effect/Effect"
 +import * as Cause from "effect/Cause"
 +import * as Deferred from "effect/Deferred"
-+import * as Exit from "effect/Exit"
+ import * as Exit from "effect/Exit"
+ import * as Option from "effect/Option"
  import * as Pool from "effect/Pool"
--import type * as Scope from "effect/Scope"
-+import * as Scope from "effect/Scope"
- import type { SqlError } from "effect/sql/SqlError"
- import { connectionInternals } from "./internal/connection.ts"
- import * as PgConnection from "./PgConnection.ts"
-@@ -94,6 +97,12 @@ export interface PgPool {
+@@ -115,6 +117,12 @@ export interface PgPool {
     *
     * For work that finishes with the effect that runs it. A lease that has to
     * outlive its effect - a stream, a transaction - takes `get` or `reserve`.
@@ -2177,7 +2266,7 @@ index c3d75942c1c1e8a03b3876160a2830983af9113e..72200f290aeef967b4b38f65d014b2d4
     */
    readonly use: <A, E, R>(
      f: (connection: PgConnection.PgConnection) => Effect.Effect<A, E, R>
-@@ -109,6 +118,114 @@ export interface PgPool {
+@@ -137,6 +145,114 @@ export interface PgPool {
   */
  export const PgPool = Context.Service<PgPool>("@effect/sql-pg/PgPool")
  
@@ -2292,7 +2381,7 @@ index c3d75942c1c1e8a03b3876160a2830983af9113e..72200f290aeef967b4b38f65d014b2d4
  /**
   * Creates a scoped PostgreSQL session pool.
   *
-@@ -126,6 +243,11 @@ export const make = Effect.fnUntraced(function*(options: Config): Effect.fn.Retu
+@@ -158,6 +274,11 @@ export const make = Effect.fnUntraced(function*(options: Config): Effect.fn.Retu
    const runFork = Effect.runForkWith(yield* Effect.context())
  
    const multiplex = options.multiplex ?? false
@@ -2304,15 +2393,15 @@ index c3d75942c1c1e8a03b3876160a2830983af9113e..72200f290aeef967b4b38f65d014b2d4
    const connectionTTL = options.connectionTTL !== undefined
      ? Duration.toMillis(Duration.fromInputUnsafe(options.connectionTTL))
      : undefined
-@@ -150,6 +272,7 @@ export const make = Effect.fnUntraced(function*(options: Config): Effect.fn.Retu
-       // Pinning a shared session has to take it out of circulation, or a
-       // second checkout lands on the connection its own stream is holding.
-       if (multiplex) internals.reserve = Pool.reserve(pool, connection)
-+      if (exclusive) internals.setExclusive()
-     }))
+@@ -228,6 +349,7 @@ export const make = Effect.fnUntraced(function*(options: Config): Effect.fn.Retu
+         // Pinning a shared session has to take it out of circulation, or a
+         // second checkout lands on the connection its own stream is holding.
+         if (multiplex) internals.reserve = Pool.reserve(pool, connection)
++        if (exclusive) internals.setExclusive()
+       }))
+   })
  
-   const maxConnections = options.maxConnections ?? 10
-@@ -157,9 +280,7 @@ export const make = Effect.fnUntraced(function*(options: Config): Effect.fn.Retu
+@@ -236,9 +358,7 @@ export const make = Effect.fnUntraced(function*(options: Config): Effect.fn.Retu
      acquire,
      min: options.minConnections ?? 0,
      max: maxConnections,
@@ -2323,9 +2412,9 @@ index c3d75942c1c1e8a03b3876160a2830983af9113e..72200f290aeef967b4b38f65d014b2d4
      timeToLive: options.idleTimeout ?? Duration.seconds(60),
      timeToLiveStrategy: "usage"
    })
-@@ -204,16 +325,149 @@ export const make = Effect.fnUntraced(function*(options: Config): Effect.fn.Retu
-   // `pin` reserves the pool item itself, so this needs no help.
-   const reserve = Effect.flatMap(get, (connection) => connection.pin)
+@@ -318,21 +438,154 @@ export const make = Effect.fnUntraced(function*(options: Config): Effect.fn.Retu
+   // for shared statements to drain, so the acquire timeout covers it too.
+   const reserve = withAcquireTimeout(Effect.flatMap(handedOut, (connection) => connection.pin))
  
 +  // An exclusive lease goes back only once nothing is outstanding on its connection: what its
 +  // holder abandoned is cancelled and drained, as an interrupted statement is on a connection that
@@ -2334,17 +2423,22 @@ index c3d75942c1c1e8a03b3876160a2830983af9113e..72200f290aeef967b4b38f65d014b2d4
 +    ? Effect.tap(get, (connection) => Effect.addFinalizer(() => connectionInternals(connection).settle))
 +    : get
 +
-   // `Pool.use` cannot pre-check a session. Use it only when no TTL applies and
-   // no connection awaits retirement. Checking inside its callback can deadlock
-   // a size-one pool while acquiring a replacement.
+   // `Pool.use` cannot pre-check a session or bound its wait. Use it only when
+   // no TTL or acquire timeout applies and no connection awaits retirement.
+   // Checking inside its callback can deadlock a size-one pool while acquiring
+   // a replacement.
 -  const use = <A, E, R>(
 +  const useAny = <A, E, R>(
      f: (connection: PgConnection.PgConnection) => Effect.Effect<A, E, R>
    ): Effect.Effect<A, E | SqlError, R> =>
      Effect.suspend(() =>
--      connectionTTL === undefined && deadConnections.size === 0
-+      !exclusive && connectionTTL === undefined && deadConnections.size === 0
-         ? Pool.use(pool, f)
+-      connectionTTL === undefined && acquireTimeout === undefined && deadConnections.size === 0
++      !exclusive && connectionTTL === undefined && acquireTimeout === undefined && deadConnections.size === 0
+         ? Pool.use(
+           pool,
+           (connection) =>
+             connects.has(connection) ? Effect.andThen(reportConnect(connection), f(connection)) : f(connection)
+         )
 -        : Effect.scoped(Effect.flatMap(get, f))
 +        : Effect.scoped(Effect.flatMap(lent, f))
 +    )

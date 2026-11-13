@@ -1,5 +1,6 @@
 /** Reusable setup lifecycle. Hosts own access checks and browser links; each target selects the saved account. */
-import { Clock, type Crypto, Effect, Schema } from "effect";
+import { Clock, Effect, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import type { ResourceLifecycle } from "../contracts/executor.ts";
 import {
   type CreateAccountConnection,
@@ -30,7 +31,7 @@ import { query, transaction, type Query } from "./database.ts";
 export const makeAccountConnections = (
   db: Query,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle?: ResourceLifecycle,
 ) => {
   const provider = (id: typeof Provider.Type.id) =>
@@ -106,9 +107,7 @@ export const makeAccountConnections = (
             Effect.mapError(() => new StorageError()),
           );
         }
-        const id = AccountConnectionId.make(
-          `con_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-        );
+        const id = AccountConnectionId.make(`con_${yield* crypto.random.uuidV4()}`);
         const now = yield* Clock.currentTimeMillis;
         const target = yield* Schema.encodeEffect(StoredConnectionTarget)(
           destination.snapshot,

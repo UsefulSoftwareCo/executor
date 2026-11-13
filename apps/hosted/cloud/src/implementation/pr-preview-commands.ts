@@ -1,105 +1,17 @@
-/** GitHub lifecycle discovery and live verification; Alchemy owns provisioning and comments. */
+/**
+ * Registry ownership, scheduled reconciliation and live verification of PR previews; Alchemy owns
+ * provisioning and comments. `prepare` is in `pr-preview-decision.ts`, which needs no dependency.
+ */
 import { Config, Console, Effect, FileSystem, Schema } from "effect";
 import { Argument, Command } from "effect/cli";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient, HttpClientRequest } from "effect/http";
-import {
-  PreviewCommit,
-  PreviewNumber,
-  compareFileLimit,
-  previewBrowserOrigin,
-  previewOrigin,
-  previewOwner,
-  previewRepository,
-  previewShows,
-  previewSlug,
-} from "../contracts/pr-preview.ts";
+import { PreviewNumber, previewBrowserOrigin, previewRepository } from "../contracts/pr-preview.ts";
+import { previewOrigin, previewOwner, previewSlug } from "../contracts/pr-preview-selection.ts";
+import { previewAction } from "./pr-preview-decision.ts";
 import { TestStageFailed } from "../contracts/test-stage-lifetime.ts";
 import { withStageAdmin } from "./test-stage-inventory.ts";
 
 const number = Argument.Int("number").pipe(Argument.withSchema(PreviewNumber));
-const PullRequest = Schema.Struct({
-  state: Schema.Literals(["open", "closed"]),
-  head: Schema.Struct({
-    sha: PreviewCommit,
-    ref: Schema.String,
-    repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
-  }),
-  base: Schema.Struct({ repo: Schema.Struct({ default_branch: Schema.NonEmptyString }) }),
-});
-/** The files a head changes since it left the default branch, renamed files' old paths included. */
-const Compared = Schema.Struct({ count: Schema.Int, paths: Schema.Array(Schema.String) });
-const StackedAbove = Schema.Array(
-  Schema.Struct({
-    number: PreviewNumber,
-    head: Schema.Struct({ repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })) }),
-  }),
-);
-const pullRequest = (repository: string, number: number) =>
-  Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const json = yield* spawner.string(
-      ChildProcess.make("gh", ["api", `repos/${repository}/pulls/${number}`]),
-    );
-    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(PullRequest))(json);
-  });
-/** Only the top layer of a stack is previewed; it contains every lower layer's change. */
-const isStackedUnder = (repository: string, ref: string) =>
-  Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const json = yield* spawner.string(
-      ChildProcess.make("gh", [
-        "api",
-        "--method",
-        "GET",
-        `repos/${repository}/pulls`,
-        "-f",
-        "state=open",
-        "-f",
-        `base=${ref}`,
-        "-f",
-        "per_page=100",
-      ]),
-    );
-    const above = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(StackedAbove))(json);
-    // Fork PRs never get a preview, so they cannot stand in for this one.
-    return above.some((pr) => pr.head.repo?.full_name === repository);
-  });
-/**
- * Whether the head's whole change against the default branch can alter what a preview shows. For a
- * stack's top layer that is every layer's change. GitHub lists at most 300 changed files; a longer
- * list may hide one a preview shows, so it counts as one.
- */
-const changesPreview = (repository: string, defaultBranch: string, sha: string) =>
-  Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const json = yield* spawner.string(
-      ChildProcess.make("gh", [
-        "api",
-        `repos/${repository}/compare/${defaultBranch}...${sha}`,
-        "--jq",
-        "{count: (.files | length), paths: [.files[] | .filename, (.previous_filename // empty)]}",
-      ]),
-    );
-    const compared = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Compared))(json);
-    return compared.count >= compareFileLimit || previewShows(compared.paths);
-  });
-/**
- * `destroy` a closed PR's preview, `retire` a lower stack layer's, and `unneeded` removes the
- * preview of a PR that changes nothing a preview shows. A later push that does deploys it again.
- */
-const previewAction = (repository: string, number: number) =>
-  Effect.gen(function* () {
-    const pr = yield* pullRequest(repository, number);
-    if (pr.state === "closed") return { pr, action: "destroy" as const };
-    if (yield* isStackedUnder(repository, pr.head.ref)) return { pr, action: "retire" as const };
-    return {
-      pr,
-      action: (yield* changesPreview(repository, pr.base.repo.default_branch, pr.head.sha))
-        ? ("deploy" as const)
-        : ("unneeded" as const),
-    };
-  });
 const output = (values: Record<string, string>) =>
   Effect.gen(function* () {
     const path = yield* Config.String("GITHUB_OUTPUT");
@@ -112,21 +24,6 @@ const output = (values: Record<string, string>) =>
       { flag: "a" },
     );
   });
-const prepare = Command.make("prepare", { number }, ({ number }) =>
-  Effect.gen(function* () {
-    const repository = yield* previewRepository;
-    const { pr, action } = yield* previewAction(repository, number);
-    if (pr.head.repo?.full_name !== repository)
-      return yield* new TestStageFailed({ message: "Fork PRs cannot access preview credentials." });
-    yield* output({
-      action,
-      sha: pr.head.sha,
-      slug: previewSlug(number),
-      owner: previewOwner(repository, number),
-      url: previewOrigin(number),
-    });
-  }),
-);
 const guard = Command.make("guard", { number }, ({ number }) =>
   Effect.gen(function* () {
     const repository = yield* previewRepository;
@@ -149,7 +46,12 @@ const stale = Command.make("stale", {}, () =>
       if (match === null) continue;
       const number = yield* Schema.decodeUnknownEffect(PreviewNumber)(Number(match[1]));
       if (stage.owner !== previewOwner(repository, number)) continue;
-      if ((yield* previewAction(repository, number)).action !== "deploy") numbers.push(number);
+      const { action } = yield* Effect.tryPromise({
+        try: () => previewAction(repository, number),
+        catch: () =>
+          new TestStageFailed({ message: `Could not read PR #${number}'s preview state.` }),
+      });
+      if (action !== "deploy") numbers.push(number);
     }
     yield* output({ numbers: JSON.stringify(numbers) });
     yield* Console.log(`Found ${numbers.length} stale PR preview(s) to clean up.`);
@@ -250,5 +152,5 @@ const verify = Command.make("verify", { number }, ({ number }) =>
 
 /** Called from workflows with step-scoped GitHub and staging credentials. */
 export const prPreviewCommand = Command.make("pr-preview").pipe(
-  Command.withSubcommands([prepare, guard, stale, verify]),
+  Command.withSubcommands([guard, stale, verify]),
 );

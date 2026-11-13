@@ -308,8 +308,24 @@ const config :Workerd.Config = (
   // requests by seconds. It runs in its own workerd process and listens only on a private Unix
   // socket, which the host passes to it and to the product's MOTEL binding. With no TCP listener,
   // an app's fetch cannot reach its ingest or query routes even when private fetch is allowed.
+  // The collector's process needs its own memory settings. Every export it stores leaves garbage in
+  // its isolate, and without these settings workerd does not collect an idle isolate or return
+  // freed memory to the system: with 30 apps' per-minute schedules the collector grew by about
+  // 100 MB an hour to about 430 MB, of which its heap held about 14 MB of live objects. The product's 10 s idle delay would never fire here,
+  // because the collector's retention alarm runs every 10 s. After 2 s without JavaScript activity
+  // the isolate runs a full collection, and TCMalloc returns the memory it frees. The same load then
+  // held the collector at about 90 MB, for about a fifth more of its CPU time. A collection stops
+  // the collector's thread while it runs, so an export that arrives during one waits for it.
+  const motelMemory = [
+    "maintenanceIntervalMs=1000",
+    "idleIsolateGcDelayMs=2000",
+    "idleIsolateGcMode=full",
+    `tcmallocBackgroundReleaseBytesPerSecond=${8 * 1024 * 1024}`,
+    "releaseMemoryAfterGc=true",
+  ].join(",");
   const motelConfig = `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
+ memory=(${motelMemory}),
  services=[
   (name="motel",worker=(
    compatibilityDate="2026-09-01",compatibilityFlags=["nodejs_compat"],modules=[(name="motel.mjs",esModule=embed "@@RUNTIME@@/motel/motel.mjs")],

@@ -34,7 +34,7 @@ import { cloudWorkers } from "../alchemy.run.ts";
 import { AppData } from "../src/infrastructure/app-data-worker.ts";
 import AppPages from "../src/app-ui.ts";
 import { Api } from "../src/main.ts";
-import { previewSlug } from "../src/contracts/pr-preview.ts";
+import { previewSlug } from "../src/contracts/pr-preview-selection.ts";
 import { McpServer } from "../src/infrastructure/mcp-server-worker.ts";
 import { Marketing } from "../src/infrastructure/marketing-worker.ts";
 import { productionStage, testStagePrefix } from "../src/infrastructure/stage.ts";

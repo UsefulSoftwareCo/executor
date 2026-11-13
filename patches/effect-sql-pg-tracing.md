@@ -1,10 +1,13 @@
 # PostgreSQL connection tracing
 
-`@effect/sql-pg` 4.0.1 traces SQL statements and transactions,
-but its physical PostgreSQL connection acquisition has no span. A slow first
+`@effect/sql-pg` 4.1.4 traces SQL statements and transactions. With
+`SpanPropagationEnabled` it adds a `db.connect` child span to a statement that waited
+for a new session, covering the part of the connect it waited for. An attempt has no
+span of its own: a failed or retried attempt, or one no statement waited for, is not
+recorded. A slow first
 transaction therefore includes an unexplained interval before its first query.
 
-`@effect%2Fsql-pg@4.0.1.patch` adds a client `sql.connect` span around one
+`@effect%2Fsql-pg@4.1.4.patch` adds a client `sql.connect` span around one
 connection attempt: password resolution, the driver's existing network
 connection and authentication effect, and `connectTimeout`. It ends when
 PostgreSQL sends `ReadyForQuery`, or on failure or interruption. It adds no URL,
@@ -39,8 +42,11 @@ an extra eager acquisition in application code.
 
 The patch is generated with `bun patch` against the npm release. Regenerate it
 when upgrading, and remove it if upstream adds equivalent connection tracing.
-4.0.1 drains an interrupted statement through `drainAborted`; the wire span wraps
+The driver drains an interrupted statement through `drainAborted`; the wire span wraps
 that unchanged cancellation path.
+
+The patch is ported from source: `dist/` and the type declarations are generated from
+the patched `src/` with the release's own build settings, so the two copies cannot differ.
 
 ## Session object pool and batches
 

@@ -112,6 +112,17 @@ is a development build. The release workflow fetches the runtime from the
 `bun-runtime-<bun version>-<patch hash>` release, building it first when the
 patch changed.
 
+A pull request that changes the lockdown patch has no runtime release yet, so CI's
+`release-local` lane fails and names the command that builds one from its branch:
+`gh workflow run bun-runtime.yml --ref <branch> -f publish=true`, which anyone with
+write access can run. The release is named by the Bun version and the patch hash
+only, so main's runs, publishing ones included, use it from then on. If the
+branch's build scripts (`scripts/releases/bun-runtime/`) change after that build
+and before merge, delete that release before merging, and the push to main builds
+it again from main's scripts. Keying the release name on a hash of the whole
+`scripts/releases/bun-runtime/` directory, not the patch alone, would make this
+automatic; it is not done yet.
+
 The install scripts are `apps/docs/public/install.sh` and `install.ps1`, served
 at `https://executor.sh/docs/`. The publish job writes the Homebrew formula
 (`scripts/releases/homebrew.ts`) to the tap named by the `HOMEBREW_TAP`

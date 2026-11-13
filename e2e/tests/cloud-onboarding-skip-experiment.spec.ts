@@ -53,7 +53,7 @@ const completeRequiredSetup = (order: OnboardingOrder) =>
     const target = yield* Target;
     expect(target.metadata.mode).toBe("managed");
     const onboarding = yield* Onboarding;
-    yield* onboarding.socialSignIn("google");
+    yield* onboarding.signInByApi;
     const name = yield* onboarding.prepareTeam;
     const userId = yield* onboarding.sessionUserId;
     yield* answerOnboardingFlag(userId, { variant: order, skip: "required" });
@@ -106,15 +106,19 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding skip experiment
         const target = yield* Target;
         expect(target.metadata.mode).toBe("managed");
         const onboarding = yield* Onboarding;
-        yield* onboarding.socialSignIn("google");
+        yield* onboarding.signInByApi;
         const name = yield* onboarding.prepareTeam;
         const userId = yield* onboarding.sessionUserId;
         // The order flag is left out, so the order experiment serves its control untracked.
         yield* answerOnboardingFlag(userId, { skip: "skippable" });
         // Today's setup: each step offers Skip for now, and skipping both opens the dashboard.
-        yield* onboarding.confirmTeam(name, "skip");
-        const events = yield* awaitPersonEvents(userId, (events) =>
-          setupEvents(events).some((event) => event.properties.action === "skip_assistant"),
+        yield* onboarding.confirmTeam(name, "skip", { checkInstall: false });
+        // The exposure is sent apart from the setup events, so it is waited for too.
+        const events = yield* awaitPersonEvents(
+          userId,
+          (events) =>
+            setupEvents(events).some((event) => event.properties.action === "skip_assistant") &&
+            exposures(events, onboardingSkipFlag).length > 0,
         );
         expect(yield* flagEvaluations(userId)).toBe(1);
         expect(exposures(events, onboardingSkipFlag)).toEqual(["skippable"]);

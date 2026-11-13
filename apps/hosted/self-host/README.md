@@ -118,8 +118,11 @@ The image runs Executor's build of workerd from
 [UsefulSoftwareCo/workerd](https://github.com/UsefulSoftwareCo/workerd), pinned by
 release and SHA-256 in `workerd.json`; packaging downloads it and fails on any other
 digest. It adds idle-isolate and memory-pressure garbage collection and TCMalloc
-memory release, set by `memory` in the generated `workerd.capnp`. Cloud and local
-development keep upstream workerd.
+memory release, set by `memory` in the generated `workerd.capnp`, and for Motel's
+process in `motel.capnp`: Motel collects its isolate after 2 seconds idle and
+returns the freed memory. With 30 apps on per-minute schedules that held it near
+90 MB, where it had risen to about 430 MB. Cloud and local development keep
+upstream workerd.
 
 The runtime uses Debian 12 distroless with Git's native commands and HTTP backend,
 their shared libraries, and the small set of tools used to prepare data volumes.

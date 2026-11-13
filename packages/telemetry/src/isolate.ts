@@ -85,7 +85,9 @@ export const isolateTelemetry = (
     };
     const console = Logger.layer([logger]);
     const buffers = buffering(pending);
-    // Export happens only when an event flushes, so no isolate timer ever runs.
+    // Export happens only when an event flushes, so no isolate timer ever runs. With no interval
+    // the exporter also runs no loop (patches/effect-otlp-exporter-loop.md): the exporters outlive
+    // every event, and workerd refuses to resume a fiber that last ran in another request.
     const exporter = (signal: string) => ({
       url: buffered(signal),
       resource,

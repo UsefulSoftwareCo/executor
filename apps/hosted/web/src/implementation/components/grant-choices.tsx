@@ -17,6 +17,7 @@ import {
   McpConsentRowPending,
   McpConsentSelect,
   McpConsentTargetRows,
+  type ConsentConnectionList,
 } from "@executor-js/ui/dashboard/mcp-consent";
 import {
   ConnectionOwnerRequest,
@@ -173,8 +174,9 @@ function ConnectionOwner({
 }
 
 /**
- * The organization's connections as the Access menu. A connection created in another tab since
- * "New connection" was chosen becomes the choice when the list shows it.
+ * The organization's connections as the Access menu. The menu shows the choice at once and reads
+ * the list inside it. A connection created in another tab since "New connection" was chosen
+ * becomes the choice when the list shows it.
  */
 function ConnectionChoice({
   organization,
@@ -202,23 +204,19 @@ function ConnectionChoice({
   useEffect(() => {
     if (created !== undefined) onChange({ kind: "connection", id: created.id });
   }, [created, onChange]);
-  if (connections === undefined)
-    return AsyncResult.isFailure(result) ? (
-      <McpConsentRowFailure
-        label="Access"
-        message={listFailure}
-        retry={retry}
-        retrying={result.waiting}
-      />
-    ) : (
-      <McpConsentRowPending label="Access" />
-    );
+  // A retry in flight reads as loading again.
+  const list: ConsentConnectionList =
+    connections !== undefined
+      ? { kind: "loaded", connections }
+      : AsyncResult.isFailure(result) && !result.waiting
+        ? { kind: "failed", retry }
+        : { kind: "loading" };
   return (
     <McpConsentAccess
-      connections={connections}
+      list={list}
       value={value}
       onChange={onChange}
-      onNewConnection={() => onNewConnection(new Set(connections.map((item) => item.id)))}
+      onNewConnection={(known) => onNewConnection(new Set(known.map((item) => item.id)))}
       disabled={disabled}
     />
   );

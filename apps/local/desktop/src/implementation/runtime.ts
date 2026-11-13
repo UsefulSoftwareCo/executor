@@ -298,8 +298,6 @@ export const packagedRuntime = (options: { readonly source: string; readonly sta
     } satisfies ServiceRuntime;
   });
 
-type StarterFailure = (typeof StarterReport.cases.Failed.Type)["error"];
-
 /** The server starter's entry, which `scripts/build.mjs` bundles beside the main entry. */
 const starterEntry = "starter.cjs";
 /** How long a starter gets to end the start attempts it began and exit before it is killed. */
@@ -496,9 +494,7 @@ export const ensureServer = (
             ),
           ),
         );
-        const service = yield* StarterReport.match<
-          Effect.Effect<Option.Option<RunningService>, StarterFailure>
-        >(report, {
+        const service = yield* StarterReport.match(report, {
           Starting: (start) =>
             options.onStart(start).pipe(Effect.as(Option.none<RunningService>())),
           Ready: ({ url, version, pid, password, browserOrigin }) =>

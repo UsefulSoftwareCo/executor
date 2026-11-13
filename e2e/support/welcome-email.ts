@@ -19,7 +19,7 @@ const make = Effect.gen(function* () {
     return yield* new WelcomeTestFailed({ operation: "Require an isolated loopback cloud host" });
   const fs = yield* FileSystem.FileSystem;
   const base = yield* HttpClient.HttpClient;
-  const jar = yield* Ref.make(Cookies.empty);
+  const jar = yield* Ref.make<ReadonlyArray<Cookies.Cookie>>([]);
   const client = base.pipe(HttpClient.withCookiesRef(jar));
   const request = (path: string, body: unknown) =>
     Effect.scoped(

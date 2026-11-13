@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@astrojs/react": "6.0.6",
-    "@effect/atom-react": "4.0.1",
+    "@effect/atom-react": "4.1.4",
     "@executor-js/sdk": "workspace:*",
     "@executor-js/telemetry": "workspace:*",
     "@executor-js/ui": "workspace:*",
@@ -26,7 +26,7 @@
     "astro": "7.3.3",
     "clsx": "2.1.1",
     "cookie": "2.0.1",
-    "effect": "4.0.1",
+    "effect": "4.1.4",
     "motion": "12.43.0",
     "posthog-js": "1.434.7",
     "react": "19.3.0",

@@ -1,13 +1,13 @@
 # MCP session store
 
-Effect 4.0.1's Streamable HTTP server keeps each stateful session (the
+Effect 4.1.4's Streamable HTTP server keeps each stateful session (the
 `initialize` it negotiated and the client's log level) in the server's memory
 only. Cloud serves MCP sessions from Durable Objects, which Cloudflare evicts
 after about 70–140 s without a request and restarts on every deploy. The
 client's next request then gets `404`, and it must initialize again, which costs
 it about 3 s.
 
-`effect@4.0.1.patch` adds a `sessions` option to `McpServer.layerHttp`, a
+`effect@4.1.4.patch` adds a `sessions` option to `McpServer.layerHttp`, a
 `SessionStore` with `save` and `load`. It changes `ai/McpServer` and
 `ai/internal/mcpRuntime` / `mcpStatefulRuntime` in source and in the distributed
 JavaScript and types:

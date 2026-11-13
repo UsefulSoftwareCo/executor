@@ -47,7 +47,7 @@ import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lif
 import { hostedEventAuthority } from "@executor-js/hosted-server/events";
 import { deliverEvents } from "@executor-js/sdk/scheduling";
 import { markdownRefusals } from "@executor-js/sdk/markdown";
-import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+import { Digest, SecureRandom } from "effect/crypto";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
 import { workerdHostHandler } from "@executor-js/sdk/workerd";
 import type { AppRuntime, BlobStorage, WorkflowRuntime } from "@executor-js/sdk/core";
@@ -110,7 +110,7 @@ export const selfHostExecutorServices = <E, R>(
       const api = lazyHostedApiDocument(() => executorSelfHostApiDocument(origin));
       // The Executor app reads this server's API; its cache and listings follow the API's revision.
       const revision = yield* hostedApiRevision(yield* api.body).pipe(
-        Effect.provide(BrowserCrypto.layer),
+        Effect.provide(Digest.layerWebCrypto),
       );
       const executor = yield* createExecutor({
         database: storage,
@@ -152,7 +152,7 @@ export const selfHostExecutorServices = <E, R>(
           authorize: hostedEventAuthority(Effect.succeed(yield* SqlClient.SqlClient)),
           allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
         },
-      }).pipe(Effect.provide(BrowserCrypto.layer));
+      }).pipe(Effect.provide([SecureRandom.layerWebCrypto, Digest.layerWebCrypto]));
       yield* lifecycle.attach(executor);
       yield* Deferred.succeed(ready, executor);
       yield* Effect.forkScoped(deliverEvents(executor));

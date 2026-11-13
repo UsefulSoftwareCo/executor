@@ -172,7 +172,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
    * or Mailchimp's `scope: null`. It receives the standard members and whether this is a refresh.
    */
   let tokenShape: TokenShape | undefined;
-  let authorizeError: string | undefined;
+  /** An RFC 6749 error code the callback returns instead of a code, and its `error_description`. */
+  let authorizeError: string | { readonly error: string; readonly description: string } | undefined;
   /** The ID-token subject issued on refresh. */
   let refreshSubject = "synthetic-subject";
   /** Lifetime of renewed tokens; unset, they last `expiresIn` like the first ones. */
@@ -422,7 +423,11 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             scope: params.get("scope"),
           });
           callback.searchParams.set("code", code);
-        } else callback.searchParams.set("error", refusal);
+        } else if (typeof refusal === "string") callback.searchParams.set("error", refusal);
+        else {
+          callback.searchParams.set("error", refusal.error);
+          callback.searchParams.set("error_description", refusal.description);
+        }
         callback.searchParams.set("state", params.get("state") ?? "");
         if (callbackIssuer !== undefined) callback.searchParams.set("iss", callbackIssuer);
         // The managed host advertises a separate callback relay; model its browser return.
@@ -1024,8 +1029,11 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly tokenError?: typeof tokenError | null;
       /** Reshape token responses like a real service; null restores the standard shape. */
       readonly tokenShape?: TokenShape | null;
-      /** Return this RFC 6749 error code to the callback instead of a code; null restores codes. */
-      readonly authorizeError?: string | null;
+      /**
+       * Return this RFC 6749 error code, alone or with an `error_description`, to the callback
+       * instead of a code; null restores codes.
+       */
+      readonly authorizeError?: typeof authorizeError | null;
       /** The ID-token subject issued on refresh. */
       readonly refreshSubject?: string;
       /** Lifetime of renewed tokens; null makes them last `expiresIn`. */

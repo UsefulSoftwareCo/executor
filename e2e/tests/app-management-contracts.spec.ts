@@ -170,7 +170,7 @@ return { catalog: catalog?.signature, commit: commit?.signature, found: found.it
     const found = (yield* Schema.decodeUnknownEffect(Discovered)(discovered)).execution.value;
     // A plain service name fails the optional name filter's pattern, so its input must show it.
     const [input] = found.catalog.split("): Promise<");
-    expect(input).toMatch(/@pattern \^@\[a-z0-9\][^\n]*\n\s*name\?: string \| null/);
+    expect(input).toMatch(/@pattern \^@\[a-z0-9\][^\n]*\n\s*name\?: string,/);
     // An app path parameter takes the app's ID, and its signature says so.
     expect(found.commit).toContain("App ID, such as app_…, from the app's `id`.");
     // deploy.md names framework.release; searching for it finds it first, saying where it goes.

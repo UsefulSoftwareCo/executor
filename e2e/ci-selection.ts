@@ -29,6 +29,10 @@
  * A changed spec file's Cloud scenarios that would otherwise first run on deployed Cloud after
  * merge run in the `cloud-product` job when managed local Cloud can run them, and are reported otherwise.
  *
+ * A pull request also runs the release lanes its changes since main start (e2e/release-lanes.ts):
+ * the released image on amd64, and linux-x64 packaging without desktop crash recovery. Main runs
+ * none; the full release matrix runs there after merge, in Executor releases.
+ *
  * Every run also checks that each scenario the plan schedules runs in CI, in a job here or in
  * Cloud tests on main, unless notRunInCi says why it cannot. That check reads only the job table
  * here. `node e2e/ci-selection.ts verify <ci|deployed> <directory>` checks after a full run that
@@ -51,6 +55,7 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createHash } from "node:crypto";
+import { lanesFor, releaseSources } from "./release-lanes.ts";
 import { Target } from "./report-model.ts";
 import { deployedSuitePattern, scenarios, scenariosForSuite, type CloudMode } from "./test-plan.ts";
 
@@ -138,7 +143,7 @@ const jobs = {
     runner: 1,
 
     pattern:
-      "Cloud app queries read current authorization|Cloud onboarding|Cloud sign-in (?:keeps a new v1|skips the v1 check|admits members of only empty free or moved v1)|Cloud OAuth callbacks|Cloud OAuth token requests record|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser decode and startup|Browser connection failures explain|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer|refuses every stored state Better Auth refuses|Billing reconciles only while visible|A dashboard read refreshed while in flight|Cloud finishes a slow app's tool listing|Cloud remembers a stalled tool listing|Cloud keeps serving aged search rows when it stops their renewal|Cloud keeps each JSON Schema definition a tool listing repeats once|definitions share a name and length but not their JSON|definition names are long and of one length|Cloud MCP session objects make|Cloud MCP request spans say whether|database failure while verifying an API key|use one API key together|Cloud cron wakes the schedule coordinator|schedule coordinator closes its database connections|Cloud runs a due schedule and requested webhook source setup while|app evaluation failures explain the likely cause|runtime limit matched from an app Worker|client request rejections are recorded on their request span|failure text reaches its caller|scheduled runs record whether the app's code|an app request Executor's network failed to send|an app's fetch receives a Brotli-encoded response|MCP tool calls deliver their tool name and outcome|Executor time|Cloud serves a tool listing its isolate cannot keep|Cloud writes the background refresh of a stale tool listing|Owners delete an organization with every app|Hosted MCP negotiates older protocol versions|Hosted MCP ends a cancelled call|Cloud lists each build's browser files|Hosted dashboard runs of approval-gated tools|Hosted dashboard approval",
+      "Cloud app queries read current authorization|Cloud onboarding|Cloud sign-in (?:keeps a new v1|skips the v1 check|admits members of only empty free or moved v1)|Cloud OAuth callbacks|Cloud OAuth token requests record|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser failures reach error collectors|browser error reports reach Sentry while|Browser connection failures explain|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer|refuses every stored state Better Auth refuses|Billing reconciles only while visible|A dashboard read refreshed while in flight|Cloud finishes a slow app's tool listing|Cloud remembers a stalled tool listing|Cloud keeps serving aged search rows when it stops their renewal|Cloud keeps each JSON Schema definition a tool listing repeats once|definitions share a name and length but not their JSON|definition names are long and of one length|Cloud MCP session objects make|Cloud MCP request spans say whether|database failure while verifying an API key|use one API key together|Cloud cron wakes the schedule coordinator|schedule coordinator closes its database connections|Cloud runs a due schedule and requested webhook source setup while|app evaluation failures explain the likely cause|runtime limit matched from an app Worker|client request rejections are recorded on their request span|failure text reaches its caller|scheduled runs record whether the app's code|an app request Executor's network failed to send|an app's fetch receives a Brotli-encoded response|MCP tool calls deliver their tool name and outcome|Executor time|Cloud serves a tool listing its isolate cannot keep|Cloud writes the background refresh of a stale tool listing|Owners delete an organization with every app|Hosted MCP negotiates older protocol versions|Hosted MCP ends a cancelled call|Cloud lists each build's browser files|Hosted dashboard runs of approval-gated tools|Hosted dashboard approval",
   },
   // The scenarios above share one local Cloud and collector, and their span and latency checks
   // stall when more scenarios load it. These assert no such bound, so they start their own. The
@@ -662,6 +667,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "cloud-deploy-origin.config.ts": () => import("./cloud-deploy-origin.config.ts"),
   "dashboard-file-names.config.ts": () => import("./dashboard-file-names.config.ts"),
   "effect-mcp.config.ts": () => import("./effect-mcp.config.ts"),
+  "desktop-next-server.config.ts": () => import("./desktop-next-server.config.ts"),
   "desktop-recovery.config.ts": () => import("./desktop-recovery.config.ts"),
   "desktop-release.config.ts": () => import("./desktop-release.config.ts"),
   "emulator-failures.config.ts": () => import("./emulator-failures.config.ts"),
@@ -669,6 +675,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "docker-release.config.ts": () => import("./docker-release.config.ts"),
   "installer.config.ts": () => import("./installer.config.ts"),
   "local-bootstrap.config.ts": () => import("./local-bootstrap.config.ts"),
+  "lockfile-sync.config.ts": () => import("./lockfile-sync.config.ts"),
   "npm-launcher.config.ts": () => import("./npm-launcher.config.ts"),
   "pglite.config.ts": () => import("./pglite.config.ts"),
   "pr-preview-selection.config.ts": () => import("./pr-preview-selection.config.ts"),
@@ -1103,7 +1110,8 @@ NodeRuntime.runMain(
             "api",
             `repos/${repository}/compare/${compareBase}...${compareHead}`,
             "--jq",
-            ".files[].filename",
+            // A renamed file counts by its old name too: moving it out of a path changes that path.
+            ".files[] | .filename, (.previous_filename // empty)",
           ]))
             .split("\n")
             .filter((file) => file !== "");
@@ -1115,6 +1123,14 @@ NodeRuntime.runMain(
           prefix.endsWith("/") ? file.startsWith(prefix) : file === prefix,
         ),
       );
+    // The release lanes, from the same comparison: a pull request's changes since main, so the
+    // top of a stack runs them for every layer. A comparison GitHub cannot list in full runs both.
+    const lanes =
+      read === undefined
+        ? undefined
+        : compared === undefined || compared.length >= compareFileLimit
+          ? { "release-docker": ["(every file)"], "release-local": ["(every file)"] }
+          : lanesFor(yield* releaseSources, compared);
     const files =
       named === undefined || "all" in named
         ? undefined
@@ -1226,6 +1242,9 @@ NodeRuntime.runMain(
           : [],
       ),
       `cloud-runners=${cloudRunners.length === 0 ? "" : JSON.stringify(cloudRunners)}`,
+      ...Object.entries(lanes ?? { "release-docker": [], "release-local": [] }).map(
+        ([lane, matched]) => `${lane}=${matched.length > 0 ? "true" : ""}`,
+      ),
       // Line coverage is comparable only between runs of every scenario.
       `full=${files === undefined}`,
     ].join("\n");
@@ -1269,6 +1288,14 @@ NodeRuntime.runMain(
       ...(guardedByFile.length === 0
         ? []
         : ["", `A guarded file differs from main, so its guards run: ${guardedByFile.join(", ")}`]),
+      "",
+      ...(lanes === undefined
+        ? ["Release lanes: none on main, where Executor releases runs the full matrix after merge."]
+        : Object.entries(lanes).map(([lane, matched]) =>
+            matched.length === 0
+              ? `${lane}: skipped, no file it reads changed.`
+              : `${lane}: runs, for ${matched.slice(0, 5).join(", ")}${matched.length > 5 ? ` and ${matched.length - 5} more` : ""}.`,
+          )),
       "",
       "| Job | Scenarios | Runners |",
       "| --- | --- | --- |",

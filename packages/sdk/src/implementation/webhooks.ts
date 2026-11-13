@@ -5,7 +5,8 @@ import { CurrentActor, type ResourceLifecycle } from "../contracts/executor.ts";
 import type { WorkflowHostControls } from "apps/contracts";
 import { CompleteWebhookSetup, WebhookSetupView } from "../contracts/webhook-setup.ts";
 /** Persist intent before upstream work. Explicit reconciliation uses a bounded, compare-and-swap lease. */
-import { Clock, type Crypto, Effect, Exit, Redacted, Result, Schema } from "effect";
+import { Clock, Effect, Exit, Redacted, Result, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import {
   ManualWebhookDescriptor,
   HostedWebhook,
@@ -304,14 +305,14 @@ export const makeWebhooks = (
   runtime: Runtime,
   resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   origin: string | undefined,
   declarations: Declarations,
   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,
 ) => {
   const db = database(storage);
-  const next = crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
+  const next = crypto.random.uuidV4();
   const metadata = (row: typeof StoredWebhook.Type) =>
     Schema.decodeUnknownEffect(WebhookSubscription)(row).pipe(
       Effect.mapError(() => new StorageError()),

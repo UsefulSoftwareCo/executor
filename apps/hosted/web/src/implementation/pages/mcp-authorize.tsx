@@ -92,7 +92,10 @@ function McpConsent({
           ? failure.message
           : "Unable to complete this connection. Try again.",
       );
-    } else window.location.assign(result.value.url);
+      return false;
+    }
+    window.location.assign(result.value.url);
+    return true;
   };
   return (
     <McpConsentLayout

@@ -50,6 +50,7 @@ import {
   type V1ImportParams,
   type V1IntoMode,
   type V1OrgOutcome,
+  type V1SelectedIntegrations,
 } from "../../contracts/v1-import-run.ts";
 import {
   decodeToolkit,
@@ -65,6 +66,8 @@ import {
   importUser,
   intoOwner,
   matchUser,
+  membersOutside,
+  outsideOf,
   plannedDisplacement,
   plannedSlug,
   slugBase,
@@ -603,8 +606,11 @@ const assessCarryOver = (
  * with no pending invitation, which WorkOS lists as a pending membership; `nothing_to_copy` also
  * needs it to have nothing to copy, no item of any kind the import moves. `copy_into_empty` takes
  * any workspace an import takes, paid, Enterprise or shared, into an organization with nothing set
- * up (`setUpIn`), or the one an earlier run recorded. An import reads it under the freeze, as the
- * rest of the assessment.
+ * up (`setUpIn`), or the one an earlier run recorded. `copy_selected` (decision 35) takes any
+ * workspace an import takes, of any size, whose active members are all already in the
+ * organization, and copies only the integrations listed (`selection`), each one v1 has whose apps
+ * take no name an app in the organization has. Only `copy_selected` takes listed integrations. An
+ * import reads it under the freeze, as the rest of the assessment.
  */
 const intoPlan = (
   sql: SqlClient.SqlClient,
@@ -612,20 +618,36 @@ const intoPlan = (
     readonly organization: string;
     readonly target: string;
     readonly mode: V1IntoMode | undefined;
+    /** The v1 integration slugs the allow table lists to copy. */
+    readonly integrations: readonly string[];
     readonly billing: V1Billing;
     readonly members: number;
     readonly pendingMembers: number;
     readonly items: ItemKeys;
     readonly owner: PlannedMember;
     readonly email: string;
+    /** For `copy_selected`: every planned member with their email, and the active ones left out. */
+    readonly everyone: ReadonlyArray<{ readonly member: string; readonly email: string }>;
+    readonly unverified: number;
+    /** For `copy_selected`: what it does with each integration, given the organization's apps. */
+    readonly selection: (
+      target: string,
+    ) => Effect.Effect<V1SelectedIntegrations, V1ImportUnavailable>;
   },
-): Effect.Effect<Into | IntoRefused, V1ImportUnavailable> =>
+): Effect.Effect<
+  { readonly decided: Into | IntoRefused; readonly integrations?: V1SelectedIntegrations },
+  V1ImportUnavailable
+> =>
   Effect.gen(function* () {
-    const refused = (reason: string) => ({ kind: "refused", refused: reason }) as const;
+    const refused = (reason: string) => ({
+      decided: { kind: "refused", refused: reason } as const,
+    });
     const mode = input.mode;
     if (mode === undefined)
       return refused("The allow table lists a mode the import does not know.");
-    if (mode !== "copy_into_empty") {
+    if (mode !== "copy_selected" && input.integrations.length > 0)
+      return refused("The allow table lists integrations to copy, which only copy_selected takes.");
+    if (mode === "nothing_to_copy" || mode === "leave_v1_data") {
       if (input.billing.kind !== "free")
         return refused(`It has a paid v1 plan (${input.billing.plans.join(", ")}).`);
       if (input.members !== 1)
@@ -641,6 +663,8 @@ const intoPlan = (
       );
       if (toCopy.length > 0) return refused(`It has items to copy (${toCopy.join(", ")}).`);
     }
+    if (mode === "copy_selected" && input.integrations.length === 0)
+      return refused("The allow table lists no integrations to copy.");
     const store = makeImportStore(sql);
     const decided = yield* intoOwner(sql, store, {
       organization: input.organization,
@@ -648,23 +672,157 @@ const intoPlan = (
       member: input.owner.user,
       email: input.email,
     });
-    if (decided.kind === "refused" || mode !== "copy_into_empty") return decided;
+    if (decided.kind === "refused") return { decided };
+    if (mode === "copy_selected") {
+      const integrations = yield* input.selection(decided.target.id);
+      const outside =
+        input.unverified + (yield* outsideOf(sql, store, decided.target.id, input.everyone));
+      if (outside > 0)
+        return {
+          ...refused(membersOutside(outside, input.everyone.length + input.unverified)),
+          integrations,
+        };
+      const unknown = integrations.refused.filter((entry) => entry.reason === noSuchIntegration);
+      const named = integrations.refused.filter((entry) => entry.reason !== noSuchIntegration);
+      if (unknown.length > 0)
+        return {
+          ...refused(
+            `v1 has no integration ${unknown.map((entry) => entry.slug).join(", ")} to copy.`,
+          ),
+          integrations,
+        };
+      if (named.length > 0)
+        return {
+          ...refused([...new Set(named.map((entry) => entry.reason))].join(" ")),
+          integrations,
+        };
+      return { decided, integrations };
+    }
+    if (mode !== "copy_into_empty") return { decided };
     // A run that already recorded it continues into what it copied there before.
     if ((yield* store.find("organization", input.organization))?.status === "imported")
-      return decided;
+      return { decided };
     const set = yield* setUpIn(sql, decided.target.id);
     return set === undefined
-      ? decided
+      ? { decided }
       : refused(`The listed v2 organization is not empty (${set}).`);
   });
+
+/** Why a listed integration is refused when v1 has none with its slug. */
+const noSuchIntegration = "v1 has no such integration.";
+
+const AppNames = Schema.Array(
+  Schema.Struct({ id: Schema.String, name: Schema.String, slug: Schema.String }),
+);
+
+/**
+ * What a `copy_selected` move does with each of the organization's integrations (decision 35): the
+ * listed ones it copies, the others it leaves in v1, and the listed ones it refuses: a slug v1 has
+ * no integration for, and one whose app would take the name or address of an app the organization
+ * already has, which it neither renames nor replaces. Apps an earlier run of this import made are
+ * its own. An integration's app takes its label; when its connections' rules differ, each
+ * connection takes its own app instead (decision 33). That is decided only as the app is generated,
+ * so every name either may take on its first try is checked.
+ */
+const selection = (
+  sql: SqlClient.SqlClient,
+  input: {
+    readonly organization: string;
+    readonly target: string;
+    readonly listed: readonly string[];
+    readonly snapshot: V1Snapshot;
+    readonly firstParty: FirstPartyClients;
+  },
+): Effect.Effect<V1SelectedIntegrations, V1ImportUnavailable> =>
+  Effect.gen(function* () {
+    const { snapshot, firstParty } = input;
+    const own = new Set(
+      (yield* makeImportStore(sql).rows(input.organization)).flatMap((row) =>
+        row.status === "imported" && row.v2_id !== null && row.v2_kind === "app" ? [row.v2_id] : [],
+      ),
+    );
+    const apps = (yield* sql`
+      select id, name, slug from executor_apps where owner = ${`organization:${input.target}`}
+    `.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(AppNames)),
+      Effect.mapError(() => new V1ImportUnavailable()),
+    )).filter((app) => !own.has(app.id));
+    const holder = (name: string) =>
+      apps.find((app) => app.name === name || app.slug === appSlug(name));
+    const listed = new Set(input.listed);
+    const refused: Array<{ readonly slug: string; readonly reason: string }> = [];
+    const copied: Array<{ readonly slug: string; readonly label: string }> = [];
+    for (const slug of input.listed) {
+      const row = snapshot.integrations.find((candidate) => candidate.slug === slug);
+      if (row === undefined) {
+        refused.push({ slug, reason: noSuchIntegration });
+        continue;
+      }
+      const names = [
+        appNames(integrationNaming(row))[0],
+        ...connectionPlans(snapshot, firstParty, row).map(({ row: connection }) =>
+          connectionAppName(snapshot, row, connection),
+        ),
+      ].filter((name): name is string => name !== undefined);
+      const taken = names.flatMap((name) => {
+        const found = holder(name);
+        return found === undefined ? [] : [found.name];
+      });
+      if (taken.length > 0)
+        refused.push({
+          slug,
+          reason: `The listed v2 organization already has an app named ${[...new Set(taken)].join(", ")}.`,
+        });
+      else copied.push({ slug, label: integrationLabel(row) });
+    }
+    return {
+      copied,
+      leftInV1: snapshot.integrations
+        .filter((row) => !listed.has(row.slug))
+        .map((row) => ({ slug: row.slug, label: integrationLabel(row) })),
+      refused,
+    };
+  });
+
+/**
+ * The items a `copy_selected` move copies (decision 35): the listed integrations it copies, their
+ * connections, the organization's and members', and the rules that apply to them. Toolkits,
+ * artifacts, other integrations and their rules stay in v1.
+ */
+const selectedItems = (
+  snapshot: V1Snapshot,
+  copied: readonly { readonly slug: string }[],
+): ItemKeys => {
+  const slugs = new Set(copied.map((entry) => entry.slug));
+  const integrations = snapshot.integrations.filter((row) => slugs.has(row.slug));
+  const ids = new Set(integrations.map((row) => row.row_id));
+  return {
+    integrations: integrations.map((row) => row.row_id),
+    connections: snapshot.connections
+      .filter((row) => slugs.has(row.integration))
+      .map((row) => row.row_id),
+    policies: snapshot.policies
+      .filter((row) => {
+        const planned = policyPlan(snapshot, row);
+        return (
+          planned.status === "will_import" &&
+          planned.integrations.some((integration) => ids.has(integration.row_id))
+        );
+      })
+      .map((row) => row.row_id),
+    toolkits: [],
+    artifacts: [],
+  };
+};
 
 /**
  * Read the organization's members, plan and rows, and decide whether it moves now. Enterprise
  * organizations move by hand (decision 15): only when the operator lists one to copy into an
- * existing v2 organization, with nothing carried over (decision 34). A paid organization moves with
- * its v1 subscription (decision 5) when it can carry over (`assessCarryOver`); an import holds it
- * back otherwise. One on a grandfathered Hobby or Professional plan moves to v2's Free plan, as a
- * free one does.
+ * existing v2 organization, with nothing carried over (decision 34). A paid organization moves
+ * with its v1 subscription (decision 5) when it can carry over (`assessCarryOver`), also into an
+ * existing organization; an import holds it back otherwise. One on a grandfathered Hobby or
+ * Professional plan moves to v2's Free plan, as a free one does. A `copy_selected` move plans only
+ * what it copies (`selectedItems`).
  */
 const assess = (params: V1ImportParams) =>
   Effect.gen(function* () {
@@ -745,20 +903,47 @@ const assess = (params: V1ImportParams) =>
     const listed = yield* listedInto(organization);
     const ownerUser = users.get(owner.user);
     if (ownerUser === undefined) return yield* new V1ImportUnavailable();
-    const into =
+    const everyone = yield* Effect.forEach(members, (member) => {
+      const user = users.get(member.user);
+      return user === undefined
+        ? Effect.fail(new V1ImportUnavailable())
+        : Effect.succeed({ member: member.user, email: memberProfile(user).email });
+    });
+    const firstParty =
+      listed?.mode === "copy_selected"
+        ? firstPartyClients(yield* Effect.flatten(HostedExecutor), environment.v1FirstPartyClients)
+            .lookup
+        : undefined;
+    const intoDecision =
       listed === undefined
         ? undefined
         : yield* intoPlan(sql, {
             organization,
             target: listed.organization,
             mode: listed.mode,
+            integrations: listed.integrations,
             billing,
             members: base.v1Counts.members,
             pendingMembers: base.v1Counts.pendingMembers,
             items,
             owner,
             email: memberProfile(ownerUser).email,
+            everyone,
+            unverified: planned.skipped.filter((member) => member.reason === "unverified_email")
+              .length,
+            selection: (target) =>
+              firstParty === undefined
+                ? Effect.succeed({ copied: [], leftInV1: [], refused: [] })
+                : selection(sql, {
+                    organization,
+                    target,
+                    listed: listed.integrations,
+                    snapshot,
+                    firstParty,
+                  }),
           });
+    const into = intoDecision?.decided;
+    const integrations = intoDecision?.integrations;
     const slug: V1OrgReport["slug"] =
       into?.kind === "into"
         ? {
@@ -779,7 +964,8 @@ const assess = (params: V1ImportParams) =>
             };
     // A copy into an existing organization carries billing over as into a copy: its own customer
     // must bill nothing. Only a paid organization carries over; an Enterprise one carries nothing,
-    // so its copy never holds, renames or deletes a v2 customer (decision 34).
+    // so its copy never holds, renames or deletes a v2 customer (decision 34). A selective copy
+    // carries a paid plan over the same way (decision 35).
     const carry =
       billing.kind === "paid"
         ? yield* assessCarryOver(
@@ -790,7 +976,9 @@ const assess = (params: V1ImportParams) =>
         : null;
     // Moving an Enterprise organization by hand means the operator lists it to copy into an
     // existing v2 organization (decision 34); otherwise it is held.
-    const listedCopy = into?.kind === "into" && listed?.mode === "copy_into_empty";
+    const listedCopy =
+      into?.kind === "into" &&
+      (listed?.mode === "copy_into_empty" || listed?.mode === "copy_selected");
     const held =
       into?.kind === "refused"
         ? `It does not move into the listed v2 organization: ${into.refused}`
@@ -825,6 +1013,7 @@ const assess = (params: V1ImportParams) =>
               organization: listed.organization,
               mode: listed.mode ?? null,
               ...(into.kind === "refused" ? { refused: into.refused } : {}),
+              ...(integrations === undefined ? {} : { integrations }),
             },
           }),
       v1Counts: {
@@ -837,8 +1026,13 @@ const assess = (params: V1ImportParams) =>
         toolkits: snapshot.toolkits.length,
         artifacts: artifacts.length,
       },
-      // A move that leaves v1's data in v1 copies none of it.
-      items: listed?.mode === "leave_v1_data" ? noItems : items,
+      // A move that leaves v1's data in v1 copies none of it; a selective copy only what it lists.
+      items:
+        listed?.mode === "leave_v1_data"
+          ? noItems
+          : listed?.mode === "copy_selected"
+            ? selectedItems(snapshot, integrations?.copied ?? [])
+            : items,
     } satisfies Assessment;
   });
 
@@ -1085,6 +1279,31 @@ const skippedWith = (
 });
 
 /**
+ * The integrations a selective copy moves, by row id (decision 35): its rules apply only to those.
+ * Undefined for every other move, whose rules apply to every integration they name.
+ */
+const selectedOf = (assessment: Pick<Assessment, "into" | "items">) =>
+  assessment.into?.mode === "copy_selected" ? new Set(assessment.items.integrations) : undefined;
+
+/** Of the integrations a rule applies to, the ones the move copies (`selectedOf`). */
+const withinSelection = (
+  integrations: readonly string[],
+  selected: ReadonlySet<string> | undefined,
+) => (selected === undefined ? integrations : integrations.filter((id) => selected.has(id)));
+
+/** The snapshot's integrations a rule can match: only the copied ones in a selective copy. */
+const selectedSnapshot = <S extends Pick<V1Snapshot, "integrations">>(
+  snapshot: S,
+  selected: ReadonlySet<string> | undefined,
+): S =>
+  selected === undefined
+    ? snapshot
+    : {
+        ...snapshot,
+        integrations: snapshot.integrations.filter((row) => selected.has(row.row_id)),
+      };
+
+/**
  * Whether a policy matches any tool its integrations' v2 apps have: a tool v1 last listed that the
  * app keeps after rewriting. An MCP tool v1 listed without the server's own name is not generated,
  * and a dropped TRACE tool is left out.
@@ -1313,7 +1532,8 @@ const dryConnectionApps = (checking: Parameters<typeof checkIntegration>[0], row
  * each takes the first of its names (`appNames`) whose address no earlier app took, and one left
  * with none fails, as its import would (`namesTaken`). A connection's own app is planned under the
  * name it takes. It does not read the target organization's apps: a copy goes only into an
- * organization with none of its own (decision 32).
+ * organization with none of its own (decision 32), and a selective copy's assessment refuses one
+ * whose apps have a name its apps take (decision 35).
  */
 const namedApps = (outcomes: readonly Outcome[]): readonly Outcome[] => {
   const taken = new Set<string>();
@@ -1488,6 +1708,7 @@ const dryPolicies = (
     // Only the rules the assessment plans, as an import moves: none when v1's data stays in v1.
     const planned = new Set(assessment.items.policies);
     const rows = snapshot.policies.filter((row) => planned.has(row.row_id));
+    const selected = selectedOf(assessment);
     return yield* Effect.forEach(rows, (row) =>
       Effect.gen(function* () {
         const decided = policyDecision(snapshot, row);
@@ -1499,9 +1720,17 @@ const dryPolicies = (
         } as const;
         if (decided.kind === "skip")
           return { ...base, status: "skipped", reason: decided.reason } satisfies Outcome;
-        const skipped = staleRuleIntegration(stale, decided.integrations);
+        const skipped = staleRuleIntegration(
+          stale,
+          withinSelection(decided.integrations, selected),
+        );
         if (skipped !== undefined) return skippedWith(base, skipped);
-        const matches = yield* policyMatches(source, snapshot, row.pattern, dropped);
+        const matches = yield* policyMatches(
+          source,
+          selectedSnapshot(snapshot, selected),
+          row.pattern,
+          dropped,
+        );
         return {
           ...base,
           status: "planned",
@@ -1638,9 +1867,11 @@ const writeIdentity = (params: V1ImportParams, assessment: Assessment) =>
         ? null
         : JSON.stringify(assessment.carryOver.subscription);
     // A listed existing organization the assessment allowed, checked again as it is recorded. Its
-    // owner is already there; a copy's other members join it.
+    // owner is already there; a copy's other members join it, and a selective copy's are already
+    // there too (decision 35).
     const into = assessment.into;
     if (into !== undefined && into.refused === undefined && into.mode !== null) {
+      const selective = into.mode === "copy_selected";
       const moved = yield* importInto(sql, store, {
         organization,
         target: into.organization,
@@ -1648,9 +1879,16 @@ const writeIdentity = (params: V1ImportParams, assessment: Assessment) =>
         member: owner,
         email: memberProfile(yield* source.user(owner.user)).email,
         billingHold,
+        others: selective
+          ? yield* Effect.forEach(others, (member) =>
+              source
+                .user(member.user)
+                .pipe(Effect.map((user) => ({ member, email: memberProfile(user).email }))),
+            )
+          : [],
       });
-      const joined: Array<readonly [string, string]> = [[owner.user, moved.user]];
-      for (const member of others) {
+      const joined: Array<readonly [string, string]> = [[owner.user, moved.user], ...moved.members];
+      for (const member of selective ? [] : others) {
         const profile = memberProfile(yield* source.user(member.user));
         const user = yield* importUser(sql, store, organization, member, profile);
         yield* importMembership(sql, store, {
@@ -2104,6 +2342,7 @@ const importPolicyItem = (
   id: string,
   dropped: DroppedTools,
   stale: StaleIntegrations,
+  selected: ReadonlySet<string> | undefined,
 ) =>
   Effect.gen(function* () {
     const { snapshot, store } = context;
@@ -2125,7 +2364,8 @@ const importPolicyItem = (
       yield* recorded(context, "tool_policy", id, hash)(result);
       return outcomeOf(base, result);
     }
-    const skipped = staleRuleIntegration(stale, decided.integrations);
+    const within = withinSelection(decided.integrations, selected);
+    const skipped = staleRuleIntegration(stale, within);
     if (skipped !== undefined) {
       yield* recorded(
         context,
@@ -2138,14 +2378,19 @@ const importPolicyItem = (
     // The rule is already in each matching app's tools.ts. One that matches none of the tools v1
     // last listed still moves, for tools the server may list again.
     const apps: string[] = [];
-    for (const id of decided.integrations) {
+    for (const id of within) {
       const integration = snapshot.integrations.find((candidate) => candidate.row_id === id);
       const found =
         integration === undefined ? undefined : yield* importedApps(store, snapshot, integration);
       if (found?.kind === "one") apps.push(found.app);
       else if (found?.kind === "split") apps.push(...found.apps.values());
     }
-    const matches = yield* policyMatches(context.source, snapshot, row.pattern, dropped);
+    const matches = yield* policyMatches(
+      context.source,
+      selectedSnapshot(snapshot, selected),
+      row.pattern,
+      dropped,
+    );
     const result: MapResult =
       apps[0] === undefined
         ? { status: "failed", reason: integrationNotImported }
@@ -3226,7 +3471,7 @@ export const runV1Import = <S>(
     const dropped = droppedTools(outcomes);
     outcomes.push(
       ...(yield* many("tool_policy", "policies", items.policies, (ctx, id) =>
-        importPolicyItem(ctx, id, dropped, skippedIntegrations),
+        importPolicyItem(ctx, id, dropped, skippedIntegrations, selectedOf(assessment)),
       )),
     );
     for (const id of items.toolkits)

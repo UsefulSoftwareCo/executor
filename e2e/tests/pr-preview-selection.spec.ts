@@ -131,6 +131,74 @@ const action = (...changes: ReadonlyArray<Change>) =>
     }),
   );
 
+/** A `gh` that answers a PR's comments from `comments-<page>` beside it, and logs each call. */
+const stubCommentsGh = `#!/bin/sh
+dir=$(dirname "$0")
+echo "$*" >> "$dir/calls"
+page=$(echo "$*" | sed -n 's/.*page=\\([0-9]*\\).*/\\1/p')
+exec cat "$dir/comments-$page"
+`;
+
+/** A comment on the PR, by its author's login. */
+type Comment = { readonly author: string; readonly body: string };
+const workflowComment = (status?: string): Comment => ({
+  author: "github-actions[bot]",
+  body: [
+    "<!-- executor-pr-preview -->",
+    ...(status === undefined ? [] : [`<!-- executor-pr-preview-status: ${status} -->`]),
+    "### Executor preview",
+  ].join("\n"),
+});
+
+/**
+ * `node apps/hosted/cloud/scripts/pr-preview.ts previewed`, as the workflow runs it for a PR it will
+ * not deploy in a run this event started, with GitHub listing these pages of the PR's comments.
+ */
+const previewed = (pages: ReadonlyArray<ReadonlyArray<Comment>>, event = "pull_request") =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-pr-previewed-" });
+    const bin = path.join(directory, "bin");
+    yield* fs.makeDirectory(bin);
+    yield* fs.writeFileString(path.join(bin, "gh"), stubCommentsGh);
+    yield* fs.chmod(path.join(bin, "gh"), 0o755);
+    yield* fs.writeFileString(path.join(bin, "calls"), "");
+    for (const [index, comments] of pages.entries())
+      yield* fs.writeFileString(
+        path.join(bin, `comments-${index + 1}`),
+        JSON.stringify(
+          comments.map((comment) => ({ user: { login: comment.author }, body: comment.body })),
+        ),
+      );
+    const outputs = path.join(directory, "outputs");
+    yield* fs.writeFileString(outputs, "");
+    const child = yield* processes.spawn(
+      ChildProcess.make(
+        "node",
+        ["apps/hosted/cloud/scripts/pr-preview.ts", "previewed", `${number}`],
+        {
+          env: {
+            PATH: `${bin}:${process.env.PATH ?? ""}`,
+            GITHUB_REPOSITORY: repository,
+            GITHUB_OUTPUT: outputs,
+            PREVIEW_EVENT: event,
+          },
+        },
+      ),
+    );
+    const [stderr, code] = yield* Effect.all(
+      [child.stderr.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+      { concurrency: "unbounded" },
+    );
+    expect(Number(code), stderr).toBe(0);
+    const calls = (yield* fs.readFileString(path.join(bin, "calls")))
+      .split("\n")
+      .filter((line) => line !== "");
+    return { remains: (yield* fs.readFileString(outputs)).trim(), calls };
+  }).pipe(Effect.scoped);
+
 layer(NodeServices.layer)("PR preview selection", (it) => {
   it.effect("deploys a pull request that changes the hosted product", () =>
     Effect.gen(function* () {
@@ -278,5 +346,72 @@ layer(NodeServices.layer)("PR preview selection", (it) => {
       expect(result.code).not.toBe(0);
       expect(result.outputs).toEqual({});
     }),
+  );
+
+  it.effect("removes a PR's preview only when its comment says one may remain", () =>
+    Effect.gen(function* () {
+      // The workflow announces every stage it creates in this comment before creating it.
+      for (const status of ["deploying", "ready", "failed", "cleanup-failed"])
+        expect((yield* previewed([[workflowComment(status)]])).remains, status).toBe(
+          "remains=true",
+        );
+      for (const status of ["closed", "stacked", "unneeded"])
+        expect((yield* previewed([[workflowComment(status)]])).remains, status).toBe(
+          "remains=false",
+        );
+      // A comment from before the status line may have a stage behind it.
+      expect((yield* previewed([[workflowComment()]])).remains).toBe("remains=true");
+      // No comment: the workflow never created a stage for this PR.
+      expect((yield* previewed([[]])).remains).toBe("remains=false");
+    }),
+  );
+
+  it.effect("reads only the workflow's own comment, on whichever page it is", () =>
+    Effect.gen(function* () {
+      const other = (body: string): Comment => ({ author: "someone", body });
+      const result = yield* previewed([
+        [
+          other(workflowComment("stacked").body),
+          ...Array.from({ length: 99 }, (_, index) => other(`comment ${index}`)),
+        ],
+        [workflowComment("ready")],
+      ]);
+      expect(result.remains).toBe("remains=true");
+      expect(result.calls).toHaveLength(2);
+    }),
+  );
+
+  it.effect("takes the newest of the workflow's comments, should a second one exist", () =>
+    Effect.gen(function* () {
+      expect(
+        (yield* previewed([[workflowComment("ready"), workflowComment("stacked")]])).remains,
+      ).toBe("remains=false");
+      expect(
+        (yield* previewed([[workflowComment("stacked"), workflowComment("ready")]])).remains,
+      ).toBe("remains=true");
+      expect(
+        (yield* previewed([
+          [
+            workflowComment("stacked"),
+            ...Array.from({ length: 99 }, () => workflowComment("closed")),
+          ],
+          [workflowComment("ready")],
+        ])).remains,
+      ).toBe("remains=true");
+    }),
+  );
+
+  it.effect(
+    "leaves the sweep and a manual dispatch to the registry, whatever the comment says",
+    () =>
+      Effect.gen(function* () {
+        // A deleted comment, or one edited to say the stage was removed, must not strand a stage.
+        for (const event of ["schedule", "workflow_dispatch"])
+          for (const comments of [[], [workflowComment("closed")], [workflowComment("stacked")]]) {
+            const result = yield* previewed([comments], event);
+            expect(result.remains, event).toBe("remains=true");
+            expect(result.calls, event).toEqual([]);
+          }
+      }),
   );
 });

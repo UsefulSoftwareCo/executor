@@ -22,6 +22,7 @@ import { TestLive, withCase } from "../support/case.ts";
 import { Browser } from "../support/browser.ts";
 import { writeRows, type RowStatement } from "../support/cloud-rows.ts";
 import { Emulators } from "../support/emulators.ts";
+import { appsManifest } from "../support/apps-release.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { Telemetry } from "../support/evidence.ts";
 import { Onboarding } from "../support/onboarding.ts";
@@ -2987,6 +2988,392 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
     ),
   );
 
+  it.effect(scenarios.v1ImportIntoSelected.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const emulators = yield* Emulators,
+          onboarding = yield* Onboarding,
+          browser = yield* Browser;
+        const operator = yield* v1ImportOperator;
+        // The owner made a v2 team, works in it with a teammate, and made an app of their own.
+        const identity = yield* onboarding.socialSignIn("google");
+        const team = yield* onboarding.confirmTeam(yield* onboarding.prepareTeam);
+        const owner = (yield* cloudRows(
+          IdRow,
+          `select id from "user" where email = $1`,
+          identity.email,
+        ))[0]?.id;
+        if (owner === undefined) return yield* Effect.die("The owner has no v2 user");
+        const teammate = syntheticEmail("teammate");
+        const teammateV2 = yield* v2User(teammate);
+        yield* writeRows("sso-database.json", [
+          row(
+            `insert into member (id, "organizationId", "userId", role, "createdAt") values ($1, $2, $3, 'member', now())`,
+            randomUUID(),
+            team.id,
+            teammateV2,
+          ),
+        ]);
+        const handMade = "Synthetic notes";
+        const deployed = yield* browser.use("Deploy the team's own app", (page) =>
+          page.evaluate(
+            ({ id, name, files }) =>
+              fetch(`/api/organizations/${id}/apps/deploy`, {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ name, files }),
+              }).then((response) =>
+                response.json().then((body: unknown) => ({ status: response.status, body })),
+              ),
+            {
+              id: team.id,
+              name: handMade,
+              files: [
+                {
+                  path: "index.ts",
+                  content: `import { defineApp, object, query, router, string } from "apps";
+export default defineApp({}, { tools: router({
+  note: query({ description: "Read a note", input: object({ id: string() }) }, async (_, input) => ({ id: input.id })),
+}) });
+`,
+                },
+                appsManifest,
+              ],
+            },
+          ),
+        );
+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+        const handMadeApp = (yield* Schema.decodeUnknownEffect(IdRow)(deployed.body)).id;
+
+        // Their paid, shared v1 workspace has the shared seed's integration, connections, rules
+        // and toolkits, and another integration with a rule of its own, which stays in v1.
+        const workspace = yield* emulators.v1Workspace([identity.email, teammate]);
+        const organization = workspace.organization;
+        const teammateUser = yield* emulators.v1User(teammate);
+        const former = yield* emulators.v1Workspace([syntheticEmail("former")]);
+        const { tracker } = yield* seedShared(organization, `v1-${randomUUID().slice(0, 8)}`, {
+          first: workspace.user,
+          second: teammateUser,
+          former: former.user,
+        });
+        const left = `left_${randomUUID().slice(0, 6)}`;
+        yield* writeRows("v1-database.json", [
+          row(
+            "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'mcp', 'Left Tracker', $3::json)",
+            organization,
+            left,
+            JSON.stringify({
+              transport: "remote",
+              endpoint: "https://left.example.com/mcp",
+              remoteTransport: "auto",
+            }),
+          ),
+          row(
+            "insert into tool_policy (tenant, owner, subject, pattern, action, position) values ($1, 'org', '', $2, 'block', 'a1')",
+            organization,
+            `${left}.*.*.search`,
+          ),
+        ]);
+        // What the workspace pays for in v1 carries over (decision 35).
+        yield* emulators.v1TeamSubscription(organization, { version: 3, seats: 2 });
+        yield* allowV1Import(organization);
+        yield* listV1Into(organization, team.id, "copy_selected", [tracker]);
+
+        const Contents = Schema.Struct({
+          name: Schema.String,
+          slug: Schema.String,
+          apps: Schema.Number,
+          accounts: Schema.Number,
+          connections: Schema.Number,
+        });
+        /** The team's own row and what it holds; accounts leave out the Executor keys v2 gives. */
+        const contents = cloudRows(
+          Contents,
+          `select o.name, o.slug,
+            (select count(*)::int from executor_apps a where a.owner = 'organization:' || o.id) as apps,
+            (select count(*)::int from executor_accounts a where a.owner = 'organization:' || o.id
+              and not exists (
+                select 1 from jsonb_each_text(coalesce(o.metadata::jsonb -> 'executorKeyAccounts', '{}'::jsonb)) k
+                where k.value = a.id
+              )) as accounts,
+            (select count(*)::int from "mcpConnection" c where c.resource = o.id and not c.revoked) as connections
+          from organization o where o.id = $1`,
+          team.id,
+        ).pipe(Effect.map((rows) => rows[0]));
+        const AppRow = Schema.Struct({ id: Schema.String, name: Schema.String });
+        const byName = (a: { readonly name: string }, b: { readonly name: string }) =>
+          a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+        const teamApps = cloudRows(
+          AppRow,
+          `select id, name from executor_apps where owner = 'organization:' || $1`,
+          team.id,
+        ).pipe(Effect.map((apps) => apps.toSorted(byName)));
+        const teamMembers = cloudRows(
+          Schema.Struct({ userId: Schema.String, role: Schema.String }),
+          `select "userId", role from member where "organizationId" = $1 order by "userId"`,
+          team.id,
+        );
+        const holds = cloudRows(
+          IdRow,
+          "select organization_id as id from private_v1_import_billing where organization_id = $1",
+          team.id,
+        );
+        const before = {
+          contents: yield* contents,
+          apps: yield* teamApps,
+          members: yield* teamMembers,
+        };
+        if (before.contents === undefined) return yield* Effect.die("The team has no row");
+        // The team is in use: its own app beside the Executor app, and both members.
+        expect(before.apps.map((app) => app.id)).toContain(handMadeApp);
+        expect(before.apps.length).toBeGreaterThanOrEqual(2);
+        expect(before.members.map((member) => member.userId).toSorted()).toEqual(
+          [owner, teammateV2].toSorted(),
+        );
+        const into = {
+          organization: team.id,
+          mode: "copy_selected",
+          integrations: {
+            copied: [{ slug: tracker, label: "Shared Tracker" }],
+            leftInV1: [{ slug: left, label: "Left Tracker" }],
+            refused: [],
+          },
+        };
+
+        const dry = v1RunId("selected-dry");
+        expect(
+          (yield* operator.start({ mode: "dry-run", runId: dry, organizations: [organization] }))
+            .status,
+        ).toBe(200);
+        const planned = yield* operator.waitForReport(dry, organization);
+        expect(planned.status, planned.reason ?? "").toBe("planned");
+        expect(planned.into).toEqual(into);
+        expect(planned.slug?.v2).toBe(team.slug);
+        // v1's items are all counted; only the listed integration's app, accounts and rules are
+        // planned, and no toolkit copy.
+        // The former member's rule is not read: their rows stay behind.
+        expect(planned.counts.v1).toMatchObject({ integrations: 2, policies: 3, toolkits: 2 });
+        expect(planned.counts.v2).toMatchObject({
+          users: 0,
+          mergedUsers: 2,
+          apps: 1,
+          accounts: 3,
+          policies: 1,
+          skippedPolicies: 1,
+          mcpConnections: 0,
+        });
+        expect(planned.billing).toMatchObject({ subscription: { plan: "team" }, problem: null });
+        expect(yield* contents).toEqual(before.contents);
+
+        const run = v1RunId("selected");
+        const started = yield* operator.start({
+          mode: "import",
+          runId: run,
+          organizations: [organization],
+        });
+        expect(started.status, JSON.stringify(started.body)).toBe(200);
+        const report = yield* operator.waitForReport(run, organization);
+        expect(report.status, report.reason ?? "").toBe("imported");
+        expect(report.into).toEqual(into);
+        expect(report.v2Organization).toEqual({ id: team.id, slug: team.slug });
+        expect(report.verification).toMatchObject({
+          members: { planned: 2, inV2: 2 },
+          accounts: { checked: 3, unreadable: 0 },
+          apps: { checked: 1, withoutVersion: 0 },
+          passed: true,
+        });
+        expect(report.cutover).toBe(true);
+        expect(report.billing).toMatchObject({ carried: true });
+        expect(yield* movedFlag(organization)).toEqual([
+          { state: "moved", v2_org_id: team.id, v2_org_slug: team.slug },
+        ]);
+        expect(yield* importState(organization)).toEqual([{ state: "cutover" }]);
+        // Only the listed integration, its connections and its rules moved.
+        const items = report.items ?? [];
+        expect(
+          items
+            .map((item) => [item.kind, item.label, item.status])
+            .toSorted((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)),
+        ).toEqual(
+          [
+            ["integration", "Shared Tracker", "imported"],
+            ["connection", "team", "imported"],
+            ["connection", "mine", "imported"],
+            ["connection", "mine", "imported"],
+            ["tool_policy", `${tracker}.*.*.search`, "skipped"],
+            ["tool_policy", `${tracker}.*.*.delete_item`, "imported"],
+          ].toSorted((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)),
+        );
+        // The team gains that one app and its three accounts, and nothing else: no toolkit copy,
+        // no app for the integration left in v1, and no member.
+        expect(yield* contents).toEqual({
+          ...before.contents,
+          apps: before.contents.apps + 1,
+          accounts: before.contents.accounts + 3,
+        });
+        const app = items.find((item) => item.kind === "integration")?.v2Id ?? "";
+        expect(yield* teamApps).toEqual(
+          [...before.apps, { id: app, name: "Shared Tracker" }].toSorted(byName),
+        );
+        expect(yield* teamMembers).toEqual(before.members);
+        // Its Team subscription is the team's now.
+        expect(yield* holds).toEqual([{ id: team.id }]);
+        // The app is shared with everyone; the workspace connection's account is the owner's,
+        // linked for everyone, and each member's own is linked for them.
+        expect(
+          yield* cloudRows(
+            Schema.Struct({ creator_id: Schema.NullOr(Schema.String), audience: Schema.String }),
+            "select creator_id, audience from hosted_app_access where id = $1",
+            app,
+          ),
+        ).toEqual([{ creator_id: owner, audience: "everyone" }]);
+        const links = yield* cloudRows(
+          Schema.Struct({
+            requirement: Schema.String,
+            subject: Schema.NullOr(Schema.String),
+            account: Schema.String,
+            personal_user_id: Schema.NullOr(Schema.String),
+          }),
+          `select l.requirement, l.subject, l.account, a.personal_user_id
+            from hosted_app_account_links l
+            join hosted_account_access a on a.account_id = l.account and a.organization_id = $2
+            where l.app = $1`,
+          app,
+          team.id,
+        );
+        expect(
+          links
+            .map((link) => [link.requirement, link.subject, link.personal_user_id])
+            .toSorted((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)),
+        ).toEqual(
+          [
+            ["workspace", null, owner],
+            ["service", owner, owner],
+            ["service", teammateV2, teammateV2],
+          ].toSorted((a, b) => (JSON.stringify(a) < JSON.stringify(b) ? -1 : 1)),
+        );
+        // The workspace is recorded against the team; its members are recorded as already there.
+        // The ids are ordered by byte, as the expected list's toSorted() orders them: the default
+        // collation sorts mixed-case ids case-insensitively.
+        const MapRow = Schema.Struct({
+          v1_kind: Schema.String,
+          v2_kind: Schema.NullOr(Schema.String),
+          v2_id: Schema.NullOr(Schema.String),
+          note: Schema.NullOr(Schema.String),
+        });
+        const identityRows = yield* cloudRows(
+          MapRow,
+          `select v1_kind, v2_kind, v2_id, reason as note from private_v1_import_map
+            where v1_org_id = $1 and v1_kind in ('organization', 'user', 'membership')
+            order by v1_kind, v2_id collate "C"`,
+          organization,
+        );
+        expect(identityRows).toEqual([
+          expect.objectContaining({ v1_kind: "membership", v2_kind: "existing_member" }),
+          {
+            v1_kind: "organization",
+            v2_kind: "existing_organization",
+            v2_id: team.id,
+            note: expect.stringContaining("listed integrations"),
+          },
+          ...[owner, teammateV2]
+            .toSorted()
+            .map((id) => ({ v1_kind: "user", v2_kind: "merged_user", v2_id: id, note: null })),
+        ]);
+
+        // A later dry run finds the team through its map row: its own app is no collision.
+        const later = v1RunId("selected-later");
+        expect(
+          (yield* operator.start({ mode: "dry-run", runId: later, organizations: [organization] }))
+            .status,
+        ).toBe(200);
+        const again = yield* operator.waitForReport(later, organization);
+        expect(again.status, again.reason ?? "").toBe("planned");
+        expect(again.into).toEqual(into);
+
+        // Another workspace of theirs lists an integration whose app would take the name of the
+        // team's own app: it is refused and stays in v1, and the team is left as it is.
+        const clash = yield* emulators.v1Workspace([identity.email, teammate]);
+        const clashing = `notes_${randomUUID().slice(0, 6)}`;
+        yield* writeRows("v1-database.json", [
+          row(
+            "insert into organizations (id, name, slug) values ($1, $2, $3)",
+            clash.organization,
+            "Synthetic clashing workspace",
+            `v1-${randomUUID().slice(0, 8)}`,
+          ),
+          row(
+            "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'mcp', $3, $4::json)",
+            clash.organization,
+            clashing,
+            handMade,
+            JSON.stringify({
+              transport: "remote",
+              endpoint: "https://notes.example.com/mcp",
+              remoteTransport: "auto",
+            }),
+          ),
+        ]);
+        yield* allowV1Import(clash.organization);
+        yield* listV1Into(clash.organization, team.id, "copy_selected", [clashing]);
+        const taken = `The listed v2 organization already has an app named ${handMade}.`;
+        const clashInto = {
+          organization: team.id,
+          mode: "copy_selected",
+          refused: taken,
+          integrations: { copied: [], leftInV1: [], refused: [{ slug: clashing, reason: taken }] },
+        };
+        const afterImport = { contents: yield* contents, apps: yield* teamApps };
+        for (const mode of ["dry-run", "import"] as const) {
+          const clashRun = v1RunId(`clash-${mode === "import" ? "import" : "dry"}`);
+          const clashStarted = yield* operator.start({
+            mode,
+            runId: clashRun,
+            organizations: [clash.organization],
+          });
+          expect(clashStarted.status, JSON.stringify(clashStarted.body)).toBe(200);
+          const refused = yield* operator.waitForReport(clashRun, clash.organization);
+          expect(refused.status, refused.reason ?? "").toBe("held_back");
+          expect(refused.reason).toBe(`It does not move into the listed v2 organization: ${taken}`);
+          expect(refused.into).toEqual(clashInto);
+        }
+        expect(yield* movedFlag(clash.organization)).toEqual([
+          { state: "rolled_back", v2_org_id: null, v2_org_slug: null },
+        ]);
+        expect(
+          yield* cloudRows(
+            IdRow,
+            "select v1_id as id from private_v1_import_map where v1_org_id = $1",
+            clash.organization,
+          ),
+        ).toEqual([]);
+        expect({ contents: yield* contents, apps: yield* teamApps }).toEqual(afterImport);
+
+        // A rollback waits for the billing to go back, then removes only what the import added:
+        // the team's own apps and members stay.
+        const early = yield* operator.rollback(organization);
+        expect(early.status).toBe(409);
+        expect(JSON.stringify(early.body)).toContain("return-billing");
+        const returned = yield* operator.returnBilling(organization);
+        expect(returned.status, JSON.stringify(returned.body)).toBe(200);
+        const rolledBack = yield* operator.rollback(organization);
+        expect(rolledBack.status, JSON.stringify(rolledBack.body)).toBe(200);
+        expect(rolledBack.body).toEqual({
+          organization,
+          state: "rolled_back",
+          removed: { apps: 1, accounts: 3, toolkitCopies: 0, members: 0 },
+        });
+        expect(yield* movedFlag(organization)).toEqual([
+          { state: "rolled_back", v2_org_id: null, v2_org_slug: null },
+        ]);
+        expect(yield* contents).toEqual(before.contents);
+        expect(yield* teamApps).toEqual(before.apps);
+        expect(yield* teamMembers).toEqual(before.members);
+      }).pipe(Effect.provide(services)),
+    ),
+  );
+
   it.effect(scenarios.v1ImportIntoRefused.title, (context) =>
     withCase(
       context,
@@ -3085,6 +3472,44 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         const leaveEnterprise = yield* ownWorkspace("leave-enterprise", "leave_v1_data");
         yield* emulators.v1Plan(leaveEnterprise.organization, "enterprise");
         const unlisted = yield* ownWorkspace("mode", "everything");
+        // Copying selected integrations needs every active member in the organization already, a
+        // listed integration v1 has, and at least one listed.
+        const strangerOwner = email("selected-stranger");
+        // The teammate has a v2 account, but is not in the owner's team.
+        const strangerMate = email("stranger");
+        v2User(strangerMate);
+        const stranger = yield* listed(
+          "selected-stranger",
+          [strangerOwner, strangerMate],
+          ownTeam(strangerOwner),
+          "copy_selected",
+        );
+        const strangerTracker = `kept_${randomUUID().slice(0, 6)}`;
+        rows.v1.push(
+          row(
+            "insert into integration (tenant, slug, plugin_id, name, config) values ($1, $2, 'mcp', 'Kept Tracker', $3::json)",
+            stranger.organization,
+            strangerTracker,
+            JSON.stringify({
+              transport: "remote",
+              endpoint: "https://kept.example.com/mcp",
+              remoteTransport: "auto",
+            }),
+          ),
+        );
+        const unknownSlug = `missing_${randomUUID().slice(0, 6)}`;
+        const selectedUnknown = yield* ownWorkspace("selected-unknown", "copy_selected");
+        const selectedNone = yield* ownWorkspace("selected-none", "copy_selected");
+        const copyListing = yield* ownWorkspace("copy-listing", "copy_into_empty");
+        rows.cloud.push(
+          listV1IntoRow(stranger.organization, stranger.into, "copy_selected", [strangerTracker]),
+          listV1IntoRow(selectedUnknown.organization, selectedUnknown.into, "copy_selected", [
+            unknownSlug,
+          ]),
+          listV1IntoRow(copyListing.organization, copyListing.into, "copy_into_empty", [
+            unknownSlug,
+          ]),
+        );
         yield* rows.write;
         const onlyOne =
           "only a workspace of one moves into an existing v2 organization without its data.";
@@ -3101,6 +3526,36 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
           [enterprise, "nothing_to_copy", "It has a paid v1 plan (enterprise)."],
           [leaveEnterprise, "leave_v1_data", "It has a paid v1 plan (enterprise)."],
           [unlisted, null, "The allow table lists a mode the import does not know."],
+          [
+            stranger,
+            "copy_selected",
+            "Its active members must all be members of the listed v2 organization; 1 of 2 is not.",
+            {
+              integrations: {
+                copied: [{ slug: strangerTracker, label: "Kept Tracker" }],
+                leftInV1: [],
+                refused: [],
+              },
+            },
+          ],
+          [
+            selectedUnknown,
+            "copy_selected",
+            `v1 has no integration ${unknownSlug} to copy.`,
+            {
+              integrations: {
+                copied: [],
+                leftInV1: [],
+                refused: [{ slug: unknownSlug, reason: "v1 has no such integration." }],
+              },
+            },
+          ],
+          [selectedNone, "copy_selected", "The allow table lists no integrations to copy."],
+          [
+            copyListing,
+            "copy_into_empty",
+            "The allow table lists integrations to copy, which only copy_selected takes.",
+          ],
         ] as const;
         const organizations = refusals.map(([workspace]) => workspace.organization);
         const TeamMember = Schema.Struct({ userId: Schema.String, role: Schema.String });
@@ -3119,22 +3574,37 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         expect((yield* operator.start({ mode: "dry-run", runId: dry, organizations })).status).toBe(
           200,
         );
-        for (const [workspace, mode, refused] of refusals) {
+        /** What a refusal's report says of the listed integrations, for a selective copy. */
+        const extraOf = (refusal: (typeof refusals)[number]) =>
+          refusal.length === 4 ? refusal[3] : {};
+        for (const refusal of refusals) {
+          const [workspace, mode, refused] = refusal;
           const report = yield* operator.waitForReport(dry, workspace.organization);
           expect(report.status, report.reason ?? "").toBe("held_back");
           expect(report.reason).toBe(
             `It does not move into the listed v2 organization: ${refused}`,
           );
-          expect(report.into).toEqual({ organization: workspace.into, mode, refused });
+          expect(report.into).toEqual({
+            organization: workspace.into,
+            mode,
+            refused,
+            ...extraOf(refusal),
+          });
         }
 
         const run = v1RunId("refused");
         const started = yield* operator.start({ mode: "import", runId: run, organizations });
         expect(started.status, JSON.stringify(started.body)).toBe(200);
-        for (const [workspace, mode, refused] of refusals) {
+        for (const refusal of refusals) {
+          const [workspace, mode, refused] = refusal;
           const report = yield* operator.waitForReport(run, workspace.organization);
           expect(report.status, report.reason ?? "").toBe("held_back");
-          expect(report.into).toEqual({ organization: workspace.into, mode, refused });
+          expect(report.into).toEqual({
+            organization: workspace.into,
+            mode,
+            refused,
+            ...extraOf(refusal),
+          });
           expect(report.v2Organization).toBeUndefined();
         }
         // Nothing was copied, so v1 has each back at once; v2 recorded nothing for any.

@@ -108,6 +108,22 @@ npm comparator ranges such as `^16.11.0`. Its fixtures are in
 `scripts/check-exact-versions-fixtures.ts`. `bunfig.toml` makes `bun install`
 and `bun add` skip versions published less than a day ago.
 
+`bun install --frozen-lockfile` accepts a lock that records an old version of a
+workspace package, so after changing any `package.json`, including a version
+bump, run `bun install` and commit bun.lock. The `apps-version` job runs
+`scripts/check-lockfile.ts --base` on pull requests, against where the pull
+request meets `main` (the merge base for an upper stack layer), and fails one
+whose own changes leave bun.lock different from what `bun install` writes; a
+lock already stale on `main` fails no pull request. On `main`, the Beta workflow refreshes a
+stale lock with `scripts/releases/lock-repair.sh` and pushes it as
+`Refresh bun.lock [skip ci]`, but only when every changed line is a workspace
+package's own `version` set to what its `package.json` says
+(`scripts/releases/lock-repair-scope.ts`). It pushes no other change, such as a
+dependency resolved differently: it warns in the Beta run's summary and keeps an
+issue labelled `lock-repair-refused` open instead, and that change needs a pull
+request. `bun run lockfile:check` checks a checkout by
+hand.
+
 The typecheck runs `tsc-rs`, a Rust port of the TypeScript 7 compiler that is
 about twice as fast as Go's `tsc` here and has the Effect language service
 diagnostics built in. It reports the Effect diagnostics configured in
@@ -181,6 +197,8 @@ suite takes about eight and holds the runners other PRs wait for. Reserve `all` 
 changes that every scenario runs through: the e2e harness (`e2e/sdk`, `e2e/support`,
 `e2e/setup.ts`), the toolchain, the lockfile or the workflows. Write the reason after
 it, such as `all: changes the lockfile`; `all` without a reason fails the `select` job.
+A lockfile change that only updates a workspace package's own `version`, as `bun install`
+writes after a version bump, installs nothing different: write `none` for it.
 A change to shared code such as the runtime, storage, auth or the MCP server is not
 by itself a reason: list the spec files for the features whose behavior it changes. [`e2e/ci-selection.ts`](e2e/ci-selection.ts) turns the block
 into each job's scenario list; the run summary shows it.
@@ -274,7 +292,8 @@ The deployed suite remains available for manual dispatch with Neon or PlanetScal
 
 Blacksmith Linux runners run every check job. Local and self-host E2E jobs use
 `blacksmith-16vcpu-ubuntu-2404`. Cloud E2E jobs use `blacksmith-8vcpu-ubuntu-2404`: each runs
-one local Cloud at a time, which kept 16 vCPUs only 8-28% busy. The load job also uses 16 vCPUs: on 4 vCPUs the
+one local Cloud at a time, which kept 16 vCPUs only 8-28% busy. The `cloud` job keeps 16 vCPUs
+with four workers: on 8 its browser scenarios saturated the cores and neared their 60 s limit. The load job also uses 16 vCPUs: on 4 vCPUs the
 product server, PGlite and the test driver contend. Its inventory case has a 120-second
 test limit because its body takes 40-48s on CI. Static checks use 4 vCPUs.
 
@@ -307,7 +326,7 @@ scenarios on Linux instead of moving them to a Mac.
   about four minutes instead of thirteen and twenty. A selection runs on one runner. The
   self-host parts keep their 16 vCPUs about 80% busy; the local ones are mostly idle and wait
   on their longest spec file, so keep local spec files short enough to split.
-- `e2e-self-host-scale` runs the 1,000-account workload and then the 7,000-tool MCP
+- `e2e-self-host-scale` runs the 300-account workload and then the 7,000-tool MCP
   catalog scenario and the slow and stalled tool listing scenarios on its own runner,
   in parallel with the functional jobs. This preserves the four concurrent writers,
   the catalog and listing latency bounds and the inventory case's 120-second limit without
@@ -341,26 +360,37 @@ scenarios on Linux instead of moving them to a Mac.
 Cloud scenarios verify
 API/MCP outcomes, workflow correlation, browser failures, app traces and analytics.
 Deployed tests run through `bun run e2e:deployed`; the runner owns provisioning
-and teardown. The release workflow builds and tests Docker images on release PRs
-and manual dispatch. Publication requires an explicit channel dispatch from main.
+and teardown. The release workflow builds and tests Docker images after merge and on
+manual dispatch. Publication requires an explicit channel dispatch from main.
 The Beta workflow (`beta.yml`) makes that dispatch, on each push to main and on a
 backstop schedule GitHub delivers hours late, when main has commits the last beta
 lacks and npm published that beta at least six hours ago, and retries a failed one
 with a bounded back-off; see [Releasing](RELEASING.md#publish-beta).
-Release PRs build and test the Linux and Windows targets only. The macOS targets run
-on manual dispatch, where they are built, signed, notarized and tested. macOS runners
-cost 5-20x as much as Linux runners, so keep them off pull requests.
+Pull requests do not run "Executor releases". CI runs two short release lanes
+instead, chosen like the E2E jobs from the pull request's changes since its merge
+base with `main` (`e2e/release-lanes.ts`): `release-docker` builds the self-host
+image on amd64 and runs the released-image scenarios when the image's source (the
+workspace packages it is built from), its build inputs or a file that suite imports
+changed, and `release-local` packages linux-x64 and runs its install, launcher,
+lockdown, credential store and desktop startup checks when the CLI's or the desktop
+app's source, their build inputs or a packaging script changed. The required `checks / e2e` check covers both, so wait
+for CI only (`ci-wait --pr N --workflow CI`); a lower stack layer runs neither.
 
-Every pull request also runs "Executor releases". Its `changes` job compares the
-pull request's head with its merge base with `main` and runs the release jobs only
-when that diff touches the release paths (the job's filters in
-`.github/workflows/release-artifacts.yml`). A lower stack layer, one another open
-pull request is based on, runs none of them: the top layer's run builds and tests
-the combined change, so a stack is gated on its top layer's run. The workflow's
-`releases` job passes when every job the run needed passed and the others were
-skipped. Gate a merge on that workflow as on CI: wait for both on the pull request,
-or on a stack's top layer (`ci-wait --workflow CI --workflow "Executor releases"`),
-and do not merge while either fails.
+After merge, the "Release check" workflow decides on every push to `main`, and
+hourly as a backstop, whether main, with every commit since the last check,
+changed what a release lane builds or runs. The paths are computed from the
+checkout (`e2e/release-check.ts`), so nothing is kept by hand. When they changed,
+it starts "Executor releases" with a repository dispatch, a paced check that
+builds at most once every two hours:
+Linux x64 packaging with desktop crash recovery, its installed CLI suite and the
+image on both architectures. Linux
+arm64, Windows and macOS run in each beta's publishing run, which tests every
+platform before it publishes, and in manual build runs. A failed run opens or
+updates one issue labelled `release-matrix-red`, which the next green run closes,
+and holds every beta until a later run passes. Fix a failure; do not
+re-run it to make it green. To check a release change before merge, dispatch the
+workflow on the branch with channel `build`. macOS runners cost 5-20x as much as
+Linux runners, so keep them off pull requests.
 
 A failed e2e job uploads raw reports and server logs. Product database files,
 runtime dependencies and private `actors.json` sessions are excluded.

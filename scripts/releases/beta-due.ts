@@ -24,13 +24,27 @@
  * - An attempt for the committed version that succeeded while npm still lacks it fails the tick:
  *   another run would succeed the same way, on every tick, with nothing red.
  *
+ * - Neither a new beta (`bump`) nor another attempt (`dispatch`) starts while main's release
+ *   matrix is red. The matrix runs are the checks, the repository dispatches of Executor releases
+ *   that the Release check workflow starts after a push that changed what a release lane builds or
+ *   runs, paced to one build every two hours, and the builds dispatched from main by hand. The
+ *   newest finished one must have passed its `releases` job, which judges the matrix jobs alone. A
+ *   run that tested nothing is skipped: a cancelled one, as a check that gave way to a newer one
+ *   is, and a check whose `pace` job did not pass or whose matrix did not run. A failed one holds
+ *   every beta until a later run passes, and when none has finished, betas hold until one does. A
+ *   run still pacing or building holds nothing: the publishing run tests every platform on the
+ *   commit it publishes, the checks' Linux x64 and image jobs among them, and publishes only when
+ *   all of them pass. Checks list apart from builds and publications, so however many there are,
+ *   they never push the publishing attempts out of the list the decision reads.
+ *
  * Attempts are publishing runs only. A dispatch with channel `build` builds and tests without
  * publishing, so it neither counts as a failure nor as a success. It still blocks the tick while it
  * runs, since two release runs on main must not overlap.
  *
  * Writes `decision` (`none`, `bump`, `dispatch` or `rerun`), `version` and `run` to
  * `GITHUB_OUTPUT`. Reads npm with `npm view`, the release runs with `gh run list` and `gh run
- * view`, and the history with `git`, so `e2e/tests/beta-due.spec.ts` drives it with stubs.
+ * view`, and the history with `git`, so `e2e/tests/beta-due.spec.ts` drives it with stubs. It
+ * changes nothing itself: beta.yml acts on its decision.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -66,10 +80,14 @@ const Run = Schema.Struct({
   createdAt: Schema.String,
   attempt: Schema.Number,
   url: Schema.String,
+  displayTitle: Schema.String,
 });
 type Run = typeof Run.Type;
 
 const Step = Schema.Struct({ name: Schema.String, conclusion: Schema.String });
+
+/** The title Executor releases gives a build dispatched by hand (its `run-name`). */
+const buildTitle = "Executor releases (build)";
 
 const Jobs = Schema.fromJsonString(
   Schema.Struct({
@@ -168,6 +186,7 @@ NodeRuntime.runMain(
         message: `Betas only follow 2.0.0-beta.N, and main records ${version}.`,
       });
 
+    /** Builds and publications only: checks are repository dispatches, listed apart. */
     const runs = yield* succeed("gh", [
       "run",
       "list",
@@ -182,7 +201,7 @@ NodeRuntime.runMain(
       "-L",
       "30",
       "--json",
-      "databaseId,status,conclusion,headSha,createdAt,attempt,url",
+      "databaseId,status,conclusion,headSha,createdAt,attempt,url,displayTitle",
     ]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Run)))));
     const registry = yield* succeed("npm", [
       "view",
@@ -199,6 +218,20 @@ NodeRuntime.runMain(
       "--json",
     ]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Registry)));
     const head = yield* succeed("git", ["rev-parse", "HEAD"]);
+    /**
+     * Commits on main after `from`, without the `Refresh bun.lock [skip ci]` commits that
+     * `lock-repair.sh` pushes: a lock refresh follows the merge that left the lock stale, and on its
+     * own it neither makes a beta due nor moves main for the retry back-off.
+     */
+    const commitsSince = (from: string) =>
+      succeed("git", [
+        "rev-list",
+        "--count",
+        "-E",
+        "--invert-grep",
+        "--grep=^Refresh bun\\.lock \\[skip ci\\]$",
+        `${from}..HEAD`,
+      ]);
     /** The `Release <version>` commit on main, or "" when main has none. */
     const releaseCommit = succeed("git", [
       "log",
@@ -209,8 +242,27 @@ NodeRuntime.runMain(
       "HEAD",
     ]);
 
+    /** Each release run's jobs, read once. */
+    const jobsRead = new Map<number, Jobs>();
+    const jobsOf = (run: Run) =>
+      Effect.gen(function* () {
+        const known = jobsRead.get(run.databaseId);
+        if (known !== undefined) return known;
+        const jobs = yield* succeed("gh", [
+          "run",
+          "view",
+          String(run.databaseId),
+          "-R",
+          repository,
+          "--json",
+          "jobs",
+        ]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Jobs)));
+        jobsRead.set(run.databaseId, jobs);
+        return jobs;
+      });
     const decide = Effect.gen(function* () {
-      // Any release run, publishing or not: two must not run on main at once.
+      // Any build or publication: two must not run on main at once. A check, which publishes
+      // nothing and may pace for two hours, is not in this list and holds no tick.
       const active = runs.find((run) => run.status !== "completed");
       if (active !== undefined) return wait(`A release run is ${active.status}: ${active.url}`);
 
@@ -221,10 +273,7 @@ NodeRuntime.runMain(
             message: `npm lists executor@${version}, but its beta tag names ${registry["dist-tags"].beta}. Inspect the last release before publishing another.`,
           });
         const release = yield* releaseCommit;
-        if (
-          release !== "" &&
-          (yield* succeed("git", ["rev-list", "--count", `${release}..HEAD`])) === "0"
-        )
+        if (release !== "" && (yield* commitsSince(release)) === "0")
           return wait(`No commits on main since ${version}.`);
         const age = now - Date.parse(published);
         if (!manual && age < gap)
@@ -238,15 +287,7 @@ NodeRuntime.runMain(
       // at most the last two publishing runs, read newest first, each with one `gh run view`.
       const attempts: Array<Attempt> = [];
       for (const run of runs) {
-        const jobs = yield* succeed("gh", [
-          "run",
-          "view",
-          String(run.databaseId),
-          "-R",
-          repository,
-          "--json",
-          "jobs",
-        ]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Jobs)));
+        const jobs = yield* jobsOf(run);
         const metadata = jobs.jobs.find((job) => job.name === "metadata");
         const step = metadata?.steps.find((candidate) => candidate.name === publishingStep);
         if (metadata?.conclusion === "success" && step === undefined)
@@ -305,23 +346,97 @@ NodeRuntime.runMain(
           "dispatch",
           `executor@${version} is not on npm; ${last.url} failed, so it is published again.`,
         );
-      if (since >= backOff && (head !== last.headSha || since >= stale))
+      const moved = head !== last.headSha && (yield* commitsSince(last.headSha)) !== "0";
+      if (since >= backOff && (moved || since >= stale))
         return act(
           "dispatch",
-          `executor@${version} is not on npm after two or more failed attempts in a row; the last, ${last.url}, started ${ago(since)}${head === last.headSha ? "" : " and main has moved since"}.`,
+          `executor@${version} is not on npm after two or more failed attempts in a row; the last, ${last.url}, started ${ago(since)}${moved ? " and main has moved since" : ""}.`,
         );
       return hold(
         `executor@${version} is not on npm after two or more failed attempts in a row; the last is ${last.url}, ${ago(since)}. The next attempt waits for six hours after it and for a new commit on main, or a day; dispatch this workflow to retry now.`,
       );
     });
 
+    /**
+     * Why main's release matrix does not allow publishing, or undefined when it does: the newest
+     * finished check or build on main must have passed its `releases` job, which judges the matrix
+     * jobs alone; the `report` job cannot make it red. Skipped, since they tested nothing: a
+     * cancelled run, and a check whose `pace` job did not pass or whose matrix did not run. A push
+     * that changed nothing a
+     * release lane reads starts no check, so it neither holds a beta nor lets one through. A run
+     * still pacing or building holds nothing: the publishing run tests every platform on the
+     * commit it publishes before it publishes.
+     */
+    const matrixGate = Effect.gen(function* () {
+      const checks = yield* succeed("gh", [
+        "run",
+        "list",
+        "-R",
+        repository,
+        "-w",
+        "release-artifacts.yml",
+        "-e",
+        "repository_dispatch",
+        "-b",
+        "main",
+        "-L",
+        "100",
+        "--json",
+        "databaseId,status,conclusion,headSha,createdAt,attempt,url,displayTitle",
+      ]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Run)))));
+      const candidates = [
+        ...checks.map((run) => ({ run, check: true })),
+        ...runs
+          .filter((run) => run.displayTitle === buildTitle)
+          .map((run) => ({ run, check: false })),
+      ].sort((a, b) => Date.parse(b.run.createdAt) - Date.parse(a.run.createdAt));
+      /** Finished checks and builds newer than the deciding one that tested nothing. */
+      const untested: Array<Run> = [];
+      let latest: { readonly run: Run; readonly passed: boolean } | undefined;
+      for (const { run, check } of candidates) {
+        if (run.status !== "completed") continue;
+        if (run.conclusion === "cancelled") {
+          untested.push(run);
+          continue;
+        }
+        const jobs = (yield* jobsOf(run)).jobs;
+        const conclusion = (name: string) => jobs.find((job) => job.name === name)?.conclusion;
+        if (check && (conclusion("pace") !== "success" || conclusion("metadata") === "skipped")) {
+          untested.push(run);
+          continue;
+        }
+        const releases = jobs.find((job) => job.name === "releases");
+        if (releases === undefined)
+          return yield* new BetaGateFailed({
+            message: `${run.url} has no releases job, so the gate cannot tell how its matrix ended. Update matrixGate in scripts/releases/beta-due.ts.`,
+          });
+        latest = { run, passed: releases.conclusion === "success" };
+        break;
+      }
+      const dispatchBuild =
+        "dispatch Executor releases from main with channel build (gh workflow run release-artifacts.yml --ref main -f channel=build)";
+      if (latest === undefined)
+        return hold(
+          `No release matrix run on main has finished testing among the last ${checks.length} checks and the builds, so no beta can show it passed. To start one, ${dispatchBuild}${untested[0] === undefined ? "" : `, or re-run ${untested[0].url}, which tested nothing`}.`,
+        );
+      if (!latest.passed)
+        return hold(
+          `The newest finished release matrix run on main, ${latest.run.url}, failed its releases job on ${latest.run.headSha}. No beta publishes until a later run passes: fix the cause, then ${dispatchBuild}, or merge the fix. Its issue is labelled release-matrix-red.`,
+        );
+      return undefined;
+    });
+
     const decided: Decision = yield* decide;
+    const gated =
+      decided.decision === "bump" || decided.decision === "dispatch"
+        ? ((yield* matrixGate) ?? decided)
+        : decided;
     // New apps pin the apps release this host ships, so the release refuses a version npm lacks.
     const result =
-      (decided.decision === "bump" || decided.decision === "dispatch") &&
+      (gated.decision === "bump" || gated.decision === "dispatch") &&
       appsRegistry.time[apps] === undefined
         ? hold(`apps@${apps} is not on npm yet; the deploy from main publishes it.`)
-        : decided;
+        : gated;
 
     // An annotation, so a release that keeps failing is visible on the tick that skips it.
     yield* Console.log(`${result.warning ? "::warning::" : ""}${result.reason}`);

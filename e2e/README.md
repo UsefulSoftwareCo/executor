@@ -51,7 +51,7 @@ E2E_ROWS=12 bun run e2e:self-host
 bun run e2e:self-host --test-name 'password login'
 ```
 
-The default data-volume scenario remains 1,000 accounts with four concurrent
+The default data-volume scenario saves 300 accounts with four concurrent
 writers. Smaller runs use the same assertions. `--test-name` is a regular expression
 matched against scenario titles, without the enclosing Vitest suite name.
 Filtered cases are not counted as executed cases in the evidence view.
@@ -176,7 +176,7 @@ E2E_ROWS=12 bun run e2e:self-host
 bun run e2e:self-host --test-name 'password login'
 ```
 
-The default data-volume scenario remains 1,000 accounts with four concurrent
+The default data-volume scenario saves 300 accounts with four concurrent
 writers. Smaller runs use the same assertions. `--test-name` is a regular expression
 matched against scenario titles, without the enclosing Vitest suite name.
 Filtered cases are not counted as executed cases in the evidence view.
@@ -343,7 +343,7 @@ inventory case, which has 120 seconds. Cleanup hooks retain a separate
 Within a scenario, use `Effect.all` or `Effect.forEach` with a concurrency bound
 when operations are independent. Keep dependent actions ordered.
 
-The self-host load case creates 1,000 accounts through four concurrent API
+The self-host load case creates 300 accounts through four concurrent API
 writers. The MCP catalog scale case deploys 29 apps with 7,000 tools and about
 46 MB of input schemas, plus nine MCP apps whose server never answers, and bounds
 execute and search latency. CI gives both cases their own 16-vCPU Linux runner, one
@@ -630,7 +630,7 @@ printing how many and the space freed: it keeps runs from the last three days, t
 passed ones and every other one, up to 3 GB (passed runs go first), and any run another process
 is writing or rendering; copy evidence you must keep outside any `.local/e2e`.
 
-Every CI e2e job, passed or failed, also uploads `<job>-resources-evidence-<index>-attempt-<N>`: the runner's load, CPU (busy, iowait, steal, cores busy), memory and busiest command names every 5 s in `samples.ndjson`, with totals in `summary.json` (`scripts/ci/resource-sampler.ts`; read with `ci-evidence.ts --file summary.json --artifact <name>`).
+Every CI e2e job, passed or failed, also uploads `<job>-resources-evidence-<index>-attempt-<N>`, and the `tooling` job `tooling-resources-evidence-attempt-<N>`: the runner's load, CPU (busy, iowait, steal, cores busy), memory and busiest command names every 5 s in `samples.ndjson`, with totals in `summary.json` (`scripts/ci/resource-sampler.ts`; read with `ci-evidence.ts --file summary.json --artifact <name>`).
 
 When evidence needs review, render the retained run, then serve the report on
 loopback. Rendering needs Playwright Chromium installed, plus ffmpeg and ffprobe

@@ -4,6 +4,7 @@ import {
   HttpBody,
   HttpClient,
   HttpClientRequest,
+  HttpMethod,
   HttpRouter,
   HttpServer,
   HttpServerRequest,
@@ -89,6 +90,8 @@ const makeProviderErrorUpstream = Effect.fn(function* (healthyUpstream: typeof t
             );
           }
           if (path.startsWith("/custom/")) return yield* HttpServerResponse.json({ ok: true });
+          if (!HttpMethod.isHttpMethod(request.method))
+            return yield* HttpServerResponse.json({ error: "unsupported method" }, { status: 405 });
           const response = yield* http.execute(
             HttpClientRequest.make(request.method)(`${healthy}${path}`, {
               headers: {

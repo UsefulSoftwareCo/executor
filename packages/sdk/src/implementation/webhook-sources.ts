@@ -3,7 +3,9 @@ import { AppProviderFailed } from "../contracts/tools.ts";
  * Managed webhook registration for each account linked to an app as a webhook source. Linking only
  * saves intent; a lease covers the network work without holding SQL transactions.
  */
-import { Clock, Effect, Exit, Result, Schema, type Crypto } from "effect";
+import { Clock, Effect, Exit, Result, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
+import { Digest } from "effect/crypto";
 import { AccountRequired, AccountSelectionInvalid } from "../contracts/apps.ts";
 import { AccountNotFound } from "../contracts/account.ts";
 import { CurrentActor, type ResourceLifecycle } from "../contracts/executor.ts";
@@ -111,7 +113,7 @@ export const setupCompleted = (
  */
 export const makeWebhookSources = (
   db: Query,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle: ResourceLifecycle | undefined,
   resources: {
     readonly webhooks: ReturnType<typeof makeWebhooks>["webhooks"];
@@ -128,13 +130,14 @@ export const makeWebhookSources = (
 ) => {
   const now = Clock.currentTimeMillis;
   const keyFor = (value: Json) =>
-    crypto.digest("SHA-256", new TextEncoder().encode(canonical(value))).pipe(
-      Effect.map(
-        (bytes) =>
-          `setup-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`,
-      ),
-      Effect.mapError(() => new StorageError()),
-    );
+    crypto.digest
+      .digest(Digest.sha256, new TextEncoder().encode(canonical(value)))
+      .pipe(
+        Effect.map(
+          (bytes) =>
+            `setup-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("")}`,
+        ),
+      );
   const find = (input: { readonly app: AppId; readonly account: AccountId }) =>
     Effect.gen(function* () {
       const row = yield* query(() =>
@@ -178,7 +181,7 @@ export const makeWebhookSources = (
     automatic = false,
   ) =>
     Effect.gen(function* () {
-      const token = yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
+      const token = yield* crypto.random.uuidV4();
       return yield* Effect.acquireUseRelease(
         transaction(db, (tx) =>
           Effect.gen(function* () {
@@ -508,7 +511,7 @@ export const makeWebhookSources = (
             retries: 0,
           };
           if (existing === undefined) {
-            const id = `src_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`;
+            const id = `src_${yield* crypto.random.uuidV4()}`;
             const createdAt = new Date(yield* now);
             yield* query(() =>
               tx.create("webhookSources", {

@@ -1,5 +1,5 @@
 /** Portable Effect exporters. The host owns scope and export lifetime. */
-import { type Duration, Effect, Layer, Logger, Metric, Redacted } from "effect";
+import { Duration, Effect, Layer, Logger, Metric, Redacted } from "effect";
 import { telemetryHttpClient } from "./transport.ts";
 import { spanAttributes } from "./span-attributes.ts";
 import { OtlpLogger, OtlpMetrics, OtlpSerialization, OtlpTracer } from "effect/observability";
@@ -33,7 +33,9 @@ export const telemetryLayer = (
     url: target.url,
     resource,
     ...(target.headers === undefined ? {} : { headers: Redacted.value(target.headers) }),
-    exportInterval: lifetime === "event" ? ("1 hour" as const) : ("1 second" as const),
+    // An event exports when its scope closes. With no interval the exporter runs no loop, so a
+    // span or log recorded from another event never resumes a fiber of this one.
+    exportInterval: lifetime === "event" ? Duration.infinity : ("1 second" as const),
     shutdownTimeout: shutdownTimeouts[name] ?? ("3 seconds" as const),
   });
   const console = Logger.layer([logger]);

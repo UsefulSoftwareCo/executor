@@ -126,7 +126,8 @@ export const pruneRuns = ({
         seen.add(inode);
         return Option.match(info.blocks, {
           onNone: () => Number(info.size),
-          onSome: (blocks) => blocks * 512,
+          // Effect 4.1 gives the block count as a bigint.
+          onSome: (blocks) => Number(blocks) * 512,
         });
       }).pipe(Effect.orElseSucceed(() => 0));
 

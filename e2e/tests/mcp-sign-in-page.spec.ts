@@ -19,6 +19,7 @@ import {
   consentOption,
   consentRow,
   consentValue,
+  peekConsent,
 } from "../support/consent-page.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
@@ -50,7 +51,7 @@ const Grants = Schema.Array(
 const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code";
 const phone = { width: 390, height: 844 };
 const desktop = { width: 1280, height: 900 };
-const listFailure = "Could not load.";
+const listFailure = "Could not load your connections.";
 
 /** An account-free app with a read tool, a write tool and a tool that always asks for approval. */
 const deployApp = Effect.gen(function* () {
@@ -633,46 +634,81 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
         );
         const paths = [`/api/organizations/${actors.organization.id}/mcp-connections`];
         yield* browser.login(actors.owner);
-        /** The browser reads the list after the page arrives; check the page while it is held. */
-        const heldInPlace = (held: { readonly requested: Effect.Effect<string, unknown> }) =>
+        /** The Access menu's value, and whether it is still reading its connections. */
+        const accessMenu = (page: Page) =>
+          Promise.all([
+            consentMenu(page, "Access").innerText(),
+            consentMenu(page, "Access").getAttribute("aria-busy"),
+          ]);
+        /**
+         * The browser reads the list after the page arrives; check the page while it is held. The
+         * Access menu shows the preselected access at once, and its list loads inside the menu.
+         */
+        const heldInPlace =
+          (shown: string) => (held: { readonly requested: Effect.Effect<string, unknown> }) =>
+            Effect.gen(function* () {
+              expect(paths).toContain(yield* held.requested);
+              expect(
+                yield* browser.use("While held, the Access menu shows its value", accessMenu),
+              ).toEqual([shown, "true"]);
+              expect(
+                yield* browser.use("While held, the frame and buttons stay", frameMounted),
+              ).toEqual([true, true, true]);
+              yield* browser.use("While held, the open menu shows its list loading", (page) =>
+                peekConsent(page, "Access", (open) =>
+                  open.getByRole("status", { name: "Loading connections", exact: true }).waitFor(),
+                ),
+              );
+            });
+        /** Capture the open Access menu. A resize closes it, so this is desktop only. */
+        const openAccessShot = (name: string) =>
           Effect.gen(function* () {
-            expect(paths).toContain(yield* held.requested);
-            yield* browser.use("While held, the Access row is loading", (page) =>
-              page.getByRole("status", { name: "Loading access", exact: true }).waitFor(),
+            yield* browser.use("Open the Access menu", (page) =>
+              consentMenu(page, "Access")
+                .click()
+                .then(() => page.getByRole("listbox").waitFor()),
+            );
+            yield* shot(name);
+            yield* browser.use("Close the Access menu", (page) =>
+              page.keyboard
+                .press("Escape")
+                .then(() => page.getByRole("listbox").waitFor({ state: "hidden" })),
+            );
+          });
+        /** The failure and its retry are inside the Access menu; the row keeps its value. */
+        const failureShown = (shown: string) =>
+          Effect.gen(function* () {
+            yield* browser.use("The Access menu stops loading", (page) =>
+              consentMenu(page, "Access")
+                .and(page.locator('[aria-busy="true"]'))
+                .waitFor({ state: "detached" }),
             );
             expect(
-              yield* browser.use("While held, the frame and buttons stay", frameMounted),
-            ).toEqual([true, true, true]);
-            // The loading row keeps the height of a loaded row.
-            const heights = yield* browser.use("While held, the row keeps its height", (page) =>
-              Promise.all(
-                (["Access", "Approvals"] as const).map((row) =>
-                  consentRow(page, row)
-                    .locator("xpath=..")
-                    .boundingBox()
-                    .then((box) => box?.height),
-                ),
+              yield* browser.use("Failed: the Access menu keeps its value", accessMenu),
+            ).toEqual([shown, null]);
+            yield* browser.use("Failed: the open menu shows the failure and Retry", (page) =>
+              peekConsent(page, "Access", (open) =>
+                Promise.all([
+                  open.getByRole("alert").filter({ hasText: listFailure }).waitFor(),
+                  consentOption(open, "Retry").waitFor(),
+                ]).then(() => undefined),
               ),
             );
-            expect(heights[0]).toBeDefined();
-            expect(heights[0]).toBe(heights[1]);
           });
-        const failureShown = browser.use("The failure takes the Access row", (page) =>
-          consentRow(page, "Access").getByText(listFailure, { exact: true }).waitFor(),
-        );
 
         // The list fails, then a retry loads it; a choice made meanwhile survives both.
         const failing = yield* holdQuery(paths, "fail");
         const retried = Effect.gen(function* () {
           yield* browser.use("Use a desktop window", (page) => page.setViewportSize(desktop));
-          yield* heldInPlace(failing);
+          yield* heldInPlace("All apps")(failing);
           yield* browser.use("Choose approvals in Executor while the list loads", (page) =>
             chooseConsent(page, "Approvals", "In Executor"),
           );
           yield* shot("connections-loading-desktop");
           yield* phoneShot("connections-loading-mobile");
+          yield* openAccessShot("connections-loading-menu-desktop");
           yield* failing.release;
-          yield* failureShown;
+          yield* failureShown("All apps");
           expect(
             yield* browser.use("Failed: the frame stays and Connect is available", frameMounted),
           ).toEqual([true, true, true]);
@@ -683,32 +719,26 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
           ).toBe("In Executor");
           yield* shot("connections-failed-desktop");
           yield* phoneShot("connections-failed-mobile");
+          yield* openAccessShot("connections-failed-menu-desktop");
           // A refresh can read the list more than once; hold every read until the check.
           const retry = yield* holdQuery(paths, "continue", { allRequests: true });
-          yield* browser.use("Retry the list", (page) =>
-            consentRow(page, "Access").getByRole("button", { name: "Retry", exact: true }).click(),
-          );
+          yield* browser.use("Retry the list", (page) => chooseConsent(page, "Access", "Retry"));
           expect(paths).toContain(yield* retry.requested);
-          // The failure stays in place while its retry runs, with Retry busy.
-          expect(
-            yield* browser.use("Retrying: the failure stays with Retry busy", (page) =>
-              Promise.all([
-                consentRow(page, "Access").getByText(listFailure, { exact: true }).isVisible(),
-                consentRow(page, "Access").getByRole("button").isDisabled(),
-                consentRow(page, "Access")
-                  .getByRole("status", { name: "Loading", exact: true })
-                  .isVisible(),
-              ]),
-            ),
-          ).toEqual([true, true, true]);
+          // While the retry runs, the menu keeps its value and loads again.
+          expect(yield* browser.use("Retrying: the Access menu loads again", accessMenu)).toEqual([
+            "All apps",
+            "true",
+          ]);
           expect(
             yield* browser.use("Retrying: the approval choice is kept", (page) =>
               consentRow(page, "Approvals").innerText(),
             ),
           ).toBe("In Executor");
           yield* retry.release;
-          yield* browser.use("Retried: the Access menu returns", (page) =>
-            consentMenu(page, "Access").waitFor(),
+          yield* browser.use("Retried: the Access menu finishes loading", (page) =>
+            consentMenu(page, "Access")
+              .and(page.locator('[aria-busy="true"]'))
+              .waitFor({ state: "detached" }),
           );
           expect(
             yield* browser.use("Retried: the list loads and the choices are kept", (page) =>
@@ -729,9 +759,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
         // A list that cannot load does not stop the person approving the URL's connection.
         const failingAgain = yield* holdQuery(paths, "fail");
         const failed = Effect.gen(function* () {
-          yield* heldInPlace(failingAgain);
+          yield* heldInPlace("One of your connections")(failingAgain);
           yield* failingAgain.release;
-          yield* failureShown;
+          yield* failureShown("One of your connections");
         });
         const fallback = yield* oauth.authorizeReviewing(failed, named.id);
         expect(yield* whoami(accessToken(fallback))).toMatchObject({

@@ -31,6 +31,13 @@ const make = Effect.gen(function* () {
     ) =>
       Effect.gen(function* () {
         const requests: { method: string; protocol: string | null; status: number }[] = [];
+        /** When each response's body ended, or the client stopped reading it, after its request. */
+        const bodies: Array<{
+          readonly method: string;
+          readonly traceId: string;
+          readonly ended: "complete" | "cancelled";
+          readonly ms: number;
+        }> = [];
         const client = yield* Effect.acquireRelease(
           Effect.sync(
             () =>
@@ -67,6 +74,7 @@ const make = Effect.gen(function* () {
               if (typeof accessToken === "function")
                 request.headers.set("authorization", `Bearer ${reveal(accessToken())}`);
               const started = yield* Clock.currentTimeMillis;
+              const sent = performance.now();
               const traceId = randomBytes(16).toString("hex"),
                 spanId = randomBytes(8).toString("hex");
               request.headers.set("traceparent", `00-${traceId}-${spanId}-01`);
@@ -107,7 +115,30 @@ const make = Effect.gen(function* () {
                   status: { code: response.status >= 400 ? 2 : 1 },
                 },
               );
-              return response;
+              const body = response.body;
+              if (body === null) return response;
+              const reader = body.getReader();
+              const finished = (how: "complete" | "cancelled") =>
+                bodies.push({ method, traceId, ended: how, ms: performance.now() - sent });
+              return new Response(
+                new ReadableStream<Uint8Array>({
+                  pull: (controller) =>
+                    reader.read().then((chunk) => {
+                      if (!chunk.done) return controller.enqueue(chunk.value);
+                      finished("complete");
+                      controller.close();
+                    }),
+                  cancel: (reason) => {
+                    finished("cancelled");
+                    return reader.cancel(reason);
+                  },
+                }),
+                {
+                  status: response.status,
+                  statusText: response.statusText,
+                  headers: response.headers,
+                },
+              );
             }),
           );
         const endpoint = new URL(`${options.origin ?? target.metadata.origin}/mcp`);
@@ -135,6 +166,8 @@ const make = Effect.gen(function* () {
         yield* driver("initialize MCP client", () => client.connect(compatible));
         return {
           elicitationCount: Effect.sync(() => prompts.length),
+          /** When each response body this client read ended, by the trace of its request. */
+          bodies: Effect.sync(() => [...bodies]),
           /** The message of each elicitation request a native client received, in order. */
           prompts: Effect.sync(() => [...prompts]),
           use: <A>(

@@ -111,14 +111,17 @@ const Into = Schema.Array(
   Schema.Struct({
     into_v2_org_id: Schema.NullOr(Schema.String),
     into_mode: Schema.NullOr(Schema.String),
+    into_integrations: Schema.NullOr(Schema.Array(Schema.String)),
   }),
 );
 
 /**
  * The existing v2 organization the operator listed in the allow table for this v1 organization to
  * move into instead of a new one (`into_v2_org_id`), and how (`into_mode`, `nothing_to_copy` when
- * unset), if any (`notes/v1-import.md`, decision 32). Only a listed organization moves into an
- * existing one, and only when the import's checks for its mode allow it; a mode it does not know is
+ * unset), if any (`notes/v1-import.md`, decision 32). `integrations` is the row's
+ * `into_integrations`, the v1 integration slugs a `copy_selected` move copies (decision 35), each
+ * once, in the order listed; empty when unset. Only a listed organization moves into an existing
+ * one, and only when the import's checks for its mode allow it; a mode it does not know is
  * `undefined`, which refuses the move. Dry runs read it too, to report the move. Only reads the
  * table.
  */
@@ -126,7 +129,8 @@ export const listedInto = (organization: string) =>
   Effect.gen(function* () {
     const sql = yield* Effect.flatten(V1ImportDatabase);
     const rows = yield* sql`
-      select into_v2_org_id, into_mode from private_v1_import_allowed where v1_org_id = ${organization}
+      select into_v2_org_id, into_mode, into_integrations
+      from private_v1_import_allowed where v1_org_id = ${organization}
     `.pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(Into)),
       Effect.mapError(() => new V1ImportUnavailable()),
@@ -138,6 +142,7 @@ export const listedInto = (organization: string) =>
       mode: Option.getOrUndefined(
         Schema.decodeUnknownOption(V1IntoMode)(row.into_mode ?? "nothing_to_copy"),
       ),
+      integrations: [...new Set(row.into_integrations ?? [])],
     };
   });
 

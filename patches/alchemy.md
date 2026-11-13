@@ -64,11 +64,26 @@ and the Bun TypeScript entry points (`src/`). It carries:
   Cloudflare measured, `startup_time_ms` from the upload response, with the bundle size, how many
   uploads this process had in flight and how long the upload took:
   `Cloudflare Worker startup: <script> startup_time_ms=223 (3.33 MB, 13 uploads in flight, ...)`.
-  A refusal for startup CPU (`ScriptStartupError`, error 10021) keeps its tag and code, and its
-  message names the script, its size and the uploads in flight; Cloudflare's refusal carries no
-  reading of its own. beta.80 decoded `startup_time_ms` and dropped it. Uploads of one bundle
-  were refused at random while about 13 uploaded at once (`notes/cloud-latency.md`), so each
-  reading is kept beside the concurrency. Drop this part when Alchemy reports the startup time.
+  beta.80 decoded `startup_time_ms` and dropped it.
+- **Re-sending an upload refused for startup CPU (stopgap).** When Cloudflare refuses a script
+  upload for startup CPU, the same upload is sent again after 2 s, at most three attempts in all.
+  Only a `ScriptStartupError` whose message reads `Script startup exceeded CPU time limit` counts:
+  Cloudflare uses error 10021 for other script validation failures too, such as a Worker that
+  throws while it starts, and the client maps each of them to that class; any other error, 10021
+  or not, fails at once as before. Only the script upload path (`putWorkerScript`) can re-send:
+  `createScriptVersion` declares no `ScriptStartupError`, so a refusal there arrives as a plain
+  `CloudflareError` and fails as before. Each refusal logs
+  `Cloudflare Worker startup refused: ... Cloudflare refused <script> (<size>) with <n> uploads in
+  flight after <t> ms, attempt <k> of 3; ...`, and the third fails the deploy with a message
+  ending `Refused on all 3 attempts.` A process that uploaded anything prints
+  `Cloudflare Worker startup summary: <n> upload attempts, <r> refused ..., <s> re-sent, <f>
+  Workers refused on all 3 attempts.` when it exits; in GitHub Actions, a deploy with any refusal
+  also writes it as a warning annotation on the run page. `e2e/tests/alchemy-first-builds.spec.ts`
+  checks these under Node (`lib/`) and Bun (`src/`). This keeps a refusal from leaving a deploy
+  half-applied: on November 12 production's MCP server Worker stayed on its previous version for
+  six minutes beside the other Workers' new ones. It does not fix the cause, which is startup too
+  close to Cloudflare's 1 s limit (`notes/cloud-latency.md`). Remove it when the API and MCP
+  server Workers read under 350 ms for a week.
 - **State store probe.** A `/version` probe of the Cloudflare state store
   that still fails after its retries, or a failed workers.dev subdomain
   lookup, fails the run. beta.80 read either as "no store", and with `--yes`
@@ -92,6 +107,30 @@ and the Bun TypeScript entry points (`src/`). It carries:
   also adds `--adopt`. Resources Alchemy cannot read back are created again:
   `Random` values, PlanetScale roles, Axiom API tokens and monitors. Remove
   this part once no stage needs recovering.
+
+- **Effect 4.1 crypto services.** beta.80 is built for Effect 4.0 and reads the
+  `effect/Crypto` module, which Effect 4.1 removed. The patch carries upstream
+  beta.85's version of the three modules that used it: `Auth/OAuthFlow` takes its
+  random bytes and PKCE digest from `SecureRandom` and `Digest`,
+  `Util/PlatformServices` adds the Web Crypto layers that the platform services no
+  longer include, and `Stack` and the declarations that named `Crypto` name those
+  two services. Alchemy stays on beta.80 because beta.84 moved every provider into
+  its own package and beta.85 moves the shared Cloudflare state store to version
+  8, after which a deploy from beta.80 is refused; see
+  [the upgrade note](../notes/effect-mcp.md#alchemy-on-effect-41). Drop this part
+  with the move to beta.85 or later.
+
+- **Worker platform services.** `WorkerBridge` gave every Worker
+  `NodeServices.layer`: Node's file system, child process, terminal, stdio and
+  path services, about 40 KB of each upload. No Executor Worker calls the first
+  four, and Effect 4.1 made them larger. A Worker now gets Node's path service
+  and `FileSystem.layerNoop({})`, a file system in which every call fails, which
+  Effect's `HttpPlatform` needs in order to build. A Worker that asks for a
+  child process, terminal or stdio service fails with a missing service. Code
+  that also runs while planning a deploy still gets the real services there.
+  This is what kept the Workers inside their upload budgets on Effect 4.1
+  (`src/infrastructure/worker-build.ts` in `apps/hosted/cloud`); upstream beta.85
+  still provides all five.
 
 Upstream beta.80 now provides what the beta.79 patch also carried: storing a
 no-op resource before signalling dependents

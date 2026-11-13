@@ -19,6 +19,7 @@
  * Attributes outside these namespaces are the product's own and pass through.
  */
 import { Effect, Exit, Layer, Option, Schema, Tracer } from "effect";
+import { HttpClient, HttpMiddleware } from "effect/http";
 import { declaredOwner, ownerAttribute } from "./ownership.ts";
 import { recordedCause } from "./recorded-failure.ts";
 
@@ -189,10 +190,24 @@ const allowlistedSpan = (span: Tracer.Span): Tracer.Span => {
   };
 };
 
+/**
+ * Executor's names for HTTP spans: `http.server GET` and `http.client GET`. Effect's defaults are
+ * the bare method since 4.1; dashboards, alerts and the app telemetry vocabulary use these.
+ */
+const httpSpanNames = Layer.mergeAll(
+  Layer.succeed(HttpMiddleware.SpanNameGenerator, (request) => `http.server ${request.method}`),
+  Layer.succeed(HttpClient.SpanNameGenerator, (request) => `http.client ${request.method}`),
+);
+
 /** Wrap whichever tracer is already in scope; provide this above the exporter. */
 export const spanAttributes = (
   clock?: "system" | "cloudflare-io",
   recordAll = false,
+): Layer.Layer<never> => Layer.merge(httpSpanNames, tracerWithAllowlist(clock, recordAll));
+
+const tracerWithAllowlist = (
+  clock: "system" | "cloudflare-io" | undefined,
+  recordAll: boolean,
 ): Layer.Layer<never> =>
   Layer.effect(Tracer.Tracer)(
     Tracer.Tracer.pipe(

@@ -6,7 +6,6 @@ import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
 import {
   Cause,
   Clock,
-  type Crypto,
   Effect,
   ErrorReporter,
   Exit,
@@ -16,6 +15,7 @@ import {
   Result,
   Schema,
 } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import { recordedCause } from "@executor-js/telemetry/recorded-failure";
 import {
   type WorkflowHostControls,
@@ -854,7 +854,7 @@ export const makeTools = (
   clients: ReadonlyMap<string, FirstPartyOAuthClient>,
   runtime: Runtime,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   listings: Listings,
   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,

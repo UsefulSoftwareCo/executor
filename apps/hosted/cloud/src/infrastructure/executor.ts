@@ -1,6 +1,6 @@
 /** Cloud composition: Postgres is authoritative; no organization data is stored in a DO. */
 import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy";
-import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+import { Digest, SecureRandom } from "effect/crypto";
 import { makeRegistryStorage } from "@executor-js/app-registry";
 import {
   firstPartyOAuthClients,
@@ -34,6 +34,7 @@ import { cloudWorkflows } from "./workflow-runtime.ts";
 import { cloudRuntime } from "./runtime.ts";
 import { durableDeclarations } from "./durable-declarations.ts";
 import { InvocationDatabase } from "./invocation-database.ts";
+import { backgroundWait, CurrentRequest } from "./served-request.ts";
 import { cloudSecrets } from "./secrets.ts";
 import { cloudOrigin, cloudResourceOrigins, productionStage, stageName } from "./stage.ts";
 import { cloudEmulators } from "./emulators.ts";
@@ -97,7 +98,7 @@ export const cloudExecutor = Effect.fn(function* (
           Effect.flatMap(({ executorCloudApiDocument }) =>
             hostedApiRevision(JSON.stringify(executorCloudApiDocument(apiOrigin))),
           ),
-          Effect.provide(BrowserCrypto.layer),
+          Effect.provide(Digest.layerWebCrypto),
         );
   const accountSignIns = yield* cloudAccountSignIns.pipe(Effect.orDie);
   const egress = yield* cloudEgress;
@@ -113,27 +114,41 @@ export const cloudExecutor = Effect.fn(function* (
   // App storage, hosted permission checks and Better Auth share the event's client.
   const database = (yield* InvocationDatabase).pipe(Effect.mapError(() => new StorageError()));
   // Work nobody waits for (stale metadata refreshes, tool listings, tool call log writes) runs
-  // beside the request, inside this event's lifetime: until 20 s after it closes, when the remaining
-  // work is interrupted. Work offered once the event is closing is refused, so its caller releases
-  // what it holds or does it itself, and work it accepted always has those 20 s. The event's
-  // database is resolved first, so its connection closes after this work ends.
+  // beside the request, in the scope it is offered in, which holds the resources it uses: the
+  // scope's close waits for it, at most `backgroundWait`, before releasing them. Work offered once
+  // the scope is closing is refused, so its caller releases what it holds or does it itself. The
+  // event's database is resolved first, so its connection closes after this work ends. When that
+  // scope is nested in the request's, such as an MCP tool call's operation, the request's close
+  // waits for the work too, so the event exports its spans (`served-request.ts`).
   const backgroundWork = yield* makeExecutionMemo(
     Effect.gen(function* () {
       yield* database;
+      const scope = yield* Effect.scope;
       const fibers = yield* FiberSet.make();
+      const drained = FiberSet.awaitEmpty(fibers);
+      const served = yield* CurrentRequest;
       let closing = false;
       yield* Effect.addFinalizer(() =>
         Effect.sync(() => {
           closing = true;
         }).pipe(
-          Effect.andThen(FiberSet.awaitEmpty(fibers)),
-          Effect.timeoutOption("20 seconds"),
-          Effect.asVoid,
+          Effect.andThen(
+            // The request's own work shares the bound of every wait its close makes.
+            served?.scope === scope
+              ? served.bounded(drained)
+              : Effect.asVoid(Effect.timeoutOption(drained, backgroundWait)),
+          ),
         ),
+      );
+      /** The request the work is offered in, when that is not this scope's own. */
+      const join = Effect.flatMap(CurrentRequest, (request) =>
+        request === undefined || request.scope === scope ? Effect.void : request.join(drained),
       );
       return (work: Effect.Effect<void>) =>
         Effect.suspend(() =>
-          closing ? Effect.succeed(false) : FiberSet.run(fibers, work).pipe(Effect.as(true)),
+          closing
+            ? Effect.succeed(false)
+            : FiberSet.run(fibers, work).pipe(Effect.andThen(join), Effect.as(true)),
         );
     }),
   );
@@ -212,7 +227,7 @@ export const cloudExecutor = Effect.fn(function* (
           // Deployed Workers cannot reach loopback; the local development Worker can.
           allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
         },
-      }).pipe(Effect.provide(BrowserCrypto.layer));
+      }).pipe(Effect.provide([SecureRandom.layerWebCrypto, Digest.layerWebCrypto]));
       yield* lifecycle.attach(executor);
       return executor;
     }).pipe(

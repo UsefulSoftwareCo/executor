@@ -9,7 +9,7 @@ import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { saveAndDeploy } from "../support/app-authoring.ts";
-import { Evidence } from "../support/evidence.ts";
+import { Evidence, Telemetry, type DeliveredSpan } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { expireEvaluated, writeRows } from "../support/cloud-rows.ts";
@@ -131,13 +131,57 @@ const oneAppBoundMs = 1_500;
  */
 const catalogSearchBoundMs = 15_000;
 /**
- * A repeated catalog-wide search reuses every kept listing and its search projections. What
- * remains is one MCP round trip, one access-checked store read per listing and ranking 7,000
- * tools, tens of milliseconds on an M-series laptop. 500 ms leaves a slower runner several times
- * that, and is under a sixth of the fastest cold search (3.7 s), so any search that evaluates the
- * catalog again fails it.
+ * SQL statements a catalog-wide search that evaluates nothing runs for each app it searches: two
+ * access checks of the member's role and groups (one to bind the app's accounts, one to search
+ * it), the app's row, its invocation snapshot, its access count for search rows and its search
+ * listing row. Each app it lists, rather than reading its kept rows, adds one more. A search runs
+ * nine more of its own: authentication, the app list twice, the account bindings, the ranking
+ * twice and the snapshot's account read. These are ceilings: a change that adds a statement per app
+ * fails them, one that removes some passes.
  */
-const warmSearchBoundMs = 500;
+const statementsPerApp = 6;
+const statementsPerSearch = 9;
+/**
+ * Statements a search may run beyond those for known one-off cases, such as reading an API key
+ * again when another request held its row (`bearer-access.ts`). It is not for timing, and it is
+ * smaller than one statement more per app, which adds at least 29.
+ */
+const statementMargin = 10;
+/**
+ * A loose bound on a repeated search's time, for a search that does the same work more slowly,
+ * such as a lost index or a slower ranking query. Reuse is asserted by the trace checks, not by
+ * this. 77 CI runs on main took 125-445 ms and the slowest CI reading since was 626 ms, so 3 s
+ * stays far from runner noise.
+ */
+const repeatedSearchBoundMs = 3_000;
+/**
+ * What a catalog-wide search did, as its request's trace records it: how many apps it searched,
+ * how it found each app's search rows (`kept`, or `missing` when it had to list the app), the
+ * cache outcome of each app it listed, whether it evaluated an app or gave up on one, and how many
+ * SQL statements it ran.
+ */
+const searchWork = (spans: ReadonlyArray<DeliveredSpan>) => {
+  const named = (operation: string) => spans.filter((span) => span.operationName === operation);
+  const rows = named("sdk.tools.searchable").filter(
+    (span) => span.tags["executor.search.rows"] !== undefined,
+  );
+  return {
+    apps: Number(named("mcp.catalog")[0]?.tags["executor.discovery.apps"]),
+    rows: new Map(
+      rows.map((span) => [span.tags["executor.app.id"], span.tags["executor.search.rows"]]),
+    ),
+    listed: new Map(
+      named("sdk.tools.listing").map((span) => [
+        span.tags["executor.app.id"],
+        span.tags["executor.declarations.cache"],
+      ]),
+    ),
+    evaluated:
+      named("sdk.tools.listing.evaluate").length + named("sdk.tools.searchable.cold-fill").length,
+    stopped: spans.some((span) => span.tags["executor.discovery.stopped"] !== undefined),
+    statements: named("sql.execute").length,
+  };
+};
 /**
  * How long discovery waits for the apps a search needs before it may give up on any. Stalled
  * apps delay a catalog-wide search by about this much, never by their connection timeout or the
@@ -458,7 +502,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP catalog scale", (it) => {
         const client = yield* mcp.connect(key.key, "catalog-scale", {
           organization: actors.organization.id,
         });
+        const telemetry = yield* Telemetry;
         const samples: Array<{ label: string; elapsed: number }> = [];
+        /** Each repeated search's app and SQL statement counts, as its trace records them. */
+        const searches: Array<{ label: string; apps: number; statements: number }> = [];
         const execute = (label: string, code: string) =>
           Effect.gen(function* () {
             const started = yield* Clock.currentTimeMillis;
@@ -470,13 +517,44 @@ layer(HostedLive, { excludeTestServices: true })("MCP catalog scale", (it) => {
             );
             const elapsed = (yield* Clock.currentTimeMillis) - started;
             samples.push({ label, elapsed });
-            yield* evidence.json("catalog-scale.json", { deployMs, samples });
+            yield* evidence.json("catalog-scale.json", { deployMs, samples, searches });
             yield* Console.log(JSON.stringify({ label, elapsed }));
+            const request = (yield* evidence.requests)
+              .filter((entry) => entry.path === "/mcp")
+              .at(-1);
+            if (request === undefined) return yield* Effect.die(new Error("Missing MCP request"));
             return {
               elapsed,
+              traceId: request.traceId,
               completed: yield* Schema.decodeUnknownEffect(Completed)(result.structuredContent),
             };
           });
+        /**
+         * The work a search did, once its trace holds a search-rows span for every app, recorded
+         * with its label in the scenario's output.
+         */
+        const workOf = (label: string, traceId: string) =>
+          telemetry
+            .settled(traceId, (spans) => {
+              // Spans are exported as they end, so once `mcp.execute` is in, its statements are too.
+              const work = searchWork(spans);
+              return (
+                work.apps > 0 &&
+                work.rows.size === work.apps &&
+                spans.some((span) => span.operationName === "mcp.execute")
+              );
+            })
+            .pipe(
+              Effect.map(searchWork),
+              Effect.tap((work) =>
+                Effect.gen(function* () {
+                  const counted = { label, apps: work.apps, statements: work.statements };
+                  searches.push(counted);
+                  yield* evidence.json("catalog-scale.json", { deployMs, samples, searches });
+                  yield* Console.log(JSON.stringify(counted));
+                }),
+              ),
+            );
         const target = apps[17]!;
         const call = `return await tools[${JSON.stringify(target.slug)}].op123({ path: { id: "rec_1" } });`;
         const large = apps[largeApp]!;
@@ -511,7 +589,8 @@ return { items: [...small.items, ...large.items] };`;
         ).toMatchObject(found.map((path) => ({ path })));
         expect(searchedAll.completed.unavailableApps).toEqual([]);
         expect(searchedAll.elapsed).toBeLessThan(catalogSearchBoundMs);
-        // Later searches reuse the evaluated listings instead of evaluating all 29 apps again.
+        // Later searches reuse the evaluated listings instead of evaluating all 29 apps again:
+        // every app's search rows are kept, and no app is listed or evaluated.
         for (const attempt of [1, 2, 3]) {
           const warm = yield* execute(`Search the whole catalog again (${attempt})`, needle);
           expect(warm.completed.execution.ok).toBe(true);
@@ -519,7 +598,15 @@ return { items: [...small.items, ...large.items] };`;
             (yield* Schema.decodeUnknownEffect(SearchValue)(warm.completed.execution.value)).items,
           ).toMatchObject(found.map((path) => ({ path })));
           expect(warm.completed.unavailableApps).toEqual([]);
-          expect(warm.elapsed).toBeLessThan(warmSearchBoundMs);
+          expect(warm.elapsed).toBeLessThan(repeatedSearchBoundMs);
+          const work = yield* workOf(`Search the whole catalog again (${attempt})`, warm.traceId);
+          for (const app of apps) expect(work.rows.get(app.id), app.slug).toBe("kept");
+          expect([...work.rows.values()].filter((rows) => rows !== "kept")).toEqual([]);
+          expect(work.listed.size).toBe(0);
+          expect(work.evaluated).toBe(0);
+          expect(work.statements).toBeLessThanOrEqual(
+            statementsPerApp * work.apps + statementsPerSearch + statementMargin,
+          );
         }
 
         // MCP apps on a machine that accepts connections and never answers join the catalog. Each
@@ -582,7 +669,23 @@ return { items: [...small.items, ...large.items] };`;
           const reported = again.completed.unavailableApps;
           expect(new Set(reported.map((entry) => entry.app))).toEqual(new Set(stalled));
           for (const entry of reported) expect(entry.reason).toContain("timed out");
-          expect(again.elapsed).toBeLessThan(warmSearchBoundMs);
+          // The other apps' rows are kept. Only the stalled apps are listed, and each listing is
+          // reported as running without waiting for it, so the search gives up on no app and
+          // evaluates none.
+          expect(again.elapsed).toBeLessThan(repeatedSearchBoundMs);
+          const work = yield* workOf(
+            `Search the whole catalog beside stalled apps again (${attempt})`,
+            again.traceId,
+          );
+          for (const app of apps) expect(work.rows.get(app.id), app.slug).toBe("kept");
+          expect(Object.fromEntries(work.listed)).toEqual(
+            Object.fromEntries(stalled.map((app) => [app, "running"])),
+          );
+          expect(work.stopped).toBe(false);
+          expect(work.evaluated).toBe(0);
+          expect(work.statements).toBeLessThanOrEqual(
+            statementsPerApp * work.apps + work.listed.size + statementsPerSearch + statementMargin,
+          );
         }
       }).pipe(Effect.provide(McpClient.layer)),
     ),

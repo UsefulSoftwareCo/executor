@@ -175,8 +175,9 @@ const sessionTraffic = (since: DateTime.Utc) =>
         [
           "legacy = countif(name == 'cloudflare.invocation' and entrypoint == 'McpSessions')",
           "sessions = countif(name == 'cloudflare.invocation' and entrypoint == 'McpSession')",
-          "initialize = countif(name endswith '/initialize' and ['status.code'] != 'ERROR')",
-          "toolCalls = countif(name endswith '/tools/call' and ['status.code'] != 'ERROR')",
+          // Effect names an MCP request's server span after its JSON-RPC method.
+          "initialize = countif(name == 'initialize' and kind == 'server' and ['status.code'] != 'ERROR')",
+          "toolCalls = countif(name == 'tools/call' and kind == 'server' and ['status.code'] != 'ERROR')",
         ].join(", "),
     ].join(" | ");
     const http = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);

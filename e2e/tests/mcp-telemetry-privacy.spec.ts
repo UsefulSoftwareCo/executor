@@ -138,8 +138,8 @@ const located = (trace: Delivered, marker: string) => {
   return found.length === 0 && JSON.stringify(trace).includes(marker) ? ["elsewhere"] : found;
 };
 
-const toolCall = (operation: string) =>
-  operation.startsWith("McpServer.") && operation.endsWith("/tools/call");
+/** Effect names an MCP request's server span after its JSON-RPC method. */
+const toolCall = (operation: string) => operation === "tools/call";
 
 layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) => {
   it.effect(scenarios.mcpTelemetryPrivacy.title, (context) =>
@@ -215,7 +215,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             ].join("\n");
             const rpc = found.data.find(({ span }) => toolCall(span.operationName))?.span;
             leaks[path] = [
-              ...(rpc?.tags.parameters === undefined ? [] : ["tools/call parameters"]),
+              ...(rpc?.tags["gen_ai.tool.call.arguments"] === undefined
+                ? []
+                : ["tools/call arguments"]),
               ...markers.flatMap((marker) => [
                 ...located(found, marker),
                 ...(logs.includes(marker) ? ["logs"] : []),
@@ -300,7 +302,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             const execute = rpcSpan(
               yield* delivered("execute", yield* latestTrace, ["tools/call", "mcp.execute"]),
             );
-            expect(execute?.tags.tool, "execute: tools/call names its tool").toBe("execute");
+            expect(execute?.tags["gen_ai.tool.name"], "execute: tools/call names its tool").toBe(
+              "execute",
+            );
             expect(execute?.status).toBe("ok");
 
             const resumed = yield* client.use(
@@ -322,7 +326,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             const resume = rpcSpan(
               yield* delivered("resume", yield* latestTrace, ["tools/call", "mcp.resume"]),
             );
-            expect(resume?.tags.tool).toBe("resume");
+            expect(resume?.tags["gen_ai.tool.name"]).toBe("resume");
 
             const rejected = yield* client.use(
               "read a skill with an invalid private slug",
@@ -340,7 +344,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             const skills = rpcSpan(
               yield* delivered("skills-invalid", yield* latestTrace, ["tools/call"]),
             );
-            expect(skills?.tags.tool).toBe("skills");
+            expect(skills?.tags["gen_ai.tool.name"]).toBe("skills");
           }),
         );
 
@@ -544,7 +548,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
               const refused = rpcSpan(
                 yield* delivered(`unknown-tool-${protocolVersion}`, unknown.trace, ["tools/call"]),
               );
-              expect(refused?.status).toBe("error");
+              // A refusal the request caused does not fail the server span; the span records its
+              // JSON-RPC code (invalid params) as the outcome.
+              expect(refused?.tags["rpc.status_code"]).toBe("-32602");
 
               const malformed = yield* call({
                 method: "tools/call",

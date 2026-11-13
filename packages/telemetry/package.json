@@ -9,6 +9,7 @@
     "./browser-errors": "./src/browser-errors.ts",
     "./http": "./src/http.ts",
     "./isolate": "./src/isolate.ts",
+    "./keepalive": "./src/keepalive.ts",
     "./local": "./src/local.ts",
     "./failed-span": "./src/failed-span.ts",
     "./files": "./src/files.ts",
@@ -24,11 +25,11 @@
   "dependencies": {
     "@bufbuild/protobuf": "2.11.0",
     "@executor-js/utils": "workspace:*",
-    "effect": "4.0.1",
+    "effect": "4.1.4",
     "workerd": "1.20260918.1"
   },
   "devDependencies": {
-    "@effect/platform-bun": "4.0.1",
-    "@effect/platform-node": "4.0.1"
+    "@effect/platform-bun": "4.1.4",
+    "@effect/platform-node": "4.1.4"
   }
 }

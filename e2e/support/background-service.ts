@@ -176,6 +176,39 @@ const alive = (pid: number) =>
   );
 
 /**
+ * Windows: when the process a process ID names now started, in 100-nanosecond ticks. Windows soon
+ * gives a freed process ID to another process, often another `executor.exe`: the next server, or a
+ * command another scenario runs at the same time. An image name cannot tell those apart; a start
+ * time can. Windows keeps no start time a Node program reads without starting one, so PowerShell
+ * reads it.
+ */
+export const windowsStartTime = (pid: number) =>
+  Effect.gen(function* () {
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    return yield* processes
+      .lines(
+        ChildProcess.make(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
+          ],
+          { stderr: "ignore" },
+        ),
+      )
+      .pipe(
+        Effect.map((lines) =>
+          Option.fromNullishOr(
+            lines.map((line) => line.trim()).find((line) => /^\d+$/u.test(line)),
+          ),
+        ),
+        Effect.orElseSucceed(() => Option.none<string>()),
+      );
+  });
+
+/**
  * End a background server as a crash would: nothing it runs on shutdown runs. Its child processes,
  * the telemetry collector and workerd, end with it, as they would with the machine. A server a
  * client starts is detached into its own process group, so POSIX signals that group, or the
@@ -449,35 +482,10 @@ export const backgroundServiceCli = (options: { readonly port?: number } = {}) =
         }),
       );
 
-    /**
-     * Windows: when the process a process ID names now started, in 100-nanosecond ticks. Windows
-     * soon gives a freed process ID to another process, often another `executor.exe`: the next
-     * server, or a command another scenario runs at the same time. An image name cannot tell those
-     * apart; a start time can. Windows keeps no start time a Node program reads without starting
-     * one, so PowerShell reads it.
-     */
     const startOf = (pid: number) =>
-      processes
-        .lines(
-          ChildProcess.make(
-            "powershell.exe",
-            [
-              "-NoProfile",
-              "-NonInteractive",
-              "-Command",
-              `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
-            ],
-            { stderr: "ignore" },
-          ),
-        )
-        .pipe(
-          Effect.map((lines) =>
-            Option.fromNullishOr(
-              lines.map((line) => line.trim()).find((line) => /^\d+$/u.test(line)),
-            ),
-          ),
-          Effect.orElseSucceed(() => Option.none<string>()),
-        );
+      windowsStartTime(pid).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, processes),
+      );
     /** On Windows, when each server this scenario saw started. */
     const starts = new Map<number, string>();
     /**

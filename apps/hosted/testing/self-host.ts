@@ -1,4 +1,5 @@
 /** Explicit local test server. Production's entry point never mounts these auth shortcuts or fixtures. */
+import * as BunCrypto from "@effect/platform-bun/BunCrypto";
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer";
 import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import * as BunServices from "@effect/platform-bun/BunServices";
@@ -92,7 +93,7 @@ const command = Command.make("test-self-host", {
 
 BunRuntime.runMain(
   Command.run(command, { version: "0.0.0" }).pipe(
-    Effect.provide(BunServices.layer),
+    Effect.provide([BunServices.layer, BunCrypto.layerDigest]),
     Effect.catch((error) =>
       CliError.isCliError(error)
         ? Effect.fail(error)

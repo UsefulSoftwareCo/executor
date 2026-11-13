@@ -46,7 +46,7 @@
     "@executor-js/utils": "workspace:*",
     "apps": "workspace:*",
     "better-auth": "1.7.20",
-    "effect": "4.0.1"
+    "effect": "4.1.4"
   },
   "devDependencies": {}
 }

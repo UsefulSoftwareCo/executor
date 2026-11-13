@@ -5,6 +5,7 @@ import {
   firstPartyFailure,
   scriptDirectory,
 } from "@executor-js/telemetry/browser-errors";
+import { budgetedFetch, pageFetch } from "@executor-js/telemetry/keepalive";
 import { documentBuild } from "@executor-js/dashboard-start/document-build";
 import { Schema, Option } from "effect";
 
@@ -57,6 +58,10 @@ export const startErrorReporting = () => {
   Sentry.init({
     tunnel,
     dsn,
+    // The SDK sends with keepalive while its own requests stay under 64 KiB, but the browser refuses
+    // one once all of the page's keepalive requests would pass that, and the SDK then drops the
+    // report. Its requests draw from the page's one budget instead.
+    transport: (options) => Sentry.makeFetchTransport(options, budgetedFetch(pageFetch)),
     environment: import.meta.env.VITE_EXECUTOR_ENVIRONMENT,
     release: documentBuild(),
     sendDefaultPii: false,

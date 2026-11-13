@@ -15,6 +15,7 @@ import {
   HttpBody,
   HttpClient,
   HttpClientRequest,
+  HttpMethod,
   HttpServerRequest,
   HttpServerResponse,
 } from "effect/http";
@@ -304,6 +305,9 @@ export const postHogUpstream = (
   const path = url.pathname.slice(config.path.length);
   const endpoint = postHogEndpoints.find(([pattern]) => pattern.test(path));
   if (endpoint === undefined) return undefined;
+  // Effect 4.1 types received methods as `string`.
+  const method = request.method;
+  if (!HttpMethod.isHttpMethod(method)) return undefined;
   const upstream = new URL(config.host);
   if (path.startsWith("/static/"))
     upstream.hostname = upstream.hostname.replace(".i.posthog.com", "-assets.i.posthog.com");
@@ -315,7 +319,7 @@ export const postHogUpstream = (
     if (value !== undefined) headers[name] = value;
   }
   return {
-    request: HttpClientRequest.make(request.method)(upstream, {
+    request: HttpClientRequest.make(method)(upstream, {
       headers,
       ...(request.method === "POST"
         ? { body: HttpBody.stream(request.stream, headers["content-type"]) }

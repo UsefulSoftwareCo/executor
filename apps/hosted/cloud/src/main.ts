@@ -62,6 +62,7 @@ import { retainedAssetFolders, retainedAssetPath } from "./contracts/retained-as
 import * as Output from "alchemy/Output";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import { Config, Effect, Layer, Option, Path, Ref } from "effect";
+import { Digest } from "effect/crypto";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { cloudAuth } from "./infrastructure/auth.ts";
 import { cloudAccountCallback } from "./implementation/account-callback.ts";
@@ -90,6 +91,7 @@ import {
 } from "./infrastructure/background-jobs.ts";
 import { handledJob, jobCompleted, jobFailed } from "./contracts/job-outcome.ts";
 import { cloudEgress } from "./infrastructure/executor.ts";
+import { servedRequest } from "./infrastructure/served-request.ts";
 import { cloudProduct } from "./infrastructure/product.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
 import { EventCleanup, sqlCancellation } from "./infrastructure/event-cleanup.ts";
@@ -789,6 +791,8 @@ export default Api.make(
         // Server-rendered pages read the API through this complete pipeline, in-process.
         withHostPipeline,
         lifetime.http,
+        // The request whose close waits for the background work nested scopes offer while it runs.
+        servedRequest,
       ),
     };
   }).pipe(
@@ -800,6 +804,8 @@ export default Api.make(
         cloudAuthDatabase,
         cloudTelemetry,
         Cloudflare.Workers.CronEventSourceLive,
+        // The published skills' versions are digests; Workers compute them with Web Crypto.
+        Digest.layerWebCrypto,
       ),
     ),
   ),

@@ -21,6 +21,7 @@ import {
   type VersionId,
   type Executor,
   type WebhookSourceConfig,
+  WebhookSourceFields,
 } from "@executor-js/sdk/core";
 import { permitsAccounts, permittedTargets } from "@executor-js/authorization";
 import { Effect, Schema } from "effect";
@@ -197,7 +198,26 @@ export const callerAccounts = (app: App, links?: CallerLinks) =>
   versionAccounts(activeVersion(app), links);
 
 /** Webhook source management, from the SDK the product links accounts through. */
-export type WebhookSources = Pick<Executor["webhooks"], "link" | "unlink" | "sources">;
+export type WebhookSources = Pick<Executor["webhooks"], "link" | "unlink">;
+
+const SourceRow = Schema.Struct({
+  actor: WebhookSourceFields.fields.actor,
+  status: WebhookSourceFields.fields.status,
+});
+/**
+ * The actor and status of an account's webhook source on an app, if it has one, read by the
+ * source table's `(app, account)` key in the caller's transaction. Listing the app's sources
+ * instead reads every account linked to it, so each link would cost more as the app's accounts grow.
+ */
+export const accountSource = (
+  sql: SqlClient.SqlClient,
+  input: { readonly app: AppId; readonly account: AccountId },
+) =>
+  Effect.gen(function* () {
+    const rows = yield* sql`select actor, status from executor_webhook_sources
+      where app = ${input.app} and account = ${input.account}`;
+    return (yield* Schema.decodeUnknownEffect(Schema.Array(SourceRow))(rows))[0];
+  }).pipe(Effect.catchTags(sqlFailures));
 const storage = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.mapError(() => new StorageError()));
 
@@ -295,9 +315,7 @@ const syncSource = (
         where app = ${input.app} and account = ${input.account}
         group by subject order by min(created_at), subject`,
     )).map((row) => row.subject);
-    const source = (yield* storage(webhooks.sources({ app: input.app }))).find(
-      (item) => item.account === input.account,
-    );
+    const source = yield* accountSource(sql, input);
     const config = input.config === undefined ? {} : { config: input.config };
     if (subjects.includes(null)) {
       if (
@@ -489,9 +507,7 @@ export const sourceActorLost = (
 ) =>
   Effect.gen(function* () {
     yield* lockLinks(sql, input.app);
-    const source = (yield* storage(webhooks.sources({ app: input.app }))).find(
-      (item) => item.account === input.account,
-    );
+    const source = yield* accountSource(sql, input);
     if (source === undefined || source.actor !== input.actor || source.status === "removing")
       return;
     const own = yield* linkedAccounts(sql, { subject: input.actor, apps: [input.app] });

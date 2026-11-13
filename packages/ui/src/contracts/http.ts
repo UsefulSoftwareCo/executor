@@ -43,13 +43,15 @@ export const requestKey = (value: unknown): string => {
 
 /**
  * Key a query by its request so a server render's settled value reaches the browser with the
- * page, and the browser reads it instead of requesting it again.
+ * page, and the browser reads it instead of requesting it again: `skipInitialRun` keeps the
+ * page's value when the query mounts, until a refresh or a changed dependency runs it.
  */
 export const hydrated = <R extends object>(
   request: R,
-): R & { readonly serializationKey: string } => ({
+): R & { readonly serializationKey: string; readonly skipInitialRun: true } => ({
   ...request,
   serializationKey: requestKey(request),
+  skipInitialRun: true,
 });
 
 /**
@@ -72,6 +74,9 @@ export const hydratedResult =
         success: options.success,
         ...(options.error === undefined ? {} : { error: options.error }),
       }) as unknown as Schema.Codec<Atom.Type<R>, unknown>,
+      // The page's value stands in for the read: without this the atom requests it again when
+      // it mounts. A refresh or a changed dependency still runs it.
+      skipInitialRun: true,
     });
 
 const notLoaded = AsyncResult.initial();

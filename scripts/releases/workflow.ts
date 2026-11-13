@@ -15,21 +15,30 @@ NodeRuntime.runMain(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const output = yield* Config.String("GITHUB_OUTPUT");
-    const requested = yield* Config.Literals(["build", "beta", "latest"], "RELEASE_CHANNEL");
-    if (requested !== "build") {
+    const requested = yield* Config.Literals(
+      ["build", "check", "beta", "latest"],
+      "RELEASE_CHANNEL",
+    );
+    if (requested !== "build" && requested !== "check") {
       const ref = yield* Config.String("GITHUB_REF");
       if (ref !== "refs/heads/main" || requested !== release.channel)
         return yield* Effect.die(
           new Error("Publish from main and select the channel recorded in apps/cli/package.json."),
         );
     }
-    // macOS runners cost 5-20x as much as Linux runners, so pull requests skip the darwin
-    // targets. Manual build and publish runs still build, sign and test them on macOS.
+    // The paced check on main, which runs every two hours or so when a push changed what a
+    // release lane builds or runs: Linux x64 packaging and its installed CLI suite, and the image
+    // on both architectures, at about USD 1 a run. macOS
+    // runners cost 20 times as much as Linux x64 and Windows 8 to 16 times, so Linux arm64,
+    // Windows and macOS packaging run in the publishing runs, which test every target before
+    // they publish, and in manual build runs. CI's release lanes skip darwin too.
     const event = yield* Config.String("GITHUB_EVENT_NAME");
     const targets =
-      event === "pull_request"
-        ? platforms.filter((target) => target.platform !== "darwin")
-        : platforms;
+      requested === "check"
+        ? platforms.filter((target) => target.platform === "linux" && target.arch === "x64")
+        : event === "pull_request"
+          ? platforms.filter((target) => target.platform !== "darwin")
+          : platforms;
     // Each job's matrix entry names the runner it runs on: `cli` overrides the platform's runner.
     const entry = (target: (typeof targets)[number]) => {
       const { cli, ...fields } = target;
@@ -57,7 +66,7 @@ NodeRuntime.runMain(
     };
     const matrix = targets.map(entry);
     const values = {
-      publish: requested === "build" ? "false" : "true",
+      publish: requested === "build" || requested === "check" ? "false" : "true",
       version: release.version,
       channel: release.channel,
       tag: release.tag,

@@ -59,6 +59,47 @@ const eventItems = collectorLinesWholeEnvironment("sentry.ndjson").pipe(
     }),
   ),
 );
+/**
+ * Each envelope the receiver accepted that carries an event of trace `trace`, as sent: its size,
+ * and the category and URL path of each breadcrumb its event carries.
+ */
+export const sentryReports = (trace: string) =>
+  collectorLinesWholeEnvironment("sentry.ndjson").pipe(
+    Effect.map((lines) =>
+      lines.flatMap((line) => {
+        const envelope = field(parseLeniently(line), "envelope");
+        if (typeof envelope !== "string") return [];
+        const event = envelope
+          .split("\n")
+          .slice(2)
+          .map(parseLeniently)
+          .find((item) => field(item, "contexts", "trace", "trace_id") === trace);
+        if (event === undefined) return [];
+        const crumbs = field(event, "breadcrumbs");
+        const values = field(event, "breadcrumbs", "values");
+        const list: ReadonlyArray<unknown> = Array.isArray(values)
+          ? values
+          : Array.isArray(crumbs)
+            ? crumbs
+            : [];
+        return [
+          {
+            bytes: new TextEncoder().encode(envelope).byteLength,
+            breadcrumbs: list.map((crumb) => {
+              const url = field(crumb, "data", "url");
+              return {
+                category: String(field(crumb, "category") ?? ""),
+                path:
+                  typeof url === "string" && URL.canParse(url, "http://page.invalid")
+                    ? new URL(url, "http://page.invalid").pathname
+                    : undefined,
+              };
+            }),
+          },
+        ];
+      }),
+    ),
+  );
 const decode = (items: ReadonlyArray<string>) =>
   items.map((item) => Schema.decodeUnknownSync(SentryEvent)(item));
 
@@ -115,8 +156,40 @@ export const awaitSentry = (
 export const awaitSentryWholeEnvironment = (predicate: (event: SentryEvent) => boolean) =>
   awaitAny(sentryEventsWholeEnvironment, predicate);
 
-/** Keep the browser's real server request and trace, then replace only the response under test. */
-export const injectDashboardResponse = (slug: string, body: string, status: number) =>
+/**
+ * Record each operation failure the page reports, as the safe metadata its event carries, in the
+ * document's `data-observed-failures` attribute. Applies to every document the page opens after.
+ */
+export const observeOperationFailures = Effect.gen(function* () {
+  const browser = yield* Browser;
+  yield* browser.use("Observe only safe operation failure metadata", (page) =>
+    page.addInitScript(() => {
+      window.addEventListener("executor:operation-failed", (event) => {
+        if (!(event instanceof CustomEvent)) return;
+        const root = document.documentElement;
+        const seen: unknown = JSON.parse(root.getAttribute("data-observed-failures") ?? "[]");
+        root.setAttribute(
+          "data-observed-failures",
+          JSON.stringify([...(Array.isArray(seen) ? seen : []), event.detail]),
+        );
+      });
+    }),
+  );
+});
+
+/**
+ * Keep the browser's real server request and trace, then replace only the response under test.
+ * Returns the trace of the replaced request and the failure the page reported for it, as JSON,
+ * which `observeOperationFailures` records; another request's failure, such as a slow server's
+ * 503 on the opened page, is passed over. `beforeFailing` runs on the opened page before the
+ * browser sends the request that fails.
+ */
+export const injectDashboardResponse = <E = never, R = never>(
+  slug: string,
+  body: string,
+  status: number,
+  beforeFailing: Effect.Effect<unknown, E, R> = Effect.void,
+) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
     let trace: string | undefined;
@@ -130,14 +203,162 @@ export const injectDashboardResponse = (slug: string, body: string, status: numb
     yield* browser.use("Open a page that does not read resources", (page) =>
       page.goto(`/org/${slug}/organization`),
     );
+    yield* beforeFailing;
     yield* browser.use("Navigate to Apps in the browser", (page) =>
       page.getByRole("navigation").getByRole("link", { name: /^Apps/ }).click(),
     );
-    yield* browser.use("Wait for the decoded operation failure", (page) =>
-      page.waitForFunction(() => document.documentElement.hasAttribute("data-observed-failure")),
+    const replaced = yield* Effect.sync(() => trace).pipe(
+      Effect.repeat({
+        schedule: Schedule.spaced("50 millis"),
+        until: (trace) => trace !== undefined,
+      }),
+      Effect.timeout("15 seconds"),
     );
-    return trace;
+    const failure = yield* browser.use("Wait for the decoded operation failure", (page) =>
+      page
+        .waitForFunction((trace) => {
+          const seen: unknown = JSON.parse(
+            document.documentElement.getAttribute("data-observed-failures") ?? "[]",
+          );
+          const match = Array.isArray(seen)
+            ? seen.find(
+                (failure: unknown) =>
+                  typeof failure === "object" &&
+                  failure !== null &&
+                  Reflect.get(failure, "trace_id") === trace,
+              )
+            : undefined;
+          return match === undefined ? false : JSON.stringify(match);
+        }, replaced)
+        .then((handle) => handle.jsonValue()),
+    );
+    return { trace: replaced, failure: String(failure) };
   }).pipe(Effect.scoped);
+
+/**
+ * Until the scope closes, hold the page's trace and log exports before they leave the browser, as
+ * a collector slowed by load holds them. Their keepalive bodies stay in flight meanwhile. `held`
+ * waits until a trace export is held. `next` lets the held exports go and waits until a new trace
+ * export is held: one export of each kind runs at a time, so it carries everything the page
+ * recorded meanwhile. `heldBytes` is the bytes of the export bodies held since then. The exporter
+ * gives up on a request after five seconds and sends the same body again; a body counts once.
+ */
+export const holdTelemetryExports = Effect.gen(function* () {
+  const browser = yield* Browser;
+  const exports = (url: URL) => /^\/api\/telemetry\/(?:traces|logs)$/.test(url.pathname);
+  const phase = () => {
+    let release = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let traceHeld = () => {};
+    const trace = new Promise<void>((resolve) => {
+      traceHeld = resolve;
+    });
+    return { release, released, traceHeld, trace, bytes: 0 };
+  };
+  let current = phase();
+  const seen = new Set<string>();
+  yield* Effect.acquireRelease(
+    browser.use("Hold the page's telemetry exports before they leave", (page) =>
+      page.route(exports, (route) => {
+        const held = current;
+        const body = route.request().postDataBuffer() ?? Buffer.alloc(0);
+        const key = `${route.request().url()} ${body.toString("base64")}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          held.bytes += body.byteLength;
+          if (new URL(route.request().url()).pathname.endsWith("/traces")) held.traceHeld();
+        }
+        return held.released.then(() => route.fallback());
+      }),
+    ),
+    () =>
+      Effect.sync(() => current.release()).pipe(
+        Effect.andThen(
+          browser.use("Let the held telemetry exports go", (page) => page.unroute(exports)),
+        ),
+        Effect.orDie,
+      ),
+  );
+  const awaitTrace = (name: string) =>
+    browser.use(name, () => current.trace).pipe(Effect.timeout("15 seconds"));
+  return {
+    held: awaitTrace("Wait until the page's trace export is held"),
+    next: Effect.suspend(() => {
+      const previous = current;
+      current = phase();
+      previous.release();
+      return awaitTrace("Let the held exports go and wait until the next trace export is held");
+    }),
+    heldBytes: Effect.sync(() => current.bytes),
+  };
+});
+
+/**
+ * Until the scope closes, hold the session replay chunks PostHog sends from the page, as a slow
+ * analytics proxy holds them. `sizes` is each held chunk's body size, in the order sent. A resent
+ * body counts once.
+ */
+export const holdReplayChunks = Effect.gen(function* () {
+  const browser = yield* Browser;
+  const chunks = (url: URL) => /^\/api\/[a-f0-9]{16}\/s\/?$/.test(url.pathname);
+  let release = () => {};
+  const released = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const sizes: Array<number> = [];
+  const seen = new Set<string>();
+  yield* Effect.acquireRelease(
+    browser.use("Hold the page's session replay chunks before they leave", (page) =>
+      page.route(chunks, (route) => {
+        const body = route.request().postDataBuffer() ?? Buffer.alloc(0);
+        const key = body.toString("base64");
+        if (!seen.has(key)) {
+          seen.add(key);
+          sizes.push(body.byteLength);
+        }
+        return released.then(() => route.fallback());
+      }),
+    ),
+    () =>
+      Effect.sync(release).pipe(
+        Effect.andThen(
+          browser.use("Let the held replay chunks go", (page) => page.unroute(chunks)),
+        ),
+        Effect.orDie,
+      ),
+  );
+  return {
+    sizes: Effect.sync(() => [...sizes]),
+  };
+});
+
+/**
+ * Count, until the scope closes, the analytics events the page sends to the PostHog proxy's event
+ * path; `count` is how many it has sent so far.
+ */
+export const countAnalyticsPushes = Effect.gen(function* () {
+  const browser = yield* Browser;
+  let count = 0;
+  const pushes = (url: URL) => /^\/api\/[a-f0-9]{16}\/push$/.test(url.pathname);
+  yield* Effect.acquireRelease(
+    browser.use("Count the page's analytics events", (page) =>
+      page.route(pushes, (route) => {
+        count++;
+        return route.fallback();
+      }),
+    ),
+    () =>
+      browser
+        .use("Stop counting analytics events", (page) => page.unroute(pushes))
+        .pipe(Effect.orDie),
+  );
+  return { count: Effect.sync(() => count) };
+});
+
+/** The URL path of the dashboard's analytics events, as their breadcrumbs would name it. */
+export const analyticsPushPath = /^\/api\/[a-f0-9]{16}\/push$/;
 
 /** Withhold the server's bootstrap data so the dashboard's browser entry cannot start. */
 export const incompleteDashboardDocument = (slug: string) =>

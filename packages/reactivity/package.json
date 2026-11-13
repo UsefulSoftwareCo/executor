@@ -7,10 +7,10 @@
     "./cloudflare": "./src/cloudflare.ts"
   },
   "dependencies": {
-    "effect": "4.0.1"
+    "effect": "4.1.4"
   },
   "devDependencies": {
-    "@effect/sql-sqlite-do": "4.0.1",
+    "@effect/sql-sqlite-do": "4.1.4",
     "esbuild": "0.28.2",
     "miniflare": "4.20260730.0"
   }
