@@ -4,13 +4,13 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as GitHub from "alchemy/GitHub";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, Layer, Schema } from "effect";
+import { PreviewCommit, PreviewNumber, previewRepository } from "./src/contracts/pr-preview.ts";
 import {
-  PreviewCommit,
-  PreviewNumber,
+  previewCommentMarker,
   previewOrigin,
-  previewRepository,
   previewSlug,
-} from "./src/contracts/pr-preview.ts";
+  previewStatusLine,
+} from "./src/contracts/pr-preview-selection.ts";
 
 export default Alchemy.Stack(
   "executor-pr-preview-comments",
@@ -58,7 +58,8 @@ export default Alchemy.Stack(
       repository: name,
       issueNumber: number,
       body: [
-        "<!-- executor-pr-preview -->",
+        // The workflow reads the status back to tell whether a stage may remain to remove.
+        `${previewCommentMarker}\n${previewStatusLine(status)}`,
         "### Executor preview",
         descriptions[status],
         ...(status === "closed" || status === "stacked" || status === "unneeded"
