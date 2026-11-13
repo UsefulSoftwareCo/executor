@@ -15,6 +15,11 @@ bun run release:wrapper
 bun run release:desktop
 ```
 
+Outside CI, `release:cli` first removes the workspace's `.local/releases` builds for the same
+platform at other versions (`scripts/releases/prune-builds.ts`), keeping any that a running
+process has open. `release:cli` and `release:desktop` do not start below the free-space floor
+described in `e2e/README.md` (`EXECUTOR_DISK_FLOOR_GB`, 20 GB by default).
+
 These commands never publish. macOS public installers require
 `bun run release:desktop --notarize`, with the five `EXECUTOR_MAC_*` credentials
 from the Agents vault. The signing helper owns a temporary keychain and an

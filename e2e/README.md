@@ -629,6 +629,11 @@ Outside CI, each run starts by removing older run folders in its workspace's `.l
 printing how many and the space freed: it keeps runs from the last three days, the newest five
 passed ones and every other one, up to 3 GB (passed runs go first), and any run another process
 is writing or rendering; copy evidence you must keep outside any `.local/e2e`.
+`bun run e2e:*` does not start when the workspace's disk has less than 20 GB free
+(`scripts/disk-floor.ts`), so a shared host does not fill up and stop every agent on it. It prints
+how much is free and the floor. Set `EXECUTOR_DISK_FLOOR_GB` to change the floor, or to `0` to turn
+it off. In CI the floor applies only when that variable is set: runners start with about 14 GB
+free on a fresh disk.
 
 Every CI e2e job, passed or failed, also uploads `<job>-resources-evidence-<index>-attempt-<N>`, and the `tooling` and `tooling-cloud` jobs `tooling-resources-evidence-attempt-<N>` and `tooling-cloud-resources-evidence-attempt-<N>`: the runner's load, CPU (busy, iowait, steal, cores busy), memory and busiest command names every 5 s in `samples.ndjson`, with totals in `summary.json` (`scripts/ci/resource-sampler.ts`; read with `ci-evidence.ts --file summary.json --artifact <name>`).
 
