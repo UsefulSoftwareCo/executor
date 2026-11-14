@@ -1,7 +1,7 @@
 /** Local fixture control process. Database credentials stay in memory and never enter the Worker. */
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -711,6 +711,99 @@ const main = Effect.gen(function* () {
       deletionMs,
     };
   });
+  /**
+   * A scenario's hold on the row of one of its own users' API keys, so its MCP calls' key checks
+   * contend as behind another request's use: `age` makes the key's last use the given number of
+   * seconds old, `hold` updates it to now in a transaction left open, which the calls' checks wait
+   * for, and `release` commits that. One hold per scenario; the fixture rolls back what it still
+   * holds when it ends.
+   */
+  const KeyUse = Schema.Struct({
+    id: Id,
+    key: Schema.NonEmptyString,
+    action: Schema.Literals(["age", "hold", "release", "blocked"]),
+    seconds: Schema.optional(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 3600 }))),
+  });
+  const holds = new Map<string, PoolClient>();
+  yield* Effect.addFinalizer(() =>
+    Effect.promise(async () => {
+      for (const client of holds.values()) {
+        await client.query("rollback").catch(() => undefined);
+        client.release();
+      }
+      holds.clear();
+    }),
+  );
+  const keyUse = Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const input = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(KeyUse)));
+    const scenario = owned.get(input.id);
+    const database = pool;
+    if (scenario === undefined || database === undefined)
+      return yield* new TestAccountFailed({ stage: "fixture" });
+    const users = [...scenario.users];
+    const run = (text: string, params: ReadonlyArray<unknown>) =>
+      Effect.tryPromise({
+        try: () => database.query(text, [...params]),
+        catch: () => new TestAccountFailed({ stage: "database" }),
+      });
+    // Only a key of the scenario's own users.
+    const mine = `id = $1 and "referenceId" = any($2::text[])`;
+    switch (input.action) {
+      case "age": {
+        const updated = yield* run(
+          `update apikey set "lastRequest" = now() - make_interval(secs => $3) where ${mine}`,
+          [input.key, users, input.seconds ?? 0],
+        );
+        return { updated: updated.rowCount ?? 0 };
+      }
+      case "hold": {
+        if (holds.has(input.id)) return yield* new TestAccountFailed({ stage: "fixture" });
+        const client = yield* Effect.tryPromise({
+          try: () => database.connect(),
+          catch: () => new TestAccountFailed({ stage: "database" }),
+        });
+        const held = yield* Effect.tryPromise({
+          try: async () => {
+            await client.query("begin");
+            return client.query(`update apikey set "lastRequest" = now() where ${mine}`, [
+              input.key,
+              users,
+            ]);
+          },
+          catch: () => new TestAccountFailed({ stage: "database" }),
+        }).pipe(
+          Effect.tapError(() =>
+            Effect.promise(async () => {
+              await client.query("rollback").catch(() => undefined);
+              client.release();
+            }),
+          ),
+        );
+        holds.set(input.id, client);
+        return { updated: held.rowCount ?? 0 };
+      }
+      case "release": {
+        const client = holds.get(input.id);
+        if (client === undefined) return { released: false };
+        holds.delete(input.id);
+        yield* Effect.tryPromise({
+          try: () => client.query("commit"),
+          catch: () => new TestAccountFailed({ stage: "database" }),
+        }).pipe(Effect.ensuring(Effect.sync(() => client.release())));
+        return { released: true };
+      }
+      case "blocked": {
+        // Statements of the key check waiting for a lock; only those this role can see.
+        const rows = yield* run(
+          `select count(*)::int as n from pg_stat_activity
+            where query ilike '%from apikey where key%' and cardinality(pg_blocking_pids(pid)) > 0`,
+          [],
+        );
+        return { blocked: Number(rows.rows[0]?.n ?? 0) };
+      }
+    }
+  });
   const routes = Layer.mergeAll(
     HttpRouter.add("POST", "/configure", endpoint(configure)),
     HttpRouter.add("POST", "/actors", endpoint(provision)),
@@ -719,6 +812,7 @@ const main = Effect.gen(function* () {
     HttpRouter.add("POST", "/remove", endpoint(remove)),
     HttpRouter.add("POST", "/settle", endpoint(settle)),
     HttpRouter.add("POST", "/domain", endpoint(domain)),
+    HttpRouter.add("POST", "/api-key-use", endpoint(keyUse)),
     HttpRouter.add(
       "GET",
       "/health",

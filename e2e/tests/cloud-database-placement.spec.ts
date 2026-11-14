@@ -1490,6 +1490,20 @@ return listed;`;
             },
           });
 
+          // A leaf that reads again once its first statement answers, as a bearer recheck whose key
+          // was contended does, writes nothing while its batch's `COMMIT` is unanswered: through
+          // Hyperdrive such a statement is never answered, and the call waits until its deadline.
+          // The read goes out, and answers, once the `COMMIT` has.
+          const later = yield* step(
+            "A batch leaf's later statement waits for its batch's COMMIT to answer before it is written",
+            "commit-unanswered",
+          );
+          expect(later).toEqual({
+            leaves: ["ok", "ok", "ok"],
+            behindCommit: 0,
+            laterAfterCommit: true,
+          });
+
           // A connect attempt that reaches its timeout, and one whose caller gives up while it
           // waits, close their sockets: a server that accepts and never answers sees each closed.
           const abandoned = yield* step(

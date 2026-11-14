@@ -24,6 +24,10 @@
  *   snapshot inside `PgPool.held`, and refuses to write `BEGIN` outside a hold. A batch whose
  *   pool cannot connect (both attempts closed at once, as by a restarting pooler) returns each
  *   leaf's failure rather than failing itself.
+ * - `commit-unanswered`: a batch leaf's statement after the one its batch sent is not written while
+ *   the batch's `COMMIT` is unanswered (through Hyperdrive such a statement is never answered); it
+ *   is written, and answered, once the `COMMIT` is. A proxy holds the server's answer to the
+ *   `COMMIT` for a moment and counts what the client writes meanwhile.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -64,6 +68,7 @@ const cases = [
   "sibling",
   "batch",
   "connect-abandoned",
+  "commit-unanswered",
 ] as const;
 
 /** The protocol code of a `CancelRequest`, the first message on its own connection. */
@@ -108,6 +113,76 @@ const proxy = (target: URL, dropCancels: boolean) =>
           for (const socket of sockets) socket.destroy();
         });
         server.listen(0, "127.0.0.1", () => resume(Effect.succeed({ server, cancels })));
+      },
+    ),
+    ({ server }) =>
+      Effect.callback<void>((resume) => {
+        server.close(() => resume(Effect.void));
+        server.emit("close");
+      }),
+  );
+
+/**
+ * A TCP proxy to the database that holds the server's answer to each `COMMIT` (its
+ * `CommandComplete`, and every message after it) for `holdMillis`, and counts the client's writes
+ * that arrive while it holds one: writes made while a `COMMIT` is unanswered, as the client sees it.
+ */
+const commitHoldingProxy = (target: URL, holdMillis: number) =>
+  Effect.acquireRelease(
+    Effect.callback<{ readonly server: Net.Server; readonly behindCommit: { count: number } }>(
+      (resume) => {
+        const behindCommit = { count: 0 };
+        const sockets = new Set<Net.Socket>();
+        const server = Net.createServer((client) => {
+          sockets.add(client);
+          const upstream = Net.connect(Number(target.port || 5432), target.hostname);
+          sockets.add(upstream);
+          let holding = false;
+          let held: Array<Buffer> = [];
+          // The server's messages, cut at their boundaries: a type byte and a length that counts
+          // itself. The startup reply begins with messages too.
+          let rest = Buffer.alloc(0);
+          upstream.on("data", (chunk: Buffer) => {
+            rest = Buffer.concat([rest, chunk]);
+            while (rest.length >= 5) {
+              const length = rest.readInt32BE(1) + 1;
+              if (rest.length < length) break;
+              const message = rest.subarray(0, length);
+              rest = rest.subarray(length);
+              const commit =
+                message[0] === 0x43 && message.subarray(5, 11).toString("latin1") === "COMMIT";
+              if (commit && !holding) {
+                holding = true;
+                setTimeout(() => {
+                  holding = false;
+                  const out = Buffer.concat(held);
+                  held = [];
+                  if (!client.destroyed) client.write(out);
+                }, holdMillis);
+              }
+              if (holding) held.push(Buffer.from(message));
+              else client.write(message);
+            }
+          });
+          client.on("data", (chunk) => {
+            if (holding) behindCommit.count++;
+            upstream.write(chunk);
+          });
+          upstream.once("close", () => {
+            sockets.delete(upstream);
+            client.destroy();
+          });
+          client.once("close", () => {
+            sockets.delete(client);
+            upstream.destroy();
+          });
+          upstream.on("error", () => client.destroy());
+          client.on("error", () => upstream.destroy());
+        });
+        server.on("close", () => {
+          for (const socket of sockets) socket.destroy();
+        });
+        server.listen(0, "127.0.0.1", () => resume(Effect.succeed({ server, behindCommit })));
       },
     ),
     ({ server }) =>
@@ -508,6 +583,47 @@ const command = Command.make("database-pool-fixture", {
                   attempts: silent.sockets.accepted - afterTimeout.attempts,
                   open: yield* leftOpen,
                 },
+              };
+            }
+            case "commit-unanswered": {
+              const holding = yield* commitHoldingProxy(target, 300);
+              const address = holding.server.address();
+              if (address === null || typeof address === "string")
+                return yield* Effect.die("The proxy has no port");
+              const url = new URL(target.toString());
+              url.hostname = "127.0.0.1";
+              url.port = String(address.port);
+              // A client of the session objects' shape, whose statements `pipelined` claims.
+              const client = yield* Layer.build(
+                PgClient.layer({
+                  url: Redacted.make(url.toString()),
+                  applicationName,
+                  maxConnections: 2,
+                  multiplex: true,
+                  multiplexConcurrency: 1,
+                  prepare: false,
+                }),
+              ).pipe(Effect.orDie);
+              const sql = Context.get(client, SqlClient.SqlClient);
+              // The first leaf reads again once its first statement answers, as a bearer recheck
+              // whose key was contended does: its batch's `COMMIT` has not answered yet.
+              let laterMs = -1;
+              const started = Date.now();
+              const recheck = Effect.gen(function* () {
+                yield* sql`SELECT 1 AS first`;
+                yield* sql`SELECT 2 AS later`;
+                laterMs = Date.now() - started;
+              });
+              const exits = yield* PgPool.held(
+                PgConnection.pipelined([recheck, sql`SELECT 3`, sql`SELECT 4`], {
+                  outside: 1,
+                  begin: "ISOLATION LEVEL REPEATABLE READ READ ONLY",
+                }),
+              ).pipe(Effect.timeout("10 seconds"), Effect.orDie);
+              return {
+                leaves: exits.map((exit) => (Exit.isSuccess(exit) ? "ok" : "failed")),
+                behindCommit: holding.behindCommit.count,
+                laterAfterCommit: laterMs >= 300,
               };
             }
             case "batch": {

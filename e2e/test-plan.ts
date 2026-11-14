@@ -7611,6 +7611,17 @@ export const scenarios = plan({
       local: na("Local has no hosted organization policies."),
     },
   },
+  cloudMcpConcurrentRecheck: {
+    fixtures: "actors",
+    file: "cloud-concurrent-recheck.spec.ts",
+    title:
+      "Cloud MCP tool calls made at once with a key whose last use is stale all answer, also the calls that read the key again",
+    targets: {
+      cloud: scheduled,
+      "self-host": na("Self-host runs a batch under PGlite's lock, not on a multiplexed pool."),
+      local: na("Local MCP sessions use the local database."),
+    },
+  },
   cloudExportHang: {
     fixtures: "actors",
     file: "cloud-export-hang.spec.ts",
