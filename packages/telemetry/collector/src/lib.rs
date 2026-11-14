@@ -6,4 +6,5 @@ pub mod http;
 pub mod lifecycle;
 pub mod log;
 pub mod otlp;
+pub mod retention;
 pub mod store;

@@ -3,12 +3,14 @@
 use std::path::PathBuf;
 
 pub const USAGE: &str = "usage: executor-collector serve --data <dir> [--listen <127.0.0.1:port | unix:path>]
-    [--max-pending <n>] [--max-export-bytes <n>]
+    [--max-pending <n>] [--max-export-bytes <n>] [--retention-hours <n>] [--max-store-mb <n>]
 
   --data              directory holding telemetry.sqlite (created if missing)
   --listen            address to listen on (default 127.0.0.1:0); port 0 picks a free port
   --max-pending       exports read, decoded or stored at once; more are refused with 429 (default 4)
   --max-export-bytes  largest export body accepted; larger ones are refused with 413 (default 16777216)
+  --retention-hours   how long traces and logs are kept after they were last written (default 168)
+  --max-store-mb      the most data the store keeps, in MiB; the oldest is evicted first (default 1024)
 
 Once listening, prints one line on stdout: {\"event\":\"listening\",\"port\":N} for TCP or
 {\"event\":\"listening\",\"path\":P} for a Unix socket.";
@@ -25,6 +27,8 @@ pub struct Args {
     pub listen: Listen,
     pub max_pending: usize,
     pub max_export_bytes: usize,
+    pub retention_hours: u64,
+    pub max_store_mb: u64,
 }
 
 pub fn parse(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -37,6 +41,8 @@ pub fn parse(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut listen = Listen::Tcp("127.0.0.1:0".to_owned());
     let mut max_pending = 4;
     let mut max_export_bytes = 16 * 1024 * 1024;
+    let mut retention_hours = 168;
+    let mut max_store_mb = 1024;
     while let Some(flag) = args.next() {
         let (name, inline) = match flag.split_once('=') {
             Some((name, value)) => (name.to_owned(), Some(value.to_owned())),
@@ -60,6 +66,9 @@ pub fn parse(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
             }
             "--max-pending" => max_pending = positive(&name, &value)?,
             "--max-export-bytes" => max_export_bytes = positive(&name, &value)?,
+            // Bounded so that their products in milliseconds and bytes cannot overflow.
+            "--retention-hours" => retention_hours = bounded(&name, &value, 24 * 365 * 100)?,
+            "--max-store-mb" => max_store_mb = bounded(&name, &value, 1 << 30)?,
             _ => return Err(format!("unknown flag {name}\n\n{USAGE}")),
         }
     }
@@ -68,7 +77,18 @@ pub fn parse(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
         listen,
         max_pending,
         max_export_bytes,
+        retention_hours,
+        max_store_mb,
     })
+}
+
+fn bounded(name: &str, value: &str, most: u64) -> Result<u64, String> {
+    match value.parse::<u64>() {
+        Ok(number) if number > 0 && number <= most => Ok(number),
+        _ => Err(format!(
+            "{name} must be a whole number from 1 to {most}, got {value:?}"
+        )),
+    }
 }
 
 fn positive(name: &str, value: &str) -> Result<usize, String> {

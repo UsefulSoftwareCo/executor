@@ -23,7 +23,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 
 use crate::log;
 use crate::otlp;
-use crate::store::{self, Job, Losses, MemoryRelease, SharedLosses};
+use crate::store::{self, Export, Job, Losses, MemoryRelease, Shared, SharedLosses};
 
 const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -35,6 +35,8 @@ pub struct App {
     pub losses: SharedLosses,
     pub last_refusal_log: Mutex<Option<Instant>>,
     pub release: Arc<MemoryRelease>,
+    /// The writer's figures: the store's size for admission and `/api/ingest`.
+    pub store: Arc<Shared>,
 }
 
 /// An admitted export: its permit, held until the export is stored or refused. Dropping it, on
@@ -72,7 +74,13 @@ enum Loss {
     TooLarge,
     Invalid,
     StoreFailed,
+    OverBound,
 }
+
+/// An export is refused while the store's pages in use are more than this share of the bound.
+/// Eviction normally keeps them within one export of it, so this means eviction cannot keep up,
+/// for example because its steps fail.
+const OVER_BOUND_PERCENT: u64 = 110;
 
 async fn health() -> Response {
     axum::Json(json!({ "ok": true, "service": "executor-collector", "version": env!("CARGO_PKG_VERSION") })).into_response()
@@ -92,6 +100,7 @@ async fn ingest_status(State(app): State<Arc<App>>) -> Response {
 }
 
 fn status_json(app: &App, losses: &Losses) -> Value {
+    let figures = app.store.figures();
     json!({
         "pending": app.max_pending - app.admission.available_permits(),
         "maxPending": app.max_pending,
@@ -105,8 +114,27 @@ fn status_json(app: &App, losses: &Losses) -> Value {
         },
         "refusedBytes": losses.refused_bytes,
         "lastRefusedAt": losses.last_refused_at,
-        // Retention lands in a later change; until then nothing is evicted.
-        "evictions": { "passes": 0, "traces": 0 },
+        "evictions": {
+            "passes": figures.eviction_passes,
+            "traces": figures.evicted_traces,
+            "spans": figures.evicted_spans,
+            "logs": figures.evicted_logs,
+        },
+        "store": {
+            "usedBytes": figures.used_bytes,
+            "fileBytes": figures.file_bytes,
+            "walBytes": figures.wal_bytes,
+            "maxBytes": figures.max_bytes,
+            "retentionHours": figures.retention_hours,
+            "draining": figures.draining,
+            "maintenancePending": figures.pending_at(app.store.wall_ms()),
+            "steps": figures.steps,
+            "longestStepMs": figures.longest_step_micros as f64 / 1000.0,
+            "longestExportWaitMs": figures.longest_export_wait_micros as f64 / 1000.0,
+            "walFull": figures.wal_full,
+            "checkpointsBlocked": figures.checkpoints_blocked,
+            "walEmptied": figures.wal_emptied,
+        },
     })
 }
 
@@ -173,6 +201,20 @@ async fn ingest(app: Arc<App>, signal: Signal, request: Request) -> Response {
             );
         }
     };
+    let figures = app.store.figures();
+    // Data past the bound means eviction is behind; a full write-ahead log means a reader keeps
+    // a checkpoint from emptying it. Both are refused until they clear.
+    if figures.settled_used_bytes > figures.max_bytes / 100 * OVER_BOUND_PERCENT || figures.wal_full
+    {
+        return refuse(
+            &app,
+            Loss::OverBound,
+            bytes,
+            StatusCode::TOO_MANY_REQUESTS,
+            "The telemetry store is over its size bound",
+            None,
+        );
+    }
     // Taken before the body is read and held until the export is stored or refused.
     let Ok(permit) = app.admission.clone().try_acquire_owned() else {
         return refuse(
@@ -254,6 +296,7 @@ async fn store(
 ) -> Response {
     let (reply, answer) = oneshot::channel();
     let limit = app.max_export_bytes;
+    let store = app.store.clone();
     let decoded = tokio::task::spawn_blocking(move || {
         let text: std::borrow::Cow<[u8]> = if gzip {
             std::borrow::Cow::Owned(gunzip(&body, limit)?)
@@ -261,9 +304,16 @@ async fn store(
             std::borrow::Cow::Borrowed(&body)
         };
         match signal {
-            Signal::Traces => otlp::decode_spans(&text).map(|spans| Job::Spans(spans, reply)),
-            Signal::Logs => otlp::decode_logs(&text).map(|logs| Job::Logs(logs, reply)),
+            Signal::Traces => otlp::decode_spans(&text).map(Export::Spans),
+            Signal::Logs => otlp::decode_logs(&text).map(Export::Logs),
         }
+        .map(|export| Job {
+            export,
+            reply,
+            maintenance_at_queue: store
+                .maintenance_micros
+                .load(std::sync::atomic::Ordering::SeqCst),
+        })
         .map_err(|invalid| Unreadable::Invalid(invalid.0))
     })
     .await;
@@ -407,6 +457,7 @@ fn refuse(
                 Loss::TooLarge => &mut refused.too_large,
                 Loss::Invalid => &mut refused.invalid,
                 Loss::StoreFailed => &mut refused.store_failed,
+                Loss::OverBound => &mut refused.over_bound,
             } += 1;
             losses.refused_bytes += bytes;
             losses.last_refused_at = Some(iso_now());
@@ -431,6 +482,7 @@ fn refuse(
             Loss::TooLarge => "tooLarge",
             Loss::Invalid => "invalid",
             Loss::StoreFailed => "storeFailed",
+            Loss::OverBound => "overBound",
         };
         let mut fields = vec![
             ("reason", Value::from(reason)),
@@ -443,7 +495,7 @@ fn refuse(
         log::warn("telemetry exports not stored", &fields);
     }
     let mut response = (status, axum::Json(json!({ "error": message }))).into_response();
-    if matches!(loss, Loss::QueueFull) {
+    if matches!(loss, Loss::QueueFull | Loss::OverBound) {
         response
             .headers_mut()
             .insert(header::RETRY_AFTER, HeaderValue::from_static("1"));

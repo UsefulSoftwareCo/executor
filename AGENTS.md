@@ -58,21 +58,40 @@ the host's proxy and workerd, and response compression cases such as streamed
 chunks, that a real image cannot hit reliably. CI runs it in the `self-host-native` job.
 
 The second is the telemetry collector crate in `packages/telemetry/collector`.
-Its `cargo test` suite in `tests/` is limited to four files:
+Its `cargo test` suite in `tests/` is limited to five files:
 
 - `otlp_mapping.rs`: the OTLP/JSON field mapping, through the crate's library.
 - `store.rs`: the store's handling of resent and changed spans, trace summaries
-  and resource references, that an export is all or nothing, and which files it
-  refuses, through the crate's library. A failure part way through a transaction
+  and resource references, that an export is all or nothing, and creating a new
+  file, through the crate's library. A failure part way through a transaction
   cannot be caused from outside the process.
+- `retention.rs`: eviction by age and by size and its order, the bound on one
+  retention step with a very large trace, a span that arrives for a trace being
+  evicted, resource references through deletion, returning free pages, and the
+  store format policy: which files it refuses with nothing changed, which links
+  and file types at its names it refuses, which stores it empties in place
+  (SQLite's own tables after `ANALYZE` or `AUTOINCREMENT` included), that a reset
+  failing part way changes nothing, the last checks before a store is served or
+  a reset commits, every state a cut-off first start can leave, a hot journal
+  over the application id included, and stamps that never go back when the
+  host's clock does, through the crate's library.
+  Clocks of hours and those file states cannot be set up from outside the
+  process.
 - `lifecycle.rs`: that the shutdown drain ends however the stop and the drain
   are ordered, through the crate's library. The order cannot be forced from
   outside the process.
 - `process.rs`: the built binary as a process, over HTTP and its socket. It
   covers stop signals and the shutdown deadline, a socket path that already
   exists, not acknowledging an export it did not store, gzip bodies, deep nesting
-  at the size limit and with a small stack in the environment, a first start cut off while creating the store, and
-  resident memory returned after a burst. These would be E2E scenarios, but nothing in `e2e/` builds the binary
+  at the size limit and with a small stack in the environment, a first start cut
+  off while creating the store at several points, a drain killed part way, a store
+  of another format emptied in place at start and killed while it is emptied, one
+  collector per directory with its lock file untouched, a store start-up cannot
+  read ending the start, the data directory named in each way, a foreign store
+  with a live log refused with nothing changed, the first status after an export,
+  the status while rows expire with the writer idle, the write-ahead log's bound under sustained ingest with
+  readers, eviction with a small `RUST_MIN_STACK`, and resident memory returned
+  after a burst. These would be E2E scenarios, but nothing in `e2e/` builds the binary
   yet.
 
 CI runs it in the `collector-native` job when the crate changes.

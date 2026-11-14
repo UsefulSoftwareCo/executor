@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 
 use executor_collector::args::{self, Listen};
 use executor_collector::lifecycle::{self, Stop};
-use executor_collector::{http, log, otlp, store};
+use executor_collector::{http, log, otlp, retention, store};
 
 /// The whole shutdown, from the stop signal until the process exits. The local host kills the
 /// collector 3 s after asking it to stop (the self-host supervisor waits 15 s); this leaves half a
@@ -53,11 +53,32 @@ fn main() -> ExitCode {
     };
     let losses = Arc::new(Mutex::new(store::LossBook::default()));
     let release = Arc::new(store::MemoryRelease::default());
+    let shared = Arc::new(store::Shared::default());
+    let limits = retention::Limits {
+        max_bytes: args.max_store_mb * 1024 * 1024,
+        retention_ms: (args.retention_hours * 3_600_000) as i64,
+    };
+    // Before anything in the directory is read: one collector per directory.
+    let owned = match store::own(&args.data) {
+        Ok(owned) => owned,
+        Err(error) => {
+            log::error(
+                "cannot use the data directory",
+                &[
+                    ("path", args.data.display().to_string().into()),
+                    ("error", error.into()),
+                ],
+            );
+            return ExitCode::FAILURE;
+        }
+    };
     let writer = match store::start(
-        &args.data,
+        owned,
         args.max_pending,
         losses.clone(),
         release.clone(),
+        limits,
+        shared.clone(),
     ) {
         Ok(writer) => writer,
         Err(error) => {
@@ -85,6 +106,7 @@ fn main() -> ExitCode {
         losses,
         last_refusal_log: Mutex::new(None),
         release,
+        store: shared,
     });
     let stopped_at = Arc::new(Mutex::new(None));
     let served = runtime.block_on(serve(args.listen.clone(), app, stopped_at.clone()));
