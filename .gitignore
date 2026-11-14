@@ -1,5 +1,7 @@
 node_modules/
 dist/
+# Cargo build output
+target/
 .DS_Store
 .reference/
 

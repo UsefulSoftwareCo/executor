@@ -1,41 +1,27 @@
 /**
  * CI configuration plane: repository settings, deployment environments, the CI Cloudflare
- * token, the protected-branch ruleset, and the public export. Development happens in this
- * private repository; `.github/workflows/export-public.yml` snapshots `main` to the public
- * repository's export branch. This stack places the token that workflow pushes with and
- * protects the export branch on the public repository.
+ * token and the public export. Development happens in this private repository;
+ * `.github/workflows/export-public.yml` snapshots `main` to the public repository's export
+ * branch. This stack places the token that workflow pushes with and protects the export branch
+ * on the public repository. The `main` ruleset is its own stack, `alchemy.github-ruleset.ts`.
  */
 import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as GitHub from "alchemy/GitHub";
 import { retain } from "alchemy/RemovalPolicy";
-import { Config, Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Config, Effect, Layer, Option, Redacted } from "effect";
 import { stackState } from "./src/infrastructure/state.ts";
 import { productionSocialCallbackOrigin } from "./src/infrastructure/deploy-settings.ts";
 import { BrowserOrigin, browserOriginSetting } from "./src/infrastructure/stage.ts";
 import {
-  CheckSince,
-  missingV1PlanetscaleDatabase,
-  missingV1MembershipCheckSince,
-  missingV1WorkosKey,
-} from "./src/infrastructure/v1-membership-settings.ts";
+  type ExecutorShOwner,
+  executorShSetting,
+} from "./src/infrastructure/executor-sh-setting.ts";
+import { missingV1WorkosKey } from "./src/infrastructure/v1-api-key-settings.ts";
 import {
-  type V1ImportSwitch,
-  V1FirstPartyClients,
-  invalidV1FirstPartyClients,
-  missingV1FirstPartyClient,
-  missingV1ImportWriter,
-  missingV1McpForwardSecret,
-  v1ImportWriterName,
   v1McpForwardSecretName,
   v1SessionHandoffSecretName,
-  v1ImportOperatorTokenMinLength,
-  missingV1ImportOperatorToken,
-  v1FirstPartyClientsName,
-  v1ImportSetting,
-  v1ImportWritesNeedImport,
-  v1ImportWritesSetting,
-} from "./src/infrastructure/v1-import-settings.ts";
+} from "./src/infrastructure/secrets.ts";
 import {
   firstPartyGitHubSettings,
   firstPartyGoogleSettings,
@@ -106,16 +92,6 @@ const productionVariables = [
   "SENTRY_URL",
 ] as const;
 
-/**
- * Required status checks on `main`. These are the contexts reported by `ci.yml` calling
- * `checks.yml` (PR #246). The E2E jobs run as matrix runners whose names change with the
- * selection, so `checks / e2e` stands for all of them. `CI_RULESET_ENFORCEMENT` defaults to `active`, so an apply that
- * cannot create the ruleset fails loudly rather than leaving `main` silently unprotected.
- * Rulesets need GitHub Pro on a private repository, which is the blocker today; `.env.ci.op`
- * sets `disabled` until the plan allows them. `evaluate` is log only and blocks nothing.
- */
-const requiredStatusChecks = ["checks / check", "checks / e2e"] as const;
-
 export default Alchemy.Stack(
   "executor-next-ci",
   {
@@ -136,11 +112,6 @@ export default Alchemy.Stack(
     const runnerMode = yield* Config.Literals(["blacksmith", "desktop"], "CI_RUNNER_MODE").pipe(
       Config.withDefault("blacksmith" as const),
     );
-    const enforcement = yield* Config.Literals(
-      ["evaluate", "active", "disabled"],
-      "CI_RULESET_ENFORCEMENT",
-    ).pipe(Config.withDefault("active" as const));
-
     // The repository already exists. Alchemy observes it and converges these settings only;
     // every property it does not declare keeps its current value.
     const repository = yield* GitHub.Repository("Repository", {
@@ -300,104 +271,32 @@ export default Alchemy.Stack(
     }).pipe(retain());
 
     /**
-     * The v1 import's switch (`v1-import-settings.ts`): `on` lets production import v1
-     * workspaces. `.env.ci.op` sets it; unset is `off`.
+     * Who serves `executor.sh` (`executor-sh.ts`, `notes/v1-shutdown.md`): `v1` (unset), or v2's
+     * gateway by the route (`route`) or by the route and the custom domain (`v2`). `.env.ci.op`
+     * sets it.
      */
-    const v1Import: V1ImportSwitch = yield* v1ImportSetting;
-    yield* GitHub.Variable("production-CLOUD_V1_IMPORT", {
+    const executorSh: ExecutorShOwner = yield* executorShSetting;
+    yield* GitHub.Variable("production-CLOUD_EXECUTOR_SH", {
       ...target,
-      name: "CLOUD_V1_IMPORT",
-      value: v1Import,
+      name: "CLOUD_EXECUTOR_SH",
+      value: executorSh,
       environment: production,
     }).pipe(retain());
-    /**
-     * Imports that write v2 need their own switch, off unless `.env.ci.op` sets it. While the
-     * import is on, operators start runs with `V1_IMPORT_OPERATOR_TOKEN`, so this stack refuses
-     * to apply without it.
-     */
-    const v1ImportWrites: V1ImportSwitch = yield* v1ImportWritesSetting;
-    // The Worker refuses this pair when it starts; refuse it here, before it is stored.
-    if (v1ImportWrites === "on" && v1Import !== "on")
-      return yield* Effect.die(new Error(v1ImportWritesNeedImport));
-    yield* GitHub.Variable("production-CLOUD_V1_IMPORT_WRITES", {
-      ...target,
-      name: "CLOUD_V1_IMPORT_WRITES",
-      value: v1ImportWrites,
-      environment: production,
-    }).pipe(retain());
-    /**
-     * The URL of v1's `v1_import_writer` role (`moved-flag.ts`), which freezes and cuts over each
-     * imported organization. Imports that write need it, so this stack refuses writes without it.
-     */
-    const writer = yield* nonEmptySecret(v1ImportWriterName);
-    if (v1ImportWrites === "on" && Option.isNone(writer))
-      return yield* Effect.die(new Error(missingV1ImportWriter));
-    if (Option.isSome(writer))
-      yield* GitHub.Secret(`production-${v1ImportWriterName}`, {
-        ...target,
-        name: v1ImportWriterName,
-        value: writer.value,
-        environment: production,
-      }).pipe(retain());
-    if (v1Import === "on") {
-      const operatorToken = yield* Config.Redacted("V1_IMPORT_OPERATOR_TOKEN").pipe(
-        Config.option,
-        Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
-      );
-      if (
-        Option.isNone(operatorToken) ||
-        Redacted.value(operatorToken.value).length < v1ImportOperatorTokenMinLength
-      )
-        return yield* Effect.die(new Error(missingV1ImportOperatorToken));
-      yield* GitHub.Secret("production-V1_IMPORT_OPERATOR_TOKEN", {
-        ...target,
-        name: "V1_IMPORT_OPERATOR_TOKEN",
-        value: operatorToken.value,
-        environment: production,
-      }).pipe(retain());
-    }
 
     /**
-     * The v1 sign-in check: v1's WorkOS API key, the name of v1's PlanetScale database (the
-     * deploy creates a read-only role on it), and the instant the check shipped. Accounts created
-     * before that instant skip it. Production requires all three, so this stack refuses to apply
-     * without them and says what to set: the key's Agents vault reference, the database name,
-     * and the cutoff, set in `.env.ci.op` at the merge that ships the check.
+     * v1's WorkOS API key, which the WorkOS API key check reads. Production requires it, so this
+     * stack refuses to apply without it and says what to set: the key's Agents vault reference,
+     * in `.env.ci.op`.
      */
     const v1Key = yield* Config.Redacted("V1_WORKOS_API_KEY").pipe(
       Config.option,
       Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
     );
     if (Option.isNone(v1Key)) return yield* Effect.die(new Error(missingV1WorkosKey));
-    const v1Since = yield* Config.String("V1_MEMBERSHIP_CHECK_SINCE").pipe(
-      Config.option,
-      Effect.map(
-        Option.filter((value) => Option.isSome(Schema.decodeUnknownOption(CheckSince)(value))),
-      ),
-    );
-    if (Option.isNone(v1Since)) return yield* Effect.die(new Error(missingV1MembershipCheckSince));
-    const v1Database = yield* Config.String("V1_PLANETSCALE_DATABASE_NAME").pipe(
-      Config.option,
-      Effect.map(Option.filter((value) => value !== "")),
-    );
-    if (Option.isNone(v1Database))
-      return yield* Effect.die(new Error(missingV1PlanetscaleDatabase));
     yield* GitHub.Secret("production-V1_WORKOS_API_KEY", {
       ...target,
       name: "V1_WORKOS_API_KEY",
       value: v1Key.value,
-      environment: production,
-    }).pipe(retain());
-    yield* GitHub.Variable("production-V1_MEMBERSHIP_CHECK_SINCE", {
-      ...target,
-      name: "V1_MEMBERSHIP_CHECK_SINCE",
-      value: v1Since.value,
-      environment: production,
-    }).pipe(retain());
-    yield* GitHub.Variable("production-V1_PLANETSCALE_DATABASE_NAME", {
-      ...target,
-      name: "V1_PLANETSCALE_DATABASE_NAME",
-      value: v1Database.value,
       environment: production,
     }).pipe(retain());
 
@@ -444,49 +343,11 @@ export default Alchemy.Stack(
     );
 
     /**
-     * v1's first-party client IDs (`v1-import-settings.ts`), public values the import compares with
-     * each v2 client's. While the import is on, every first-party client production offers needs
-     * v1's ID, or its connections are all reported as mismatches.
-     */
-    const v1Clients = yield* Config.String(v1FirstPartyClientsName).pipe(
-      Config.option,
-      Effect.map(Option.filter((value) => value !== "")),
-    );
-    const v1ClientIds = Option.isNone(v1Clients)
-      ? {}
-      : yield* Schema.decodeUnknownEffect(Schema.fromJsonString(V1FirstPartyClients))(
-          v1Clients.value,
-        ).pipe(
-          Effect.mapError(() => new Error(invalidV1FirstPartyClients)),
-          Effect.orDie,
-        );
-    if (v1Import === "on") {
-      const offered = [
-        "github",
-        ...(Option.isSome(googleId) ? ["google"] : []),
-        ...(Option.isSome(slackId) ? ["slack"] : []),
-      ];
-      const missing = offered.find((client) => !Object.hasOwn(v1ClientIds, client));
-      if (missing !== undefined)
-        return yield* Effect.die(new Error(missingV1FirstPartyClient(missing)));
-    }
-    if (Option.isSome(v1Clients))
-      yield* GitHub.Variable(`production-${v1FirstPartyClientsName}`, {
-        ...target,
-        name: v1FirstPartyClientsName,
-        value: v1Clients.value,
-        environment: production,
-      }).pipe(retain());
-
-    /**
      * The secret v1 signs the MCP requests it forwards with (`v1-mcp-forward.ts`), the same value
      * as v1's `V2_MCP_FORWARD_SECRET`. Without it production accepts no forwarded request, which v1
-     * answers as unavailable for a moved workspace, so imports that write, which cut workspaces
-     * over, need it.
+     * answers as unavailable for a moved workspace.
      */
     const v1Forward = yield* nonEmptySecret(v1McpForwardSecretName);
-    if (v1ImportWrites === "on" && Option.isNone(v1Forward))
-      return yield* Effect.die(new Error(missingV1McpForwardSecret));
     if (Option.isSome(v1Forward))
       yield* GitHub.Secret(`production-${v1McpForwardSecretName}`, {
         ...target,
@@ -507,33 +368,6 @@ export default Alchemy.Stack(
         value: v1Handoff.value,
         environment: production,
       }).pipe(retain());
-
-    // Rulesets are unavailable on private repositories under the GitHub Free plan, so
-    // `CI_RULESET_ENFORCEMENT=disabled` skips the resource instead of asking GitHub for it.
-    const ruleset =
-      enforcement === "disabled"
-        ? undefined
-        : yield* GitHub.Ruleset("Main", {
-            ...target,
-            name: "main",
-            enforcement,
-            target: "branch",
-            conditions: { include: ["refs/heads/main"] },
-            // Administrators keep direct access while the workflow names are still settling.
-            bypassActors: [{ actorType: "RepositoryRole", actorId: 5, bypassMode: "always" }],
-            rules: {
-              deletion: true,
-              nonFastForward: true,
-              requiredStatusChecks: {
-                checks: requiredStatusChecks.map((context) => ({ context })),
-                strictRequiredStatusChecksPolicy: false,
-              },
-              pullRequest: {
-                requiredApprovingReviewCount: 0,
-                requiredReviewThreadResolution: true,
-              },
-            },
-          }).pipe(retain());
 
     /**
      * The export branch on the public repository receives fast-forward snapshot commits from
@@ -560,9 +394,6 @@ export default Alchemy.Stack(
       repositoryId: repository.repoId,
       environments: [production],
       deployTokenId: deployToken.tokenId,
-      rulesetId: ruleset?.rulesetId,
-      rulesetEnforcement: enforcement,
-      requiredStatusChecks,
     };
   }),
 );

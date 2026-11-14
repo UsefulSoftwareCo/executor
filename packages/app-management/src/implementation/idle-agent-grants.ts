@@ -10,7 +10,7 @@ import { SqlClient } from "effect/sql";
 import type { DataStep, DataStepJournal, DataStepMode } from "../contracts/data-steps.ts";
 
 /**
- * A host's grant expiry endpoints, which fail with `E`; see `grantExpiry` in
+ * A host's grant maintenance endpoints, which fail with `E`; see `grantExpiry` in
  * `@executor-js/mcp-auth/oauth`.
  */
 export interface AgentGrantExpiry<E = unknown> {
@@ -25,6 +25,14 @@ export interface AgentGrantExpiry<E = unknown> {
     ids: ReadonlyArray<string>,
     apply: boolean,
   ) => Effect.Effect<ReadonlyArray<{ readonly id: string; readonly outcome: string }>, E>;
+  /**
+   * Each grant's outcome of storing the approval mode its consent names on an MCP grant that has
+   * none; written only when `apply` is set. See `12_store_agent_grant_modes`.
+   */
+  readonly storeModes: (
+    ids: ReadonlyArray<string>,
+    apply: boolean,
+  ) => Effect.Effect<ReadonlyArray<{ readonly id: string; readonly outcome: string }>, E>;
 }
 
 export interface AgentGrantHost {
@@ -34,7 +42,7 @@ export interface AgentGrantHost {
 type GrantPage = ReadonlyArray<{ readonly id: string; readonly userId: string }>;
 
 /** Visit every unrevoked grant, one page at a time, in ID order. */
-const eachPage = <G, E, R>(
+export const eachPage = <G, E, R>(
   grants: AgentGrantExpiry<G>,
   visit: (page: GrantPage) => Effect.Effect<void, E, R>,
 ): Effect.Effect<void, G | E, R> =>

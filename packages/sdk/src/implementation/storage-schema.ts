@@ -837,7 +837,7 @@ const retriedWebhookSources = table("executor_webhook_sources", {
   retries: column("retries", Schema.Int).default(0),
 }).unique("executor_webhook_sources_app_account", ["app", "account"]);
 
-/** Tables of the 4.0.15 layout, the current one; 4.0.16 only adds indexes. */
+/** Tables of the 4.0.15 layout; 4.0.16 only adds indexes. */
 export const version4015Tables = {
   ...version4014Tables,
   webhookSources: retriedWebhookSources,
@@ -867,4 +867,29 @@ export const queueReadIndexes = [
   "CREATE INDEX IF NOT EXISTS executor_webhook_sources_intent ON executor_webhook_sources (lease_until) WHERE status = 'pending' AND lease IS NULL",
   "CREATE INDEX IF NOT EXISTS executor_webhook_sources_retry ON executor_webhook_sources (lease_until) WHERE status <> 'ready'",
   "CREATE INDEX IF NOT EXISTS executor_account_checks_account_app ON executor_account_checks (account, app)",
+] as const;
+
+/**
+ * Version 4.0.17 lets a subscription select events as the subscriber wrote them: every event of
+ * one app (`event` null), or every event of every app its owner has (`app` and `event` null).
+ * `selection` keeps that choice, `{ app?, event? }`, and is null for a subscription to one named
+ * event; deliveries of a selection carry the app and event beside the data. Every row written
+ * before it names one app and one event and has no selection.
+ */
+const selectingEventSubscriptions = table("executor_event_subscriptions", {
+  ...eventSubscriptions.columns,
+  app: column("app", Schema.NullOr(AppId), { type: "varchar(255)" }).default(null),
+  event: column("event", Schema.NullOr(Schema.String), { type: "varchar(64)" }).default(null),
+  selection: column("selection", Schema.NullOr(Schema.Json)).default(null),
+});
+
+/** Tables of the 4.0.17 layout, the current one. */
+export const version4017Tables = {
+  ...version4015Tables,
+  eventSubscriptions: selectingEventSubscriptions,
+};
+
+/** Selections across an owner's apps are matched by owner. */
+export const eventSelectionIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_event_subscriptions_owner_selection ON executor_event_subscriptions (owner, status) WHERE app IS NULL",
 ] as const;

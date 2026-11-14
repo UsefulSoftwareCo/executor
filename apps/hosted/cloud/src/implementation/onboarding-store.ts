@@ -148,16 +148,6 @@ export const makeOnboardingStore = Effect.gen(function* () {
         rows[0] ? Effect.succeed(rows[0].allowed) : Effect.fail(new OnboardingUnavailable()),
       ),
     );
-  /** Whether the user set up a team through onboarding, which runs the v1 check first. */
-  const setUpTeam = (userId: string) =>
-    sql`select exists(select 1 from cloud_organization_setup where user_id = ${userId}) as set_up`.pipe(
-      Effect.flatMap(
-        Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ set_up: Schema.Boolean }))),
-      ),
-      Effect.flatMap((rows) =>
-        rows[0] ? Effect.succeed(rows[0].set_up) : Effect.fail(new OnboardingUnavailable()),
-      ),
-    );
   /** Keep the first assignment: a retried creation never changes the order already shown. */
   const assignSetup = (userId: string, organizationId: string, variant: SetupOrder) =>
     sql`insert into cloud_setup_assignment (user_id, organization_id, variant)
@@ -218,7 +208,6 @@ export const makeOnboardingStore = Effect.gen(function* () {
     setupAssignment,
     claimSetupExposure,
     canReadIcon,
-    setUpTeam,
     user,
     lockUser,
     state,

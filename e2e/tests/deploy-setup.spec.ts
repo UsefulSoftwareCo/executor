@@ -191,26 +191,30 @@ layer(HostedLive, { excludeTestServices: true })("Deploy setup", (it) => {
             telemetry = yield* Telemetry;
           // Creating the organization queued its installation and its owner's member setup, which
           // linked the owner's default Executor key in a background provisioning job.
-          yield* Actors;
-          const woken = yield* telemetry.search("hosted.provision", {}).pipe(
-            Effect.flatMap(({ data }) =>
-              Effect.forEach(
-                [...new Set(data.map(({ traceId }) => traceId))],
-                (traceId) =>
-                  telemetry
-                    .query(traceId)
-                    .pipe(Effect.map(({ data: trace }) => (wakes(trace) ? [traceId] : []))),
-                { concurrency: 4 },
+          const actors = yield* Actors;
+          // This organization's provisioning jobs, each in its own trace. Its team installation
+          // runs the owner's member setup itself, so the owner's own member job finds it done.
+          const woken = yield* telemetry
+            .search("hosted.provision", { organization: actors.organization.id })
+            .pipe(
+              Effect.flatMap(({ data }) =>
+                Effect.forEach(
+                  [...new Set(data.map(({ traceId }) => traceId))],
+                  (traceId) =>
+                    telemetry
+                      .query(traceId)
+                      .pipe(Effect.map(({ data: trace }) => (wakes(trace) ? [traceId] : []))),
+                  { concurrency: 4 },
+                ),
               ),
-            ),
-            Effect.map((found) => found.flat()),
-            Effect.flatMap((found) =>
-              found.length > 0
-                ? Effect.succeed(found)
-                : Effect.fail(new Error("No provisioning job woke webhook source setup")),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
-          );
+              Effect.map((found) => found.flat()),
+              Effect.flatMap((found) =>
+                found.length > 0
+                  ? Effect.succeed(found)
+                  : Effect.fail(new Error("No provisioning job woke webhook source setup")),
+              ),
+              Effect.retry({ schedule: Schedule.spaced("1 second"), times: 30 }),
+            );
           yield* evidence.json("member-setup-wakes.json", woken);
         }),
       ),

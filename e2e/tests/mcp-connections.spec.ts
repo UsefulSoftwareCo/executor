@@ -192,11 +192,28 @@ layer(HostedLive, { excludeTestServices: true })("Scoped MCP connections", (it) 
               ok: true,
               value: { message: "ok", receipt: hidden.receipt },
             });
-            // A connection's token cannot be used at another URL, even the full-access one.
-            const moved = yield* Effect.exit(
-              mcp.connect(Redacted.make(Redacted.value(grant.tokens).access_token), "moved"),
+            // At the full-access URL, a connection's token still reaches only its connection: the
+            // grant's record, not the URL, decides what it serves.
+            const moved = executor(
+              yield* mcp.connect(Redacted.make(Redacted.value(grant.tokens).access_token), "moved"),
             );
-            expect(Exit.isFailure(moved)).toBe(true);
+            const [movedRead, movedWrite, movedOther] = yield* Effect.all(
+              [
+                moved("Read at the full-access URL", `return await ${appPath}.read({})`),
+                moved(
+                  "Write at the full-access URL",
+                  `return await ${appPath}.write({message: "denied"})`,
+                ),
+                moved(
+                  "Another app at the full-access URL",
+                  `return await ${hiddenPath}.echo({message: "denied"})`,
+                ),
+              ],
+              { concurrency: 3 },
+            );
+            expect(movedRead.execution).toEqual({ ok: true, value: { read: receipt } });
+            expect(movedWrite.execution.ok).toBe(false);
+            expect(movedOther.execution.ok).toBe(false);
           }),
         );
         yield* evidence.step(
@@ -332,7 +349,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
               actors.owner,
               "POST",
               connectionsPath(path, "user", "service"),
-              { destination: { kind: "personal" } },
+              {},
             );
             expect(connection.status, JSON.stringify(connection.body)).toBe(200);
             const request = yield* body(Resource, connection);
@@ -473,7 +490,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
               actors.owner,
               "POST",
               connectionsPath(path, "user", "service"),
-              { destination: { kind: "personal" } },
+              {},
             );
             expect(connection.status, JSON.stringify(connection.body)).toBe(200);
             const request = yield* body(Resource, connection);
@@ -507,7 +524,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
                 name: "execute",
                 arguments: {
                   code: `const first = await ${tools}.who({});
-await ${tools}.enter({});
 await ${tools}.hold({});
 let second;
 try { second = await ${tools}.who({}); } catch (error) { second = { refused: String(error.message) }; }
@@ -528,7 +544,7 @@ return { first, second };`,
               ),
             );
         yield* untilHeld(
-          call("entered", "query").pipe(
+          call("holding", "query").pipe(
             Effect.flatMap((response) => body(Schema.Boolean, response)),
           ),
         );
@@ -624,9 +640,22 @@ return { first, second };`,
           .request(actors.owner, "GET", `${prefix}/mcp-connections`)
           .pipe(Effect.flatMap((response) => body(Schema.Array(ConnectionView), response)));
         yield* browser.login(actors.owner);
+        // LAN HTTP exposes getRandomValues, but not randomUUID. Keep the real API and UI.
+        if (target.metadata.target === "self-host")
+          yield* browser.use("Reproduce missing native UUIDs on HTTP", (page) =>
+            page.addInitScript(() => {
+              Reflect.deleteProperty(Crypto.prototype, "randomUUID");
+            }),
+          );
         yield* browser.use("Open Connections", (page) =>
           page.goto(`/org/${actors.organization.slug}/connect`),
         );
+        if (target.metadata.target === "self-host")
+          expect(
+            yield* browser.use("Native browser UUIDs are unavailable", (page) =>
+              page.evaluate(() => typeof crypto.randomUUID),
+            ),
+          ).toBe("undefined");
         yield* browser.use("Connect with full access", (page) =>
           page
             .getByRole("listitem", { name: "Full access" })
@@ -710,13 +739,36 @@ return { first, second };`,
             .getByRole("img")
             .waitFor({ state: "visible" }),
         );
-        // Radix paints the dialog before the effect that makes it the topmost layer and moves focus
-        // into it. Escape pressed before that effect closes the setup dialog beneath it instead.
+        // Radix paints the dialog and moves focus into it before the render that makes it the
+        // topmost layer: until then the setup dialog beneath still owns Escape, and Escape closes
+        // both. That render is the one where the setup dialog stops taking pointer input and the
+        // full-size screenshot starts to.
         yield* browser.use("The full-size screenshot takes focus", (page) =>
           page
             .getByRole("dialog", { name: "Claude’s Add custom connector dialog" })
             .and(page.locator(":focus-within"))
             .waitFor(),
+        );
+        yield* browser.use("The full-size screenshot is the topmost dialog", (page) =>
+          page.waitForFunction(
+            ({ top, beneath }) => {
+              const dialog = (title: string) =>
+                [...document.querySelectorAll('[role="dialog"]')].find(
+                  (element) =>
+                    document.getElementById(element.getAttribute("aria-labelledby") ?? "")
+                      ?.textContent === title,
+                );
+              const screenshot = dialog(top),
+                setup = dialog(beneath);
+              return (
+                screenshot !== undefined &&
+                setup !== undefined &&
+                getComputedStyle(screenshot).pointerEvents === "auto" &&
+                getComputedStyle(setup).pointerEvents === "none"
+              );
+            },
+            { top: "Claude’s Add custom connector dialog", beneath: "Connect Full access" },
+          ),
         );
         yield* browser.use("Close the full-size screenshot", (page) =>
           page.keyboard.press("Escape"),
@@ -779,6 +831,9 @@ return { first, second };`,
             .waitFor({ state: "visible" }),
         );
         const [saved] = yield* list;
+        expect(saved?.id).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
         expect(saved?.policy.apps).toEqual([
           { app: app.id, runsAs: [{ kind: "app" }], tools: { kind: "readOnly" } },
         ]);
@@ -889,9 +944,7 @@ export default defineApp({ app: { accounts: { team } } }, async () => ({ tools: 
           actors.owner,
           "POST",
           connectionsPath(path, "app", "team"),
-          {
-            destination: { kind: "personal" },
-          },
+          {},
         );
         expect(started.status, JSON.stringify(started.body)).toBe(200);
         const submitted = yield* api.request(

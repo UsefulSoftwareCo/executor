@@ -20,22 +20,14 @@ import {
   keyStorageConfig,
   keyStorageInvalid,
   type KeyStorage,
-  LocalConfigurationReason,
+  LocalConfigurationError,
+  type LocalConfigurationReason,
   LocalCredentialService,
   LocalInstallation as Installation,
 } from "../contracts/auth.ts";
 import { desktopPairing } from "../contracts/startup.ts";
 import { writeAtomically } from "./atomic-file.ts";
 import { readSettings } from "./service-files.ts";
-
-/** Safe startup instructions. Key values are never displayed; native error text is sanitized. */
-export class LocalConfigurationError extends Schema.TaggedError<LocalConfigurationError>()(
-  "LocalConfigurationError",
-  {
-    reason: LocalConfigurationReason,
-    message: Schema.String,
-  },
-) {}
 
 const Keys = Schema.Struct({
   apiKey: Schema.RedactedFromValue(Schema.String.check(Schema.isMinLength(32))),
@@ -448,7 +440,7 @@ export const withKeyFileNotice = <A, E, R>(directory: string, start: Effect.Effe
   });
 
 /**
- * Read the API key a client of one directory's running server sends, such as `executor pair`.
+ * Read the API key a client of one directory's running server sends, such as `executor service pair`.
  * Unlike `localConfiguration` it never creates the directory, a record or keys, and takes no
  * lock: every bootstrap write is atomic and saves keys before the record that names them.
  * A supplied EXECUTOR_API_KEY is sent instead of the saved key. Clients never need the

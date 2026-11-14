@@ -17,6 +17,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { releaseAnalytics } from "./analytics.ts";
 import { type Platform, platformVersion, release } from "./config.ts";
 import { signStandaloneMac } from "./macos-signing.ts";
+import { treeDigest } from "./tree-digest.ts";
 import { npmCommand } from "./npm.ts";
 import { bundleStandaloneRuntime } from "./runtime-bundle.ts";
 
@@ -58,12 +59,24 @@ const bunRuntime = Effect.gen(function* () {
  * Build the release install from `stage`, the packaged runtime, into `<output>/standalone`, and
  * pack it as the platform's release archive in `output`. Returns the install directory.
  */
+/** The file beside a platform's archive that holds the digest of its install before signing. */
+export const payloadDigestFile = "payload.sha256";
+
+/**
+ * The SHA-256 of an install's files before any is signed (`treeDigest`). A Developer ID signature
+ * carries its own secure timestamp, so two signed archives of one commit differ; their payloads
+ * must not.
+ */
+const payloadDigest = (install: string) => treeDigest(install);
+
 export const buildStandalone = (
   root: string,
   output: string,
   stage: string,
   target: Platform,
   signing: "unsigned" | "sign" | "notarize",
+  /** With `notarize`, submit without waiting and write the submission id here. */
+  submission?: string,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -168,10 +181,12 @@ export const buildStandalone = (
       return yield* Effect.die(
         new Error(`The executable reported ${JSON.stringify(version.trim())}`),
       );
+    yield* fs.writeFileString(path.join(output, payloadDigestFile), yield* payloadDigest(install));
     if (signing !== "unsigned")
       yield* signStandaloneMac(install, executable, {
         entitlements: path.join(root, "scripts/releases/entitlements.standalone.plist"),
         notarize: signing === "notarize",
+        ...(submission === undefined ? {} : { submission }),
       });
 
     yield* fs.writeFileString(

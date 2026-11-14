@@ -122,6 +122,15 @@ export const LocalConfigurationReason = Schema.Literals([
 ]);
 export type LocalConfigurationReason = typeof LocalConfigurationReason.Type;
 
+/** Safe startup instructions. Key values are never displayed; native error text is sanitized. */
+export class LocalConfigurationError extends Schema.TaggedError<LocalConfigurationError>()(
+  "LocalConfigurationError",
+  {
+    reason: LocalConfigurationReason,
+    message: Schema.String,
+  },
+) {}
+
 /**
  * Key storage for a new data directory. Unset uses the OS credential store and falls back to
  * `keys.json` only when there is no store; `os` never falls back; `file` always uses `keys.json`.

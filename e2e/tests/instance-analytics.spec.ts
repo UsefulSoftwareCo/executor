@@ -5,8 +5,8 @@ import { Actors } from "../support/actors.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
 import {
-  awaitAnalytics,
-  deliveredAnalytics,
+  awaitAnalyticsWholeEnvironment,
+  deliveredAnalyticsWholeEnvironment,
   localAgent,
   reportedBuild,
   type DeliveredEvent,
@@ -101,7 +101,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host instance analytics",
         const actors = yield* Actors;
         const target = yield* Target;
         const organization = actors.organization;
-        const started = yield* awaitAnalytics((events) =>
+        const started = yield* awaitAnalyticsWholeEnvironment((events) =>
           events.some((event) => event.event === "instance_started"),
         );
         const startup = started.events.find((event) => event.event === "instance_started");
@@ -155,7 +155,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host instance analytics",
         expect(accepted.status).toBe(200);
         expect(accepted.body).toEqual({ status: "accepted" });
 
-        const delivered = yield* awaitAnalytics(
+        const delivered = yield* awaitAnalyticsWholeEnvironment(
           (events) =>
             events.some((event) => event.properties.message === ownerMessage) &&
             events.some((event) => event.properties.message === memberMessage) &&
@@ -243,7 +243,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host instance analytics",
         });
         // Shutdown sends whatever a running sender buffered, so an empty file is conclusive.
         yield* serverControl("stop");
-        expect((yield* deliveredAnalytics).text).toBe("");
+        expect((yield* deliveredAnalyticsWholeEnvironment).text).toBe("");
       }),
     ),
   );
@@ -252,7 +252,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host instance analytics",
 layer(TestLive, { excludeTestServices: true })("Self-host root domain", (it) => {
   const rootDomain = (expected: string, absent: readonly string[]) =>
     Effect.gen(function* () {
-      const { events, text } = yield* awaitAnalytics((events) =>
+      const { events, text } = yield* awaitAnalyticsWholeEnvironment((events) =>
         events.some((event) => event.event === "instance_started"),
       );
       for (const event of events) expect(event.properties.root_domain).toBe(expected);
@@ -276,7 +276,7 @@ layer(TestLive, { excludeTestServices: true })("Local instance analytics", (it) 
         const api = yield* Api;
         const target = yield* Target;
         const agent = yield* localAgent;
-        const started = yield* awaitAnalytics((events) =>
+        const started = yield* awaitAnalyticsWholeEnvironment((events) =>
           events.some((event) => event.event === "instance_started"),
         );
         const startup = started.events.find((event) => event.event === "instance_started");
@@ -335,7 +335,7 @@ layer(TestLive, { excludeTestServices: true })("Local instance analytics", (it) 
         });
         expect(missing.status).not.toBe(200);
 
-        const { events, text } = yield* awaitAnalytics(
+        const { events, text } = yield* awaitAnalyticsWholeEnvironment(
           (events) =>
             events.some((event) => event.properties.message === message) &&
             events.filter((event) => event.event === "tool_execution_completed").length >= 2,
@@ -378,7 +378,7 @@ layer(TestLive, { excludeTestServices: true })("Local instance analytics", (it) 
         expect(refused.body).toEqual(disabled);
         // Shutdown sends whatever a running sender buffered, so an empty file is conclusive.
         yield* serverControl("stop");
-        expect((yield* deliveredAnalytics).text).toBe("");
+        expect((yield* deliveredAnalyticsWholeEnvironment).text).toBe("");
       }),
     ),
   );

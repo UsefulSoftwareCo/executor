@@ -521,39 +521,34 @@ const releaseKeptPastItsLimit = (selections: ReadonlyArray<Selection>) =>
 const replacedFacets = { apps: 1, accountsPerApp: 2, database: true };
 
 /**
- * An app with a database runs one data facet at a time. When a call uses other accounts, because
- * another was linked in place of the first, the facet it replaces is unloaded rather than kept for
- * the rest of the process, so linking the first account again starts a fresh Worker with its own
- * credential.
- */
-const replacedFacetUnloaded = (selections: ReadonlyArray<Selection>) =>
-  Effect.gen(function* () {
-    const [first, second] = selections as [Selection, Selection];
-    const before = yield* observe(first);
-    const again = yield* observe(first);
-    expect(again.isolate, "calls of one selection share its facet Worker").toBe(before.isolate);
-    const other = yield* observe(second);
-    expect(other.isolate).not.toBe(before.isolate);
-    const back = yield* observe(first);
-    expect(back.isolate, "the replaced facet Worker was unloaded").not.toBe(before.isolate);
-    expect(back.calls).toBe(1);
-  });
-
-/**
  * How long the data supervisor stays idle so the runtime evicts it and builds a new one for the
  * next call. The pinned workerd evicts an idle Durable Object after about ten seconds.
  */
 const supervisorEvicted = "20 seconds";
 
 /**
- * The runtime evicts an idle data supervisor but keeps the facet Workers it loaded. Calls that
- * alternate accounts with the supervisor evicted in between still unload each replaced facet, so
- * the app keeps one facet Worker rather than one per account ever used.
+ * An app with a database runs one data facet at a time. When a call uses other accounts, because
+ * another was linked in place of the first, the facet it replaces is unloaded rather than kept for
+ * the rest of the process, so linking the first account again starts a fresh Worker with its own
+ * credential. This holds first with the data supervisor in memory, then with it evicted between
+ * calls: the runtime evicts an idle supervisor but keeps the facet Workers it loaded, and each
+ * replaced facet is still unloaded, so the app keeps one facet Worker rather than one per account
+ * ever used.
  */
-const replacedFacetUnloadedAfterEviction = (selections: ReadonlyArray<Selection>) =>
+const replacedFacetUnloaded = (selections: ReadonlyArray<Selection>) =>
   Effect.gen(function* () {
     const [first, second] = selections as [Selection, Selection];
+    // With the supervisor in memory: calls follow each other well inside its eviction time.
+    const initial = yield* observe(first);
+    const again = yield* observe(first);
+    expect(again.isolate, "calls of one selection share its facet Worker").toBe(initial.isolate);
+    const swapped = yield* observe(second);
+    expect(swapped.isolate).not.toBe(initial.isolate);
     const before = yield* observe(first);
+    expect(before.isolate, "the replaced facet Worker was unloaded").not.toBe(initial.isolate);
+    expect(before.calls).toBe(1);
+
+    // With the supervisor evicted before each call.
     yield* Effect.sleep(supervisorEvicted);
     const other = yield* observe(second);
     expect(other.isolate).not.toBe(before.isolate);
@@ -682,12 +677,6 @@ layer(HostedLive, { excludeTestServices: true })("App Worker budget", (it) => {
       ),
     { timeout: 120_000 },
   );
-  it.effect(scenarios.appDataFacetUnloaded.title, (context) =>
-    withHostedCase(
-      context,
-      hostedSelections(replacedFacets).pipe(Effect.flatMap(replacedFacetUnloaded)),
-    ),
-  );
   it.effect(scenarios.appDataFacetBudget.title, (context) =>
     withHostedCase(
       context,
@@ -697,11 +686,11 @@ layer(HostedLive, { excludeTestServices: true })("App Worker budget", (it) => {
     ),
   );
   it.effect(
-    scenarios.appDataFacetUnloadedAfterEviction.title,
+    scenarios.appDataFacetUnloaded.title,
     (context) =>
       withHostedCase(
         context,
-        hostedSelections(replacedFacets).pipe(Effect.flatMap(replacedFacetUnloadedAfterEviction)),
+        hostedSelections(replacedFacets).pipe(Effect.flatMap(replacedFacetUnloaded)),
       ),
     { timeout: 180_000 },
   );

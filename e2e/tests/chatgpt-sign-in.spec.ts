@@ -13,7 +13,7 @@ layer(FetchHttpClient.layer, { excludeTestServices: true })("ChatGPT preview sig
         const edgeOrigin = yield* Config.String("CHATGPT_EDGE_ORIGIN");
         for (const at of [origin, callbackOrigin, edgeOrigin])
           expect(new URL(at).hostname.endsWith(".executor.engineering")).toBe(true);
-        const jar = yield* Ref.make(Cookies.empty);
+        const jar = yield* Ref.make<ReadonlyArray<Cookies.Cookie>>([]);
         const http = (yield* HttpClient.HttpClient).pipe(HttpClient.withCookiesRef(jar));
         const request = (path: string, body: unknown) =>
           HttpClientRequest.post(`${origin}${path}`, {

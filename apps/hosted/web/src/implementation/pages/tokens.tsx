@@ -1,4 +1,5 @@
 import { LocalTime } from "@executor-js/ui/components/local-time";
+import { copyText } from "@executor-js/ui/lib/clipboard";
 import { Link } from "@tanstack/react-router";
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
@@ -466,7 +467,7 @@ export function TokensPage({
                 <Button
                   onClick={async () => {
                     try {
-                      await navigator.clipboard.writeText(Redacted.value(created.key));
+                      await copyText(Redacted.value(created.key));
                       setCopied(true);
                       setError(undefined);
                     } catch {

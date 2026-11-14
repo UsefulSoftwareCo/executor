@@ -8,10 +8,10 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Config, Effect, FileSystem, Path, Schema } from "effect";
-import { HttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { TestLive, withCase } from "../support/case.ts";
 import { Evidence } from "../support/evidence.ts";
+import { processGroupRunning, ServerProcess } from "../support/managed-server.ts";
 import { SpanQuery } from "../support/contracts.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
@@ -69,8 +69,7 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
             fs = yield* FileSystem.FileSystem,
             path = yield* Path.Path,
             evidence = yield* Evidence,
-            processes = yield* ChildProcessSpawner.ChildProcessSpawner,
-            http = yield* HttpClient.HttpClient;
+            processes = yield* ChildProcessSpawner.ChildProcessSpawner;
           const run = path.join(target.directory, "failure-cases");
           yield* fs.makeDirectory(run, { recursive: true, mode: 0o700 });
           yield* fs.copyFile(
@@ -338,7 +337,7 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
             slow.telemetry.filter(({ error }) => error === "Not read before the evidence deadline")
               .length,
           ).toBe(slow.unfetchedIds.length);
-          // The cleanup hook finished, so the product was stopped and no longer listens.
+          // The cleanup hook finished, so the product was stopped: none of its processes runs.
           const lifecycles = path.join(run, "report/lifecycle");
           const cleanups: (number | null)[] = [];
           for (const name of yield* fs.readDirectory(lifecycles)) {
@@ -347,14 +346,13 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence", (it) => {
           }
           expect(cleanups).toHaveLength(1);
           expect(cleanups[0]).toBeLessThan(60_000);
-          const { origin } = yield* read(
-            Schema.Struct({ origin: Schema.String }),
+          // Identified by its process group, not its origin: once the product freed its port, another
+          // server on this runner can be handed it and answer there.
+          const { processGroup } = yield* read(
+            ServerProcess,
             path.join(slow.folder, "product.json"),
           );
-          const answer = yield* http
-            .get(`${origin}/`)
-            .pipe(Effect.timeout("5 seconds"), Effect.result);
-          expect(answer._tag, "the product stopped").toBe("Failure");
+          expect(yield* processGroupRunning(processGroup), "the product stopped").toBe(false);
         }),
       ),
     120_000,

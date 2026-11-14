@@ -455,6 +455,9 @@ const beforeTheApp = [
   "Unauthorized",
   "Forbidden",
   "OrganizationForbidden",
+  // Fork connection authorization and pinned-link checks refuse before app code runs.
+  "ConnectionKeyRefused",
+  "ConnectionAccountUnlinked",
   "AuthenticationUnavailable",
   "AccountChoiceUnsupported",
   "AppNotFound",
@@ -2650,6 +2653,11 @@ return { failed: failed.isError, text: failed.content[0].text, read: read.isErro
             path: `${tools}.remote.lookup`,
             ok: true,
             value: { isError: true, content: [{ type: "text", text: reportedError }] },
+            // The result says the tool failed, so the call's log reference is beside it.
+            callLog: {
+              reference: expect.stringMatching(/^call_[0-9a-hjkmnp-tv-z]{14}$/u),
+              note: expect.stringContaining("tool call log"),
+            },
           },
           calls: [[`${tools}.remote.lookup`, "failure"]],
         });
@@ -3137,10 +3145,7 @@ return { failed: failed.isError, text: failed.content[0].text, read: read.isErro
           expect(skill.body).toMatchObject({ skills: { reason: "request", status: 503 } });
           // The calls ran where the case says: the facet loads its build in facet mode.
           yield* telemetry
-            .spans("runtime.app.build.load", {
-              "executor.app.id": app.id,
-              "executor.runtime.mode": mode,
-            })
+            .spans("runtime.app.build.load", { app: app.id }, { "executor.runtime.mode": mode })
             .pipe(
               Effect.flatMap((spans) =>
                 spans.length > 0

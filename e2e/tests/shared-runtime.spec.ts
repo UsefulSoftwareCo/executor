@@ -254,7 +254,7 @@ const fixture = Effect.gen(function* () {
 
   /** The tags of `app`'s MCP tool calls of `tool`, once `count` of them say what started. */
   const toolCalls = (app: typeof App.Type, tool: string, count: number) =>
-    telemetry.spans("mcp.tool.call", { "executor.app.id": app.id }).pipe(
+    telemetry.spans("mcp.tool.call", { app: app.id }).pipe(
       Effect.map((found) =>
         found.filter(
           (tags) =>

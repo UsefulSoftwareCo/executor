@@ -1,3 +1,4 @@
+import { expect } from "@effect/vitest";
 import { _electron, type ElectronApplication } from "playwright";
 import {
   type Cause,
@@ -11,7 +12,6 @@ import {
   Path,
   type PlatformError,
   Queue,
-  Redacted,
   Schedule,
   Schema,
   Stream,
@@ -23,8 +23,11 @@ import {
   crashServer,
   ServiceInfo,
   ServiceRegistration,
+  windowsStartTime,
 } from "./background-service.ts";
+import { captureOutput, closeDesktop, redactLinks } from "./desktop-quit.ts";
 import { driver } from "./platform.ts";
+import { reveal } from "./failure-text.ts";
 
 /**
  * What a desktop scenario's own environment keeps of the runner's: its display and session bus,
@@ -91,6 +94,9 @@ export const launchDesktop = (options: {
         args: [desktop, "--disable-gpu"],
       };
     }
+    const data = options.env.EXECUTOR_DESKTOP_DATA_DIR;
+    // A quit that does not end the desktop fails the scenario with what it was doing (see
+    // `closeDesktop`), instead of hanging until the test limit.
     const electron = yield* Effect.acquireRelease(
       driver("launch desktop", () =>
         _electron.launch({
@@ -99,13 +105,15 @@ export const launchDesktop = (options: {
           cwd: options.cwd,
           env: { ...options.env },
         }),
-      ),
-      (electron) => driver("close desktop", () => electron.close()).pipe(Effect.orDie),
-    );
+      ).pipe(Effect.map((electron) => ({ electron, output: captureOutput(electron) }))),
+      ({ electron, output }) =>
+        closeDesktop(electron, { ...(data === undefined ? {} : { data }), output }).pipe(
+          Effect.orDie,
+        ),
+    ).pipe(Effect.map(({ electron }) => electron));
     // A failed or timed-out scenario, as one whose dashboard never shows, prints the desktop's
     // own record of its connections, losses and recoveries before the window closes, which shows
     // the step it stopped at, and keeps what its windows show and its logs (see `keepEvidence`).
-    const data = options.env.EXECUTOR_DESKTOP_DATA_DIR;
     if (data !== undefined)
       yield* Effect.addFinalizer((exit) =>
         Exit.isSuccess(exit)
@@ -119,13 +127,11 @@ export const launchDesktop = (options: {
     return electron;
   });
 
-/** Pairing links carry a one-use credential; kept evidence holds only their shape. */
-const redactLinks = (text: string) => text.replace(/#pair=[a-f0-9]{64}/g, "#pair=<redacted>");
-
 /**
  * Keep a failed scenario's evidence, which would go with its directory: a screenshot of each
  * desktop window, and the desktop's and its servers' logs from `data`, in a new folder under
- * EXECUTOR_E2E_DESKTOP_SCREENSHOTS (by default `.local/desktop-recovery`), which it names.
+ * EXECUTOR_E2E_DESKTOP_SCREENSHOTS (by default `.local/desktop-recovery`), which it names, with a
+ * `scenario.json` naming the scenario (`e2e/release-evidence.ts` reads it).
  */
 const keepEvidence = (electron: ElectronApplication, data: string) =>
   Effect.gen(function* () {
@@ -137,6 +143,12 @@ const keepEvidence = (electron: ElectronApplication, data: string) =>
     const stamp = DateTime.formatIso(yield* DateTime.now).replace(/[:.]/g, "-");
     const directory = path.resolve(screenshots, `failed-${stamp}-${process.pid}`);
     yield* fs.makeDirectory(directory, { recursive: true });
+    // Which scenario failed, so the release workflow's evidence step files the folder under it.
+    const { currentTestName, testPath } = expect.getState();
+    yield* fs.writeFileString(
+      path.join(directory, "scenario.json"),
+      JSON.stringify({ title: currentTestName ?? "", file: testPath ?? "" }),
+    );
     yield* Effect.forEach(
       electron.windows(),
       (page, index) =>
@@ -181,6 +193,10 @@ const lifecycleMessages = new Set([
   "Moved Executor data to a backup",
   "Executor data reset failed",
   "Desktop stopped",
+  "Desktop quitting",
+  "Desktop still quitting",
+  "Desktop closed",
+  "Desktop uncaught exception",
 ]);
 
 /**
@@ -190,12 +206,14 @@ const lifecycleMessages = new Set([
  */
 const lifecycleLog = (events: ReadonlyArray<DesktopEvent>) => {
   const lifecycle = events.filter((event) => lifecycleMessages.has(event.message));
-  const lines = lifecycle.map(({ annotations: { detail, ...annotations }, ...event }) =>
+  const lines = lifecycle.map(({ annotations: { detail, error, ...annotations }, ...event }) =>
     JSON.stringify({
       ...event,
       annotations: {
         ...annotations,
         ...(detail === undefined ? {} : { detailCharacters: detail.length }),
+        // An uncaught exception's first line names it; its stack stays in the kept logs.
+        ...(error === undefined ? {} : { error: redactLinks(error.split("\n")[0] ?? "") }),
       },
     }),
   );
@@ -238,6 +256,14 @@ const LogLine = Schema.fromJsonString(
       ),
       failure: Schema.optional(Schema.String),
       attempt: Schema.optional(Schema.Number),
+      /** How the desktop quit: why, which finalizers ran, for how long and how it ended. */
+      reason: Schema.optional(Schema.String),
+      closing: Schema.optional(Schema.String),
+      seconds: Schema.optional(Schema.Number),
+      outcome: Schema.optional(Schema.String),
+      resources: Schema.optional(Schema.Array(Schema.String)),
+      /** An uncaught exception the desktop recorded, as it described the thrown value. */
+      error: Schema.optional(Schema.String),
     }),
   }),
 );
@@ -542,13 +568,15 @@ export const processAlive = (pid: number) =>
   }).pipe(Effect.match({ onSuccess: () => true, onFailure: (exists) => exists }));
 
 /**
- * Wait until `directory`'s registered server is a process other than those in `seen` and answers
+ * Wait until `directory`'s registered server is a server other than those in `seen` and answers
  * ready, and return it. A desktop or CLI that starts one detaches it, so it is found by its file.
+ * Servers are told apart by the id each registers: Windows soon gives a new server the pid of one
+ * that has exited.
  */
-export const nextServer = (directory: string, seen: ReadonlyArray<number>) =>
+export const nextServer = (directory: string, seen: ReadonlyArray<ServiceRegistration>) =>
   registeredServer(directory).pipe(
     Effect.flatMap((found) =>
-      Option.isSome(found) && !seen.includes(found.value.pid)
+      Option.isSome(found) && !seen.some((server) => server.id === found.value.id)
         ? answersReady(found.value).pipe(Effect.map((ready) => (ready ? found : Option.none())))
         : Effect.succeed(Option.none<ServiceRegistration>()),
     ),
@@ -560,7 +588,43 @@ export const nextServer = (directory: string, seen: ReadonlyArray<number>) =>
       }),
     ),
     Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 1200 }),
+    // Say when the new server has an earlier one's pid, so a passing run shows the reuse it met.
+    Effect.tap((server) => {
+      const earlier = seen.find((other) => other.pid === server.pid);
+      return earlier === undefined
+        ? Effect.void
+        : Effect.logInfo(
+            `Server ${server.id} has process ID ${server.pid}, which earlier server ${earlier.id} had`,
+          );
+    }),
+    // It just answered as itself, so its pid names it: record when it started, for `serverExited`.
+    Effect.tap((server) =>
+      process.platform === "win32"
+        ? windowsStartTime(server.pid).pipe(
+            Effect.map(Option.map((start) => windowsStarts.set(server.id, start))),
+          )
+        : Effect.void,
+    ),
   );
+
+/** On Windows, when each server `nextServer` returned started, by its id. */
+const windowsStarts = new Map<string, string>();
+
+/**
+ * Whether `server`, one `nextServer` returned, has exited: its pid names no process or, on Windows,
+ * names a process that started after it did. Windows soon gives a freed pid to the next server.
+ * When the start time cannot be read, only the pid naming no process counts as exited.
+ */
+export const serverExited = (server: ServiceRegistration) =>
+  Effect.gen(function* () {
+    if (!(yield* processAlive(server.pid))) return true;
+    const start = windowsStarts.get(server.id);
+    if (process.platform !== "win32" || start === undefined) return false;
+    // A start time that cannot be read is no proof of another process: the pid's liveness decides.
+    const now = yield* windowsStartTime(server.pid);
+    if (Option.isNone(now)) return !(yield* processAlive(server.pid));
+    return now.value !== start;
+  });
 
 /**
  * Stop every background server this scenario's desktop or CLI left for `directory`: the one
@@ -588,7 +652,7 @@ export const stopBackgroundServers = (
       if (!(yield* answersAsServer(server))) continue;
       yield* http
         .post(`${server.url}/api/service/stop`, {
-          headers: { authorization: `Bearer ${Redacted.value(server.password)}` },
+          headers: { authorization: `Bearer ${reveal(server.password)}` },
         })
         .pipe(Effect.timeout("5 seconds"), Effect.ignore);
       // It proved itself just before, so a pid still running is still that server.

@@ -24,22 +24,35 @@ export type WorkerName =
   | "edge";
 
 /**
- * Bytes of JavaScript each Worker may upload. Cloudflare compiles every uploaded ES module when
- * an isolate starts, whether or not the Worker ever imports it, so each megabyte adds about
- * 50 ms to every cold request. Load rarely used code from another Worker rather than raising a
- * budget: the API Worker leaves rendering to `dashboard`, source formatting to `formatter`, the
- * authoring reference to `authoring` and MCP sessions to `mcp-server`.
+ * The most JavaScript each Worker may upload, in bytes. Cloudflare compiles every uploaded ES
+ * module when an isolate starts, whether or not the Worker ever imports it: about 40 ms for each
+ * megabyte, on every cold request (36-45 ms on test stages; see `notes/cloud-latency.md`).
+ *
+ * Each budget is a backstop with room above the Worker's size, so a build fails only on a large
+ * mistake, and a change does not fail for arriving last. What holds a Worker's size is the check
+ * job: it fails a pull request that adds more than 50 KB to one Worker unless the description
+ * allows it (`scripts/worker-sizes.ts`), and flags a Worker with little of its budget left.
+ *
+ * Change a budget only in a pull request that does nothing else and says what the added
+ * cold-start time buys. To make room instead, load rarely used code from another Worker: the API
+ * Worker leaves rendering to `dashboard`, source formatting and Markdown parsing to `formatter`,
+ * the authoring reference to `authoring` and MCP sessions to `mcp-server`.
  */
 const uploadBudgets: Record<WorkerName, number> = {
-  api: 5_450_000,
+  // A person or an agent waits on the first five's cold starts, so each has about a tenth of its
+  // size as room.
+  api: 6_000_000,
   // App runners and data supervisors: a cold tool call starts both isolates.
-  "app-data": 700_000,
-  "app-pages": 2_500_000,
-  "mcp-server": 3_400_000,
-  dashboard: 3_900_000,
-  formatter: 2_000_000,
+  "app-data": 750_000,
+  "app-pages": 2_700_000,
+  "mcp-server": 3_700_000,
+  // Reached through a service binding, so most documents start a new isolate.
+  dashboard: 4_300_000,
+  // The rest are called rarely or already take seconds. `formatter` and `authoring` take what
+  // the API Worker leaves out, so they have more room.
+  formatter: 2_500_000,
   // Generated data: the published skills and the framework reference.
-  authoring: 700_000,
+  authoring: 1_000_000,
   compiler: 1_700_000,
   marketing: 1_000_000,
   // A test stage's forwarding Worker: routing and a service binding call.
@@ -63,7 +76,7 @@ type OutputBundle = Record<
   | { readonly type: "asset"; readonly source: string | Uint8Array }
 >;
 
-/** The plugin that enforces a Worker's budget; `scripts/worker-sizes.ts` builds Workers that use it. */
+/** The plugin that enforces a Worker's budget; `scripts/worker-builds.ts` builds Workers that use it. */
 export const uploadedModulesPlugin = "executor-uploaded-modules";
 
 /**
@@ -76,15 +89,25 @@ export const uploadedModulesPlugin = "executor-uploaded-modules";
 const uploadedModules = (worker: WorkerName) => ({
   name: uploadedModulesPlugin,
   async generateBundle(options: { readonly dir?: string }, bundle: OutputBundle) {
-    const reachable = new Set<string>();
-    const visit = (name: string) => {
-      const output = bundle[name];
-      if (reachable.has(name) || output?.type !== "chunk") return;
-      reachable.add(name);
-      for (const imported of [...output.imports, ...output.dynamicImports]) visit(imported);
+    const reach = (dynamic: boolean) => {
+      const reached = new Set<string>();
+      const visit = (name: string) => {
+        const output = bundle[name];
+        if (reached.has(name) || output?.type !== "chunk") return;
+        reached.add(name);
+        for (const imported of [...output.imports, ...(dynamic ? output.dynamicImports : [])])
+          visit(imported);
+      };
+      for (const [name, output] of Object.entries(bundle))
+        if (output.type === "chunk" && output.isEntry) visit(name);
+      return reached;
     };
-    for (const [name, output] of Object.entries(bundle))
-      if (output.type === "chunk" && output.isEntry) visit(name);
+    const reachable = reach(true);
+    let staticBytes = 0;
+    for (const name of reach(false)) {
+      const output = bundle[name];
+      if (output?.type === "chunk") staticBytes += Buffer.byteLength(output.code);
+    }
     let bytes = 0;
     const sources = new Map<string, number>();
     for (const [name, output] of Object.entries(bundle)) {
@@ -112,6 +135,7 @@ const uploadedModules = (worker: WorkerName) => ({
       worker,
       bytes,
       budget: uploadBudgets[worker],
+      staticBytes,
       sources: Object.fromEntries([...sources].toSorted((a, b) => b[1] - a[1])),
     };
     await writeWorkerUpload(upload);
@@ -199,8 +223,17 @@ export const workerBuild = (
           strictExecutionOrder: false,
           // Re-chunking the prebuilt dashboard graph by entry reach can evaluate a chunk that reads a
           // binding before the chunk that initializes it. One chunk keeps that graph's own module order.
+          // The dashboard build imports this Worker's Effect, and a group also takes its modules'
+          // dependencies: without a group of its own, Effect joins the dashboard chunk, and the
+          // entry, which imports Effect too, then loads the whole renderer at startup instead of on
+          // the first render. Groups are plain strings: Alchemy keeps these props as JSON.
           codeSplitting: {
-            groups: [{ name: "dashboard", test: "/web/dist/server/" }],
+            groups: [
+              ...(worker === "dashboard"
+                ? [{ name: "effect", test: "/node_modules/effect/", priority: 1 }]
+                : []),
+              { name: "dashboard", test: "/web/dist/server/" },
+            ],
           },
           keepNames: false,
           sourcemap: "hidden",

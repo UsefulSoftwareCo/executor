@@ -186,7 +186,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
                   const request = spans.find(
                     (span) => span.operationName === "mcp.session.request",
                   );
-                  const matches = spans.some((span) => span.operationName.endsWith(`/${method}`));
+                  // Effect names an MCP request's server span after its JSON-RPC method.
+                  const matches = spans.some((span) => span.operationName === method);
                   return forward === undefined || request === undefined || !matches
                     ? []
                     : [{ trace, forward, request }];

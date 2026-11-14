@@ -1,5 +1,10 @@
 import { WorkflowHost, type WorkflowRuntime } from "./workflow-runtime.ts";
-import { WebhookSourceHost, type WebhookSourceDispatcher } from "./webhooks.ts";
+import {
+  UnremovableWebhooksHost,
+  WebhookSourceHost,
+  type UnremovableWebhooks,
+  type WebhookSourceDispatcher,
+} from "./webhooks.ts";
 /** The shared Executor interface and remote client options; projected from ExecutorApi. */
 import { Context, type Effect, type Redacted, type Stream, Schema } from "effect";
 import type { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -10,7 +15,6 @@ import { StorageHost, type Credentials } from "./storage.ts";
 import { PrefetchHost } from "./tools.ts";
 import { SavedOAuthClientsHost } from "./oauth-clients.ts";
 import { OwnerMovesHost } from "./owner.ts";
-import { OAuthGrantImport } from "./oauth.ts";
 import type { ExecutorDatabase } from "../implementation/storage.ts";
 import type { AppRuntime } from "../implementation/runtime.ts";
 import type { OAuthOptions } from "./oauth.ts";
@@ -41,6 +45,8 @@ import type {
 } from "./shared.ts";
 import type { BlobStorage } from "./blobs.ts";
 import type { Caller } from "apps/contracts";
+import type { MarkdownReader, MarkdownUnavailable } from "./markdown.ts";
+
 import { RepositoryHost, type RepositoryBackend, type SourceFiles } from "./source.ts";
 import type { RegistryOptions } from "./registry.ts";
 import type { CatalogReadOptions } from "./declarations.ts";
@@ -284,6 +290,12 @@ export interface ExecutorInputs {
   readonly webhookOrigin?: string;
   /** The Git backend behind app source. The executor derives revision storage from it. */
   readonly git: RepositoryBackend;
+  /**
+   * Reads setup help at deploys. Pass `markdownRefusals` from `@executor-js/sdk/markdown` to parse
+   * in process. A reader that parses elsewhere fails with `MarkdownUnavailable` when it gets no
+   * answer, and so does the deploy.
+   */
+  readonly markdown: MarkdownReader;
   readonly blobs: BlobStorage;
   readonly runtime: AppRuntime;
   readonly oauth?: OAuthOptions;
@@ -451,7 +463,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
     /**
      * Host-only: compile source files as `deploy` would and return the requirements they declare,
      * writing nothing: no app, version or source is saved, and the build is neither retained nor
-     * cached. For checks that must not create anything, such as the v1 import's dry run. Fails
+     * cached. For checks that must not create anything. Fails
      * like `deploy`'s build, except that a compiler that did not answer is `BuildUnanswered`.
      */
     readonly build: (input: {
@@ -460,7 +472,11 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
       readonly files: SourceFiles;
     }) => Effect.Effect<
       { readonly requirements: typeof AppRequirements.Type },
-      VersionBuildFailed | BuildMemoryExceeded | BuildUnanswered | StorageError
+      | VersionBuildFailed
+      | BuildMemoryExceeded
+      | BuildUnanswered
+      | MarkdownUnavailable
+      | StorageError
     >;
   };
   readonly [WebhookSourceHost]: WebhookSourceDispatcher;
@@ -470,8 +486,8 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
   readonly [PrefetchHost]: PrefetchHost;
   readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
   readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
-  /** Host-only: the v1 importer's grant import (`notes/v1-import.md`). */
-  readonly [OAuthGrantImport]: OAuthGrantImport;
+  /** Host-only: data step 11's repair of registrations no removal can finish. */
+  readonly [UnremovableWebhooksHost]: UnremovableWebhooks;
   readonly scheduler: import("./scheduler.ts").ScheduleDispatcher;
   /** Host-only: products authorize every event operation before calling it. */
   readonly events: import("./events.ts").ExecutorEvents;
@@ -497,7 +513,7 @@ export type PromiseExecutor = Promisify<
     | typeof PrefetchHost
     | typeof SavedOAuthClientsHost
     | typeof OwnerMovesHost
-    | typeof OAuthGrantImport
+    | typeof UnremovableWebhooksHost
     | "scheduler"
     | "events"
     | "managedAccounts"

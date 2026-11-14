@@ -1,4 +1,5 @@
 import { localSourceFormatter } from "@executor-js/app-management/source-format";
+import { mcpWhoamiPath } from "@executor-js/mcp-auth";
 import {
   publishedSkillRoutes,
   readExecutorSkills,
@@ -47,7 +48,8 @@ import {
   requestRejections,
 } from "@executor-js/sdk/core";
 import { filesystemBlobStore, workerdApps } from "@executor-js/sdk/node";
-import { officialCatalogUrl } from "@executor-js/catalog";
+import { markdownRefusals } from "@executor-js/sdk/markdown";
+import { catalogFeedSetting } from "@executor-js/catalog";
 import {
   Config,
   Effect,
@@ -181,6 +183,7 @@ export const localApi = (
         secret: config.encryptionKey,
         origin: config.webhookOrigin ?? config.browserOrigin ?? `http://localhost:${config.port}`,
         git: repositories,
+        markdown: markdownRefusals,
         hooks: localResourceLifecycle(Deferred.await(ready), sql),
         blobs,
         runtime,
@@ -459,9 +462,7 @@ export const localApi = (
         auth,
         egress,
         {
-          catalogFeedUrl: yield* Config.String("EXECUTOR_CATALOG_URL").pipe(
-            Config.withDefault(officialCatalogUrl),
-          ),
+          catalogFeedUrl: yield* catalogFeedSetting,
           managedApp: managed.app,
           managedAccount: managed.account,
           ownerMigration: Ref.get(ownerMigration),
@@ -499,6 +500,7 @@ export const localApi = (
         HttpRouter.add("POST", "/dashboard/api/telemetry/logs", browserTelemetry(config, "logs")),
         programmatic,
         HttpRouter.add("*", "/mcp", mcp.http),
+        HttpRouter.add("GET", mcpWhoamiPath, mcp.whoami),
         HttpRouter.add("*", "/api/auth/*", oauth.handler),
         HttpRouter.add("GET", "/.well-known/oauth-protected-resource", oauth.protectedResource),
         HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", oauth.protectedResource),

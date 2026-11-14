@@ -1,8 +1,11 @@
 import { homedir } from "node:os";
 import { lock } from "proper-lockfile";
 /**
- * CLI device sign-in and credential-store adapter. Sessions live in the OS credential store, or on machines
- * without one in a file only this user can read. Credentials never enter repositories or config files.
+ * CLI device sign-in and credential-store adapter. A host can hold two sign-ins: app management,
+ * for the host's API resource, and tools, for its MCP resource. Sessions live in the OS credential
+ * store, or on machines without one in a file only this user can read. Credentials never enter
+ * repositories or config files. The host signed in to last is remembered beside them, without a
+ * credential, so client commands default to it.
  */
 import {
   Clock,
@@ -19,7 +22,7 @@ import {
 import { Hex } from "effect/encoding";
 import { FetchHttpClient, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { AppClientError, LoginFailed } from "../client-error.ts";
+import { AppClientError, LoginFailed, SignInStateInvalid } from "../client-error.ts";
 
 /**
  * Credential-bearing traffic is permitted only over TLS or to loopback development hosts,
@@ -60,6 +63,18 @@ const Session = Schema.Struct({
    */
   gitOrigins: Schema.optional(Schema.Array(Schema.String)),
 });
+/** The tools sign-in: a grant for the host's MCP resource, which may be on another origin. */
+const ToolsSession = Schema.Struct({
+  clientId: Schema.String,
+  accessToken: Schema.String,
+  refreshToken: Schema.String,
+  expiresAt: Schema.Number,
+  /** The MCP endpoint the grant is for, as the host's resource metadata names it. */
+  resource: Schema.String,
+});
+export type ToolsSession = typeof ToolsSession.Type;
+/** Which of a host's two sign-ins: app management (`api`) or tools (`mcp`). */
+export type SignIn = "api" | "mcp";
 const authError = () => new AppClientError({ reason: "authentication" });
 /** Session locks, and sessions on machines without an OS credential store, live here. */
 const authDirectory = Effect.gen(function* () {
@@ -74,7 +89,9 @@ const digest = (input: string) =>
       ),
     catch: authError,
   });
+/** The app management sign-in's store entry; the name predates the tools sign-in. */
 const sessionService = "Executor Registry";
+const toolsService = "Executor Tools";
 /**
  * Which signed-in host a Git origin's remotes use. It holds an origin, never a credential, and
  * {@link gitSession} accepts it only when that host's own session names the Git origin.
@@ -141,6 +158,23 @@ const writeCredential = (service: string, account: string, value: string) =>
     yield* fs.rename(temporary, file);
     return Option.some(file);
   }).pipe(Effect.catchTag("PlatformError", authError));
+/**
+ * Remove a credential from the OS credential store and the file fallback. A store that cannot
+ * delete it is left alone only when it cannot read it either, as when there is no store; a value
+ * that can still be read afterwards fails the removal.
+ */
+const deleteCredential = (service: string, account: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const os = yield* osEntry(service, account);
+    if (Option.isSome(os))
+      yield* Effect.tryPromise({
+        try: (signal) => os.value.deletePassword(signal),
+        catch: authError,
+      }).pipe(Effect.ignore);
+    yield* fs.remove(yield* credentialFile(service, account), { force: true });
+    if ((yield* readCredential(service, account)) !== undefined) return yield* authError();
+  }).pipe(Effect.catchTag("PlatformError", authError));
 /** Read a JSON response from the Executor host; redirects fail rather than carry credentials. */
 const fetchJson = <A>(request: HttpClientRequest.HttpClientRequest, schema: Schema.Decoder<A>) =>
   HttpClient.execute(request).pipe(
@@ -161,21 +195,38 @@ const request = <A>(url: string, body: URLSearchParams | object, schema: Schema.
 const Endpoint = Schema.String.check(
   Schema.makeFilter((input) => Schema.is(RegistryOrigin)(URL.parse(input)?.origin ?? "")),
 );
+/** The MCP resource a host's metadata names: an endpoint at `/mcp` on a permitted origin. */
+const isMcpResource = (resource: string) => {
+  const url = URL.parse(resource);
+  return (
+    url !== null &&
+    Schema.is(RegistryOrigin)(url.origin) &&
+    url.pathname === "/mcp" &&
+    url.search === "" &&
+    url.hash === ""
+  );
+};
 /**
- * Find the host's API resource and its authorization server, as RFC 9728 and RFC 8414 clients
+ * Find one of the host's resources and its authorization server, as RFC 9728 and RFC 8414 clients
  * do: the resource names its issuer, and the issuer's own origin serves the endpoints, which may
- * be on another host than the API (hosted Executor's are). The issuer must match exactly.
+ * be on another host than the API (hosted Executor's are). The issuer must match exactly. The API
+ * resource is the host's own `/api`; the MCP resource is the `/mcp` endpoint the host names.
  */
-const discover = (host: string) =>
+const discover = (host: string, signIn: SignIn) =>
   Effect.gen(function* () {
     const protectedResource = yield* fetchJson(
-      HttpClientRequest.get(`${host}/.well-known/oauth-protected-resource/api`),
+      HttpClientRequest.get(`${host}/.well-known/oauth-protected-resource/${signIn}`),
       Schema.Struct({
         resource: Schema.String,
         authorization_servers: Schema.NonEmptyArray(Endpoint),
       }),
     );
-    if (protectedResource.resource !== `${host}/api`) return yield* authError();
+    if (
+      signIn === "api"
+        ? protectedResource.resource !== `${host}/api`
+        : !isMcpResource(protectedResource.resource)
+    )
+      return yield* authError();
     const issuer = protectedResource.authorization_servers[0];
     const issuerUrl = new URL(issuer);
     const metadata = yield* fetchJson(
@@ -198,6 +249,13 @@ const discover = (host: string) =>
       device: metadata.device_authorization_endpoint,
     };
   });
+/** The MCP endpoint a host names for tools, read from its unauthenticated resource metadata. */
+export const mcpResource = (host: string) =>
+  Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(
+    Effect.mapError(authError),
+    Effect.andThen(discover(host, "mcp")),
+    Effect.map(({ resource }) => resource),
+  );
 const save = (host: string, session: typeof Session.Type) =>
   writeCredential(sessionService, host, JSON.stringify(session));
 
@@ -233,6 +291,35 @@ const withSessionLock = <A, E, R>(host: string, work: Effect.Effect<A, E, R>) =>
  */
 export const sessionRefreshMarginMs = 60_000;
 
+/**
+ * The session as saved, or with fresh tokens from the host when its access token is due to
+ * expire. The caller holds the host's session lock and saves the result.
+ */
+const refreshDue = <S extends { clientId: string; refreshToken: string; expiresAt: number }>(
+  host: string,
+  signIn: SignIn,
+  saved: S,
+) =>
+  Effect.gen(function* () {
+    if (saved.expiresAt > Date.now() + sessionRefreshMarginMs) return Option.none<S>();
+    const endpoints = yield* discover(host, signIn);
+    const fresh = yield* request(
+      endpoints.token,
+      new URLSearchParams({
+        grant_type: "refresh_token",
+        client_id: saved.clientId,
+        refresh_token: saved.refreshToken,
+      }),
+      Token,
+    );
+    return Option.some({
+      ...saved,
+      accessToken: fresh.access_token,
+      refreshToken: fresh.refresh_token,
+      expiresAt: Date.now() + fresh.expires_in * 1000,
+    });
+  });
+
 /** Read and refresh one explicitly selected organization grant. The credential store owns refresh-token custody. */
 export const registrySession = (host: string) =>
   withSessionLock(
@@ -244,27 +331,43 @@ export const registrySession = (host: string) =>
       const saved = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Session))(raw).pipe(
         Effect.mapError(authError),
       );
-      if (saved.expiresAt > Date.now() + sessionRefreshMarginMs) return Redacted.make(saved);
-      const endpoints = yield* discover(host);
-      const fresh = yield* request(
-        endpoints.token,
-        new URLSearchParams({
-          grant_type: "refresh_token",
-          client_id: saved.clientId,
-          refresh_token: saved.refreshToken,
-        }),
-        Token,
-      );
-      const session = {
-        ...saved,
-        accessToken: fresh.access_token,
-        refreshToken: fresh.refresh_token,
-        expiresAt: Date.now() + fresh.expires_in * 1000,
-      };
-      yield* save(host, session);
-      return Redacted.make(session);
+      const fresh = yield* refreshDue(host, "api", saved);
+      if (Option.isNone(fresh)) return Redacted.make(saved);
+      yield* save(host, fresh.value);
+      return Redacted.make(fresh.value);
     }),
   );
+
+/** Read the tools sign-in, if the host has one, without refreshing it. */
+const readToolsSession = (host: string) =>
+  Effect.gen(function* () {
+    const raw = yield* readCredential(toolsService, host);
+    if (raw === undefined) return Option.none<ToolsSession>();
+    return Option.some(
+      yield* Schema.decodeUnknownEffect(Schema.fromJsonString(ToolsSession))(raw).pipe(
+        Effect.mapError(authError),
+      ),
+    );
+  });
+
+/** The tools sign-in for `host`, refreshed as the app management sign-in is. */
+export const toolsSession = (host: string) =>
+  withSessionLock(
+    host,
+    Effect.gen(function* () {
+      yield* Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(Effect.mapError(authError));
+      const saved = yield* readToolsSession(host);
+      if (Option.isNone(saved)) return yield* authError();
+      const fresh = yield* refreshDue(host, "mcp", saved.value);
+      if (Option.isNone(fresh)) return Redacted.make(saved.value);
+      yield* writeCredential(toolsService, host, JSON.stringify(fresh.value));
+      return Redacted.make(fresh.value);
+    }),
+  );
+
+/** Whether `host` holds an app management sign-in. Reads the store; refreshes nothing. */
+export const hasRegistrySession = (host: string) =>
+  readCredential(sessionService, host).pipe(Effect.map((raw) => raw !== undefined));
 
 /**
  * The session for Git remotes on `origin`. Hosted Executor serves Git on other origins than its
@@ -281,10 +384,15 @@ export const gitSession = (origin: string) =>
     return session;
   });
 
-const scope = "executor offline_access";
+/** The scope each sign-in asks for; both keep a refresh token. */
+const scopes: Record<SignIn, string> = {
+  api: "executor offline_access",
+  mcp: "mcp offline_access",
+};
 const deviceGrant = "urn:ietf:params:oauth:grant-type:device_code";
 type Endpoints = Effect.Success<ReturnType<typeof discover>>;
-const fail = (reason: LoginFailed["reason"]) => () => new LoginFailed({ reason });
+const failure = (signIn: SignIn) => (reason: LoginFailed["reason"]) => () =>
+  new LoginFailed({ reason, signIn });
 const TokenError = Schema.Struct({ error: Schema.String });
 /** Seconds a rate-limited response asks to wait, in delta-seconds; Better Auth names its own header. */
 const retryAfter = (headers: Readonly<Record<string, string | undefined>>) => {
@@ -337,9 +445,11 @@ const openBrowser = (platform: string, url: string) =>
  * open that page when a browser can, then poll the token endpoint at the host's interval, slowing
  * down when asked, until approval, denial or expiry.
  */
-const deviceLogin = (endpoints: Endpoints, platform: string) =>
+const deviceLogin = (endpoints: Endpoints, signIn: SignIn, platform: string) =>
   Effect.gen(function* () {
-    if (endpoints.device === undefined) return yield* new LoginFailed({ reason: "unsupported" });
+    const fail = failure(signIn);
+    const scope = scopes[signIn];
+    if (endpoints.device === undefined) return yield* fail("unsupported")();
     const client = yield* request(
       endpoints.registration,
       {
@@ -398,8 +508,7 @@ const deviceLogin = (endpoints: Endpoints, platform: string) =>
     ): Effect.Effect<typeof Token.Type, LoginFailed> =>
       Effect.gen(function* () {
         yield* Effect.sleep(Duration.seconds(delay));
-        if ((yield* Clock.currentTimeMillis) >= deadline)
-          return yield* new LoginFailed({ reason: "expired" });
+        if ((yield* Clock.currentTimeMillis) >= deadline) return yield* fail("expired")();
         const response = yield* HttpClient.execute(poll).pipe(
           Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),
           Effect.provide(FetchHttpClient.layer),
@@ -420,21 +529,63 @@ const deviceLogin = (endpoints: Endpoints, platform: string) =>
         );
         if (error === "authorization_pending") return yield* wait(interval);
         if (error === "slow_down") return yield* wait(interval + 5);
-        return yield* new LoginFailed({
-          reason:
-            error === "access_denied" ? "denied" : error === "expired_token" ? "expired" : "token",
-        });
+        return yield* fail(
+          error === "access_denied" ? "denied" : error === "expired_token" ? "expired" : "token",
+        )();
       });
     return { clientId: client.client_id, token: yield* wait(started.interval ?? 5) };
   });
 
-/** Sign in to a hosted Executor with a code approved on any signed-in browser. */
+/**
+ * The host client commands use when neither --host nor EXECUTOR_HOST names one: the host signed in
+ * to last, recorded beside the sessions without a credential.
+ */
+const RememberedHost = Schema.fromJsonString(Schema.Struct({ host: RegistryOrigin }));
+const rememberedFile = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  return path.join(yield* authDirectory, "host.json");
+});
+/** The host signed in to last, if one is remembered. */
+export const rememberedHost = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const file = yield* rememberedFile;
+  if (!(yield* fs.exists(file))) return Option.none<string>();
+  const text = yield* fs.readFileString(file);
+  const { host } = yield* Schema.decodeUnknownEffect(RememberedHost)(text).pipe(
+    Effect.mapError(() => new SignInStateInvalid({ file })),
+  );
+  return Option.some(host);
+});
+const remember = (host: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const directory = yield* authDirectory;
+    yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
+    const file = yield* rememberedFile;
+    const temporary = `${file}.${crypto.randomUUID()}.tmp`;
+    yield* fs.writeFileString(temporary, JSON.stringify({ host }), { mode: 0o600 });
+    yield* fs.rename(temporary, file);
+  });
+
+/** Say where a session went when the OS credential store could not take it. */
+const reportFileFallback = (saved: Option.Option<string>) =>
+  Option.isSome(saved)
+    ? Console.error(
+        `No system credential store is available, so the session is saved in ${saved.value}, readable only by you.`,
+      )
+    : Effect.void;
+
+/**
+ * Sign in to a hosted Executor for app commands with a code approved on any signed-in browser.
+ * The host becomes the one client commands use by default.
+ */
 export const registryLogin = (host: string, platform: string) =>
   Effect.scoped(
     Effect.gen(function* () {
+      const fail = failure("api");
       yield* Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(Effect.mapError(fail("host")));
-      const endpoints = yield* discover(host).pipe(Effect.mapError(fail("host")));
-      const { clientId, token } = yield* deviceLogin(endpoints, platform);
+      const endpoints = yield* discover(host, "api").pipe(Effect.mapError(fail("host")));
+      const { clientId, token } = yield* deviceLogin(endpoints, "api", platform);
       const context = yield* fetchJson(
         HttpClientRequest.get(`${host}/api/context`).pipe(
           HttpClientRequest.bearerToken(token.access_token),
@@ -460,13 +611,75 @@ export const registryLogin = (host: string, platform: string) =>
             gitOrigins,
           });
           for (const origin of gitOrigins) yield* writeCredential(gitService, origin, host);
+          yield* remember(host);
           return file;
         }),
       ).pipe(Effect.mapError(fail("storage")));
-      if (Option.isSome(saved))
-        yield* Console.error(
-          `No system credential store is available, so the session is saved in ${saved.value}, readable only by you.`,
-        );
+      yield* reportFileFallback(saved);
       yield* Console.log(`Connected to ${host} as @${context.slug}.`);
+    }),
+  );
+
+/**
+ * Sign in for tool commands and `executor mcp`: a device grant for the host's MCP resource. What
+ * the grant reaches and how its approvals are answered are chosen on the approval page. The host
+ * becomes the one client commands use by default. Returns the saved session.
+ */
+export const toolsLogin = (host: string, platform: string) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fail = failure("mcp");
+      yield* Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(Effect.mapError(fail("host")));
+      const endpoints = yield* discover(host, "mcp").pipe(Effect.mapError(fail("host")));
+      const { clientId, token } = yield* deviceLogin(endpoints, "mcp", platform);
+      const session: ToolsSession = {
+        clientId,
+        accessToken: token.access_token,
+        refreshToken: token.refresh_token,
+        expiresAt: Date.now() + token.expires_in * 1000,
+        resource: endpoints.resource,
+      };
+      const saved = yield* withSessionLock(
+        host,
+        Effect.gen(function* () {
+          const file = yield* writeCredential(toolsService, host, JSON.stringify(session));
+          yield* remember(host);
+          return file;
+        }),
+      ).pipe(Effect.mapError(fail("storage")));
+      yield* reportFileFallback(saved);
+      return session;
+    }),
+  );
+
+/**
+ * Remove both of `host`'s sign-ins, and the Git origins its app management sign-in named, and
+ * forget it when it is the remembered host. Returns whether it held any sign-in.
+ */
+export const logout = (host: string) =>
+  withSessionLock(
+    host,
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const raw = yield* readCredential(sessionService, host);
+      const api =
+        raw === undefined
+          ? undefined
+          : Schema.decodeUnknownOption(Schema.fromJsonString(Session))(raw).pipe(
+              Option.getOrUndefined,
+            );
+      for (const origin of api?.gitOrigins ?? [])
+        if ((yield* readCredential(gitService, origin)) === host)
+          yield* deleteCredential(gitService, origin);
+      const tools = yield* readCredential(toolsService, host);
+      yield* deleteCredential(sessionService, host);
+      yield* deleteCredential(toolsService, host);
+      // A damaged record cannot name another host, so signing out is how it is cleared.
+      const remembered = yield* rememberedHost.pipe(
+        Effect.catchTag("SignInStateInvalid", () => Effect.succeed(Option.some(host))),
+      );
+      if (Option.isSome(remembered) && remembered.value === host)
+        yield* fs.remove(yield* rememberedFile, { force: true });
+      return raw !== undefined || tools !== undefined;
     }),
   );

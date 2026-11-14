@@ -6,7 +6,8 @@
 import { layer } from "alchemy/Alchemist/Runtime";
 import { store } from "alchemy/Alchemist/routes/state";
 import { Config, Effect, Redacted, Schema } from "effect";
-import { TestStageSlug, testStagePrefix } from "../src/infrastructure/stage.ts";
+import { TestStageSlug } from "../src/contracts/test-stage-lifetime.ts";
+import { testStagePrefix } from "../src/infrastructure/stage.ts";
 
 /** The stack name declared in `alchemy.run.ts`. */
 const stack = "executor-next-hosted";

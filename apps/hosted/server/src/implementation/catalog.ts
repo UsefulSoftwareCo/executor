@@ -9,7 +9,7 @@ import type { ClientMetadataSetting } from "./oauth-client-metadata.ts";
 
 /**
  * Read the official app feed at `feedUrl` on request, after this installation's built-in Executor
- * app. Layer construction performs no network I/O. The API document and the Executor app source are
+ * app, which stays listed when the feed is off or cannot be read. Layer construction performs no network I/O. The API document and the Executor app source are
  * only needed to prepare the Executor app, so both load on that request instead of during server
  * startup. The Executor app calls this deployment's API, an OAuth resource, at `apiOrigin`.
  */
@@ -32,10 +32,10 @@ export const catalogLive = (
       const executor = executorCatalogEntry(apiOrigin);
       return HostedCatalog.of({
         list: official.list.pipe(
-          Effect.map((entries) => [
-            executor,
-            ...entries.filter((entry) => entry.id !== executor.id),
-          ]),
+          Effect.map((listing) => ({
+            ...listing,
+            apps: [executor, ...listing.apps.filter((entry) => entry.id !== executor.id)],
+          })),
         ),
         custom: official.custom,
         prepare: (input) =>

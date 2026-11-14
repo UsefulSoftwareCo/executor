@@ -1,5 +1,5 @@
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Schema, Schedule } from "effect";
+import { Effect, Schema, Schedule } from "effect";
 import { scenarios } from "../test-plan.ts";
 import { App } from "../support/contracts.ts";
 import { Actors } from "../support/actors.ts";
@@ -7,6 +7,7 @@ import { Api, body } from "../support/api.ts";
 import { Evidence } from "../support/evidence.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withCase, withHostedCase } from "../support/case.ts";
+import { analyticsEvents } from "../support/collector-events.ts";
 import { Target } from "../support/platform.ts";
 import { captureBrowserAnalytics, renderBrowserReplay } from "../support/product-analytics.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -17,19 +18,12 @@ const Event = Schema.Struct({
   distinct_id: Schema.optional(Schema.String),
   properties: Schema.Record(Schema.String, Schema.Json),
 });
-const Batch = Schema.Struct({ batch: Schema.Array(Event) });
 const isSnapshot = (event: Schema.Json) =>
   event !== null &&
   typeof event === "object" &&
   !Array.isArray(event) &&
   "event" in event &&
   event.event === "$snapshot";
-const readEvents = (text: string) =>
-  text
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .flatMap((line) => Schema.decodeUnknownSync(Schema.fromJsonString(Batch))(line).batch);
 
 layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
   it.effect(scenarios.productAnalytics.title, (context) =>
@@ -39,16 +33,15 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
         const actors = yield* Actors,
           api = yield* Api,
           browser = yield* Browser,
-          target = yield* Target,
-          fs = yield* FileSystem.FileSystem;
+          target = yield* Target;
         expect(target.metadata.mode).toBe("managed");
         const actor = yield* body(
           Schema.Struct({ user: Schema.Struct({ id: Schema.String }) }),
           yield* api.request(actors.owner, "GET", "/api/auth/get-session"),
         );
-        const before = readEvents(
-          yield* fs.readFileString(`${target.directory}/analytics.ndjson`),
-        ).length;
+        // Cases share one collector, so only this case's organization is considered.
+        const organizationEvents = analyticsEvents({ organization: actors.organization.id });
+        const before = (yield* organizationEvents).length;
         const prefix = `/api/organizations/${actors.organization.id}`;
         // Reads are traced but never exported; dashboard refetches would otherwise dominate.
         expect((yield* api.request(actors.owner, "GET", `${prefix}/inventory`)).status).toBe(200);
@@ -56,13 +49,8 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
           message: "Synthetic feedback from the product analytics scenario",
         });
         expect(response.status).toBe(200);
-        // Cases share one collector, so only this case's organization is considered.
-        const events = yield* fs.readFileString(`${target.directory}/analytics.ndjson`).pipe(
-          Effect.map((text) =>
-            readEvents(text)
-              .slice(before)
-              .filter((event) => event.properties.organization_id === actors.organization.id),
-          ),
+        const events = yield* organizationEvents.pipe(
+          Effect.map((events) => events.slice(before)),
           Effect.repeat({
             schedule: Schedule.spaced("100 millis"),
             until: (events) =>
@@ -148,7 +136,12 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
           ),
         );
         yield* interact();
-        yield* recordedAfter(0);
+        // The stylesheet's recording is the first delivery; the checks after it read it.
+        yield* browser.use("Wait for the embedded stylesheet recording", () =>
+          expect
+            .poll(() => JSON.stringify(snapshots()), { timeout: 30000 })
+            .toContain("--replay-stylesheet-probe"),
+        );
         expect(capture.requests.filter((path) => path.includes("recorder"))).toEqual([]);
         // No browser file names the build; the page reads its release from the document.
         // Replay snapshots carry no event properties; every other browser event does.
@@ -158,11 +151,6 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
         expect(browserEvents.map((event) => event.event)).toContain("$identify");
         expect(browserEvents.map((event) => event.properties.release)).toEqual(
           browserEvents.map(() => target.metadata.commit),
-        );
-        yield* browser.use("Wait for the embedded stylesheet recording", () =>
-          expect
-            .poll(() => JSON.stringify(snapshots()), { timeout: 30000 })
-            .toContain("--replay-stylesheet-probe"),
         );
         const initialReplay = [...snapshots()];
         const liveLayout = yield* browser.use("Read live dashboard layout", (page) =>
@@ -177,7 +165,6 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
         expect(liveLayout.display).toBe("grid");
         expect(liveLayout.linkedStyle).toBe("linked");
         yield* browser.checkpoint("live-dashboard");
-        const first = snapshots().length;
         yield* browser.use("Insert ordinary content and synthetic secrets", (page) =>
           page.evaluate(() => {
             const region = document.createElement("section");
@@ -188,8 +175,7 @@ layer(HostedLive, { excludeTestServices: true })("Product analytics", (it) => {
             console.log("PRIVATE_CONSOLE");
           }),
         );
-        yield* interact();
-        yield* recordedAfter(first);
+        // One delivery after the insertion and the edits carries both.
         yield* browser.use("Update ordinary and secret fields, then reveal a token", (page) =>
           page
             .getByLabel("Replay password")
@@ -242,7 +228,6 @@ export default defineApp({}, async () => ({ tools: router({
             .then(() => page.getByRole("region", { name: "Tool result" }).innerText())
             .then((result) => expect(result).toContain("PRIVATE_TOOL_RESULT")),
         );
-        yield* recordedAfter(snapshots().length);
         yield* browser.checkpoint("tool-result-live");
         const toolError = yield* browser.use("Run a failing tool", (page) =>
           page
@@ -251,6 +236,8 @@ export default defineApp({}, async () => ({ tools: router({
             .then(() => page.getByRole("button", { name: "Run tool", exact: true }).click())
             .then(() => page.getByRole("alert").innerText()),
         );
+        // A delivery made after the failing run carries it, and whatever the passing run left
+        // buffered, before the page is left.
         yield* recordedAfter(snapshots().length);
         yield* browser.checkpoint("tool-error-live");
         yield* open(`/account/tokens?organization=${actors.organization.slug}`);
@@ -411,16 +398,8 @@ export default defineApp({}, async () => ({ tools: router({
             expect(opened).toBe(path);
           });
 
-        yield* onboarding.emailSignIn(yield* onboarding.freshEmail);
-        yield* browser.use("Decline passkey enrollment when it is offered", (page) => {
-          const decline = page.getByRole("button", { name: "Not now", exact: true });
-          return decline
-            .or(page.getByLabel("Team name", { exact: true }))
-            .first()
-            .waitFor()
-            .then(() => decline.count())
-            .then((offered) => (offered > 0 ? decline.click() : undefined));
-        });
+        // Sign-in is walked by the sign-in scenarios; this one records what follows it.
+        yield* onboarding.signInByApi;
         yield* browser.use("Team creation is open", (page) =>
           page
             .getByLabel("Team name", { exact: true })
@@ -468,7 +447,6 @@ export default defineApp({}, async () => ({ tools: router({
             document.body.append(region);
           }),
         );
-        yield* recordedAfter(accounts);
         yield* browser.use("Wait for the inserted setup content", () =>
           expect.poll(() => recorded(accounts), { timeout: 30000 }).toContain("VISIBLE_SETUP_TEXT"),
         );

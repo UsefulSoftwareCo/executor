@@ -1,5 +1,5 @@
 /**
- * MCP requests v1 forwards for workspaces that moved to v2 (`notes/v1-import.md`, Forwarding).
+ * MCP requests v1 forwards for workspaces that moved to v2 (`notes/v1-shutdown.md`, Forwarding).
  *
  * v1 keeps serving its MCP URLs and authenticating its own credentials (AuthKit tokens and WorkOS
  * API keys). For a moved organization it sends the request on to v2 with a bearer it signs with a
@@ -36,9 +36,30 @@ import {
 import { Clock, Effect, Option, Redacted, Result, Schema } from "effect";
 import { Base64Url } from "effect/encoding";
 import { SqlClient } from "effect/sql";
-import { toolkitCopyConnectionId, toolkitCopyId } from "./v1-import/store.ts";
 
 const prefix = "v1fwd.";
+
+/** The import map's id of a member's copy of a v1 toolkit: the toolkit's row and the member. */
+const toolkitCopyId = (toolkitRow: string, member: string) => `${toolkitRow}:${member}`;
+
+/**
+ * The connection id the import gave a member's first copy of a toolkit in a v2 organization,
+ * which v1 computes too when it forwards the toolkit's URL.
+ */
+const toolkitCopyConnectionId = (organization: string, toolkitRow: string, member: string) =>
+  Effect.promise(() =>
+    crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(JSON.stringify([organization, toolkitRow, member])),
+    ),
+  ).pipe(
+    Effect.map(
+      (digest) =>
+        `v1-${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0"))
+          .join("")
+          .slice(0, 40)}`,
+    ),
+  );
 
 /** The client every forwarded request is attributed to, in usage and in its session's key. */
 export const v1ForwardClient = "executor-v1";
@@ -285,8 +306,8 @@ export const v1ForwardAccess = (
         Effect.fail(new McpForbidden({ reason: "organization_mismatch" })),
       );
     // A toolkit runs under the caller's copy, the scoped connection its import made for them. v1
-    // names it by the id the import gives a copy first, generation 0's; one the opt-in import made
-    // keeps its earlier id, and one made again after a rollback has a later generation's.
+    // names it by the id the import gave a first copy; one the opt-in import made kept its
+    // earlier id, and one made again after a rollback had a later one: the import map holds it.
     const copy = row.toolkitConnection;
     if (claims.toolkit !== undefined) {
       if (copy === null)
@@ -295,7 +316,6 @@ export const v1ForwardAccess = (
         row.organization,
         claims.toolkit,
         claims.account,
-        0,
       );
       if (claims.connection !== copy && claims.connection !== derived)
         return yield* Effect.andThen(recordAuthFailure("wrong_resource"), Effect.fail(forbidden));

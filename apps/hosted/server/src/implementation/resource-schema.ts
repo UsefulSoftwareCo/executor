@@ -50,3 +50,17 @@ export const migrateResourceAccess = Effect.gen(function* () {
     target jsonb
   )`;
 });
+
+/**
+ * Accounts are no longer shared with groups. A sign-in request saved to create a group-shared
+ * account would now complete as an account for the whole organization, so its access record is
+ * removed: the request is refused and its creator starts again. Saved accounts are not changed
+ * here: one whose audience is still `groups` is used by nobody, and its creator and the
+ * organization's admins can delete it. `hosted_account_groups` stays until no running server
+ * reads it.
+ */
+export const removeGroupAccountConnections = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`delete from hosted_connection_access
+    where destination ->> 'kind' = 'shared' and destination -> 'audience' ->> 'kind' = 'groups'`;
+});

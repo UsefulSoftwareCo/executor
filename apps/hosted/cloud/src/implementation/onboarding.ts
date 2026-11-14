@@ -22,7 +22,6 @@ import {
   CreateTeam,
   type OnboardingCreated,
   TeamIconNotFound,
-  V1Membership,
   onboardingExperiment,
   onboardingSkipExperiment,
   SetupGate,
@@ -69,7 +68,6 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
   const blobs = yield* BlobStore;
   const store = yield* makeOnboardingStore;
   const lookup = yield* CompanyLookup;
-  const v1 = yield* V1Membership;
   const iconUrl = (owner: string, key: string) =>
     new URL(`/api/onboarding/icons/${owner}/${key}`, options.origin).href;
   const iconKey = (owner: string, key: string) => BlobKey.make(`team-icons/${owner}/${key}`);
@@ -107,11 +105,7 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
       );
       return null;
     });
-  /**
-   * The one entry decision: existing membership, a pending invitation and earlier setup come
-   * first; only an account with none of them asks v1. Runs no SQL transaction, so the WorkOS
-   * read never holds one open.
-   */
+  /** The one entry decision: existing membership, a pending invitation, then earlier setup. */
   const standing = (userId: string) =>
     Effect.gen(function* () {
       const user = yield* store.user(userId);
@@ -122,8 +116,6 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
       if (state.invitation !== null)
         return { status: "invitation" as const, invitation: state.invitation };
       if (state.provisioned) return { status: "ready" as const, organizations: [] };
-      // Only a verified email reaches this point, so the answer cannot reveal another person's v1 account.
-      if ((yield* v1.check(user)) === "v1") return { status: "v1" as const };
       return { status: "new" as const, user };
     });
   const prepare: typeof Onboarding.Service.prepare = (userId) =>
@@ -151,8 +143,8 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
         ...input,
         name: input.name.trim(),
       });
-      // Settle existing membership and the v1 check before storing an icon, and before the
-      // transaction: no SQL transaction stays open during WorkOS or R2 I/O.
+      // Settle existing membership before storing an icon, and before the transaction: no SQL
+      // transaction stays open during R2 I/O.
       const entry = yield* standing(userId);
       if (entry.status !== "new") return entry;
       const details = {
@@ -308,22 +300,5 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
         Schema.is(TeamIconNotFound)(error) ? error : new OnboardingUnavailable(),
       ),
     );
-  /**
-   * Creating an organization needs the account's own pass of the v1 check, whatever its v2
-   * memberships and invitations: an invitation lets a v1 member join the inviting organization,
-   * not start another. Setting up a team through onboarding ran the check (or the account
-   * predates it), so such an account is not asked again; any other account asks v1 now.
-   * Accounts created before the check shipped skip it (`V1Membership`).
-   */
-  const allowsOrganization: typeof Onboarding.Service.allowsOrganization = (userId) =>
-    Effect.gen(function* () {
-      const user = yield* store.user(userId);
-      if (!user?.emailVerified) return yield* new OnboardingUnavailable();
-      if (yield* store.setUpTeam(userId)) return true;
-      return (yield* v1.check(user)) !== "v1";
-    }).pipe(
-      Effect.mapError(() => new OnboardingUnavailable()),
-      Effect.withSpan("onboarding.allowsOrganization"),
-    );
-  return Onboarding.of({ prepare, create, allowsOrganization, setup, gate, icon });
+  return Onboarding.of({ prepare, create, setup, gate, icon });
 });

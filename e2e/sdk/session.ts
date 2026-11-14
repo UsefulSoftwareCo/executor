@@ -1,5 +1,5 @@
 /** A retained scenario composes the same actors, HTTP, browser and evidence adapters as tests. */
-import { Context, Effect, Exit, Layer, Redacted, Schema, Semaphore } from "effect";
+import { Context, Effect, Exit, Layer, Schema, Semaphore } from "effect";
 import { Api, SessionClients } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Target } from "../support/platform.ts";
@@ -8,6 +8,7 @@ import { RecordingFocus } from "../support/recording-focus.ts";
 import { Browser, BrowserDriver } from "../support/browser.ts";
 import { startScenario } from "./scenario.ts";
 import { seedOrganization, SeedReceipt, DataShape } from "./data.ts";
+import { reveal } from "../support/failure-text.ts";
 
 /** Scenario failures retain safe operation names while detailed evidence stays local. */
 export class ScenarioFailed extends Schema.TaggedError<ScenarioFailed>()("ScenarioFailed", {
@@ -50,7 +51,7 @@ export const createScenario = (
         ? yield* Effect.gen(function* () {
             const session = yield* api.session();
             const paired = yield* session.send("POST", "/auth/pair", undefined, {
-              authorization: `Bearer ${Redacted.value(target.apiKey)}`,
+              authorization: `Bearer ${reveal(target.apiKey)}`,
             });
             const value = yield* Schema.decodeUnknownEffect(Schema.Struct({ url: Schema.String }))(
               paired.body,
@@ -160,7 +161,7 @@ export const createScenario = (
             } else {
               const session = yield* api.session();
               const paired = yield* session.send("POST", "/auth/pair", undefined, {
-                authorization: `Bearer ${Redacted.value(target.apiKey)}`,
+                authorization: `Bearer ${reveal(target.apiKey)}`,
               });
               const value = yield* Schema.decodeUnknownEffect(
                 Schema.Struct({ url: Schema.String }),

@@ -1,5 +1,6 @@
 /** Workflow actions share the read-only browser and keep independent mutation state. */
 import { Json, type HostedWorkflow, type WorkflowRun } from "@executor-js/sdk";
+import { randomUuid } from "@executor-js/utils/random-uuid";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult, type Atom } from "effect/reactivity";
 import { Exit, Schema } from "effect";
@@ -27,7 +28,7 @@ export function WorkflowStart<E>({
   readonly onStarted: () => void;
 }) {
   const [input, setInput] = useState("{}");
-  const [key, setKey] = useState(() => crypto.randomUUID());
+  const [key, setKey] = useState(() => randomUuid());
   const [invalid, setInvalid] = useState(false);
   const [result, setResult] = useState<Exit.Exit<WorkflowRun, E>>();
   const [pending, setPending] = useState(false);
@@ -51,7 +52,7 @@ export function WorkflowStart<E>({
           setPending(false);
           setResult(result);
           if (Exit.isSuccess(result)) {
-            setKey(crypto.randomUUID());
+            setKey(randomUuid());
             onStarted();
           }
         }}
@@ -68,7 +69,7 @@ export function WorkflowStart<E>({
             }
             onChange={(event) => {
               setInput(event.target.value);
-              setKey(crypto.randomUUID());
+              setKey(randomUuid());
             }}
             spellCheck={false}
           />

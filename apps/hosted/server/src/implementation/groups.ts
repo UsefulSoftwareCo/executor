@@ -1,5 +1,5 @@
 /** Group writes commit metadata and memberships together, after locking current authority. */
-import { Effect, Schema } from "effect";
+import { Array as Arr, Effect, Schema } from "effect";
 import { SqlClient, SqlError } from "effect/sql";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
@@ -100,7 +100,7 @@ const listGroups = Effect.gen(function* () {
       Effect.flatMap((rows) => decodeRows(Membership, rows)),
     );
   const members =
-    yield* sql`select m.id, m."userId", u.name, u.email from member m join "user" u on u.id = m."userId" where m."organizationId" = ${access.organization}
+    yield* sql`select m.id, m."userId", u.name, u.email, u.image from member m join "user" u on u.id = m."userId" where m."organizationId" = ${access.organization}
     and (${access.role !== "member"} or exists (select 1 from hosted_group_members gm where gm.member_id = m.id and ${sql.in("gm.group_id", groupIds)}))
     order by lower(u.name), m.id`.pipe(Effect.flatMap((rows) => decodeRows(GroupMember, rows)));
   return {
@@ -138,8 +138,9 @@ const saveGroup = (
     const group = (yield* decodeRows(StoredGroup, changed))[0];
     if (group === undefined) return yield* new GroupNotFound();
     yield* sql`delete from hosted_group_members where group_id = ${group.id}`;
-    if (input.memberIds.length > 0)
-      yield* sql`insert into hosted_group_members ${sql.insert(input.memberIds.map((member) => ({ group_id: group.id, member_id: member })))}`;
+    const members = input.memberIds.map((member) => ({ group_id: group.id, member_id: member }));
+    if (Arr.isArrayNonEmpty(members))
+      yield* sql`insert into hosted_group_members ${sql.insert(members)}`;
     return { ...group, memberIds: input.memberIds } satisfies Group;
   });
 const removeGroup = (id: GroupId, revision: typeof GroupRevision.Type) =>

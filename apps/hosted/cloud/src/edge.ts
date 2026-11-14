@@ -13,7 +13,6 @@ import { sentryBindings } from "./infrastructure/sentry.ts";
 import { siteTelemetryBinding } from "./infrastructure/site-telemetry.ts";
 import { Marketing } from "./infrastructure/marketing-worker.ts";
 import { Edge } from "./infrastructure/edge-worker.ts";
-import { testStageEdgeRoutes } from "./infrastructure/role-hosts.ts";
 import { workerBuild } from "./infrastructure/worker-build.ts";
 import { platformObservability } from "./infrastructure/telemetry.ts";
 
@@ -42,7 +41,7 @@ export default Edge.make(
         (yield* postHogBindings).analyticsProxy,
         (yield* sentryBindings).errorTunnel,
       ),
-      ...(yield* testStageEdgeRoutes),
+      // Its route is the switch's (`executor-sh.ts`), which points it here unless switched.
       ...(yield* platformObservability),
     };
   }),

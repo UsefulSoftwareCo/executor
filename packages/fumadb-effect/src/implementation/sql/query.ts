@@ -11,7 +11,7 @@
  * the row back by id), `SELECT TOP (n)` and `OFFSET ... FETCH NEXT` on MSSQL,
  * and `COUNT(*)` coming back as a bigint on PostgreSQL and CockroachDB.
  */
-import { DateTime, Effect, Equal, Option, Result } from "effect";
+import { Array as Arr, DateTime, Effect, Equal, Option, Result } from "effect";
 import { Statement } from "effect/sql";
 import { SqlClient } from "effect/sql/SqlClient";
 import { QueryError } from "../../contracts/errors.ts";
@@ -672,7 +672,7 @@ export const makeSqlOrmAdapter = (
    */
   const insertFragment = (
     sql: SqlClient,
-    rows: ReadonlyArray<Record<string, unknown>>,
+    rows: Arr.NonEmptyReadonlyArray<Record<string, unknown>>,
     returning: Statement.Fragment | undefined,
   ): Statement.Fragment => {
     const aligned = alignColumns(rows);
@@ -698,11 +698,11 @@ export const makeSqlOrmAdapter = (
    * single column list. A column another row sets is inserted as `NULL` here.
    */
   const alignColumns = (
-    rows: ReadonlyArray<Record<string, unknown>>,
-  ): Array<Record<string, unknown>> => {
+    rows: Arr.NonEmptyReadonlyArray<Record<string, unknown>>,
+  ): Arr.NonEmptyArray<Record<string, unknown>> => {
     const keys = new Set<string>();
     for (const row of rows) for (const key of Object.keys(row)) keys.add(key);
-    return rows.map((row) => {
+    return Arr.map(rows, (row) => {
       const out: Record<string, unknown> = {};
       for (const key of keys) out[key] = row[key] ?? null;
       return out;
@@ -763,7 +763,7 @@ export const makeSqlOrmAdapter = (
       // One INSERT per parameter budget; several chunks run in one transaction so the batch stays atomic.
       const columnCount = Math.max(1, Object.keys(table.columns).length);
       const rowsPerStatement = Math.max(1, Math.floor(parameterBudget(provider) / columnCount));
-      const chunks = chunk(encoded, rowsPerStatement);
+      const chunks = Arr.chunksOf(encoded, rowsPerStatement);
       const insertAll = Effect.forEach(
         chunks,
         (rows) => sql`INSERT INTO ${sql(table.names.sql)} ${insertFragment(sql, rows, undefined)}`,

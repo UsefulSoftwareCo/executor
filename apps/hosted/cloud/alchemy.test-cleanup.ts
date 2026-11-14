@@ -7,7 +7,8 @@ import * as Planetscale from "alchemy/Planetscale";
 import * as Neon from "alchemy/Neon";
 import { Effect, Layer, Schema } from "effect";
 import { Stage } from "alchemy/Stage";
-import { TestStageSlug } from "./src/infrastructure/stage.ts";
+import { TestStageSlug } from "./src/contracts/test-stage-lifetime.ts";
+import { ExecutorShHostnameProvider } from "./src/infrastructure/executor-sh.ts";
 import { PreviousTestDatabaseCleanup } from "./src/infrastructure/previous-test-database-cleanup.ts";
 import {
   TestStageBuildCleanup,
@@ -37,6 +38,8 @@ export default Alchemy.Stack(
       Neon.providers(),
       TestStageDomainCleanup().pipe(Layer.provide(cleanupState)),
       PreviousTestDatabaseCleanup(),
+      // A test stage's switch removes its edge route with the stage (`executor-sh.ts`).
+      ExecutorShHostnameProvider(),
     ),
     state: cleanupState,
   },

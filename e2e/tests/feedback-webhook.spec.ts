@@ -11,7 +11,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { managementApp } from "../support/management-app.ts";
 import { Target } from "../support/platform.ts";
 import { serverControl } from "../support/server-control.ts";
-import { deliveredAnalytics } from "../support/instance-analytics.ts";
+import { deliveredAnalyticsWholeEnvironment } from "../support/instance-analytics.ts";
 
 const Payload = Schema.Struct({
   message: Schema.String,
@@ -152,7 +152,7 @@ const exercise = (analyticsOff: boolean) =>
     expect(logs).not.toContain(receiver);
     expect(logs).not.toContain("synthetic-feedback-secret");
     expect(logs).toContain("Feedback webhook delivery failed");
-    const analytics = yield* deliveredAnalytics;
+    const analytics = yield* deliveredAnalyticsWholeEnvironment;
     if (analyticsOff) expect(analytics.text).toBe("");
     else {
       expect(

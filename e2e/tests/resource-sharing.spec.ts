@@ -138,7 +138,9 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
             ),
           ).toBe(true);
         }
-        for (const kind of ["personal", "shared"] as const) {
+        // Two accounts of the owner's: one connected on the app page, one through a connection
+        // handoff link. Both are the owner's own.
+        for (const kind of ["personal", "handoff"] as const) {
           const label = `${kind} ${suffix}`;
           if (kind === "personal") {
             yield* browser.use("Open account selections", (page) =>
@@ -154,10 +156,10 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
                 actors.owner,
                 "POST",
                 connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-                { destination: { kind: "shared", audience: { kind: "everyone" } } },
+                {},
               ),
             );
-            yield* browser.use("Open the shared connection handoff", (page) =>
+            yield* browser.use("Open the connection handoff", (page) =>
               page.goto(`/org/${actors.organization.slug}/connections/${connection.id}`),
             );
           }
@@ -189,10 +191,20 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
         yield* browser.use("Open the unified account list", (page) =>
           page.goto(`/org/${actors.organization.slug}/accounts`),
         );
-        for (const kind of ["personal", "shared"])
-          yield* browser.use("Personal and shared accounts appear together", (page) =>
+        for (const kind of ["personal", "handoff"])
+          yield* browser.use("Both of the owner's accounts are listed", (page) =>
             page.getByRole("button", { name: `Manage ${kind} ${suffix}`, exact: true }).waitFor(),
           );
+        // Every account is personal, so the list marks none as personal or shared.
+        expect(
+          yield* browser.use("No account is marked personal or shared", (page) =>
+            page
+              .getByRole("main")
+              .getByText(/^(Personal|Shared)$/)
+              .count(),
+          ),
+        ).toBe(0);
+        yield* browser.checkpoint("The owner's accounts, none marked personal or shared");
         const deleting = connected[0];
         if (!deleting) throw new Error("The connected personal account is missing");
         yield* browser.use("Start deleting the personal account", (page) =>
@@ -232,9 +244,26 @@ layer(HostedLive, { excludeTestServices: true })("Resource sharing", (it) => {
         const after = yield* api.request(actors.owner, "GET", `${prefix}/accounts/${deleting}`);
         expect([403, 404]).toContain(after.status);
         connected.splice(0, 1);
-        yield* browser.use("The team account remains", (page) =>
-          page.getByRole("button", { name: `Manage shared ${suffix}`, exact: true }).waitFor(),
+        yield* browser.use("The other account remains", (page) =>
+          page.getByRole("button", { name: `Manage handoff ${suffix}`, exact: true }).waitFor(),
         );
+        // Another member sees neither of the owner's accounts.
+        yield* browser.login(actors.member);
+        yield* browser.use("Open the member's account list", (page) =>
+          page.goto(`/org/${actors.organization.slug}/accounts`),
+        );
+        yield* browser.use("The account list has loaded", (page) =>
+          page
+            .locator(".inventory")
+            .or(page.getByText("Open an app to connect your own account.", { exact: true }))
+            .first()
+            .waitFor(),
+        );
+        expect(
+          yield* browser.use("The owner's account is not listed for the member", (page) =>
+            page.getByRole("button", { name: `Manage handoff ${suffix}`, exact: true }).count(),
+          ),
+        ).toBe(0);
       }),
     ),
   );

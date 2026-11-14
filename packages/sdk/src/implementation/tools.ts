@@ -6,7 +6,6 @@ import type { FirstPartyOAuthClient } from "../contracts/oauth.ts";
 import {
   Cause,
   Clock,
-  type Crypto,
   Effect,
   ErrorReporter,
   Exit,
@@ -16,6 +15,7 @@ import {
   Result,
   Schema,
 } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import { recordedCause } from "@executor-js/telemetry/recorded-failure";
 import {
   type WorkflowHostControls,
@@ -100,6 +100,7 @@ import {
   type ToolSummary,
   InvocationPrefetch,
   InvocationSelection,
+  ToolCallKindObserved,
   type PrefetchedInvocation,
   type PrefetchHost,
   type SearchableTools,
@@ -920,7 +921,7 @@ export const makeTools = (
   clients: ReadonlyMap<string, FirstPartyOAuthClient>,
   runtime: Runtime,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   listings: Listings,
   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
   lifecycle?: ResourceLifecycle,
@@ -1700,6 +1701,7 @@ export const makeTools = (
         // Every failure from here, the app's or Executor's own, passes through `callFailure` once.
         return yield* Effect.gen(function* () {
           const kind = yield* kindOf(state, context, parsed.tool, named);
+          if (kind !== undefined) (yield* ToolCallKindObserved)?.(kind);
           let toolError = false;
           const execute = (context: InvocationContext) =>
             Effect.suspend(() => {

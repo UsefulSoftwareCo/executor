@@ -174,7 +174,7 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
         );
         expect(Exit.isFailure(adminMoved)).toBe(true);
         yield* evidence.step(
-          "A credential used at another MCP URL names the URL it works at",
+          "The grant's record, not the URL, decides what a credential reaches",
           Effect.gen(function* () {
             const anonymous = yield* api.session();
             const admin = yield* api.request(
@@ -187,18 +187,49 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
             expect(admin.status).toBe(403);
             expect(admin.body).toMatchObject(
               refusal(
-                "This credential works only at the MCP URL ending in /mcp, not at the URL of this request. Recovery: Connect at the MCP URL ending in /mcp, or connect again at this URL to get a credential for it, then retry.",
+                `This credential has full access and no sign-in record, so it cannot be limited to the connection ${connection.id} that this MCP URL names. Recovery: Use the MCP URL without the connection parameter, or sign the client in through OAuth and choose the connection, then retry.`,
               ),
             );
-            const unscoped = yield* api.request(anonymous, "POST", "/mcp", listTools, {
-              authorization: `Bearer ${Redacted.value(token)}`,
-            });
-            expect(unscoped.status).toBe(403);
-            expect(unscoped.body).toMatchObject(
-              refusal(
-                `This credential works only at the MCP URL ending in /mcp?connection=${connection.id}, not at the URL of this request. Recovery: Connect at the MCP URL ending in /mcp?connection=${connection.id}, or connect again at this URL to get a credential for it, then retry.`,
-              ),
+            // At the plain URL the connection's grant still reaches only its connection.
+            const plain = yield* mcp.connect(token, "local-scoped-plain");
+            const [plainRead, plainExcluded] = yield* Effect.all(
+              [
+                plain
+                  .use("Call the read tool at the plain URL", (client, signal) =>
+                    client.callTool(
+                      { name: "execute", arguments: { code: `return await ${appPath}.read({})` } },
+                      undefined,
+                      { signal },
+                    ),
+                  )
+                  .pipe(
+                    Effect.flatMap((result) =>
+                      Schema.decodeUnknownEffect(Execution)(result.structuredContent),
+                    ),
+                  ),
+                plain
+                  .use("Call an excluded app at the plain URL", (client, signal) =>
+                    client.callTool(
+                      {
+                        name: "execute",
+                        arguments: {
+                          code: `return await tools[${JSON.stringify(hidden.app.slug)}].echo({message: "x"})`,
+                        },
+                      },
+                      undefined,
+                      { signal },
+                    ),
+                  )
+                  .pipe(
+                    Effect.flatMap((result) =>
+                      Schema.decodeUnknownEffect(Execution)(result.structuredContent),
+                    ),
+                  ),
+              ],
+              { concurrency: 2 },
             );
+            expect(plainRead.execution).toEqual({ ok: true, value: { read: receipt } });
+            expect(plainExcluded.execution.ok).toBe(false);
             // A malformed URL names no MCP address, so it is invalid rather than refused.
             const malformed = yield* api.request(
               anonymous,
@@ -522,40 +553,43 @@ layer(TestLive, { excludeTestServices: true })("Local scoped MCP connections", (
           "search",
           "skills",
         ]);
-        // The default is the plain URL's model mode only, not every approval mode.
-        const other = yield* Effect.exit(
-          mcp.connect(token, "local-without-resource-browser-mode", { mode: "browser" }),
+        // The grant's record holds model mode; an address naming another mode is served in it.
+        const native = yield* mcp.connect(token, "local-without-resource-native-address", {
+          mode: "native",
+        });
+        const nativeListed = yield* native.use(
+          "An address naming native mode serves the grant's model mode",
+          (client) => client.listTools(),
         );
-        expect(Exit.isFailure(other)).toBe(true);
-        const anonymous = yield* api.session();
-        const bearer = { authorization: `Bearer ${Redacted.value(token)}` };
-        const browserMode = yield* api.request(
-          anonymous,
-          "POST",
-          "/mcp?elicitation_mode=browser",
-          listTools,
-          bearer,
-        );
-        expect(browserMode.status).toBe(403);
-        expect(browserMode.body).toMatchObject(
-          refusal(
-            "This credential works only at the MCP URL ending in /mcp, not at the URL of this request. Recovery: Connect at the MCP URL ending in /mcp, or connect again at this URL to get a credential for it, then retry.",
-          ),
+        // Native mode has no resume tool; model mode lists it.
+        expect(nativeListed.tools.map((tool) => tool.name).sort()).toEqual([
+          "call",
+          "describe",
+          "execute",
+          "resume",
+          "search",
+          "skills",
+        ]);
+        const browserAddress = yield* mcp.connect(token, "local-without-resource-browser-address", {
+          mode: "browser",
+        });
+        yield* browserAddress.use(
+          "An address naming browser mode also serves the grant",
+          (client) => client.listTools(),
         );
         yield* evidence.step(
-          "A grant issued at the model-mode URL cannot be narrowed to browser approval",
+          "A grant whose approval mode is model cannot be narrowed to browser approval",
           Effect.gen(function* () {
-            // No URL could serve it: its own URL cannot ask for browser approval.
+            // Its own approval mode cannot ask for browser approval, so no request could use it.
             const narrowed = yield* api.request(operator, "POST", "/api/auth/mcp/grants/narrow", {
               id: yield* clientGrantId(operator, consent.clientId),
               policy: { kind: "tools", apps: [], approval: "browser" },
             });
             expect(narrowed.status, JSON.stringify(narrowed.body)).toBe(403);
             expect(narrowed.body).toMatchObject({
-              message:
-                "Browser approval needs a grant issued at an MCP URL with elicitation_mode=browser.",
+              message: "Browser approval needs a grant whose approval mode is browser.",
             });
-            const relisted = yield* client.use("The grant still serves its own URL", (client) =>
+            const relisted = yield* client.use("The grant still serves its own mode", (client) =>
               client.listTools(),
             );
             expect(relisted.tools.map((tool) => tool.name).sort()).toEqual([

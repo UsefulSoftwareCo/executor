@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import type { Page } from "playwright";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
+import { replaceResponses } from "../support/browser-responses.ts";
 import { Evidence } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { openInApp } from "../support/in-app-navigation.ts";
@@ -57,27 +58,31 @@ const drawn = (page: Page) =>
   );
 
 /**
- * Open a document as the server streamed it. Its scripts are refused, including React's inline
+ * Until the scope closes, refuse the scripts of the document at `path`, including React's inline
  * reveals, so the page stays at its first paint: the server's loading fallback for every region
  * still waiting, or the page itself where it was ready. That is the window a person sees before
  * the page streams in.
  */
+const refuseScripts = (path: string) => {
+  const pathname = path.split("?")[0];
+  // In a DevTools pattern `?` matches any one character, including the query's own.
+  return replaceResponses(`*${path}`, (response) => {
+    if (new URL(response.url).pathname !== pathname) return "unchanged";
+    const contentType = response.headers["content-type"];
+    if (contentType === undefined) throw new Error(`${path} was served without a content type`);
+    return response.body().then((body) => ({
+      status: response.status,
+      body,
+      contentType,
+      headers: { "content-security-policy": "script-src 'none'" },
+    }));
+  });
+};
+
+/** Open a document whose scripts are refused, as the server streamed it. */
 const firstPaint = (page: Page, path: string) =>
   page
-    .route(
-      (url) => url.pathname === path.split("?")[0],
-      (route) =>
-        route.fetch().then((response) =>
-          route.fulfill({
-            response,
-            headers: {
-              ...response.headers(),
-              "content-security-policy": "script-src 'none'",
-            },
-          }),
-        ),
-    )
-    .then(() => page.goto(path, { waitUntil: "load" }))
+    .goto(path, { waitUntil: "load" })
     .then(() =>
       Promise.all([
         headings(page),
@@ -92,10 +97,9 @@ const firstPaint = (page: Page, path: string) =>
       heading,
       screenshot,
     }))
-    // The page can never hydrate; later steps start from a page that is not a dashboard.
-    .finally(() =>
-      page.unrouteAll({ behavior: "ignoreErrors" }).then(() => page.goto("about:blank")),
-    );
+    // The page can never hydrate; the step ends on a page that is not a dashboard, so neither it
+    // nor later steps wait for this one to respond.
+    .finally(() => page.goto("about:blank"));
 
 /** The same document once it has hydrated and `ready` resolves, where it draws its heading. */
 const readyPaint = (page: Page, path: string, ready: (page: Page) => Promise<unknown>) =>
@@ -163,8 +167,13 @@ layer(HostedLive, { excludeTestServices: true })("Route loading", (it) => {
         }) =>
           Effect.gen(function* () {
             const name = viewport === undefined ? label : `${label} ${viewport.width}`;
-            const paint = yield* browser.use(`${name}: the server's first paint`, (page) =>
-              atViewport(page, viewport, () => firstPaint(page, path)),
+            const paint = yield* Effect.scoped(
+              Effect.gen(function* () {
+                yield* refuseScripts(path);
+                return yield* browser.use(`${name}: the server's first paint`, (page) =>
+                  atViewport(page, viewport, () => firstPaint(page, path)),
+                );
+              }),
             );
             expect(paint.hydrated, `${name} was read before any script ran`).toBe(false);
             expect(paint.visible, `${name} shows its own heading`).not.toEqual([]);

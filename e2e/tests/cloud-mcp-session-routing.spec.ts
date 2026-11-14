@@ -11,19 +11,41 @@
  */
 import { createHmac, randomBytes, randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Redacted, Schedule, Schema } from "effect";
+import { Effect, FileSystem, Layer, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import type { SpanQuery } from "../support/contracts.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
+import { Evidence, Telemetry, type DeliveredSpan } from "../support/evidence.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
-type Span = (typeof SpanQuery.Type)["data"][number]["span"];
+type Span = DeliveredSpan;
+
+/** A trace's spans, split at the session object: what the object ran and what the gateway ran. */
+const split = (all: ReadonlyArray<Span>) => {
+  const byId = new Map(all.map((span) => [span.spanId, span]));
+  const inObject = (span: Span) => {
+    const seen = new Set<string>();
+    for (let at: Span | undefined = span; at !== undefined;) {
+      if (at.operationName === "mcp.session.request") return true;
+      if (at.parentSpanId === null || seen.has(at.parentSpanId)) return false;
+      seen.add(at.parentSpanId);
+      at = byId.get(at.parentSpanId);
+    }
+    return false;
+  };
+  const named = (list: ReadonlyArray<Span>, name: string) =>
+    list.filter((span) => span.operationName === name);
+  return {
+    all,
+    object: all.filter(inObject),
+    gateway: all.filter((span) => !inObject(span)),
+    named,
+  };
+};
 
 const Token = Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) });
 /** The stateful revision; its sessions carry an `Mcp-Session-Id`. */
@@ -198,34 +220,18 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
            * the gateway ran. `ready` says when the spans that prove the outcome have arrived.
            */
           const spans = (traceId: string, ready: (spans: ReadonlyArray<Span>) => boolean) =>
-            telemetry.query(traceId).pipe(
-              Effect.map((result) => result.data.map(({ span }) => span)),
-              Effect.flatMap((all) =>
-                ready(all)
-                  ? Effect.succeed(all)
-                  : Effect.fail(new Error("The request's spans have not reached Motel")),
-              ),
-              Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
-              Effect.map((all) => {
-                const byId = new Map(all.map((span) => [span.spanId, span]));
-                const inObject = (span: Span) => {
-                  const seen = new Set<string>();
-                  for (let at: Span | undefined = span; at !== undefined;) {
-                    if (at.operationName === "mcp.session.request") return true;
-                    if (at.parentSpanId === null || seen.has(at.parentSpanId)) return false;
-                    seen.add(at.parentSpanId);
-                    at = byId.get(at.parentSpanId);
-                  }
-                  return false;
-                };
-                const named = (list: ReadonlyArray<Span>, name: string) =>
-                  list.filter((span) => span.operationName === name);
-                const object = all.filter(inObject);
-                const gateway = all.filter((span) => !inObject(span));
-                return { all, object, gateway, named };
-              }),
+            telemetry.settled(traceId, ready).pipe(
+              Effect.map(split),
               Effect.tap((found) => evidence.json(`trace-${traceId}.json`, found.all)),
             );
+          /**
+           * The object answered, and the gateway's forward and bearer check have arrived: the
+           * gateway exports its spans apart from the object's, often in a later flush.
+           */
+          const checkedInGateway = (list: ReadonlyArray<Span>) => {
+            const { gateway, named } = split(list);
+            return forwardedAndAnswered(list) && named(gateway, "auth.authenticate").length > 0;
+          };
           const hasTag = (name: string, value: string) => (list: ReadonlyArray<Span>) =>
             list.some((span) => span.tags[name] === value);
           const objectAnswered = (list: ReadonlyArray<Span>) =>
@@ -601,7 +607,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
               });
               listsTools(answer);
               expect(answer.headers["mcp-session-id"]).toBeUndefined();
-              const trace = yield* spans(answer.traceId, objectAnswered);
+              const trace = yield* spans(answer.traceId, checkedInGateway);
               expect(
                 trace
                   .named(trace.gateway, "mcp.session.forward")
@@ -636,7 +642,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session routing", (i
               const lost = `${victim.objectId}.${mac(yield* currentKey, victim.objectId, forgotten)}.${forgotten}`;
               const answer = yield* listTools(owner.key, lost);
               notFound(answer);
-              const trace = yield* spans(answer.traceId, objectAnswered);
+              const trace = yield* spans(answer.traceId, forwardedAndAnswered);
               expect(
                 trace
                   .named(trace.gateway, "mcp.session.forward")

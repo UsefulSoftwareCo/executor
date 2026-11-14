@@ -1,5 +1,5 @@
 import { Layer } from "effect";
-import { requireUserLive } from "./auth.ts";
+import { requireBrowserSessionLive } from "./auth.ts";
 import { requireOrganizationLive } from "./organization.ts";
 import { requireAccountTargetLive } from "./proofs/account-access.ts";
 import { batchAuthentication } from "./batch-authentication.ts";
@@ -9,7 +9,7 @@ import { batchAuthentication } from "./batch-authentication.ts";
  * a new middleware joins here rather than in each host.
  */
 export const hostedMiddlewareLive = Layer.mergeAll(
-  requireUserLive,
+  requireBrowserSessionLive,
   requireOrganizationLive,
   requireAccountTargetLive,
   batchAuthentication.layer,

@@ -180,6 +180,10 @@ layer(TestLive, { excludeTestServices: true })("Auth observability", (it) => {
               "auth.error_code": fixture.code,
               "auth.stage": fixture.stage,
               "auth.session_created": String(fixture.kind === "success"),
+              // Only a profile that arrived says whether it had a photo; a fresh identity's
+              // photo is stored when Better Auth creates the user, not by the refresh.
+              "auth.profile.photo": fixture.kind === "success" ? "present" : "unknown",
+              "auth.photo.refresh": fixture.kind === "success" ? "new_user" : "none",
               "http.response.status_code": "302",
             },
           });

@@ -26,6 +26,7 @@ import {
   EventList,
   Granted,
   RpcResult,
+  appEvent,
   emitterFiles,
   meta,
   revision,
@@ -186,7 +187,7 @@ layer(TestLive, { excludeTestServices: true })("Local MCP events", (it) => {
             });
 
           const listed = yield* Schema.decodeUnknownEffect(EventList)(yield* rpc("events/list"));
-          expect(listed.events.map((event) => event.name)).toContain(name);
+          expect(listed.events.map((event) => event.name)).toEqual([appEvent]);
           const granted = yield* Schema.decodeUnknownEffect(Granted)(
             yield* rpc("events/subscribe", {
               name,
@@ -252,6 +253,30 @@ layer(TestLive, { excludeTestServices: true })("Local MCP events", (it) => {
             hook.received.some((item) => item.id === marked && item.subscription === marker.id),
           );
           expect(hook.received.filter((item) => item.id === dropped)).toHaveLength(0);
+
+          // A selection of every app receives the local owner's apps' events, each with its app
+          // and event beside the data.
+          const everything = yield* Schema.decodeUnknownEffect(Granted)(
+            yield* rpc("events/subscribe", {
+              name: appEvent,
+              arguments: {},
+              delivery: { mode: "webhook", url: hook.url, secret: secrets[0] },
+            }),
+          );
+          const selected = yield* emit("acme/selected", 6);
+          yield* awaitReceived(() =>
+            hook.received.some(
+              (item) => item.id === selected && item.subscription === everything.id,
+            ),
+          );
+          const delivery = hook.received.find(
+            (item) => item.id === selected && item.subscription === everything.id,
+          );
+          expect(JSON.parse(delivery!.body)).toMatchObject({
+            eventId: selected,
+            name: appEvent,
+            data: { app: app.slug, event: "issue.opened", data: { title: "Issue 6", number: 6 } },
+          });
         }),
       ),
     { timeout: 120_000 },

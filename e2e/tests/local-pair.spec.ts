@@ -1,4 +1,4 @@
-/** Run the real `executor pair` beside a server the scenario starts with its own data directory. */
+/** Run the real `executor service pair` beside a server the scenario starts with its own data directory. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { randomBytes } from "node:crypto";
@@ -113,7 +113,7 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
             directory: string,
             port: number,
             extra: Readonly<Record<string, string>> = {},
-          ) => run(["pair"], directory, port, extra);
+          ) => run(["service", "pair"], directory, port, extra);
           /** A running server writes its own databases; its key files are what pairing must keep. */
           const keyFiles = (directory: string) =>
             Effect.forEach(["installation.json", "keys.json"], (name) =>
@@ -237,7 +237,7 @@ layer(TestLive, { excludeTestServices: true })("Local pair", (it) => {
 
               // A rotated key takes effect only when the server restarts. Pairing sends the
               // password the server registered, so it keeps working until then.
-              const rotated = yield* run(["rotate-key"], running, port);
+              const rotated = yield* run(["service", "rotate-key"], running, port);
               expect(rotated.code, rotated.stderr).toBe(0);
               expect(rotated.stdout).toContain(
                 "Rotated the local API key. Run `executor service restart` to use it, then update clients that used the previous key.",

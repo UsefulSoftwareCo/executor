@@ -15,7 +15,10 @@ import {
   socialCallbackOrigin,
 } from "./oauth-proxy-settings.ts";
 import type { SendAuthEmail } from "../contracts/email.ts";
+import type { ProviderPhotoRefresh } from "./auth-observability.ts";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
+import { FetchHttpClient, HttpClient } from "effect/http";
+import { google, type GoogleOptions } from "better-auth/social-providers";
 import { emailCodeExpiresIn, emailCodeMessage, invitationEmailMessage } from "./email-messages.ts";
 import { nativeAuthAnalytics, type NativeAuthUsage } from "./auth-analytics.ts";
 import { passkeyEnrollmentCookie } from "../contracts/passkey-enrollment.ts";
@@ -109,6 +112,48 @@ export const cloudAuthSettings = Effect.gen(function* () {
   };
 });
 
+const GoogleUserInfo = Schema.Struct({
+  sub: Schema.String,
+  picture: Schema.optional(Schema.String),
+});
+
+/**
+ * Google leaves `picture` out of some accounts' ID tokens, Workspace accounts among them, while
+ * its userinfo endpoint still returns it. Better Auth builds the user from the ID token alone, so
+ * those people never got a photo. When the token has none, ask userinfo for the photo and nothing
+ * else. The profile stays the verified token's; a userinfo failure keeps the sign-in photo-less.
+ */
+const withGooglePhoto = (options: GoogleOptions): GoogleOptions => {
+  const provider = google(options);
+  return {
+    ...options,
+    getUserInfo: async (tokens) => {
+      const info = await provider.getUserInfo(tokens);
+      const accessToken = tokens.accessToken;
+      if (info === null || info.user.image || accessToken === undefined) return info;
+      const picture = await Effect.runPromise(
+        Effect.gen(function* () {
+          const response = yield* HttpClient.get(
+            "https://openidconnect.googleapis.com/v1/userinfo",
+            {
+              headers: { authorization: `Bearer ${accessToken}` },
+            },
+          );
+          if (response.status !== 200) return undefined;
+          const userInfo = yield* response.json.pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(GoogleUserInfo)),
+          );
+          return userInfo.sub === info.data.sub ? userInfo.picture : undefined;
+        }).pipe(
+          Effect.provide(FetchHttpClient.layer),
+          Effect.catch(() => Effect.succeed(undefined)),
+        ),
+      );
+      return picture ? { ...info, user: { ...info.user, image: picture } } : info;
+    },
+  };
+};
+
 /** Promise boundary used by Better Auth's organization lifecycle. */
 export interface CloudBillingHooks {
   readonly memberLimit: (organization: string) => Promise<number>;
@@ -126,8 +171,8 @@ export const cloudAuthOptions = (
   onSignup?: (userId: string) => Promise<void>,
   onLogin?: (userId: string) => Promise<void>,
   onOperation?: (usage: NativeAuthUsage) => Promise<void>,
-  allowsOrganization?: (userId: string) => Promise<boolean>,
   grants?: GrantObservers,
+  onProviderPhoto?: (refresh: ProviderPhotoRefresh) => void,
 ) => {
   const base = authOptions(settings, ipAddressHeaders, grants);
   // A test stage that signs in through production's proxy uses production's callback, which the
@@ -171,19 +216,26 @@ export const cloudAuthOptions = (
           : Effect.runPromise(
               Effect.gen(function* () {
                 const { id, image } = user;
-                if (source.method !== "oauth" || source.action === "create-user") return;
-                if (typeof id !== "string" || typeof image !== "string" || image.length === 0)
-                  return;
+                if (source.method !== "oauth") return;
+                if (source.action === "create-user") return "new_user" as const;
+                if (typeof image !== "string" || image.length === 0) return "absent" as const;
+                if (typeof id !== "string") return "user_missing" as const;
                 const adapter = context.context.internalAdapter;
                 const current = yield* Effect.tryPromise(() => adapter.findUserById(id));
-                if (!current || current.image === image) return;
+                if (!current) return "user_missing" as const;
+                if (current.image === image) return "unchanged" as const;
                 yield* Effect.tryPromise(() => adapter.updateUser(id, { image }));
+                return "updated" as const;
               }).pipe(
                 Effect.catch((error) =>
-                  Effect.sync(() =>
-                    context.context.logger.warn("Unable to refresh the provider photo", error),
-                  ),
+                  Effect.sync(() => {
+                    context.context.logger.warn("Unable to refresh the provider photo", error);
+                    return "failed" as const;
+                  }),
                 ),
+                Effect.map((refresh) => {
+                  if (refresh !== undefined) onProviderPhoto?.(refresh);
+                }),
               ),
             ),
     } satisfies BetterAuthOptions["user"],
@@ -257,14 +309,14 @@ export const cloudAuthOptions = (
     socialProviders: Option.isSome(settings.emulators)
       ? {}
       : {
-          google: {
+          google: withGooglePhoto({
             ...redirectURI("google"),
             clientId: settings.googleClientId,
             clientSecret: Redacted.value(settings.googleClientSecret),
             includeGrantedScopes: false,
             // Without it Google silently reuses an account that already approved Executor.
             prompt: "select_account" as const,
-          },
+          }),
           github: {
             ...redirectURI("github"),
             clientId: settings.githubClientId,
@@ -344,11 +396,6 @@ export const cloudAuthOptions = (
           : {
               membershipLimit: (_user, organization) => billing.memberLimit(organization.id),
             }),
-        // Team setup's v1 decision also governs Better Auth's own create endpoint, so a
-        // signed-in account that belongs on Executor v1 cannot create a v2 organization here.
-        ...(allowsOrganization === undefined
-          ? {}
-          : { allowUserToCreateOrganization: (user) => allowsOrganization(user.id) }),
         disableOrganizationDeletion: true,
         requireEmailVerificationOnInvitation: true,
         sendInvitationEmail: ({ email, id, organization }) =>

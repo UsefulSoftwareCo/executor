@@ -27,7 +27,9 @@ const Access = Schema.Struct({ revision: Schema.String });
 const Which = Schema.Struct({ account: Schema.String });
 
 layer(HostedLive, { excludeTestServices: true })("Shared app account handoff", (it) => {
-  it.effect(scenarios.sharedAppAccountHandoff.title, (context) =>
+  // Pending product decision: notes/personal-account-model-decision.md (PR #92).
+  // Keep this regression until the user decides whether to accept personal-only accounts.
+  it.effect.skip(scenarios.sharedAppAccountHandoff.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {

@@ -6,11 +6,7 @@ import { Data, Effect } from "effect";
 import { Atom, AsyncResult } from "effect/reactivity";
 import type { Account, AccountId, AppId } from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
-import type {
-  AppAudience,
-  SharedAudience,
-  AccessRevision,
-} from "@executor-js/hosted-server/resource-access";
+import type { AppAudience, AccessRevision } from "@executor-js/hosted-server/resource-access";
 import { acknowledge } from "@executor-js/ui/contracts/mutations";
 import { providerDisplayUrl } from "@executor-js/ui/contracts/dashboard";
 import { HostedClient } from "./api.ts";
@@ -25,10 +21,6 @@ class DirectoryKey extends Data.Class<{
 class AppKey extends Data.Class<{
   readonly organization: OrganizationReference;
   readonly app: AppId;
-}> {}
-class AccountKey extends Data.Class<{
-  readonly organization: OrganizationReference;
-  readonly account: AccountId;
 }> {}
 const directory = Atom.family((key: DirectoryKey) =>
   HostedClient.query(
@@ -50,12 +42,6 @@ const appAccess = Atom.family((key: AppKey) =>
     protectedQuery,
   ),
 );
-const accountAccess = Atom.family((key: AccountKey) =>
-  HostedClient.query("resourceAccess", "account", hydrated({ params: key })).pipe(
-    revalidated,
-    protectedQuery,
-  ),
-);
 /** Explicit management mode never changes the normal app or account list. */
 export const resourceDirectoryAtom = (
   organization: OrganizationReference,
@@ -64,11 +50,6 @@ export const resourceDirectoryAtom = (
 /** Per-app authority and sharing. */
 export const appAccessAtom = (key: { organization: OrganizationReference; app: AppId }) =>
   appAccess(new AppKey(key));
-/** Per-account authority; personal policies are returned only to their owner. */
-export const accountAccessAtom = (key: {
-  organization: OrganizationReference;
-  account: AccountId;
-}) => accountAccess(new AccountKey(key));
 /**
  * Read the lists again after a change to apps or sharing. They stay visible while they reconcile;
  * the server's access verdict still clears them when the change removed this user's access.
@@ -124,38 +105,9 @@ const shareApp = Atom.family((key: AppKey) =>
       ),
   ),
 );
-const shareAccount = Atom.family((key: AccountKey) =>
-  HostedClient.runtime.fn(
-    (
-      payload: { audience: typeof SharedAudience.Type; revision: typeof AccessRevision.Type },
-      get,
-    ) =>
-      Effect.flatMap(HostedClient, (client) =>
-        client.resourceAccess.shareAccount({ params: key, payload }),
-      ).pipe(
-        Effect.tap((saved) =>
-          Effect.sync(() => {
-            acknowledge(get, accountAccess(key), () => saved);
-            refreshResourceDirectory(get, key.organization);
-          }),
-        ),
-        Effect.tapError(() =>
-          Effect.sync(() => {
-            get.refresh(accountAccess(key));
-            get.refresh(groupsAtom(key.organization));
-          }),
-        ),
-      ),
-  ),
-);
 /** App sharing is an independent mutation per app. */
 export const shareAppAtom = (key: { organization: OrganizationReference; app: AppId }) =>
   shareApp(new AppKey(key));
-/** Account sharing is an independent mutation per account. */
-export const shareAccountAtom = (key: {
-  organization: OrganizationReference;
-  account: AccountId;
-}) => shareAccount(new AccountKey(key));
 
 class ListKey extends Data.Class<{
   readonly organization: OrganizationReference;

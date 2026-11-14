@@ -39,6 +39,7 @@ const forwarded: ReadonlyArray<readonly [method: string, target: string]> = [
   ["GET", "/api/auth/callback/github"],
   ["GET", `/api/oauth/callback?code=c&state=${accountOAuthStatePrefix}abc`],
   ["GET", "/oauth/client-metadata.json"],
+  ["GET", "/favicon.png"],
   ["GET", "/git/acme/site.git/info/refs?service=git-upload-pack"],
   ["POST", "/git/acme/site.git/git-receive-pack"],
   ["GET", "/"],

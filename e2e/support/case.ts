@@ -9,14 +9,20 @@ import { BrowserDriver, Browser } from "./browser.ts";
 import { Evidence, evidenceLayer, Telemetry } from "./evidence.ts";
 import { RecordingFocus } from "./recording-focus.ts";
 import { Terminal } from "./terminal.ts";
+import { processCoverageLayer } from "./process-coverage.ts";
+import { holdSecret } from "./failure-text.ts";
 
 /** Build per-case layers using the shared runtime from Effect Vitest's layer helper. */
 export const withCase = <A, E, R>(context: TestContext, program: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const lifetime = scenarioLifetime(context);
     const target = lifetime.target;
+    // The case's API key is masked in every failure text, like each secret the harness reveals.
+    holdSecret(target.apiKey);
     const scope = yield* Scope.fork(lifetime.scope);
-    const runtime = SessionClients.layer.pipe(Layer.provideMerge(Layer.succeed(Target, target)));
+    const runtime = Layer.mergeAll(SessionClients.layer, processCoverageLayer).pipe(
+      Layer.provideMerge(Layer.succeed(Target, target)),
+    );
     return yield* Effect.gen(function* () {
       const services = yield* Layer.buildWithScope(
         Layer.fresh(

@@ -47,8 +47,8 @@ export interface McpSourceOptions {
   readonly headers?: Readonly<Record<string, string>> | undefined;
   readonly queryParams?: Readonly<Record<string, string>> | undefined;
   readonly tools?: GeneratedToolRules | undefined;
-  /** See `ProtocolAppOptions.sharedAccounts`; only for known sign-in methods. */
-  readonly sharedAccounts?: boolean | undefined;
+  /** See `ProtocolAppOptions.appLinkedAccounts`; only for known sign-in methods. */
+  readonly appLinkedAccounts?: boolean | undefined;
   /** See `ProtocolAppOptions.fixedAccount`; only for known sign-in methods. */
   readonly fixedAccount?: GeneratedFixedAccount | undefined;
 }

@@ -1,9 +1,10 @@
 /** Explicit local test server. Production's entry point never mounts these auth shortcuts or fixtures. */
+import * as BunCrypto from "@effect/platform-bun/BunCrypto";
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer";
 import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import * as BunServices from "@effect/platform-bun/BunServices";
 import { localTelemetry } from "@executor-js/telemetry/local";
-import { Config, ConfigProvider, Console, Effect, Layer, Option } from "effect";
+import { Cause, Config, ConfigProvider, Console, Effect, Layer, Option } from "effect";
 import { CliError, Command, Flag } from "effect/cli";
 import { HttpRouter } from "effect/http";
 import * as Statement from "effect/sql/Statement";
@@ -94,12 +95,14 @@ const command = Command.make("test-self-host", {
 
 BunRuntime.runMain(
   Command.run(command, { version: "0.0.0" }).pipe(
-    Effect.provide(BunServices.layer),
+    Effect.provide([BunServices.layer, BunCrypto.layerDigest]),
     Effect.catch((error) =>
       CliError.isCliError(error)
         ? Effect.fail(error)
         : Console.error(
             "The test server could not start. Use dev/test mode, an HTTP loopback origin with a free port, and built self-host web assets. Stop any server using that data directory first.",
+            // The cause, such as the port being taken, which the advice above can only guess at.
+            Cause.pretty(Cause.fail(error)),
           ).pipe(
             Effect.andThen(
               Effect.sync(() => {

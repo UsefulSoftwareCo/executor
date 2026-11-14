@@ -67,7 +67,7 @@ export const config = Config.all({
   }),
 }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.toType(ServerConfig))));
 
-/** The port of the running server a client such as `executor pair` connects to. */
+/** The port of the running server a client such as `executor service pair` connects to. */
 export const serverPortConfig = Config.Port("EXECUTOR_PORT").pipe(Config.withDefault(defaultPort));
 
 /**

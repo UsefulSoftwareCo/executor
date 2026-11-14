@@ -1,5 +1,5 @@
 /** Reproducible populated organizations created through the real product and provider APIs. */
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { randomBytes } from "node:crypto";
 import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
@@ -7,6 +7,7 @@ import { App, Resource } from "../support/contracts.ts";
 import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
 import { BaseUrl, emulatorRequest } from "../support/emulators.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { heldValue, reveal } from "../support/failure-text.ts";
 
 /** Bounded volumes are explicit; the seed controls data values while the scenario owns unique identities. */
 export const DataShape = Schema.Struct({
@@ -94,7 +95,7 @@ export const seedOrganization = (input: typeof DataShape.Type) =>
                 Schema.decodeUnknownEffect(
                   Schema.Struct({
                     credential: Schema.Struct({
-                      token: Schema.RedactedFromValue(Schema.NonEmptyString),
+                      token: heldValue(Schema.RedactedFromValue(Schema.NonEmptyString)),
                     }),
                   }),
                 ),
@@ -166,7 +167,7 @@ export const seedOrganization = (input: typeof DataShape.Type) =>
             yield* api.request(actor, "POST", `${prefix}/connections/${connection.id}/submit`, {
               method: "token",
               label: `${index % 3 === 0 ? "Support" : index % 3 === 1 ? "Engineering" : "Finance"} ${String(index + 1).padStart(3, "0")}`,
-              fields: { token: Redacted.value(token) },
+              fields: { token: reveal(token) },
             }),
           );
           return saved.id;

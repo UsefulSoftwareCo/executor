@@ -43,13 +43,15 @@ export const requestKey = (value: unknown): string => {
 
 /**
  * Key a query by its request so a server render's settled value reaches the browser with the
- * page, and the browser reads it instead of requesting it again.
+ * page, and the browser reads it instead of requesting it again: `skipInitialRun` keeps the
+ * page's value when the query mounts, until a refresh or a changed dependency runs it.
  */
 export const hydrated = <R extends object>(
   request: R,
-): R & { readonly serializationKey: string } => ({
+): R & { readonly serializationKey: string; readonly skipInitialRun: true } => ({
   ...request,
   serializationKey: requestKey(request),
+  skipInitialRun: true,
 });
 
 /**
@@ -72,16 +74,23 @@ export const hydratedResult =
         success: options.success,
         ...(options.error === undefined ? {} : { error: options.error }),
       }) as unknown as Schema.Codec<Atom.Type<R>, unknown>,
+      // The page's value stands in for the read: without this the atom requests it again when
+      // it mounts. A refresh or a changed dependency still runs it.
+      skipInitialRun: true,
     });
 
+const notLoaded = AsyncResult.initial();
+
 /**
- * A read that is not sent with the page. The server renders its loading state and the browser
- * requests it after hydration, so both render the same markup.
+ * A read that is not sent with the page. The server and hydration render its loading state, even
+ * when the browser's read answers first; an atom derived from it needs its own server value.
  */
 export const browserOnly = <A, E>(
   atom: Atom.Atom<AsyncResult.AsyncResult<A, E>>,
 ): Atom.Atom<AsyncResult.AsyncResult<A, E>> =>
-  typeof window === "undefined" ? Atom.make(AsyncResult.initial<A, E>()) : atom;
+  typeof window === "undefined"
+    ? Atom.make<AsyncResult.AsyncResult<A, E>>(notLoaded)
+    : Atom.withServerValue(atom, () => notLoaded);
 
 /**
  * Better Auth client options for dashboard code. On the server there is no page origin, and the

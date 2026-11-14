@@ -19,6 +19,7 @@ import {
   AccountSelectionInvalid,
   VersionBuildFailed,
   BuildMemoryExceeded,
+  MarkdownUnavailable,
   CommittedSource,
   sourceErrors,
   SourceSnapshot,
@@ -82,6 +83,7 @@ export const appOperationErrors = [
   AccountSelectionInvalid,
   VersionBuildFailed,
   BuildMemoryExceeded,
+  MarkdownUnavailable,
 ] as const;
 /** Wire errors remain typed in browser, CLI, and agent clients. */
 export const AppOperationError = Schema.Union(appOperationErrors);

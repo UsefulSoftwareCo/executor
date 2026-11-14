@@ -1,6 +1,6 @@
 /**
  * Cloud's role hosts (`notes/cloud-domains.md`): `app.` serves the dashboard and sign-in, `mcp.`
- * MCP and its discovery, `api.` the API, its discovery and app webhooks, and the edge (standing in
+ * MCP and its discovery, `api.` the API, its discovery, MCP discovery naming `mcp.` and app webhooks, and the edge (standing in
  * for `executor.sh`) the issuer's metadata and provider returns. The deployment origin keeps
  * everything but browser pages. Each grant is for one resource and works at every origin of that
  * resource's kind. Every request's server span names the host it arrived at and that host's role.
@@ -89,6 +89,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud role hosts", (it) => {
           [origin, "/.well-known/oauth-protected-resource/mcp", `${origin}/mcp`],
           [apiHost, "/.well-known/oauth-protected-resource/api", `${apiHost}/api`],
           [origin, "/.well-known/oauth-protected-resource/api", `${origin}/api`],
+          // `api.` is not an MCP origin, so its MCP discovery names the canonical one on `mcp.`:
+          // the host the CLI signs in to says where its MCP endpoint is.
+          [apiHost, "/.well-known/oauth-protected-resource/mcp", `${mcp}/mcp`],
         ] as const) {
           const response = yield* rawRequest(`${at}${path}`);
           expect(response.status, `${at}${path}`).toBe(200);
@@ -146,7 +149,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud role hosts", (it) => {
           [mcp, hook, { method: "POST", body: "{}" }],
           [apiHost, "/mcp", mcpPost(key)],
           [apiHost, `/org/${actors.organization.slug}/mcp`, mcpPost(key)],
-          [apiHost, "/.well-known/oauth-protected-resource/mcp"],
+          [apiHost, "/.well-known/oauth-protected-resource"],
           [apiHost, "/api/auth/get-session"],
           [apiHost, "/api/entry"],
           [apiHost, "/api/oauth/callback"],
@@ -154,18 +157,20 @@ layer(HostedLive, { excludeTestServices: true })("Cloud role hosts", (it) => {
           [app, "/mcp", mcpPost(key)],
           [app, `/org/${actors.organization.slug}/mcp`, mcpPost(key)],
           [app, "/.well-known/oauth-protected-resource/mcp"],
-          [edge, "/mcp", mcpPost(key)],
-          [edge, "/login"],
-          [edge, inventory, bearer(key)],
-          [edge, "/api/auth/get-session"],
-          [edge, "/api/auth/oauth2/token", { method: "POST" }],
-          [edge, "/.well-known/oauth-protected-resource/mcp"],
-          [edge, "/api/auth/callback"],
-          // No OpenID configuration exists, so the edge forwards none.
-          [edge, "/api/auth/.well-known/openid-configuration"],
         ];
         for (const [at, path, init] of refused)
           expect((yield* rawRequest(`${at}${path}`, init)).status, `${at}${path}`).toBe(404);
+        // The edge serves none of v2's API or Better Auth's endpoints: under `/api` it answers as
+        // v1's API, gone. No OpenID configuration exists either. What else it serves in v1's place
+        // once v1 shuts down is `cloud-v1-shutdown.spec.ts`'s.
+        const edgeRefused: ReadonlyArray<readonly [string, RequestInit?]> = [
+          [inventory, bearer(key)],
+          ["/api/auth/get-session"],
+          ["/api/auth/oauth2/token", { method: "POST" }],
+          ["/api/auth/.well-known/openid-configuration"],
+        ];
+        for (const [path, init] of edgeRefused)
+          expect((yield* rawRequest(`${edge}${path}`, init)).status, `${edge}${path}`).toBe(410);
         // The deployment origin keeps MCP, the API and Better Auth's client endpoints.
         expect((yield* rawRequest(`${origin}/mcp`, mcpPost())).status).toBe(401);
         expect((yield* rawRequest(`${origin}/api/auth/get-session`)).status).toBe(200);
@@ -466,7 +471,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud role hosts", (it) => {
         for (const { request, traceId } of sent) {
           // The Tail receiver records each invocation shortly after it ends.
           const span = yield* telemetry
-            .search("cloudflare.invocation", { "executor.trace_id": traceId })
+            .search("cloudflare.invocation", { requestTrace: traceId })
             .pipe(
               Effect.flatMap(({ data }) => {
                 const record = data.find(apiWorker);

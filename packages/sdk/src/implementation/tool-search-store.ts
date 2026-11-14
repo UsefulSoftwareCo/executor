@@ -2,7 +2,7 @@
  * Tool search rows and their BM25 ranking in the executor's own Postgres database. The SQL client
  * stays inside this module; callers see only these operations.
  */
-import { Clock, Effect, Schema } from "effect";
+import { Array as Arr, Clock, Effect, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
 import {
@@ -135,14 +135,17 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
   const insertBatched = <A, R extends Record<string, unknown>>(
     items: ReadonlyArray<A>,
     encode: (item: A, index: number) => { readonly row: R; readonly chars: number },
-    insert: (rows: ReadonlyArray<R>) => Effect.Effect<unknown, SqlError>,
+    insert: (rows: Arr.NonEmptyReadonlyArray<R>) => Effect.Effect<unknown, SqlError>,
   ) =>
     Effect.gen(function* () {
       let batch: Array<R> = [];
       let chars = 0;
       for (const [index, item] of items.entries()) {
         const encoded = encode(item, index);
-        if (batch.length > 0 && (batch.length >= batchRows || chars + encoded.chars > batchChars)) {
+        if (
+          Arr.isArrayNonEmpty(batch) &&
+          (batch.length >= batchRows || chars + encoded.chars > batchChars)
+        ) {
           yield* insert(batch);
           batch = [];
           chars = 0;
@@ -150,7 +153,7 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
         batch.push(encoded.row);
         chars += encoded.chars;
       }
-      if (batch.length > 0) yield* insert(batch);
+      if (Arr.isArrayNonEmpty(batch)) yield* insert(batch);
     });
   /** Delete the tool and definition rows of the listings. */
   const removeRows = (listings: ReadonlyArray<ToolSearchListing>) =>

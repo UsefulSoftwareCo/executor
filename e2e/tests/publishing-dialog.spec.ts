@@ -5,6 +5,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
+import { Target } from "../support/platform.ts";
 import { App } from "../support/contracts.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { publishingPreview } from "../support/publishing-preview.ts";
@@ -26,6 +27,8 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
         const api = yield* Api;
         const actors = yield* Actors;
         const browser = yield* Browser;
+        const { metadata } = yield* Target;
+        const publishLabel = metadata.target === "self-host" ? "Publish app" : "Publish";
         const prefix = `/api/organizations/${actors.organization.id}`;
         const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
           name: `Publishing example ${randomUUID().slice(0, 8)}`,
@@ -119,7 +122,7 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
                 yield* browser.use("No publish action for blocked source", (page) =>
                   page
                     .getByRole("dialog")
-                    .getByRole("button", { name: "Publish", exact: true })
+                    .getByRole("button", { name: publishLabel, exact: true })
                     .count(),
                 ),
               ).toBe(0);
@@ -262,7 +265,7 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
             yield* browser.use("The dialog reviews the renamed package", (page) =>
               page
                 .getByRole("dialog")
-                .getByRole("button", { name: "Publish", exact: true })
+                .getByRole("button", { name: publishLabel, exact: true })
                 .waitFor(),
             );
             yield* browser.use("The listing shows the new name", (page) =>
@@ -300,7 +303,7 @@ layer(HostedLive, { excludeTestServices: true })("Publishing dialog", (it) => {
             yield* browser.use("The ready package can be published", (page) =>
               page
                 .getByRole("dialog")
-                .getByRole("button", { name: "Publish", exact: true })
+                .getByRole("button", { name: publishLabel, exact: true })
                 .waitFor(),
             );
             yield* browser.checkpoint("Ready package shows its exact public name");

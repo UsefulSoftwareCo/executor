@@ -23,6 +23,7 @@ import { undeclaredError } from "@executor-js/utils/connection-failure";
 import { ErrorNotice } from "./error-notice.tsx";
 import { OAuthClientOrigin, sharesClientId } from "./oauth-client-origin.tsx";
 import { useQuery } from "./context.tsx";
+import { SetupHelp } from "./markdown.tsx";
 
 /** Keep forms mounted through cached setup reads, refresh failures, and retries. */
 export function OAuthSetup<E extends UserFacingError>({
@@ -112,9 +113,15 @@ export function OAuthFields<A, E>({
   setupAction,
   registerClient = false,
   editClient,
+  clientGuide,
   disabled = false,
 }: {
   readonly providerName: string;
+  /**
+   * The app's Markdown on creating an OAuth client at this service, shown under Executor's own
+   * line and redirect URL when someone enters a client.
+   */
+  readonly clientGuide?: string | undefined;
   readonly account?: Pick<Account, "label">;
   readonly redirectUri: string;
   readonly start: (input: OAuthSubmission) => Promise<Exit.Exit<A, E>>;
@@ -327,6 +334,7 @@ export function OAuthFields<A, E>({
           </div>
         </div>
       )}
+      {manual && clientGuide && <SetupHelp label="OAuth client guide">{clientGuide}</SetupHelp>}
       {manual && (
         <>
           <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">

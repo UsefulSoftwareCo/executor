@@ -1,4 +1,4 @@
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { CurrentUsage } from "../contracts/product-analytics.ts";
 import { requiresToolMetadata } from "@executor-js/authorization";
 import { grantAuthorization } from "@executor-js/mcp-auth";
@@ -13,12 +13,15 @@ import { mcpCaller } from "./caller.ts";
 import { recordAuthFailure } from "./auth-telemetry.ts";
 import {
   restrictMcpBackend,
-  deliveryRefusal,
+  grantRefusal,
+  unrecordedRefusal,
   GrantForbidden,
+  McpWhoami,
   requestedMcpAddress,
   mcpResource,
   mcpResourceMetadataUrl,
   requestResourceOrigin,
+  type ApprovalMode,
   type McpAddress,
 } from "@executor-js/mcp-auth";
 import {
@@ -43,6 +46,7 @@ import {
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import {
   CurrentMcpGrant,
+  CurrentMcpSession,
   McpAuthentication,
   McpUnauthorized,
   type McpAccess,
@@ -51,6 +55,7 @@ import { CurrentOrganization, OrganizationReference } from "../contracts/organiz
 import {
   CallStateCache,
   ConcurrentStatements,
+  HostedBackground,
   HostedExecutor,
   StatementBatch,
   statementGroup,
@@ -61,6 +66,7 @@ import { callerAccounts } from "./app-accounts.ts";
 import { resourceAuthorityForLinks } from "./resource-policy.ts";
 import { BearerHashes } from "./bearer-access.ts";
 import { hostedMcpBackend } from "./mcp.ts";
+import { patGrantOf } from "./mcp-oauth.ts";
 
 // A native MCP server retains its tool handlers. Authority is supplied only while
 // dispatching the HTTP request, never while registering those handlers.
@@ -106,12 +112,20 @@ const RequestBackend = Context.Reference<McpBackend<RequestError>>("hosted/McpRe
     callTool: unavailable,
     resumeInvocation: unavailable,
     authorizeElicitation: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
-    eventDefinitions: unavailable,
     findEventSubscription: unavailable,
     subscribeEvent: unavailable,
     unsubscribeEvent: unavailable,
   }),
 });
+/** The authenticated request's approval mode; see {@link requestMode}. */
+const RequestMode = Context.Reference<ApprovalMode | undefined>("hosted/McpRequestMode", {
+  defaultValue: () => undefined,
+});
+const requestMode = Effect.flatMap(RequestMode, (mode) =>
+  mode === undefined
+    ? Effect.die("MCP request has no authenticated approval mode")
+    : Effect.succeed(mode),
+);
 const RequestApprovalUrl = Context.Reference<
   | ((
       address: import("@executor-js/mcp/browser").BrowserApprovalAddress,
@@ -141,8 +155,6 @@ const requestBackend: McpBackend<RequestError> = {
     Effect.flatMap(RequestBackend, (backend) =>
       backend.resumeInvocation(request, response, options),
     ),
-  eventDefinitions: (input) =>
-    Effect.flatMap(RequestBackend, (backend) => backend.eventDefinitions(input)),
   findEventSubscription: (key) =>
     Effect.flatMap(RequestBackend, (backend) => backend.findEventSubscription(key)),
   subscribeEvent: (input) =>
@@ -157,13 +169,16 @@ export const makeHostedMcp = (
   limits: McpOptions["limits"] = defaultMcpLimits,
   sessions?: McpOptions["sessions"],
   interactions?: McpOptions["interactions"],
+  maxSessions?: McpOptions["maxSessions"],
 ) =>
   makeMcp({
     backend: requestBackend,
     ...(beforeExecute === undefined ? {} : { beforeExecute }),
     ...(sessions === undefined ? {} : { sessions }),
     ...(interactions === undefined ? {} : { interactions }),
+    ...(maxSessions === undefined ? {} : { maxSessions }),
     caller: requestCaller,
+    mode: requestMode,
     instructions: executorIntro,
     limits,
     annotateSkillRead,
@@ -187,6 +202,22 @@ export const requestedMcpOrganization = (url: URL): OrganizationReference | unde
   return Option.getOrUndefined(reference);
 };
 
+/**
+ * Why `access` cannot serve an MCP request at `address`, or undefined when it can. An OAuth grant
+ * serves the approval mode and connection its record holds, whatever the URL names. A personal
+ * access token takes its mode from the URL. The fork may narrow it to its owner's live connection;
+ * without that authenticated narrowing, a connection URL is refused rather than served with full access.
+ */
+export const mcpAccessRefusal = (access: McpAccess, address: McpAddress) => {
+  const pat = patGrantOf(access.grant.id);
+  return (
+    grantRefusal(access.grant) ??
+    (Option.isSome(pat) && pat.value.connection === undefined
+      ? unrecordedRefusal(address)
+      : undefined)
+  );
+};
+
 /** A session belongs to a user/client/organization grant, never to a browser's active organization. */
 export const mcpSessionKey = ({ userId, clientId, access, grant }: McpAccess) =>
   JSON.stringify([userId, clientId, access.organization, grant.id]);
@@ -200,17 +231,20 @@ export const dispatchHostedMcp = <E, R>(
   Effect.gen(function* () {
     const authentication = yield* McpAuthentication;
     const request = yield* HttpServerRequest.HttpServerRequest;
+    // Effect's protocol server issued it at `initialize` and refuses a request naming any other.
+    const session = request.headers["mcp-session-id"];
     const scoped = (fresh: McpAccess) =>
       Effect.gen(function* () {
-        // A grant serves only the MCP URL it was issued for, and says why it cannot serve this one.
-        const refusal = deliveryRefusal(fresh.grant, address);
+        // The grant's record, not this URL, decides its mode and connection.
+        const refusal = mcpAccessRefusal(fresh, address);
         if (refusal !== undefined) return yield* new GrantForbidden({ refusal });
         const backend = yield* hostedMcpBackend.pipe(
           Effect.provideService(CurrentOrganization, fresh.access),
-          Effect.provideService(CurrentAuthorization, grantAuthorization(fresh.grant.policy)),
+          Effect.provideService(CurrentPolicy, grantAuthorization(fresh.grant.policy)),
           Effect.provideService(CurrentUserId, fresh.userId),
           Effect.provideService(CurrentCaller, mcpCaller(fresh, authentication.issuer)),
           Effect.provideService(CurrentMcpGrant, fresh.grant.id),
+          Effect.provideService(CurrentMcpSession, session),
         );
         return restrictMcpBackend<RequestError, never>(backend, Effect.succeed(fresh.grant));
       });
@@ -220,6 +254,7 @@ export const dispatchHostedMcp = <E, R>(
     const backend = scope.success;
     const services = yield* Effect.context<HostedExecutor | GroupDatabase>().pipe(
       Effect.map(Context.pick(HostedExecutor, GroupDatabase)),
+      Effect.map(Context.add(HostedBackground, yield* HostedBackground)),
     );
     // Discovery uses this HTTP request's authenticated identity. Resource policies
     // are still checked by the hosted backend. Never retain this adapter in the session.
@@ -335,10 +370,7 @@ export const dispatchHostedMcp = <E, R>(
           !fold.result.value.access.canUse
             ? Effect.succeed(undefined)
             : callerAccounts(read.app.success, fold.result.value.accounts).pipe(
-                Effect.provideService(
-                  CurrentAuthorization,
-                  grantAuthorization(access.grant.policy),
-                ),
+                Effect.provideService(CurrentPolicy, grantAuthorization(access.grant.policy)),
                 Effect.provideService(CurrentUserId, access.userId),
                 Effect.provideContext(services),
                 Effect.option,
@@ -455,6 +487,10 @@ export const dispatchHostedMcp = <E, R>(
         ),
       ),
       Effect.provideService(RequestCaller, mcpSessionKey(access)),
+      Effect.provideService(
+        RequestMode,
+        access.grant.target.kind === "mcp" ? access.grant.target.mode : undefined,
+      ),
       Effect.provideService(McpRequestAttributes, caller),
       Effect.provideService(CurrentUsage, { source: "mcp", client_id: access.clientId }),
     );
@@ -516,6 +552,27 @@ export const authenticatedMcp = <E, R>(
     // Clients print a refusal's body after their own prefix, so it keeps the typed cause.
     return yield* refusedMcpRequest(access.failure);
   }).pipe(Effect.map(HttpServerResponse.setHeader("cache-control", "no-store")));
+
+/**
+ * `GET /mcp/whoami`: what the presented MCP credential reaches, authenticated exactly as the MCP
+ * endpoint is, with the same challenge and refusals.
+ */
+export const mcpWhoami = authenticatedMcp((access, address) =>
+  Effect.gen(function* () {
+    const refusal = mcpAccessRefusal(access, address);
+    if (refusal !== undefined) return yield* refusedMcpRequest(new GrantForbidden({ refusal }));
+    const auth = yield* McpAuthentication;
+    return yield* auth.describe(access).pipe(
+      Effect.map((described) =>
+        HttpServerResponse.jsonUnsafe(Schema.encodeSync(McpWhoami)(described)),
+      ),
+      Effect.catchTags({
+        McpUnauthorized: () => mcpChallenge,
+        AuthenticationUnavailable: refusedMcpRequest,
+      }),
+    );
+  }),
+);
 
 /** RFC 9728 resource metadata naming the authorization server's issuer. */
 export const mcpProtectedResource = Effect.gen(function* () {

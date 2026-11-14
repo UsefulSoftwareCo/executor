@@ -46,18 +46,19 @@ its bytes. Send that entry back unchanged in a commit to keep the file. Through
 Git clone has them all.
 
 Read these docs with
-`executor apps skills --app executor --name app-authoring --file deploy.md`.
+`executor skills --app executor --name app-authoring --file deploy.md`.
 
-Without `--host` or `EXECUTOR_HOST`, commands use the local background
-Executor, starting it if it is not running, and need no API key. A set
+Commands use `--host`, then `EXECUTOR_HOST`, then the host the CLI signed in to
+last. Without any of them, they use the local background Executor, starting it
+if it is not running, and need no API key. A set
 `EXECUTOR_API_KEY` is sent in place of the background Executor's own
 credential, so it must be that server's current key. A `--host` that names
 another local server, such as `http://127.0.0.1:4400`, needs that server's API
 key in `EXECUTOR_API_KEY`; if the variable is unset, ask the user to set it, and
 do not search files for it. For hosted Executor, run
-`executor apps login --host https://api.executor.sh` once. It prints a link and
-a code and waits; ask the user to open the link and approve the code. Then pass
-the same `--host` to every command, or set `EXECUTOR_HOST` to it once.
+`executor apps login` once; add `--host <origin>` for a self-hosted Executor.
+It prints a link and a code and waits; ask the user to open the link and
+approve the code. Later commands use that host without `--host`.
 `--organization` defaults to the organization you signed in to.
 
 A command that fails exits with status 1. Its standard error states the
@@ -383,16 +384,16 @@ Access depends on the app as well as the caller's role. Any member can deploy
 a new app; it starts private, with the deployer as its creator. The creator and
 organization owners and administrators manage it: they rename it, activate a
 version, change its audience, remove it, and connect or link its app
-requirements, which also needs use of the account linked. Using an app (calling
+requirements with their own accounts. Using an app (calling
 its tools, opening its UI, `userConnect` and `userLink`) follows its audience: a
 private app only by its creator, even for administrators; a `groups` app by
 members of those groups; an `everyone` app by every member. Managing an app does
-not grant its use. Personal accounts are usable only by their owner; shared
-accounts follow their own audience. An MCP connection limited to selected apps
+not grant its use. Every saved account is personal: only its owner uses or
+manages it, and an app link is how one account serves every caller. An MCP connection limited to selected apps
 can only find and run those apps' tools; deploying and other management calls
 need a connection to all apps. The server rechecks the caller's grant, current
 membership and these rules on every API call.
-The management app's caller credential is never saved as a shared account.
+The management app's caller credential is never saved as an account.
 
 **The remaining management examples use the local product's API**, not
 self-host's.

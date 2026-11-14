@@ -17,17 +17,24 @@
  * - `--await`: the production deploy runs beside the job that publishes. It waits for the registry
  *   to serve the version, then compares as above. It never publishes.
  *
- * npm lists a new version a few seconds before it serves the version's archive, and its CDN keeps
- * serving the archive's 404 for up to five minutes (`cache-control: max-age=300`). Every mode
- * waits, for a bounded time, while the listed archive is missing. Any other status, or an archive
- * whose integrity differs from the registry's, fails at once.
+ * npm lists a new version minutes after `npm publish` returns, sometimes before it serves the
+ * version's archive. Its CDN caches an archive's 404 for five minutes (`cache-control: public,
+ * max-age=300`), so one early request for the archive holds every reader of that URL, app builds
+ * included, for five minutes after npm stores it. Every mode therefore asks for the archive under a
+ * URL no one has asked for before (a fresh query string, which npm's CDN keys separately and the
+ * origin ignores) until npm serves it, and only then requests the archive's own URL, the one app
+ * builds use, and compares that. Each wait is bounded. Any other status, or an archive whose
+ * integrity differs from the registry's, fails at once. A version's document is not cached while
+ * it answers 404, so asking for it early costs nothing.
  *
  * `APPS_REGISTRY` points the checks at another registry; e2e/tests/apps-published.spec.ts uses it
  * to replay npm's propagation. The production deploy's modes, `--publish` and `--await`, refuse it
- * before any request, so a stray override cannot let a deploy pass without npm.
+ * before any request, so a stray override cannot let a deploy pass without npm. Against another
+ * registry only, `APPS_ARCHIVE_ATTEMPTS` shortens the archive wait so a test can reach its end.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import { randomUUID } from "node:crypto";
 import { Config, Console, Effect, FileSystem, Path, Redacted, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -83,6 +90,11 @@ NodeRuntime.runMain(
         message: `${staged} holds apps@${built}, not ${version}; run bun run apps:build again.`,
       });
 
+    // npm's own wait is fixed; only a test registry may shorten it.
+    const attempts =
+      registry === npm
+        ? archiveAttempts
+        : yield* Config.Int("APPS_ARCHIVE_ATTEMPTS").pipe(Config.withDefault(archiveAttempts));
     const directory = yield* fs.makeTempDirectoryScoped();
     const local = yield* pack(staged, path.join(directory, "local"));
     const lookup = Effect.gen(function* () {
@@ -165,18 +177,25 @@ NodeRuntime.runMain(
     const published =
       "published" in existing ? existing.published : yield* publishNew(existing.missing.status);
 
-    const download = Effect.gen(function* () {
-      const archive = yield* http.get(published.dist.tarball);
-      if (archive.status === 404) {
-        yield* archive.text;
-        return yield* new NotServed({ status: archive.status });
-      }
-      if (archive.status !== 200)
-        return yield* new AppsReleaseMismatch({
-          message: `npm answered ${published.dist.tarball} for apps@${version} with status ${archive.status}.`,
-        });
-      return new Uint8Array(yield* archive.arrayBuffer);
-    });
+    const fetchArchive = (url: string) =>
+      Effect.gen(function* () {
+        const archive = yield* http.get(url);
+        if (archive.status === 404) {
+          yield* archive.text;
+          return yield* new NotServed({ status: archive.status });
+        }
+        if (archive.status !== 200)
+          return yield* new AppsReleaseMismatch({
+            message: `npm answered ${url} for apps@${version} with status ${archive.status}.`,
+          });
+        return new Uint8Array(yield* archive.arrayBuffer);
+      });
+    // The archive's own URL is requested only once npm serves the archive under a fresh URL, so
+    // this check never caches a 404 that app builds would then read for five minutes.
+    // Each attempt asks under a new URL: a fresh URL's own 404 is cached too.
+    const download = Effect.suspend(() =>
+      fetchArchive(`${published.dist.tarball}?served=${randomUUID()}`),
+    ).pipe(Effect.andThen(fetchArchive(published.dist.tarball)));
     const bytes = yield* download.pipe(
       Effect.tapError((error) =>
         error._tag === "NotServed"
@@ -186,7 +205,7 @@ NodeRuntime.runMain(
       Effect.retry({
         while: (error) => error._tag === "NotServed",
         schedule: archiveWait,
-        times: archiveAttempts,
+        times: attempts,
       }),
       Effect.catchTag("NotServed", () =>
         Effect.fail(

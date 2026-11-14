@@ -1,11 +1,12 @@
 /** Cloud records an unusable OAuth response with safe evidence and tells the user it was tracked. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Schedule, Schema } from "effect";
+import { Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { analyticsEvents, type AnalyticsEvent } from "../support/collector-events.ts";
 import { BaseUrl, emulatorRequest } from "../support/emulators.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
@@ -23,17 +24,9 @@ const Ledger = Schema.Struct({
     }),
   ),
 });
-const Batch = Schema.Struct({
-  batch: Schema.Array(
-    Schema.Struct({ event: Schema.String, properties: Schema.Record(Schema.String, Schema.Json) }),
-  ),
-});
-const failureReports = (text: string) =>
-  text
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .flatMap((line) => Schema.decodeUnknownSync(Schema.fromJsonString(Batch))(line).batch)
+/** The safe reports of the unusable OAuth responses among `events`. */
+const failureReports = (events: ReadonlyArray<AnalyticsEvent>) =>
+  events
     .filter(
       (event) =>
         event.event === "product_operation_completed" &&
@@ -50,8 +43,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth error report", (it) => {
         const api = yield* Api,
           actors = yield* Actors,
           browser = yield* Browser,
-          target = yield* Target,
-          fs = yield* FileSystem.FileSystem;
+          target = yield* Target;
         expect(
           target.metadata.mode,
           "This scenario requires managed Cloud with the local analytics collector",
@@ -148,7 +140,8 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           ),
         ).toEqual([1, 0]);
         yield* browser.checkpoint("OAuth-incompatible-tracked-desktop");
-        const reports = yield* fs.readFileString(`${target.directory}/analytics.ndjson`).pipe(
+        // This organization's reports: other cases on the Cloud report their own failures.
+        const reports = yield* analyticsEvents({ organization: actors.organization.id }).pipe(
           Effect.map(failureReports),
           Effect.repeat({
             schedule: Schedule.spaced("100 millis"),

@@ -61,7 +61,7 @@ const completeAssignedOrder = (order: OnboardingOrder) =>
     const target = yield* Target;
     expect(target.metadata.mode).toBe("managed");
     const onboarding = yield* Onboarding;
-    yield* onboarding.socialSignIn("google");
+    yield* onboarding.signInByApi;
     const name = yield* onboarding.prepareTeam;
     const userId = yield* onboarding.sessionUserId;
     yield* answerOnboardingFlag(userId, { variant: order });
@@ -152,11 +152,13 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding experiment", (i
         const target = yield* Target;
         expect(target.metadata.mode).toBe("managed");
         const onboarding = yield* Onboarding;
-        yield* onboarding.socialSignIn("google");
+        yield* onboarding.signInByApi;
         const name = yield* onboarding.prepareTeam;
         const userId = yield* onboarding.sessionUserId;
         yield* answerOnboardingFlag(userId, "unavailable");
         // Today's order: accounts first, then the assistant, then the dashboard.
+        // The check below is for an exposure that never arrives, which no wait can confirm, so this
+        // keeps the install check that runs before it, as on main.
         yield* onboarding.confirmTeam(name, "skip");
         const events = yield* awaitPersonEvents(userId, (events) =>
           setupEvents(events).some((event) => event.properties.action === "skip_assistant"),

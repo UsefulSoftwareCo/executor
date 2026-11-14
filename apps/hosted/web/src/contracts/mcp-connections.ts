@@ -1,5 +1,5 @@
 /** The member's own scoped connections and connected agents in one organization, reconciled after each write. */
-import { hydrated, hydratedResult } from "@executor-js/ui/contracts/http";
+import { browserOnly, hydrated, hydratedResult } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { pollingQuery, steadyPolling } from "@executor-js/ui/contracts/polling";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -15,6 +15,7 @@ import type {
   ConnectionKeyRequest,
   ConnectionKeyRevoke,
   ConnectionSave,
+  ConsentConnection,
 } from "@executor-js/ui/contracts/scoped-connections";
 import { acknowledge, acknowledgedQuery, upsert } from "@executor-js/ui/contracts/mutations";
 import { HostedClient } from "./api.ts";
@@ -227,6 +228,71 @@ export const revokeMcpAgentAtom = Atom.family((organization: OrganizationReferen
           ),
         ),
       ),
+    ),
+  ),
+);
+
+/**
+ * The member's connections in one organization as the sign-in page lists them, each with the
+ * names of the apps it reaches. Both reads refresh when the tab becomes visible again, so a
+ * connection created in another tab appears on return. The page needs only the names from the
+ * organization's app directory, so the browser reads it rather than the server sending the whole
+ * directory with the document.
+ */
+export const consentConnectionsAtom = Atom.family((organization: OrganizationId) =>
+  browserOnly(
+    Atom.readable(
+      (get) =>
+        AsyncResult.map(
+          AsyncResult.all([
+            get(mcpConnectionsAtom(organization)),
+            get(resourceInventoryAtom(organization)),
+          ]),
+          ([connections, inventory]): readonly ConsentConnection[] => {
+            const names = new Map(inventory.apps.map((app) => [app.id, app.name]));
+            return connections.map((connection) => ({
+              id: connection.id,
+              name: connection.name,
+              apps: connection.policy.apps.map((item) => names.get(item.app) ?? "Unavailable app"),
+            }));
+          },
+        ),
+      (refresh) => {
+        refresh(mcpConnectionsAtom(organization));
+        refresh(resourceInventoryAtom(organization));
+      },
+    ),
+  ),
+);
+/** Which of the member's organizations holds a connection a sign-in URL names. */
+export class ConnectionOwnerRequest extends Data.Class<{
+  readonly organizations: ReadonlyArray<OrganizationId>;
+  readonly connection: ConnectionId;
+}> {}
+/**
+ * The organization holding the named connection, or none when no listed organization does, such
+ * as after it was revoked. Reads each organization's list, which the page shows next anyway; in
+ * the browser, as the page's list is.
+ */
+export const connectionOwnerAtom = Atom.family((request: ConnectionOwnerRequest) =>
+  browserOnly(
+    Atom.readable(
+      (get) =>
+        AsyncResult.map(
+          AsyncResult.all(
+            request.organizations.map((organization) =>
+              AsyncResult.map(get(mcpConnectionsAtom(organization)), (connections) =>
+                connections.some((item) => item.id === request.connection)
+                  ? Option.some(organization)
+                  : Option.none<OrganizationId>(),
+              ),
+            ),
+          ),
+          (found) => Option.firstSomeOf(found),
+        ),
+      (refresh) => {
+        for (const organization of request.organizations) refresh(mcpConnectionsAtom(organization));
+      },
     ),
   ),
 );

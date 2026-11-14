@@ -1,6 +1,6 @@
 /**
  * An account linked to an app's own requirements is the app's webhook source without an actor. It
- * serves the webhooks of the requirements it is linked to, also while members link it for
+ * serves the webhooks of the requirements it is linked to, also while its owner links it for
  * themselves, and its registrations are removed with its last app link.
  */
 import { expect, layer } from "@effect/vitest";
@@ -279,93 +279,113 @@ const carriedWebhook = (fixture: Effect.Success<ReturnType<typeof appLinksFixtur
   };
 };
 
+/**
+ * The first webhook app with its fixture, and the waits and steps its scenarios read webhooks
+ * through: a link or unlink in either scope, an account's one source and live subscriptions, and
+ * an anonymous delivery.
+ */
+const appAccountHooks = Effect.gen(function* () {
+  const fixture = yield* appLinksFixture([{ path: "index.ts", content: source }]);
+  const { api, actors, path, ids, connect } = fixture;
+  /** Link or unlink an account for an app requirement, or for the actor's own. */
+  const link = (actor: Session, scope: LinkScope, requirement: string, account: string) =>
+    linkAccountResponse(actor, path, requirement, account, scope).pipe(Effect.flatMap(ok));
+  const unlink = (actor: Session, scope: LinkScope, requirement: string, account: string) =>
+    unlinkAccountResponse(actor, path, requirement, account, scope).pipe(Effect.flatMap(ok));
+  /** The account's only source, once it runs as `actor` (null for its app link) and is ready. */
+  const sourceRunsAs = (account: string, actor: string | null) =>
+    settleWebhookSources(actors.owner, path, (sources) => {
+      const of = sources.filter((item) => item.account === account);
+      return of.length === 1 && of[0]?.actor === actor && of[0].status === "ready";
+    });
+  /** The names of the account's live subscriptions. */
+  const liveNames = (account: string) =>
+    settleWebhookSubscriptions(actors.owner, path, () => true).pipe(
+      Effect.map((hooks) =>
+        hooks
+          .filter((hook) => hook.sourceAccount === account && hook.status !== "stopped")
+          .map((hook) => hook.name)
+          .sort(),
+      ),
+    );
+  /** The account's live subscription to `name`, once `settled` accepts it. */
+  const live = (
+    name: string,
+    account: string,
+    settled: (hook: WebhookSubscriptionRow) => boolean,
+  ) =>
+    settleWebhookSubscriptions(actors.owner, path, (hooks) =>
+      hooks.some(
+        (hook) =>
+          hook.name === name &&
+          hook.sourceAccount === account &&
+          hook.status !== "stopped" &&
+          settled(hook),
+      ),
+    ).pipe(
+      Effect.map((hooks) =>
+        hooks.find(
+          (hook) =>
+            hook.name === name && hook.sourceAccount === account && hook.status !== "stopped",
+        ),
+      ),
+      Effect.flatMap((hook) =>
+        hook === undefined ? Effect.die(new Error("Webhook missing")) : Effect.succeed(hook),
+      ),
+    );
+  const stopped = (name: string, account: string) =>
+    settleWebhookSubscriptions(
+      actors.owner,
+      path,
+      (hooks) =>
+        hooks.some(
+          (hook) =>
+            hook.name === name && hook.sourceAccount === account && hook.status === "stopped",
+        ) &&
+        !hooks.some(
+          (hook) =>
+            hook.name === name && hook.sourceAccount === account && hook.status !== "stopped",
+        ),
+    );
+  /** Deliver an anonymous callback and decode what the handler received. */
+  const deliver = (hook: WebhookSubscriptionRow) =>
+    Effect.gen(function* () {
+      const delivered = yield* api.request(
+        yield* api.session(),
+        "POST",
+        new URL(hook.callbackUrl).pathname,
+        {},
+      );
+      expect(delivered.status, JSON.stringify(delivered.body)).toBe(200);
+      return yield* body(Delivered, delivered);
+    });
+  return {
+    fixture,
+    api,
+    actors,
+    path,
+    ids,
+    connect,
+    link,
+    unlink,
+    sourceRunsAs,
+    liveNames,
+    live,
+    stopped,
+    deliver,
+  };
+});
+
 layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) => {
   it.effect(scenarios.hostedAppAccountWebhooks.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const fixture = yield* appLinksFixture([{ path: "index.ts", content: source }]);
-        const { api, actors, path, ids, connect } = fixture;
-        /** Link or unlink an account for an app requirement, or for the actor's own. */
-        const link = (actor: Session, scope: LinkScope, requirement: string, account: string) =>
-          linkAccountResponse(actor, path, requirement, account, scope).pipe(Effect.flatMap(ok));
-        const unlink = (actor: Session, scope: LinkScope, requirement: string, account: string) =>
-          unlinkAccountResponse(actor, path, requirement, account, scope).pipe(Effect.flatMap(ok));
-        /** The account's only source, once it runs as `actor` (null for its app link) and is ready. */
-        const sourceRunsAs = (account: string, actor: string | null) =>
-          settleWebhookSources(actors.owner, path, (sources) => {
-            const of = sources.filter((item) => item.account === account);
-            return of.length === 1 && of[0]?.actor === actor && of[0].status === "ready";
-          });
-        /** The names of the account's live subscriptions. */
-        const liveNames = (account: string) =>
-          settleWebhookSubscriptions(actors.owner, path, () => true).pipe(
-            Effect.map((hooks) =>
-              hooks
-                .filter((hook) => hook.sourceAccount === account && hook.status !== "stopped")
-                .map((hook) => hook.name)
-                .sort(),
-            ),
-          );
-        /** The account's live subscription to `name`, once `settled` accepts it. */
-        const live = (
-          name: string,
-          account: string,
-          settled: (hook: WebhookSubscriptionRow) => boolean,
-        ) =>
-          settleWebhookSubscriptions(actors.owner, path, (hooks) =>
-            hooks.some(
-              (hook) =>
-                hook.name === name &&
-                hook.sourceAccount === account &&
-                hook.status !== "stopped" &&
-                settled(hook),
-            ),
-          ).pipe(
-            Effect.map((hooks) =>
-              hooks.find(
-                (hook) =>
-                  hook.name === name && hook.sourceAccount === account && hook.status !== "stopped",
-              ),
-            ),
-            Effect.flatMap((hook) =>
-              hook === undefined ? Effect.die(new Error("Webhook missing")) : Effect.succeed(hook),
-            ),
-          );
-        const stopped = (name: string, account: string) =>
-          settleWebhookSubscriptions(
-            actors.owner,
-            path,
-            (hooks) =>
-              hooks.some(
-                (hook) =>
-                  hook.name === name && hook.sourceAccount === account && hook.status === "stopped",
-              ) &&
-              !hooks.some(
-                (hook) =>
-                  hook.name === name && hook.sourceAccount === account && hook.status !== "stopped",
-              ),
-          );
-        /** Deliver an anonymous callback and decode what the handler received. */
-        const deliver = (hook: WebhookSubscriptionRow) =>
-          Effect.gen(function* () {
-            const delivered = yield* api.request(
-              yield* api.session(),
-              "POST",
-              new URL(hook.callbackUrl).pathname,
-              {},
-            );
-            expect(delivered.status, JSON.stringify(delivered.body)).toBe(200);
-            return yield* body(Delivered, delivered);
-          });
-
-        // Connecting a shared account for the first app requirement links it for the app, which
+        const { actors, path, connect, link, live, deliver } = yield* appAccountHooks;
+        // Connecting the owner's account for the first app requirement links it for the app, which
         // makes it the app's source without an actor. Only the first requirement's webhook
         // registers.
-        const team = yield* connect(actors.owner, "app", "first", "team-key", {
-          kind: "shared",
-          audience: { kind: "everyone" },
-        });
+        const team = yield* connect(actors.owner, "app", "first", "team-key");
         yield* settleWebhookSources(
           actors.owner,
           path,
@@ -386,71 +406,51 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
         expect(yield* deliver(first)).toEqual({ user: false, first: [team], second: [] });
 
         // Linking the same account to the second requirement registers that webhook on the same
-        // source; unlinking it from the first stops only the first requirement's webhook.
+        // source.
         yield* link(actors.owner, "app", "second", team);
         const second = yield* live("secondHook", team, (hook) => hook.status === "active");
         expect(second.actor).toBeNull();
         expect(yield* deliver(second)).toEqual({ user: false, first: [team], second: [team] });
+      }),
+    ),
+  );
+
+  it.effect(scenarios.hostedAppAccountWebhookUnlinkOne.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { actors, connect, link, unlink, live, stopped, deliver } = yield* appAccountHooks;
+        // One account linked for both app requirements, both webhooks registered on its source.
+        const team = yield* connect(actors.owner, "app", "first", "team-key");
+        yield* link(actors.owner, "app", "second", team);
+        const [, second] = yield* Effect.all(
+          [
+            live("firstHook", team, (hook) => hook.status === "active"),
+            live("secondHook", team, (hook) => hook.status === "active"),
+          ],
+          { concurrency: "unbounded" },
+        );
+        // Unlinking it from the first requirement stops only that requirement's webhook.
         yield* unlink(actors.owner, "app", "first", team);
         yield* stopped("firstHook", team);
         const kept = yield* live("secondHook", team, (hook) => hook.status === "active");
         expect(kept.id).toBe(second.id);
         expect(yield* deliver(kept)).toEqual({ user: false, first: [], second: [team] });
+      }),
+    ),
+  );
 
-        // The same account may be linked in both scopes. A member linking the app's account for
-        // themselves leaves it one source, serving as its app link: no user webhook registers.
-        yield* link(actors.member, "user", "personal", team);
-        yield* sourceRunsAs(team, null);
-        expect(yield* liveNames(team)).toEqual(["secondHook"]);
-        expect(yield* deliver(kept)).toEqual({ user: false, first: [], second: [team] });
-        // Linking a member's own account for the app as well moves its source to the app link:
-        // the member's webhook stops and the app requirement's registers without an actor.
-        const personal = yield* connect(actors.member, "user", "personal", "member-key", {
-          kind: "shared",
-          audience: { kind: "everyone" },
-        });
-        const own = yield* live("personalHook", personal, (hook) => hook.status === "active");
-        expect(own.actor).toBe(ids.member);
-        yield* sourceRunsAs(personal, ids.member);
-        yield* link(actors.owner, "app", "first", personal);
-        yield* stopped("personalHook", personal);
-        yield* live(
-          "firstHook",
-          personal,
-          (hook) => hook.status === "active" && hook.actor === null,
-        );
-        yield* sourceRunsAs(personal, null);
-        expect(yield* liveNames(personal)).toEqual(["firstHook"]);
-
-        // Unlinking the app link hands the source back to the member who still links the account:
-        // the app requirement's webhook stops and the member's registers, running as the member.
-        yield* unlink(actors.owner, "app", "first", personal);
-        yield* stopped("firstHook", personal);
-        const handed = yield* live(
-          "personalHook",
-          personal,
-          (hook) => hook.status === "active" && hook.actor === ids.member,
-        );
-        expect(handed.id).not.toBe(own.id);
-        yield* sourceRunsAs(personal, ids.member);
-        expect(yield* liveNames(personal)).toEqual(["personalHook"]);
-        // The app's account goes the same way when its last app link goes.
-        yield* unlink(actors.owner, "app", "second", team);
-        yield* stopped("secondHook", team);
-        yield* live(
-          "personalHook",
-          team,
-          (hook) => hook.status === "active" && hook.actor === ids.member,
-        );
-        yield* sourceRunsAs(team, ids.member);
-        expect(yield* liveNames(team)).toEqual(["personalHook"]);
-        // Unlinking the member's links too removes each source and stops its webhook. An app is
-        // removed only once its webhooks stopped.
-        yield* unlink(actors.member, "user", "personal", team);
-        yield* stopped("personalHook", team);
-        yield* unlink(actors.member, "user", "personal", personal);
-        yield* stopped("personalHook", personal);
-        yield* settleWebhookSources(actors.owner, path, (sources) => sources.length === 0);
+  it.effect(scenarios.hostedAppAccountWebhookCommandSpans.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { fixture, actors, connect, unlink, live, stopped, deliver } = yield* appAccountHooks;
+        // One registration, one delivery and one unregistration.
+        const team = yield* connect(actors.owner, "app", "first", "team-key");
+        const first = yield* live("firstHook", team, (hook) => hook.status === "active");
+        expect(yield* deliver(first)).toEqual({ user: false, first: [team], second: [] });
+        yield* unlink(actors.owner, "app", "first", team);
+        yield* stopped("firstHook", team);
 
         // Each webhook command's runtime span names its app and the part of the webhook's life it
         // ran, so one app's failing handler can be told from the runtime's failures.
@@ -459,11 +459,11 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
           target = yield* Target;
         const runtime = target.metadata.target === "cloud" ? "runtime.cloud" : "runtime.workerd";
         const operations = yield* telemetry
-          .spans(`${runtime}.webhook`, { "executor.app.id": fixture.app.id })
+          .spans(`${runtime}.webhook`, { app: fixture.app.id })
           .pipe(
             Effect.map((spans) => spans.map((tags) => tags["executor.webhook.operation"])),
             Effect.flatMap((operations) =>
-              operations.filter((operation) => operation === "handle").length >= 4 &&
+              operations.filter((operation) => operation === "handle").length >= 1 &&
               operations.includes("register") &&
               operations.includes("unregister")
                 ? Effect.succeed(operations)
@@ -475,7 +475,7 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
         expect(
           operations.filter((operation) => operation === "handle"),
           "One span for each delivery",
-        ).toHaveLength(4);
+        ).toHaveLength(1);
         for (const operation of operations)
           expect([
             "definitions",
@@ -488,6 +488,108 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
       }),
     ),
   );
+
+  it.effect(scenarios.hostedAppAccountWebhookBothScopes.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { actors, path, connect, link, unlink, sourceRunsAs, liveNames, live, deliver } =
+          yield* appAccountHooks;
+        // An app link of the owner's key for the second requirement, its webhook registered.
+        const team = yield* connect(actors.owner, "app", "second", "team-key");
+        const kept = yield* live("secondHook", team, (hook) => hook.status === "active");
+        // Only the account's owner links it for themselves: a member cannot link it.
+        yield* refused(
+          yield* linkAccountResponse(actors.member, path, "personal", team, "user"),
+          403,
+          "OrganizationForbidden",
+        );
+        // The same account may be linked in both scopes. The owner linking the app's account for
+        // themselves leaves it one source, serving as its app link: no user webhook registers.
+        yield* link(actors.owner, "user", "personal", team);
+        yield* sourceRunsAs(team, null);
+        expect(yield* liveNames(team)).toEqual(["secondHook"]);
+        expect(yield* deliver(kept)).toEqual({ user: false, first: [], second: [team] });
+        // The owner's own link goes too, so only the app link remains for the fixture to release.
+        yield* unlink(actors.owner, "user", "personal", team);
+        expect(yield* liveNames(team)).toEqual(["secondHook"]);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.hostedAppAccountWebhookMovesSource.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { actors, ids, connect, link, unlink, sourceRunsAs, liveNames, live, stopped } =
+          yield* appAccountHooks;
+        // Linking an account the owner linked for themselves for the app as well moves its source
+        // to the app link: the owner's webhook stops and the app requirement's registers without
+        // an actor.
+        const personal = yield* connect(actors.owner, "user", "personal", "owner-key");
+        const own = yield* live("personalHook", personal, (hook) => hook.status === "active");
+        expect(own.actor).toBe(ids.owner);
+        yield* sourceRunsAs(personal, ids.owner);
+        yield* link(actors.owner, "app", "first", personal);
+        yield* stopped("personalHook", personal);
+        yield* live(
+          "firstHook",
+          personal,
+          (hook) => hook.status === "active" && hook.actor === null,
+        );
+        yield* sourceRunsAs(personal, null);
+        expect(yield* liveNames(personal)).toEqual(["firstHook"]);
+
+        // Unlinking the app link hands the source back to the owner, who still links the account:
+        // the app requirement's webhook stops and the owner's registers, running as the owner.
+        yield* unlink(actors.owner, "app", "first", personal);
+        yield* stopped("firstHook", personal);
+        const handed = yield* live(
+          "personalHook",
+          personal,
+          (hook) => hook.status === "active" && hook.actor === ids.owner,
+        );
+        expect(handed.id).not.toBe(own.id);
+        yield* sourceRunsAs(personal, ids.owner);
+        expect(yield* liveNames(personal)).toEqual(["personalHook"]);
+        // The owner's own link goes too, so nothing remains for the fixture to release.
+        yield* unlink(actors.owner, "user", "personal", personal);
+        yield* stopped("personalHook", personal);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.hostedAppAccountWebhookHandBack.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { actors, path, ids, connect, link, unlink, sourceRunsAs, liveNames, live, stopped } =
+          yield* appAccountHooks;
+        // An app link of the owner's key for the second requirement, its webhook registered.
+        const team = yield* connect(actors.owner, "app", "second", "team-key");
+        yield* live("secondHook", team, (hook) => hook.status === "active");
+        // The owner links it for themselves too; it stays one source, serving its app link.
+        yield* link(actors.owner, "user", "personal", team);
+        yield* sourceRunsAs(team, null);
+        // The app's account goes the same way when its last app link goes.
+        yield* unlink(actors.owner, "app", "second", team);
+        yield* stopped("secondHook", team);
+        yield* live(
+          "personalHook",
+          team,
+          (hook) => hook.status === "active" && hook.actor === ids.owner,
+        );
+        yield* sourceRunsAs(team, ids.owner);
+        expect(yield* liveNames(team)).toEqual(["personalHook"]);
+        // Unlinking the owner's own links too removes each source and stops its webhook. An app is
+        // removed only once its webhooks stopped.
+        yield* unlink(actors.owner, "user", "personal", team);
+        yield* stopped("personalHook", team);
+        yield* settleWebhookSources(actors.owner, path, (sources) => sources.length === 0);
+      }),
+    ),
+  );
+
   it.effect(scenarios.hostedAppAccountWebhookRemoval.title, (context) =>
     withHostedCase(
       context,
@@ -515,15 +617,6 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
         yield* ok(yield* unlink(actors.owner, "team", own));
         yield* subscription(own, "stopped");
         yield* settleWebhookSources(actors.owner, path, (sources) => sources.length === 0);
-
-        // A shared account stays usable after it is unlinked, so its registration is removed too.
-        const shared = yield* connect(actors.owner, "app", "team", "shared-team", {
-          kind: "shared",
-          audience: { kind: "everyone" },
-        });
-        yield* subscription(shared, "active");
-        yield* ok(yield* unlink(actors.owner, "team", shared));
-        yield* subscription(shared, "stopped");
 
         // The admin links their personal account and then leaves the organization. The app could
         // no longer use it, so removing its registration is refused: the subscription waits,
@@ -905,8 +998,7 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
           },
         ]);
         const { api, actors, path, connect } = fixture;
-        const { setupPath, deploy, pinnedTo, post, deliver, removeAll } = carriedWebhook(fixture);
-        yield* Effect.addFinalizer(() => removeAll.pipe(Effect.orDie));
+        const { setupPath, deploy, pinnedTo, post, deliver } = carriedWebhook(fixture);
         yield* connect(actors.owner, "app", "team", "team-key");
         const [first] = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
           hooks.some((hook) => hook.status === "setup-required"),
@@ -965,8 +1057,7 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
           },
         ]);
         const { api, actors, path, connect } = fixture;
-        const { setupPath, deploy, pinnedTo, deliver, removeAll } = carriedWebhook(fixture);
-        yield* Effect.addFinalizer(() => removeAll.pipe(Effect.orDie));
+        const { setupPath, deploy, pinnedTo, deliver } = carriedWebhook(fixture);
         yield* connect(actors.owner, "app", "team", "team-key");
         const [first] = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
           hooks.some((hook) => hook.status === "setup-required"),
@@ -1078,9 +1169,7 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
           { path: "index.ts", content: carriedSource("first", "executor", nested(30)) },
         ]);
         const { api, actors, path, connect } = fixture;
-        const { setupPath, deploy, pinnedTo, deliver, removeAll, redeployReplaces } =
-          carriedWebhook(fixture);
-        yield* Effect.addFinalizer(() => removeAll.pipe(Effect.orDie));
+        const { setupPath, deploy, pinnedTo, deliver, redeployReplaces } = carriedWebhook(fixture);
         yield* connect(actors.owner, "app", "team", "team-key");
         const [first] = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
           hooks.some((hook) => hook.status === "setup-required"),
@@ -1127,9 +1216,7 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
           },
         ]);
         const { api, actors, path, connect } = fixture;
-        const { setupPath, deploy, pinnedTo, deliver, removeAll, redeployReplaces } =
-          carriedWebhook(fixture);
-        yield* Effect.addFinalizer(() => removeAll.pipe(Effect.orDie));
+        const { setupPath, deploy, pinnedTo, deliver, redeployReplaces } = carriedWebhook(fixture);
         yield* connect(actors.owner, "app", "team", "team-key");
         const [first] = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
           hooks.some((hook) => hook.status === "setup-required"),
@@ -1187,9 +1274,7 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
           },
         ]);
         const { api, actors, path, connect } = fixture;
-        const { setupPath, deploy, pinnedTo, deliver, removeAll, redeployReplaces } =
-          carriedWebhook(fixture);
-        yield* Effect.addFinalizer(() => removeAll.pipe(Effect.orDie));
+        const { setupPath, deploy, pinnedTo, deliver, redeployReplaces } = carriedWebhook(fixture);
         yield* connect(actors.owner, "app", "team", "team-key");
         const [first] = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
           hooks.some((hook) => hook.status === "setup-required"),
@@ -1224,8 +1309,7 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
           { path: "index.ts", content: carriedSource("first", "executor") },
         ]);
         const { actors, path, connect } = fixture;
-        const { removeAll, redeployReplaces } = carriedWebhook(fixture);
-        yield* Effect.addFinalizer(() => removeAll.pipe(Effect.orDie));
+        const { redeployReplaces } = carriedWebhook(fixture);
         yield* connect(actors.owner, "app", "team", "team-key");
         yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>
           hooks.some((hook) => hook.status === "setup-required"),
@@ -1262,21 +1346,15 @@ layer(HostedLive, { excludeTestServices: true })("App account webhooks", (it) =>
         const { api, actors, path, connect } = fixture;
         const { setupPath, subscriptions, deploy, post, deliver, activate } =
           carriedWebhook(fixture);
-        // Registered subscriptions stop on removal and manual ones once it is confirmed, which
-        // the app's removal waits for.
+        // The providers answer again before the fixture's cleanup unlinks the account and removes
+        // the webhooks.
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             for (const provider of [before, after]) {
               yield* provider.recover;
               yield* provider.fail;
             }
-            for (const row of yield* subscriptions)
-              if (row.status !== "disabled")
-                yield* api.request(actors.owner, "DELETE", `${path}/webhooks/${row.id}`);
-            for (const row of yield* subscriptions)
-              if (row.status === "disabled")
-                yield* api.request(actors.owner, "POST", `${setupPath(row.id)}/confirm-removal`);
-          }).pipe(Effect.orDie),
+          }),
         );
         yield* connect(actors.owner, "app", "team", "team-key");
         const [first] = yield* settleWebhookSubscriptions(actors.owner, path, (hooks) =>

@@ -1,6 +1,6 @@
 /** Hosted MCP journeys use isolated grants and run against Node and Cloudflare. */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Exit, Layer, Redacted, Schedule, Schema } from "effect";
+import { Effect, Layer, Redacted, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { Api, body } from "../support/api.ts";
@@ -18,22 +18,6 @@ const Completed = Schema.Struct({
   status: Schema.Literal("completed"),
   execution: Schema.Struct({ ok: Schema.Literal(true), value: Schema.Unknown }),
 });
-/**
- * MCP clients print a refused request's body after their own prefix, such as "Error POSTing to
- * endpoint:", so the JSON-RPC error names the grant's own reason for the refusal.
- */
-const refusal = (message: string) => ({
-  jsonrpc: "2.0",
-  id: null,
-  error: {
-    // JSON-RPC Invalid Request, as for the MCP transport's own rejections.
-    code: -32600,
-    message: `GrantForbidden (HTTP 403): ${message} Retryable (unchanged call): no.`,
-    data: { code: "GrantForbidden", status: 403 },
-  },
-});
-const listTools = { jsonrpc: "2.0", id: 1, method: "tools/list" };
-
 layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
   it.effect(scenarios.mcpProtocol.title, (context) =>
     withHostedCase(
@@ -206,30 +190,34 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
           "search",
           "skills",
         ]);
-        // The default is the plain URL's model mode only, not every approval mode.
-        const other = yield* Effect.exit(
-          mcp.connect(token, "without-resource-browser-mode", { mode: "browser" }),
+        // The grant's record holds model mode; an address naming another mode is served in it.
+        const native = yield* mcp.connect(token, "without-resource-native-address", {
+          mode: "native",
+        });
+        const nativeListed = yield* native.use(
+          "An address naming native mode serves the grant's model mode",
+          (client) => client.listTools(),
         );
-        expect(Exit.isFailure(other)).toBe(true);
-        const anonymous = yield* api.session();
-        const bearer = { authorization: `Bearer ${Redacted.value(token)}` };
-        const browserMode = yield* api.request(
-          anonymous,
-          "POST",
-          "/mcp?elicitation_mode=browser",
-          listTools,
-          bearer,
-        );
-        expect(browserMode.status).toBe(403);
-        expect(browserMode.body).toMatchObject(
-          refusal(
-            "This credential works only at the MCP URL ending in /mcp, not at the URL of this request. Recovery: Connect at the MCP URL ending in /mcp, or connect again at this URL to get a credential for it, then retry.",
-          ),
+        // Native mode has no resume tool; model mode lists it.
+        expect(nativeListed.tools.map((tool) => tool.name).sort()).toEqual([
+          "call",
+          "describe",
+          "execute",
+          "resume",
+          "search",
+          "skills",
+        ]);
+        const browserAddress = yield* mcp.connect(token, "without-resource-browser-address", {
+          mode: "browser",
+        });
+        yield* browserAddress.use(
+          "An address naming browser mode also serves the grant",
+          (client) => client.listTools(),
         );
         yield* evidence.step(
-          "A grant issued at the model-mode URL cannot be narrowed to browser approval",
+          "A grant whose approval mode is model cannot be narrowed to browser approval",
           Effect.gen(function* () {
-            // No URL could serve it: its own URL cannot ask for browser approval.
+            // Its own approval mode cannot ask for browser approval, so no request could use it.
             const narrowed = yield* api.request(
               actors.owner,
               "POST",
@@ -241,10 +229,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
             );
             expect(narrowed.status, JSON.stringify(narrowed.body)).toBe(403);
             expect(narrowed.body).toMatchObject({
-              message:
-                "Browser approval needs a grant issued at an MCP URL with elicitation_mode=browser.",
+              message: "Browser approval needs a grant whose approval mode is browser.",
             });
-            const relisted = yield* client.use("The grant still serves its own URL", (client) =>
+            const relisted = yield* client.use("The grant still serves its own mode", (client) =>
               client.listTools(),
             );
             expect(relisted.tools.map((tool) => tool.name).sort()).toEqual([
@@ -312,11 +299,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP server", (it) => {
             }),
             Effect.timeout("15 seconds"),
           );
-        expect(executorSkills.map((entry) => entry.name).sort()).toEqual([
-          "app-authoring",
-          "code-mode",
-          "executor",
-        ]);
+        // Discovery finds the entry skill and the two skills the instructions name; the full list
+        // the host publishes is deferred-server-paths' subject.
+        expect(executorSkills.map((entry) => entry.name)).toEqual(
+          expect.arrayContaining(["app-authoring", "code-mode", "executor"]),
+        );
         const guide = executorSkills.find((entry) => entry.name === "executor");
         if (guide === undefined)
           return yield* Effect.die("The installed Executor app must contain its entry skill");

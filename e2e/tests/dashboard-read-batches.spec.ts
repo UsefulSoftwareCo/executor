@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
+import { replaceResponses } from "../support/browser-responses.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { openInApp, openThroughBrowser } from "../support/in-app-navigation.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -294,19 +295,16 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         // A batch reply that ends early fails every read it did not answer, as a lost request
         // fails, instead of leaving it waiting.
         let unanswered = 0;
-        yield* browser.use("Cut each batch reply off after its first answer", (page) =>
-          page.route(
-            (url) => url.pathname === batchPath,
-            (route) =>
-              route.fetch().then((response) =>
-                response.text().then((text) => {
-                  const lines = text.split("\n").filter((line) => line !== "");
-                  unanswered += batchedReads(route.request().postData()).length - 1;
-                  return route.fulfill({ response, body: `${lines[0] ?? ""}\n` });
-                }),
-              ),
-          ),
-        );
+        yield* replaceResponses(`*${batchPath}*`, (response) => {
+          if (new URL(response.url).pathname !== batchPath) return "unchanged";
+          const contentType = response.headers["content-type"];
+          if (contentType === undefined) throw new Error("A batch reply has no content type");
+          return response.body().then((text) => {
+            const lines = text.split("\n").filter((line) => line !== "");
+            unanswered += batchedReads(response.requestBody).length - 1;
+            return { status: response.status, body: `${lines[0] ?? ""}\n`, contentType };
+          });
+        });
         yield* browser.use("Open a page that does not read the app", (page) =>
           page.goto(`/org/${actors.organization.slug}/organization`),
         );

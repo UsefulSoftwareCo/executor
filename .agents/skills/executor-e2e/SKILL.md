@@ -81,6 +81,9 @@ make behavioral regressions fail automatically.
 Report the commands and scenario that ran, the outcome, the saved evidence path,
 and any behavior or target left unverified. Diagnose failures within the task's
 scope; do not skip cases, loosen assertions, or call a blocked run a pass.
+A later run in the same workspace prunes run folders under `.local/e2e` (after three days;
+sooner for passed runs past the newest five, or past 3 GB), so copy evidence you must keep
+outside any `.local/e2e`.
 
 ## Select the scenarios CI runs
 

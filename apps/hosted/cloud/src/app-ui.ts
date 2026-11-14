@@ -33,6 +33,7 @@ import {
 } from "./infrastructure/telemetry.ts";
 
 import { workerBuild } from "./infrastructure/worker-build.ts";
+import { servedRequest } from "./infrastructure/served-request.ts";
 
 /** A dedicated native Worker guarantees that every private HTML/JS/CSS request passes app authentication. */
 export default class AppPages extends Cloudflare.Worker<AppPages>()(
@@ -132,6 +133,9 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
         recordClientNetwork,
         recordUnclassifiedRefusals,
         lifetime.http,
+        // The request whose close releases its database connections before it waits on
+        // telemetry, as on the API Worker (`served-request.ts`).
+        servedRequest,
       ),
     };
   }).pipe(Effect.provide(Layer.mergeAll(cloudAuthDatabase, cloudTelemetry))),

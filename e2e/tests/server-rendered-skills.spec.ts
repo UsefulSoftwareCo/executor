@@ -4,6 +4,7 @@ import { Actors, freshOwnerSession } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
+import { noPageErrors } from "../support/page-errors.ts";
 
 /** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
@@ -66,7 +67,7 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered skills", (it) 
             .waitFor({ state: "visible" }),
         );
         yield* browser.use("Let the skills region hydrate", (page) => page.waitForTimeout(1500));
-        expect(failures).toEqual([]);
+        yield* noPageErrors(failures);
         expect(skillReads).toEqual([]);
         // Each skill in the list and the open file show their size in lines and estimated tokens.
         const size = /^[\d,]+ lines? · ~[\d.]+K? tokens$/;

@@ -69,6 +69,11 @@ layer(HostedLive, { excludeTestServices: true })("Registry upgrades", (it) => {
             expect.objectContaining({ path: "package.json" }),
           ]),
         );
+        // Read the version a fresh current server actually installed, without importing SDK internals.
+        const [currentSdk] = yield* legacyStorage([
+          { sql: `SELECT value FROM private_executor_settings WHERE key = 'version'` },
+        ]);
+        expect(currentSdk).toHaveLength(1);
         // Reconstruct the supported prior schemas on the stopped runner-owned database. Both
         // historical scopes can legitimately retain one owner's same label in layout 1.
         yield* legacyStorage([
@@ -138,7 +143,7 @@ layer(HostedLive, { excludeTestServices: true })("Registry upgrades", (it) => {
             },
             { sql: `SELECT count(*)::integer AS count FROM executor_public_listings` },
           ]);
-          expect(sdk).toEqual([{ value: "4.0.15" }]);
+          expect(sdk).toEqual(currentSdk);
           expect(registry).toEqual([{ value: "2.0.0" }]);
           expect(count).toEqual([{ count: 1 }]);
         }

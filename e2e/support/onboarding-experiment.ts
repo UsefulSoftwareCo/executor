@@ -2,7 +2,8 @@
  * Cloud's onboarding experiment through the managed loopback collector: answer one person's flag
  * evaluations, and read the events and evaluations the collector received for them.
  */
-import { Effect, FileSystem, Schedule, Schema } from "effect";
+import { Effect, FileSystem, Schedule } from "effect";
+import { analyticsEvents, type AnalyticsEvent } from "./collector-events.ts";
 import { Target } from "./platform.ts";
 
 export const onboardingFlag = "onboarding-order-v1";
@@ -45,26 +46,10 @@ export const answerOnboardingFlag = (
     );
   });
 
-/** A captured event: the server names its person on the event, the browser SDK in its properties. */
-const Captured = Schema.Struct({
-  event: Schema.String,
-  distinct_id: Schema.optionalKey(Schema.String),
-  properties: Schema.Record(Schema.String, Schema.Json),
-});
-export type Captured = typeof Captured.Type;
-const Batch = Schema.Struct({ batch: Schema.Array(Captured) });
+export type Captured = AnalyticsEvent;
 
 /** Every event the collector received for this person, in delivery order. */
-export const personEvents = (userId: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const target = yield* Target;
-    const text = yield* fs.readFileString(`${target.directory}/analytics.ndjson`);
-    const events: Captured[] = [];
-    for (const line of text.split("\n").filter((line) => line.length > 0))
-      events.push(...(yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Batch))(line)).batch);
-    return events.filter((event) => (event.distinct_id ?? event.properties.distinct_id) === userId);
-  });
+export const personEvents = (userId: string) => analyticsEvents({ person: userId });
 
 /** This person's events once `ready` holds; the server flushes per request, the browser at once. */
 export const awaitPersonEvents = (
@@ -76,19 +61,8 @@ export const awaitPersonEvents = (
     Effect.timeout("15 seconds"),
   );
 
-const FlagRequest = Schema.Struct({ distinct_id: Schema.String });
 /** How many times the Worker asked PostHog for this person's flags. */
-export const flagEvaluations = (userId: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const target = yield* Target;
-    const text = yield* fs.readFileString(`${target.directory}/flags.ndjson`);
-    return text
-      .split("\n")
-      .filter((line) => line.length > 0)
-      .map((line) => Schema.decodeUnknownSync(Schema.fromJsonString(FlagRequest))(line))
-      .filter((request) => request.distinct_id === userId).length;
-  });
+export { flagEvaluations } from "./collector-events.ts";
 
 /** The onboarding `product_action` events this person's setup reported, in order. */
 export const onboardingActions = (events: readonly Captured[]) =>

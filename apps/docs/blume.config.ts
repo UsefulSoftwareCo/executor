@@ -6,6 +6,17 @@ import { assetsInlineLimit } from "@executor-js/marketing/script-assets";
 import { releaseCommandMarkdown } from "./release-commands.ts";
 import { release } from "../../scripts/releases/config.ts";
 
+/** A variable family in local files, one upright and one italic face. */
+const localFamily = (name: string, file: string) => ({
+  name,
+  variants: [
+    { src: `./fonts/${file}.woff2`, style: "normal" as const },
+    { src: `./fonts/${file}-italic.woff2`, style: "italic" as const },
+  ],
+});
+const geist = localFamily("Geist", "geist-latin");
+const geistMono = localFamily("Geist Mono", "geist-mono-latin");
+
 // Analytics settings come from the deployment, never from this file. The Site
 // build command in apps/hosted/cloud/src/main.ts binds the PostHog stack
 // outputs into the environment of `bun run hosted:cloud:site:build`, which
@@ -120,7 +131,9 @@ export default defineConfig({
     accent: { light: "#111111", dark: "#ededed" },
     mode: "system",
     radius: "md",
-    fonts: { display: "geist", body: "geist", mono: "geist-mono" },
+    // Geist and Geist Mono as Google Fonts serves them (the Latin subset), kept in
+    // fonts/ so a build never downloads them. See fonts/README.md.
+    fonts: { display: geist, body: geist, mono: geistMono },
   },
   // Agent readability is the reason for Blume: llms.txt, llms-full.txt and a
   // .md variant of every page. Ask AI and the hosted MCP server need server

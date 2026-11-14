@@ -2,7 +2,6 @@
 import { Random } from "alchemy";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { testStage } from "./stage.ts";
-import { v1McpForwardSecretName, v1SessionHandoffSecretName } from "./v1-import-settings.ts";
 
 const SigningSecret = Schema.Redacted(Schema.String.check(Schema.isMinLength(32)));
 /** AES-GCM credentials need exactly 32 raw bytes, hex encoded. */
@@ -51,6 +50,16 @@ export const cloudSecrets = Effect.gen(function* () {
   const authSecret = yield* Random("AuthSecret");
   return { authSecret: yield* authSecret.text, encryptionKey } satisfies CloudSecrets;
 });
+
+/** The secret v1 signs forwarded MCP requests with, shared with v1's `V2_MCP_FORWARD_SECRET`. */
+export const v1McpForwardSecretName = "V1_MCP_FORWARD_SECRET";
+
+/**
+ * The secret v1 signs session handoffs with, shared with v1's `V2_SESSION_HANDOFF_SECRET`: v1's
+ * dashboard sends a signed-in member of a moved organization to `/api/v1-handoff` with a token
+ * signed with it, so they need not sign in again (`v1-session-handoff.ts`).
+ */
+export const v1SessionHandoffSecretName = "V1_SESSION_HANDOFF_SECRET";
 
 /**
  * A secret v1 shares with this deployment. GitHub Actions passes an unset secret as an empty

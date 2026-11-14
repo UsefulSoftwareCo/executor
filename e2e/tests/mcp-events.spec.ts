@@ -1,8 +1,8 @@
 /**
  * MCP events as ChatGPT uses them: protocol 2026-07-28, webhook delivery only. A client discovers
- * the `events` capability, lists an app's events, subscribes with a callback URL and a Standard
- * Webhooks secret, and receives each matching occurrence, signed, after the callback echoed a
- * challenge. The receiver is an Executor app's own webhook: it checks every signature and records
+ * the `events` capability, lists the one event every caller is offered, subscribes to an app's
+ * event by its name with a callback URL and a Standard Webhooks secret, and receives each matching
+ * occurrence, signed, after the callback echoed a challenge. The receiver is an Executor app's own webhook: it checks every signature and records
  * what arrived, so the scenario needs no outside service and runs on deployed Cloudflare.
  */
 import { expect, layer } from "@effect/vitest";
@@ -15,6 +15,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import {
   Discovered,
   EventList,
+  appEvent,
   Granted,
   Occurrence,
   eventFixtures,
@@ -68,23 +69,22 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
           // Discovery advertises events beside tools.
           const discovered = yield* ok(Discovered, yield* rpc("server/discover"));
           expect(discovered.capabilities.events).toEqual({});
+          // The list is the same for every caller: one event whose arguments select apps' events.
+          // Clients such as ChatGPT save it once and offer it to every user, so it names none of
+          // this organization's apps.
           const listed = yield* ok(EventList, yield* rpc("events/list"));
-          const listedEvent = listed.events.find((event) => event.name === name);
-          expect(listedEvent, JSON.stringify(listed)).toMatchObject({
-            description: "An issue was opened in a repository.",
+          expect(listed.events.map((event) => event.name)).toEqual([appEvent]);
+          expect(listed.events[0]).toMatchObject({
             delivery: ["webhook"],
             inputSchema: {
               type: "object",
-              properties: { repo: { type: "string" } },
-              additionalProperties: false,
+              properties: { app: { type: "string" }, event: { type: "string" } },
             },
-            payloadSchema: { type: "object" },
+            payloadSchema: { type: "object", required: ["app", "event", "data"] },
           });
-          expect(listedEvent?.inputSchema.required).toBeUndefined();
-          // The receiver declares no events, so it lists none.
-          expect(listed.events.some((event) => event.name.startsWith(`${receiver.slug}.`))).toBe(
-            false,
-          );
+          expect(listed.events[0]?.inputSchema.required).toBeUndefined();
+          expect(JSON.stringify(listed)).not.toContain(emitter.slug);
+          expect(JSON.stringify(listed)).not.toContain(receiver.slug);
 
           // Requests that do not fit are refused with the extension's codes.
           expect(yield* refused(yield* subscribe({ secret: "not-a-secret" }))).toMatchObject({
@@ -199,9 +199,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
               .map((delivery) => delivery.id);
           expect(to(granted.id)).toEqual([first]);
           expect(to(everything.id).sort()).toEqual([first, other].sort());
-          const firstBody = yield* Schema.decodeUnknownEffect(Occurrence)(
-            tracked(delivered)[0]!.body,
-          );
+          // Deliveries to the two subscriptions arrive in no set order; read Issue 1's by its ID.
+          const firstDelivery = tracked(delivered).find((delivery) => delivery.id === first);
+          expect(firstDelivery, "Issue 1's delivery").toBeDefined();
+          const firstBody = yield* Schema.decodeUnknownEffect(Occurrence)(firstDelivery!.body);
           expect(firstBody.data).toEqual({ title: "Issue 1", number: 1 });
 
           // The same upstream event, emitted again, is not delivered again.

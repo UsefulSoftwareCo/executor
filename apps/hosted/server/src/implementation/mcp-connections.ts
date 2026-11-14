@@ -29,11 +29,11 @@ import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { checkAccounts, currentOwner, usableApp } from "./access.ts";
 import { addLink, linkedAccounts, lockedChange } from "./app-accounts.ts";
 import {
-  accountAccess,
   currentResourceAuthority,
   policyDatabase,
-  requireAccountAccessAs,
+  requireAccountOwnerAs,
 } from "./resource-policy.ts";
+
 import { audited } from "./security-audit.ts";
 
 const owner = Effect.gen(function* () {
@@ -183,22 +183,18 @@ const resolveApp = (
         const actor = yield* currentResourceAuthority.pipe(
           Effect.catchTag("OrganizationForbidden", () => Effect.fail(invalid("account"))),
         );
-        const owned = yield* accountAccess(account.id, actor).pipe(
+        yield* requireAccountOwnerAs(actor, account.id).pipe(
           Effect.catchTag("OrganizationForbidden", () => Effect.fail(invalid("account"))),
         );
-        if (owned.ownership.kind !== "personal" || owned.ownership.user !== userId)
-          return yield* invalid("account");
         const linked = yield* linkedAccounts(sql, { subject: userId, apps: [app.id] });
         if (linked.some((link) => link.id === account.id)) return false;
         // Check both again under the app's link lock: either may have been revoked while the
         // change waited for it (see `lockedChange`).
         return yield* lockedChange(executor, { app: app.id, access: "use" }, (locked, actor) =>
           Effect.gen(function* () {
-            const access = yield* requireAccountAccessAs(actor, account.id, "use").pipe(
+            yield* requireAccountOwnerAs(actor, account.id).pipe(
               Effect.catchTag("OrganizationForbidden", () => Effect.fail(invalid("account"))),
             );
-            if (access.ownership.kind !== "personal" || access.ownership.user !== userId)
-              return yield* invalid("account");
             return yield* Effect.forEach(
               requirements.filter((requirement) => requirement.provider === account.provider),
               (requirement) =>
@@ -242,6 +238,7 @@ const resolvePolicy = (apps: readonly ConnectionApp[]) =>
  * and mint only within that connection's policy, and a narrowed connection without manage is
  * refused. Key lifetime stays inside the declared 5-second to 90-day bound.
  */
+
 export const hostedMcpConnectionHandlers = HttpApiBuilder.group(
   HostedApi,
   "mcpConnections",

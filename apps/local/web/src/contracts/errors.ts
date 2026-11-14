@@ -1,3 +1,4 @@
+import { CatalogFeedUnavailable } from "@executor-js/catalog/contracts";
 import { registryErrorMessage } from "@executor-js/ui/contracts/registry-error";
 import type { LocalAppManagementApi } from "@executor-js/local-server/app-management";
 import type { LocalWebhookSetupApi } from "@executor-js/local-server/webhook-setup";
@@ -282,8 +283,11 @@ const errorMessage = Match.type<DashboardError>().pipe(
         "The selected account could not load",
         "Check the local server's credential configuration.",
       ),
-    CatalogUnavailable: () =>
-      message("Catalog unavailable", "The app catalog could not be reached. Try again."),
+    // The wire form carries an agent's next step; people get the dashboards' wording of it.
+    CatalogUnavailable: () => {
+      const { title, description, recovery } = new CatalogFeedUnavailable();
+      return message(title, `${description} ${recovery.action}`);
+    },
     AppVersionChanged: () =>
       message("App changed", "Reload its source before updating or activating a version."),
     AppSlugTaken: () =>
@@ -305,6 +309,8 @@ const errorMessage = Match.type<DashboardError>().pipe(
           : error.reason,
       ),
     BuildMemoryExceeded: (error) =>
+      message(error.title, `${error.description} ${error.recovery.action}`),
+    MarkdownUnavailable: (error) =>
       message(error.title, `${error.description} ${error.recovery.action}`),
     CatalogImportFailed: (error) => message("App could not be imported", error.reason),
     HttpClientError: unavailable,

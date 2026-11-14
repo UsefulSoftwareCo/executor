@@ -4,8 +4,9 @@ import * as Planetscale from "alchemy/Planetscale";
 import * as Command from "alchemy/Command";
 import * as Output from "alchemy/Output";
 import { Random } from "alchemy";
+import { AlchemyContext } from "alchemy/AlchemyContext";
 import { Config, Effect, Option, Redacted } from "effect";
-import { testStage, type TestStage } from "./stage.ts";
+import { type TestStage } from "./stage.ts";
 
 /** Build a credential-redacted Postgres URL with hostname and certificate verification. */
 export const postgresUrl = (origin: Neon.PostgresOrigin) => {
@@ -29,12 +30,26 @@ type PreviewConnection = {
 };
 
 /**
- * PgBouncer server connections for a PlanetScale preview's runtime role. The branch allows 25
- * connections, three reserved for superusers; PgBouncer's default of 20 left none for the
- * migration login on the next deploy. Hyperdrive connects through the same PgBouncer, so this
- * caps the runtime role's backends whatever Hyperdrive and the Durable Objects open.
+ * A PlanetScale preview's `max_connections` and the PgBouncer server connections of its runtime
+ * role, which also cap Hyperdrive's origin connections: Hyperdrive connects through the same
+ * PgBouncer. Every preview stays on the smallest branch size: a branch at a paid size is a
+ * production branch, which the stages' PlanetScale token cannot delete, so its teardown would
+ * leave it behind.
+ *
+ * - A stage that runs the deployed suite (`test-e2e-*`) gets production's pool of 20 (its
+ *   `CLOUD_DATABASE_CONNECTION_LIMIT`, and PgBouncer's default) and `max_connections` 50. Beside the
+ *   pool, these connect directly: the schedule coordinator (up to 4), the suite's actor fixtures
+ *   (up to 6), PlanetScale's own clients (about 4), the next deploy's migration login and a
+ *   monitoring session; with 3 reserved for superusers that is 39. At Postgres's default of 25 the
+ *   suite's set-up burst queued behind a pool of 10 among 22 client slots, and a pool of 20 left
+ *   the actor fixtures none.
+ * - Every other preview keeps 25 connections, three reserved for superusers; PgBouncer's default
+ *   of 20 left none for the migration login on the next deploy, so the pool is 10.
  */
-export const previewPoolConnections = 10;
+export const previewShape = (stage: TestStage) =>
+  stage.name.startsWith("test-e2e-")
+    ? { maxConnections: Option.some(50), poolConnections: 20 }
+    : { maxConnections: Option.none<number>(), poolConnections: 10 };
 
 /** Preview provider selection is shared by database allocation and Worker transport. */
 export const previewDatabaseProvider = Config.Literals(
@@ -145,20 +160,38 @@ export const previewDatabase = (stage: TestStage) =>
   });
 
 /**
- * Cap a PlanetScale preview branch's PgBouncer pool. Only the stack declares this job; Worker
- * initialization evaluates the database connection but not branch administration.
+ * Set a PlanetScale preview branch's connection settings ({@link previewShape}): its PgBouncer pool
+ * and, where the shape gives one, `max_connections`, which restarts Postgres. Only the stack
+ * declares this job, during deploys; the migration job waits for it, and every other database
+ * consumer waits for the migration, so the restart comes before any session. Returns what the
+ * migration job depends on, or nothing for other providers, `alchemy dev` and inside Workers.
  */
-export const previewPoolSize = Effect.gen(function* () {
-  const stage = yield* testStage;
-  if (Option.isNone(stage) || (yield* previewDatabaseProvider) !== "planetscale") return;
-  const preview = yield* previewDatabase(stage.value);
-  yield* Command.Exec("PreviewPoolSize", {
-    command: "node scripts/preview-pool-size.ts",
-    env: {
-      TEST_STAGE_DATABASE: yield* Config.NonEmptyString("TEST_STAGE_DATABASE"),
-      TEST_STAGE_DATABASE_BRANCH: preview.branchName,
-      POOL_SIZE: String(previewPoolConnections),
-    },
-    timeout: "7 minutes",
+export const previewBranchSettings = (stage: TestStage) =>
+  Effect.gen(function* () {
+    // Inside Workers there is no deploy context; `alchemy dev` sets no branch parameters.
+    if (globalThis.__ALCHEMY_RUNTIME__) return Option.none();
+    if ((yield* AlchemyContext).dev || (yield* previewDatabaseProvider) !== "planetscale")
+      return Option.none();
+    const preview = yield* previewDatabase(stage);
+    const shape = previewShape(stage);
+    const settings = yield* Command.Exec("PreviewPoolSize", {
+      command: "node scripts/preview-pool-size.ts",
+      env: {
+        TEST_STAGE_DATABASE: yield* Config.NonEmptyString("TEST_STAGE_DATABASE"),
+        // Waits for both roles too: the restart would fail a role PlanetScale is still creating.
+        // The runtime URL comes from the runtime role, the migration URL from the migration role.
+        TEST_STAGE_DATABASE_BRANCH: Output.all(
+          preview.branchName,
+          preview.runtimeUrl,
+          preview.migrationUrl,
+        ).pipe(Output.map(([branch]) => branch)),
+        POOL_SIZE: String(shape.poolConnections),
+        ...Option.match(shape.maxConnections, {
+          onNone: () => ({}),
+          onSome: (connections) => ({ MAX_CONNECTIONS: String(connections) }),
+        }),
+      },
+      timeout: "9 minutes",
+    });
+    return Option.some(settings.hash);
   });
-}).pipe(Effect.orDie);

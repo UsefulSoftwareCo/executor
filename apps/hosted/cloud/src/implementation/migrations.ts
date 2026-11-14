@@ -11,6 +11,8 @@ import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { cloudAuthSetup } from "./auth-provisioning.ts";
 import { migrateAppDomainRecords } from "./app-domain-records.ts";
+import { migrateV1CapturedApiKeys } from "./v1-captured-api-keys.ts";
+import { migrateV1LegacyUrls } from "./v1-legacy-urls.ts";
 
 /** Additive cloud tables; existing organizations and memberships are never changed. */
 export const migrateOnboarding = Effect.gen(function* () {
@@ -252,6 +254,17 @@ export const migrateV1ImportInto = Effect.gen(function* () {
 }).pipe(Effect.mapError(migrationFailed("product")));
 
 /**
+ * The v1 integrations a `copy_selected` move copies into the existing v2 organization, by v1 slug
+ * (`notes/v1-import.md`, decision 35), written by direct SQL like the rest of the table. Additive
+ * and nullable, without a default, so adding it rewrites nothing; the running server never reads
+ * it.
+ */
+export const migrateV1ImportIntoIntegrations = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`alter table private_v1_import_allowed add column if not exists into_integrations text[]`;
+}).pipe(Effect.mapError(migrationFailed("product")));
+
+/**
  * The onboarding experiment's assignments (`notes/posthog.md#onboarding-order-experiment`): one
  * row per member who created their first team through team setup and was assigned a variant,
  * and when they first saw it. Additive: the running server never reads it. Drop it in a later
@@ -316,6 +329,9 @@ export const migrateCloudDatabase = Effect.scoped(
         "12_v1_import_displacement": migrateV1ImportDisplacement,
         "13_v1_import_into": migrateV1ImportInto,
         "14_v1_import_failed_keeps_id": migrateV1ImportFailedKeepsId,
+        "15_v1_import_into_integrations": migrateV1ImportIntoIntegrations,
+        "16_v1_legacy_urls": migrateV1LegacyUrls,
+        "17_v1_captured_api_keys": migrateV1CapturedApiKeys,
       });
     });
     yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(

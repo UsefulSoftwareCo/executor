@@ -19,6 +19,9 @@ export {
   collectTelemetry,
   forwardTelemetry,
   makeTelemetryForwarder,
+  TelemetryDrainScope,
+  TelemetryWaitReport,
+  type TelemetryWait,
   TelemetryBatch,
 } from "./relay.ts";
 export { TraceContext, currentTraceContext, externalTrace, traceLinks } from "./trace-context.ts";

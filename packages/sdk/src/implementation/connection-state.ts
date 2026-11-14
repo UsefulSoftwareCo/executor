@@ -1,5 +1,6 @@
 /** Persisted connection transitions shared by secrets and OAuth completion. */
-import { Clock, type Crypto, Effect, Option, Schema } from "effect";
+import { Clock, Effect, Option, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import {
   AccountConnectionClosed,
   AccountConnectionFailure,
@@ -64,10 +65,10 @@ export const readConnection = (db: Query, input: typeof GetAccountConnection.Typ
 export const lockConnection = (
   db: Query,
   input: typeof GetAccountConnection.Type,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
 ) =>
   Effect.gen(function* () {
-    const claim = yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
+    const claim = yield* crypto.random.uuidV4();
     while (true) {
       const row = yield* readConnection(db, input);
       if (row.state.status !== "pending") return row;
@@ -142,7 +143,7 @@ export const startSignIn = (db: Query, row: ConnectionRow, attempt: string) =>
  */
 export const recordSignInFailure = (
   db: Query,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   input: typeof GetAccountConnection.Type,
   attempt: string | null,
   error: AccountConnectionFailure["error"],

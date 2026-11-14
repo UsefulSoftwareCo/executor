@@ -20,11 +20,11 @@ type trustedProxy struct {
 func trustedProxyConfiguration() (*trustedProxy, error) {
 	header := strings.ToLower(strings.TrimSpace(os.Getenv("EXECUTOR_TRUSTED_PROXY_HEADER")))
 	peers := strings.TrimSpace(os.Getenv("EXECUTOR_TRUSTED_PROXIES"))
-	if header == "" && peers == "" {
+	if header == "" {
 		return nil, nil
 	}
-	if header == "" || peers == "" {
-		return nil, errors.New("EXECUTOR_TRUSTED_PROXY_HEADER and EXECUTOR_TRUSTED_PROXIES must be set together")
+	if peers == "" {
+		return nil, errors.New("EXECUTOR_TRUSTED_PROXIES is required with EXECUTOR_TRUSTED_PROXY_HEADER")
 	}
 	if !regexp.MustCompile(`^[a-z0-9!#$%&'*+.^_|~\x60-]+$`).MatchString(header) || header == "x-executor-client-ip" {
 		return nil, errors.New("EXECUTOR_TRUSTED_PROXY_HEADER must be a valid HTTP header other than x-executor-client-ip")
