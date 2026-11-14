@@ -14,8 +14,8 @@
  * once are all asked again at the next poll. It fails at once only on what cannot change: the job
  * finished without success, or the same name listed twice on two consecutive consistent reads.
  *
- * It lists the jobs of this run's own attempt (`RUN_ATTEMPT`, which the workflow step passes as
- * `github.run_attempt`) and considers only jobs whose `run_attempt` is that attempt; a job of the
+ * It lists the jobs of this run's own attempt (`GITHUB_RUN_ATTEMPT`, which GitHub sets in every
+ * step) and considers only jobs whose `run_attempt` is that attempt; a job of the
  * name from another attempt is never the answer, and is named in the "not yet" message. After
  * "re-run failed jobs", GitHub lists a job the new attempt did not run again as a new record with a
  * new id, this attempt's number and the original start and end times, so a rerun accepts the job
@@ -23,11 +23,15 @@
  * listing shows in that attempt's first seconds has not been observed, but an earlier attempt's
  * record carries that attempt's number and so can never match.
  *
- * Reads `GITHUB_API_URL`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, `RUN_ATTEMPT` and `GH_TOKEN` (the
- * job's token with `actions: read`). `JOB_WAIT_LIMIT_SECONDS`, `JOB_WAIT_ATTEMPT_SECONDS` and
- * `JOB_WAIT_POLL_SECONDS` shorten the limits for tests.
+ * An error answer is not yet an answer either. Its status and the API's `message` are named in the
+ * log, so a rate limit reads apart from a missing permission, and a `retry-after` delays the next
+ * look, never by less than the usual spacing and never past the deadline.
+ *
+ * Reads `GITHUB_API_URL`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, `GITHUB_RUN_ATTEMPT` and `GH_TOKEN`
+ * (the job's token with `actions: read`). For tests, `JOB_WAIT_LIMIT_SECONDS`,
+ * `JOB_WAIT_ATTEMPT_SECONDS` and `JOB_WAIT_POLL_SECONDS` change the limits.
  */
-import { Config, Console, Duration, Effect, Redacted, Schedule, Schema } from "effect";
+import { Config, Console, Duration, Effect, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 
 const Job = Schema.Struct({
@@ -52,7 +56,68 @@ export class JobWaitFailed extends Schema.TaggedError<JobWaitFailed>()("JobWaitF
 /** The job has not finished, or the API could not say: ask again, within the deadline. */
 class NotFinished extends Schema.TaggedError<NotFinished>()("NotFinished", {
   reason: Schema.String,
+  /** Seconds the API asked for before the next request (`retry-after`), if it asked. */
+  retryAfter: Schema.optionalKey(Schema.Number),
 }) {}
+
+/**
+ * The forms of HTTP-date a `retry-after` may carry (RFC 9110): the preferred IMF-fixdate
+ * (`Sun, 06 Nov 1994 08:49:37 GMT`), and the obsolete RFC 850 and asctime forms.
+ */
+const httpDates = [
+  /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} \d{2}:\d{2}:\d{2} GMT$/u,
+  /^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday), \d{2}-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{2} \d{2}:\d{2}:\d{2} GMT$/u,
+  /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) [ \d]\d \d{2}:\d{2}:\d{2} \d{4}$/u,
+];
+
+/**
+ * The delay a `retry-after` header asks for, in seconds: unsigned whole seconds, or an HTTP-date.
+ * Anything else is ignored, and the usual spacing applies.
+ */
+const retryAfterSeconds = (value: string | undefined): number | undefined => {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (/^[0-9]+$/u.test(trimmed)) return Number(trimmed);
+  const form = httpDates.findIndex((date) => date.test(trimmed));
+  if (form === -1) return undefined;
+  // The asctime form names no zone; every HTTP-date is GMT.
+  const at = Date.parse(form === 2 ? `${trimmed} GMT` : trimmed);
+  return Number.isNaN(at) ? undefined : Math.max(0, (at - Date.now()) / 1000);
+};
+
+/** The `message` of a GitHub API error body, if the body is JSON with one. */
+const apiMessage = (body: string): string | undefined => {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    return typeof parsed === "object" &&
+      parsed !== null &&
+      "message" in parsed &&
+      typeof parsed.message === "string"
+      ? parsed.message
+      : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/** A positive safe integer attempt number from `name`, if it is set; fails when it is malformed. */
+const attemptFrom = (name: string) =>
+  Config.String(name).pipe(
+    Config.option,
+    Effect.mapError(() => new JobWaitFailed({ message: `${name} cannot be read` })),
+    Effect.flatMap((value) => {
+      if (value._tag === "None") return Effect.succeed(undefined);
+      const text = value.value;
+      // Checked after converting too: a value past 2^53 would be asked for as a different number.
+      return /^[1-9][0-9]*$/u.test(text) && Number.isSafeInteger(Number(text))
+        ? Effect.succeed(Number(text))
+        : Effect.fail(
+            new JobWaitFailed({
+              message: `${name} must be a positive safe integer, not ${JSON.stringify(text)}`,
+            }),
+          );
+    }),
+  );
 
 /** How to wait for one job and what to say about it. */
 export type JobWait = {
@@ -99,24 +164,11 @@ export const waitForJob = (options: JobWait) =>
     );
     const repository = yield* Config.String("GITHUB_REPOSITORY");
     const run = yield* Config.String("GITHUB_RUN_ID");
-    const runAttempt = yield* Config.String("RUN_ATTEMPT").pipe(
-      Effect.mapError(
-        () =>
-          new JobWaitFailed({
-            message: "RUN_ATTEMPT is not set: pass the step's github.run_attempt",
-          }),
-      ),
-      Effect.flatMap((value) =>
-        // Checked after converting too: a value past 2^53 would be asked for as a different number.
-        /^[1-9][0-9]*$/u.test(value) && Number.isSafeInteger(Number(value))
-          ? Effect.succeed(Number(value))
-          : Effect.fail(
-              new JobWaitFailed({
-                message: `RUN_ATTEMPT must be a positive safe integer, not ${JSON.stringify(value)}`,
-              }),
-            ),
-      ),
-    );
+    const runAttempt =
+      (yield* attemptFrom("GITHUB_RUN_ATTEMPT")) ??
+      (yield* new JobWaitFailed({
+        message: "GITHUB_RUN_ATTEMPT is not set: this must run in a GitHub Actions step",
+      }));
     const token = yield* Config.Redacted("GH_TOKEN");
     const limit = yield* seconds("JOB_WAIT_LIMIT_SECONDS", options.minutes * 60);
     const attempt = yield* seconds("JOB_WAIT_ATTEMPT_SECONDS", attemptSeconds);
@@ -136,10 +188,14 @@ export const waitForJob = (options: JobWait) =>
           )
           .pipe(Effect.mapError(() => new NotFinished({ reason: "the jobs API did not answer" })));
         if (response.status !== 200) {
-          // Read and dropped inside this attempt's time limit, so a body that never ends cannot
-          // hold the wait.
-          yield* response.text.pipe(Effect.ignore);
-          return yield* new NotFinished({ reason: `the jobs API answered ${response.status}` });
+          // Read inside this attempt's time limit, so a body that never ends cannot hold the wait.
+          const body = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
+          const message = apiMessage(body);
+          const retryAfter = retryAfterSeconds(response.headers["retry-after"]);
+          return yield* new NotFinished({
+            reason: `the jobs API answered ${response.status}${message === undefined ? "" : `: ${message}`}`,
+            ...(retryAfter === undefined ? {} : { retryAfter }),
+          });
         }
         return yield* response.json.pipe(
           Effect.flatMap(Schema.decodeUnknownEffect(Jobs)),
@@ -206,28 +262,25 @@ export const waitForJob = (options: JobWait) =>
     });
 
     let last = "no answer yet";
-    yield* look.pipe(
-      Effect.tapError((error) =>
-        error._tag === "NotFinished"
-          ? Effect.andThen(
-              Effect.sync(() => {
-                last = error.reason;
-              }),
-              Console.log(`Waiting for the ${options.job} job: ${error.reason}`),
-            )
-          : Effect.void,
+    /** Looks until the job's answer is known, waiting the usual spacing or what the API asked. */
+    const follow: Effect.Effect<void, JobWaitFailed> = Effect.suspend(() =>
+      look.pipe(
+        Effect.asVoid,
+        Effect.catchTag("NotFinished", (error) => {
+          last = error.reason;
+          const pause = Math.max(poll, error.retryAfter ?? 0);
+          return Console.log(`Waiting for the ${options.job} job: ${error.reason}`).pipe(
+            Effect.andThen(Effect.sleep(Duration.seconds(pause))),
+            Effect.andThen(follow),
+          );
+        }),
       ),
-      Effect.retry({
-        while: (error) => error._tag === "NotFinished",
-        schedule: Schedule.spaced(Duration.seconds(poll)),
-      }),
+    );
+    yield* follow.pipe(
       Effect.timeoutOrElse({
         duration: Duration.seconds(limit),
         orElse: () => Effect.fail(new JobWaitFailed({ message: options.late(last) })),
       }),
-      Effect.catchTag("NotFinished", (error) =>
-        Effect.fail(new JobWaitFailed({ message: options.late(error.reason) })),
-      ),
     );
     yield* Console.log(options.succeeded);
   });

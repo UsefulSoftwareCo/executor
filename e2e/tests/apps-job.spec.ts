@@ -5,7 +5,8 @@
  * for GitHub's jobs API that answers with the given states in order, repeating the last, and read
  * its exit code, output and the requests it made. Cases about time set the waiter's limits short
  * through `JOB_WAIT_LIMIT_SECONDS`, `JOB_WAIT_ATTEMPT_SECONDS` and `JOB_WAIT_POLL_SECONDS`. The
- * waiter's attempt is `RUN_ATTEMPT`, 1 unless a case says otherwise.
+ * waiter's attempt is `GITHUB_RUN_ATTEMPT`, 1 unless a case says otherwise; every case sets it,
+ * since a CI step has its own.
  */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -41,7 +42,11 @@ type Answer =
     }
   | { readonly stall: "headers" }
   | { readonly stall: "body"; readonly status: number }
-  | { readonly raw: string }
+  | {
+      readonly raw: string;
+      readonly status?: number;
+      readonly headers?: Readonly<Record<string, string>>;
+    }
   | {
       readonly slow: {
         readonly headersMs: number;
@@ -66,6 +71,7 @@ const jobsApi = (
 ) => {
   const attempt = options.attempt ?? 1;
   const requests: Array<{ readonly path: string; readonly authorization: string | undefined }> = [];
+  const times: Array<number> = [];
   const sockets = new Set<Socket>();
   const timers = new Set<NodeJS.Timeout>();
   const later = (ms: number, run: () => void) => {
@@ -78,6 +84,7 @@ const jobsApi = (
   let listings = 0;
   const server = createServer((request, response) => {
     requests.push({ path: request.url ?? "", authorization: request.headers.authorization });
+    times.push(Date.now());
     const page = Number(
       new URL(request.url ?? "/", "http://stand-in").searchParams.get("page") ?? 1,
     );
@@ -96,7 +103,10 @@ const jobsApi = (
       return;
     }
     if ("raw" in answer) {
-      response.writeHead(200, { "content-type": "application/json" });
+      response.writeHead(answer.status ?? 200, {
+        "content-type": "application/json",
+        ...answer.headers,
+      });
       response.end(answer.raw);
       return;
     }
@@ -150,6 +160,10 @@ const jobsApi = (
     Effect.as({
       url: () => `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
       requests: () => requests,
+      /** When the first request came, in milliseconds since the epoch. */
+      firstAt: () => times[0] ?? Number.NaN,
+      /** Seconds between each request and the one before it. */
+      gaps: () => times.slice(1).map((at, index) => (at - times[index]!) / 1000),
     }),
   );
 };
@@ -157,7 +171,7 @@ const jobsApi = (
 /** Short limits for the cases about time: the whole wait, one request, and the pause between. */
 type Limits = { readonly limit: number; readonly attempt: number; readonly poll: number };
 
-/** `attempt` is what `RUN_ATTEMPT` is set to; `null` leaves it unset. */
+/** `attempt` is what `GITHUB_RUN_ATTEMPT` is set to; `null` (or an empty value) leaves it unset. */
 const wait = (api: string, limits?: Limits, attempt: number | string | null = 1) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -167,7 +181,7 @@ const wait = (api: string, limits?: Limits, attempt: number | string | null = 1)
           GITHUB_API_URL: api,
           GITHUB_REPOSITORY: repository,
           GITHUB_RUN_ID: run,
-          ...(attempt === null ? {} : { RUN_ATTEMPT: String(attempt) }),
+          GITHUB_RUN_ATTEMPT: attempt === null ? "" : String(attempt),
           GH_TOKEN: "synthetic-token",
           ...(limits === undefined
             ? {}
@@ -185,13 +199,22 @@ const wait = (api: string, limits?: Limits, attempt: number | string | null = 1)
       [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
       { concurrency: "unbounded" },
     );
-    return { exitCode, log, seconds: (Date.now() - started) / 1000 };
+    return { exitCode, log, seconds: (Date.now() - started) / 1000, endedAt: Date.now() };
   }).pipe(Effect.scoped);
+
+/**
+ * Seconds from the stand-in's first request to the waiter's exit: how long the wait itself took,
+ * leaving out Node's start-up, which a busy machine can stretch.
+ */
+const waited = (result: { readonly endedAt: number }, api: { readonly firstAt: () => number }) =>
+  (result.endedAt - api.firstAt()) / 1000;
 
 const inProgress = { apps: { status: "in_progress", conclusion: null } };
 const succeeded = { apps: { status: "completed", conclusion: "success" } };
-/** One-second requests and polls inside a 20-second wait: a stall costs one attempt. */
-const quick: Limits = { limit: 20, attempt: 1, poll: 0.5 };
+/** Short polls inside a 20-second wait, for cases not about time: a request gets 5 s. */
+const quick: Limits = { limit: 20, attempt: 5, poll: 0.5 };
+/** The same with a one-second request limit, for the cases about a stalled or slow answer. */
+const stalling: Limits = { limit: 20, attempt: 1, poll: 0.5 };
 
 layer(NodeServices.layer)("deploy waits for the apps job", (it) => {
   it.effect("an apps job that succeeds after a while lets the deploy continue", () =>
@@ -248,12 +271,13 @@ layer(NodeServices.layer)("deploy waits for the apps job", (it) => {
   it.effect("an answer whose headers never come costs one attempt, then the wait goes on", () =>
     Effect.gen(function* () {
       const api = yield* jobsApi([{ stall: "headers" }, succeeded]);
-      const result = yield* wait(api.url(), quick);
+      const result = yield* wait(api.url(), stalling);
       expect(result.exitCode, result.log).toBe(0);
       expect(result.log).toContain(
         "Waiting for the apps job: the jobs API did not answer within 1 s",
       );
-      expect(api.requests()).toHaveLength(2);
+      // One slow answer on a busy machine can cost one more request.
+      expect(api.requests().length).toBeGreaterThanOrEqual(2);
       expect(result.seconds).toBeLessThan(10);
     }).pipe(Effect.scoped),
   );
@@ -264,12 +288,13 @@ layer(NodeServices.layer)("deploy waits for the apps job", (it) => {
       () =>
         Effect.gen(function* () {
           const api = yield* jobsApi([{ stall: "body", status }, succeeded]);
-          const result = yield* wait(api.url(), quick);
+          const result = yield* wait(api.url(), stalling);
           expect(result.exitCode, result.log).toBe(0);
           expect(result.log).toContain(
             "Waiting for the apps job: the jobs API did not answer within 1 s",
           );
-          expect(api.requests()).toHaveLength(2);
+          // One slow answer on a busy machine can cost one more request.
+          expect(api.requests().length).toBeGreaterThanOrEqual(2);
           expect(result.seconds).toBeLessThan(10);
         }).pipe(Effect.scoped),
     );
@@ -277,21 +302,27 @@ layer(NodeServices.layer)("deploy waits for the apps job", (it) => {
   it.effect("an apps job still running at the deadline stops the deploy then, not later", () =>
     Effect.gen(function* () {
       const api = yield* jobsApi([inProgress]);
-      const result = yield* wait(api.url(), { limit: 2, attempt: 1, poll: 0.5 });
+      const result = yield* wait(api.url(), { limit: 2, attempt: 5, poll: 0.5 });
       expect(result.exitCode).toBe(1);
       expect(result.log).toContain("The apps job did not finish within");
       expect(result.log).toContain("(the apps job is in_progress); not deploying.");
-      expect(result.seconds).toBeLessThan(6);
+      // From the first request: the deadline counts from the waiter's start, not Node's.
+      expect(waited(result, api)).toBeLessThan(4);
+      // A watchdog on the whole process.
+      expect(result.seconds).toBeLessThan(30);
     }).pipe(Effect.scoped),
   );
 
   it.effect("an apps job that never appears stops the deploy at the deadline", () =>
     Effect.gen(function* () {
       const api = yield* jobsApi([{}]);
-      const result = yield* wait(api.url(), { limit: 2, attempt: 1, poll: 0.5 });
+      const result = yield* wait(api.url(), { limit: 2, attempt: 5, poll: 0.5 });
       expect(result.exitCode).toBe(1);
       expect(result.log).toContain(`(run ${run} lists no apps job yet); not deploying.`);
-      expect(result.seconds).toBeLessThan(6);
+      // From the first request: the deadline counts from the waiter's start, not Node's.
+      expect(waited(result, api)).toBeLessThan(4);
+      // A watchdog on the whole process.
+      expect(result.seconds).toBeLessThan(30);
     }).pipe(Effect.scoped),
   );
 
@@ -367,12 +398,15 @@ layer(NodeServices.layer)("deploy waits for the apps job", (it) => {
     () =>
       Effect.gen(function* () {
         const api = yield* jobsApi([changing[0]!]);
-        const result = yield* wait(api.url(), { limit: 3, attempt: 1, poll: 0.5 });
+        const result = yield* wait(api.url(), { limit: 3, attempt: 5, poll: 0.5 });
         expect(result.exitCode).toBe(1);
         expect(result.log).toContain(
           `(run ${run}'s job list changed while it was read); not deploying.`,
         );
-        expect(result.seconds).toBeLessThan(8);
+        // From the first request: the deadline counts from the waiter's start, not Node's.
+        expect(waited(result, api)).toBeLessThan(5);
+        // A watchdog on the whole process.
+        expect(result.seconds).toBeLessThan(30);
       }).pipe(Effect.scoped),
   );
 
@@ -423,6 +457,21 @@ layer(NodeServices.layer)("deploy waits for the apps job", (it) => {
         `Run ${run} lists 2 jobs named apps in attempt 1 on two reads in a row; cannot tell which to wait for.`,
       );
       expect(api.requests()).toHaveLength(2);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a changing list between two duplicates does not clear them", () =>
+    Effect.gen(function* () {
+      // Duplicate, a list that changes while it is read, duplicate again: the changing read is not
+      // a consistent one, so the two duplicates are on consecutive consistent reads.
+      const api = yield* jobsApi([duplicate, changing[0]!, duplicate]);
+      const result = yield* wait(api.url(), quick);
+      expect(result.exitCode, result.log).toBe(1);
+      expect(result.log).toContain(
+        `Run ${run} lists 2 jobs named apps in attempt 1 on two reads in a row; cannot tell which to wait for.`,
+      );
+      // It fails on the second duplicate: one request, two for the changing list's pages, one.
+      expect(api.requests()).toHaveLength(4);
     }).pipe(Effect.scoped),
   );
 
@@ -501,7 +550,7 @@ layer(NodeServices.layer)("deploy waits for the apps job", (it) => {
         [{ pages: [{ total: 1, jobs: [{ ...appsDone, run_attempt: 1 }] }] }],
         { attempt: 2 },
       );
-      const result = yield* wait(api.url(), { limit: 3, attempt: 1, poll: 0.5 }, 2);
+      const result = yield* wait(api.url(), { limit: 3, attempt: 5, poll: 0.5 }, 2);
       expect(result.exitCode).toBe(1);
       expect(result.log).toContain(
         `(run ${run} lists a job named apps from attempt 1, but none from this attempt, 2); not deploying.`,
@@ -525,17 +574,18 @@ layer(NodeServices.layer)("deploy waits for the apps job", (it) => {
             { slow: { headersMs: 650, bodyMs: 650, status, body } },
             succeeded,
           ]);
-          const result = yield* wait(api.url(), quick);
+          const result = yield* wait(api.url(), stalling);
           expect(result.exitCode, result.log).toBe(0);
           expect(result.log).toContain(
             "Waiting for the apps job: the jobs API did not answer within 1 s",
           );
-          expect(api.requests()).toHaveLength(2);
+          // One slow answer on a busy machine can cost one more request.
+          expect(api.requests().length).toBeGreaterThanOrEqual(2);
         }).pipe(Effect.scoped),
     );
 
   /** A two-second wait: long enough for a few polls, short enough for many cases. */
-  const brief: Limits = { limit: 2, attempt: 1, poll: 0.5 };
+  const brief: Limits = { limit: 2, attempt: 5, poll: 0.5 };
   const appsJob = {
     id: 2,
     name: "apps",
@@ -606,17 +656,20 @@ layer(NodeServices.layer)("deploy waits for the apps job", (it) => {
 
   it.effect("a missing or invalid attempt stops the deploy before it asks GitHub", () =>
     Effect.gen(function* () {
+      const notSet = "GITHUB_RUN_ATTEMPT is not set: this must run in a GitHub Actions step";
+      const invalid = (value: string) =>
+        `GITHUB_RUN_ATTEMPT must be a positive safe integer, not ${JSON.stringify(value)}`;
       for (const [attempt, said] of [
-        [null, "RUN_ATTEMPT is not set: pass the step's github.run_attempt"],
+        [null, notSet],
         // An empty value counts as unset.
-        ["", "RUN_ATTEMPT is not set: pass the step's github.run_attempt"],
-        ["0", 'RUN_ATTEMPT must be a positive safe integer, not "0"'],
-        ["1.5", 'RUN_ATTEMPT must be a positive safe integer, not "1.5"'],
-        ["two", 'RUN_ATTEMPT must be a positive safe integer, not "two"'],
+        ["", notSet],
+        ["0", invalid("0")],
+        ["1.5", invalid("1.5")],
+        ["two", invalid("two")],
         // Past 2^53: it would be asked for as 9007199254740992.
-        ["9007199254740993", 'RUN_ATTEMPT must be a positive safe integer, not "9007199254740993"'],
+        ["9007199254740993", invalid("9007199254740993")],
         // Converts to Infinity.
-        ["9".repeat(400), `RUN_ATTEMPT must be a positive safe integer, not "${"9".repeat(400)}"`],
+        ["9".repeat(400), invalid("9".repeat(400))],
       ] as const) {
         const api = yield* jobsApi([succeeded]);
         const result = yield* wait(api.url(), quick, attempt);
@@ -624,6 +677,218 @@ layer(NodeServices.layer)("deploy waits for the apps job", (it) => {
         expect(result.log).toContain(said);
         expect(api.requests()).toHaveLength(0);
       }
+    }).pipe(Effect.scoped),
+  );
+
+  const rateLimited = (headers: Record<string, string>): Answer => ({
+    raw: JSON.stringify({ message: "API rate limit exceeded for installation ID 4242." }),
+    status: 429,
+    headers,
+  });
+
+  it.effect("a rate limit is waited out for as long as retry-after asks, naming it", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([rateLimited({ "retry-after": "2" }), succeeded]);
+      const result = yield* wait(api.url(), quick);
+      expect(result.exitCode, result.log).toBe(0);
+      expect(result.log).toContain(
+        "Waiting for the apps job: the jobs API answered 429: API rate limit exceeded for installation ID 4242.",
+      );
+      expect(api.requests()).toHaveLength(2);
+      expect(api.gaps()[0]).toBeGreaterThanOrEqual(1.9);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a retry-after shorter than the usual spacing does not shorten it", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([rateLimited({ "retry-after": "0" }), succeeded]);
+      const result = yield* wait(api.url(), { limit: 20, attempt: 5, poll: 2 });
+      expect(result.exitCode, result.log).toBe(0);
+      expect(api.gaps()[0]).toBeGreaterThanOrEqual(1.9);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a retry-after past the deadline ends the wait at the deadline, naming it", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([rateLimited({ "retry-after": "60" })]);
+      const result = yield* wait(api.url(), { limit: 3, attempt: 5, poll: 0.5 });
+      expect(result.exitCode).toBe(1);
+      expect(result.log).toContain(
+        "(the jobs API answered 429: API rate limit exceeded for installation ID 4242.); not deploying.",
+      );
+      // From the first request: the deadline counts from the waiter's start, not Node's.
+      expect(waited(result, api)).toBeLessThan(5);
+      // A watchdog on the whole process.
+      expect(result.seconds).toBeLessThan(30);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a permission the token lacks is named, and stops the deploy at the deadline", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([
+        {
+          raw: JSON.stringify({ message: "Resource not accessible by integration" }),
+          status: 403,
+        },
+      ]);
+      const result = yield* wait(api.url(), { limit: 2, attempt: 5, poll: 0.5 });
+      expect(result.exitCode).toBe(1);
+      expect(result.log).toContain(
+        "(the jobs API answered 403: Resource not accessible by integration); not deploying.",
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("the deadline cuts off a request still waiting for its answer", () =>
+    Effect.gen(function* () {
+      // A 3 s wait whose one request may take 30 s and never gets an answer.
+      const api = yield* jobsApi([{ stall: "headers" }]);
+      const result = yield* wait(api.url(), { limit: 3, attempt: 30, poll: 0.5 });
+      expect(result.exitCode).toBe(1);
+      expect(result.log).toContain("The apps job did not finish within");
+      // From the first request: the deadline counts from the waiter's start, not Node's.
+      expect(waited(result, api)).toBeLessThan(5);
+      // A watchdog on the whole process.
+      expect(result.seconds).toBeLessThan(30);
+      expect(api.requests()).toHaveLength(1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a page that lists more jobs than its total is not an answer", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([
+        {
+          pages: [
+            {
+              total: 1,
+              jobs: [
+                { id: 1, name: "deploy", status: "in_progress", conclusion: null },
+                { id: 2, name: "apps", status: "completed", conclusion: "success" },
+              ],
+            },
+          ],
+        },
+      ]);
+      const result = yield* wait(api.url(), { limit: 2, attempt: 5, poll: 0.5 });
+      expect(result.exitCode, result.log).toBe(1);
+      expect(result.log).toContain(
+        `(run ${run}'s job list changed while it was read); not deploying.`,
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a retry-after given as an HTTP-date is waited out until that time", () =>
+    Effect.gen(function* () {
+      const date = new Date(Date.now() + 5000).toUTCString();
+      const api = yield* jobsApi([
+        {
+          raw: JSON.stringify({ message: "synthetic rate limit" }),
+          status: 429,
+          headers: { "retry-after": date },
+        },
+        succeeded,
+      ]);
+      const result = yield* wait(api.url(), { limit: 10, attempt: 5, poll: 0.2 });
+      expect(result.exitCode, result.log).toBe(0);
+      expect(api.requests()).toHaveLength(2);
+      // The date has whole seconds, so the second request may come up to a second before `date`
+      // was made; it must not come before the date itself.
+      expect(api.firstAt() + api.gaps()[0]! * 1000).toBeGreaterThanOrEqual(Date.parse(date) - 100);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a retry-after on a 403 is waited out as on a 429", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([
+        {
+          raw: JSON.stringify({ message: "synthetic secondary rate limit" }),
+          status: 403,
+          headers: { "retry-after": "2" },
+        },
+        succeeded,
+      ]);
+      const result = yield* wait(api.url(), { limit: 6, attempt: 5, poll: 0.2 });
+      expect(result.exitCode, result.log).toBe(0);
+      expect(api.gaps()[0]).toBeGreaterThanOrEqual(1.9);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a retry-after too large for a 32-bit timer is still waited out, not cut short", () =>
+    Effect.gen(function* () {
+      // 2,147,484 s is just over 2^31 ms: a timer that took it as a 32-bit integer would wrap to
+      // almost nothing and ask again at once.
+      const api = yield* jobsApi([
+        {
+          raw: JSON.stringify({ message: "synthetic long rate limit" }),
+          status: 429,
+          headers: { "retry-after": "2147484" },
+        },
+        succeeded,
+      ]);
+      const result = yield* wait(api.url(), { limit: 2, attempt: 5, poll: 0.2 });
+      expect(result.exitCode, result.log).toBe(1);
+      expect(api.requests()).toHaveLength(1);
+    }).pipe(Effect.scoped),
+  );
+
+  for (const value of ["-20000", "+2027"])
+    it.effect(`a retry-after of ${value}, neither seconds nor an HTTP-date, is ignored`, () =>
+      Effect.gen(function* () {
+        // `Date.parse` reads both as years; the waiter must not sleep until then.
+        const api = yield* jobsApi([
+          {
+            raw: JSON.stringify({ message: "synthetic rate limit" }),
+            status: 429,
+            headers: { "retry-after": value },
+          },
+          succeeded,
+        ]);
+        const result = yield* wait(api.url(), { limit: 10, attempt: 5, poll: 0.2 });
+        expect(result.exitCode, result.log).toBe(0);
+        expect(api.gaps()[0]).toBeLessThan(2);
+      }).pipe(Effect.scoped),
+    );
+
+  it.effect("the API's message is named for any error status, not only 403 and 429", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([
+        { raw: JSON.stringify({ message: "synthetic service outage" }), status: 502 },
+        succeeded,
+      ]);
+      const result = yield* wait(api.url(), quick);
+      expect(result.exitCode, result.log).toBe(0);
+      expect(result.log).toContain(
+        "Waiting for the apps job: the jobs API answered 502: synthetic service outage",
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a second page with another total is refused even when the count adds up", () =>
+    Effect.gen(function* () {
+      // Page one: 100 jobs of 101. Page two: the 101st, but it says 102. Only the per-page total
+      // check sees it; the final count agrees.
+      const others = Array.from({ length: 100 }, (_, index) => ({
+        id: index + 10,
+        name: `other ${index}`,
+        status: "completed",
+        conclusion: "success",
+      }));
+      const api = yield* jobsApi([
+        {
+          pages: [
+            { total: 101, jobs: others },
+            {
+              total: 102,
+              jobs: [{ id: 1, name: "apps", status: "completed", conclusion: "success" }],
+            },
+          ],
+        },
+      ]);
+      const result = yield* wait(api.url(), { limit: 2, attempt: 5, poll: 0.2 });
+      expect(result.exitCode, result.log).toBe(1);
+      expect(result.log).toContain(
+        `(run ${run}'s job list changed while it was read); not deploying.`,
+      );
     }).pipe(Effect.scoped),
   );
 

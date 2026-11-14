@@ -12,9 +12,9 @@
  * npm itself, as before.
  *
  * The waiting is `job-wait.ts`'s: it reads `GITHUB_API_URL`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`,
- * `RUN_ATTEMPT` (the step's `github.run_attempt`) and `GH_TOKEN` (the job's token with
- * `actions: read`), and takes only this attempt's jobs: a rerun of failed jobs sees the `apps` job that already succeeded, and a
- * rerun of all jobs waits for the new one. Doubt still there at the deadline stops the deploy with
+ * `GITHUB_RUN_ATTEMPT` (set by GitHub in every step) and `GH_TOKEN` (the job's token with
+ * `actions: read`), and takes only this attempt's jobs: a rerun of failed jobs sees the `apps` job
+ * that already succeeded, and a rerun of all jobs waits for the new one. Doubt still there at the deadline stops the deploy with
  * a message naming it; nothing but this attempt's successful `apps` job lets it go on.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
