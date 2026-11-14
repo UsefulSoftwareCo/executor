@@ -57,6 +57,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createHash } from "node:crypto";
 import { collectorChanged } from "./collector-inputs.ts";
 import { lanesFor, releaseSources } from "./release-lanes.ts";
+import { packagedEngineDependency } from "./packaged-engine.ts";
 import { savePathFiles } from "./save-path.ts";
 import { Target } from "./report-model.ts";
 import { exactly, split } from "./scenario-parts.ts";
@@ -624,7 +625,15 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
  * compared with main, not the pull request's base, so the top of a stack counts every layer.
  */
 const patchGuards: Readonly<Record<string, ReadonlyArray<string>>> = {
-  "@alchemy.run/cloudflare-runtime": ["mcp-protocol-versions.spec.ts"],
+  // Its workflow worker is the products' workflow engine: the local engine scenarios and the
+  // durability scenarios prove its behaviour from source, and the release-docker lane runs the
+  // image's packaged engine scenarios too (e2e/packaged-engine.ts).
+  "@alchemy.run/cloudflare-runtime": [
+    "mcp-protocol-versions.spec.ts",
+    "local-workflow-engine-steps.spec.ts",
+    "local-workflow-engine-memory.spec.ts",
+    "workflow-durability.spec.ts",
+  ],
   "@opencode-ai/codemode": [
     "mcp-catalog.spec.ts",
     "mcp-execute-concurrency.spec.ts",
@@ -664,7 +673,7 @@ const pinned = (
 const blobId = (bytes: Uint8Array) =>
   createHash("sha1").update(`blob ${bytes.byteLength}\0`).update(bytes).digest("hex");
 
-/** Guard spec files for every dependency this tree pins differently from main. */
+/** The guarded dependencies this tree pins or patches differently from main. */
 const guardedPatches = (mainManifest: string, mainPatches: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -683,11 +692,10 @@ const guardedPatches = (mainManifest: string, mainPatches: string) =>
     const headBlobs = new Map<string, string>();
     for (const path of Object.values(head.patchedDependencies ?? {}))
       if (yield* fs.exists(path)) headBlobs.set(path, blobId(yield* fs.readFile(path)));
-    return Object.entries(patchGuards).flatMap(([dependency, specs]) =>
-      pinned(main, dependency, (path) => mainBlobs.get(path)) ===
-      pinned(head, dependency, (path) => headBlobs.get(path))
-        ? []
-        : specs,
+    return Object.keys(patchGuards).filter(
+      (dependency) =>
+        pinned(main, dependency, (path) => mainBlobs.get(path)) !==
+        pinned(head, dependency, (path) => headBlobs.get(path)),
     );
   });
 
@@ -1237,7 +1245,7 @@ NodeRuntime.runMain(
     );
     // Main's pinned dependencies and patches: patch guard scenarios run when they differ. The
     // workflow names the default branch; without it there is no main to compare with.
-    const guarded =
+    const repinned =
       read === undefined || defaultBranch === ""
         ? []
         : yield* guardedPatches(
@@ -1254,6 +1262,7 @@ NodeRuntime.runMain(
               '.[] | "\\(.sha) \\(.name)"',
             ]),
           );
+    const guarded = [...new Set(repinned.flatMap((dependency) => patchGuards[dependency]!))];
     const guardedByFile =
       read === undefined || defaultBranch === ""
         ? []
@@ -1293,12 +1302,29 @@ NodeRuntime.runMain(
         ? undefined
         : compared === undefined || compared.length >= compareFileLimit
           ? { "release-docker": ["(every file)"], "release-local": ["(every file)"] }
-          : lanesFor(yield* releaseSources, compared);
+          : (({ "release-docker": docker, "release-local": local }) => ({
+              "release-docker": docker,
+              "release-local": local,
+            }))(lanesFor(yield* releaseSources, compared));
     // The collector's own job, from the same comparison: for a pull request everything since it
     // left main, so a stack's top layer covers every layer; for a push the pushed range. Without a
     // comparison, as on a manual run, or with one GitHub cut short, it runs.
     const collector =
       compared === undefined || compared.length >= compareFileLimit || collectorChanged(compared);
+    // The image's packaged engine scenarios, within the release-docker lane: when the comparison
+    // is cut short, or the pull request changes what makes that engine differ from the source
+    // lanes' (e2e/packaged-engine.ts) or re-pins or re-patches its runtime.
+    const engine =
+      read === undefined
+        ? undefined
+        : compared === undefined || compared.length >= compareFileLimit
+          ? ["(every file)"]
+          : [
+              ...lanesFor(yield* releaseSources, compared)["release-docker-engine"],
+              ...(repinned.includes(packagedEngineDependency)
+                ? [`${packagedEngineDependency}'s pin or patch`]
+                : []),
+            ];
     const files =
       named === undefined || "all" in named
         ? undefined
@@ -1414,6 +1440,7 @@ NodeRuntime.runMain(
       ...Object.entries(lanes ?? { "release-docker": [], "release-local": [] }).map(
         ([lane, matched]) => `${lane}=${matched.length > 0 ? "true" : ""}`,
       ),
+      `release-docker-engine=${(engine ?? []).length > 0 ? "true" : ""}`,
       `collector=${collector}`,
       // Line coverage is comparable only between runs of every scenario.
       `full=${files === undefined}`,
@@ -1475,6 +1502,13 @@ NodeRuntime.runMain(
               ? `${lane}: skipped, no file it reads changed.`
               : `${lane}: runs, for ${matched.slice(0, 5).join(", ")}${matched.length > 5 ? ` and ${matched.length - 5} more` : ""}.`,
           )),
+      ...(lanes === undefined || lanes["release-docker"].length === 0
+        ? []
+        : [
+            (engine ?? []).length === 0
+              ? "release-docker runs without the packaged engine's scenarios: nothing that makes the image's engine differ changed (e2e/packaged-engine.ts). Main's paced check runs them."
+              : `release-docker runs the packaged engine's scenarios, for ${engine!.slice(0, 5).join(", ")}.`,
+          ]),
       "",
       collector
         ? "collector-native: runs (e2e/collector-inputs.ts)."

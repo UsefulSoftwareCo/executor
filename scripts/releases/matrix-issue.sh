@@ -111,6 +111,15 @@ done
   if [[ -n "$green" ]]; then
     read -r green_sha green_url <<< "$green"
     echo "- Last green run before it: $green_url on $green_sha. The first failure came from a commit in $server_repo/compare/$green_sha...$first_sha"
+    # The commits in that range, oldest first, so whoever picks this up starts from a list.
+    commits="$(gh api "repos/$GITHUB_REPOSITORY/compare/$green_sha...$first_sha" \
+      --jq '.commits[] | "\(.sha[0:9]) \(.commit.message | split("\n")[0])"' 2> /dev/null | clean | head -50 || true)"
+    if [[ -n "$commits" ]]; then
+      echo
+      echo "Commits since the last green run, oldest first:"
+      echo
+      sed 's/^/- /' <<< "$commits"
+    fi
   else
     echo "- The check or build on main before the first failure did not pass, or is not among the last 100 finished runs."
   fi
@@ -121,6 +130,8 @@ done
   echo
   echo "<!-- first-red: $first_sha $first_url -->"
 } > "$RUNNER_TEMP/issue.md"
+# The run's own summary says the same, so the failed run names the commits too.
+if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then cat "$RUNNER_TEMP/issue.md" >> "$GITHUB_STEP_SUMMARY"; fi
 
 if [[ -n "$issue" ]]; then
   gh issue edit "$issue" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/issue.md"

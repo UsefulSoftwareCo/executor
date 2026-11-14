@@ -1398,6 +1398,12 @@ const issueWorld = (input: {
     readonly log: string;
   }>;
   readonly issue?: { readonly number: number; readonly body: string };
+  /** The commits GitHub's compare lists from the last green run to the first failure. */
+  readonly compare?: {
+    readonly base: string;
+    readonly head: string;
+    readonly commits: ReadonlyArray<{ readonly sha: string; readonly message: string }>;
+  };
 }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -1457,6 +1463,13 @@ const issueWorld = (input: {
         ],
       });
     }
+    if (input.compare !== undefined)
+      yield* save(`repos/${repository}/compare/${input.compare.base}...${input.compare.head}`, {
+        commits: input.compare.commits.map((commit) => ({
+          sha: commit.sha,
+          commit: { message: commit.message },
+        })),
+      });
     const failed = input.failed ?? [];
     yield* save(`${api}/runs/${self}/attempts/1/jobs?per_page=100`, {
       jobs: failed.map((job) => ({
@@ -1488,6 +1501,7 @@ const issueWorld = (input: {
       GITHUB_RUN_ID: String(self),
       GITHUB_RUN_ATTEMPT: "1",
       GITHUB_SHA: "c".repeat(40),
+      GITHUB_STEP_SUMMARY: path.join(github, "summary.md"),
       RUNNER_TEMP: root,
     });
     const read = (name: string) =>
@@ -1502,6 +1516,7 @@ const issueWorld = (input: {
       ...result,
       calls: (yield* read("calls"))!.split("\n").filter((line) => line !== ""),
       created: yield* read("created.md"),
+      summary: yield* read("summary.md"),
       edited:
         input.issue === undefined ? undefined : yield* read(`edited-${input.issue.number}.md`),
     };
@@ -1565,6 +1580,33 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it
         expect(line.match(/[`@]/g), line).toEqual(["`", "`"]);
       expect(body).toContain(`<!-- first-red: ${"c".repeat(40)} ${runUrl(50)} -->`);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a failure names the commits since the last green run, in the issue and the run's summary",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* issueWorld({
+          needs: { ...passed, docker: "failure" },
+          runs: [{ id: 30, created: 3, sha: "a".repeat(40) }],
+          failed: [{ id: 7002, name: "docker (amd64)", log: "" }],
+          compare: {
+            base: "a".repeat(40),
+            head: "c".repeat(40),
+            commits: [
+              { sha: "1".repeat(40), message: "Pin the `engine` for @someone\n\nBody text" },
+              { sha: "2".repeat(40), message: "Package the engine's runtime" },
+            ],
+          },
+        });
+        expect(result.exitCode, result.output).toBe(0);
+        for (const text of [result.created!, result.summary!]) {
+          expect(text).toContain("Commits since the last green run, oldest first:");
+          expect(text).toContain(`- ${"1".repeat(9)} Pin the engine for someone`);
+          expect(text).toContain(`- ${"2".repeat(9)} Package the engine's runtime`);
+          expect(text).not.toContain("Body text");
+        }
+      }).pipe(Effect.scoped),
   );
 
   it.effect("a later failure rewrites the open issue and keeps its first failure", () =>

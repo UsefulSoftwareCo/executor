@@ -12,6 +12,9 @@ import {
   recoveryParts,
 } from "./config.ts";
 
+/** The job kinds a build run can be narrowed to (RELEASE_JOBS). */
+const narrowableJobs = ["local", "checks", "cli", "recovery", "docker"] as const;
+
 NodeRuntime.runMain(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -20,6 +23,39 @@ NodeRuntime.runMain(
       ["build", "check", "beta", "latest"],
       "RELEASE_CHANNEL",
     );
+    // A build run may be narrowed to some targets and job kinds, to prove one job on one platform
+    // without building and testing the rest. Checks and publications always run everything: a
+    // check is main's record that the matrix is green, and a publication tests what it publishes.
+    const list = (variable: string) =>
+      Config.String(variable).pipe(
+        Config.withDefault(""),
+        Config.map((value) =>
+          value
+            .split(",")
+            .map((entry) => entry.trim())
+            .filter((entry) => entry !== ""),
+        ),
+      );
+    const onlyTargets = yield* list("RELEASE_TARGETS");
+    const onlyJobs = yield* list("RELEASE_JOBS");
+    const narrowed = onlyTargets.length > 0 || onlyJobs.length > 0;
+    if (narrowed && requested !== "build")
+      return yield* Effect.die(
+        new Error(
+          `Only a build run can be narrowed to targets or jobs; a ${requested} run runs everything.`,
+        ),
+      );
+    const targetNames = platforms.map((target) => `${target.platform}-${target.arch}`);
+    const unknownTargets = onlyTargets.filter((name) => !targetNames.includes(name));
+    const unknownJobs = onlyJobs.filter(
+      (name) => !(narrowableJobs as ReadonlyArray<string>).includes(name),
+    );
+    if (unknownTargets.length + unknownJobs.length > 0)
+      return yield* Effect.die(
+        new Error(
+          `Unknown ${[...unknownTargets, ...unknownJobs].join(", ")}. Targets: ${targetNames.join(", ")}. Jobs: ${narrowableJobs.join(", ")}.`,
+        ),
+      );
     if (requested !== "build" && requested !== "check") {
       const ref = yield* Config.String("GITHUB_REF");
       if (ref !== "refs/heads/main" || requested !== release.channel)
@@ -28,13 +64,18 @@ NodeRuntime.runMain(
         );
     }
     // A notarizing run signs the desktop app with the company's Developer ID, has Apple notarize
-    // it, and leaves it downloadable as an artifact. Only publishing runs did that before, and only
-    // from main, so only main may ask for it. (Any branch's run signs the CLI with Developer ID, as
-    // before; that is the release environment's to restrict.)
+    // it, and leaves it downloadable as an artifact. Only main may ask for it. Only main's runs
+    // sign the CLI as well: a build from another branch uses no release credentials.
     const notarizeRequested =
       (yield* Config.Literals(["true", "false"], "RELEASE_NOTARIZE").pipe(
         Config.withDefault("false"),
       )) === "true";
+    if (notarizeRequested && narrowed)
+      return yield* Effect.die(
+        new Error(
+          "A notarizing build tests the notarized app with every target: do not narrow it.",
+        ),
+      );
     if (notarizeRequested && (yield* Config.String("GITHUB_REF")) !== "refs/heads/main")
       return yield* Effect.die(
         new Error("Notarize from main: it signs and notarizes the desktop app."),
@@ -46,12 +87,21 @@ NodeRuntime.runMain(
     // Windows and macOS packaging run in the publishing runs, which test every target before
     // they publish, and in manual build runs. CI's release lanes skip darwin too.
     const event = yield* Config.String("GITHUB_EVENT_NAME");
-    const targets =
+    const targets = (
       requested === "check"
         ? platforms.filter((target) => target.platform === "linux" && target.arch === "x64")
         : event === "pull_request"
           ? platforms.filter((target) => target.platform !== "darwin")
-          : platforms;
+          : platforms
+    ).filter(
+      (target) =>
+        onlyTargets.length === 0 || onlyTargets.includes(`${target.platform}-${target.arch}`),
+    );
+    /** Whether this run runs a job kind; a kind with no target left runs nothing either. */
+    const runs = (job: (typeof narrowableJobs)[number]) =>
+      onlyJobs.length === 0 || onlyJobs.includes(job);
+    const ifRuns = <A>(job: (typeof narrowableJobs)[number], entries: ReadonlyArray<A>) =>
+      runs(job) ? entries : [];
     // Each job's matrix entry names the runner it runs on: `cli` overrides the platform's runner.
     const entry = (target: (typeof targets)[number]) => {
       const { cli, ...fields } = target;
@@ -107,12 +157,19 @@ NodeRuntime.runMain(
       // macOS arm64 builds, signs and notarizes the app the notarized recovery parts test, so it
       // is a job of its own (local-macos-arm64): those parts wait for it alone, whatever the
       // other targets' local legs are still doing.
-      local_matrix: JSON.stringify({ include: matrix.filter((entry) => !macosArm64(entry)) }),
-      local_macos_arm64_matrix: JSON.stringify({ include: matrix.filter(macosArm64) }),
-      macos_arm64: matrix.some(macosArm64) ? "true" : "false",
+      local_matrix: JSON.stringify({
+        include: ifRuns(
+          "local",
+          matrix.filter((entry) => !macosArm64(entry)),
+        ),
+      }),
+      local_macos_arm64_matrix: JSON.stringify({
+        include: ifRuns("local", matrix.filter(macosArm64)),
+      }),
+      macos_arm64: ifRuns("local", matrix).some(macosArm64) ? "true" : "false",
       // Every part of the installed CLI suite runs on its own runner (e2e/run.ts --part).
       cli_matrix: JSON.stringify({
-        include: targets.flatMap((target) =>
+        include: ifRuns("cli", targets).flatMap((target) =>
           target.cli === undefined
             ? []
             : Array.from({ length: target.cli.parts }, (_, index) => ({
@@ -124,29 +181,67 @@ NodeRuntime.runMain(
         ),
       }),
       // The launcher, install script and credential store checks, beside the packaging in `local`.
-      checks_matrix: JSON.stringify({ include: matrix }),
+      checks_matrix: JSON.stringify({ include: ifRuns("checks", matrix) }),
       // Each part of the desktop crash recovery scenarios (e2e/desktop-recovery.config.ts). A
       // run that notarizes tests the macOS app it notarizes, so its macOS parts wait for `local` and
       // run in `recovery-notarized`; every other part builds an unpacked app of its own.
       recovery_matrix: JSON.stringify({
-        include: recovery.filter((part) => !(notarizing && part.platform === "darwin")),
+        include: ifRuns(
+          "recovery",
+          recovery.filter((part) => !(notarizing && part.platform === "darwin")),
+        ),
       }),
       notarized_recovery_matrix: JSON.stringify({
         include: recovery.filter((part) => notarizing && part.platform === "darwin"),
       }),
       // The image builds and its scenarios run on each Linux platform's `local` runner size.
       docker_matrix: JSON.stringify({
-        include: platforms
+        include: ifRuns("docker", platforms)
           .filter((target) => target.platform === "linux")
+          .filter(
+            (target) =>
+              onlyTargets.length === 0 || onlyTargets.includes(`${target.platform}-${target.arch}`),
+          )
           .map((target) => ({
             runner: target.runner,
             arch: target.arch === "x64" ? "amd64" : "arm64",
           })),
       }),
     };
+    // Each kind runs when its matrix has an entry: GitHub refuses an empty matrix, so its job is
+    // skipped instead, and the releases job expects exactly these.
+    const included = (key: keyof typeof values) =>
+      (JSON.parse(values[key]) as { include: ReadonlyArray<unknown> }).include.length > 0
+        ? "true"
+        : "false";
+    const kinds = {
+      narrowed: narrowed ? "true" : "false",
+      run_local: included("local_matrix"),
+      run_checks: included("checks_matrix"),
+      run_cli: included("cli_matrix"),
+      run_recovery: included("recovery_matrix"),
+      run_docker: included("docker_matrix"),
+    };
+    // A narrowed run must still run something, and a whole-matrix run, a check or a publication
+    // must run every kind: one left empty would pass untested.
+    const empty = Object.entries(kinds)
+      .filter(([key, value]) => key.startsWith("run_") && value !== "true")
+      .map(([key]) => key.slice("run_".length));
+    if (narrowed && empty.length === Object.keys(kinds).length - 1)
+      return yield* Effect.die(
+        new Error(
+          `This selection is empty: no ${onlyJobs.join(", ") || "job"} runs on ${onlyTargets.join(", ") || "any target"}. Name a job the targets have.`,
+        ),
+      );
+    if (!narrowed && empty.length > 0)
+      return yield* Effect.die(
+        new Error(
+          `A ${requested} run must run every job kind, but no target has ${empty.join(", ")}. Check scripts/releases/config.ts.`,
+        ),
+      );
     yield* fs.writeFileString(
       output,
-      Object.entries(values)
+      Object.entries({ ...values, ...kinds })
         .map(([key, value]) => `${key}=${value}\n`)
         .join(""),
       { flag: "a" },

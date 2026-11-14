@@ -408,8 +408,9 @@ base with `main` (`e2e/release-lanes.ts`): `release-docker` builds the self-host
 image on amd64 and runs the released-image scenarios when the image's source (the
 workspace packages it is built from), its build inputs or a file that suite imports
 changed, and `release-local` packages linux-x64 and runs its install, launcher,
-lockdown, credential store and desktop startup checks when the CLI's or the desktop
-app's source, their build inputs or a packaging script changed. The required `checks / e2e` check covers both, so wait
+lockdown and credential store checks (`release-local-cli`) and its desktop startup
+checks (`release-local-desktop`) as two jobs when the CLI's or the desktop app's
+source, their build inputs or a packaging script changed. The required `checks / e2e` check covers both, so wait
 for CI only (`ci-wait --pr N --workflow CI`); a lower stack layer runs neither.
 
 After merge, the "Release check" workflow decides on every push to `main`, and

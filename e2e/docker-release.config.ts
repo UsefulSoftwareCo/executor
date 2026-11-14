@@ -1,4 +1,9 @@
 import { defineConfig } from "vitest/config";
+import {
+  packagedEngineSpecs,
+  packagedEngineUnchanged,
+  packagedEngineVariable,
+} from "./packaged-engine.ts";
 
 /**
  * The suite runs its files side by side and lasts as long as its longest file, the workflow idle
@@ -42,6 +47,12 @@ export default defineConfig({
       "e2e/tests/docker-oauth-renewal.spec.ts",
       "e2e/tests/workflow-engine.spec.ts",
     ],
+    // CI's release-docker lane leaves out the packaged engine's scenarios on a pull request that
+    // changes none of their inputs (e2e/packaged-engine.ts); every other run includes them.
+    exclude:
+      process.env[packagedEngineVariable] === packagedEngineUnchanged
+        ? [...packagedEngineSpecs]
+        : [],
     testTimeout: 180_000,
     // Every Docker network the scenarios use exists before the first starts; see
     // e2e/support/release-networks.ts.
