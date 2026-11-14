@@ -9,8 +9,8 @@
  * - `mcp.` and `api.` answer only from their own routers, so any other path there is the
  *   router's 404, as for an unknown path anywhere. `api.` also answers MCP resource discovery,
  *   naming the canonical MCP resource on `mcp.`, so the host the CLI signs in to names it.
- * - The edge (`executor.sh`) answers only the requests v1 forwards (`servedOnEdge`), from its
- *   own router.
+ * - The edge (`executor.sh`) answers from its own router: today only the requests v1 forwards
+ *   reach it, and once v1 shuts down everything there (`notes/v1-shutdown.md`).
  * - The deployment origin (`v2.executor.sh`) and any other host keep the full product, except
  *   browser pages, which redirect permanently to the same path on the browser origin, and site
  *   pages, which redirect permanently to the edge. Its homepage goes to the dashboard for a
@@ -27,7 +27,6 @@ import { Effect, Option } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { CloudHosts, HostRole, RoleHosts } from "../infrastructure/stage.ts";
 import { isBrowserPage, isMcpPath } from "../contracts/browser-pages.ts";
-import { servedOnEdge } from "../contracts/edge-paths.ts";
 import { isSitePage } from "../contracts/site-paths.ts";
 
 /** The host of the URL a request arrived at; never a forwarding header. */
@@ -144,7 +143,8 @@ export const withRoleHosts =
             case "api":
               return yield* handlers.api;
             case "edge":
-              return servedOnEdge(url) ? yield* handlers.edge : notFound;
+              // The edge's own router answers every path it serves and 404s the rest.
+              return yield* handlers.edge;
             case "deployment":
               if (page && isSitePage(pathname)) return yield* redirectTo(edge, 308);
               if (page && pathname === "/" && !hasSession(request.headers))

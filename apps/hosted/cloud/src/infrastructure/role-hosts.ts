@@ -14,7 +14,7 @@ import { Effect, Option } from "effect";
 import { cloudRoleHosts, customDomain, hostRoles, testStage, type RoleHosts } from "./stage.ts";
 
 /** The role hosts of a deployed stage, with the zone that serves them. */
-const deployedRoleHosts = Effect.gen(function* () {
+export const deployedRoleHosts = Effect.gen(function* () {
   const roles = yield* cloudRoleHosts.pipe(Effect.orDie);
   if (Option.isNone(roles)) return Option.none<RoleHosts & { readonly zone: string }>();
   const zone = roles.value.zone;
@@ -48,18 +48,6 @@ export const roleHostRoutes = Effect.gen(function* () {
 export const testStageEdge = Effect.gen(function* () {
   if (Option.isNone(yield* testStage.pipe(Effect.orDie))) return Option.none<string>();
   return Option.map(yield* cloudRoleHosts.pipe(Effect.orDie), (roles) => roles.edge);
-});
-
-/**
- * The forwarding Worker's `routes` prop: its edge host, in the stage's zone. Only test stages
- * deploy the Worker; anywhere else it has no route.
- */
-export const testStageEdgeRoutes = Effect.gen(function* () {
-  const edge = yield* testStageEdge;
-  if (Option.isNone(edge)) return {};
-  const roles = yield* deployedRoleHosts;
-  if (Option.isNone(roles)) return {};
-  return { routes: [{ pattern: `${new URL(edge.value).hostname}/*`, zoneName: roles.value.zone }] };
 });
 
 /** A test stage's proxied records for its role hosts and edge; production's are in `alchemy.dns.ts`. */

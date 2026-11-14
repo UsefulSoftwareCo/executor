@@ -14,6 +14,10 @@ import { stackState } from "./src/infrastructure/state.ts";
 import { productionSocialCallbackOrigin } from "./src/infrastructure/deploy-settings.ts";
 import { BrowserOrigin, browserOriginSetting } from "./src/infrastructure/stage.ts";
 import {
+  type ExecutorShOwner,
+  executorShSetting,
+} from "./src/infrastructure/executor-sh-setting.ts";
+import {
   CheckSince,
   missingV1PlanetscaleDatabase,
   missingV1MembershipCheckSince,
@@ -281,6 +285,19 @@ export default Alchemy.Stack(
       ...target,
       name: "CLOUD_BROWSER_ORIGIN",
       value: browserOrigin,
+      environment: production,
+    }).pipe(retain());
+
+    /**
+     * Who serves `executor.sh` (`executor-sh.ts`, `notes/v1-shutdown.md`): `v1` (unset), or v2's
+     * gateway by the route (`route`) or by the route and the custom domain (`v2`). `.env.ci.op`
+     * sets it.
+     */
+    const executorSh: ExecutorShOwner = yield* executorShSetting;
+    yield* GitHub.Variable("production-CLOUD_EXECUTOR_SH", {
+      ...target,
+      name: "CLOUD_EXECUTOR_SH",
+      value: executorSh,
       environment: production,
     }).pipe(retain());
 

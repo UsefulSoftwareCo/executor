@@ -63,11 +63,15 @@ layer(TestLive, { excludeTestServices: true })("Cloud site on the edge", (it) =>
         expect(skills.status).toBe(200);
         // Demos live under `/experiments`, which v1 forwards; `/demo` is a v1 organization.
         expect((yield* rawRequest(`${edge}/experiments/demo/posthog`, html)).status).toBe(200);
-        // Pages v1 keeps are not served for the edge: its sign-in and its Google OAuth
-        // verification pages. (Static files reach a local Cloud's assets on any host, so
-        // `/demo` and the favicons are held to v1 by the contract v1 tests, not here.)
-        for (const path of ["/login", "/privacy", "/terms", "/google-oauth"])
-          expect((yield* rawRequest(`${edge}${path}`, html)).status, path).toBe(404);
+        // The pages v1 keeps until it shuts down: its sign-in opens v2's sign-in, and its Google
+        // OAuth verification pages are the site's own (`cloud-v1-shutdown.spec.ts`). v1's edge
+        // forwards none of them before the switch. (Static files reach a local Cloud's assets on
+        // any host, so `/demo` and the favicons are held to v1 by the contract v1 tests, not here.)
+        const signIn = yield* rawRequest(`${edge}/login`, html);
+        expect(signIn.status).toBe(302);
+        expect(signIn.location).toBe(`${app}/login`);
+        for (const path of ["/privacy", "/terms", "/google-oauth"])
+          expect((yield* rawRequest(`${edge}${path}`, html)).status, path).toBe(200);
         // An old demo link on the deployment origin finds the demo's new path.
         const demo = yield* rawRequest(`${deployment}/demo/posthog`, html);
         expect(demo.status).toBe(301);

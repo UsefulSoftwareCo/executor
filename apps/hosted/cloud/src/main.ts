@@ -67,6 +67,8 @@ import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { cloudAuth } from "./infrastructure/auth.ts";
 import { cloudAccountCallback } from "./implementation/account-callback.ts";
 import { v1HandoffPath } from "./implementation/v1-session-handoff.ts";
+import { legacyMcp, legacyProtectedResource } from "./implementation/v1-legacy-mcp.ts";
+import { invocationSql } from "./infrastructure/invocation-database.ts";
 import { cloudOnboarding, cloudV1ImportSettings } from "./infrastructure/onboarding.ts";
 import {
   V1ImportConfiguration,
@@ -107,6 +109,14 @@ import { browserReturnTo } from "@executor-js/hosted-server/browser/contracts";
 import { HttpServerRequest } from "effect/http";
 import { homepage, staticDocument } from "./implementation/homepage.ts";
 import { sitePageRoutes } from "./contracts/site-paths.ts";
+import {
+  accountCallback,
+  apiGoneOnEdge,
+  edgeFallback,
+  v1ClientIdMetadata,
+  v1SignIn,
+  v1SignUp,
+} from "./implementation/v1-edge.ts";
 import { withNotFoundDocument, notFoundDocument } from "./implementation/not-found.ts";
 import { openAiAppsChallenge } from "./implementation/openai-apps-challenge.ts";
 import {
@@ -546,6 +556,31 @@ export default Api.make(
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource", mcpProtectedResource),
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", mcpProtectedResource),
     ).pipe(HttpRouter.provideRequest(auth.mcpIdentity));
+    // v1's MCP URLs and their discovery, which the edge serves once v1 shuts down
+    // (`notes/v1-shutdown.md`): each resolves its v1 organization and toolkit, if it names them,
+    // and is served as v2's MCP.
+    const withSql = yield* invocationSql;
+    const legacy = legacyMcp(withSql, mcp.http);
+    const legacyDiscovery = legacyProtectedResource(withSql);
+    const legacyMcpRoutes = Layer.mergeAll(
+      HttpRouter.add("*", "/mcp", legacy),
+      HttpRouter.add("GET", mcpWhoamiPath, mcpWhoami),
+      HttpRouter.add("*", "/mcp/toolkits/:toolkit", legacy),
+      HttpRouter.add("*", "/:selector/mcp", legacy),
+      HttpRouter.add("*", "/:selector/mcp/toolkits/:toolkit", legacy),
+      HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", legacyDiscovery),
+      HttpRouter.add(
+        "GET",
+        "/.well-known/oauth-protected-resource/mcp/toolkits/:toolkit",
+        legacyDiscovery,
+      ),
+      HttpRouter.add("GET", "/.well-known/oauth-protected-resource/:selector/mcp", legacyDiscovery),
+      HttpRouter.add(
+        "GET",
+        "/.well-known/oauth-protected-resource/:selector/mcp/toolkits/:toolkit",
+        legacyDiscovery,
+      ),
+    ).pipe(HttpRouter.provideRequest(auth.mcpIdentity));
     const apiDiscoveryRoutes = Layer.mergeAll(
       HttpRouter.add("GET", "/api", apiChallenge),
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource/api", apiProtectedResource),
@@ -742,13 +777,14 @@ export default Api.make(
     // sign-in's state cookie is.
     const edgeHost = yield* Layer.mergeAll(
       authorizationServerRoutes,
+      legacyMcpRoutes,
       HttpRouter.add("GET", "/api/auth/callback/:provider", redirectTo(auth.origin, 302)),
       // A connected-account sign-in's return opens the browser origin's callback page, or a
-      // stage's when the sign-in is the stage's.
+      // stage's when the sign-in is the stage's. One v1 started finds a page saying v1 is gone.
       HttpRouter.add(
         "GET",
         "/api/oauth/callback",
-        cloudAccountCallback(auth.returnsStageAccountCallback),
+        accountCallback(auth.origin, cloudAccountCallback(auth.returnsStageAccountCallback)),
       ).pipe(HttpRouter.provideRequest(auth.identity)),
       // The OAuth client metadata document sign-ins start with; its callback is the edge's.
       HttpRouter.add("GET", clientMetadataDocumentPath, clientMetadataDocument(clientMetadata)),
@@ -758,6 +794,30 @@ export default Api.make(
       siteRoutes,
       siteTelemetryRoutes,
       publishedSkillRoutes(authoring),
+      // What v1 served on `executor.sh`, which the edge serves once v1 shuts down
+      // (`notes/v1-shutdown.md`): its client ID metadata documents, its sign-in
+      // and dashboard paths, the redirects v1's edge made, and 410 for the rest of its API.
+      HttpRouter.addAll([
+        HttpRouter.route("GET", "/api/oauth/client-id-metadata.json", v1ClientIdMetadata),
+        HttpRouter.route("GET", "/api/oauth/client-id-metadata/*", v1ClientIdMetadata),
+        HttpRouter.route("GET", "/login", v1SignIn(auth.origin)),
+        ...(["login", "callback", "logout", "me"] as const).map((path) =>
+          HttpRouter.route("*", `/api/auth/${path}`, v1SignIn(auth.origin)),
+        ),
+        HttpRouter.route("GET", "/sign-up", v1SignUp(auth.origin)),
+        HttpRouter.route("GET", "/signup", v1SignUp(auth.origin)),
+        HttpRouter.route("GET", "/org/*", redirectTo(auth.origin, 308)),
+        HttpRouter.route(
+          "*",
+          "/*",
+          edgeFallback({
+            withSql,
+            browser: auth.origin,
+            api: `${auth.resourceOrigins.api[0]}/api`,
+            notFound: notFoundDocument,
+          }),
+        ),
+      ]),
     ).pipe(
       Layer.provide(HttpServer.layerServices),
       toRequestHttpEffect,
@@ -766,7 +826,11 @@ export default Api.make(
     const roleHosts = withRoleHosts(
       auth.hosts,
       (headers) => hasSessionCookie(new Headers(headers), auth.cookiePrefix),
-      { mcp: mcpHost, api: apiHost, edge: edgeHost },
+      {
+        mcp: mcpHost,
+        api: apiHost,
+        edge: edgeHost.pipe(apiGoneOnEdge(`${auth.resourceOrigins.api[0]}/api`)),
+      },
     );
     return {
       fetch: handle.pipe(

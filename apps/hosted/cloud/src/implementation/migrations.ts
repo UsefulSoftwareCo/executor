@@ -11,6 +11,8 @@ import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { cloudAuthSetup } from "./auth-provisioning.ts";
 import { migrateAppDomainRecords } from "./app-domain-records.ts";
+import { migrateV1CapturedApiKeys } from "./v1-captured-api-keys.ts";
+import { migrateV1LegacyUrls } from "./v1-legacy-urls.ts";
 
 /** Additive cloud tables; existing organizations and memberships are never changed. */
 export const migrateOnboarding = Effect.gen(function* () {
@@ -314,6 +316,8 @@ export const migrateCloudDatabase = Effect.scoped(
         "12_v1_import_displacement": migrateV1ImportDisplacement,
         "13_v1_import_into": migrateV1ImportInto,
         "14_v1_import_into_integrations": migrateV1ImportIntoIntegrations,
+        "15_v1_legacy_urls": migrateV1LegacyUrls,
+        "16_v1_captured_api_keys": migrateV1CapturedApiKeys,
       });
     });
     yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(

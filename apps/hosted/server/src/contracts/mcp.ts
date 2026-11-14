@@ -64,6 +64,7 @@ export const McpForbiddenReason = Schema.Literals([
   "organization_required",
   "organization_mismatch",
   "membership",
+  "toolkit",
 ]);
 export type McpForbiddenReason = typeof McpForbiddenReason.Type;
 const forbidden: { readonly [Reason in McpForbiddenReason]: ErrorPresentation } = {
@@ -97,6 +98,16 @@ const forbidden: { readonly [Reason in McpForbiddenReason]: ErrorPresentation } 
         "Check the organization name, and that this account still belongs to it. Copy the fix prompt into your agent to investigate the missing access.",
       instructions:
         "Check which account the credential belongs to and which organization the MCP URL, X-Executor-Organization header or connection names. Correct a wrong organization, or have an organization owner restore the account's membership. Do not bypass authorization or assume changing app code can grant access.",
+    },
+  },
+  toolkit: {
+    title: "Toolkit not available",
+    description:
+      "This Executor v1 toolkit URL names no toolkit of this account's in the organization, or the account's copy of it was removed.",
+    recovery: {
+      action: "Use the organization's MCP URL, or a connection made in Executor, then retry.",
+      instructions:
+        "Executor v1's toolkits became each member's own MCP connection when the organization moved. Check that this account was a member who had the toolkit, and that its connection still exists under Connections. Otherwise connect at the organization's MCP URL and verify that tools are listed. Do not bypass authorization.",
     },
   },
 };

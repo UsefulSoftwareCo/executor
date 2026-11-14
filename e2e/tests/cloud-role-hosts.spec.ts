@@ -157,18 +157,20 @@ layer(HostedLive, { excludeTestServices: true })("Cloud role hosts", (it) => {
           [app, "/mcp", mcpPost(key)],
           [app, `/org/${actors.organization.slug}/mcp`, mcpPost(key)],
           [app, "/.well-known/oauth-protected-resource/mcp"],
-          [edge, "/mcp", mcpPost(key)],
-          [edge, "/login"],
-          [edge, inventory, bearer(key)],
-          [edge, "/api/auth/get-session"],
-          [edge, "/api/auth/oauth2/token", { method: "POST" }],
-          [edge, "/.well-known/oauth-protected-resource/mcp"],
-          [edge, "/api/auth/callback"],
-          // No OpenID configuration exists, so the edge forwards none.
-          [edge, "/api/auth/.well-known/openid-configuration"],
         ];
         for (const [at, path, init] of refused)
           expect((yield* rawRequest(`${at}${path}`, init)).status, `${at}${path}`).toBe(404);
+        // The edge serves none of v2's API or Better Auth's endpoints: under `/api` it answers as
+        // v1's API, gone. No OpenID configuration exists either. What else it serves in v1's place
+        // once v1 shuts down is `cloud-v1-shutdown.spec.ts`'s.
+        const edgeRefused: ReadonlyArray<readonly [string, RequestInit?]> = [
+          [inventory, bearer(key)],
+          ["/api/auth/get-session"],
+          ["/api/auth/oauth2/token", { method: "POST" }],
+          ["/api/auth/.well-known/openid-configuration"],
+        ];
+        for (const [path, init] of edgeRefused)
+          expect((yield* rawRequest(`${edge}${path}`, init)).status, `${edge}${path}`).toBe(410);
         // The deployment origin keeps MCP, the API and Better Auth's client endpoints.
         expect((yield* rawRequest(`${origin}/mcp`, mcpPost())).status).toBe(401);
         expect((yield* rawRequest(`${origin}/api/auth/get-session`)).status).toBe(200);

@@ -261,11 +261,14 @@ const resourceOriginsFor = (
 ): ResourceOrigins => {
   if (Option.isNone(roles)) return singleResourceOrigin(deployment);
   const { mcp, api } = roles.value.origins;
+  // The edge serves v1's MCP URLs, each its own resource, once v1 shuts down
+  // (`notes/v1-shutdown.md`). Before then v1 owns those paths and its edge never forwards them.
+  const legacyMcp = roles.value.edge;
   switch (canonical) {
     case "deployment":
-      return { mcp: [deployment, mcp], api: [deployment, api] };
+      return { mcp: [deployment, mcp], api: [deployment, api], legacyMcp };
     case "role":
-      return { mcp: [mcp, deployment], api: [api, deployment] };
+      return { mcp: [mcp, deployment], api: [api, deployment], legacyMcp };
   }
 };
 

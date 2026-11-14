@@ -50,6 +50,9 @@ import { cloudAuthRateLimit } from "./stage.ts";
 import { AuthDatabase, appSessionsPerCall, boundAuthAdapter } from "./auth-database.ts";
 import { invocationSql } from "./invocation-database.ts";
 import { mcpAuthentication } from "./mcp-auth.ts";
+import { v1CapturedApiKeys } from "../implementation/v1-captured-api-keys.ts";
+import { cloudV1WorkOSKeys } from "./v1-api-key-settings.ts";
+import { resolveLegacyResource } from "../implementation/v1-legacy-mcp.ts";
 import { authAudit } from "../implementation/auth-audit.ts";
 
 /** Bind during initialization; database calls capture the current invocation only. */
@@ -67,6 +70,8 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
     const v1Forward = yield* v1McpForwardSecret;
     const v1Handoff = yield* v1SessionHandoffSecret;
     const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive));
+    // Statements on the client this invocation shares with Better Auth and the executor.
+    const withSql = yield* invocationSql;
     // Better Auth invokes Promise callbacks. Carry the calling request's scope,
     // bindings and cancellation through that boundary, isolated per invocation.
     const callbacks = new AsyncLocalStorage<{
@@ -140,6 +145,9 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
           ),
         ),
       {
+        // A grant for one of v1's MCP URLs is bound to the URL's organization and toolkit.
+        resolveResource: (input) =>
+          runCallback(withSql(resolveLegacyResource(settings.resourceOrigins, input))),
         onRefreshRejected: observation.refreshRejected,
         // A person approved a new agent, by consent or by a device's code: the agent can connect.
         onGrantCreated: (grant) =>
@@ -219,8 +227,7 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       Effect.provide(RuntimeContext.phantom),
     );
     // Bearer authentication reads its rows in one statement on the client this invocation
-    // shares with Better Auth and the executor.
-    const withSql = yield* invocationSql;
+    // shares with Better Auth and the executor (`withSql`, above).
     const identity = Layer.effect(
       SessionAuthentication,
       Effect.gen(function* () {
@@ -284,14 +291,16 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       resourceOrigins: settings.resourceOrigins,
       issuer: settings.issuer,
     };
-    const mcpIdentity = mcpAuthentication(origins, bound, withSql, v1Forward);
+    // Executor v1's WorkOS API keys, on every MCP and API route (`notes/v1-shutdown.md`).
+    const v1Keys = v1CapturedApiKeys(yield* cloudV1WorkOSKeys.pipe(Effect.orDie));
+    const mcpIdentity = mcpAuthentication(origins, bound, withSql, v1Forward, v1Keys);
     const apiIdentity = Layer.effect(
       BearerAuthentication,
       Effect.gen(function* () {
         return BearerAuthentication.of({
           ...origins,
           authenticate: (headers, organization) =>
-            withSql(apiBearerAccess(origins, { headers, organization })).pipe(
+            withSql(apiBearerAccess(origins, { headers, organization }, v1Keys)).pipe(
               Effect.tap(({ access, userId }) =>
                 Effect.annotateCurrentSpan(callerSpanAttributes(access.organization, userId)),
               ),

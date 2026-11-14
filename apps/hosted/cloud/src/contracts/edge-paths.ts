@@ -129,10 +129,3 @@ export const slashRedirectedSitePages: ReadonlyArray<SitePattern> = sitePages.fi
 /** Whether `forwards` include `url`. */
 export const forwardsToV2 = (forwards: ReadonlyArray<EdgeForward>, url: URL) =>
   forwards.some((forward) => forward.matches(url));
-
-/**
- * What v2 answers on the edge whatever the deployment's telemetry: every forward, and any
- * `/api/<16 hex>/...` path, which only the telemetry handlers answer and only at their own path.
- */
-export const servedOnEdge = (url: URL) =>
-  forwardsToV2(routedEdgeForwards, url) || /^\/api\/[0-9a-f]{16}\//.test(url.pathname);

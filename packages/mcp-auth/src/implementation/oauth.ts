@@ -35,6 +35,7 @@ import {
   OAuthResourceProvisioningFailed,
   recordedTarget,
   type ResourceOrigins,
+  legacyMcpTarget,
 } from "../contracts/grant.ts";
 import { approvalRefusal } from "../contracts/grant-enforcement.ts";
 import {
@@ -149,6 +150,24 @@ export interface CreatedGrant {
   readonly clientId: string;
   readonly kind: "mcp" | "api";
 }
+/**
+ * The host's binding of a legacy resource. An `APIError` it rejects with is the page's message; any
+ * other rejection is an outage to retry.
+ */
+const resolveBinding = (
+  resolve: NonNullable<GrantOAuthOptions["resolveResource"]>,
+  input: Parameters<NonNullable<GrantOAuthOptions["resolveResource"]>>[0],
+) =>
+  Effect.tryPromise({
+    try: () => resolve(input),
+    catch: (error) => (isAPIError(error) ? error : new APIError("SERVICE_UNAVAILABLE")),
+  });
+
+/** What a legacy MCP resource binds its grant to: an organization, and maybe a connection. */
+export interface ResourceBinding {
+  readonly organization: string;
+  readonly connection?: ConnectionId | undefined;
+}
 export interface GrantOAuthOptions {
   /** The browser origin that serves sign-in and consent; same-origin checks compare against it. */
   readonly origin: string;
@@ -183,6 +202,20 @@ export interface GrantOAuthOptions {
    * Called once per grant, in the approving request; its failure never refuses the approval.
    */
   readonly onGrantCreated?: ((grant: CreatedGrant) => Promise<void>) | undefined;
+  /**
+   * Bind a grant for a legacy MCP resource (`legacyMcpTarget`) when it is created: the URL names
+   * its organization, and a toolkit URL the caller's own connection, which the host resolves.
+   * `organization` is the one the consent page chose, when it chose one. Rejects with an
+   * `APIError` the page shows, such as for a URL the host does not know. Called only for legacy
+   * resources.
+   */
+  readonly resolveResource?:
+    | ((input: {
+        readonly userId: string;
+        readonly resource: string;
+        readonly organization: string | undefined;
+      }) => Promise<ResourceBinding>)
+    | undefined;
   /**
    * Offer RFC 8628 device authorization, approved on the browser origin's verification page.
    * Only hosts that serve that page and a signed-in browser session enable it.
@@ -1062,14 +1095,40 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
         settingsHeader === undefined
           ? {}
           : yield* parse(Schema.fromJsonString(GrantSettings), settingsHeader);
+      // A legacy URL names its organization, and a toolkit URL the caller's own connection. Bare
+      // `/mcp` names neither, and is chosen like v2's own.
+      const resource = resources[0];
+      const legacy =
+        resource === undefined ? undefined : legacyMcpTarget(resourceOrigins, resource)?.path;
+      const bound =
+        resource === undefined ||
+        settings.resolveResource === undefined ||
+        legacy === undefined ||
+        (legacy.selector === undefined && legacy.toolkit === undefined)
+          ? undefined
+          : yield* resolveBinding(settings.resolveResource, {
+              userId,
+              resource,
+              organization: ctx.headers?.get("x-executor-organization") ?? undefined,
+            });
+      if (
+        bound?.connection !== undefined &&
+        chosen.access !== undefined &&
+        !(chosen.access.kind === "connection" && chosen.access.id === bound.connection)
+      )
+        return yield* Effect.fail(
+          new APIError("BAD_REQUEST", { message: "This URL names its own toolkit." }),
+        );
       const connectionId =
         named.kind === "api"
           ? undefined
-          : chosen.access === undefined
-            ? named.connection
-            : chosen.access.kind === "connection"
-              ? chosen.access.id
-              : undefined;
+          : bound?.connection !== undefined
+            ? bound.connection
+            : chosen.access === undefined
+              ? named.connection
+              : chosen.access.kind === "connection"
+                ? chosen.access.id
+                : undefined;
       const connection =
         connectionId === undefined
           ? undefined
@@ -1097,14 +1156,18 @@ export const grantOAuthPlugins = (settings: GrantOAuthOptions) => {
             ? GrantPolicy.make({ kind: "all" })
             : yield* parse(Schema.fromJsonString(GrantPolicy), policyHeader);
       yield* requireServable(policy, target);
-      const resource = yield* settings.selectResource(ctx, userId, connection?.resource);
+      const organization = yield* settings.selectResource(
+        ctx,
+        userId,
+        connection?.resource ?? bound?.organization,
+      );
       const row = yield* authCall(() =>
         ctx.context.adapter.create({
           model: "mcpGrant",
           data: {
             userId,
             clientId,
-            resource,
+            resource: organization,
             policy: JSON.stringify(policy),
             revoked: false,
             ...(target.kind === "mcp" ? { mode: target.mode } : {}),

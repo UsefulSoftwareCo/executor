@@ -105,6 +105,8 @@ export * from "./contracts/mcp.ts";
 export {
   mcpBrowserGrantError,
   mcpConnectionStore,
+  patGrantId,
+  patGrantOf,
   provisionHostedConnectionResources,
   provisionHostedOAuthResources,
   type HostedOAuthOrigins,
@@ -123,6 +125,7 @@ export {
   apiBearerAccess,
   describeMcpAccess,
   mcpBearerAccess,
+  type UnknownApiKeys,
 } from "./implementation/bearer-access.ts";
 export {
   makeHostedMcp,

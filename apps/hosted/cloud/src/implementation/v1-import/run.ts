@@ -37,7 +37,7 @@ import {
   Schema,
   type Scope,
 } from "effect";
-import type { SqlClient } from "effect/sql";
+import { SqlClient } from "effect/sql";
 import { billingCustomerId, freeMembers } from "../../contracts/billing-catalog.ts";
 import { V1ImportDatabase, V1ImportUnavailable } from "../../contracts/v1-import.ts";
 import {
@@ -52,9 +52,11 @@ import {
   type V1OrgOutcome,
   type V1SelectedIntegrations,
 } from "../../contracts/v1-import-run.ts";
+import { LegacySlugTaken, recordLegacyUrls } from "../v1-legacy-urls.ts";
 import {
   decodeToolkit,
   firstPartyClientPrefix,
+  ToolkitData,
   matchPattern,
   type ConnectionRow,
   type IntegrationRow,
@@ -3118,6 +3120,38 @@ const freezeInV1 = (params: V1ImportParams) =>
 const releaseInV1 = (organization: string) =>
   Effect.flatMap(flagWriter, (flag) => flag.set(organization, V1MovedState.RolledBack()));
 
+/**
+ * Record the URLs v1 issued for the organization (`v1-legacy-urls.ts`), which v2 serves once v1
+ * shuts down: its slug and id, and each member's copy of each toolkit. Written just before the
+ * cutover, so they exist whenever v1 forwards the organization. Another moved organization holding
+ * the slug is a problem that keeps it from cutting over, returned as its reason.
+ */
+const recordLegacyUrlsOf = (context: ImportContext) =>
+  recordLegacyUrls({
+    v1Organization: context.snapshot.tenant,
+    v1Slug: context.snapshot.organization.slug,
+    v2Organization: context.target.id,
+    toolkits: context.snapshot.toolkits.flatMap((row) =>
+      Option.match(Schema.decodeUnknownOption(ToolkitData)(row.data), {
+        onNone: () => [],
+        onSome: (data) => [
+          { row: row.row_id, key: row.key, slug: data.slug, orgOwned: row.owner === "org" },
+        ],
+      }),
+    ),
+  }).pipe(
+    Effect.provideService(SqlClient.SqlClient, context.sql),
+    Effect.as(undefined),
+    Effect.catchTags({
+      LegacySlugTaken: (taken: LegacySlugTaken) =>
+        Effect.succeed(
+          `Its v1 slug already names another moved organization (${taken.holder}), so its URLs would be ambiguous.`,
+        ),
+      SqlError: () => Effect.fail(new V1ImportUnavailable()),
+      SchemaError: () => Effect.fail(new V1ImportUnavailable()),
+    }),
+  );
+
 /** Cutover step 5: v1 forwards the organization to v2 and redirects its dashboard there. */
 const cutOverInV1 = (organization: string, target: Identity["target"]) =>
   Effect.flatMap(flagWriter, (flag) =>
@@ -3521,6 +3555,15 @@ export const runV1Import = <S>(
             }),
           ),
         );
+    }
+    // The URLs v2 serves for the organization once v1 shuts down, before v1 forwards it.
+    if (problems.length === 0) {
+      const legacy = yield* step("legacy urls", Effect.flatMap(context, recordLegacyUrlsOf)).pipe(
+        Effect.catchTag("V1ImportStepFailed", () =>
+          Effect.succeed("Its v1 URLs could not be recorded for v2."),
+        ),
+      );
+      if (legacy !== undefined) problems.push(legacy);
     }
     // Cutover step 5, only once verification passed. Step 6 sends no email (decision 13).
     const cutOver =

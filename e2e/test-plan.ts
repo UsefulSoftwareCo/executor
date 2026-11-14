@@ -9740,6 +9740,40 @@ export const scenarios = plan({
       "Cloud v1 import opens v2 sign-in without a session for a handoff with a wrong signature, an expired or too long-lived token, another audience or version, a WorkOS user the import never mapped, or a member who has left the organization",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ShutdownMcpUrls: {
+    fixtures: "actors",
+    file: "cloud-v1-shutdown.spec.ts",
+    title:
+      "Cloud's edge serves v1's MCP URLs after v1 shuts down: discovery names each URL and v2's issuer, an AuthKit token or none gets that URL's challenge, a v2 grant signed in for a v1 slug reaches the organization it moved to though its v2 slug differs and another team holds the v1 slug, merged organizations' slugs and the org_ id reach the same one, and an unknown slug, a non-member and a key that names no organization are refused",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ShutdownToolkitUrls: {
+    fixtures: "actors",
+    file: "cloud-v1-shutdown.spec.ts",
+    title:
+      "Cloud's edge serves v1's toolkit URLs after v1 shuts down: a grant signed in for one is bound to the caller's own copy, with or without the organization in the URL, a key there is narrowed to the copy, a member without a copy is refused, and another grant is sent to sign in for the toolkit",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ShutdownSdkSignIn: {
+    fixtures: "actors",
+    file: "cloud-v1-shutdown.spec.ts",
+    title:
+      "An MCP SDK client holding AuthKit's registration and tokens for a v1 URL rediscovers v2's authorization server once it is refused, signs in there once and lists its tools",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ShutdownEdgePages: {
+    fixtures: "actors",
+    file: "cloud-v1-shutdown.spec.ts",
+    title:
+      "Cloud's edge serves v1's client ID metadata documents byte for byte and the site's own terms, privacy and Google OAuth pages after v1 shuts down, redirects v1's dashboards to the organizations they moved to and v1's sign-in to v2's, shows a page for a connected-account sign-in v1 started, and answers 410 for the rest of v1's API",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ShutdownApiKeyCapture: {
+    file: "cloud-v1-shutdown.spec.ts",
+    title:
+      "Cloud validates a v1 WorkOS API key it does not hold against v1's WorkOS on its first use, stores it as a native key of its owner pinned to the organization it moved to, and then serves it on v1's URLs, v2's MCP and v2's API with WorkOS refusing every call; an unknown key is refused and not asked about again soon, an unanswered WorkOS is a retryable 503, and a key of an organization that did not move, or one its owner deleted in v2, is not stored; the import records the organization's v1 URLs and the backfill writes them again",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ImportToolkitCalls: {
     file: "cloud-v1-import.spec.ts",
     title:

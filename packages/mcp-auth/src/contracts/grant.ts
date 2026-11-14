@@ -167,6 +167,11 @@ export type OriginList = readonly [string, ...string[]];
 export interface ResourceOrigins {
   readonly mcp: OriginList;
   readonly api: OriginList;
+  /**
+   * Where an earlier product's MCP URLs are served, each its own resource (`LegacyMcpPath`): Cloud
+   * serves Executor v1's on `executor.sh` once v1 shuts down. None elsewhere.
+   */
+  readonly legacyMcp?: string | undefined;
 }
 /** A deployment that serves both kinds of resource on one origin only. */
 export const singleResourceOrigin = (origin: string): ResourceOrigins => ({
@@ -212,6 +217,8 @@ export const grantTarget = (
   const url = URL.parse(resource);
   if (url === null) return undefined;
   if (origins.api.includes(url.origin) && resource === `${url.origin}/api`) return { kind: "api" };
+  const legacy = legacyMcpTarget(origins, resource);
+  if (legacy !== undefined) return { kind: "mcp", mode: legacy.mode };
   if (!origins.mcp.includes(url.origin) || url.pathname !== "/mcp") return undefined;
   const address = requestedMcpAddress(url);
   // Only the canonical spelling is a resource; reordered or extra parameters are not.
@@ -219,6 +226,76 @@ export const grantTarget = (
     ? { kind: "mcp", ...address }
     : undefined;
 };
+/**
+ * An Executor v1 MCP URL's path: `/mcp`, `/<selector>/mcp`, `/mcp/toolkits/<toolkit>` or
+ * `/<selector>/mcp/toolkits/<toolkit>`, where the selector names a v1 organization by its slug or
+ * its `org_` id. Bare `/mcp` names neither, as v2's own `/mcp` does.
+ */
+export interface LegacyMcpPath {
+  readonly selector?: string | undefined;
+  readonly toolkit?: string | undefined;
+}
+
+const legacySegment = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u;
+
+/** The legacy MCP URL `pathname` names, if it names one. */
+export const legacyMcpPath = (pathname: string): LegacyMcpPath | undefined => {
+  const segments = pathname.split("/").slice(1);
+  const valid = (segment: string | undefined): segment is string =>
+    segment !== undefined && legacySegment.test(segment);
+  const [first, second, third, fourth] = segments;
+  if (segments.length === 1 && first === "mcp") return {};
+  if (segments.length === 2 && second === "mcp" && valid(first)) return { selector: first };
+  if (segments.length === 3 && first === "mcp" && second === "toolkits" && valid(third))
+    return { toolkit: third };
+  if (
+    segments.length === 4 &&
+    second === "mcp" &&
+    third === "toolkits" &&
+    valid(first) &&
+    valid(fourth)
+  )
+    return { selector: first, toolkit: fourth };
+  return undefined;
+};
+
+/** The pathname of a legacy MCP URL. */
+export const legacyMcpPathname = (path: LegacyMcpPath) =>
+  `${path.selector === undefined ? "" : `/${path.selector}`}/mcp${path.toolkit === undefined ? "" : `/toolkits/${path.toolkit}`}`;
+
+/** A legacy MCP URL's OAuth audience for an approval mode, spelled as `mcpResource` spells one. */
+export const legacyMcpResource = (origin: string, path: LegacyMcpPath, mode: ApprovalMode) =>
+  `${origin}${legacyMcpPathname(path)}${mcpQuery({ mode })}`;
+
+/** Where a legacy MCP URL's resource metadata is, for its 401 challenge (RFC 9728). */
+export const legacyMcpResourceMetadataUrl = (
+  origin: string,
+  path: LegacyMcpPath,
+  mode: ApprovalMode,
+) =>
+  `${origin}/.well-known/oauth-protected-resource${legacyMcpPathname(path)}?${new URLSearchParams({ elicitation_mode: mode }).toString()}`;
+
+/**
+ * The legacy MCP URL and approval mode a resource names, when it is one at `origins.legacyMcp`
+ * spelled canonically. It names no connection: the host binds a grant for it to its organization
+ * and, for a toolkit, to the caller's own connection when the grant is created.
+ */
+export const legacyMcpTarget = (
+  origins: ResourceOrigins,
+  resource: string,
+): { readonly path: LegacyMcpPath; readonly mode: ApprovalMode } | undefined => {
+  if (origins.legacyMcp === undefined) return undefined;
+  const url = URL.parse(resource);
+  if (url === null || url.origin !== origins.legacyMcp) return undefined;
+  const path = legacyMcpPath(url.pathname);
+  const address = requestedMcpAddress(url);
+  if (path === undefined || address === undefined || address.connection !== undefined)
+    return undefined;
+  return legacyMcpResource(url.origin, path, address.mode) === resource
+    ? { path, mode: address.mode }
+    : undefined;
+};
+
 /** Discovery and the authentication challenge carry the requested address into standard OAuth. */
 export const mcpResourceMetadataUrl = (resourceOrigin: string, address: McpAddress) => {
   const query = new URLSearchParams();
