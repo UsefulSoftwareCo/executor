@@ -20,9 +20,9 @@ import {
 import { HostRequirementsError, DeclaredRequirements, HostResponse } from "apps/contracts";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
-import { Context, Effect, FiberSet, Option, Schema } from "effect";
-import { CurrentOrganization, CurrentUserId } from "@executor-js/hosted-server";
+import { Effect, FiberSet, Schema } from "effect";
 import { dataChanges } from "../implementation/data-changes.ts";
+import { runtimeActor } from "../implementation/runtime-actor.ts";
 import { cacheRuntimeBuild, cachedRuntimeBuilds } from "../implementation/runtime-build-cache.ts";
 import type { DurableObjectNamespace } from "@cloudflare/workers-types";
 import { CloudCompileResult } from "../contracts/builds.ts";
@@ -67,19 +67,7 @@ const compilerDidNotAnswer = Effect.annotateCurrentSpan(
  * and its own usage data cannot be split by user or organization.
  */
 const withActor = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  Effect.gen(function* () {
-    const context = yield* Effect.context<never>();
-    const user = Context.get(context, CurrentUserId);
-    const organization = Context.getOption(context, CurrentOrganization);
-    return yield* effect.pipe(
-      Effect.annotateSpans({
-        ...(user === undefined ? {} : { "executor.user.id": user }),
-        ...(Option.isSome(organization)
-          ? { "executor.organization.id": organization.value.organization }
-          : {}),
-      }),
-    );
-  });
+  Effect.flatMap(runtimeActor, (actor) => Effect.annotateSpans(effect, actor));
 const NativeNamespace = Schema.declare(
   (value): value is Pick<DurableObjectNamespace, "getByName"> =>
     typeof value === "object" &&
@@ -157,6 +145,7 @@ export const cloudRuntime = Effect.fn(function* (
     );
     const runtime = yield* appRuntime({
       name: "runtime.cloud",
+      actor: runtimeActor,
       loadBuild: load,
       invoke: (invocation, capabilities) =>
         withActor(

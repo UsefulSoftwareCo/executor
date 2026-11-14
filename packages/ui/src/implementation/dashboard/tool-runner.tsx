@@ -6,7 +6,7 @@ import {
   type Tool,
   type ToolResumeResultReceived,
 } from "@executor-js/sdk";
-import type { BrowserToolRun } from "@executor-js/mcp/browser";
+import { ToolCallReference, type BrowserToolRun } from "@executor-js/mcp/browser";
 import { Cause, Exit, Match, Option, Schema } from "effect";
 import { AsyncResult, type Atom } from "effect/reactivity";
 import { useCallback, useState, type ComponentType } from "react";
@@ -18,7 +18,7 @@ import { Button } from "../components/button.tsx";
 import { Skeleton } from "../components/skeleton.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/tabs.tsx";
 import { Textarea } from "../components/textarea.tsx";
-import { Code } from "./code.tsx";
+import { Code, CopyButton } from "./code.tsx";
 import { isSchema, type JsonSchema } from "./json-schema.ts";
 import { ProviderErrorNotice } from "./provider-error-notice.tsx";
 import {
@@ -138,6 +138,32 @@ const answered = (result: ToolResumeResultReceived) =>
     }),
   );
 
+/** A failed call's reference, which the host gives beside the error when it recorded the call. */
+const Referenced = Schema.Struct({ reference: ToolCallReference });
+const referenceOf = (error: unknown) =>
+  Option.getOrUndefined(
+    Option.map(Schema.decodeUnknownOption(Referenced)(error), ({ reference }) => reference),
+  );
+
+/**
+ * The host's reference for a call that did not succeed, apart from the tool's own error text: what
+ * the person quotes to an organization admin, who finds the call in the activity log with it.
+ */
+function CallReference({ reference }: { readonly reference: string }) {
+  return (
+    <section
+      aria-label="Call reference"
+      className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border px-3 py-2 text-xs text-muted-foreground"
+    >
+      <span>This call's reference in the activity log</span>
+      <span className="flex min-w-0 items-center gap-1">
+        <code className="font-mono text-foreground wrap-anywhere">{reference}</code>
+        <CopyButton code={reference} label="Copy call reference" inline text="" />
+      </span>
+    </section>
+  );
+}
+
 /** The person reviews their own call; approving runs the saved call and shows its result here. */
 function ToolRunReview({ atoms }: { readonly atoms: ToolRunApprovalAtoms }) {
   const answer = useAtomValue(atoms.answer);
@@ -145,12 +171,14 @@ function ToolRunReview({ atoms }: { readonly atoms: ToolRunApprovalAtoms }) {
     AsyncResult.isSuccess(answer) && answer.value.status === "answered"
       ? answer.value.result
       : undefined;
+  const reference = AsyncResult.isSuccess(answer) ? answer.value.reference : undefined;
   return (
     <>
       <BrowserApprovalCard
         atoms={atoms}
         completion={result === undefined ? undefined : answered(result)}
       />
+      {reference !== undefined && <CallReference reference={reference} />}
       {result?.status === "completed" && (
         <section aria-label="Tool result">
           <Code code={JSON.stringify(result.value, null, 2)} copyable copyLabel="Copy result" />
@@ -192,6 +220,7 @@ export function ToolRunner<E>({
   // Form fields whose text does not parse, so the draft still holds their last good value.
   const [invalid, setInvalid] = useState<ReadonlySet<string>>(new Set());
   const [output, setOutput] = useState<string>();
+  const [reference, setReference] = useState<string>();
   const [review, setReview] = useState<ApprovalRequestId>();
   const [error, setError] = useState<"json" | "object" | Cause.Cause<E>>();
   const onInvalidChange = useCallback(
@@ -268,11 +297,19 @@ export function ToolRunner<E>({
           setPending(true);
           setOutput(undefined);
           setReview(undefined);
+          setReference(undefined);
           const result = await run(input);
           setPending(false);
-          if (Exit.isFailure(result)) setError(result.cause);
-          else if (result.value.status === "approval-required") setReview(result.value.requestId);
-          else setOutput(JSON.stringify(result.value.value, null, 2));
+          if (Exit.isFailure(result)) {
+            setError(result.cause);
+            setReference(
+              Option.getOrUndefined(Option.map(Cause.findErrorOption(result.cause), referenceOf)),
+            );
+          } else if (result.value.status === "approval-required") setReview(result.value.requestId);
+          else {
+            setOutput(JSON.stringify(result.value.value, null, 2));
+            setReference(result.value.reference);
+          }
         }}
       >
         {/* No tab is selected until the schema decides between the form and JSON. */}
@@ -344,6 +381,7 @@ export function ToolRunner<E>({
       ) : (
         error !== undefined && <Failure cause={error} />
       )}
+      {reference !== undefined && <CallReference reference={reference} />}
       {review !== undefined && <ToolRunReview key={review} atoms={approval(review)} />}
       {output !== undefined && (
         <section aria-label="Tool result">

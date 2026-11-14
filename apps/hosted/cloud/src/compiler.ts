@@ -30,7 +30,7 @@ export default AppCompiler.make(
       ...(yield* cloudObservability),
       workersDev: false,
       build: workerBuild("compiler"),
-      compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+      compatibility: { date: "2026-09-08", flags: ["nodejs_compat", "no_brotli_content_encoding"] },
       env: yield* telemetryBindings,
       ...(Option.isSome(framework) ? { assets: { directory: framework.value } } : {}),
     };

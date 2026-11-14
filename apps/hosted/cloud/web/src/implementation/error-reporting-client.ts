@@ -5,6 +5,7 @@ import {
   firstPartyFailure,
   scriptDirectory,
 } from "@executor-js/telemetry/browser-errors";
+import { budgetedFetch, pageFetch } from "@executor-js/telemetry/keepalive";
 import { documentBuild } from "@executor-js/dashboard-start/document-build";
 import { Schema, Option } from "effect";
 
@@ -34,6 +35,20 @@ export const strippedBreadcrumb = <A extends { data?: Record<string, unknown> | 
   return crumb;
 };
 
+/**
+ * Which of the SDK's envelopes a request carries, so a resent one is recorded under a fixed name:
+ * an error report carries an event item, a session update does not.
+ */
+const envelopeSender = (body: BodyInit | null | undefined) => {
+  const text =
+    typeof body === "string"
+      ? body
+      : body instanceof Uint8Array
+        ? new TextDecoder().decode(body.subarray(0, 4096))
+        : "";
+  return /\n\{"type":"event"/.test(text) ? "error-reports" : "error-sessions";
+};
+
 /** Call once at the browser composition root; unconfigured local builds remain disabled. */
 export const startErrorReporting = () => {
   const dsn: unknown = import.meta.env.VITE_SENTRY_DSN;
@@ -57,6 +72,13 @@ export const startErrorReporting = () => {
   Sentry.init({
     tunnel,
     dsn,
+    // The SDK sends with keepalive while its own requests stay under 64 KiB, but the browser refuses
+    // one once all of the page's keepalive requests would pass that, and the SDK then drops the
+    // report. Its requests draw from the page's one budget instead.
+    transport: (options) =>
+      Sentry.makeFetchTransport(options, (input, init) =>
+        budgetedFetch(envelopeSender(init?.body), pageFetch)(input, init),
+      ),
     environment: import.meta.env.VITE_EXECUTOR_ENVIRONMENT,
     release: documentBuild(),
     sendDefaultPii: false,

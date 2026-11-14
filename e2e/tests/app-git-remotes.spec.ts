@@ -54,21 +54,6 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           expect(printed.code, printed.stderr).toBe(0);
           expect(printed.stdout.trim()).toBe(remote);
 
-          // The dashboard shows the same remote, not one on its own origin.
-          yield* browser.login(actors.owner);
-          yield* browser.use("Open the app's source", (page) =>
-            page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=source`),
-          );
-          yield* browser.use("Open the clone details", (page) =>
-            page.getByRole("button", { name: "Clone", exact: true }).click(),
-          );
-          expect(
-            yield* browser.use("Read the dashboard's clone URL", (page) =>
-              page.getByLabel("Git clone URL").inputValue(),
-            ),
-          ).toBe(remote);
-          yield* browser.checkpoint("The dashboard shows the host's remote");
-
           // Git clones and pushes through it with the CLI's session.
           const cloned = yield* tools.git(["clone", "--quiet", remote, "."]);
           expect(cloned.code, cloned.stderr).toBe(0);
@@ -221,6 +206,24 @@ layer(HostedLive, { excludeTestServices: true })("App Git remotes", (it) => {
           expect((yield* tools.git(["pull", "--quiet", "--ff-only", "origin", "main"])).code).toBe(
             0,
           );
+
+          // The dashboard shows the same remote, not one on its own origin. The browser records
+          // its page until the case ends, and Playwright encodes the time a page shows no change
+          // only when it closes; a page opened before the Git steps above would leave minutes of
+          // video to encode while the case cleans up.
+          yield* browser.login(actors.owner);
+          yield* browser.use("Open the app's source", (page) =>
+            page.goto(`/org/${actors.organization.slug}/apps/${app.id}?view=source`),
+          );
+          yield* browser.use("Open the clone details", (page) =>
+            page.getByRole("button", { name: "Clone", exact: true }).click(),
+          );
+          expect(
+            yield* browser.use("Read the dashboard's clone URL", (page) =>
+              page.getByLabel("Git clone URL").inputValue(),
+            ),
+          ).toBe(remote);
+          yield* browser.checkpoint("The dashboard shows the host's remote");
         }),
       ),
     // Signs in through the browser, runs the CLI several times, and clones and pushes over HTTP,

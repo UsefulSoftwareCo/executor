@@ -5,7 +5,7 @@ import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource, SpanQuery } from "../support/contracts.ts";
-import { Evidence, Telemetry } from "../support/evidence.ts";
+import { Evidence, Telemetry, type SpanScope } from "../support/evidence.ts";
 import { accountToolSource } from "../support/tool-account-context.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -115,10 +115,10 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
         const work = yield* add("Work", "work"),
           personal = yield* add("Personal", "personal");
 
-        // Every delivered trace with a span of this operation whose attributes match.
-        const tracesWith = (operation: string, attributes: Readonly<Record<string, string>>) =>
+        // Every delivered trace with a span of this operation in `scope`.
+        const tracesWith = (operation: string, scope: SpanScope) =>
           telemetry
-            .search(operation, attributes)
+            .search(operation, scope)
             .pipe(
               Effect.flatMap((found) =>
                 Effect.forEach(new Set(found.data.map(({ traceId }) => traceId)), telemetry.query),
@@ -139,7 +139,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
         // so an account's cold start is found by its Worker identity, in the index's trace
         // or the coordinator's.
         const coldStarts = (identity: string) =>
-          tracesWith("runtime.app.invoke", { "executor.worker.identity": identity }).pipe(
+          tracesWith("runtime.app.invoke", { worker: identity }).pipe(
             Effect.map((traces) =>
               traces.flatMap((trace) =>
                 trace.data
@@ -234,9 +234,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud build reuse", (it) => {
         if (first.build === undefined) return yield* Effect.die("Build ID missing");
 
         // Every load of the build in the runner, by any call.
-        const loads = (yield* tracesWith("runtime.cloud.build.cached", {
-          "executor.build.id": first.build,
-        }))
+        const loads = (yield* tracesWith("runtime.cloud.build.cached", { build: first.build }))
           .flatMap((trace) =>
             trace.data
               .filter(

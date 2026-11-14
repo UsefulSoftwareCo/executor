@@ -1,4 +1,8 @@
-import { CurrentOrganization, CurrentPrincipal } from "@executor-js/hosted-server";
+import {
+  CurrentOrganization,
+  CurrentPrincipal,
+  memberSetupProgress,
+} from "@executor-js/hosted-server";
 import { Effect, Schema, Stream } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -58,15 +62,29 @@ export const onboardingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "onboar
   }),
 );
 
-/** The member's setup order for a team they may already read; membership was checked first. */
+/**
+ * The member's setup for a team they may already read, and whether its dashboard is open to them;
+ * membership was checked first.
+ */
 export const setupHandlers = HttpApiBuilder.group(ExecutorCloudApi, "setup", (handlers) =>
   Effect.gen(function* () {
     const onboarding = yield* Onboarding;
-    return handlers.handle("sequence", () =>
-      Effect.gen(function* () {
-        const { userId } = yield* CurrentPrincipal;
-        return yield* onboarding.setup(userId, (yield* CurrentOrganization).organization);
-      }),
-    );
+    return handlers
+      .handle("sequence", () =>
+        Effect.gen(function* () {
+          const { userId } = yield* CurrentPrincipal;
+          return yield* onboarding.setup(userId, (yield* CurrentOrganization).organization);
+        }),
+      )
+      .handle("gate", () =>
+        Effect.gen(function* () {
+          const { userId } = yield* CurrentPrincipal;
+          return yield* onboarding.gate(
+            userId,
+            (yield* CurrentOrganization).organization,
+            memberSetupProgress,
+          );
+        }),
+      );
   }),
 );

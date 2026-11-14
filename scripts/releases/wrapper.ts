@@ -1,13 +1,17 @@
 /**
- * Build the `executor` npm package: a launcher that starts the executable from the platform package
- * it names as an exact optional dependency. Nothing is published.
+ * Build the `executor` npm package: a launcher that downloads its platform's release archive on
+ * first use and starts the executable in it. The package records each archive's SHA-256, read from
+ * `<directory>/<version>-<platform>-<arch>/`, where the directory is the first argument (default
+ * `.local/releases`). A publishing run supplies every platform's archive; a test build may have
+ * only its own. Nothing is published.
  */
+import { createHash } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Console, Effect, FileSystem, Path } from "effect";
+import { Console, Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import manifest from "../../apps/cli/package.json" with { type: "json" };
-import { platforms, platformPackage, platformVersion, release } from "./config.ts";
+import { platformArchive, platforms, release } from "./config.ts";
 import { npmCommand } from "./npm.ts";
 
 const build = Effect.gen(function* () {
@@ -16,6 +20,33 @@ const build = Effect.gen(function* () {
   const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
   const root = yield* path.fromFileUrl(new URL("../../", import.meta.url));
   const directory = path.join(root, ".local/releases", release.version, "wrapper");
+  const archives = path.resolve(root, process.argv[2] ?? ".local/releases");
+  const sha256 = (file: string) =>
+    Effect.gen(function* () {
+      const hash = createHash("sha256");
+      yield* fs.stream(file).pipe(
+        Stream.runForEach((bytes) =>
+          Effect.sync(() => {
+            hash.update(bytes);
+          }),
+        ),
+      );
+      return hash.digest("hex");
+    });
+  const runtimes: Record<string, string> = {};
+  for (const target of platforms) {
+    // `release:cli` and the release workflow's artifacts both lay out <version>-<platform>-<arch>/.
+    const file = path.join(
+      archives,
+      `${release.version}-${target.platform}-${target.arch}`,
+      platformArchive(target),
+    );
+    if (yield* fs.exists(file)) runtimes[`${target.platform}-${target.arch}`] = yield* sha256(file);
+  }
+  if (Object.keys(runtimes).length === 0)
+    return yield* Effect.die(
+      new Error(`No release archive for ${release.version} in ${archives}.`),
+    );
   if (yield* fs.exists(directory)) yield* fs.remove(directory, { recursive: true });
   yield* fs.makeDirectory(directory, { recursive: true });
   yield* fs.writeFileString(
@@ -27,18 +58,15 @@ const build = Effect.gen(function* () {
         bin: { executor: "bin.mjs" },
         files: ["bin.mjs", "bin/executor", "bin/package.json", "README.md", "LICENSE"],
         publishConfig: { access: "public", tag: release.channel },
-        optionalDependencies: Object.fromEntries(
-          platforms.map((target) => [
-            platformPackage(target),
-            `npm:executor@${platformVersion(target)}`,
-          ]),
-        ),
+        // The SHA-256 of each platform's release archive, which the launcher checks a download
+        // against. npm's integrity covers this file, so it covers the runtime too.
+        runtimes,
       },
       null,
       2,
     ),
   );
-  // The launcher reads its platform packages and channel from this package.json.
+  // The launcher reads its version, runtimes and channel from this package.json.
   yield* fs.copyFile(
     path.join(root, "scripts/releases/npm-launcher.mjs"),
     path.join(directory, "bin.mjs"),
@@ -74,7 +102,7 @@ const build = Effect.gen(function* () {
   );
   if (code !== 0) return yield* Effect.die(new Error(`npm pack failed (${code})`));
   yield* Console.log(
-    `Launcher archive: ${path.join(directory, `executor-${release.version}.tgz`)}`,
+    `Launcher archive: ${path.join(directory, `executor-${release.version}.tgz`)} (runtimes: ${Object.keys(runtimes).join(", ")})`,
   );
 });
 

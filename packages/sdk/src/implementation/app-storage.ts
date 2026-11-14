@@ -10,12 +10,15 @@ import { database } from "./database.ts";
 import { resolve, snapshot, type InvocationSnapshot } from "./tools.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
+import type { HostApi } from "../contracts/executor.ts";
+import { versionHostApi } from "./declarations.ts";
 
 /** Bind data calls to the current app version and the named accounts. */
 export const makeAppData = (
   storage: ExecutorDatabase,
   resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"],
   runtime: Runtime,
+  hostApi: HostApi | undefined,
   workflows?: (state: InvocationSnapshot) => WorkflowHostControls,
 ) => {
   const db = database(storage);
@@ -30,6 +33,7 @@ export const makeAppData = (
       const accounts = yield* resolve(state, resolveAccount);
       return yield* runtime[kind]({
         build: state.version.build,
+        hostApi: versionHostApi(hostApi, state.version),
         database: ownsDatabase(state.version.requirements),
         ...accounts,
         app: state.app.id,

@@ -22,9 +22,15 @@ import {
 import { type App, type AppId, type Executor } from "@executor-js/sdk/core";
 import { localOwner } from "./owners.ts";
 import { HttpRouter, HttpServerRequest } from "effect/http";
-import { Effect, Layer, Redacted } from "effect";
+import { Effect, Layer } from "effect";
 import { Base64 } from "effect/encoding";
-import { localRequest, requestOrigin, type LocalAuth } from "./auth.ts";
+import {
+  localBearer,
+  localCredential,
+  localRequest,
+  requestOrigin,
+  type LocalAuth,
+} from "./auth.ts";
 import type { ServerConfig } from "../contracts/config.ts";
 
 /**
@@ -75,12 +81,13 @@ export const localAppManagement = (
             if (scope !== "local" || request.headers.origin !== undefined)
               return yield* new AppAccessDenied({ reason: "forbidden" });
             const authorization = request.headers.authorization;
-            if (authorization !== `Bearer ${Redacted.value(config.apiKey)}`) {
+            // Git sends the credential as a Basic password; any user name is accepted.
+            if (!localBearer(config, authorization)) {
               if (!authorization?.startsWith("Basic "))
                 return yield* new AppAccessDenied({ reason: "authentication" });
               const decoded = yield* Effect.fromResult(Base64.decodeString(authorization.slice(6)));
               const colon = decoded.indexOf(":");
-              if (colon < 0 || decoded.slice(colon + 1) !== Redacted.value(config.apiKey))
+              if (colon < 0 || !localCredential(config, decoded.slice(colon + 1)))
                 return yield* new AppAccessDenied({ reason: "authentication" });
             }
             return {

@@ -29,6 +29,59 @@ const installedPackages = [
   "typescript",
 ] as const;
 
+/**
+ * The files of dugite's Git distribution the runtime keeps, by path relative to it. The bundled Git
+ * serves app repositories on this machine, through plumbing commands and `git http-backend`, and
+ * never reaches a remote. So the Git Credential Manager, Git LFS, network transports and scripted
+ * tools dugite also ships are left out. What stays is the `git` executable, `git http-backend`
+ * (which windows-git.ts adds on Windows after staging), the libraries they load, the templates
+ * `git init` copies and the licenses of what remains. Symbolic links to `git`, its argv[0]
+ * aliases such as `git-upload-pack`, stay as well.
+ */
+const keptGit = (platform: string): ReadonlyArray<RegExp> =>
+  platform === "win32"
+    ? [
+        /^LICENSE\.txt$/u,
+        /^cmd\/git\.exe$/u,
+        /^mingw64\/bin\/(git\.exe|libiconv-2\.dll|libintl-8\.dll|libpcre2-8-0\.dll|libwinpthread-1\.dll|zlib1\.dll)$/u,
+        /^mingw64\/libexec\/git-core\/git-http-backend\.exe$/u,
+        /^mingw64\/share\/git-core\/templates\//u,
+        /^mingw64\/share\/licenses\//u,
+      ]
+    : [
+        /^bin\/git$/u,
+        /^libexec\/git-core\/(git|git-http-backend)$/u,
+        /^share\/git-core\/templates\//u,
+      ];
+
+/** Remove everything from the Git distribution at `directory` that `keptGit` does not keep. */
+const pruneGit = (directory: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const kept = keptGit(process.platform);
+    const prune = (current: string): Effect.Effect<boolean, never, FileSystem.FileSystem> =>
+      Effect.gen(function* () {
+        let empty = true;
+        for (const name of yield* fs.readDirectory(current)) {
+          const file = path.join(current, name);
+          const relative = path.relative(directory, file).split(path.sep).join("/");
+          const info = yield* Effect.tryPromise(() => lstat(file));
+          if (info.isDirectory()) {
+            if (yield* prune(file)) yield* fs.remove(file, { recursive: true });
+            else empty = false;
+          } else if (
+            kept.some((pattern) => pattern.test(relative)) ||
+            (info.isSymbolicLink() && (yield* fs.readLink(file)) === "git")
+          )
+            empty = false;
+          else yield* fs.remove(file);
+        }
+        return empty;
+      }).pipe(Effect.orDie);
+    yield* prune(directory);
+  });
+
 /** The source substitutions both runtime builds share. */
 const sourcePlugin = (root: string) =>
   Effect.gen(function* () {
@@ -246,7 +299,7 @@ const internalWorkers = (directory: string) =>
     return workers;
   });
 
-/** Bundle both process entry points once; copy only locked native dependencies and resource files. */
+/** Bundle the CLI entry point; copy only locked native dependencies and resource files. */
 export const bundleLocalRuntime = (root: string, stage: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -279,10 +332,7 @@ export const bundleLocalRuntime = (root: string, stage: string) =>
     const bundled = yield* Effect.tryPromise(() =>
       build({
         absWorkingDir: root,
-        entryPoints: {
-          cli: "apps/local/server/src/bin.ts",
-          desktop: "apps/local/desktop/src/server.ts",
-        },
+        entryPoints: { cli: "apps/local/server/src/bin.ts" },
         outdir: output,
         outExtension: { ".js": ".mjs" },
         bundle: true,
@@ -373,6 +423,7 @@ export const bundleLocalRuntime = (root: string, stage: string) =>
     ] as const) {
       yield* copyPackage(yield* requiredPackage(name, owner));
     }
+    yield* pruneGit(path.join(stage, "node_modules/dugite/git"));
     // npm deliberately omits symbolic and hard links. Git uses argv[0] aliases;
     // preserve those commands with shell builtins instead of duplicating its binary.
     const materializeLinks = (
@@ -446,15 +497,28 @@ else process.exitCode = result.status ?? 1;
       path.join(root, "apps/local/web/dist/client"),
       path.join(stage, "apps/local/web/dist/client"),
     );
-    yield* fs.copy(
-      path.join(root, "packages/telemetry/dist/motel"),
-      path.join(stage, "packages/telemetry/dist/motel"),
-    );
+    // The telemetry collector and the viewer it serves, where packages/telemetry/src/local.ts finds
+    // them. The collector's build for this target is in dist/collector (`collector:build`, or the
+    // release run's collector job, whose download drops the executable bit). It is made executable
+    // here, so the packages can run it; the macOS signer signs every Mach-O file and gives those
+    // with an execute bit the executable entitlements. Their notices join the install's own below.
+    const telemetry = path.join(root, "packages/telemetry/dist");
+    const collectorName =
+      process.platform === "win32" ? "executor-collector.exe" : "executor-collector";
+    const stagedCollector = path.join(stage, "packages/telemetry/dist/collector", collectorName);
+    yield* fs.makeDirectory(path.dirname(stagedCollector), { recursive: true });
+    yield* fs.copyFile(path.join(telemetry, "collector", collectorName), stagedCollector);
+    if (process.platform !== "win32") yield* fs.chmod(stagedCollector, 0o755);
+    for (const file of ["index.html", "assets"])
+      yield* fs.copy(
+        path.join(telemetry, "viewer", file),
+        path.join(stage, "packages/telemetry/dist/viewer", file),
+      );
     // Keep build diagnostics beside the artifact, without making every npm user
     // download external source maps. These files are not executable runtime assets.
     for (const [directory, name] of [
       [output, "runtime"],
-      [path.join(stage, "packages/telemetry/dist/motel"), "motel"],
+      [path.join(stage, "packages/telemetry/dist/viewer"), "viewer"],
     ] as const) {
       for (const file of yield* fs.readDirectory(directory, { recursive: true })) {
         if (!file.endsWith(".map")) continue;
@@ -533,6 +597,28 @@ else process.exitCode = result.status ?? 1;
             overwrite: true,
           });
     }
+    // The collector's notices: Motel's licence, whose behaviour it follows, the licence files of
+    // every crate linked into it and the Rust standard library's; its crates as `cargo:name@version`.
+    yield* fs.copy(
+      path.join(telemetry, "collector/NOTICE"),
+      path.join(stage, "licenses/executor-collector/NOTICE"),
+    );
+    yield* fs.copy(path.join(telemetry, "collector/licenses"), path.join(stage, "licenses"), {
+      overwrite: true,
+    });
+    inventory.push("executor-collector");
+    for (const line of (yield* fs.readFileString(
+      path.join(telemetry, "collector/cargo-packages.txt"),
+    )).split("\n"))
+      if (line !== "") inventory.push(`cargo:${line}`);
+    // The viewer's: the packages its build bundled, in this same layout.
+    yield* fs.copy(path.join(telemetry, "viewer/licenses"), path.join(stage, "licenses"), {
+      overwrite: true,
+    });
+    for (const line of (yield* fs.readFileString(
+      path.join(telemetry, "viewer/runtime-packages.txt"),
+    )).split("\n"))
+      if (line !== "") inventory.push(line);
     yield* fs.writeFileString(
       path.join(stage, "runtime-packages.txt"),
       [...new Set(inventory)].sort().join("\n") + "\n",

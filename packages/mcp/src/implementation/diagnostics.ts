@@ -1,11 +1,25 @@
 import { Cause, Effect, ErrorReporter, Option, Schema, SchemaAST } from "effect";
 import { HttpServerResponse } from "effect/http";
 import { McpSchema } from "effect/ai";
-import { CallFailure, callFailurePresentation, ToolCallFailed } from "@executor-js/sdk/core";
+import {
+  AppEvaluationFailed,
+  CallFailure,
+  callFailurePresentation,
+  hostObservedEvaluation,
+  ToolCallFailed,
+  ToolListingTimedOut,
+  ToolSearchStale,
+  ToolSearchUnavailable,
+} from "@executor-js/sdk/core";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { maxApiErrorInstructionsLength, maxApiErrorMessageLength } from "apps/contracts";
 import type { CodeMode } from "@opencode-ai/codemode";
-import { McpErrorResponse } from "../contracts/execute.ts";
+import {
+  AppDiscoveryTimedOut,
+  FailureReference,
+  McpErrorResponse,
+  type McpFailurePhase,
+} from "../contracts/execute.ts";
 
 const encodeResponse = Schema.encodeSync(Schema.fromJsonString(McpErrorResponse));
 
@@ -46,6 +60,54 @@ const presentation = (error: Error): Option.Option<McpErrorResponse> => {
     retryable: presented.retryable ?? false,
   });
 };
+/**
+ * Where a failure reached the agent: whether Executor was listing an app's tools or calling one,
+ * and the trace of the request that met it.
+ */
+export interface FailureSite {
+  readonly operation: "discover" | "call";
+  readonly reference: string | undefined;
+}
+/**
+ * The current request's trace ID, the reference of each failure it meets. The host's tracer
+ * creates it or continues the client's, so nothing an app returns can set or change it.
+ */
+export const failureReference: Effect.Effect<string | undefined> = Effect.option(
+  Effect.currentSpan,
+).pipe(
+  Effect.map((span) =>
+    Option.isSome(span) && Schema.is(FailureReference)(span.value.traceId)
+      ? span.value.traceId
+      : undefined,
+  ),
+);
+/**
+ * The phase a failure stopped, from what Executor itself observed: what it was doing when it met
+ * the failure, `evaluate` only when its own code found the app's definition could not load, and
+ * `discover` for its own listing deadlines. The app's code can raise any other failure, including
+ * one that names a phase or says the definition failed, so the phase an app reports stays in
+ * the message as the app's account and never chooses this one.
+ */
+const phaseOf = (error: Error, operation: FailureSite["operation"]): McpFailurePhase => {
+  if (Schema.is(AppEvaluationFailed)(error) && hostObservedEvaluation(error)) return "evaluate";
+  if (
+    Schema.is(ToolListingTimedOut)(error) ||
+    Schema.is(AppDiscoveryTimedOut)(error) ||
+    Schema.is(ToolSearchUnavailable)(error) ||
+    Schema.is(ToolSearchStale)(error)
+  )
+    return "discover";
+  return operation;
+};
+/** A product error's presentation with the phase it stopped and its request's reference. */
+const located = (error: Error, site: FailureSite): Option.Option<McpErrorResponse> =>
+  presentation(error).pipe(
+    Option.map((response) => ({
+      ...response,
+      phase: phaseOf(error, site.operation),
+      ...(site.reference === undefined ? {} : { reference: site.reference }),
+    })),
+  );
 const identifier = (error: Error) => {
   const schema = error.constructor;
   return Schema.isSchema(schema) ? (SchemaAST.resolveIdentifier(schema.ast) ?? "Error") : "Error";
@@ -59,21 +121,33 @@ export const reportFailure = (error: Error): Effect.Effect<void> =>
   ErrorReporter.report(Cause.fail(error));
 /**
  * One line for agents: code, status, message, the declared recovery action and whether repeating
- * the same call unchanged may help. A corrected call is a new call whatever this says.
+ * the same call unchanged may help, then the phase the failure stopped and the reference a user
+ * can share to find it. A corrected call is a new call whatever this says.
  */
-const summary = ({ code, status, message, recovery, retryable }: McpErrorResponse) =>
-  `${code} (HTTP ${status}): ${message}${recovery === undefined ? "" : ` Recovery: ${recovery.action}`} Retryable (unchanged call): ${retryable ? "yes" : "no"}.`;
+const summary = ({
+  code,
+  status,
+  message,
+  recovery,
+  retryable,
+  phase,
+  reference,
+}: McpErrorResponse) =>
+  `${code} (HTTP ${status}): ${message}${recovery === undefined ? "" : ` Recovery: ${recovery.action}`} Retryable (unchanged call): ${retryable ? "yes" : "no"}.${phase === undefined ? "" : ` Phase: ${phase}.`}${reference === undefined ? "" : ` Reference: ${reference}.`}`;
 
 /**
  * Preserve bounded, curated framework recovery as JSON, which a program can read from a caught
  * tool error; unknown errors expose only their schema identifier.
  */
-export const diagnostic = (error: Error): string =>
-  Option.match(presentation(error), { onSome: encodeResponse, onNone: () => identifier(error) });
+export const diagnostic = (error: Error, site: FailureSite): string =>
+  Option.match(located(error, site), {
+    onSome: encodeResponse,
+    onNone: () => identifier(error),
+  });
 
 /** The same presentation as a single readable line, for failures agents read but never parse. */
-export const diagnosticSummary = (error: Error): string =>
-  Option.match(presentation(error), { onSome: summary, onNone: () => identifier(error) });
+export const diagnosticSummary = (error: Error, site: FailureSite): string =>
+  Option.match(located(error, site), { onSome: summary, onNone: () => identifier(error) });
 
 /**
  * Refuse an MCP HTTP request before protocol dispatch. Clients print the response body after

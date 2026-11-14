@@ -9,7 +9,13 @@ import {
 import { appBrowserBindings } from "../../contracts/app-browser.ts";
 import { AppSchedules } from "@executor-js/ui/dashboard/schedules";
 import { scheduleBindings } from "../../contracts/schedules.ts";
-import { allResults, QueryResult, QueryView, useQuery } from "@executor-js/ui/dashboard/context";
+import {
+  allResults,
+  QueryResult,
+  QueryView,
+  usePreload,
+  useQuery,
+} from "@executor-js/ui/dashboard/context";
 import {
   missingRequirements,
   requirementAccounts,
@@ -97,6 +103,7 @@ export function AppDetailPage({
     shouldBlockFn: () => skillDirty && !window.confirm("Discard your unsaved changes?"),
     enableBeforeUnload: skillDirty,
   });
+  usePreload(appAtom(id), appLinksAtom(id), userLinksAtom(id));
   const query = useQuery(appAtom(id));
   const appLinks = useQuery(appLinksAtom(id));
   const userLinks = useQuery(userLinksAtom(id));
@@ -117,7 +124,7 @@ export function AppDetailPage({
       </Button>
     </div>
   );
-  const pending = <AppDetailLoading view={tab} app={app} selectedTool={tool} />;
+  const pending = <AppDetailLoading view={tab} app={app} selectedTool={tool} canEdit />;
   return (
     <AppDetailLayout
       key={id}

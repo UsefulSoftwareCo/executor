@@ -10,8 +10,9 @@ import {
   OrganizationLogo,
   organizationHandle,
   organizationSlugMaxLength,
+  type OrganizationId,
 } from "@executor-js/hosted-server";
-import { SetupOrder } from "@executor-js/hosted-server/setup";
+import { SetupOrder, SetupSkip, type SetupStep } from "@executor-js/hosted-server/setup";
 import {
   TeamIconOwner,
   CompanyLookup,
@@ -21,8 +22,9 @@ import {
   CreateTeam,
   type OnboardingCreated,
   TeamIconNotFound,
-  V1Membership,
   onboardingExperiment,
+  onboardingSkipExperiment,
+  SetupGate,
 } from "../contracts/onboarding.ts";
 import { FeatureFlags } from "./feature-flags.ts";
 import { makeOnboardingStore } from "./onboarding-store.ts";
@@ -66,7 +68,6 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
   const blobs = yield* BlobStore;
   const store = yield* makeOnboardingStore;
   const lookup = yield* CompanyLookup;
-  const v1 = yield* V1Membership;
   const iconUrl = (owner: string, key: string) =>
     new URL(`/api/onboarding/icons/${owner}/${key}`, options.origin).href;
   const iconKey = (owner: string, key: string) => BlobKey.make(`team-icons/${owner}/${key}`);
@@ -104,11 +105,7 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
       );
       return null;
     });
-  /**
-   * The one entry decision: existing membership, a pending invitation and earlier setup come
-   * first; only an account with none of them asks v1. Runs no SQL transaction, so the WorkOS
-   * read never holds one open.
-   */
+  /** The one entry decision: existing membership, a pending invitation, then earlier setup. */
   const standing = (userId: string) =>
     Effect.gen(function* () {
       const user = yield* store.user(userId);
@@ -119,8 +116,6 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
       if (state.invitation !== null)
         return { status: "invitation" as const, invitation: state.invitation };
       if (state.provisioned) return { status: "ready" as const, organizations: [] };
-      // Only a verified email reaches this point, so the answer cannot reveal another person's v1 account.
-      if ((yield* v1.check(user)) === "v1") return { status: "v1" as const };
       return { status: "new" as const, user };
     });
   const prepare: typeof Onboarding.Service.prepare = (userId) =>
@@ -148,8 +143,8 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
         ...input,
         name: input.name.trim(),
       });
-      // Settle existing membership and the v1 check before storing an icon, and before the
-      // transaction: no SQL transaction stays open during WorkOS or R2 I/O.
+      // Settle existing membership before storing an icon, and before the transaction: no SQL
+      // transaction stays open during R2 I/O.
       const entry = yield* standing(userId);
       if (entry.status !== "new") return entry;
       const details = {
@@ -189,7 +184,7 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
       if (created === undefined || selected.next !== "setup" || confirmed.status !== "ready")
         return confirmed;
       yield* assignSetup(userId, created);
-      // The browser opens the first step straight away, so the order is read, and any exposure
+      // The browser opens the first step straight away, so the setup is read, and any exposures
       // recorded, as that step is shown. A failed read leaves the step to read it.
       const sequence = yield* setup(userId, created).pipe(Effect.option);
       return Option.isSome(sequence) ? { ...confirmed, setup: sequence.value } : confirmed;
@@ -198,43 +193,96 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
       Effect.withSpan("onboarding.create"),
     );
   /**
-   * Ask PostHog for the new team's setup order and keep its answer, so every later read shows the
-   * same one. An unavailable flag, or a failure keeping the answer, leaves the team unassigned:
-   * it sees the control and is not counted. Creating the team never waits on more than the
-   * evaluation's one-second deadline and never fails because of it.
+   * Ask PostHog, in one evaluation, for the new team's setup order and whether its steps can be
+   * skipped, and keep each answer, so every later read shows the same setup. The two experiments
+   * are independent: an unavailable flag, or a failure keeping its answer, leaves the member
+   * unassigned in that experiment only, where they see its control and are not counted. Creating
+   * the team never waits on more than the evaluation's one-second deadline and never fails
+   * because of it.
    */
   const assignSetup = (userId: string, organization: string) =>
     Effect.gen(function* () {
       const flags = yield* FeatureFlags;
-      const variant = Schema.decodeUnknownOption(SetupOrder)(
-        yield* flags.evaluate(onboardingExperiment.flag, userId),
+      const answers = yield* flags.evaluate(
+        [onboardingExperiment.flag, onboardingSkipExperiment.flag],
+        userId,
       );
-      if (Option.isSome(variant)) yield* store.assignSetup(userId, organization, variant.value);
-    }).pipe(
-      Effect.catch(() =>
-        Effect.logWarning("Setup order was not assigned; the team sees the control untracked"),
-      ),
-    );
+      const order = Schema.decodeUnknownOption(SetupOrder)(answers[onboardingExperiment.flag]);
+      if (Option.isSome(order))
+        yield* store
+          .assignSetup(userId, organization, order.value)
+          .pipe(
+            Effect.catch(() =>
+              Effect.logWarning(
+                "Setup order was not assigned; the team sees the control untracked",
+              ),
+            ),
+          );
+      const skip = Schema.decodeUnknownOption(SetupSkip)(answers[onboardingSkipExperiment.flag]);
+      if (Option.isSome(skip))
+        yield* store
+          .assignSkip(userId, organization, skip.value)
+          .pipe(
+            Effect.catch(() =>
+              Effect.logWarning(
+                "Setup skip was not assigned; the member sees the control untracked",
+              ),
+            ),
+          );
+    });
+  /** Exactly one read marks an assignment seen, so each exposure is recorded once. */
+  const exposure = (
+    userId: string,
+    organization: OrganizationId,
+    flag: string,
+    claimed: string | undefined,
+  ) =>
+    claimed === undefined
+      ? Effect.void
+      : recordFlagExposure({ userId, organizationId: organization, flag, variant: claimed });
   const setup: typeof Onboarding.Service.setup = (userId, organization) =>
     Effect.gen(function* () {
-      // Exactly one read marks the assignment seen, so the exposure is recorded once.
-      const exposed = yield* store.claimSetupExposure(userId, organization);
-      if (exposed !== undefined) {
-        yield* recordFlagExposure({
-          userId,
-          organizationId: organization,
-          flag: onboardingExperiment.flag,
-          variant: exposed,
-        });
-        return { order: exposed, enrolled: true };
-      }
-      const assigned = yield* store.setupAssignment(userId, organization);
-      return assigned === undefined
-        ? { order: onboardingExperiment.control, enrolled: false }
-        : { order: assigned, enrolled: true };
+      const exposedOrder = yield* store.claimSetupExposure(userId, organization);
+      yield* exposure(userId, organization, onboardingExperiment.flag, exposedOrder);
+      const exposedSkip = yield* store.claimSkipExposure(userId, organization);
+      yield* exposure(userId, organization, onboardingSkipExperiment.flag, exposedSkip);
+      const order = exposedOrder ?? (yield* store.setupAssignment(userId, organization));
+      const skip = exposedSkip ?? (yield* store.skipAssignment(userId, organization))?.variant;
+      return {
+        order: order ?? onboardingExperiment.control,
+        enrolled: order !== undefined,
+        skip: {
+          variant: skip ?? onboardingSkipExperiment.control,
+          enrolled: skip !== undefined,
+        },
+      };
     }).pipe(
       Effect.mapError(() => new OnboardingUnavailable()),
       Effect.withSpan("onboarding.setup"),
+    );
+  const gate: typeof Onboarding.Service.gate = (userId, organization, progress) =>
+    Effect.gen(function* () {
+      const assigned = yield* store.skipAssignment(userId, organization);
+      if (assigned === undefined || assigned.variant !== "required" || assigned.completed)
+        return SetupGate.make({ status: "open" });
+      const done = yield* progress;
+      if (done.accounts && done.agent !== undefined) {
+        yield* store.completeSetup(userId, organization);
+        return SetupGate.make({ status: "open" });
+      }
+      const order =
+        (yield* store.setupAssignment(userId, organization)) ?? onboardingExperiment.control;
+      // The next step is the first of the member's order that is not done.
+      const first: SetupStep = order === "assistant_first" ? "assistant" : "accounts";
+      const firstDone = first === "accounts" ? done.accounts : done.agent !== undefined;
+      const step: SetupStep = firstDone ? (first === "accounts" ? "assistant" : "accounts") : first;
+      // The account step carries a connected assistant on to the first prompt.
+      return step === "accounts" && done.agent !== undefined
+        ? SetupGate.make({ status: "setup", step, agent: done.agent })
+        : SetupGate.make({ status: "setup", step });
+    }).pipe(
+      Effect.mapError(() => new OnboardingUnavailable()),
+      Effect.withSpan("onboarding.gate"),
     );
   const icon: typeof Onboarding.Service.icon = (userId, owner, key) =>
     Effect.gen(function* () {
@@ -252,22 +300,5 @@ export const makeOnboarding = Effect.fn("onboarding.service")(function* (options
         Schema.is(TeamIconNotFound)(error) ? error : new OnboardingUnavailable(),
       ),
     );
-  /**
-   * Creating an organization needs the account's own pass of the v1 check, whatever its v2
-   * memberships and invitations: an invitation lets a v1 member join the inviting organization,
-   * not start another. Setting up a team through onboarding ran the check (or the account
-   * predates it), so such an account is not asked again; any other account asks v1 now.
-   * Accounts created before the check shipped skip it (`V1Membership`).
-   */
-  const allowsOrganization: typeof Onboarding.Service.allowsOrganization = (userId) =>
-    Effect.gen(function* () {
-      const user = yield* store.user(userId);
-      if (!user?.emailVerified) return yield* new OnboardingUnavailable();
-      if (yield* store.setUpTeam(userId)) return true;
-      return (yield* v1.check(user)) !== "v1";
-    }).pipe(
-      Effect.mapError(() => new OnboardingUnavailable()),
-      Effect.withSpan("onboarding.allowsOrganization"),
-    );
-  return Onboarding.of({ prepare, create, allowsOrganization, setup, icon });
+  return Onboarding.of({ prepare, create, setup, gate, icon });
 });

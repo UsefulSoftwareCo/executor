@@ -8,9 +8,15 @@
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schedule } from "effect";
+import { randomUUID } from "node:crypto";
 import type { Page, Route } from "playwright";
 import { scenarios } from "../test-plan.ts";
-import { awaitSentry, captureThroughPage, sentryEvents } from "../support/browser-observability.ts";
+import {
+  awaitSentry,
+  awaitSentryWholeEnvironment,
+  captureThroughPage,
+  sentryEvents,
+} from "../support/browser-observability.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
@@ -88,9 +94,11 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
           noPrivateApps(page).waitFor(),
         );
         // Every request below comes from this one document, which the reporter tags.
-        const marker = "connection scenario marker";
+        // Unique to this run, so the report found by it is this page's.
+        const marker = `connection scenario marker ${randomUUID()}`;
         yield* captureThroughPage(marker);
-        const [markerEvent] = yield* awaitSentry(
+        // The marker is this scenario's own; its report names the page the rest is scoped to.
+        const [markerEvent] = yield* awaitSentryWholeEnvironment(
           (event) => event.exception?.values.some((value) => value.value === marker) === true,
         );
         expect(typeof markerEvent?.tags?.page_id).toBe("string");
@@ -149,11 +157,11 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
           delivered: (spans: ReadonlyArray<Tags>) => boolean,
         ) =>
           telemetry
-            .search("ui.api.transport", {
-              "error.type": "BrowserConnectionFailed",
-              "executor.page.id": pageId,
-              "executor.error.expected": expected,
-            })
+            .search(
+              "ui.api.transport",
+              { page: pageId },
+              { "error.type": "BrowserConnectionFailed", "executor.error.expected": expected },
+            )
             .pipe(
               Effect.map((found) => found.data.map(({ span }): Tags => span.tags)),
               Effect.flatMap((spans) =>
@@ -196,6 +204,7 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
         yield* evidence.attach("connection-reset.png", "image/png", reset);
         expect(yield* reportedFailures).toContain("BrowserConnectionFailed");
         yield* awaitSentry(
+          { page: pageId },
           (event) =>
             event.tags?.page_id === pageId && event.tags.error_type === "BrowserConnectionFailed",
         );
@@ -441,7 +450,7 @@ layer(HostedLive, { excludeTestServices: true })("Browser connection failures", 
           reported: reportedAfterNavigations,
         });
         // Only the reset connection reached the error reporter, under its own kind.
-        const fromPage = (yield* sentryEvents).filter(
+        const fromPage = (yield* sentryEvents({ page: pageId })).filter(
           (event) => event.tags?.page_id === pageId && event.tags.error_type !== undefined,
         );
         expect(fromPage.length).toBeGreaterThan(0);

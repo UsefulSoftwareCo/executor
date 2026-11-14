@@ -1,4 +1,4 @@
-import type { ComponentProps, ReactElement, ReactNode } from "react";
+import { type ComponentProps, type ReactElement, type ReactNode } from "react";
 import { ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Button } from "@executor-js/ui/components/button";
@@ -12,7 +12,17 @@ import { SessionMenu } from "./auth.tsx";
  * that grows or shrinks never moves what is above it. A step that keeps its own content scrolling,
  * such as a list, passes `h-dvh` so the column ends at the bottom of the screen.
  */
-export function SetupPage({ className, children }: ComponentProps<"main">) {
+export function SetupPage({
+  className,
+  children,
+  organization,
+  onSignOut,
+}: ComponentProps<"main"> & {
+  /** The team whose setup this is, so account settings know the way back to it. */
+  readonly organization?: string;
+  /** Reports leaving from a setup step, before the session ends. */
+  readonly onSignOut?: () => void;
+}) {
   return (
     <main
       className={cn(
@@ -21,7 +31,7 @@ export function SetupPage({ className, children }: ComponentProps<"main">) {
       )}
     >
       <div className="mb-6 w-[200px] max-w-full self-end bg-background lg:fixed lg:bottom-[max(12px,_env(safe-area-inset-bottom))] lg:left-[max(12px,_env(safe-area-inset-left))] lg:z-10 lg:mb-0 lg:max-w-[calc(100%-88px)]">
-        <SessionMenu />
+        <SessionMenu organization={organization} onSignOut={onSignOut} />
       </div>
       <div className="flex min-h-0 w-full max-w-[600px] flex-1 flex-col">
         <div className="mb-8 flex items-center gap-2 font-mono text-[15px] max-sm:mb-6">
@@ -76,7 +86,7 @@ export function SetupCard({ className, ...props }: ComponentProps<"div">) {
 export function SetupActions({ children }: { readonly children: ReactNode }) {
   return (
     <div className="z-20 shrink-0 bg-background max-sm:fixed max-sm:inset-x-0 max-sm:bottom-0 max-sm:border-t max-sm:pb-[env(safe-area-inset-bottom)] sm:sticky sm:bottom-0 sm:mt-3">
-      <div className="flex w-full items-center justify-end gap-3 py-3 max-sm:gap-2 max-sm:px-6">
+      <div className="flex w-full items-center justify-end gap-3 py-3 max-sm:flex-wrap max-sm:gap-x-2 max-sm:gap-y-1.5 max-sm:px-6">
         {children}
       </div>
     </div>
@@ -88,30 +98,45 @@ export function SetupActions({ children }: { readonly children: ReactNode }) {
  * done it is a quiet "Skip for now"; once `done`, the primary action named by `label`. Both labels
  * hold the button's box, so it keeps its size and place when it changes. `children` renders the
  * link or button for the current state around the content it is given.
+ *
+ * A `required` step cannot be skipped: until it is done the button is disabled and reads `hint`,
+ * saying what to do, in place of "Skip for now".
  */
 export function SetupNext({
   done,
   label,
+  required = false,
+  hint,
   children,
 }: {
   readonly done: boolean;
   readonly label: string;
+  readonly required?: boolean;
+  readonly hint: string;
   readonly children: (content: ReactNode) => ReactElement;
 }) {
-  return (
-    <Button
-      variant={done ? "default" : "secondary"}
-      // Only its colors fade; its size follows the screen at once, so a resize never animates it.
-      className="ml-auto transition-[color,background-color,box-shadow] max-sm:flex-1"
-      asChild
-    >
-      {children(
-        // Hidden labels keep their width and leave the accessible name to the one shown.
-        <span className="grid">
-          <ForwardLabel shown={!done}>Skip for now</ForwardLabel>
-          <ForwardLabel shown={done}>{label}</ForwardLabel>
-        </span>,
-      )}
+  // Hidden labels keep their width and leave the accessible name to the one shown.
+  const content = (
+    <span className="grid">
+      <ForwardLabel shown={!done}>{required ? hint : "Skip for now"}</ForwardLabel>
+      <ForwardLabel shown={done}>{label}</ForwardLabel>
+    </span>
+  );
+  // Only its colors fade; its size follows the screen at once, so a resize never animates it.
+  const forward = "ml-auto transition-[color,background-color,box-shadow,opacity] max-sm:flex-1";
+  if (!required)
+    return (
+      <Button variant={done ? "default" : "secondary"} className={forward} asChild>
+        {children(content)}
+      </Button>
+    );
+  return done ? (
+    <Button className={forward} asChild>
+      {children(content)}
+    </Button>
+  ) : (
+    <Button className={forward} disabled>
+      {content}
     </Button>
   );
 }

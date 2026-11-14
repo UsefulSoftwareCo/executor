@@ -217,17 +217,20 @@ const upgradeFlow = <E, R>(
     const linkStep = {
       sql: `SELECT name FROM ${host.journal}_migrations WHERE name = 'app_account_links'`,
     };
-    const [schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore] = yield* storage([
-      scheduleRows,
-      sourceRows,
-      {
-        sql: "SELECT id, actor, start_key FROM executor_workflow_runs WHERE app = $1",
-        params: [app],
-      },
-      linkRows,
-      linkStep,
-      ...beforeAppAccounts(),
-    ]);
+    const versionRow = { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" };
+    const [versionBefore, schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore] =
+      yield* storage([
+        versionRow,
+        scheduleRows,
+        sourceRows,
+        {
+          sql: "SELECT id, actor, start_key FROM executor_workflow_runs WHERE app = $1",
+          params: [app],
+        },
+        linkRows,
+        linkStep,
+        ...beforeAppAccounts(),
+      ]);
     // The host's link step stays recorded, holding the member's link and no app link.
     expect(stepBefore).toEqual([{ name: "app_account_links" }]);
     expect(linksBefore).toEqual([{ requirement: "service", subject: host.actor, account }]);
@@ -264,7 +267,7 @@ const upgradeFlow = <E, R>(
     // What the upgrade wrote, read from storage.
     const [version, step, scopes, nullable, schedulesAfter, sourcesAfter, linksAfter] =
       yield* storage([
-        { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
+        versionRow,
         linkStep,
         { sql: "SELECT id, scope FROM executor_workflow_runs WHERE app = $1", params: [app] },
         {
@@ -281,7 +284,8 @@ const upgradeFlow = <E, R>(
       before: { schedulesBefore, sourcesBefore, runsBefore, linksBefore, stepBefore },
       after: { version, step, scopes, nullable, schedulesAfter, sourcesAfter, linksAfter },
     });
-    expect(version).toEqual([{ value: "4.0.15" }]);
+    // The upgrade reached the version this build recorded before the fixture labelled it 4.0.13.
+    expect(version, "the current schema version").toEqual(versionBefore);
     expect(step).toEqual([{ name: "app_account_links" }]);
     // The member's user link as it was, and the app link without a subject.
     expect(linksAfter).toEqual([
@@ -349,7 +353,7 @@ layer(HostedLive, { excludeTestServices: true })("Protocol-12 accounts on hosted
               actor,
               "POST",
               connectionsPath(path, "user", "service"),
-              { destination: { kind: "personal" } },
+              {},
             );
             expect(started.status, JSON.stringify(started.body)).toBe(200);
             const submitted = yield* api.request(
@@ -529,7 +533,7 @@ layer(HostedLive, { excludeTestServices: true })("App accounts storage upgrade o
                   owner,
                   "POST",
                   connectionsPath(path, scope, requirement),
-                  { destination: { kind: "personal" } },
+                  {},
                 );
                 yield* ok(started);
                 const submitted = yield* api.request(

@@ -2,6 +2,7 @@
 import { UrlPolicy, defaultUrlPolicy, urlPolicyConfig } from "@executor-js/utils/url-policy";
 import { Config, Effect, Option, Schema } from "effect";
 import { McpLimits, defaultMcpLimits } from "@executor-js/mcp";
+import { dataDirectoryConfig, defaultPort } from "./service.ts";
 
 /** One explicit HTTPS origin for a private reverse proxy, without paths or credentials. */
 export const BrowserOrigin = Schema.String.check(
@@ -23,6 +24,11 @@ export const ServerConfig = Schema.Struct({
   encryptionKey: Schema.RedactedFromValue(
     Schema.String.check(Schema.isPattern(/^[a-fA-F0-9]{64}$/u)),
   ),
+  /**
+   * This process's background service password, random per process and accepted wherever the API
+   * key is. The process sets it after reading the environment; it is never configured.
+   */
+  password: Schema.optional(Schema.RedactedFromValue(Schema.String.check(Schema.isMinLength(32)))),
   mcp: McpLimits.pipe(Schema.withDecodingDefault(Effect.succeed(defaultMcpLimits))),
   urlPolicy: UrlPolicy.pipe(Schema.withDecodingDefault(Effect.succeed(defaultUrlPolicy))),
   oauthClientMetadataUrl: Schema.optional(Schema.NonEmptyString),
@@ -31,14 +37,6 @@ export const ServerConfig = Schema.Struct({
 });
 /** Parsed configuration, with secrets redacted at ingress. */
 export type ServerConfig = typeof ServerConfig.Type;
-
-/** The port a local server listens on when EXECUTOR_PORT is unset. */
-const defaultPort = 4312;
-
-/** The data directory, before it is resolved. The npm launcher defaults it to ~/.executor/v2/cli. */
-export const dataDirectoryConfig = Config.String("EXECUTOR_DATA_DIR").pipe(
-  Config.withDefault(".local/executor"),
-);
 
 /** Read the environment at process startup. Local defaults only apply to directory and port. */
 export const config = Config.all({
@@ -66,22 +64,18 @@ export const config = Config.all({
     maxToolCalls: Config.Number("EXECUTOR_MCP_MAX_TOOL_CALLS").pipe(
       Config.withDefault(defaultMcpLimits.maxToolCalls),
     ),
-    maxOutputBytes: Config.Number("EXECUTOR_MCP_MAX_OUTPUT_BYTES").pipe(
-      Config.withDefault(defaultMcpLimits.maxOutputBytes),
-    ),
   }),
 }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.toType(ServerConfig))));
 
-/** The port of the running server a client such as `executor pair` connects to. */
+/** The port of the running server a client such as `executor service pair` connects to. */
 export const serverPortConfig = Config.Port("EXECUTOR_PORT").pipe(Config.withDefault(defaultPort));
 
 /**
- * Key storage for a new data directory. Unset uses the OS credential store and falls back to
- * `keys.json` only when there is no store; `os` never falls back; `file` always uses `keys.json`.
- * Bootstrap applies it before `config`, and never uses it to switch an existing directory.
+ * The port a server listens on: EXECUTOR_PORT, then the background service's `port` setting, then
+ * 4312. 0 listens on any free port, as a private server does.
  */
-export const KeyStorage = Schema.Literals(["os", "file"]);
-export type KeyStorage = typeof KeyStorage.Type;
-export const keyStorageConfig = Config.schema(KeyStorage, "EXECUTOR_KEY_STORAGE").pipe(
-  Config.option,
-);
+export const listenPortConfig = (setting: number | undefined) =>
+  Config.schema(
+    Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 65535 })),
+    "EXECUTOR_PORT",
+  ).pipe(Config.withDefault(setting ?? defaultPort));

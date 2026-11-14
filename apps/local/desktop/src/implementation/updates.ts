@@ -43,7 +43,8 @@ export const makeUpdater = (restart: (install: () => void) => void) =>
           dialog.showMessageBox({
             type: "question",
             message: `Executor 2 ${version} is ready to install.`,
-            detail: "The local server will stop while Executor restarts.",
+            detail:
+              "Executor restarts to install it. Its background server keeps running until the new version replaces it.",
             buttons: ["Restart", "Later"],
             defaultId: 1,
             cancelId: 1,

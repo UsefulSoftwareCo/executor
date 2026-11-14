@@ -6,7 +6,8 @@
  * last call naming the same accounts resolved, and the same batch reads the links live. A call
  * naming accounts the session has not called with yet reads the app and links first and sends the
  * account reads in a second batch. Every check still runs on every call against live rows; the
- * batch decides nothing a separate read would not.
+ * batch decides nothing a separate read would not. When the call ends, the tool call log records it
+ * in one more statement outside the batches, counted on its own.
  *
  * Self-host runs the batch under the PGlite client's lock, as Cloud runs it in one socket write
  * (see `cloud-tool-call-batch.spec.ts`). Each batch is one `sql.pipeline` span.
@@ -73,8 +74,10 @@ const Execution = Schema.Struct({
 interface CallTrace {
   /** `sql.pipeline` spans: each batch the call sent. */
   readonly batches: number;
-  /** `sql.execute` spans outside the app's runtime. */
+  /** `sql.execute` spans outside the app's runtime and the tool call log's write. */
   readonly statements: number;
+  /** `sql.execute` spans of the tool call log's write once the call ended. */
+  readonly logWrites: number;
   /** Grant reads the resolve loop made itself, after the batch. */
   readonly liveGrantReads: number;
   readonly texts: ReadonlyArray<string>;
@@ -248,7 +251,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             const trace = yield* traceOf(request.traceId);
             return { execution, trace };
           });
-        /** The last MCP tool call of a trace, once its whole trace has reached Motel. */
+        /** The last MCP tool call of a trace, once its whole trace has reached the collector. */
         const traceOf = (traceId: string) =>
           telemetry.query(traceId).pipe(
             Effect.flatMap((result) => {
@@ -260,7 +263,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
                 (entry) => entry.span.tags["http.response.status_code"] === "200",
               );
               if (root === undefined || !complete)
-                return Effect.fail(new Error("The completed server trace must reach Motel"));
+                return Effect.fail(
+                  new Error("The completed server trace must reach the collector"),
+                );
               const byId = new Map(result.data.map(({ span }) => [span.spanId, span]));
               /** The span names between a span and the tool call, or undefined outside it. */
               const path = (spanId: string | null) => {
@@ -280,18 +285,26 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
                 const names = path(span.parentSpanId);
                 return names !== undefined && !names.some((name) => name.startsWith("runtime."));
               });
-              const statements = inside.filter(({ span }) => span.operationName === "sql.execute");
+              const logged = (spanId: string | null) =>
+                (path(spanId) ?? []).includes("product.tool_call_log.write");
+              const executed = inside.filter(({ span }) => span.operationName === "sql.execute");
+              const statements = executed.filter(({ span }) => !logged(span.parentSpanId));
               const texts = statements.map(({ span }) =>
                 String(span.tags["db.query.text"] ?? "")
                   .replace(/\s+/g, " ")
                   .slice(0, 80),
               );
-              return statements.length === 0
-                ? Effect.fail(new Error("The tool call's statements must reach Motel"))
+              // A call that succeeded writes its log row after it ends, so the write can arrive
+              // later than the call's own statements.
+              return statements.length === 0 || executed.length === statements.length
+                ? Effect.fail(
+                    new Error("The tool call's statements and log write must reach the collector"),
+                  )
                 : Effect.succeed({
                     batches: inside.filter(({ span }) => span.operationName === "sql.pipeline")
                       .length,
                     statements: statements.length,
+                    logWrites: executed.length - statements.length,
                     liveGrantReads: statements.filter(
                       ({ span }) =>
                         String(span.tags["db.query.text"] ?? "").includes(
@@ -320,6 +333,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             expect(made.trace.batches, `${label}: batches`).toBe(expected.batches);
             if (expected.statements !== undefined)
               expect(made.trace.statements, `${label}: statements`).toBe(expected.statements);
+            expect(made.trace.logWrites, `${label}: the tool call log's one insert`).toBe(1);
           });
 
         yield* evidence.step(

@@ -1,5 +1,6 @@
 /** Colo cache of the official app feed, so listing and installing do not each wait on R2. */
-import { Effect, Schema } from "effect";
+import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
+import { Effect, FiberSet, Schema } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
 class FeedCacheFailed extends Schema.TaggedError<FeedCacheFailed>()("FeedCacheFailed", {}) {}
@@ -14,12 +15,23 @@ const retentionSeconds = 5 * 60;
  * requests, failures and non-200 responses pass through uncached. A cache failure only costs the
  * origin read.
  */
-export const cachedFeedClient = (
+export const cachedFeedClient = Effect.fn(function* (
   origin: string,
   feedUrl: string,
   client: HttpClient.HttpClient,
-): HttpClient.HttpClient => {
+) {
   const feedDirectory = new URL(".", feedUrl).href;
+  // Alchemy closes the event scope through waitUntil after sending the response.
+  // Own cache writes there, without retaining an init-time Worker context.
+  const writes = yield* makeExecutionMemo(
+    Effect.gen(function* () {
+      const writes = yield* FiberSet.make();
+      yield* Effect.addFinalizer(() =>
+        FiberSet.awaitEmpty(writes).pipe(Effect.timeoutOption("2 seconds"), Effect.asVoid),
+      );
+      return writes;
+    }),
+  );
   return HttpClient.transform(client, (response, request) => {
     if (request.method !== "GET" || !request.url.startsWith(feedDirectory)) return response;
     return Effect.gen(function* () {
@@ -49,12 +61,15 @@ export const cachedFeedClient = (
         "content-type": fresh.headers["content-type"] ?? "application/json",
         "cache-control": `public, max-age=${retentionSeconds}`,
       };
-      yield* cached(() => cache.put(key, new Response(body, { headers }))).pipe(
-        Effect.catchTag("FeedCacheFailed", () =>
-          Effect.logWarning("Catalog feed cache write failed"),
+      yield* FiberSet.run(
+        yield* writes,
+        cached(() => cache.put(key, new Response(body, { headers }))).pipe(
+          Effect.catchTag("FeedCacheFailed", () =>
+            Effect.logWarning("Catalog feed cache write failed"),
+          ),
         ),
       );
       return HttpClientResponse.fromWeb(request, new Response(body, { status: 200, headers }));
     }).pipe(Effect.withSpan("catalog.feed.read"));
   });
-};
+});

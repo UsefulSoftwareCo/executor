@@ -155,6 +155,39 @@ export const sessionCookie = (config: Pick<ServerConfig, "port" | "browserOrigin
 export const pairingUrl = (base: string, token: Redacted.Redacted<string>) =>
   Redacted.make(`${base}/#pair=${Redacted.value(token)}`);
 
+/** Compare every byte, so the time taken does not reveal how much of a secret matched. */
+const sameSecret = (supplied: string, secret: Redacted.Redacted<string>) => {
+  const left = new TextEncoder().encode(supplied);
+  const right = new TextEncoder().encode(Redacted.value(secret));
+  let difference = left.length ^ right.length;
+  for (const [index, byte] of right.entries()) difference |= (left[index] ?? 0) ^ byte;
+  return difference === 0;
+};
+type Secrets = ReadonlyArray<Redacted.Redacted<string> | undefined>;
+const oneOf = (supplied: string | undefined, secrets: Secrets) =>
+  supplied !== undefined &&
+  secrets.some((secret) => secret !== undefined && sameSecret(supplied, secret));
+
+/** Whether an `Authorization` header's bearer token is one of `secrets`. */
+export const bearerMatches = (authorization: string | undefined, secrets: Secrets) =>
+  authorization?.startsWith("Bearer ") === true &&
+  oneOf(authorization.slice("Bearer ".length), secrets);
+
+/**
+ * Whether a programmatic client sent a local credential: the API key, or this process's background
+ * service password, which local clients read from the service registration.
+ */
+export const localCredential = (
+  config: Pick<ServerConfig, "apiKey" | "password">,
+  supplied: string | undefined,
+) => oneOf(supplied, [config.apiKey, config.password]);
+
+/** Whether an `Authorization` header carries a local credential as its bearer token. */
+export const localBearer = (
+  config: Pick<ServerConfig, "apiKey" | "password">,
+  authorization: string | undefined,
+) => bearerMatches(authorization, [config.apiKey, config.password]);
+
 /** Reject foreign browser requests and DNS rebinding; allow only top-level OAuth authorization navigation. */
 export const localRequest = (port: number, browserOrigin?: string) =>
   Effect.gen(function* () {
@@ -247,7 +280,7 @@ export const authHandlers = (auth: LocalAuth, config: ServerConfig) => {
         Effect.gen(function* () {
           const request = yield* localRequest(config.port, config.browserOrigin);
           if (request.headers.origin === undefined) {
-            if (request.headers.authorization !== `Bearer ${Redacted.value(config.apiKey)}`)
+            if (!localBearer(config, request.headers.authorization))
               return yield* new PairingUnauthorized();
           } else if (!(yield* auth.valid(request.cookies[name]))) {
             return yield* new AuthForbidden();

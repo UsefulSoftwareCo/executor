@@ -1,6 +1,7 @@
 /** A Node host owns polling and every in-flight task in its existing Effect scope. */
 import { WebhookSourceHost } from "../contracts/webhooks.ts";
 import { Effect, Queue, Schedule, Schema, Semaphore } from "effect";
+import { traceFailure } from "@executor-js/telemetry/failed-span";
 import type { Executor } from "../contracts/executor.ts";
 import type { ScheduleAuthority } from "../contracts/scheduler.ts";
 import { ScheduleHostReady, ScheduleWorkerOptions } from "../contracts/schedule-worker.ts";
@@ -23,11 +24,20 @@ export const startScheduleWorker = (
         runner: config.runner,
         maxCandidates: config.concurrency,
         authorize,
-        execute: (operation) => pool.withPermitsIfAvailable(1)(operation).pipe(Effect.asVoid),
+        // Each operation a pass finds is one trace, rooted in a dispatch as a Cloud
+        // coordinator's pass is.
+        execute: (operation) =>
+          pool
+            .withPermitsIfAvailable(1)(
+              operation.pipe(Effect.withSpan("schedule.dispatch"), Effect.withTracerEnabled(true)),
+            )
+            .pipe(Effect.asVoid),
       })
       .pipe(
-        // Each pass is one trace, as a Cloud coordinator's dispatch is.
-        Effect.withSpan("schedule.dispatch"),
+        // A pass runs every second; one that finds nothing to run records nothing. One that
+        // fails is still a trace of its own.
+        Effect.withTracerEnabled(false),
+        traceFailure("schedule.dispatch"),
         Effect.catch(() => Effect.logError("Scheduled dispatch failed")),
         Effect.forkIn(scope),
         Effect.asVoid,

@@ -1,9 +1,15 @@
-import { RequireUser, OrganizationId, OrganizationLogo } from "@executor-js/hosted-server";
+import {
+  RequireBrowserSession,
+  OrganizationId,
+  OrganizationLogo,
+  type SetupProgress,
+} from "@executor-js/hosted-server";
 import {
   OrganizationReference,
   RequireOrganization,
 } from "@executor-js/hosted-server/organization";
-import { SetupOrder } from "@executor-js/hosted-server/setup";
+import { SetupOrder, SetupSkip, SetupStep } from "@executor-js/hosted-server/setup";
+import { GrantId } from "@executor-js/mcp-auth/grants";
 import { ApiError } from "@executor-js/utils/api-error";
 import { Context, Effect, Schema } from "effect";
 import {
@@ -84,14 +90,11 @@ export const OnboardingDraft = Schema.Struct({
   status: Schema.Literal("draft"),
   suggestion: TeamDetails,
 });
-/** A new account whose email belongs to an Executor v1 organization stays on v1; no team is created. */
-export const OnboardingV1Workspace = Schema.Struct({ status: Schema.Literal("v1") });
 /** Entry either has a destination or needs explicit team confirmation. */
 export const OnboardingEntry = Schema.Union([
   OnboardingReady,
   OnboardingInvitation,
   OnboardingDraft,
-  OnboardingV1Workspace,
 ]);
 
 /**
@@ -106,11 +109,47 @@ export const onboardingExperiment = {
 } as const satisfies { readonly control: SetupOrder } & Record<string, unknown>;
 
 /**
- * The setup order this member sees for this team. `enrolled` marks a team in the experiment; every
- * other team, including one whose evaluation failed, sees the control untracked.
+ * The onboarding skip experiment, assigned beside the order experiment and independently of it:
+ * `skippable` (the control) keeps today's "Skip for now", `required` takes it away and keeps the
+ * dashboard closed until both steps are done. See `notes/posthog.md#onboarding-skip-experiment`.
  */
-export const SetupSequence = Schema.Struct({ order: SetupOrder, enrolled: Schema.Boolean });
+export const onboardingSkipExperiment = {
+  flag: "onboarding-skip-v1",
+  control: "skippable",
+  attributionDays: 7,
+} as const satisfies { readonly control: SetupSkip } & Record<string, unknown>;
+
+/** Whether this member's setup steps for this team can be skipped, and whether that is tracked. */
+export const SetupSkipAssignment = Schema.Struct({ variant: SetupSkip, enrolled: Schema.Boolean });
+export type SetupSkipAssignment = typeof SetupSkipAssignment.Type;
+
+/**
+ * The setup this member sees for this team: the order of its steps and whether they can be
+ * skipped. Each `enrolled` marks the member in that experiment; every other member, including one
+ * whose evaluation failed, sees that experiment's control untracked.
+ */
+export const SetupSequence = Schema.Struct({
+  order: SetupOrder,
+  enrolled: Schema.Boolean,
+  skip: SetupSkipAssignment,
+});
 export type SetupSequence = typeof SetupSequence.Type;
+
+/**
+ * Whether the team's dashboard is open to this member. It is closed only to a member whose setup
+ * is `required` and who has not done both steps; `step` is the one to do next. When the assistant
+ * came first and is connected, `agent` is the agent it connected, which the account step carries
+ * to the first prompt.
+ */
+export const SetupGate = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("open") }),
+  Schema.Struct({
+    status: Schema.Literal("setup"),
+    step: SetupStep,
+    agent: Schema.optionalKey(GrantId),
+  }),
+]);
+export type SetupGate = typeof SetupGate.Type;
 
 /**
  * A team created for its setup carries its setup order, so its first step opens without reading
@@ -120,12 +159,8 @@ export const OnboardingTeamCreated = Schema.Struct({
   ...OnboardingReady.fields,
   setup: Schema.optionalKey(SetupSequence),
 });
-/** A confirmation can also discover membership, an invitation or a v1 organization. */
-export const OnboardingCreated = Schema.Union([
-  OnboardingTeamCreated,
-  OnboardingInvitation,
-  OnboardingV1Workspace,
-]);
+/** A confirmation can also discover membership or an invitation. */
+export const OnboardingCreated = Schema.Union([OnboardingTeamCreated, OnboardingInvitation]);
 
 /** Setup failed before a confirmed result; retrying cannot create another organization. */
 export const OnboardingUnavailable = ApiError.define({
@@ -147,25 +182,6 @@ export class CompanyLookup extends Context.Service<
   }
 >()("cloud/CompanyLookup") {}
 
-/** The v1 lookup could not answer; entry fails closed and the person can retry. */
-export class V1MembershipUnavailable extends Schema.TaggedError<V1MembershipUnavailable>()(
-  "V1MembershipUnavailable",
-  {},
-) {}
-/**
- * Decides whether a v2 account with no v2 organization belongs on Executor v1. Callers pass
- * only verified emails. The check is off where v1's WorkOS key is not configured.
- */
-export class V1Membership extends Context.Service<
-  V1Membership,
-  {
-    readonly check: (account: {
-      readonly email: string;
-      readonly createdAt: Date;
-    }) => Effect.Effect<"v1" | "continue", V1MembershipUnavailable>;
-  }
->()("cloud/V1Membership") {}
-
 /** Cloud entry prepares a suggestion, then provisions only after explicit confirmation. */
 export class Onboarding extends Context.Service<
   Onboarding,
@@ -178,12 +194,6 @@ export class Onboarding extends Context.Service<
       details: CreateTeam,
     ) => Effect.Effect<typeof OnboardingCreated.Type, OnboardingUnavailable>;
     /**
-     * Whether this account may create an organization outside team setup, such as through
-     * Better Auth's organization endpoint. Applies the same decision as `prepare` and
-     * `create`: false only when the account belongs on Executor v1. Fails closed.
-     */
-    readonly allowsOrganization: (userId: string) => Effect.Effect<boolean, OnboardingUnavailable>;
-    /**
      * The setup order for a team this member created through team setup. The first read for an
      * enrolled team records the experiment exposure; later reads return the same order.
      */
@@ -191,6 +201,16 @@ export class Onboarding extends Context.Service<
       userId: string,
       organization: OrganizationId,
     ) => Effect.Effect<SetupSequence, OnboardingUnavailable>;
+    /**
+     * Whether the team's dashboard is open to this member. `progress` reads what the member has
+     * done of the steps; it runs only for a member whose setup is required and not yet finished.
+     * Finding both steps done finishes setup for good.
+     */
+    readonly gate: <E, R>(
+      userId: string,
+      organization: OrganizationId,
+      progress: Effect.Effect<SetupProgress, E, R>,
+    ) => Effect.Effect<SetupGate, OnboardingUnavailable, R>;
     readonly icon: (
       userId: string,
       owner: string,
@@ -224,9 +244,12 @@ export const onboardingGroup = HttpApiGroup.make("onboarding")
       error: [OnboardingUnavailable, TeamIconNotFound],
     }),
   )
-  .middleware(RequireUser);
+  .middleware(RequireBrowserSession);
 
-/** A new team's setup steps read their order with the page; membership is checked first. */
+/**
+ * A new team's setup steps read their order with the page, and dashboard pages whether setup still
+ * holds them; membership is checked first.
+ */
 export const setupGroup = HttpApiGroup.make("setup")
   .add(
     HttpApiEndpoint.get("sequence", "/api/organizations/:organization/setup", {
@@ -235,5 +258,12 @@ export const setupGroup = HttpApiGroup.make("setup")
       error: OnboardingUnavailable,
     }),
   )
+  .add(
+    HttpApiEndpoint.get("gate", "/api/organizations/:organization/setup/gate", {
+      params: { organization: OrganizationReference },
+      success: SetupGate,
+      error: OnboardingUnavailable,
+    }),
+  )
   .middleware(RequireOrganization)
-  .middleware(RequireUser);
+  .middleware(RequireBrowserSession);

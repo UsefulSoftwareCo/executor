@@ -2,7 +2,7 @@
  * Tool search rows and their BM25 ranking in the executor's own Postgres database. The SQL client
  * stays inside this module; callers see only these operations.
  */
-import { Clock, Effect, Schema } from "effect";
+import { Array as Arr, Clock, Effect, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
 import type { SqlError } from "effect/sql/SqlError";
 import {
@@ -58,6 +58,16 @@ const Kept = Schema.Struct({
   digest: Schema.String,
   routers: Schema.Array(ToolRouter),
   superseded: Schema.NullOr(Schema.Number),
+});
+/**
+ * {@link Kept} with the listing and target it belongs to, for a read of several listings. Rows
+ * written before targets were recorded have none; they match no wanted target, as `listing`'s
+ * `target =` filter skips them.
+ */
+const KeptOf = Schema.Struct({
+  ...Kept.fields,
+  listing: Schema.String,
+  target: Schema.NullOr(Schema.String),
 });
 const Listed = Schema.Struct({ listing: Schema.String });
 /** A ranked page as one row: every part of it read in the same statement. */
@@ -135,14 +145,17 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
   const insertBatched = <A, R extends Record<string, unknown>>(
     items: ReadonlyArray<A>,
     encode: (item: A, index: number) => { readonly row: R; readonly chars: number },
-    insert: (rows: ReadonlyArray<R>) => Effect.Effect<unknown, SqlError>,
+    insert: (rows: Arr.NonEmptyReadonlyArray<R>) => Effect.Effect<unknown, SqlError>,
   ) =>
     Effect.gen(function* () {
       let batch: Array<R> = [];
       let chars = 0;
       for (const [index, item] of items.entries()) {
         const encoded = encode(item, index);
-        if (batch.length > 0 && (batch.length >= batchRows || chars + encoded.chars > batchChars)) {
+        if (
+          Arr.isArrayNonEmpty(batch) &&
+          (batch.length >= batchRows || chars + encoded.chars > batchChars)
+        ) {
           yield* insert(batch);
           batch = [];
           chars = 0;
@@ -150,7 +163,7 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
         batch.push(encoded.row);
         chars += encoded.chars;
       }
-      if (batch.length > 0) yield* insert(batch);
+      if (Arr.isArrayNonEmpty(batch)) yield* insert(batch);
     });
   /** Delete the tool and definition rows of the listings. */
   const removeRows = (listings: ReadonlyArray<ToolSearchListing>) =>
@@ -213,6 +226,38 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
         Effect.map((rows) => rows[0]),
         failed,
       ),
+    /**
+     * The kept rows of each of these listings of its target, in order, read in one statement;
+     * undefined where none is kept. Each answers as `listing` would for it alone.
+     */
+    listings: (
+      wanted: ReadonlyArray<{ readonly listing: ToolSearchListing; readonly target: string }>,
+    ) =>
+      wanted.length === 0
+        ? Effect.succeed([])
+        : sql`select listing, target, at::float8 as at, digest, routers,
+            superseded::float8 as superseded
+          from executor_tool_search_listings
+          where listing in ${sql.in([...new Set(wanted.map((entry) => entry.listing))])}`.pipe(
+            Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(KeptOf))),
+            Effect.map((rows) =>
+              wanted.map((entry) => {
+                const row = rows.find(
+                  (candidate) =>
+                    candidate.listing === entry.listing && candidate.target === entry.target,
+                );
+                return row === undefined
+                  ? undefined
+                  : {
+                      at: row.at,
+                      digest: row.digest,
+                      routers: row.routers,
+                      superseded: row.superseded,
+                    };
+              }),
+            ),
+            failed,
+          ),
     /**
      * Keep a superseded listing that a target resolves to again for as long as a current one,
      * so the executions that search it keep finding it.

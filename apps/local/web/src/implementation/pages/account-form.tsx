@@ -85,8 +85,11 @@ export function AppAccountForm({
       submit={(input: AccountSubmission) => submit(input)}
       {...(checkWith
         ? {
-            check: (input: AccountSubmission) =>
-              checkCredentials({ app, provider: provider.id, ...input }),
+            check: {
+              app,
+              run: (input: AccountSubmission) =>
+                checkCredentials({ app, provider: provider.id, ...input }),
+            },
           }
         : {})}
       oauth={(props) => (

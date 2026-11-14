@@ -1,7 +1,7 @@
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { ApiError } from "@executor-js/utils/api-error";
-/** Local browser pairing and the private desktop bootstrap protocol. */
-import { Schema, type Effect } from "effect";
+/** Local browser pairing and the keys a local data directory keeps. */
+import { Config, Schema, type Effect } from "effect";
 import { AppId } from "@executor-js/sdk";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
@@ -90,14 +90,6 @@ export const PairingLink = Schema.Struct({
   url: Schema.RedactedFromValue(Schema.String),
   expiresAt: Schema.Date,
 });
-/** Private pipe payload sent by a desktop parent, never command-line arguments or environment. */
-export const DesktopBootstrap = Schema.Struct({
-  version: Schema.Literal(1),
-  token: BootstrapToken,
-});
-export type DesktopBootstrap = typeof DesktopBootstrap.Type;
-/** Parent/CLI ready notification contains no credential. */
-export const ServerReady = Schema.Struct({ version: Schema.Literal(1), url: Schema.String });
 
 /** OS credential-store service. Each installation's entry uses its installation ID as the account. */
 export const LocalCredentialService = "com.usefulsoftware.executor.v2";
@@ -130,7 +122,30 @@ export const LocalConfigurationReason = Schema.Literals([
 ]);
 export type LocalConfigurationReason = typeof LocalConfigurationReason.Type;
 
-/** Shared contracts used by the local browser, CLI, and future desktop parent. */
+/** Safe startup instructions. Key values are never displayed; native error text is sanitized. */
+export class LocalConfigurationError extends Schema.TaggedError<LocalConfigurationError>()(
+  "LocalConfigurationError",
+  {
+    reason: LocalConfigurationReason,
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * Key storage for a new data directory. Unset uses the OS credential store and falls back to
+ * `keys.json` only when there is no store; `os` never falls back; `file` always uses `keys.json`.
+ * Bootstrap applies it before `config`, and never uses it to switch an existing directory.
+ */
+export const KeyStorage = Schema.Literals(["os", "file"]);
+export type KeyStorage = typeof KeyStorage.Type;
+export const keyStorageConfig = Config.schema(KeyStorage, "EXECUTOR_KEY_STORAGE").pipe(
+  Config.option,
+);
+/** Why a server refuses another EXECUTOR_KEY_STORAGE value, before it writes anything. */
+export const keyStorageInvalid =
+  'EXECUTOR_KEY_STORAGE must be "file" (keep keys in keys.json) or "os" (OS credential store only), or unset. Nothing was changed.';
+
+/** Shared contracts used by the local browser, the CLI and Executor desktop. */
 export const LocalAuthApi = HttpApi.make("local-auth").add(
   HttpApiGroup.make("auth")
     .add(

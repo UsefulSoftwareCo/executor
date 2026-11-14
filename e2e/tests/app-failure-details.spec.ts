@@ -345,6 +345,11 @@ export default defineApp({}, {});`,
             kind,
             input: {},
           });
+        // The caller lists the tools first: only a kept listing confirms that a query only reads,
+        // so its failures keep a read's advice.
+        expect((yield* api.request(actors.owner, "GET", `${prefix}/${app.id}/tools`)).status).toBe(
+          200,
+        );
 
         // The app's own error name and message pass through, not a fixed SDK reason.
         const query = yield* body(ToolFailed, yield* call("fail", "query"));
@@ -413,7 +418,9 @@ export default defineApp({}, {});`,
           retryable: true,
         });
         expect(failure.message).toContain(appMarker);
-        expect(failure.message).toMatch(/ Retryable \(unchanged call\): yes\.$/);
+        expect(failure.message).toMatch(
+          / Retryable \(unchanged call\): yes\. Phase: [a-z]+\. Reference: [0-9a-f]{32}\.$/,
+        );
         const cacheRetryable = (tool: string) =>
           client
             .use(`Call the app query ${tool}`, (client, signal) =>
@@ -467,7 +474,9 @@ export default defineApp({}, {});`,
             ),
           ),
         );
-        expect(written.message).toMatch(/ Retryable \(unchanged call\): no\.$/);
+        expect(written.message).toMatch(
+          / Retryable \(unchanged call\): no\. Phase: [a-z]+\. Reference: [0-9a-f]{32}\.$/,
+        );
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
   );

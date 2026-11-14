@@ -1,5 +1,15 @@
 import { useQuery } from "./context.tsx";
-import { useEffect, useId, useRef, useState, type ReactNode, type ComponentType } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useCallback,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+  type ComponentType,
+} from "react";
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult, type Atom } from "effect/reactivity";
 import { Exit, Option, type Cause } from "effect";
@@ -25,9 +35,10 @@ import {
 } from "../../contracts/dashboard.ts";
 import { AppProviderIcon, ProviderIcon } from "./common.tsx";
 import { AccountAvatar, AccountCheckResult } from "./account-health.tsx";
-import { EmptyState } from "./empty-state.tsx";
+import { CopyButton } from "./code.tsx";
 import { Button } from "../components/button.tsx";
 import { Checkbox } from "../components/checkbox.tsx";
+import { Skeleton } from "../components/skeleton.tsx";
 import { Spinner } from "../components/spinner.tsx";
 import {
   DropdownMenu,
@@ -238,16 +249,49 @@ const checkFreshFor = 5 * 60 * 1000;
 
 /**
  * Stale while revalidate: rows show the recorded checks at once, and each account this app checks
- * is checked again in the background, once per view, when its result is missing, outdated or older
- * than `checkFreshFor`.
+ * is checked again in the background when its result is missing, outdated or older than
+ * `checkFreshFor`. Each recorded result is rechecked once, so a redeploy or new credentials while
+ * the page stays open check again, and a recheck that changes nothing does not repeat. A recheck
+ * that cannot run leaves the result as it was, so its rows offer to try again.
  */
 function useRevalidateChecks(
   app: App,
   scope: AccountScope,
   accounts: readonly AccountSummary[],
-  revalidate: ((account: AccountId) => Promise<unknown>) | undefined,
-) {
-  const started = useRef(new Set<AccountId>());
+  revalidate: Revalidate | undefined,
+): Rechecks {
+  const started = useRef(new Set<string>());
+  const [running, setRunning] = useState<ReadonlyMap<AccountId, number>>(new Map());
+  const [failed, setFailed] = useState<ReadonlySet<AccountId>>(new Set());
+  const retry = useCallback(
+    (id: AccountId) => {
+      if (revalidate === undefined) return;
+      const count = (by: number) =>
+        setRunning((runs) => {
+          const next = new Map(runs);
+          const total = (next.get(id) ?? 0) + by;
+          if (total > 0) next.set(id, total);
+          else next.delete(id);
+          return next;
+        });
+      const fail = (failure: boolean) =>
+        setFailed((ids) => {
+          const next = new Set(ids);
+          if (failure) next.add(id);
+          else next.delete(id);
+          return next;
+        });
+      count(1);
+      fail(false);
+      void revalidate(id)
+        .then(
+          (exit) => fail(Exit.isFailure(exit)),
+          () => fail(true),
+        )
+        .finally(() => count(-1));
+    },
+    [revalidate],
+  );
   useEffect(() => {
     if (revalidate === undefined) return;
     const now = Date.now();
@@ -257,25 +301,39 @@ function useRevalidateChecks(
         if (
           account.provider !== requirement.provider ||
           account.health === undefined ||
-          started.current.has(account.id) ||
           accountNeedsSignIn(account) ||
           account.signIn?.state === "unavailable"
         )
           continue;
         const entry = account.health.apps.find((item) => item.app === app.id);
+        if (entry !== undefined && !entry.checkable) continue;
         const checkedAt =
           entry === undefined ? account.health.infoCheckedAt : (entry.check?.checkedAt ?? null);
-        const fresh =
-          checkedAt !== null &&
-          entry?.check?.current !== false &&
-          now - checkedAt.getTime() < checkFreshFor;
-        if (fresh) continue;
-        started.current.add(account.id);
-        void revalidate(account.id);
+        const current = entry?.check?.current !== false;
+        if (checkedAt !== null && current && now - checkedAt.getTime() < checkFreshFor) continue;
+        const result = `${account.id}:${checkedAt?.getTime() ?? "none"}:${current}`;
+        if (started.current.has(result)) continue;
+        started.current.add(result);
+        retry(account.id);
       }
     }
-  });
+  }, [app, scope, accounts, revalidate, retry]);
+  return { running, failed, retry };
 }
+
+/** Check an account again; resolves with the check's outcome. */
+type Revalidate = (account: AccountId) => Promise<Exit.Exit<unknown, unknown>>;
+/** The accounts whose check of this app is running again, or could not run. */
+interface Rechecks {
+  readonly running: ReadonlyMap<AccountId, number>;
+  readonly failed: ReadonlySet<AccountId>;
+  readonly retry: (account: AccountId) => void;
+}
+const Checking = createContext<Rechecks>({
+  running: new Map(),
+  failed: new Set(),
+  retry: () => {},
+});
 
 type RequirementEntry = readonly [string, AccountRequirement];
 
@@ -320,7 +378,7 @@ export interface ScopeAccounts<E> {
     | ((account: AccountSummary, slot: string, requirement: AccountRequirement) => ReactNode)
     | undefined;
   /** Check one linked account again; its result reaches `links` through the host's queries. */
-  readonly revalidate?: ((account: AccountId) => Promise<unknown>) | undefined;
+  readonly revalidate?: Revalidate | undefined;
 }
 
 /**
@@ -335,6 +393,7 @@ export function AppAccounts<E>({
   appAccounts,
   yourAccounts,
   accounts,
+  canEdit,
   Failure,
 }: {
   readonly app: App;
@@ -342,42 +401,140 @@ export function AppAccounts<E>({
   readonly yourAccounts: ScopeAccounts<E>;
   /** The caller's usable accounts, whose sign-in and check details the choices reuse. */
   readonly accounts: readonly AccountSummary[];
+  /** Whether the caller can edit the app, and so have their agent add account requirements. */
+  readonly canEdit: boolean;
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
-  const appRequirements = scoped(app, "app");
-  const userRequirements = scoped(app, "user");
-  if (appRequirements.length === 0 && userRequirements.length === 0)
-    return (
-      <EmptyState size="compact" title="No accounts required">
-        This app can run without a saved account.
-      </EmptyState>
-    );
   return (
     <div className="accounts-section space-y-8">
-      {appRequirements.length > 0 && (
-        <LinkScope
-          app={app}
-          scope="app"
-          title="App accounts"
-          description="Linked for everyone"
-          requirements={appRequirements}
-          data={appAccounts}
-          accounts={accounts}
-          Failure={Failure}
-        />
-      )}
-      {userRequirements.length > 0 && (
-        <LinkScope
-          app={app}
-          scope="user"
-          title="Your accounts"
-          description="Linked for you"
-          requirements={userRequirements}
-          data={yourAccounts}
-          accounts={accounts}
-          Failure={Failure}
-        />
-      )}
+      {accountScopes.map(({ scope, title, description }) => {
+        const requirements = scoped(app, scope);
+        return requirements.length === 0 ? (
+          <AccountScopeSection key={scope} title={title} description={description}>
+            <NoScopeAccounts app={app} scope={scope} canEdit={canEdit} />
+          </AccountScopeSection>
+        ) : (
+          <LinkScope
+            key={scope}
+            app={app}
+            scope={scope}
+            title={title}
+            description={description}
+            requirements={requirements}
+            data={scope === "app" ? appAccounts : yourAccounts}
+            accounts={accounts}
+            Failure={Failure}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+/** The Accounts tab's two sections, in order. */
+export const accountScopes = [
+  { scope: "app", title: "App accounts", description: "Linked for everyone" },
+  { scope: "user", title: "Your accounts", description: "Linked for you" },
+] as const satisfies readonly {
+  readonly scope: AccountScope;
+  readonly title: string;
+  readonly description: string;
+}[];
+
+/** One scope's section: its heading, then its requirements or empty state. */
+export function AccountScopeSection({
+  title,
+  description,
+  readOnly,
+  children,
+}: {
+  readonly title: string;
+  readonly description: string;
+  readonly readOnly?: boolean | undefined;
+  readonly children: ReactNode;
+}) {
+  return (
+    <section aria-label={title} data-read-only={readOnly} className="space-y-3">
+      <div>
+        <h2 className="text-sm font-medium">{title}</h2>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+const scopeGuide = {
+  app: {
+    title: "No app accounts",
+    kind: "an app account",
+    detail: (
+      <>
+        One account linked for everyone, such as a team API key. Callers, schedules and webhooks all
+        use it, and the app reads it as <code>ctx.app.accounts</code>.
+      </>
+    ),
+  },
+  user: {
+    title: "No user accounts",
+    kind: "a user account",
+    detail: (
+      <>
+        Each person links their own account, and the app reads the caller’s as{" "}
+        <code>ctx.user.accounts</code>.
+      </>
+    ),
+  },
+} as const satisfies Record<
+  AccountScope,
+  { readonly title: string; readonly kind: string; readonly detail: ReactNode }
+>;
+
+/** A self-contained request for an agent with this app's source tools. */
+const addAccountPrompt = (app: App, scope: AccountScope) => {
+  const target = `my Executor app ${JSON.stringify(app.name)} (app ID: ${app.id})`;
+  const read = `First read accounts.md in the Executor app's app-authoring skill and the app's current source. Declare the provider with defineProvider`;
+  return scope === "app"
+    ? `Add an app account to ${target}: one shared [service, for example Datadog] account that people who can edit the app link once for everyone. Every caller, schedule and webhook uses it. ${read}, add it under the app scope of the requirements, { app: { accounts } }, and read it in tools as ctx.app.accounts.<name>. Never put credentials in source. Deploy the updated app, then tell me to link the account under App accounts on its Accounts tab.`
+    : `Add a user account to ${target} so each person who uses it connects their own [service, for example GitHub] account. ${read}, add it under the user scope of the requirements, { user: { accounts } }, and read the caller's account in tools as ctx.user.accounts.<name>. Never put credentials in source. Deploy the updated app, then tell me to link my account under Your accounts on its Accounts tab.`;
+};
+
+/**
+ * A scope without requirements. Requirements are declared in the app's source, so editors get a
+ * prompt for their agent. `canEdit` is unknown while the app's access loads.
+ */
+export function NoScopeAccounts({
+  app,
+  scope,
+  canEdit,
+}: {
+  readonly app: App;
+  readonly scope: AccountScope;
+  readonly canEdit: boolean | undefined;
+}) {
+  const guide = scopeGuide[scope];
+  return (
+    <div className="rounded-lg border border-dashed px-4 py-3.5">
+      <h3 className="text-[13px] font-medium">{guide.title}</h3>
+      <p className="mt-1 max-w-xl text-pretty text-xs leading-5 text-muted-foreground">
+        {guide.detail}
+      </p>
+      <div className="mt-3 flex min-h-9 items-center">
+        {canEdit === undefined ? (
+          <Skeleton className="h-9 w-32" />
+        ) : canEdit ? (
+          <CopyButton
+            code={addAccountPrompt(app, scope)}
+            label={`Copy prompt to add ${guide.kind}`}
+            text="Copy prompt"
+            variant="outline"
+            size="default"
+            inline
+          />
+        ) : (
+          <p className="text-xs text-muted-foreground">People who can edit this app can add one.</p>
+        )}
+      </div>
     </div>
   );
 }
@@ -401,7 +558,7 @@ function LinkScope<E>({
   readonly requirements: readonly RequirementEntry[];
 }) {
   const { app, scope, data } = props;
-  useRevalidateChecks(
+  const checking = useRevalidateChecks(
     app,
     scope,
     data.links.map((link) => link.account),
@@ -410,35 +567,35 @@ function LinkScope<E>({
   const all = Object.values(app.requirements.accounts);
   const readOnly = data.edit === undefined;
   return (
-    <section aria-label={title} data-read-only={readOnly} className="space-y-3">
-      <div>
-        <h2 className="text-sm font-medium">{title}</h2>
-        <p className="text-xs text-muted-foreground">{description}</p>
-      </div>
-      {readOnly && data.readOnly !== undefined && (
-        <p className="text-xs text-muted-foreground">{data.readOnly}</p>
-      )}
-      <div className={cn("space-y-5", readOnly && "opacity-60")}>
-        {requirements.map(([slot, requirement]) => (
-          <RequirementView
-            key={slot}
-            {...props}
-            slot={slot}
-            requirement={requirement}
-            linked={data.links.flatMap((link) => (link.requirement === slot ? [link.account] : []))}
-            label={
-              all.length > 1
-                ? `${requirement.definition.name} (${slot})`
-                : requirement.definition.name
-            }
-            showSlot={
-              all.filter((other) => other.definition.name === requirement.definition.name).length >
-              1
-            }
-          />
-        ))}
-      </div>
-    </section>
+    <Checking.Provider value={checking}>
+      <AccountScopeSection title={title} description={description} readOnly={readOnly}>
+        {readOnly && data.readOnly !== undefined && (
+          <p className="text-xs text-muted-foreground">{data.readOnly}</p>
+        )}
+        <div className={cn("space-y-5", readOnly && "opacity-60")}>
+          {requirements.map(([slot, requirement]) => (
+            <RequirementView
+              key={slot}
+              {...props}
+              slot={slot}
+              requirement={requirement}
+              linked={data.links.flatMap((link) =>
+                link.requirement === slot ? [link.account] : [],
+              )}
+              label={
+                all.length > 1
+                  ? `${requirement.definition.name} (${slot})`
+                  : requirement.definition.name
+              }
+              showSlot={
+                all.filter((other) => other.definition.name === requirement.definition.name)
+                  .length > 1
+              }
+            />
+          ))}
+        </div>
+      </AccountScopeSection>
+    </Checking.Provider>
   );
 }
 
@@ -474,7 +631,7 @@ function RequirementView<E>({
   const { data } = props;
   return (
     <section aria-label={label} className="min-w-0 space-y-2.5">
-      <div className="flex min-h-8 min-w-0 items-center gap-3 text-sm [&_.provider-icon]:size-14 [&_.provider-icon]:rounded-lg [&_.provider-icon]:border-0 [&_.provider-icon]:bg-muted/40 [&_.provider-icon>img]:size-8 [&_.provider-icon>svg]:size-8">
+      <div className="flex min-h-8 min-w-0 items-center gap-3 text-sm [&_.provider-icon]:size-14 [&_.provider-icon]:rounded-xl">
         <AppProviderIcon app={props.app} provider={requirement.definition} large />
         <div className="min-w-0">
           <p className="truncate font-medium">{requirement.definition.name}</p>
@@ -757,6 +914,7 @@ function AccountStatus({
   readonly account: AccountSummary;
   readonly reconnect?: ReactNode;
 }) {
+  const rechecks = useContext(Checking);
   if (accountNeedsSignIn(account))
     return (
       <span className="flex items-center gap-2 text-xs text-sign-in-warning">
@@ -765,11 +923,25 @@ function AccountStatus({
     );
   if (account.signIn?.state === "unavailable")
     return <span className="text-xs text-sign-in-warning">Unavailable</span>;
-  return <AppCheck health={account.health?.apps.find((entry) => entry.app === app.id)} />;
+  return (
+    <AppCheck
+      health={account.health?.apps.find((entry) => entry.app === app.id)}
+      checking={rechecks.running.has(account.id)}
+      retry={rechecks.failed.has(account.id) ? () => rechecks.retry(account.id) : undefined}
+    />
+  );
 }
 
 /** This app's check of a linked account; apps without a check show nothing. */
-function AppCheck({ health }: { readonly health: AccountAppHealth | undefined }) {
-  if (health === undefined || (!health.checkable && health.check === null)) return null;
-  return <AccountCheckResult health={health} />;
+function AppCheck({
+  health,
+  checking,
+  retry,
+}: {
+  readonly health: AccountAppHealth | undefined;
+  readonly checking: boolean;
+  readonly retry: (() => void) | undefined;
+}) {
+  if (health === undefined || !health.checkable) return null;
+  return <AccountCheckResult health={health} checking={checking} retry={retry} />;
 }

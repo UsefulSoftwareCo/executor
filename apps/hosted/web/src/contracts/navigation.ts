@@ -1,27 +1,29 @@
-import { AccountConnectionId, AccountId } from "@executor-js/sdk";
+import { AccountConnectionId, AccountId, OAuthClientId } from "@executor-js/sdk";
 import { GrantId } from "@executor-js/mcp-auth/grants";
 import { AppView, AppViewFromUrl, AssistantId } from "@executor-js/ui/contracts/dashboard";
 import { Option, Schema } from "effect";
 import { OrganizationId } from "@executor-js/hosted-server/organization";
 import type { AgentBaseline } from "./mcp-connections.ts";
 
-/** A failed OAuth attempt can reopen its client fields without placing credentials in the URL. */
+/**
+ * A failed OAuth attempt can reopen its client fields without placing credentials in the URL:
+ * `change` enters new details, and a registered client's ID edits that client.
+ */
+export const ClientRecovery = Schema.Union([Schema.Literal("change"), OAuthClientId]);
 export const ConnectionSearch = Schema.Struct({
-  client: Schema.optionalKey(Schema.Literal("change")),
+  client: Schema.optionalKey(ClientRecovery),
 });
 
 /** Direct links and refreshes retain a connection dialog on its app page. */
 export function parseConnectionSearch(search: Record<string, unknown>): {
   readonly connection?: AccountConnectionId | undefined;
-  readonly client?: "change" | undefined;
+  readonly client?: typeof ClientRecovery.Type | undefined;
 } {
   return {
     connection: Option.getOrUndefined(
       Schema.decodeUnknownOption(AccountConnectionId)(search.connection),
     ),
-    client: Option.getOrUndefined(
-      Schema.decodeUnknownOption(Schema.Literal("change"))(search.client),
-    ),
+    client: Option.getOrUndefined(Schema.decodeUnknownOption(ClientRecovery)(search.client)),
   };
 }
 
@@ -131,7 +133,7 @@ export function hostedPageTitle(
   if (pathname === "/mcp/authorize") return "Authorize client";
   if (pathname === "/device") return "Connect a device";
   if (pathname === "/oauth/callback") return "Connecting account";
-  const [root, section, page, item, action] = pathname.split("/").filter(Boolean);
+  const [root, section, page, item] = pathname.split("/").filter(Boolean);
   if (root === "account")
     return section === "tokens"
       ? "Tokens"
@@ -146,17 +148,11 @@ export function hostedPageTitle(
   if (page === "organization") return "Settings";
   if (page === "approvals") return item ? "Review request" : "Approvals";
   if (page === "groups") return item ? "Group" : "Groups";
-  if (page === "connect") return "Connections";
+  if (page === "activity") return "Activity";
+  if (page === "connect") return item ? "Connection" : "Connections";
   if (page === "webhooks") return "Webhook setup";
   if (page === "connections") return "Connect account";
-  if (page === "apps")
-    return item === "add"
-      ? action === "custom"
-        ? "Add custom app"
-        : "Add app"
-      : item
-        ? "App"
-        : "Apps";
+  if (page === "apps") return item === "add" ? "App catalog" : item ? "App" : "Apps";
   if (page === "accounts") return "Accounts";
   return "Dashboard";
 }

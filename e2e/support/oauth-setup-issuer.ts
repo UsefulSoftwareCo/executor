@@ -141,6 +141,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let tokenChecks: Readonly<Record<string, boolean>> = {};
   let refreshes = 0;
   let refreshChecks: Readonly<Record<string, boolean>> = {};
+  let requiredRefreshRedirectUri: string | undefined;
+  let refreshRedirectUri: string | null | undefined;
   /** Client authentication on the latest code exchange; background refreshes do not overwrite it. */
   let lastExchangeAuth: TokenAuth | undefined;
   /** Appended to the authorization redirect as RFC 9207 `iss`, as Google does. */
@@ -170,7 +172,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
    * or Mailchimp's `scope: null`. It receives the standard members and whether this is a refresh.
    */
   let tokenShape: TokenShape | undefined;
-  let authorizeError: string | undefined;
+  /** An RFC 6749 error code the callback returns instead of a code, and its `error_description`. */
+  let authorizeError: string | { readonly error: string; readonly description: string } | undefined;
   /** The ID-token subject issued on refresh. */
   let refreshSubject = "synthetic-subject";
   /** Lifetime of renewed tokens; unset, they last `expiresIn` like the first ones. */
@@ -420,7 +423,11 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             scope: params.get("scope"),
           });
           callback.searchParams.set("code", code);
-        } else callback.searchParams.set("error", refusal);
+        } else if (typeof refusal === "string") callback.searchParams.set("error", refusal);
+        else {
+          callback.searchParams.set("error", refusal.error);
+          callback.searchParams.set("error_description", refusal.description);
+        }
         callback.searchParams.set("state", params.get("state") ?? "");
         if (callbackIssuer !== undefined) callback.searchParams.set("iss", callbackIssuer);
         // The managed host advertises a separate callback relay; model its browser return.
@@ -447,8 +454,10 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         }
         if (refreshing) refreshes++;
         else tokenExchanges++;
-        if (refreshing) refreshResource = input.get("resource");
-        else exchangeResource = input.get("resource");
+        if (refreshing) {
+          refreshResource = input.get("resource");
+          refreshRedirectUri = input.get("redirect_uri");
+        } else exchangeResource = input.get("resource");
         tokenContentTypes.push(contentType);
         if (tokenError === "reset") {
           const source = request.source;
@@ -509,7 +518,14 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             client !== undefined &&
             (client.secret === null ? method === "none" : presented.secret === client.secret),
         };
-        if (refreshing) refreshChecks = { issued: refreshClient !== undefined, ...authChecks };
+        if (refreshing)
+          refreshChecks = {
+            issued: refreshClient !== undefined,
+            ...authChecks,
+            redirect:
+              requiredRefreshRedirectUri === undefined ||
+              refreshRedirectUri === requiredRefreshRedirectUri,
+          };
         else
           tokenChecks = {
             issued: issued !== undefined,
@@ -976,6 +992,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly refreshTokens?: boolean;
       /** Replace the refresh token on every refresh. */
       readonly rotateRefreshTokens?: boolean;
+      /** Refuse refreshes unless they repeat this authorization-code redirect URI. */
+      readonly requireRefreshRedirectUri?: string | null;
       /** Whether a replaced refresh token is still accepted. */
       readonly replacedRefreshTokens?: typeof replacedRefreshTokens;
       /** Hold matching requests until `release`; null stops holding new ones. */
@@ -1011,8 +1029,11 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly tokenError?: typeof tokenError | null;
       /** Reshape token responses like a real service; null restores the standard shape. */
       readonly tokenShape?: TokenShape | null;
-      /** Return this RFC 6749 error code to the callback instead of a code; null restores codes. */
-      readonly authorizeError?: string | null;
+      /**
+       * Return this RFC 6749 error code, alone or with an `error_description`, to the callback
+       * instead of a code; null restores codes.
+       */
+      readonly authorizeError?: typeof authorizeError | null;
       /** The ID-token subject issued on refresh. */
       readonly refreshSubject?: string;
       /** Lifetime of renewed tokens; null makes them last `expiresIn`. */
@@ -1053,6 +1074,9 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (input.refreshTokens !== undefined) refreshTokens = input.refreshTokens;
         if (input.rotateRefreshTokens !== undefined)
           rotateRefreshTokens = input.rotateRefreshTokens;
+        if (input.requireRefreshRedirectUri !== undefined)
+          requiredRefreshRedirectUri =
+            input.requireRefreshRedirectUri === null ? undefined : input.requireRefreshRedirectUri;
         if (input.replacedRefreshTokens !== undefined)
           replacedRefreshTokens = input.replacedRefreshTokens;
         if (input.hold !== undefined) hold = input.hold === null ? undefined : input.hold;
@@ -1131,6 +1155,14 @@ export const oauthSetupIssuer = Effect.gen(function* () {
               : [...(input.methods ?? ["client_secret_basic"])],
         });
       }),
+    /** A refresh token issued to `clientId` at sign-in, for a grant an earlier release saved. */
+    issueRefreshToken: (clientId: string) =>
+      Effect.sync(() => {
+        const token = `synthetic-refresh-${randomUUID()}`;
+        refreshGrants.set(token, clientId);
+        refreshOrigins.set(token, "sign-in");
+        return token;
+      }),
     /** End every access token issued so far; the resource refuses them with 401 from now on. */
     expireAccessTokens: Effect.sync(() => {
       for (const token of issuedAccessTokens) expiredAccessTokens.add(token);
@@ -1160,6 +1192,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       authorizationResource,
       exchangeResource,
       refreshResource,
+      refreshRedirectUri,
       refreshes,
       refreshChecks,
       lastExchangeAuth,

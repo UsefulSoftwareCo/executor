@@ -13,7 +13,7 @@ import { officialApps } from "../support/public-catalogs.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { scenarios } from "../test-plan.ts";
 
-const Catalog = Schema.Array(
+const Entries = Schema.Array(
   Schema.Struct({
     id: Schema.String,
     package: Schema.String,
@@ -30,6 +30,11 @@ const Catalog = Schema.Array(
     ),
   }),
 );
+/** A listing whose feed was read: the official apps are all there. */
+const Catalog = Schema.Struct({
+  apps: Entries,
+  feed: Schema.Struct({ status: Schema.Literal("listed") }),
+});
 const Installed = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -60,7 +65,7 @@ layer(HostedLive, { excludeTestServices: true })("Official app catalog", (it) =>
           browser = yield* Browser,
           actors = yield* Actors;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        const entries = yield* body(
+        const { apps: entries } = yield* body(
           Catalog,
           yield* api.request(actors.owner, "GET", "/api/catalog"),
         );
@@ -191,9 +196,39 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         );
         yield* browser.checkpoint("The tracker shows its catalog icon");
         expect(logos).toEqual([]);
+        // Add app keeps its layout while the catalog loads: the placeholders take the loaded
+        // toolbar's and rows' places, so nothing moves when the catalog answers.
+        const layout = (page: Page, row: string) =>
+          Promise.all(
+            [".list-toolbar", row].map((selector) =>
+              page
+                .locator(selector)
+                .first()
+                .boundingBox()
+                .then((box) => box && [box.x, box.y, box.width, box.height]),
+            ),
+          );
+        const pending = yield* holdQuery(["/api/catalog"], "continue");
         yield* browser.use("Open Add app", (page) =>
           page.goto(`/org/${actors.organization.slug}/apps/add`),
         );
+        yield* pending.requested;
+        const placeholder = yield* browser.use("Add app holds its layout while loading", (page) =>
+          page
+            .getByRole("status", { name: "Loading apps" })
+            .waitFor()
+            .then(() => layout(page, '[aria-label="Loading apps"] > div')),
+        );
+        yield* browser.checkpoint("Add app holds its layout while the catalog loads");
+        yield* pending.release;
+        const loaded = yield* browser.use("The catalog fills the same places", (page) =>
+          page
+            .locator(".catalog-row")
+            .first()
+            .waitFor()
+            .then(() => layout(page, ".catalog-row")),
+        );
+        expect(loaded).toEqual(placeholder);
         yield* browser.use("Search the catalog", (page) =>
           page.getByPlaceholder("Search apps…").fill("synthetic"),
         );
@@ -258,7 +293,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         yield* browser.checkpoint("The added app offers Open on the same page");
 
         // A fresh visit still knows both apps are installed.
-        yield* browser.use("Reload Add app", (page) => page.reload());
+        yield* browser.use("Reload the app catalog", (page) => page.reload());
         yield* browser.use("Search the catalog again", (page) =>
           page.getByPlaceholder("Search apps…").fill("synthetic"),
         );
@@ -276,18 +311,116 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
         );
         yield* browser.checkpoint("Open leads to the added app's account setup");
 
-        // A user-entered MCP URL and the agent prompt for any other service remain.
-        yield* browser.use("Open Connect a service", (page) =>
-          page.goto(`/org/${actors.organization.slug}/apps/add/custom`),
+        // Add app offers making your own app first, then the app catalog.
+        yield* browser.use("Return to Apps", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps`),
         );
-        yield* browser.use("Only an MCP URL is accepted directly", (page) =>
-          page.getByLabel("MCP server URL", { exact: true }).waitFor(),
+        const choose = (choice: string) =>
+          browser.use(`Choose ${choice}`, (page) =>
+            page
+              .getByRole("button", { name: "Add app", exact: true })
+              .click()
+              .then(() => page.getByRole("menuitem", { name: new RegExp(`^${choice}`) }).click()),
+          );
+        yield* browser.use("Open Add app", (page) =>
+          page.getByRole("button", { name: "Add app", exact: true }).click(),
         );
-        const generic = yield* browser.use("Other services get a prompt", (page) =>
-          page.getByRole("region", { name: "Any other service" }).textContent(),
+        const menu = yield* browser.use("Add app lists the ways to add an app", (page) =>
+          page
+            .getByRole("menuitem")
+            .first()
+            .waitFor()
+            .then(() =>
+              Promise.all([
+                page.getByRole("menu").getByText("Create your own", { exact: true }).count(),
+                page.getByRole("menuitem").locator(".font-medium").allTextContents(),
+              ]),
+            ),
         );
-        expect(generic).toContain("Ask me which service I want to connect.");
-        yield* browser.checkpoint("Connect a service offers MCP or an agent prompt");
+        expect(menu).toEqual([1, ["From scratch", "From an MCP server", "Browse app catalog"]]);
+        yield* browser.checkpoint("Add app puts creating your own before the app catalog");
+        yield* browser.use("Close the menu", (page) => page.keyboard.press("Escape"));
+
+        yield* choose("From scratch");
+        yield* browser.use("Describe the app", (page) =>
+          page
+            .getByRole("dialog", { name: "Create from scratch" })
+            .getByLabel("What should it do?")
+            .fill("Summarize my Linear issues every Monday."),
+        );
+        const prompt = yield* browser.use("The prompt carries the description", (page) =>
+          page.getByRole("region", { name: "Send this to your agent" }).textContent(),
+        );
+        expect(prompt).toContain("What it should do: Summarize my Linear issues every Monday.");
+        yield* browser.checkpoint("From scratch hands the description to the agent");
+        yield* browser.use("Close the From scratch dialog", (page) =>
+          page.keyboard.press("Escape"),
+        );
+
+        // URL import is for MCP servers only; anything else, such as OpenAPI, starts from scratch.
+        yield* choose("From an MCP server");
+        const mcp = yield* browser.use("The MCP server dialog offers one URL form", (page) => {
+          const dialog = page.getByRole("dialog", { name: "Create from an MCP server" });
+          return dialog
+            .getByLabel("MCP server URL", { exact: true })
+            .waitFor()
+            .then(() =>
+              Promise.all([
+                dialog.getByRole("textbox").count(),
+                dialog.getByRole("link").count(),
+                dialog.getByText(/build an app from it/i).count(),
+              ]),
+            );
+        });
+        expect(mcp).toEqual([2, 0, 0]);
+        yield* browser.checkpoint("The MCP server dialog imports MCP URLs only");
+        yield* browser.use("Send other services to From scratch", (page) =>
+          page
+            .getByRole("button", { name: "Start from scratch", exact: true })
+            .click()
+            .then(() => page.getByRole("dialog", { name: "Create from scratch" }).waitFor()),
+        );
+        yield* browser.use("Close the From scratch dialog", (page) =>
+          page.keyboard.press("Escape"),
+        );
+
+        yield* choose("Browse app catalog");
+        yield* browser.use("Browse app catalog opens the catalog", (page) =>
+          page
+            .waitForURL(`**/org/${actors.organization.slug}/apps/add`)
+            .then(() => page.getByRole("heading", { name: "App catalog", exact: true }).waitFor()),
+        );
+        const makeYourOwn = yield* browser.use("The catalog offers Make your own twice", (page) =>
+          page.getByRole("button", { name: "Make your own", exact: true }).count(),
+        );
+        expect(makeYourOwn).toBe(2);
+        yield* browser.checkpoint(
+          "App catalog offers Make your own in its header and below the apps",
+        );
+        yield* browser.use("The header's Make your own opens the same create choices", (page) =>
+          page
+            .getByRole("button", { name: "Make your own", exact: true })
+            .first()
+            .click()
+            .then(() => page.getByRole("menuitem", { name: /^From an MCP server/ }).click())
+            .then(() => page.getByRole("dialog", { name: "Create from an MCP server" }).waitFor()),
+        );
+        yield* browser.checkpoint("The catalog's Make your own opens the MCP server dialog");
+        yield* browser.use("Close the MCP server dialog", (page) => page.keyboard.press("Escape"));
+        yield* browser.use("Search for a missing app", (page) =>
+          page.getByPlaceholder("Search apps…").fill("no such service"),
+        );
+        const noResults = yield* browser.use("No results still offer Make your own", (page) =>
+          page
+            .getByRole("heading", { name: "No matching apps", exact: true })
+            .waitFor()
+            .then(() =>
+              page.getByRole("button", { name: "Make your own", exact: true }).last().waitFor(),
+            )
+            .then(() => page.getByRole("button", { name: "Make your own", exact: true }).count()),
+        );
+        expect(noResults).toBe(2);
+        yield* browser.checkpoint("No results offer Make your own");
       }),
     ),
   );

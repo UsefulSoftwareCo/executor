@@ -59,7 +59,7 @@ const SetupFailed = Schema.Struct({
 });
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 
-/** Import one emulated server through the hosted Connect a service API. */
+/** Import one emulated server through the hosted MCP server import API. */
 const importer = Effect.gen(function* () {
   const api = yield* Api,
     actors = yield* Actors;
@@ -132,9 +132,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           actors.owner,
           "POST",
           connectionsPath(`${prefix}/apps/${appId}`, "user", "service"),
-          {
-            destination: { kind: "personal" },
-          },
+          {},
         ),
       );
       return yield* api.request(
@@ -414,8 +412,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP auth detection", (it) => {
         // The dashboard shows the reason with the signals that decided it.
         const server = yield* mcpAuthServer("bearer-key");
         yield* browser.login(actors.owner);
-        yield* browser.use("Open Connect a service", (page) =>
-          page.goto(`/org/${actors.organization.slug}/apps/add/custom`),
+        yield* browser.use("Open the MCP server dialog", (page) =>
+          page
+            .goto(`/org/${actors.organization.slug}/apps`)
+            .then(() => page.getByRole("button", { name: "Add app", exact: true }).click())
+            .then(() => page.getByRole("menuitem", { name: /^From an MCP server/ }).click()),
         );
         yield* browser.use("Name the app", (page) =>
           page.getByLabel("App name", { exact: true }).fill("Keyed service"),

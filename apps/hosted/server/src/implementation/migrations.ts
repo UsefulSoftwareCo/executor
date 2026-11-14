@@ -2,18 +2,20 @@
 import type { BetterAuthOptions } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
 import { createDataStepJournal } from "@executor-js/app-management/data-steps";
-import { makeExecutorStorage } from "@executor-js/sdk/core";
+import { makeExecutorStorage, StorageMigrationFailed } from "@executor-js/sdk/core";
 import { Effect, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import * as Migrator from "effect/sql/Migrator";
 import { migrateProvisioning } from "./provisioning-schema.ts";
 import { migrateGroups } from "./group-schema.ts";
-import { migrateResourceAccess } from "./resource-schema.ts";
+import { migrateResourceAccess, removeGroupAccountConnections } from "./resource-schema.ts";
 import { migrateOAuthClientAccess } from "./oauth-client-schema.ts";
 import { migrateOrganizationRemovals } from "./organization-removal-schema.ts";
 import { migrateApiKeyMemberships } from "./api-key-membership-schema.ts";
 import { queueExecutorAppUpgrades } from "./executor-app-upgrades.ts";
 import { migrateAppAccountLinks } from "./app-account-schema.ts";
+import { migrateToolCallLog } from "./tool-call-log.ts";
+import { migratePersonalAccounts } from "./personal-account-schema.ts";
 
 /**
  * Migration failures stop startup; callers must not log the driver's secret-bearing cause. The
@@ -26,11 +28,12 @@ export class HostedMigrationFailed extends Schema.TaggedError<HostedMigrationFai
     stage: Schema.Literals(["auth", "product"]),
     causeTags: Schema.optionalKey(Schema.Array(Schema.String)),
     sqlState: Schema.optionalKey(Schema.String),
+    migrationVersion: Schema.optionalKey(Schema.String),
   },
 ) {
   override get message() {
     const tags = this.causeTags?.join(" > ") ?? "unknown cause";
-    return `${this.stage} migration failed: ${tags}${this.sqlState ? ` (SQLSTATE ${this.sqlState})` : ""}`;
+    return `${this.stage} migration failed${this.migrationVersion ? ` at executor version ${this.migrationVersion}` : ""}: ${tags}${this.sqlState ? ` (SQLSTATE ${this.sqlState})` : ""}`;
   }
 }
 
@@ -38,6 +41,15 @@ export class HostedMigrationFailed extends Schema.TaggedError<HostedMigrationFai
 export const migrationFailed =
   (stage: HostedMigrationFailed["stage"]) =>
   (cause: unknown): HostedMigrationFailed => {
+    if (cause instanceof StorageMigrationFailed)
+      return new HostedMigrationFailed({
+        stage,
+        causeTags: ["StorageMigrationFailed", ...cause.causeTags],
+        ...(cause.sqlState === undefined ? {} : { sqlState: cause.sqlState }),
+        ...(cause.migrationVersion === undefined
+          ? {}
+          : { migrationVersion: cause.migrationVersion }),
+      });
     const causeTags: Array<string> = [];
     let sqlState: string | undefined;
     let current: unknown = cause;
@@ -109,6 +121,14 @@ const hostedProductMigrations = migrateProductSteps("private_hosted_migrations",
   // App and user account links; profiles become user links. Runs after SDK 4.0.13, which keeps
   // the profiles.
   "9_app_account_links": migrateAppAccountLinks,
+  // Accounts are no longer shared with groups; pending sign-ins for one are refused. The running
+  // server already refuses a connection without an access record.
+  "10_group_account_connections": removeGroupAccountConnections,
+  // Additive: the tool call log, two new tables with no backfill; the running server never reads them.
+  "11_tool_call_log": migrateToolCallLog,
+  // Every shared account becomes one member's personal account; pending sign-ins for one are
+  // refused. The running server reads personal accounts as this leaves them.
+  "12_personal_accounts": migratePersonalAccounts,
 });
 
 /**

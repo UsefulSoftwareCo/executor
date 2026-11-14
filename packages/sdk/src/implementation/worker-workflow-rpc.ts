@@ -1,10 +1,12 @@
 /** Invocation-owned RPC capabilities preserve the Effect context across Dynamic Worker calls. */
-import { Cause, Effect, Redacted, Schema } from "effect";
+import { Cause, Effect, Redacted, Schema, SchemaIssue } from "effect";
 import {
   WorkflowFailure,
   WorkflowRpcCommand,
   WorkflowRpcResult,
   WorkflowControlCommand,
+  WorkflowRun,
+  WorkflowRunPage,
   type WorkflowExecution,
   type WorkflowHostControls,
   type WorkflowRpc,
@@ -84,26 +86,68 @@ export const invocationWorkflow = (
         { signal },
       );
   });
-/** App-scoped lifecycle management uses the same private callback transport as step execution. */
+const issues = SchemaIssue.makeFormatterStandardSchemaV1();
+const controlOperations = ["start", "get", "list", "terminate"] as const;
+/**
+ * A control call the host refused before it reached the engine. Names each invalid field and the
+ * rule it broke; the messages describe the schema, not the value.
+ */
+const invalidControl = (input: unknown, error: Schema.SchemaError) => {
+  const operation =
+    typeof input === "object" && input !== null && "operation" in input
+      ? controlOperations.find((name) => name === input.operation)
+      : undefined;
+  const fields = issues(error.issue)
+    .issues.slice(0, 4)
+    .map(({ path, message }) => {
+      const field = (path ?? []).map(String).join(".");
+      return `${field === "" ? "input" : field}: ${message.slice(0, 200)}`;
+    });
+  return new WorkflowFailure({
+    reason: "input",
+    retryable: false,
+    message: `${operation === undefined ? "The workflow call" : `ctx.workflows.${operation}`} was refused before Executor started or changed any run. ${fields.join("; ")}.`,
+  });
+};
+/**
+ * App-scoped lifecycle management uses the same private callback transport as step execution.
+ * Runs are sent in their encoded form, so apps built before a field's rename read its former name.
+ */
 export const invocationWorkflowControls = (controls: WorkflowHostControls, signal: AbortSignal) =>
   Effect.gen(function* () {
     const services = yield* Effect.context<never>();
+    const run = Schema.encodeEffect(WorkflowRun);
     return (input: unknown): Promise<unknown> =>
       Effect.runPromiseWith(services)(
         reply(
           Effect.gen(function* () {
-            const command = yield* Schema.decodeUnknownEffect(WorkflowControlCommand)(input);
+            const command = yield* Schema.decodeUnknownEffect(WorkflowControlCommand)(input).pipe(
+              Effect.mapError((error) => invalidControl(input, error)),
+            );
+            yield* Effect.annotateCurrentSpan("executor.workflow.operation", command.operation);
             switch (command.operation) {
               case "start":
-                return yield* controls.start(command);
+                return yield* controls.start(command).pipe(Effect.flatMap(run));
               case "get":
-                return yield* controls.get(command);
+                return yield* controls.get(command).pipe(Effect.flatMap(run));
               case "list":
-                return yield* controls.list(command);
+                return yield* controls
+                  .list(command)
+                  .pipe(Effect.flatMap(Schema.encodeEffect(WorkflowRunPage)));
               case "terminate":
-                return yield* controls.terminate(command);
+                return yield* controls.terminate(command).pipe(Effect.flatMap(run));
             }
-          }),
+          }).pipe(
+            Effect.tapError((error) =>
+              Schema.is(WorkflowFailure)(error)
+                ? Effect.annotateCurrentSpan({
+                    "executor.workflow.failure.reason": error.reason,
+                    "executor.workflow.failure.retryable": error.retryable,
+                  })
+                : Effect.void,
+            ),
+            Effect.withSpan("workflow.control"),
+          ),
         ),
         { signal },
       );

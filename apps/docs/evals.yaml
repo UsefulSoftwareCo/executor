@@ -95,7 +95,7 @@ questions:
       - 100 tool calls
       - 5 minutes
       - 65,536 characters of program source
-      - 65,536 bytes of output
+      - no limit on the size of a result
       - a client cannot raise them
     routes:
       - /mcp

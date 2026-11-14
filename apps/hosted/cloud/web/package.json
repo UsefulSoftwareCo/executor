@@ -16,9 +16,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@better-auth/passkey": "1.7.5",
-    "@better-auth/sso": "1.7.5",
-    "@effect/atom-react": "4.0.1",
+    "@better-auth/passkey": "1.7.20",
+    "@better-auth/sso": "1.7.20",
+    "@effect/atom-react": "4.1.4",
     "@executor-js/dashboard-start": "workspace:*",
     "@executor-js/devtools": "workspace:*",
     "@executor-js/hosted-server": "workspace:*",
@@ -30,8 +30,8 @@
     "@sentry/react": "10.75.0",
     "@tanstack/react-router": "1.170.41",
     "@tanstack/react-start": "1.168.60",
-    "better-auth": "1.7.5",
-    "effect": "4.0.1",
+    "better-auth": "1.7.20",
+    "effect": "4.1.4",
     "posthog-js": "1.434.7",
     "react": "19.3.0",
     "react-dom": "19.3.0"

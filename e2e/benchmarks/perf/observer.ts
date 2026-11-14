@@ -4,7 +4,7 @@
  * It creates a short-lived monitoring role (pg_monitor, TTL) through the PlanetScale API, then
  * samples pg_stat_activity and blocking PIDs with psql `\watch`. Each sample records only backend
  * state, wait events, ages, the statement's leading keyword and its SQLCommenter traceparent, so a
- * slow `sql.wire` span can be matched to what the origin was doing. SQL text, parameters, rows
+ * slow `sql.execute` span can be matched to what the origin was doing. SQL text, parameters, rows
  * and credentials are never written. The role password stays in this process's memory.
  */
 import { Config, Console, Effect, FileSystem, Redacted, Schedule, Schema, Stream } from "effect";

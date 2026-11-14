@@ -289,7 +289,7 @@ export default AppData.make(
       build: workerBuild("app-data"),
       ...(yield* cloudObservability),
       workersDev: false,
-      compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+      compatibility: { date: "2026-09-08", flags: ["nodejs_compat", "no_brotli_content_encoding"] },
       env: {
         ...(yield* telemetryBindings),
         ...(yield* appOutboundBindings),
@@ -355,7 +355,9 @@ export default AppData.make(
                 // Read after the reply, so a fresh isolate's lookup had the round trip to answer.
                 Effect.tap(() => Effect.annotateCurrentSpan("cache.caller.colo", colo())),
                 Effect.provide(RuntimeContext.phantom),
-                Effect.withSpan("runtime.cloud.cache"),
+                Effect.withSpan("runtime.cloud.cache", {
+                  attributes: { "executor.app.id": app },
+                }),
               ),
           };
         },

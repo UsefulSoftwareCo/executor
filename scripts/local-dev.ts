@@ -4,7 +4,8 @@
  * already set wins, except the two served-address values below; this only fills gaps.
  *
  * - Data lives in this checkout's `.local/dev/`, apart from older directories
- *   that may be tied to other keys.
+ *   that may be tied to other keys. The CLI and the development desktop share
+ *   `.local/dev/local` and its background server.
  * - The dev directories use one development key pair saved in
  *   `.local/dev/keys.json` (mode 0600). A checkout copy carries its data and keys
  *   together, headless agents need no OS keychain, and throwaway copies leave no
@@ -75,7 +76,6 @@ const chosenDirectory =
   env.EXECUTOR_DATA_DIR !== undefined || env.EXECUTOR_DESKTOP_DATA_DIR !== undefined;
 const chosenKeys = env.EXECUTOR_API_KEY !== undefined || env.EXECUTOR_ENCRYPTION_KEY !== undefined;
 env.EXECUTOR_DATA_DIR ??= join(developmentDirectory, "local");
-env.EXECUTOR_DESKTOP_DATA_DIR ??= join(developmentDirectory, "desktop");
 if (!chosenDirectory && !chosenKeys) {
   const keys = developmentKeys();
   env.EXECUTOR_API_KEY = keys.apiKey;

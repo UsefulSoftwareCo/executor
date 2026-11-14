@@ -8,14 +8,14 @@ import { Clock, Effect, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
-import { Api, body } from "../support/api.ts";
+import { Api, body, type Session } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { appBuildLoads, latestRequestBuildLoads, unreadableBuild } from "../support/build-loads.ts";
 import { Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
-import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
+import { connectionsPath, linkAccount, type LinkScope } from "../support/app-accounts.ts";
 import {
   expectFacetLoadsOnlyAtColdStarts,
   expectIsolatedAccounts,
@@ -63,15 +63,18 @@ const scenario = Effect.gen(function* () {
       );
       return app;
     });
-  /** The webhook source status of a linked account, which its background setup settles. */
-  const status = (app: string, account: string) =>
-    api.request(actors.owner, "GET", `${prefix}/apps/${app}/webhook-sources`).pipe(
+  /**
+   * The webhook source status of a linked account, which its background setup settles, as the
+   * account's owner reads it.
+   */
+  const status = (app: string, account: string, reader: Session = actors.owner) =>
+    api.request(reader, "GET", `${prefix}/apps/${app}/webhook-sources`).pipe(
       Effect.flatMap((response) => body(Schema.Array(SourceStatus), response)),
       Effect.map((sources) => sources.find((source) => source.account === account)?.status),
     );
   /** Wait until linking the account has finished its background webhook source setup. */
-  const settled = (app: string, account: string) =>
-    status(app, account).pipe(
+  const settled = (app: string, account: string, reader: Session = actors.owner) =>
+    status(app, account, reader).pipe(
       Effect.flatMap((current) =>
         current !== undefined && current !== "pending"
           ? Effect.succeed(current)
@@ -92,9 +95,10 @@ const scenario = Effect.gen(function* () {
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       return yield* body(Observation, response);
     });
-  const removeAccount = (account: string) =>
+  /** Delete the account when the scenario ends, as its owner: only they may delete it. */
+  const removeAccount = (account: string, owner: Session = actors.owner) =>
     Effect.addFinalizer(() =>
-      api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
+      api.request(owner, "DELETE", `${prefix}/accounts/${account}`).pipe(Effect.orDie),
     );
   /** Link the owner's `account` in place of the app's linked one, once its webhook source is set up. */
   const link = (app: string, account: string) =>
@@ -104,20 +108,53 @@ const scenario = Effect.gen(function* () {
   return { api, actors, prefix, deploy, settled, observe, removeAccount, link };
 });
 
+/**
+ * The observer app with its key requirement in `scope`. In app scope, someone who can edit the app
+ * links one account for everyone, so every caller's calls use it.
+ */
+const observerSource = (
+  options: { readonly name: string; readonly database: boolean; readonly resource: string | null },
+  scope: LinkScope,
+) => {
+  const source = observerApp(options);
+  if (scope === "user") return source;
+  const appScoped = source
+    .replace("{ user: { accounts: { service } } }", "{ app: { accounts: { service } } }")
+    .replaceAll(".user.accounts.service", ".app.accounts.service");
+  expect(appScoped, "the observer app declares its requirement in app scope").toContain(
+    "{ app: { accounts: { service } } }",
+  );
+  expect(appScoped, "the observer app reads only its app requirement").not.toContain(
+    "user.accounts",
+  );
+  return appScoped;
+};
+
 /** An observer app with a key account, whose saved credential can be replaced in place. */
-const keyApp = (options: { readonly database: boolean; readonly resource: string | null }) =>
+const keyApp = (options: {
+  readonly database: boolean;
+  readonly resource: string | null;
+  readonly scope?: LinkScope;
+}) =>
   Effect.gen(function* () {
     const { api, actors, prefix, deploy, settled, observe, removeAccount, link } = yield* scenario;
     const name = `Worker reuse ${randomUUID().slice(0, 8)}`;
+    const scope = options.scope ?? "user";
     const app = yield* deploy(name, [
-      { path: "index.ts", content: observerApp({ name, ...options }) },
+      {
+        path: "index.ts",
+        content: observerSource(
+          { name, database: options.database, resource: options.resource },
+          scope,
+        ),
+      },
       appsManifest,
       ...databaseFiles(options.database),
     ]);
     const path = `${prefix}/apps/${app.id}`;
-    const submit = (connection: string, token: string) =>
+    const submit = (connection: string, token: string, actor: Session = actors.owner) =>
       api
-        .request(actors.owner, "POST", `${prefix}/connections/${connection}/submit`, {
+        .request(actor, "POST", `${prefix}/connections/${connection}/submit`, {
           method: "key",
           label: name,
           fields: { token },
@@ -128,24 +165,26 @@ const keyApp = (options: { readonly database: boolean; readonly resource: string
           ),
           Effect.flatMap((saved) => body(Resource, saved)),
         );
-    /** Connect a new account from the app, which links it for the owner. */
+    /**
+     * Connect a new account of `actor`, the owner unless named, from the app. In user scope it is
+     * linked for `actor`; in app scope, for everyone.
+     */
     const connect = (
       token: string,
-      options: { readonly settle?: boolean; readonly shared?: boolean } = {},
+      options: { readonly settle?: boolean; readonly actor?: Session } = {},
     ) =>
       Effect.gen(function* () {
+        const actor = options.actor ?? actors.owner;
         const pending = yield* api.request(
-          actors.owner,
+          actor,
           "POST",
-          connectionsPath(path, "user", "service"),
-          options.shared === true
-            ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
-            : {},
+          connectionsPath(path, scope, "service"),
+          {},
         );
         expect(pending.status, JSON.stringify(pending.body)).toBe(200);
-        const account = (yield* submit((yield* body(Resource, pending)).id, token)).id;
-        yield* removeAccount(account);
-        if (options.settle !== false) yield* settled(app.id, account);
+        const account = (yield* submit((yield* body(Resource, pending)).id, token, actor)).id;
+        yield* removeAccount(account, actor);
+        if (options.settle !== false) yield* settled(app.id, account, actor);
         return account;
       });
     /** Replace the saved credential of the same account, as a user's key rotation does. */
@@ -155,7 +194,7 @@ const keyApp = (options: { readonly database: boolean; readonly resource: string
         const reconnect = yield* api.request(
           actors.owner,
           "POST",
-          connectionsPath(path, "user", "service"),
+          connectionsPath(path, scope, "service"),
           {
             account,
           },
@@ -187,21 +226,19 @@ const keyApp = (options: { readonly database: boolean; readonly resource: string
           yield* Effect.sleep("100 millis");
         }
       });
-    /** Share the app with everyone, and have the member link an account shared with them. */
-    const share = (account: string) =>
-      Effect.gen(function* () {
-        const access = yield* body(
-          Schema.Struct({ revision: Schema.String }),
-          yield* api.request(actors.owner, "GET", `${path}/access`),
-        );
-        const shared = yield* api.request(actors.owner, "PATCH", `${path}/access`, {
-          revision: access.revision,
-          audience: { kind: "everyone" },
-        });
-        expect(shared.status, JSON.stringify(shared.body)).toBe(200);
-        yield* linkAccount(actors.member, path, "service", account);
-        return actors.member;
+    /** Let everyone use the app, and return the member, who may then connect their own account. */
+    const share = Effect.gen(function* () {
+      const access = yield* body(
+        Schema.Struct({ revision: Schema.String }),
+        yield* api.request(actors.owner, "GET", `${path}/access`),
+      );
+      const shared = yield* api.request(actors.owner, "PATCH", `${path}/access`, {
+        revision: access.revision,
+        audience: { kind: "everyone" },
       });
+      expect(shared.status, JSON.stringify(shared.body)).toBe(200);
+      return actors.member;
+    });
     /** Save the account's webhook source configuration again, which sets the source up anew. */
     const reconfigure = (account: string) =>
       Effect.gen(function* () {
@@ -306,17 +343,16 @@ layer(HostedLive, { excludeTestServices: true })("App worker reuse", (it) => {
       context,
       Effect.gen(function* () {
         const issuer = yield* oauthSetupIssuer;
-        const { app, connect, share, observe, run, link } = yield* keyApp({
+        const { app, connect, share, observe, run } = yield* keyApp({
           database: false,
           resource: `${issuer.origin}/resource`,
         });
         // A member links only one account per plain requirement, so the second account runs for
-        // another member: the owner shares it, and links the first again in its place.
-        const first = yield* connect("synthetic-shared-first");
-        const second = yield* connect("synthetic-shared-second", { shared: true });
-        const member = yield* share(second);
+        // another member: the owner lets everyone use the app, and the member connects their own.
+        yield* connect("synthetic-shared-first");
+        const member = yield* share;
+        yield* connect("synthetic-shared-second", { actor: member });
         const { owner } = yield* Actors;
-        yield* link(app.id, first);
         // Each self-host call has its own session context and each run its own workflow instance,
         // so every observation after an account's first uses a Worker loaded by a finished context.
         const alternate = (actor: typeof member, workflowFirst: boolean) =>
@@ -493,7 +529,7 @@ export default defineApp({ user: { accounts: { service } } }, {
         Effect.gen(function* () {
           for (const database of [true, false]) {
             const { app, connect, share, observe } = yield* keyApp({ database, resource: null });
-            const first = yield* connect("synthetic-loads", { shared: true });
+            yield* connect("synthetic-loads");
             const calls: Array<{ observation: typeof Observation.Type; loads: number }> = [];
             const call = (round: number) =>
               Effect.gen(function* () {
@@ -506,24 +542,30 @@ export default defineApp({ user: { accounts: { service } } }, {
             for (let round = 0; round < loadRounds; round++) yield* call(round);
             expectOneLoadPerColdStart(calls);
 
-            // Another member who links the same shared account shares its loaded Worker and loads
-            // nothing: the Worker belongs to the accounts a call uses, not to its caller.
-            const member = yield* share(first);
-            const shared = yield* observe(app.id, member);
+            // An account linked for everyone serves every caller from one loaded Worker, and a
+            // second caller loads nothing: the Worker belongs to the accounts a call uses, not to
+            // its caller.
+            const forEveryone = yield* keyApp({ database, resource: null, scope: "app" });
+            yield* forEveryone.connect("synthetic-loads-everyone");
+            const member = yield* forEveryone.share;
+            const linker = yield* forEveryone.observe(forEveryone.app.id);
+            expect(linker).toMatchObject({ token: "synthetic-loads-everyone" });
+            const shared = yield* forEveryone.observe(forEveryone.app.id, member);
             expect(shared).toMatchObject({
-              isolate: calls[0]!.observation.isolate,
-              previous: "synthetic-loads",
-              token: "synthetic-loads",
+              isolate: linker.isolate,
+              previous: "synthetic-loads-everyone",
+              token: "synthetic-loads-everyone",
             });
             expect(yield* latestRequestBuildLoads(`${database}-shared`)).toBe(0);
 
-            // Another account's Worker never sees the first account's credential. The owner
-            // connects it in place of the first, which the member still uses.
-            yield* connect("synthetic-loads-other");
+            // Another account's Worker never sees the first account's credential. The member
+            // connects their own account while the owner still uses the first.
+            yield* share;
+            yield* connect("synthetic-loads-other", { actor: member });
             const [firstCalls, secondCalls] = yield* Effect.all(
               [
-                Effect.forEach(Array.from({ length: 6 }), () => observe(app.id, member)),
                 Effect.forEach(Array.from({ length: 6 }), () => observe(app.id)),
+                Effect.forEach(Array.from({ length: 6 }), () => observe(app.id, member)),
               ],
               { concurrency: 2 },
             );
@@ -547,7 +589,6 @@ export default defineApp({ user: { accounts: { service } } }, {
             if (replacesFacets)
               expectFacetLoadsOnlyAtColdStarts(loads, [
                 ...calls.map((call) => call.observation),
-                shared,
                 ...firstCalls,
                 ...secondCalls,
               ]);
@@ -580,10 +621,11 @@ export default defineApp({ user: { accounts: { service } } }, {
             yield* observe(app.id);
             // Each call's invocation names the Worker it ran in and the caller it ran for.
             const identities = yield* telemetry
-              .spans("runtime.app.invoke", {
-                "executor.organization.id": actors.organization.id,
-                "executor.user.id": viewer.userId,
-              })
+              .spans(
+                "runtime.app.invoke",
+                { organization: actors.organization.id },
+                { "executor.user.id": viewer.userId },
+              )
               .pipe(
                 Effect.map((spans) =>
                   spans

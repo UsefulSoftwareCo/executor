@@ -15,10 +15,12 @@ export const evaluatedLimits = {
 
 /**
  * `at` is when the read that produced the result began; `until` is when the store may drop it.
- * A write whose evaluation began no later than the app's last cache invalidation is refused.
+ * A write whose evaluation began no later than the app's last cache change is refused. `changed`
+ * reads when that change was, so a process can forget the results it keeps in memory from before.
  */
 export const EvaluatedCommand = Schema.Union([
   Schema.Struct({ operation: Schema.Literal("read"), key: Key }),
+  Schema.Struct({ operation: Schema.Literal("changed") }),
   Schema.Struct({
     operation: Schema.Literal("write"),
     key: Key,
@@ -60,8 +62,18 @@ export const EvaluatedWritten = Schema.Struct({
 });
 export type EvaluatedWritten = typeof EvaluatedWritten.Type;
 
+/**
+ * A `changed` reply: when the app's cached data last changed, on the supervisor's clock, or null
+ * when it never has. Supervisors deployed before `changed` answer it as `missing`.
+ */
+export const EvaluatedChanged = Schema.Struct({
+  changed: Schema.NullOr(Time),
+  supervisor: EvaluatedSupervisor,
+});
+export type EvaluatedChanged = typeof EvaluatedChanged.Type;
+
 /** A command or reply as JSON text, with bodies in base64, for a host that sends it over HTTP. */
 export const EvaluatedCommandJson = Schema.fromJsonString(Schema.toCodecJson(EvaluatedCommand));
 export const EvaluatedReplyJson = Schema.fromJsonString(
-  Schema.toCodecJson(Schema.Union([EvaluatedEntry, EvaluatedWritten])),
+  Schema.toCodecJson(Schema.Union([EvaluatedEntry, EvaluatedWritten, EvaluatedChanged])),
 );

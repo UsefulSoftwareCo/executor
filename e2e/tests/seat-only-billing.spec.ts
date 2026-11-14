@@ -106,6 +106,36 @@ layer(HostedLive, { excludeTestServices: true })("Seat-only billing", (it) => {
           }),
         )(result.structuredContent);
         expect(completed.execution.value).toEqual({ message: "seat-only", receipt });
+        // The owner's agent reads the same plans through the Executor app.
+        const agentBilling = yield* client.use(
+          "Read billing through the Executor app",
+          (client, signal) =>
+            client.callTool(
+              {
+                name: "execute",
+                arguments: {
+                  code: `return await tools.executor.billing.overview(${JSON.stringify({ path: { organization: actors.organization.id } })});`,
+                },
+              },
+              undefined,
+              { signal },
+            ),
+        );
+        expect(agentBilling.isError).not.toBe(true);
+        const agentOverview = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({
+            status: Schema.Literal("completed"),
+            execution: Schema.Struct({
+              ok: Schema.Literal(true),
+              value: Schema.Struct({ plans: Schema.Array(Schema.Struct({ name: Schema.String })) }),
+            }),
+          }),
+        )(agentBilling.structuredContent);
+        expect(agentOverview.execution.value.plans.map((plan) => plan.name).sort()).toEqual([
+          "Enterprise",
+          "Free",
+          "Team",
+        ]);
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
   );

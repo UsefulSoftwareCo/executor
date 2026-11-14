@@ -47,14 +47,21 @@ export const profileAppCopiesPending = (
 ];
 
 /**
- * Undo SDK 4.0.15 and 4.0.14 and label the database 4.0.13, as an upgrade from the version before
- * app accounts finds it: webhook sources count no retries, schedules and webhook sources always have
+ * Undo SDK 4.0.17, 4.0.15 and 4.0.14 and label the database 4.0.13, as an upgrade from the version
+ * before app accounts finds it: event subscriptions name one app and event and keep no selection,
+ * webhook sources count no retries, schedules and webhook sources always have
  * an actor, workflow runs record no scope, and start keys are unique per app and actor without one.
  * The host's link step (hosted `9_app_account_links`, local `2_app_account_links`) ships with app
  * accounts and runs after the SDK steps, so it is left to the caller: one that undoes it removes its
  * ledger row and table.
  */
 export const beforeAppAccounts = (): ReadonlyArray<{ readonly sql: string }> => [
+  { sql: "DROP INDEX executor_event_subscriptions_owner_selection" },
+  {
+    sql: `ALTER TABLE executor_event_subscriptions DROP COLUMN selection,
+      ALTER COLUMN app DROP DEFAULT, ALTER COLUMN app SET NOT NULL,
+      ALTER COLUMN event DROP DEFAULT, ALTER COLUMN event SET NOT NULL`,
+  },
   { sql: "ALTER TABLE executor_webhook_sources DROP COLUMN retries" },
   { sql: "DROP INDEX executor_schedules_app" },
   { sql: "DROP INDEX executor_workflow_runs_scope_key" },

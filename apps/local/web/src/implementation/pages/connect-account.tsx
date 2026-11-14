@@ -15,9 +15,8 @@ import {
   submitConnectionAtom,
   cancelConnectionAtom,
 } from "../../contracts/account-connections.ts";
-import { faviconUrl } from "@executor-js/ui/contracts/icons";
 import { Button } from "@executor-js/ui/components/button";
-import { ConnectionLinkFailure } from "../components/common.tsx";
+import { ConnectionLinkFailure, ProviderIcon } from "../components/common.tsx";
 import { AccountForm } from "@executor-js/ui/dashboard/account-form";
 import { LinkOAuthFields } from "./oauth-fields.tsx";
 
@@ -83,7 +82,6 @@ function ConnectionForm({
   const submit = useAtomSet(submitConnectionAtom, { mode: "promiseExit" });
   const cancel = useAtomSet(cancelConnectionAtom, { mode: "promiseExit" });
   const refresh = useAtomRefresh(connectionDetailsAtom);
-  const icon = faviconUrl(providerDisplayUrl(connection.provider.definition), 32);
   if (state.status !== "pending")
     return (
       <div className="account-connect-result py-[24px] px-0 text-center [&_>_svg]:[margin:0_auto_18px] [&_p]:text-[13px] [&_p]:text-muted-foreground">
@@ -113,8 +111,12 @@ function ConnectionForm({
     );
   return (
     <>
-      <header className="account-connect-heading mb-7 [&_>_img]:w-9 [&_>_img]:h-9 [&_>_img]:mb-4.5">
-        {icon && <img src={icon} alt="" referrerPolicy="no-referrer" />}
+      <header className="account-connect-heading mb-7 [&_>_.provider-icon]:mb-4.5">
+        <ProviderIcon
+          name={connection.provider.definition.name}
+          url={providerDisplayUrl(connection.provider.definition)}
+          large
+        />
         <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
           Connect {connection.provider.definition.name}
         </h1>

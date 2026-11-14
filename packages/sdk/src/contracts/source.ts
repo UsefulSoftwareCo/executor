@@ -396,6 +396,16 @@ export const Branch = Schema.String.check(
  */
 export const sourceLimits = { files: 4096, bytes: 16 * 1024 * 1024 } as const;
 /**
+ * The most bytes one of the app's own files the build compiles as JavaScript or TypeScript may
+ * hold. Files of the npm packages it imports are not limited and compile however large they are.
+ * esbuild compiles each file in a single synchronous stretch on the thread that serves the host's
+ * requests; this bounds the work it does on any one of the app's files, not a whole build, which
+ * with several large files, or a large package file, can still hold that thread for seconds. JSON files are outside this limit on purpose: the app's own server JSON imports
+ * become modules of their own, and JSON in packages or the browser build goes through esbuild's
+ * JSON loader. `ui/public/` files are never compiled. `sourceLimits` still bounds the whole source.
+ */
+export const compiledFileLimit = 2_000_000;
+/**
  * Public files under `ui/public/`, which builds never load and deploys copy one at a time:
  *
  * - `fileBytes`: Cloudflare Artifacts, which stores hosted app source, refuses a file over 32 MB.

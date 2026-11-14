@@ -3,7 +3,7 @@ import { SqlClient } from "effect/sql";
 import { fumadb } from "fumadb-effect";
 import { column, idColumn, schema, table } from "fumadb-effect/schema";
 import { sqlAdapter } from "fumadb-effect/sql";
-import { SetupOrder } from "@executor-js/hosted-server/setup";
+import { SetupOrder, SetupSkip } from "@executor-js/hosted-server/setup";
 import {
   CompanyProfile,
   OnboardingReady,
@@ -148,16 +148,6 @@ export const makeOnboardingStore = Effect.gen(function* () {
         rows[0] ? Effect.succeed(rows[0].allowed) : Effect.fail(new OnboardingUnavailable()),
       ),
     );
-  /** Whether the user set up a team through onboarding, which runs the v1 check first. */
-  const setUpTeam = (userId: string) =>
-    sql`select exists(select 1 from cloud_organization_setup where user_id = ${userId}) as set_up`.pipe(
-      Effect.flatMap(
-        Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ set_up: Schema.Boolean }))),
-      ),
-      Effect.flatMap((rows) =>
-        rows[0] ? Effect.succeed(rows[0].set_up) : Effect.fail(new OnboardingUnavailable()),
-      ),
-    );
   /** Keep the first assignment: a retried creation never changes the order already shown. */
   const assignSetup = (userId: string, organizationId: string, variant: SetupOrder) =>
     sql`insert into cloud_setup_assignment (user_id, organization_id, variant)
@@ -179,12 +169,45 @@ export const makeOnboardingStore = Effect.gen(function* () {
       Effect.flatMap(Schema.decodeUnknownEffect(Assignment)),
       Effect.map((rows) => rows[0]?.variant),
     );
+  /** Keep the first assignment, as the order's: a retried creation never changes it. */
+  const assignSkip = (userId: string, organizationId: string, variant: SetupSkip) =>
+    sql`insert into cloud_setup_skip_assignment (user_id, organization_id, variant)
+      values (${userId}, ${organizationId}, ${variant})
+      on conflict (user_id) do nothing`.pipe(Effect.asVoid);
+  const SkipAssignment = Schema.Array(
+    Schema.Struct({ variant: SetupSkip, completed: Schema.Boolean }),
+  );
+  /** The member's skip assignment for this team, and whether a required setup finished. */
+  const skipAssignment = (userId: string, organizationId: string) =>
+    sql`select variant, completed_at is not null as completed from cloud_setup_skip_assignment
+      where user_id = ${userId} and organization_id = ${organizationId}`.pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(SkipAssignment)),
+      Effect.map((rows) => rows[0]),
+    );
+  /** Marks the skip assignment seen; only the one request that marks it gets the variant back. */
+  const claimSkipExposure = (userId: string, organizationId: string) =>
+    sql`update cloud_setup_skip_assignment set exposed_at = now()
+      where user_id = ${userId} and organization_id = ${organizationId} and exposed_at is null
+      returning variant`.pipe(
+      Effect.flatMap(
+        Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ variant: SetupSkip }))),
+      ),
+      Effect.map((rows) => rows[0]?.variant),
+    );
+  /** Setup finished: from now on the dashboard stays open, whatever later changes. */
+  const completeSetup = (userId: string, organizationId: string) =>
+    sql`update cloud_setup_skip_assignment set completed_at = now()
+      where user_id = ${userId} and organization_id = ${organizationId}
+        and completed_at is null`.pipe(Effect.asVoid);
   return {
+    assignSkip,
+    skipAssignment,
+    claimSkipExposure,
+    completeSetup,
     assignSetup,
     setupAssignment,
     claimSetupExposure,
     canReadIcon,
-    setUpTeam,
     user,
     lockUser,
     state,

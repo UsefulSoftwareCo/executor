@@ -2,11 +2,16 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Console, Effect, FileSystem, Path, Schema } from "effect";
+import { Hex } from "effect/encoding";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { desktopUpdateFeed, desktopUpdateFile, nativePlatform, release } from "./config.ts";
 import { developerIdMac, unsignedMac } from "./macos-signing.ts";
 import { installNodeRuntime } from "./node-runtime.ts";
-import { launcherAnalytics } from "./analytics.ts";
+import { smokePackagedCollector } from "./standalone.ts";
+import {
+  DesktopRuntimeBuild,
+  desktopRuntimeBuildFile,
+} from "../../apps/local/desktop/src/contracts/desktop.ts";
 
 const build = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -26,10 +31,10 @@ const build = Effect.gen(function* () {
   const stage = path.join(output, "desktop");
   const artifacts = path.join(output, "desktop-artifacts");
   const runtime = path.join(stage, "runtime");
-  // The desktop runs the packaged runtime with its own Node; the npm archive holds the CLI's
+  // The desktop runs the packaged CLI runtime with its own Node; the npm archive holds the CLI's
   // executable instead.
   const packaged = path.join(output, "package");
-  if (!(yield* fs.exists(path.join(packaged, "runtime/desktop.mjs"))))
+  if (!(yield* fs.exists(path.join(packaged, "bin.mjs"))))
     return yield* Effect.die(new Error("Build the matching CLI runtime before the desktop."));
   const run = (
     command: string,
@@ -69,26 +74,19 @@ const build = Effect.gen(function* () {
   yield* fs.makeDirectory(runtime, { recursive: true });
   yield* fs.copy(packaged, runtime, { overwrite: true });
   yield* installNodeRuntime(runtime);
-  // The backend restarts with each launch; Node's compile cache spares it recompiling the runtime.
-  // Node writes the cache only on an orderly exit, and on Windows the desktop's stop terminates
-  // the backend outright, so it is written once the runtime has loaded.
+  // The desktop copies this runtime out of the app once per build and runs the background server
+  // from that copy with `node bin.mjs`, so the server outlives an update or an unmounted AppImage.
   yield* fs.writeFileString(
-    path.join(runtime, "desktop-server.mjs"),
-    `import { flushCompileCache } from "node:module";
-import { enablePrivateCompileCache } from "./compile-cache.mjs";
-import { packagedRuntimeEnvironment } from "./runtime-env.mjs";
-Object.assign(process.env, packagedRuntimeEnvironment(process.env));
-process.env.EXECUTOR_BUILD_VERSION = ${JSON.stringify(version)};
-${yield* launcherAnalytics}enablePrivateCompileCache();
-await import("./runtime/desktop.mjs");
-flushCompileCache();
-`,
+    path.join(runtime, desktopRuntimeBuildFile),
+    yield* Schema.encodeEffect(Schema.fromJsonString(DesktopRuntimeBuild))({
+      version,
+      build: Hex.encode(crypto.getRandomValues(new Uint8Array(6))),
+    }),
   );
   yield* run("node", ["apps/local/desktop/scripts/build.mjs"], root);
-  yield* fs.copyFile(
-    path.join(root, "apps/local/desktop/dist/main.cjs"),
-    path.join(stage, "main.cjs"),
-  );
+  // The main entry and the server starter it runs in a utility process.
+  for (const entry of ["main.cjs", "starter.cjs"])
+    yield* fs.copyFile(path.join(root, "apps/local/desktop/dist", entry), path.join(stage, entry));
   yield* fs.writeFileString(
     path.join(stage, "package.json"),
     JSON.stringify({
@@ -120,7 +118,7 @@ flushCompileCache();
     electronVersion: electron.devDependencies.electron,
     asar: true,
     npmRebuild: false,
-    files: ["main.cjs", "package.json"],
+    files: ["main.cjs", "starter.cjs", "package.json"],
     extraResources: [
       { from: runtime, to: "runtime" },
       // electron-builder deliberately omits a matcher's root node_modules.
@@ -173,6 +171,8 @@ flushCompileCache();
     signing.env,
   );
   yield* signing.finalize(artifacts);
+  // The app's own copy of the collector, as it ships: every unpacked app this build wrote.
+  yield* smokePackagedCollector(root, target, artifacts);
   if (updates && !process.argv.includes("--dir")) {
     const metadata = path.join(artifacts, desktopUpdateFile(target, release.channel));
     if (!(yield* fs.exists(metadata)))

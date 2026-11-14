@@ -28,6 +28,7 @@ export const emulatedSocialProviders = (
         scopes: ["openid", "email", "profile"],
         pkce: true,
         requireIdTokenVerification: true,
+        prompt: "select_account",
       },
       {
         providerId: "github",

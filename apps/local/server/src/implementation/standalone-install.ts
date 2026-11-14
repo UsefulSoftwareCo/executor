@@ -3,7 +3,8 @@
  * `<root>/versions/<version>/`, with `<root>/current` pointing at the version in use and
  * `<root>/previous` at the one before it. `<root>` is `~/.executor/v2/runtime` unless the person
  * chose another directory. A command on PATH starts `current/executor`, so switching `current`
- * switches every later start; a running process keeps the files it started from.
+ * switches every later start. A switch removes older versions, so a process still running from
+ * one loses its files: `executor upgrade` stops the background server first.
  *
  * Release archives come from the public release and are checked against its SHA256SUMS before
  * anything is unpacked.
@@ -24,6 +25,13 @@ export interface StandaloneInstall {
 }
 
 const executableName = (platform: string) => (platform === "win32" ? "executor.exe" : "executor");
+
+/** The executable of one installed version. */
+export const versionExecutable = (install: StandaloneInstall, version: string, platform: string) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    return path.join(install.root, "versions", version, executableName(platform));
+  });
 
 /**
  * The standalone install that `executable` belongs to, or none when it was installed another way.
@@ -108,10 +116,17 @@ const link = (root: string, name: "current" | "previous", version: string, platf
   });
 
 /**
- * Make `version` current and remember the version it replaces as previous. Versions other than
- * these two are removed; one still running, which Windows keeps open, stays until a later switch.
+ * Make `version` current and remember the version it replaces as previous. Other versions are
+ * removed, except those in `running`: versions a background server still runs from, because it
+ * could not be stopped. A removal Windows refuses, as for an open executable, is retried at a
+ * later switch.
  */
-export const switchVersion = (install: StandaloneInstall, version: string, platform: string) =>
+export const switchVersion = (
+  install: StandaloneInstall,
+  version: string,
+  platform: string,
+  running: ReadonlyArray<string>,
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -119,7 +134,7 @@ export const switchVersion = (install: StandaloneInstall, version: string, platf
     const replaced = Option.getOrElse(current, () => install.version);
     yield* link(install.root, "current", version, platform);
     if (replaced !== version) yield* link(install.root, "previous", replaced, platform);
-    const keep = new Set([version, replaced]);
+    const keep = new Set([version, replaced, ...running]);
     const versions = path.join(install.root, "versions");
     for (const name of yield* fs.readDirectory(versions))
       if (!keep.has(name))
@@ -169,9 +184,11 @@ export const installVersion = (
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      // GitHub answers each release download with a redirect to the file, so the status is
+      // checked on the response the redirects end at.
       const client = (yield* HttpClient.HttpClient).pipe(
-        HttpClient.filterStatusOk,
         HttpClient.followRedirects(5),
+        HttpClient.filterStatusOk,
       );
       const base = `${yield* downloadBase}/executor@${version}`;
       const file = releaseArchive(version, platform, arch);
@@ -237,7 +254,7 @@ export const installVersion = (
       const destination = path.join(versions, version);
       yield* fs.remove(destination, { recursive: true, force: true });
       yield* fs.rename(unpacked, destination);
-      const reported = yield* reportedVersion(path.join(destination, executableName(platform)));
+      const reported = yield* reportedVersion(yield* versionExecutable(install, version, platform));
       if (reported !== `executor v${version}`) {
         yield* fs.remove(destination, { recursive: true, force: true }).pipe(Effect.ignore);
         return yield* failed(

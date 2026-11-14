@@ -12,9 +12,14 @@ import { Button } from "@executor-js/ui/components/button";
 import { DialogDescription, DialogTitle } from "@executor-js/ui/components/dialog";
 import { Popover, PopoverContent, PopoverTrigger } from "@executor-js/ui/components/popover";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
+import { cn } from "@executor-js/ui/lib/utils";
 import { Spinner } from "@executor-js/ui/components/spinner";
 import { ProviderIcon } from "@executor-js/ui/dashboard/common";
-import { installedCatalogApps, useCatalogInstall } from "@executor-js/ui/dashboard/catalog";
+import {
+  CatalogFeedNotice,
+  installedCatalogApps,
+  useCatalogInstall,
+} from "@executor-js/ui/dashboard/catalog";
 import { useIncrementalList } from "@executor-js/ui/dashboard/incremental-list";
 import { parseAccountsSetupSearch, setupHandoff } from "../../contracts/navigation.ts";
 import { inventoryAtom } from "../../contracts/organization.ts";
@@ -40,20 +45,24 @@ import {
 } from "./account-actions.tsx";
 
 /**
- * The apps offered first, by catalog ID, when the catalog lists them. Google signs in to every
- * Google service at once; each service is also offered alone, with narrower access.
+ * The apps offered first, by catalog ID, when the catalog lists them: the ones most teams connect
+ * an account to, in v2 and in v1, that sign in without an OAuth app of the member's own. Google
+ * signs in with Executor for Google, to every Google service at once or to each alone, with
+ * narrower access. Slack is left out: its sign-in needs the member's own Slack app.
  */
 const featured: readonly { readonly id: string; readonly detail?: string }[] = [
   { id: "google", detail: "Gmail, Calendar, Drive, Docs and Sheets in one sign-in" },
   { id: "gmail" },
   { id: "google-calendar" },
-  { id: "google-drive" },
   { id: "github" },
-  { id: "slack" },
+  { id: "google-drive" },
   { id: "linear" },
   { id: "notion" },
-  { id: "vercel" },
-  { id: "stripe" },
+  { id: "cloudflare" },
+  { id: "posthog" },
+  { id: "sentry" },
+  { id: "google-sheets" },
+  { id: "google-docs" },
 ];
 
 /** Rows load in pages as the list scrolls. */
@@ -112,7 +121,7 @@ const searchRank = (item: SetupApp, term: string) => {
  * one height and one button width, so connecting never moves the list.
  */
 export function AccountsSetupPage() {
-  const { organization } = useOrganizationRoute();
+  const { organization, slug } = useOrganizationRoute();
   // When the assistant connected first, its handoff rides in the URL to the first prompt.
   const handoff = setupHandoff(parseAccountsSetupSearch(useLocation().search));
   const sequence = useSetupSequence();
@@ -123,7 +132,8 @@ export function AccountsSetupPage() {
   const retryCatalog = useAtomRefresh(atoms.catalog);
   const inventory = useAtomValue(inventoryAtom(organization));
   const retryInventory = useAtomRefresh(inventoryAtom(organization));
-  const entries = Option.getOrUndefined(AsyncResult.value(catalog));
+  const listing = Option.getOrUndefined(AsyncResult.value(catalog));
+  const entries = listing?.apps;
   const known = Option.getOrUndefined(AsyncResult.value(inventory));
   const apps = entries && known ? setupApps(entries, known) : undefined;
   const connected = new Set(apps?.flatMap((item) => item.accounts.map((account) => account.id)));
@@ -132,7 +142,11 @@ export function AccountsSetupPage() {
   const count = Math.max(connected.size, 1);
   return (
     <OAuthReturnContext value={{ page: "setup", ...(handoff === undefined ? {} : { handoff }) }}>
-      <SetupPage className="h-dvh">
+      <SetupPage
+        className="h-dvh"
+        organization={slug}
+        onSignOut={() => sequence.report("leave_setup", "started")}
+      >
         {/*
           Wider screens give the list one height, shrunk only to fit the screen, so the actions
           keep their place whether the list is loading, short or long. Phones fill the screen.
@@ -158,14 +172,31 @@ export function AccountsSetupPage() {
             ) : apps === undefined || known === undefined ? (
               <LoadingList />
             ) : apps.length === 0 ? (
-              <NotListed query="" />
+              <>
+                {listing && listing.feed.status !== "listed" && (
+                  <div className="px-4 pt-4 max-sm:px-6">
+                    <CatalogFeedNotice
+                      feed={listing.feed}
+                      retry={retryCatalog}
+                      retrying={AsyncResult.isWaiting(catalog)}
+                      layout="compact"
+                    />
+                  </div>
+                )}
+                <NotListed query="" />
+              </>
             ) : (
               <AppList apps={apps} redirectUri={known.accountSetup.redirectUri} />
             )}
           </SetupCard>
         </section>
         <SetupActions>
-          <SetupNext done={done} label={`Continue with ${count} account${count === 1 ? "" : "s"}`}>
+          <SetupNext
+            done={done}
+            required={sequence.required}
+            hint="Connect an account to continue"
+            label={`Continue with ${count} account${count === 1 ? "" : "s"}`}
+          >
             {(content) => (
               <SetupLink
                 to={sequence.after("accounts", handoff)}
@@ -484,6 +515,10 @@ const Check = () => (
   </span>
 );
 
+/** The labels a row's button can show; it is as wide as the widest of them. */
+const rowLabels = ["connect", "connecting", "adding", "add"] as const;
+type RowLabel = (typeof rowLabels)[number];
+
 /**
  * One app in one fixed-height row: its logo, its name over one line of detail, and one button of a
  * fixed width. Connecting changes only the detail line and the button; more accounts open over the
@@ -503,6 +538,13 @@ function AppRow({
   const { entry, accounts } = item;
   const [first] = accounts;
   const oauth = entry.auth.some((auth) => auth.kind === "oauth2");
+  const shown: RowLabel = busy
+    ? first === undefined
+      ? "connecting"
+      : "adding"
+    : first === undefined
+      ? "connect"
+      : "add";
   return (
     <div
       role="group"
@@ -545,18 +587,32 @@ function AppRow({
         onClick={onConnect}
         className="min-w-[120px] disabled:text-muted-foreground disabled:opacity-100 max-sm:min-w-[92px] max-sm:px-2.5"
       >
-        {busy ? (
-          <>
-            <Spinner className="size-3" aria-hidden role={undefined} />
-            {first === undefined ? "Connecting" : "Adding"}
-          </>
-        ) : first !== undefined ? (
-          <span>
-            Add<span className="max-sm:hidden"> another</span> +
-          </span>
-        ) : (
-          "Connect"
-        )}
+        {/* Every label stays laid out in one cell, so connecting never resizes the button. */}
+        <span className="grid justify-items-center">
+          {rowLabels.map((label) => (
+            <span
+              key={label}
+              aria-hidden={label === shown ? undefined : true}
+              className={cn(
+                "flex items-center gap-1.5 [grid-area:1/1]",
+                label !== shown && "invisible",
+              )}
+            >
+              {label === "connecting" || label === "adding" ? (
+                <>
+                  <Spinner className="size-3" aria-hidden role={undefined} />
+                  {label === "connecting" ? "Connecting" : "Adding"}
+                </>
+              ) : label === "add" ? (
+                <span>
+                  Add<span className="max-sm:hidden"> another</span> +
+                </span>
+              ) : (
+                "Connect"
+              )}
+            </span>
+          ))}
+        </span>
       </Button>
     </div>
   );
@@ -602,7 +658,6 @@ function AccountsPopover({
               <span className="min-w-0 flex-1 truncate">{account.label || "Unnamed account"}</span>
               <HostedAccountActions
                 account={account}
-                access={undefined}
                 open={(kind) => {
                   setOpen(false);
                   onAccountAction(account.id, kind);

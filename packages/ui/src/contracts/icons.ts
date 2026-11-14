@@ -1,7 +1,7 @@
 import { Atom, AsyncResult } from "effect/reactivity";
 import { Option } from "effect";
 import { getDomain } from "tldts";
-import type { CatalogEntry, CatalogIcon } from "@executor-js/catalog/contracts";
+import type { CatalogIcon, CatalogListing } from "@executor-js/catalog/contracts";
 import type { AppRequirements } from "@executor-js/sdk";
 import type { Query } from "./dashboard.ts";
 
@@ -35,7 +35,14 @@ export const noCatalogIcons: CatalogIcons = {
   byName: new Map(),
 };
 
-export const catalogIconsAtom = <E>(catalogAtom: Query<readonly CatalogEntry[], E>) =>
+const unsettledCatalogIcons: CatalogIcons = {
+  settled: false,
+  byPackage: new Map(),
+  byName: new Map(),
+};
+
+/** Hydration renders the server's unsettled icons, even when the browser's catalog answered first. */
+export const catalogIconsAtom = <E>(catalogAtom: Query<CatalogListing, E>) =>
   Atom.make((get): CatalogIcons => {
     const result = get(catalogAtom);
     const settled = AsyncResult.isSuccess(result) || AsyncResult.isFailure(result);
@@ -43,14 +50,14 @@ export const catalogIconsAtom = <E>(catalogAtom: Query<readonly CatalogEntry[], 
     const byName = new Map<string, readonly CatalogIcon[] | null>();
     const catalog = AsyncResult.value(result);
     if (Option.isSome(catalog))
-      for (const entry of catalog.value) {
+      for (const entry of catalog.value.apps) {
         if (entry.icons.length === 0) continue;
         byPackage.set(entry.package, entry.icons);
         const name = entry.name.trim().toLowerCase();
         byName.set(name, byName.has(name) ? null : entry.icons);
       }
     return { settled, byPackage, byName };
-  });
+  }).pipe(Atom.withServerValue(() => unsettledCatalogIcons));
 
 /** An app's declared icon for each color scheme. Both are the same when it declares one. */
 export interface AppIconSources {

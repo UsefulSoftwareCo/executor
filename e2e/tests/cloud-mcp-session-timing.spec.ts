@@ -186,7 +186,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
                   const request = spans.find(
                     (span) => span.operationName === "mcp.session.request",
                   );
-                  const matches = spans.some((span) => span.operationName.endsWith(`/${method}`));
+                  // Effect names an MCP request's server span after its JSON-RPC method.
+                  const matches = spans.some((span) => span.operationName === method);
                   return forward === undefined || request === undefined || !matches
                     ? []
                     : [{ trace, forward, request }];
@@ -204,7 +205,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
               Effect.flatMap((traces) => forwarded(traces, method)),
               Effect.flatMap((found) =>
                 found.length < count
-                  ? Effect.fail(new Error("The requests' spans have not reached Motel"))
+                  ? Effect.fail(new Error("The requests' spans have not reached the collector"))
                   : Effect.succeed(found),
               ),
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: attempts }),
@@ -288,7 +289,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
             Effect.flatMap((spans) =>
               spans.some((span) => span.operationName === "mcp.tool.call")
                 ? Effect.succeed(spans)
-                : Effect.fail(new Error("The call's tool span has not reached Motel")),
+                : Effect.fail(new Error("The call's tool span has not reached the collector")),
             ),
             Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
           );
@@ -440,7 +441,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
             Effect.flatMap((result) =>
               result.data.some(({ span }) => span.operationName === "mcp.session.request")
                 ? Effect.void
-                : Effect.fail(new Error("The abandoned call's object span has not reached Motel")),
+                : Effect.fail(
+                    new Error("The abandoned call's object span has not reached the collector"),
+                  ),
             ),
             Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
           );
@@ -523,7 +526,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session timing", (it
             ),
             Effect.flatMap((span) =>
               span === undefined
-                ? Effect.fail(new Error("The stream's forward has not reached Motel"))
+                ? Effect.fail(new Error("The stream's forward has not reached the collector"))
                 : Effect.succeed(span),
             ),
             Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),

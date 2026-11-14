@@ -43,14 +43,6 @@ export interface ConnectionApp {
   readonly events?: ConnectionEvents;
 }
 
-/** Short summary used in rows, details, and the connection list. */
-export const connectionToolsLabel = (tools: ConnectionTools): string =>
-  tools.kind === "all"
-    ? "All tools"
-    : tools.kind === "readOnly"
-      ? "Read-only tools"
-      : `${tools.names.length.toLocaleString("en-US")} ${tools.names.length === 1 ? "tool" : "tools"}`;
-
 /** Short summary of an event scope, for an app that declares events. */
 export const connectionEventsLabel = (events: ConnectionEvents | undefined): string =>
   events === undefined || events.kind === "all"
@@ -71,6 +63,23 @@ const targetInput = (
 ): ConnectionInput["apps"][number]["runsAs"][number] =>
   target.kind === "app" ? target : { kind: "account", id: target.id };
 
+/**
+ * A connection nobody named is named for its apps, so creating one never starts with naming it.
+ * The result fits the 80 characters a name allows.
+ */
+export const defaultConnectionName = (apps: readonly { readonly name: string }[]): string => {
+  const [first, second, ...rest] = apps.map((app) => app.name);
+  const name =
+    first === undefined
+      ? "New connection"
+      : second === undefined
+        ? first
+        : rest.length === 0
+          ? `${first} and ${second}`
+          : `${first}, ${second} and ${rest.length.toLocaleString("en-US")} more`;
+  return name.length > 80 ? `${name.slice(0, 79)}…` : name;
+};
+
 /** The request for a complete draft. Undefined while any included app has no way to run. */
 export const connectionInput = (draft: ConnectionDraft): ConnectionInput | undefined => {
   const apps: ConnectionInput["apps"][number][] = [];
@@ -84,8 +93,15 @@ export const connectionInput = (draft: ConnectionDraft): ConnectionInput | undef
       ...(app.events === undefined ? {} : { events: app.events }),
     });
   }
-  return { id: draft.id, name: draft.name.trim(), apps };
+  return { id: draft.id, name: draft.name.trim() || defaultConnectionName(draft.apps), apps };
 };
+
+/** A saved connection as the sign-in page lists it: its name and the names of the apps it reaches. */
+export interface ConsentConnection {
+  readonly id: ConnectionId;
+  readonly name: string;
+  readonly apps: readonly string[];
+}
 
 /** Create a new connection or replace an existing one's name and access. */
 export interface ConnectionSave {

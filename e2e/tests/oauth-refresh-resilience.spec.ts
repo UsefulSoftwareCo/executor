@@ -85,6 +85,41 @@ const refreshFailures = {
     body: { ok: false, error: "internal_error", ...privateError },
   },
   invalid_grant: { status: 400, body: { error: "invalid_grant", ...privateError } },
+  // Supabase Auth's OAuth server refuses a refresh with its own body instead of RFC 6749's
+  // `error`. Its `refresh_token_already_used` means the grant has ended; other codes do not.
+  supabase_refusal: {
+    status: 400,
+    body: { code: 400, error_code: "validation_failed", msg: "PRIVATE_PROVIDER_ERROR" },
+  },
+  supabase_already_used: {
+    status: 400,
+    body: { code: 400, error_code: "refresh_token_already_used", msg: "PRIVATE_PROVIDER_ERROR" },
+  },
+  // GitHub answers an invalid or expired refresh token with HTTP 200 and its own code. Slack
+  // answers HTTP 200 with `ok: false` and its own codes for an invalid refresh token and for a
+  // deleted user or workspace or a removed app.
+  github_bad_refresh_token: { status: 200, body: { error: "bad_refresh_token", ...privateError } },
+  slack_invalid_refresh_token: {
+    status: 200,
+    body: { ok: false, error: "invalid_refresh_token", ...privateError },
+  },
+  slack_token_revoked: {
+    status: 200,
+    body: { ok: false, error: "token_revoked", ...privateError },
+  },
+  // AWS Sign-In answers a refresh token whose session has ended with HTTP 401 and a code of its
+  // own, uppercase, with a `message` instead of `error_description`, and one revoked by a password
+  // change with HTTP 403. Tesla answers a refresh token used again, or one the user revoked, with
+  // HTTP 401 and OpenID Connect's `login_required`.
+  aws_token_expired: {
+    status: 401,
+    body: { error: "TOKEN_EXPIRED", message: "PRIVATE_PROVIDER_ERROR" },
+  },
+  aws_user_credentials_changed: {
+    status: 403,
+    body: { error: "USER_CREDENTIALS_CHANGED", message: "PRIVATE_PROVIDER_ERROR" },
+  },
+  tesla_login_required: { status: 401, body: { error: "login_required", ...privateError } },
 } satisfies Record<string, TokenError>;
 type RefreshFailure = keyof typeof refreshFailures;
 /** Seconds a token lasts when a scenario needs it to expire before the next call. */
@@ -120,9 +155,10 @@ const renewalFixture = Effect.gen(function* () {
   /**
    * Deploy an app whose query presents each listed slot's token to the issuer's resource, and
    * whose mutation posts the first slot's token. A refused token is reported as an
-   * authentication failure of the account that presented it, as provider helpers do.
+   * authentication failure of the account that presented it, as provider helpers do. `manifest`
+   * pins the `apps` release it is built with.
    */
-  const deploy = (appName: string, slots: ReadonlyArray<string>) =>
+  const deploy = (appName: string, slots: ReadonlyArray<string>, manifest = appsManifest) =>
     Effect.gen(function* () {
       const reads = slots
         .map((slot) => `${slot}: await call(fetch, accounts.${slot}, "GET")`)
@@ -146,7 +182,7 @@ export default defineApp({ user: { accounts: { ${slots.map((slot) => `${slot}: s
   }),
 }));`,
           },
-          appsManifest,
+          manifest,
         ],
       });
       expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
@@ -211,11 +247,20 @@ export default defineApp({ user: { accounts: { ${slots.map((slot) => `${slot}: s
    * Read with the app's linked account. Connecting another account from the app replaces the
    * link, so each call uses the account connected last.
    */
-  const read = () =>
-    api.request(actors.owner, "POST", `${prefix}/apps/${app.id}/tools/call`, {
+  const read = (appId = app.id) =>
+    api.request(actors.owner, "POST", `${prefix}/apps/${appId}/tools/call`, {
       tool: "read",
       kind: "query",
       input: {},
+    });
+  /**
+   * List the app's tools, as a caller discovering them does. The listing is kept, and only a kept
+   * listing confirms that a query only reads, so a refused query is repeated after renewal.
+   */
+  const list = (appId = app.id) =>
+    Effect.gen(function* () {
+      const listed = yield* api.request(actors.owner, "GET", `${prefix}/apps/${appId}/tools`);
+      expect(listed.status, JSON.stringify(listed.body)).toBe(200);
     });
   const expectRead = (generation: number) =>
     Effect.gen(function* () {
@@ -261,6 +306,7 @@ export default defineApp({ user: { accounts: { ${slots.map((slot) => `${slot}: s
     provider,
     connect,
     read,
+    list,
     expectRead,
     refreshes,
     assertPrivate,
@@ -300,8 +346,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
         {
           const pair = yield* deploy(`${name} pair`, ["service", "backup"]);
           // Connecting from the app links the account to `service`; link it to `backup` too.
-          const shared = yield* connect("Synthetic shared account", pair.id);
+          const shared = yield* connect("Synthetic paired account", pair.id);
           yield* linkAccount(actors.owner, `${prefix}/apps/${pair.id}`, "backup", shared);
+          // The new link is new intent for the account's webhook source, whose background pass
+          // resolves, and so may renew, the account again. Let it finish too, so the one renewal
+          // counted below is the call's.
+          yield* settleWebhookSources(actors.owner, `${prefix}/apps/${pair.id}`, (sources) =>
+            sources.some((source) => source.account === shared && source.status !== "pending"),
+          );
           const renewed = (yield* refreshes) + 1;
           const response = yield* api.request(
             actors.owner,
@@ -388,6 +440,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
             providerError: "invalid_scope",
           },
           { failure: "slack_internal_error", reason: "renewal_rejected", status: 200 },
+          { failure: "supabase_refusal", reason: "renewal_rejected", status: 400 },
         ];
         for (const scenario of transient) {
           yield* Effect.sleep(pastShortLifetime);
@@ -434,6 +487,12 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
             ).toMatchObject({
               "oauth.provider.id": provider,
               "oauth.renewal.outcome": "service_unavailable",
+              // Who the credentials were decrypted for, whose account and why; never their values.
+              "oauth.resolve.purpose": "run",
+              "oauth.resolve.credential_type": "oauth2",
+              "executor.account.id": expect.any(String),
+              "executor.organization.id": actors.organization.id,
+              "executor.user.id": expect.any(String),
             });
             expect(
               trace.data.find(({ span }) => span.operationName === "oauth.refresh")?.span.tags,
@@ -507,6 +566,79 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
         const again = yield* read();
         expect(again.status, JSON.stringify(again.body)).toBe(409);
         expect(yield* refreshes).toBe(beforeRefusal + 1);
+      }),
+    ),
+  );
+  it.effect(scenarios.oauthRenewalEndedGrantCodes.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { issuer, provider, connect, read, refreshes, assertPrivate, spans, evidence } =
+          yield* renewalFixture;
+        // A service's own code for a refresh token that can never be used again ends the grant
+        // as `invalid_grant` does, at any HTTP status, so the account asks to reconnect instead of
+        // renewing on every use: Supabase Auth's for a token used again, GitHub's for an invalid
+        // or expired one, Slack's for an invalid one or a removed installation, AWS Sign-In's for
+        // an ended session or changed password, and Tesla's for one used again or revoked. A 401
+        // with one of these is not a refusal of the client. The trace names the code.
+        const ended: ReadonlyArray<{
+          readonly failure: RefreshFailure;
+          readonly status: number;
+          readonly code: string;
+        }> = [
+          { failure: "supabase_already_used", status: 400, code: "refresh_token_already_used" },
+          { failure: "github_bad_refresh_token", status: 200, code: "bad_refresh_token" },
+          { failure: "slack_invalid_refresh_token", status: 200, code: "invalid_refresh_token" },
+          { failure: "slack_token_revoked", status: 200, code: "token_revoked" },
+          { failure: "aws_token_expired", status: 401, code: "token_expired" },
+          {
+            failure: "aws_user_credentials_changed",
+            status: 403,
+            code: "user_credentials_changed",
+          },
+          { failure: "tesla_login_required", status: 401, code: "login_required" },
+        ];
+        for (const scenario of ended) {
+          const account = yield* connect(`Synthetic ${scenario.failure} account`);
+          yield* issuer.configure({ tokenError: refreshFailures[scenario.failure] });
+          const before = yield* refreshes;
+          const refusedRead = yield* read();
+          expect(
+            refusedRead.status,
+            `${scenario.failure}: ${JSON.stringify(refusedRead.body)}`,
+          ).toBe(409);
+          expect(yield* body(Failure, refusedRead), scenario.failure).toMatchObject({
+            _tag: "OAuthReconnectRequired",
+            account,
+            cause: { stage: "refresh", status: scenario.status },
+          });
+          assertPrivate(refusedRead.body);
+          const trace = yield* spans;
+          expect(
+            trace.data.find(
+              ({ span }) =>
+                span.operationName === "oauth.resolve" &&
+                span.tags["oauth.renewal.outcome"] !== undefined,
+            )?.span.tags,
+            scenario.failure,
+          ).toMatchObject({
+            "oauth.provider.id": provider,
+            "oauth.renewal.outcome": "reconnect",
+            "oauth.reconnect.reason": "renewal_refused",
+          });
+          expect(
+            trace.data.find(({ span }) => span.operationName === "oauth.refresh")?.span.tags,
+            scenario.failure,
+          ).toMatchObject({ "oauth.error.known_provider_code": scenario.code });
+          assertPrivate(trace);
+          yield* evidence.json(`refresh-${scenario.failure}-trace.json`, trace);
+          yield* issuer.configure({ tokenError: null });
+          const stillEnded = yield* read();
+          expect(stillEnded.status, `${scenario.failure}: ${JSON.stringify(stillEnded.body)}`).toBe(
+            409,
+          );
+          expect(yield* refreshes, scenario.failure).toBe(before + 1);
+        }
       }),
     ),
   );
@@ -593,15 +725,17 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
           app,
           connect,
           read,
+          list,
           expectRead,
           refreshes,
           assertPrivate,
         } = yield* renewalFixture;
         // Salesforce issues a refresh token but no `expires_in`, then ends the session later, and
         // its API answers the old token with 401. Executor renews the grant once and repeats a
-        // query, which only reads; later calls keep the renewed token.
+        // query the app's kept listing confirms only reads; later calls keep the renewed token.
         yield* issuer.configure({ expiresIn: null });
         const session = yield* connect("Synthetic Salesforce-style account");
+        yield* list();
         const beforeExpiry = yield* refreshes;
         yield* expectRead(0);
         yield* expectRead(0);
@@ -659,11 +793,77 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
       }),
     ),
   );
+  it.effect(scenarios.oauthUnconfirmedReadRenewal.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { issuer, name, deploy, app, connect, read, list, refreshes, assertPrivate } =
+          yield* renewalFixture;
+        // No `expires_in`, so only the service's refusal starts a renewal.
+        yield* issuer.configure({ expiresIn: null });
+        /**
+         * The service refuses `read` once. Executor renews the grant but, with no kept listing
+         * confirming the query only reads, does not repeat it: one failed call that may have
+         * written. The next call uses the renewed token.
+         */
+        const refusedOnce = (appId: string, session: string) =>
+          Effect.gen(function* () {
+            yield* issuer.expireAccessTokens;
+            const before = yield* refreshes;
+            const gets = (yield* issuer.metrics).resourceRequests.GET;
+            const refused = yield* read(appId);
+            expect(refused.status, JSON.stringify(refused.body)).toBe(502);
+            expect(refused.body).toMatchObject({
+              _tag: "AppProviderFailed",
+              reason: "unauthorized",
+              status: 401,
+              credentialsRenewed: true,
+              mayHaveWritten: true,
+              account: { id: session },
+              recovery: { action: unknownOutcomeAction },
+            });
+            assertPrivate(refused.body);
+            expect(yield* refreshes).toBe(before + 1);
+            expect((yield* issuer.metrics).resourceRequests.GET).toBe(gets + 1);
+            const next = yield* read(appId);
+            expect(next.status, JSON.stringify(next.body)).toBe(200);
+            expect(yield* body(Read, next)).toEqual({ service: presented(before + 1) });
+            expect(yield* refreshes).toBe(before + 1);
+            expect((yield* issuer.metrics).resourceRequests.GET).toBe(gets + 2);
+          });
+
+        // Nobody has listed the app's tools yet.
+        const session = yield* connect("Synthetic unlisted account");
+        yield* refusedOnce(app.id, session);
+
+        // The same app built on `apps` beta.95, from before `kindConfirmed`: its kept listing names
+        // `read` a query, but nothing confirms it.
+        const legacy = yield* deploy(`${name} beta.95`, ["service"], {
+          path: "package.json",
+          content: JSON.stringify({ dependencies: { apps: "0.0.1-beta.95" } }),
+        });
+        const legacySession = yield* connect("Synthetic beta.95 account", legacy.id);
+        yield* list(legacy.id);
+        yield* refusedOnce(legacy.id, legacySession);
+
+        // Built on the current release and listed, the app confirms `read`, so the refused call
+        // is repeated with the renewed token and succeeds.
+        yield* list();
+        yield* issuer.expireAccessTokens;
+        const before = yield* refreshes;
+        const gets = (yield* issuer.metrics).resourceRequests.GET;
+        const repeated = yield* read();
+        expect(repeated.status, JSON.stringify(repeated.body)).toBe(200);
+        expect(yield* body(Read, repeated)).toEqual({ service: presented(before + 1) });
+        expect((yield* issuer.metrics).resourceRequests.GET).toBe(gets + 2);
+      }),
+    ),
+  );
   it.effect(scenarios.oauthRenewalFailedAfterWrite.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, issuer, prefix, name, connect, refreshes, assertPrivate } =
+        const { api, actors, issuer, prefix, name, connect, list, refreshes, assertPrivate } =
           yield* renewalFixture;
         const records = yield* recordingService;
         // `save` hands a record to a service that saves it later, then presents the account's
@@ -719,6 +919,8 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         // token endpoint is down when it does.
         yield* issuer.configure({ expiresIn: null });
         const session = yield* connect("Synthetic records account", app.id);
+        // The kept listing confirms that `check` and `records` only read.
+        yield* list(app.id);
         yield* issuer.expireAccessTokens;
         yield* issuer.configure({ tokenError: refreshFailures.unavailable });
 
@@ -931,10 +1133,7 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
           yield* issuer.configure({ tokenError: null, expiresIn: 20 });
           // The calls ran where the case says: the facet loads its build in facet mode.
           yield* telemetry
-            .spans("runtime.app.build.load", {
-              "executor.app.id": app.id,
-              "executor.runtime.mode": mode,
-            })
+            .spans("runtime.app.build.load", { app: app.id }, { "executor.runtime.mode": mode })
             .pipe(
               Effect.flatMap((spans) =>
                 spans.length > 0

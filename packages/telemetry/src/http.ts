@@ -8,7 +8,11 @@ import {
 } from "effect/http";
 import { forwardTelemetry } from "./relay.ts";
 import { recordResponseReady } from "./measurements.ts";
-export { isRequestRejection, recordRequestRejections } from "./request-rejection.ts";
+export {
+  isRequestRejection,
+  recordRequestRejection,
+  recordRequestRejections,
+} from "./request-rejection.ts";
 
 /**
  * Expose handler-to-response timing and correlation IDs to the caller.
@@ -85,3 +89,5 @@ export const receiveBrowserTelemetry = (signal: "traces" | "logs", build?: strin
       TimeoutError: () => Effect.succeed(HttpServerResponse.empty({ status: 504 })),
     }),
   );
+export { annotateRequestSpan, currentRequestSpan } from "./request-span.ts";
+export { toRequestHttpEffect } from "./request-router.ts";

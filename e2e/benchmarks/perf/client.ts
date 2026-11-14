@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
+import { roleHost } from "../../support/role-hosts.ts";
 
 export class PerfRequestFailed extends Schema.TaggedError<PerfRequestFailed>()(
   "PerfRequestFailed",
@@ -38,10 +39,15 @@ export const cookieHeader = (cookies: readonly { name: string; value: string }[]
 
 export type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
-/** Product HTTP client bound to one origin and one actor's cookies. */
-export const productClient = (origin: string, cookies: string) =>
+/**
+ * Product HTTP client for one stage and one actor's cookies. `origin` is the stage's deployment
+ * origin; requests go to its browser host (`app.`), where Cloud keeps sessions and checks their
+ * origin, as a browser's would.
+ */
+export const productClient = (deployment: string, cookies: string) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
+    const origin = roleHost(deployment, "app");
     const request = (method: Method, path: string, data?: unknown) =>
       Effect.gen(function* () {
         const url = new URL(path, origin);

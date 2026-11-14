@@ -193,6 +193,7 @@ export function AppAccounts({
       <SharedAccounts
         app={app}
         accounts={accounts}
+        canEdit={canManage}
         Failure={HostedFailure}
         appAccounts={scopeAccounts(
           "app",
@@ -356,6 +357,7 @@ function AppConnectionFields({
             redirectUri: value.redirectUri,
             ...(account ? { reconnect: true } : {}),
             manualClient: value.manualClient,
+            ...(value.registeredClient ? { registeredClient: value.registeredClient } : {}),
             ...(returnTo === undefined ? {} : { returnTo }),
           },
           value.authorizationUrl,

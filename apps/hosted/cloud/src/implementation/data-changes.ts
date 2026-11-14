@@ -3,12 +3,14 @@ import type { DurableObjectNamespace, MessageEvent } from "@cloudflare/workers-t
 import { Cause, Effect, Queue, Schema, Stream } from "effect";
 import { RuntimeProtocolFailed } from "@executor-js/sdk/core";
 import { traceHeaders } from "@executor-js/telemetry";
+import { runtimeActor } from "./runtime-actor.ts";
 
 /** Notify after registration, conflate bursts, and close with the subscriber's scope. */
 export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">, app: string) =>
   Stream.callback<number, RuntimeProtocolFailed>(
     (queue) =>
       Effect.gen(function* () {
+        const actor = yield* runtimeActor;
         const socket = yield* Effect.acquireRelease(
           Effect.gen(function* () {
             const headers = yield* traceHeaders;
@@ -25,7 +27,12 @@ export const dataChanges = (namespace: Pick<DurableObjectNamespace, "getByName">
               },
               catch: () => new RuntimeProtocolFailed(),
             });
-          }).pipe(Effect.withSpan("runtime.cloud.changes.connect", { kind: "client" })),
+          }).pipe(
+            Effect.withSpan("runtime.cloud.changes.connect", {
+              kind: "client",
+              attributes: { ...actor, "executor.app.id": app },
+            }),
+          ),
           (socket) => Effect.sync(() => socket.close(1000, "Subscription ended")),
         );
         const changed = (event: MessageEvent) => {

@@ -1,30 +1,45 @@
 # Executor 2 beta
 
-Install with npm, `npm i -g executor@beta --include=optional`, on Node 14.18
-or newer. Without Node, run `curl -fsSL https://executor.sh/docs/install.sh | sh`
+Install with npm, `npm i -g executor@beta`, on Node 14.18 or newer. Without Node, run `curl -fsSL https://executor.sh/docs/install.sh | sh`
 on macOS or Linux, or `irm https://executor.sh/docs/install.ps1 | iex` in
 PowerShell on Windows. Each release also attaches its archives and `SHA256SUMS`.
-Run `executor` to start the server and open the dashboard. It checks npm daily
-for a newer release and suggests `executor upgrade`; set `EXECUTOR_NO_UPDATE_CHECK=1` to skip it. Use `executor serve`
-for headless operation and `executor pair` to get a new browser connection link.
+Run `executor` to start the background Executor, or join the one already
+running, and open the dashboard. The background Executor keeps running until
+`executor service stop`; nothing starts it with the OS. `executor` checks npm
+daily for a newer release and suggests `executor upgrade`; set
+`EXECUTOR_NO_UPDATE_CHECK=1` to skip it. Use `executor service start` to start it
+without a browser, `executor serve` to run it in the foreground, and
+`executor service pair` to get a new browser connection link.
 `executor upgrade` installs the newest release on your channel the way Executor
 was installed: an install-script copy downloads and checks the release and keeps
 the previous version for `executor upgrade --rollback`; an npm, pnpm, Bun or
-Yarn install runs its package manager. Restart a running server afterwards.
+Yarn install runs its package manager. Either way it stops the background
+Executor before replacing its files and starts it again on the new version; a
+release from before the background service, which a rollback can return to, has
+no `executor service`, so run `executor serve` there instead.
 
 Executor is one executable, built with Bun, with the files it runs or reads
 beside it: the dashboard, the app framework and compiler references, workerd,
-Git, the native credential-store binding and the Motel collector. It needs no
+Git, the native credential-store binding and the telemetry collector with its viewer. It needs no
 source checkout, Node, Bun or 1Password on the user machine. The `executor` npm
-package is a launcher that starts the executable from the platform package npm
-installs as an optional dependency, for macOS (Apple Silicon and Intel), Linux
-(arm64 and x64, glibc) and Windows (x64). The same archive is the release
-download the install scripts and Homebrew use.
+package is a launcher. The first time a version starts, it downloads that
+release's archive for the platform, for macOS (Apple Silicon and Intel), Linux
+(arm64 and x64, glibc) or Windows (x64), from the public GitHub release, checks it
+against the SHA-256 the package records, and keeps it in
+`~/.executor/v2/launcher/<version>` with the version before it. The same archive
+is the release download the install scripts and Homebrew use.
+`EXECUTOR_DOWNLOAD_URL` names a mirror of the releases for all of them.
 
 Beta uses `~/.executor/v2/cli` for its data. This path stays the same at the
-stable release. It is separate from Executor 1 data. Do not run two servers
-against the same directory. `EXECUTOR_DATA_DIR` selects another directory and
-`EXECUTOR_PORT` changes the default port of 4312.
+stable release. It is separate from Executor 1 data. One server runs per data
+directory; its `.server.lock` stops a second. `EXECUTOR_DATA_DIR` selects another
+directory, and `EXECUTOR_PORT` or `executor service set port` changes the default
+port of 4312. The desktop app uses the same directory and background Executor.
+Its first launch moves the data of a desktop release from before the background
+service into that directory, once. CLI data already there moves to
+`~/.executor/v2/backups/cli-data-<time>`, which the desktop app names; nothing
+is merged or deleted. The CLI's settings carry over, except its port and the
+`env` variables that belong to its data.
 
 On first launch, Executor saves its API and encryption keys in the OS credential
 store: macOS Keychain, Windows Credential Manager, or Linux Secret Service.
@@ -66,19 +81,26 @@ Native artifacts are under `.local/releases/<version>-<platform>-<arch>/`.
 `release:cli` bundles the runtime twice. `package/` holds the JavaScript runtime
 the desktop app runs with its own Node. `standalone/` holds the release install:
 the `executor` executable (`bun build --compile`) and the files beside it, which
-`executor-<version>-<platform>-<arch>.tgz` packs as the platform's npm package
-and release archive. The executable takes `runtime/cli.mjs` in its install
-directory as every module's location, so resources, `require` and
-`import.meta.resolve` find the same files beside it as from the npm package,
-through any launcher symlink. Packages that must stay on disk load from
+`executor-<version>-<platform>-<arch>.tgz` packs as the platform's release
+archive. The executable takes `runtime/cli.mjs` in its install directory as
+every module's location, so resources, `require` and `import.meta.resolve` find
+the same files beside it wherever the archive is unpacked, through any launcher
+symlink. Packages that must stay on disk load from
 `runtime/node_modules`; Git is in `runtime/git`.
-The npm launcher is under `.local/releases/<version>/wrapper/` and uses exact
-native version aliases. These build commands do not publish anything.
-The app compiler and framework are prepared for workerd at build time. No
-runtime download is needed. Each compressed native archive must fit within
-180 MiB before publication. This is a release budget with margin, not a
-documented npm registry limit. External source maps stay in the separate CI
-artifact for release diagnostics.
+The npm launcher is under `.local/releases/<version>/wrapper/`. Its
+package.json records the SHA-256 of each platform archive found under
+`.local/releases/<version>-<platform>-<arch>/`, or under the directory
+`release:wrapper` is given; publishing requires all five. The runtimes are never
+published to npm. Through 2.0.0-beta.36 each was published as a version of the
+`executor` package, such as `2.0.0-beta.36-win32-x64`, which semver ranks above
+the launcher, so a range update such as `bun update -g` replaced the launcher
+with a runtime. Those versions are deprecated so package managers skip them.
+These build commands do not publish anything.
+The app compiler and framework are prepared for workerd at build time, so the
+executable downloads nothing more. Most of each archive is the executable,
+workerd and the bundled Git, which keeps only what the runtime runs (`keptGit`
+in `runtime-bundle.ts`).
+External source maps stay in the separate CI artifact for release diagnostics.
 
 Stock Bun lets any local process run its own code inside a compiled executable,
 through `BUN_OPTIONS`, `BUN_BE_BUN`, `BUN_INSPECT` and similar variables that
@@ -89,6 +111,29 @@ publishing builds refuse stock Bun, and a local build without it prints that it
 is a development build. The release workflow fetches the runtime from the
 `bun-runtime-<bun version>-<patch hash>` release, building it first when the
 patch changed.
+
+A pull request that changes the lockdown patch has no runtime release yet, so CI's
+`release-local` lane (both its jobs) fails and names the command that builds one from its branch:
+`gh workflow run bun-runtime.yml --ref <branch> -f publish=true`, which anyone with
+write access can run. The release is named by the Bun version and the patch hash
+only, so main's runs, publishing ones included, use it from then on. If the
+branch's build scripts (`scripts/releases/bun-runtime/`) change after that build
+and before merge, delete that release before merging, and the push to main builds
+it again from main's scripts. Keying the release name on a hash of the whole
+`scripts/releases/bun-runtime/` directory, not the patch alone, would make this
+automatic; it is not done yet.
+
+The Rust telemetry collector is built by `packages/telemetry/scripts/build-collector.ts` (see the
+crate's README). The release workflow's `collector` job builds each target once per run from the
+`collector_matrix` that `workflow.ts` writes: the targets the run's packaging jobs (`local`,
+`local-macos-arm64`, `checks`, `cli`, `recovery`) run on, after any narrowing, so Linux x64 only
+in a check and none in a build of only the image, whose `releases` gate then expects the
+`collector` job skipped. It always builds; no release run restores or saves it. The packaging jobs do not
+`need` it: each waits for its own target's collector job with `collector-job.ts` and then
+downloads the build into `packages/telemetry/dist/collector/` before "Package the CLI runtime".
+`collector-job.ts` and the Deploy workflow's `apps-job.ts` share `job-wait.ts`, which follows one
+job of the run through the jobs API, fails as soon as that job ends without success or an answer
+leaves doubt, and fails at its deadline in elapsed time otherwise.
 
 The install scripts are `apps/docs/public/install.sh` and `install.ps1`, served
 at `https://executor.sh/docs/`. The publish job writes the Homebrew formula

@@ -57,6 +57,23 @@ export const recordResponseReady = (
 };
 
 /** Fixed failure metadata goes to both local/native logs and the metric registry, even when the remote exporter is down. */
+/** The signal an export path carries. */
+const signalOf = (path: string) =>
+  path.endsWith("/traces")
+    ? "traces"
+    : path.endsWith("/logs")
+      ? "logs"
+      : path.endsWith("/metrics")
+        ? "metrics"
+        : path === "app"
+          ? "app"
+          : "other";
+
+/**
+ * Count and log one failed export. `elapsedMs`, when known, is how long its request had run when
+ * it failed: an interruption at an exporter's deadline, such as the relay's three seconds, shows
+ * that deadline.
+ */
 export const recordExportFailure = (
   path: string,
   reason:
@@ -69,16 +86,9 @@ export const recordExportFailure = (
     | "relay"
     | "shutdown",
   records = 0,
+  elapsedMs?: number,
 ) => {
-  const signal = path.endsWith("/traces")
-    ? "traces"
-    : path.endsWith("/logs")
-      ? "logs"
-      : path.endsWith("/metrics")
-        ? "metrics"
-        : path === "app"
-          ? "app"
-          : "other";
+  const signal = signalOf(path);
   return Metric.update(Metric.withAttributes(exportFailures, { signal, reason }), 1).pipe(
     Effect.andThen(
       Metric.update(Metric.withAttributes(rejectedRecords, { signal, reason }), records),
@@ -89,6 +99,7 @@ export const recordExportFailure = (
           "executor.telemetry.signal": signal,
           "executor.telemetry.failure": reason,
           "executor.telemetry.rejected_records": records,
+          ...(elapsedMs === undefined ? {} : { "executor.telemetry.elapsed_ms": elapsedMs }),
         }),
       ),
     ),

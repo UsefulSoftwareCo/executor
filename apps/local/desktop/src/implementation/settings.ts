@@ -1,45 +1,67 @@
-/** Desktop-owned settings. The port form is a script-free document; its submission is a navigation. */
+/**
+ * The background server's port, kept in the data directory's `service.json` like `executor service
+ * set port`. The form is a script-free document; its submission is a navigation.
+ */
 import { createServer } from "node:net";
 import { BrowserWindow, session } from "electron";
 import { Effect, FileSystem, Option, Path, Schema } from "effect";
-import { DesktopPort, DesktopSettings, SettingsFailed } from "../contracts/desktop.ts";
+import { readSettings, writeSettings } from "../../../server/src/implementation/service-files.ts";
+import { DesktopPort, LegacyDesktopSettings, SettingsFailed } from "../contracts/desktop.ts";
 
-/** Where the backend port comes from. An explicit EXECUTOR_PORT always wins over the setting. */
+/** Where the server's port comes from. An explicit EXECUTOR_PORT always wins over the setting. */
 export type PortSource =
   | { readonly kind: "environment"; readonly port: string }
   | { readonly kind: "setting"; readonly port: number }
-  | { readonly kind: "default" };
+  | { readonly kind: "default" }
+  | { readonly kind: "invalid"; readonly message: string };
 
-const settingsPath = (directory: string) =>
+/** The port source now. `environment` is EXECUTOR_PORT as this desktop started. */
+export const portSource = (directory: string, environment: Option.Option<string>) =>
+  Option.isSome(environment)
+    ? Effect.succeed<PortSource>({ kind: "environment", port: environment.value })
+    : readSettings(directory).pipe(
+        Effect.map((settings): PortSource =>
+          settings.port === undefined
+            ? { kind: "default" }
+            : { kind: "setting", port: settings.port },
+        ),
+        Effect.catchTag("ServiceSettingInvalid", (error) =>
+          Effect.succeed<PortSource>({ kind: "invalid", message: error.message }),
+        ),
+      );
+
+/** Keep every other setting; only the port changes. */
+const savePort = (platform: string, directory: string, port: number) =>
+  readSettings(directory).pipe(
+    Effect.flatMap((settings) => writeSettings(platform, directory, { ...settings, port })),
+    Effect.mapError(() => new SettingsFailed()),
+  );
+
+/**
+ * The port an old desktop saved in its own data directory's `desktop.json`, for the migration.
+ * A missing file has none; an unreadable one is logged and carries none over.
+ */
+export const legacyPort = (directory: string) =>
   Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    return path.join(directory, "desktop.json");
-  });
+    const file = path.join(directory, "desktop.json");
+    if (!(yield* fs.exists(file))) return undefined;
+    const settings = yield* fs
+      .readFileString(file)
+      .pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(LegacyDesktopSettings))),
+      );
+    return settings.port;
+  }).pipe(
+    Effect.catch(() =>
+      Effect.logWarning("The old desktop.json is unreadable; its port is not carried over").pipe(
+        Effect.as(undefined),
+      ),
+    ),
+  );
 
-/** Read `desktop.json`. A missing file is the default; an unreadable one stops startup. */
-export const readSettings = (directory: string) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const file = yield* settingsPath(directory);
-    if (!(yield* fs.exists(file))) return Option.none<typeof DesktopSettings.Type>();
-    return Option.some(
-      yield* fs
-        .readFileString(file)
-        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(DesktopSettings)))),
-    );
-  }).pipe(Effect.mapError(() => new SettingsFailed({ reason: "invalid" })));
-
-const writeSettings = (directory: string, settings: typeof DesktopSettings.Type) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const file = yield* settingsPath(directory);
-    const staged = `${file}.${process.pid}.tmp`;
-    const contents = yield* Schema.encodeEffect(Schema.fromJsonString(DesktopSettings))(settings);
-    yield* fs.writeFileString(staged, `${contents}\n`, { mode: 0o600 });
-    yield* fs.rename(staged, file);
-  }).pipe(Effect.mapError(() => new SettingsFailed({ reason: "write" })));
-
-/** Probe the loopback address the backend binds. A later bind can still race another process. */
+/** Probe the loopback address the server binds. A later bind can still race another process. */
 const portAvailable = (port: number) =>
   Effect.callback<boolean>((resume) => {
     const server = createServer();
@@ -63,12 +85,15 @@ const portPage = (options: {
   readonly value: string;
   readonly error: string | undefined;
 }) => {
-  const locked = options.source.kind === "environment";
-  const note = locked
-    ? `EXECUTOR_PORT sets the port for this launch. Unset it to choose a port here.`
-    : options.current === undefined
-      ? `The local server is not running. Executor restarts to apply a new port.`
-      : `MCP clients and scripts use http://127.0.0.1:${options.current}. Update them after a change. Executor restarts to apply it.`;
+  const locked = options.source.kind === "environment" || options.source.kind === "invalid";
+  const note =
+    options.source.kind === "environment"
+      ? `EXECUTOR_PORT sets the port for this launch. Unset it to choose a port here.`
+      : options.source.kind === "invalid"
+        ? options.source.message
+        : options.current === undefined
+          ? `The background server is not running. It restarts to apply a new port.`
+          : `MCP clients and scripts use http://127.0.0.1:${options.current}. Update them after a change. The background server restarts to apply it, and the Executor CLI uses it too.`;
   return `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
@@ -100,15 +125,18 @@ const portPage = (options: {
 };
 
 /**
- * Make the "Server port…" action. `current` is the port the running backend bound, if one is
- * running. Saving writes `desktop.json` and asks the caller to restart, because the listener cannot
- * move in place.
+ * Make the "Server port…" action. `current` is the port the running server bound, if one is
+ * running. Saving writes `service.json` and restarts the background server, because the listener
+ * cannot move in place.
  */
 export const makePortAction = (options: {
   readonly directory: string;
+  readonly platform: string;
+  /** EXECUTOR_PORT as this desktop started; it locks the form. */
+  readonly environment: Option.Option<string>;
   readonly current: () => number | undefined;
-  readonly source: PortSource;
   readonly parent: () => BrowserWindow | undefined;
+  /** Stop the background server and start it again, so it listens on the saved port. */
   readonly restart: () => void;
 }) =>
   Effect.gen(function* () {
@@ -116,8 +144,11 @@ export const makePortAction = (options: {
     const run = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | Path.Path>) =>
       Effect.runPromise(Effect.provide(effect, services));
     let open: BrowserWindow | undefined;
-    const show = Effect.sync(() => {
+    const show = Effect.gen(function* () {
       if (open !== undefined && !open.isDestroyed()) return open.focus();
+      // Read once per opened form, so a restart while it is open cannot change the page.
+      const source = yield* portSource(options.directory, options.environment);
+      const running = options.current();
       const parent = options.parent();
       const current = new BrowserWindow({
         width: 420,
@@ -145,11 +176,9 @@ export const makePortAction = (options: {
       current.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
       current.webContents.on("will-attach-webview", (event) => event.preventDefault());
       current.once("ready-to-show", () => current.show());
-      // Read once per opened form, so a backend restart while it is open cannot change the page.
-      const running = options.current();
       const load = (value: string, error: string | undefined) => {
         void current
-          .loadURL(portPage({ current: running, source: options.source, value, error }))
+          .loadURL(portPage({ current: running, source, value, error }))
           .catch(() => current.destroy());
       };
       const submit = (value: string) =>
@@ -162,10 +191,7 @@ export const makePortAction = (options: {
               value,
               `Port ${port.value} is in use by another program. Choose another port.`,
             );
-          const saved = yield* writeSettings(options.directory, {
-            version: 1,
-            port: port.value,
-          }).pipe(
+          const saved = yield* savePort(options.platform, options.directory, port.value).pipe(
             Effect.as(true),
             Effect.catch(() => Effect.succeed(false)),
           );
@@ -179,7 +205,7 @@ export const makePortAction = (options: {
         });
       current.webContents.on("will-navigate", (event, url) => {
         event.preventDefault();
-        if (options.source.kind === "environment" || !url.startsWith(action)) {
+        if (source.kind === "environment" || source.kind === "invalid" || !url.startsWith(action)) {
           current.destroy();
           return;
         }
@@ -187,10 +213,7 @@ export const makePortAction = (options: {
         if (target.pathname === "port") void run(submit(target.searchParams.get("port") ?? ""));
         else current.destroy();
       });
-      load(
-        String(running ?? (options.source.kind === "setting" ? options.source.port : "")),
-        undefined,
-      );
+      load(String(running ?? (source.kind === "setting" ? source.port : "")), undefined);
     });
     return show;
   });

@@ -6,6 +6,7 @@ import type { WorkerHost } from "./worker-build.ts";
 import type { Plugin } from "esbuild";
 import { boundBuildMessage, describeBuildCause, RuntimeBuildFailed } from "../contracts/runtime.ts";
 import tailwind from "tailwindcss/package.json" with { type: "json" };
+import { withoutUrlSecrets } from "@executor-js/utils/url-policy";
 
 const Package = Schema.Struct({
   dependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
@@ -14,6 +15,10 @@ const Package = Schema.Struct({
 /**
  * Framework archives are loaded alone; direct npm imports retain their authored declarations and
  * dependency graphs. `registry` replaces the public npm registry when the host configures one.
+ * The installer's errors quote the URLs it fetched, which start with that registry. An operator's
+ * registry URL can carry credentials or a token, and the deployer reading a failed build is not
+ * always the operator, so a failure loses each URL's userinfo, query and fragment. A token the
+ * registry takes as a path segment is kept and reaches the deployer: it cannot be told from a path.
  */
 export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerHost) =>
   Effect.gen(function* () {
@@ -51,7 +56,9 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
                 stage: "dependencies",
                 dependency: name,
                 message: boundBuildMessage(
-                  `Installing ${name}@${version} failed: ${describeBuildCause(cause)}`,
+                  withoutUrlSecrets(
+                    `Installing ${name}@${version} failed: ${describeBuildCause(cause)}`,
+                  ),
                 ),
               }),
           });
@@ -63,9 +70,11 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
               stage: "dependencies",
               dependency: name,
               message: boundBuildMessage(
-                result.warnings.length > 0
-                  ? `Installing ${name}@${version} failed: ${result.warnings.join("; ")}`
-                  : `Installing ${name}@${version} did not produce node_modules/${name}/package.json.`,
+                withoutUrlSecrets(
+                  result.warnings.length > 0
+                    ? `Installing ${name}@${version} failed: ${result.warnings.join("; ")}`
+                    : `Installing ${name}@${version} did not produce node_modules/${name}/package.json.`,
+                ),
               ),
             });
           yield* Effect.annotateCurrentSpan({

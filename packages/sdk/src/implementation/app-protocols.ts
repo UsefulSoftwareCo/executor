@@ -14,6 +14,9 @@ import {
   type HostAccounts,
   type HostInvocation,
   type HostRequest,
+  type ResolvedAccount,
+  type ResolvedAccounts,
+  type ResolvedAccountSlots,
   type WorkflowExecution,
 } from "apps/contracts";
 import type { SourceTextFile as SourceFile } from "../contracts/source.ts";
@@ -55,13 +58,18 @@ export interface AppProtocol {
    * account was connected through a later app that declared hosts.
    */
   readonly sealedCredentials: boolean;
+  /**
+   * The accounts, already sealed or unsealed, as this protocol's bundles read them, in the
+   * invocation and in each workflow step's context.
+   */
+  readonly accounts: (accounts: ResolvedAccounts) => ResolvedAccounts;
 }
 
-/** Protocol 13 is the host's current protocol, so its messages need no conversion. */
-const protocol13: AppProtocol = {
-  version: 13,
+/** Protocol 14 is the host's current protocol, so its messages need no conversion. */
+const protocol14: AppProtocol = {
+  version: 14,
   workerEntry: appBridge,
-  nodeEntry: nodeAppEntry(13),
+  nodeEntry: nodeAppEntry(14),
   invocation: (input) => JSON.stringify(input),
   request: (command) => command,
   refuse: () => undefined,
@@ -69,6 +77,48 @@ const protocol13: AppProtocol = {
   workflow: (execution) => execution,
   concurrentData: true,
   sealedCredentials: true,
+  accounts: (accounts) => accounts,
+};
+
+/** A credential host with an underscore, which bundles of protocol 13 and earlier reject. */
+const underscored = (host: string) => host.includes("_");
+
+const withoutUnderscoredHosts = (account: ResolvedAccount): ResolvedAccount => {
+  const hosts = account.provider.hosts;
+  return hosts?.some(underscored) === true
+    ? { ...account, provider: { ...account.provider, hosts: hosts.filter((h) => !underscored(h)) } }
+    : account;
+};
+
+const slotsWithoutUnderscoredHosts = (slots: ResolvedAccountSlots): ResolvedAccountSlots =>
+  Object.fromEntries(
+    Object.entries(slots).map(([slot, selected]) => [
+      slot,
+      "provider" in selected
+        ? withoutUnderscoredHosts(selected)
+        : selected.map(withoutUnderscoredHosts),
+    ]),
+  );
+
+/**
+ * Protocol 13 is protocol 14 with credential hosts that never hold an underscore. An account its
+ * bundle uses can still carry one: connected through a later app that declared it, and granted by
+ * this app's wildcard. Its bundles read each account's hosts but never decide from them where a
+ * credential goes: a sealed handle carries the hosts it was sealed for and the outbound network
+ * checks those. So such a bundle receives each account without its underscored hosts, which it
+ * would otherwise reject with the whole invocation. Every other message and reply is unchanged.
+ */
+const protocol13: AppProtocol = {
+  ...protocol14,
+  version: 13,
+  nodeEntry: nodeAppEntry(13),
+  accounts: (accounts) =>
+    accounts.user === undefined
+      ? { app: slotsWithoutUnderscoredHosts(accounts.app) }
+      : {
+          app: slotsWithoutUnderscoredHosts(accounts.app),
+          user: slotsWithoutUnderscoredHosts(accounts.user),
+        },
 };
 
 /**
@@ -254,6 +304,7 @@ const legacyProtocol = (version: LegacyVersion): AppProtocol => {
     }),
     concurrentData: false,
     sealedCredentials: false,
+    accounts: protocol13.accounts,
   };
 };
 
@@ -272,6 +323,7 @@ const protocols: ReadonlyMap<number, AppProtocol> = new Map(
     protocol11,
     protocol12,
     protocol13,
+    protocol14,
   ].map((protocol) => [protocol.version, protocol]),
 );
 

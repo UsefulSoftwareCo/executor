@@ -1,4 +1,5 @@
 import { expect, layer } from "@effect/vitest";
+import type { Page } from "playwright";
 import { Effect, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -6,6 +7,7 @@ import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
+import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
 import { acceptedToken, accountCheckUpstream } from "../support/account-check-upstream.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { scenarios } from "../test-plan.ts";
@@ -419,6 +421,90 @@ layer(HostedLive, { excludeTestServices: true })("Account health", (it) => {
           status: "healthy",
           current: true,
         });
+
+        // A redeploy while the page stays open outdates the result it already rechecked. Returning
+        // to the tab reads the accounts again, and the open page checks the account once more,
+        // showing the check in progress instead of the outdated result until it finishes.
+        yield* upstream.answer({ kind: "hang" });
+        const third = yield* api.request(actors.owner, "POST", `${identityPath}/deploy`, {
+          files: [
+            {
+              path: "index.ts",
+              content: `${source(identityCheck(upstream.origin))}\n// redeployed a third time`,
+            },
+            appsManifest,
+          ],
+        });
+        expect(third.status, JSON.stringify(third.body)).toBe(200);
+        expect(entry(yield* read(), identity)?.check).toMatchObject({ current: false });
+        yield* refreshVisiblePage;
+        const row = (page: Page) =>
+          page.locator(".accounts-section li").filter({ hasText: "Default" });
+        yield* browser.use("The open page checks the outdated result again", (page) =>
+          row(page).locator('[data-check-status="checking"]').waitFor(),
+        );
+        yield* browser.checkpoint("Outdated result being checked again");
+        yield* browser.use("Record every state the row shows until the check finishes", (page) =>
+          page.evaluate(() => {
+            const states: string[] = [];
+            Reflect.set(window, "checkStates", states);
+            new MutationObserver(() => {
+              const pill = [...document.querySelectorAll(".accounts-section li")]
+                .find((item) => item.textContent?.includes("Default"))
+                ?.querySelector<HTMLElement>("[data-check-status]");
+              states.push(`${pill?.dataset.checkStatus}:${pill?.dataset.checkCurrent}`);
+            }).observe(document.body, {
+              subtree: true,
+              childList: true,
+              attributes: true,
+              characterData: true,
+            });
+          }),
+        );
+        yield* browser.use("The new result replaces the check in progress", (page) =>
+          row(page)
+            .locator('[data-check-status="check_failed"][data-check-current="true"]')
+            .waitFor({ timeout: 30_000 }),
+        );
+        // The finished check shows its result at once; the row never falls back to the outdated one.
+        const states = yield* browser.use("Read the states the row showed", (page) =>
+          page.evaluate(() => Reflect.get(window, "checkStates") as string[]),
+        );
+        expect(
+          states.filter((state) => state.endsWith(":false")),
+          states.join(" > "),
+        ).toEqual([]);
+        yield* upstream.answer({ kind: "user" });
+
+        // A recheck that cannot reach the server leaves the outdated result, so the row says the
+        // check could not run and offers to try again instead of showing the outdated result.
+        const lost = yield* holdQuery(/\/accounts\/[^/]+\/health$/, "fail", { method: "POST" });
+        const fourth = yield* api.request(actors.owner, "POST", `${identityPath}/deploy`, {
+          files: [
+            {
+              path: "index.ts",
+              content: `${source(identityCheck(upstream.origin))}\n// redeployed a fourth time`,
+            },
+            appsManifest,
+          ],
+        });
+        expect(fourth.status, JSON.stringify(fourth.body)).toBe(200);
+        yield* refreshVisiblePage;
+        yield* lost.requested;
+        yield* lost.release;
+        yield* browser.use("The row says the check could not run", (page) =>
+          row(page).locator('[data-check-status="recheck_failed"]').waitFor(),
+        );
+        yield* browser.checkpoint("Recheck that could not run");
+        yield* browser.use("Try the check again", (page) =>
+          row(page).getByRole("button", { name: "Try again" }).click(),
+        );
+        yield* browser.use("Trying again shows the new result", (page) =>
+          row(page)
+            .locator('[data-check-status="healthy"][data-check-current="true"]')
+            .waitFor({ timeout: 30_000 }),
+        );
+        yield* browser.checkpoint("Result after trying again");
       }),
     ),
   );

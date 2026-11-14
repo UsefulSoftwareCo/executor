@@ -31,6 +31,15 @@ App mutations/webhooks can call `ctx.workflows.start({ workflow, input, key? })`
 and `terminate({ run })`. Queries also have `get({ run })` and `list(options?)`.
 Controls cannot target another app. Use stable start keys when retrying a caller;
 starting a workflow is never part of a SQL transaction.
+
+Limits: workflow and step names are 1–200 characters, `start` input is JSON of at
+most 1 MiB, a `key` is 1–128 characters, and `list` takes `limit` 1–100 (default
+20). A start with the same key and input returns that run; the same key with
+other input fails with reason `conflict`. Controls throw `WorkflowFailure` with
+`reason`, `retryable` and a `message`. Reason `input` is refused before any run
+starts; fix the call. A `start` that fails with reason `engine` and
+`retryable: false` may still have started its run: start again with the same key
+and input, or check `list`, before starting a run without a key.
 The SDK namespace is `executor.apps.workflowRuns`, with discovery through
 `executor.apps.workflows.list`. Do not invent `executor.workflowRuns`.
 

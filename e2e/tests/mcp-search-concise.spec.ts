@@ -1,4 +1,4 @@
-/** A broad tools.search stays inside the execute output budget; describe returns full detail. */
+/** A broad tools.search stays inside its page budget; describe returns full detail. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -11,8 +11,8 @@ import { connectLocalAccount } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
-/** Execute's default output budget; a search page may use a quarter of it. */
-const outputBytes = 100_000;
+/** UTF-8 bytes of JSON one search page holds at most. */
+const pageBytes = 25_000;
 const records = 100;
 const kinds = 300;
 
@@ -185,7 +185,7 @@ layer(TestLive, { excludeTestServices: true })("MCP search concise", (it) => {
         yield* evidence.json("search-first-page.json", first.value);
         const text = JSON.stringify(first.value);
         const page = yield* Schema.decodeUnknownEffect(Page)(first.value);
-        expect(Buffer.byteLength(text)).toBeLessThanOrEqual(outputBytes / 4);
+        expect(Buffer.byteLength(text)).toBeLessThanOrEqual(pageBytes);
         expect(page.items.length).toBeGreaterThan(0);
         expect(page.items.length).toBeLessThan(tools);
         expect(page.remaining).toBe(tools - page.items.length);

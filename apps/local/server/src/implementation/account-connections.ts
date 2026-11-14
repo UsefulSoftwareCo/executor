@@ -18,7 +18,7 @@ import {
 import { AuthForbidden, PairingUnauthorized } from "../contracts/auth.ts";
 import { OAuthCallbackPath } from "../contracts/dashboard.ts";
 import type { ServerConfig } from "../contracts/config.ts";
-import { localRequest, requestOrigin } from "./auth.ts";
+import { localBearer, localRequest, requestOrigin } from "./auth.ts";
 import { connectOptions, connectionClient } from "./oauth-clients.ts";
 import { executorAppOwner, localOwner } from "./owners.ts";
 import { requireScopedRequirement } from "./app-accounts.ts";
@@ -88,7 +88,7 @@ export const accountConnectHandlers = (
         Effect.gen(function* () {
           const request = yield* localRequest(config.port, config.browserOrigin);
           if (request.headers.origin !== undefined) return yield* new AuthForbidden();
-          if (request.headers.authorization !== `Bearer ${Redacted.value(config.apiKey)}`)
+          if (!localBearer(config, request.headers.authorization))
             return yield* new PairingUnauthorized();
           if (payload.account === managed.account || payload.target.app === managed.app)
             return yield* new ConnectionLinkRejected();

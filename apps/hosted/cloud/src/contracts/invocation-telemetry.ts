@@ -1,4 +1,7 @@
-/** Parse only platform timing metadata; request bodies, URLs, credentials and logs are discarded. */
+/**
+ * Parse only platform timing metadata. Request bodies, credentials and logs are discarded; the
+ * request's URL and user agent are read only to classify the invocation, never recorded.
+ */
 import { Schema } from "effect";
 
 const milliseconds = Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0));
@@ -40,9 +43,11 @@ export const InvocationRpc = Schema.Struct({ rpcMethod: Schema.String });
 export const InvocationHttp = Schema.Struct({
   request: Schema.Struct({
     method: Schema.String,
+    url: Schema.optional(Schema.String),
     headers: Schema.Struct({
       "cf-ray": Schema.optional(Schema.String),
       traceparent: Schema.optional(Schema.String),
+      "user-agent": Schema.optional(Schema.String),
     }),
   }),
   response: Schema.optional(Schema.Struct({ status: Schema.Int })),

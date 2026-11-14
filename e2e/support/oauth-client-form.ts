@@ -1,7 +1,7 @@
 /**
  * The OAuth connect form, as hosted dialogs and the local connection page render it. With client
- * entry it reads, top to bottom: what happened or what to do, the redirect URL, the client
- * fields, where the sign-in goes, and the Connect action.
+ * entry it reads, top to bottom: what happened or what to do, the redirect URL, the app's client
+ * guide when it declares one, the client fields, where the sign-in goes, and the Connect action.
  */
 import type { Locator } from "playwright";
 

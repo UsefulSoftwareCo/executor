@@ -39,6 +39,11 @@
       "rules": { "executor/no-module-level-mutable-state": "error" },
     },
     {
+      // Product code: a synchronous write to stdout or stderr can hold the process open.
+      "files": ["apps/**/src/**", "packages/*/src/**"],
+      "rules": { "executor/no-sync-stdio-write": "error" },
+    },
+    {
       // Worker entry points: initialization runs once per isolate, for every request it serves.
       "files": ["apps/hosted/cloud/src/**"],
       "rules": { "executor/no-shared-wait-in-worker-initialization": "error" },
@@ -77,6 +82,28 @@
         "packages/telemetry/src/browser*.ts",
       ],
       "rules": { "executor/authored-code-through-adapter": "off" },
+    },
+    {
+      // Code the self-host dashboard runs in the browser, which may be served over plain HTTP on
+      // a LAN address. App UIs are published only on HTTPS or localhost, so the apps client is not
+      // listed.
+      "files": [
+        "apps/hosted/web/src/**",
+        "apps/hosted/self-host/web/src/**",
+        "packages/ui/src/**",
+        "packages/telemetry/src/browser*.ts",
+      ],
+      "rules": { "executor/no-secure-context-api": "error" },
+    },
+    {
+      // The only browser code allowed to read crypto.randomUUID, crypto.subtle and
+      // navigator.clipboard: the helpers that wrap them. Any feature detection for these APIs
+      // belongs inside such a helper; add a new helper here rather than exempting a caller.
+      "files": [
+        "packages/ui/src/implementation/lib/clipboard.ts",
+        "packages/utils/src/random-uuid.ts",
+      ],
+      "rules": { "executor/no-secure-context-api": "off" },
     },
     {
       // Authorization proofs are minted only where their check runs.

@@ -11,11 +11,10 @@ import {
   credentialValues,
   credentialsComplete,
 } from "../../contracts/credentials.ts";
-import { CredentialFields } from "../components/credential-fields.tsx";
+import { CredentialFields, CredentialInput } from "../components/credential-fields.tsx";
 import { Button } from "../components/button.tsx";
 import { Card, CardContent } from "../components/card.tsx";
 import { Checkbox } from "../components/checkbox.tsx";
-import { Input } from "../components/input.tsx";
 import { Textarea } from "../components/textarea.tsx";
 import { CopyButton } from "./code.tsx";
 
@@ -205,11 +204,9 @@ function SetupForm<E>({
           ) : (
             <label className="field-label">
               Provider signing secret
-              <Input
-                type="password"
+              <CredentialInput
                 value={secret}
-                onChange={(event) => setSecret(event.target.value)}
-                autoComplete="off"
+                onValueChange={setSecret}
                 required
                 disabled={pending}
               />

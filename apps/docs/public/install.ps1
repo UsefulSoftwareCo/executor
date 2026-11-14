@@ -6,7 +6,9 @@
 # It downloads the release archive from the public GitHub release, checks it against the
 # release's SHA256SUMS, unpacks it into %USERPROFILE%\.executor\v2\runtime\versions\<version>,
 # points the runtime\current junction at it and adds runtime\current to your user PATH. The
-# version it replaces stays as `previous`, so `executor upgrade --rollback` can switch back.
+# version it replaces stays as `previous`, so `executor upgrade --rollback` can switch back. A
+# running background Executor is stopped first; the next `executor` command starts it on the new
+# version.
 #
 # Settings: EXECUTOR_VERSION (or the first argument), EXECUTOR_INSTALL_DIR, EXECUTOR_DOWNLOAD_URL,
 # EXECUTOR_NPM_REGISTRY, and EXECUTOR_NO_MODIFY_PATH=1 to leave PATH alone.
@@ -69,6 +71,26 @@ try {
   $reported = & (Join-Path $unpacked "executor.exe") --version 2>$null
   if ("$reported".Trim() -ne "executor v$Version") {
     Fail "the downloaded Executor did not start on this machine. Nothing was installed."
+  }
+
+  # A background Executor may run from a version this replaces or removes, and Windows cannot
+  # remove the files of a running program, so the installed Executor stops it first, as
+  # `executor upgrade` does. A version from before the background service has no
+  # `executor service` and runs none; a development build's runs from its checkout and is left
+  # alone. This script does not start it again: a server started from here would hold this shell's
+  # inheritable handles, such as the pipe a caller reads its output from, for as long as it runs.
+  $installed = Join-Path $root "current\executor.exe"
+  if (Test-Path $installed) {
+    # Its errors, such as from a version without `executor service`, only leave it running.
+    $ErrorActionPreference = "Continue"
+    $status = "$(& $installed service status 2>$null)"
+    # A registered server prints its URL, version and process, whether it answers or not.
+    if ($status -match 'http://\S+ \(version [^,]+, process \d+\)' -and $status -notmatch '\(version 0\.0\.0-dev,') {
+      & $installed service stop *> $null
+      if ($LASTEXITCODE -eq 0) { Write-Host "Stopped the background Executor; the next executor command starts it on $Version." }
+      else { Write-Host "The background Executor did not stop. Run executor service restart once the install is done." }
+    }
+    $ErrorActionPreference = "Stop"
   }
 
   $versions = Join-Path $root "versions"

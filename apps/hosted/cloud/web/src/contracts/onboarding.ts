@@ -8,6 +8,7 @@ import {
   OnboardingReady,
   OnboardingEntry,
   type CreateTeam,
+  SetupGate,
   type SetupSequence,
 } from "../../../src/contracts/onboarding.ts";
 import { CloudClient } from "./billing.ts";
@@ -87,3 +88,35 @@ export const setupSequenceAtom = Atom.family((organization: OrganizationReferenc
     (refresh) => refresh(query),
   ).pipe(Atom.withLabel("ui.onboarding.setup"));
 });
+
+/** Organizations whose dashboard this tab found open; an open dashboard never closes again. */
+const openDashboards = new Set<string>();
+
+/**
+ * Where a dashboard address sends this member instead: their current setup step while their setup
+ * is required and not finished, otherwise nowhere. `read` fetches from the API, in process on the
+ * server. A failed read leaves the dashboard open, since every API request still checks access,
+ * and is asked again on the next visit.
+ */
+export const setupGateRedirect = async (
+  read: (path: string) => Promise<Response>,
+  organization: string,
+): Promise<string | undefined> => {
+  if (openDashboards.has(organization)) return undefined;
+  const response = await read(
+    `/api/organizations/${encodeURIComponent(organization)}/setup/gate`,
+  ).catch(() => undefined);
+  if (response?.ok !== true) return undefined;
+  const gate = Schema.decodeUnknownOption(SetupGate)(await response.json().catch(() => null));
+  if (Option.isNone(gate)) return undefined;
+  if (gate.value.status === "open") {
+    // The server renders one document per request; only a tab remembers.
+    if (typeof window !== "undefined") openDashboards.add(organization);
+    return undefined;
+  }
+  const setup = `/org/${encodeURIComponent(organization)}/setup`;
+  if (gate.value.step === "assistant") return `${setup}/assistant`;
+  return gate.value.agent === undefined
+    ? `${setup}/accounts`
+    : `${setup}/accounts?${new URLSearchParams({ assistant: "other", agent: gate.value.agent })}`;
+};

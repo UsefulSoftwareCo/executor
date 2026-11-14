@@ -14,6 +14,8 @@ const overview = "**/api/organizations/*/billing";
 const held = 1_500;
 const pollInterval = 30_000;
 const polls = 3;
+const overviewRead = (request: Request) =>
+  request.method() === "GET" && /\/api\/organizations\/[^/]+\/billing$/.test(request.url());
 
 interface Read {
   readonly request: Request;
@@ -33,11 +35,7 @@ layer(HostedLive, { excludeTestServices: true })("Superseded reads", (it) => {
         const observe = (page: Page) => {
           const find = (request: Request) => reads.find((read) => read.request === request);
           page.on("request", (request) => {
-            if (
-              request.method() === "GET" &&
-              /\/api\/organizations\/[^/]+\/billing$/.test(request.url())
-            )
-              reads.push({ request, responded: false, ended: undefined });
+            if (overviewRead(request)) reads.push({ request, responded: false, ended: undefined });
           });
           page.on("response", (response) => {
             const read = find(response.request());
@@ -72,9 +70,11 @@ layer(HostedLive, { excludeTestServices: true })("Superseded reads", (it) => {
           page.route(overview, hold),
         );
         const before = reads.length;
+        // A poll fires near the end of the advanced interval, and its request event can arrive
+        // after `runFor` returns, so each poll waits for the read it sends.
         for (let poll = 1; poll <= polls; poll += 1)
           yield* browser.use(`Poll ${poll} while the previous read is held`, (page) =>
-            page.clock.runFor(pollInterval),
+            Promise.all([page.waitForRequest(overviewRead), page.clock.runFor(pollInterval)]),
           );
         const polled = reads.slice(before);
         const latest = polled.at(-1);

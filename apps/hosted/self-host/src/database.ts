@@ -1,6 +1,6 @@
 /** One persisted PGlite engine for self-host auth and product data. */
 import { Effect, FileSystem, Layer, Path } from "effect";
-import { pgliteLayer } from "fumadb-effect/pglite";
+import { persistentPgliteLayer } from "fumadb-effect/pglite";
 import { lock } from "proper-lockfile";
 import { dataDirectory } from "./contracts/config.ts";
 import { DatabaseUnavailable } from "./contracts/database.ts";
@@ -28,9 +28,11 @@ const databaseDirectory = Effect.gen(function* () {
   return directory;
 });
 
-/** Acquire the native engine before exposing migrated auth and product services. */
+/**
+ * Acquire the native engine before exposing migrated auth and product services. The volume lock is
+ * held before the database is opened, and a first start creates the database whole, so one ended
+ * partway leaves no database or a complete one; see `persistentPgliteLayer`.
+ */
 export const selfHostDatabase = selfHostDatabaseSchema.pipe(
-  Layer.provideMerge(
-    Layer.unwrap(Effect.map(databaseDirectory, (dataDir) => pgliteLayer({ dataDir }))),
-  ),
+  Layer.provideMerge(Layer.unwrap(Effect.map(databaseDirectory, persistentPgliteLayer))),
 );

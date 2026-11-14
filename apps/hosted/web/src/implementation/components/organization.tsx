@@ -279,6 +279,8 @@ function useOrganizationQueryReference(routeReference: OrganizationReference) {
 export type OrganizationPageReads = (
   organization: OrganizationReference,
   params: Readonly<Record<string, unknown>>,
+  /** The route's validated search, for a page whose reads the address's query names. */
+  search?: Readonly<Record<string, unknown>>,
 ) => ReadonlyArray<Atom.Atom<unknown>>;
 
 declare module "@tanstack/react-router" {
@@ -315,7 +317,9 @@ export function OrganizationBoundary({
   usePreload(accessAtom(reference), organizationsAtom);
   const released = useGuardedPreload(
     accessAtom(reference),
-    matches.flatMap((match) => match.staticData.organizationReads?.(reference, match.params) ?? []),
+    matches.flatMap(
+      (match) => match.staticData.organizationReads?.(reference, match.params, match.search) ?? [],
+    ),
   );
   const access = useAtomValue(accessAtom(reference));
   const session = useAtomValue(sessionAtom);

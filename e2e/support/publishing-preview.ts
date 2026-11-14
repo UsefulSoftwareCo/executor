@@ -1,12 +1,13 @@
 /** Exercise the shared dialog with server-result fixtures; registry authorization is tested separately. */
 import { Effect, Schema } from "effect";
-import type { Route } from "playwright";
 import { Browser } from "./browser.ts";
+import { type ReceivedResponse, replaceResponses } from "./browser-responses.ts";
 
 type WorkspaceDisplay = { readonly revision: { readonly commit: string } };
 const WorkspaceDisplay = Schema.Struct({
   revision: Schema.Struct({ commit: Schema.String }),
 });
+const Fields = Schema.Record(Schema.String, Schema.Unknown);
 
 /**
  * Self-host does not publish; replace only that capability on real workspace reads for UI checks.
@@ -19,58 +20,50 @@ export const publishingPreview = (
 ) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
-    const workspace = (url: URL) => url.pathname.endsWith(`/apps/${app}/workspace/display`);
-    const authoring = (url: URL) => url.pathname.endsWith(`/apps/${app}/authoring`);
     const listings = (url: URL) => url.pathname.endsWith("/app-publications/published");
-    const source = (route: Route) =>
-      route.fetch().then((response) => {
-        if (response.status() !== 200) throw new Error("The real workspace must be readable");
-        return response.json().then((body: unknown) =>
-          route.fulfill({
+    /** Add `fields` to the server's real answer for the reads whose path ends with `path`. */
+    const extend = (
+      path: string,
+      unreadable: string,
+      fields: (body: Readonly<Record<string, unknown>>) => object,
+    ) =>
+      replaceResponses(`*${path}*`, (response: ReceivedResponse) => {
+        if (!new URL(response.url).pathname.endsWith(path)) return "unchanged";
+        if (response.status !== 200) throw new Error(unreadable);
+        return response.body().then((text) => {
+          const body = Schema.decodeUnknownSync(Fields)(JSON.parse(text));
+          return {
             status: 200,
             contentType: "application/json",
-            body: JSON.stringify({
-              ...Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown))(body),
-              publication:
-                typeof publication === "function"
-                  ? publication(Schema.decodeUnknownSync(WorkspaceDisplay)(body))
-                  : publication,
-            }),
-          }),
-        );
+            body: JSON.stringify({ ...body, ...fields(body) }),
+          };
+        });
       });
-    const entries = (route: Route) =>
-      route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify(published),
-      });
-    yield* browser.use("Enable publishing in the shared authoring controls", (page) =>
-      page.route(authoring, (route) =>
-        route.fetch().then((response) => {
-          if (response.status() !== 200) throw new Error("Real authoring access must succeed");
-          return response.json().then((body: unknown) =>
-            route.fulfill({
-              status: 200,
-              contentType: "application/json",
-              body: JSON.stringify({
-                ...Schema.decodeUnknownSync(Schema.Record(Schema.String, Schema.Unknown))(body),
-                canPublish: true,
-              }),
-            }),
-          );
+    yield* extend(`/apps/${app}/authoring`, "Real authoring access must succeed", () => ({
+      canPublish: true,
+    }));
+    yield* extend(
+      `/apps/${app}/workspace/display`,
+      "The real workspace must be readable",
+      (body) => ({
+        publication:
+          typeof publication === "function"
+            ? publication(Schema.decodeUnknownSync(WorkspaceDisplay)(body))
+            : publication,
+      }),
+    );
+    yield* browser.use("Provide the existing public listings", (page) =>
+      page.route(listings, (route) =>
+        route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify(published),
         }),
       ),
     );
-    yield* browser.use("Provide publishing results for the shared dialog", (page) =>
-      page.route(workspace, source),
-    );
-    yield* browser.use("Provide the existing public listings", (page) =>
-      page.route(listings, entries),
-    );
     yield* Effect.addFinalizer(() =>
       browser
-        .use("Release publishing result fixtures", (page) => page.unrouteAll({ behavior: "wait" }))
+        .use("Release the public listings fixture", (page) => page.unroute(listings))
         .pipe(Effect.orDie),
     );
   });

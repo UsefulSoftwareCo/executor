@@ -25,8 +25,12 @@ import {
 } from "effect";
 import { developmentDatabase } from "./development.ts";
 import { cloudOrigin, roleHostsJobEnvironment, testStage, type TestStage } from "./stage.ts";
-import { postgresUrl, previewDatabase, previewPoolConnections } from "./preview-database.ts";
-import { missingV1PlanetscaleDatabase } from "./v1-membership-settings.ts";
+import {
+  postgresUrl,
+  previewBranchSettings,
+  previewDatabase,
+  previewShape,
+} from "./preview-database.ts";
 
 /**
  * Hyperdrive needs an uploaded trust root even for publicly issued certificates.
@@ -77,12 +81,20 @@ const fixtureStage = /^test-(?:e2e|perf)-/;
 const preparedPreviewDatabase = (stage: TestStage) =>
   Effect.gen(function* () {
     const preview = yield* previewDatabase(stage);
+    const settings = yield* previewBranchSettings(stage);
     const migrations = globalThis.__ALCHEMY_RUNTIME__
       ? yield* Command.Exec.ref("Migrations")
       : yield* Command.Exec("Migrations", {
           command: "node src/migrate.ts",
           env: {
             DATABASE_URL: preview.migrationUrl,
+            // Waits for the branch's connection settings, whose restart would cut the migration.
+            ...Option.match(settings, {
+              onNone: () => ({}),
+              onSome: (hash) => ({
+                PREVIEW_BRANCH_SETTINGS: hash.pipe(Output.map(() => "applied")),
+              }),
+            }),
             // The same logical id as `cloudSecrets`, so the job signs with the secret the Worker will verify.
             BETTER_AUTH_SECRET: (yield* Random("AuthSecret")).text,
             BETTER_AUTH_URL: stage.origin,
@@ -156,7 +168,7 @@ const preparedPreviewDatabase = (stage: TestStage) =>
     return runtimeDatabase(
       migrated(preview.runtimeUrl),
       Option.map(preview.hyperdriveOrigin, (origin) =>
-        hyperdriveProps(migrated(origin), Option.some(previewPoolConnections)),
+        hyperdriveProps(migrated(origin), Option.some(previewShape(stage).poolConnections)),
       ),
     );
   });
@@ -270,10 +282,18 @@ export const databaseInfrastructure = Effect.gen(function* () {
 }).pipe(Effect.orDie);
 
 /**
- * The connection for Worker events: Hyperdrive wherever it fronts the database, because every
- * event opens its own connections and Hyperdrive hands one out in about 2 ms instead of a TLS
- * login to PgBouncer (about 70 ms). Alchemy dev declares a local Hyperdrive passthrough. Neon
- * previews bind their pooler URL.
+ * How a pool reaches the database, recorded on each of its `sql.connect` spans as
+ * `db.connect.route`. Only `direct` connections are PgBouncer clients of their own; Hyperdrive's
+ * pool holds a bounded number of PgBouncer clients for all of its callers.
+ */
+export type DatabaseRoute = "hyperdrive" | "direct";
+
+/**
+ * The connection for Worker events and per-caller Durable Objects: Hyperdrive wherever it fronts
+ * the database, because every event opens its own connections and Hyperdrive hands one out in
+ * about 2 ms instead of a TLS login to PgBouncer (about 70 ms), and because however many callers
+ * connect, Hyperdrive holds only its own bounded pool of PgBouncer clients. Alchemy dev declares a
+ * local Hyperdrive passthrough. Neon previews bind their pooler URL.
  */
 export const cloudDatabaseConnection = Effect.gen(function* () {
   const database = yield* databaseInfrastructure;
@@ -283,44 +303,25 @@ export const cloudDatabaseConnection = Effect.gen(function* () {
     ? yield* Cloudflare.Hyperdrive.Connection.ref("DatabaseConnection")
     : yield* Cloudflare.Hyperdrive.Connection("DatabaseConnection", database.hyperdrive.value);
   const client = yield* Cloudflare.Hyperdrive.Connect(configuration);
-  return { connectionString: client.connectionString.pipe(Effect.provide(RuntimeContext.phantom)) };
+  return {
+    connectionString: client.connectionString.pipe(Effect.provide(RuntimeContext.phantom)),
+    route: "hyperdrive" as DatabaseRoute,
+  };
 }).pipe(Effect.provide(Cloudflare.Hyperdrive.ConnectBinding));
 
 /**
- * The runtime role's PgBouncer URL, bound as the `DatabaseUrl` secret. Durable Objects use it:
- * they keep their connections across calls, so they pay the login once per window, and statements
- * on a held PgBouncer connection are faster than through Hyperdrive.
+ * The runtime role's PgBouncer URL, bound as the `DatabaseUrl` secret. Each pool on it holds
+ * PgBouncer clients of its own, so only consumers whose number is fixed may use it, such as the
+ * schedule coordinator: it keeps its connections across calls and runs its statements on them
+ * without Hyperdrive's per-statement cost.
  */
 export const cloudDirectDatabaseConnection = Effect.gen(function* () {
   const database = yield* databaseInfrastructure;
-  return { connectionString: yield* Output.named(database.url, "DatabaseUrl") };
+  return {
+    connectionString: yield* Output.named(database.url, "DatabaseUrl"),
+    route: "direct" as DatabaseRoute,
+  };
 });
-
-/**
- * v1's Postgres for the v1 sign-in check, on production only. The stack declares a role on v1's
- * PlanetScale database (`V1_PLANETSCALE_DATABASE_NAME`, branch `main`) that inherits only
- * `pg_read_all_data`, and binds its pooled URL as the `V1_DATABASE_URL` Worker secret. It never
- * declares v1's database, which v1 owns; removing the resource drops only the role. Temporary,
- * with the v1 import window. Without the name a production deploy stops and says what to set.
- */
-export const v1DatabaseConnection = Effect.gen(function* () {
-  const role = globalThis.__ALCHEMY_RUNTIME__
-    ? yield* Planetscale.PostgresRole.ref("V1ReaderRole")
-    : yield* Planetscale.PostgresRole("V1ReaderRole", {
-        database: yield* Config.String("V1_PLANETSCALE_DATABASE_NAME").pipe(
-          Config.option,
-          Effect.map(Option.filter((name) => name !== "")),
-          Effect.flatMap(
-            Option.match({
-              onNone: () => Effect.die(new Error(missingV1PlanetscaleDatabase)),
-              onSome: Effect.succeed,
-            }),
-          ),
-        ),
-        inheritedRoles: ["pg_read_all_data"],
-      });
-  return yield* Output.named(role.pooledOrigin.pipe(Output.map(postgresUrl)), "V1_DATABASE_URL");
-}).pipe(Effect.orDie);
 
 /**
  * How long one attempt to open a runtime connection may take. A connection usually opens in
@@ -336,12 +337,23 @@ const connectAttemptTimeout = Duration.millis(2500);
  * session `SET`, advisory locks or `LISTEN`). Building it opens no connection; the pool connects
  * on first use. Opening a connection gets a second attempt when the first fails or times out.
  * Each `sql.connect` span records its `db.connect.attempt`, and the second also records why the
- * first failed as `db.connect.retry_reason`. When both fail, the statement fails with the
- * driver's `SqlError`; statements themselves are never repeated. Beside the client it provides
- * {@link OpenedConnections}, its count of those spans.
+ * first failed as `db.connect.retry_reason`. A failed attempt, a timed-out one included, is an
+ * error span with `db.connect.failure`. When both fail, the statement fails with the
+ * driver's `SqlError`. Each also records the pool's `db.connect.route`. Beside the client it
+ * provides {@link OpenedConnections}, its count of those spans.
+ *
+ * A statement whose connection a proxy or the server closed under it runs once more, when its
+ * run is all reads outside a transaction and outside a `PgPool.held` batch, on a connection of
+ * this pool opened after the loss (`PgPool.use` in the @effect/sql-pg patch,
+ * `patches/effect-sql-pg-tracing.md`). A write is never repeated. The repeat closes any older idle
+ * connection it is handed, healthy or not, one at a time, so no more than `maxConnections` are
+ * open at once; later statements reconnect. It costs one connect when the database can be reached.
+ * When it cannot, that connect gets the same two attempts, so a read fails up to 5 s later than
+ * without the repeat. Each repeat is a `sql.connection.repeat` span.
  */
 export const cloudDatabasePool = (options: {
   readonly url: Redacted.Redacted;
+  readonly route: DatabaseRoute;
   readonly maxConnections: number;
   readonly idleTimeout?: Duration.Input;
   readonly applicationName?: string;
@@ -363,9 +375,13 @@ export const cloudDatabasePool = (options: {
       const tracer = yield* Effect.tracer;
       let opened = 0;
       const counting = Tracer.make({
-        span: (span) => {
-          if (span.name === "sql.connect") opened += 1;
-          return tracer.span(span);
+        span: (spanOptions) => {
+          const span = tracer.span(spanOptions);
+          if (spanOptions.name === "sql.connect") {
+            opened += 1;
+            span.attribute("db.connect.route", options.route);
+          }
+          return span;
         },
         context: tracer.context,
       });

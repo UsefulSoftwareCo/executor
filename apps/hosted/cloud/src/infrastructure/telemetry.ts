@@ -35,6 +35,20 @@ export const telemetryDatasets = Effect.gen(function* () {
   };
 });
 
+/**
+ * Whether this stage exports telemetry to Axiom. Production and every other configured stage
+ * always do. A test stage exports only when its deploy asks for it
+ * (`test-stage deploy --telemetry export`), as deployed E2E runs do to read their traces back.
+ * Other previews keep Cloudflare's own logs and traces, which cost no Axiom ingest.
+ */
+export const telemetryExport = Effect.gen(function* () {
+  if (Option.isNone(yield* testStage)) return true;
+  const telemetry = yield* Config.Literals(["export", "off"], "TEST_STAGE_TELEMETRY").pipe(
+    Config.withDefault("off"),
+  );
+  return telemetry === "export";
+}).pipe(Effect.orDie);
+
 export const telemetryResources = Effect.gen(function* () {
   const stage = yield* Stage;
   const { shared, names } = yield* telemetryDatasets;
@@ -110,12 +124,33 @@ export const telemetryResources = Effect.gen(function* () {
 });
 
 /**
+ * Native invocation logs with query strings removed: request URLs can carry unsubscribe links,
+ * sign-in codes and the searches apps send through their outbound Worker.
+ */
+const platformLogs = {
+  enabled: true,
+  redactQueryString: true,
+  logs: { enabled: true, invocationLogs: true, persist: true },
+};
+
+/** Props for a Worker that keeps only its native logs, with no tail consumer or trace export. */
+export const platformObservability = Effect.gen(function* () {
+  if ((yield* AlchemyContext).dev) return {};
+  return { observability: platformLogs };
+});
+
+/**
  * Export invocation summaries and supplementary platform spans, joined by Ray ID.
  * Tail delivery supplies timings independently of native trace sampling.
  * This does not register a second Effect tracer.
  */
 export const cloudObservability = Effect.gen(function* () {
   if ((yield* AlchemyContext).dev) return {};
+  const native = {
+    ...platformLogs,
+    traces: { enabled: true, headSamplingRate: 1, persist: true },
+  };
+  if (!(yield* telemetryExport)) return { observability: native };
   const stage = yield* Stage;
   const { names, traces, ingest } = yield* telemetryResources;
   const destination = yield* Cloudflare.Workers.ObservabilityDestination("PlatformTraces", {
@@ -130,15 +165,8 @@ export const cloudObservability = Effect.gen(function* () {
   return {
     tailConsumers: [yield* InvocationTelemetry],
     observability: {
-      enabled: true,
-      redactQueryString: true,
-      logs: { enabled: true, invocationLogs: true, persist: true },
-      traces: {
-        enabled: true,
-        headSamplingRate: 1,
-        persist: true,
-        destinations: [destination.slug],
-      },
+      ...native,
+      traces: { ...native.traces, destinations: [destination.slug] },
     },
   };
 }).pipe(Effect.orDie);
@@ -150,9 +178,20 @@ export const telemetryBindings = Effect.gen(function* () {
     const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(TelemetryConfig))(config);
     return { [binding]: Output.asOutput(Redacted.make(encoded)) };
   }
-  const { names, traces, logs, metrics, ingest } = yield* telemetryResources;
   const version = yield* Config.NonEmptyString("EXECUTOR_BUILD_VERSION");
   const environment = yield* Stage;
+  if (!(yield* telemetryExport)) {
+    // The isolate still runs its tracer and meters; with no targets nothing leaves it.
+    const config = {
+      service: "executor-cloud",
+      clock: "cloudflare-io" as const,
+      version,
+      environment,
+    };
+    const encoded = yield* Schema.encodeEffect(Schema.fromJsonString(TelemetryConfig))(config);
+    return { [binding]: Output.asOutput(Redacted.make(encoded)) };
+  }
+  const { names, traces, logs, metrics, ingest } = yield* telemetryResources;
   return {
     [binding]: Output.all(
       traces.otelTracesEndpoint,
@@ -200,9 +239,11 @@ export const cloudTelemetry = Layer.unwrap(
     const config = yield* Schema.decodeUnknownEffect(
       Schema.Union([Schema.fromJsonString(TelemetryConfig), TelemetryConfig]),
     )(value).pipe(Effect.catch(() => Effect.die(new Error("Invalid telemetry configuration"))));
-    // Each event flushes for its entire lifetime, including streamed bodies, and
-    // periodically, so long-lived streams remain observable before disconnect.
-    const exporters = yield* isolateTelemetry({ ...config, clock: "cloudflare-io" });
+    // Each event exports what is buffered when it closes, including after a streamed body. Between
+    // closes, the first item buffered arms one flush a second later, which keeps the event that
+    // buffered it alive until it has exported, so long-lived streams remain observable.
+    const { waitUntil } = yield* Effect.promise(() => import("cloudflare:workers"));
+    const exporters = yield* isolateTelemetry({ ...config, clock: "cloudflare-io" }, waitUntil);
     return Telemetry.layer(Layer.mergeAll(exporters, sqlTracing));
   }),
 );

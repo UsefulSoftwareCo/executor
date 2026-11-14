@@ -35,7 +35,7 @@ const indexTools = (actor: Session, app: string, label: string) =>
   });
 
 /** The app's cache round trips, read from the index request's delivered trace. */
-const cacheTrips = (index: Effect.Success<ReturnType<typeof indexTools>>) =>
+const cacheTrips = (index: Effect.Success<ReturnType<typeof indexTools>>, app: string) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence,
       telemetry = yield* Telemetry;
@@ -51,6 +51,9 @@ const cacheTrips = (index: Effect.Success<ReturnType<typeof indexTools>>) =>
       Effect.retry({ schedule: Schedule.spaced("1 second"), times: 40 }),
     );
     const commands = spans.filter((span) => span.operationName === "app.cache.command");
+    const host = spans.filter((span) => span.operationName === "runtime.cloud.cache");
+    // Each host-side command names the app whose supervisor it reached.
+    for (const span of host) expect(span.tags["executor.app.id"], index.label).toBe(app);
     const result = spans.find((span) => span.operationName === "app.cache.get")?.tags[
       "cache.result"
     ];
@@ -62,9 +65,7 @@ const cacheTrips = (index: Effect.Success<ReturnType<typeof indexTools>>) =>
         ms: span.durationMs,
       })),
       // Cloud also reports each command from the host side of the RPC when it has arrived.
-      host: spans
-        .filter((span) => span.operationName === "runtime.cloud.cache")
-        .map((span) => ({ operation: span.tags["cache.operation"], ms: span.durationMs })),
+      host: host.map((span) => ({ operation: span.tags["cache.operation"], ms: span.durationMs })),
     });
     return {
       result,
@@ -89,15 +90,20 @@ const toolDetail = (actor: Session, app: string, name: string) =>
     return request;
   });
 
-/** How a request read the tool listing, and whether it invoked the app, from its trace. */
-const listingRead = (traceId: string, label: string) =>
+/**
+ * How a request read the tool listing, and whether it invoked the app, from its trace. A trace
+ * arrives in pieces: the app's spans (`app.dispatch`) are exported by the app's Worker, apart from
+ * the host's. So the read waits until every span in `reads` has arrived, as `Telemetry.settled`
+ * asks: name `app.dispatch` there when the check expects the app to have been invoked.
+ */
+const listingRead = (traceId: string, label: string, reads: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence,
       telemetry = yield* Telemetry;
     const spans = yield* telemetry.query(traceId).pipe(
       Effect.map((result) => result.data.map((row) => row.span)),
       Effect.flatMap((spans) =>
-        spans.some((span) => span.operationName === "sdk.tools.listing")
+        reads.every((name) => spans.some((span) => span.operationName === name))
           ? Effect.succeed(spans)
           : Effect.fail(new Error(`The ${label} trace has not arrived`)),
       ),
@@ -129,7 +135,9 @@ layer(HostedLive, { excludeTestServices: true })("Tools index cache", (it) => {
         const kept = yield* indexTools(actors.owner, app.id, "kept-index");
         expect(cold.names.length).toBeGreaterThan(0);
         expect(kept.names).toEqual(cold.names);
-        const keptIndex = yield* listingRead(kept.request.traceId, "kept-index");
+        const keptIndex = yield* listingRead(kept.request.traceId, "kept-index", [
+          "sdk.tools.listing",
+        ]);
         expect(keptIndex.cache).toBe("hit");
         expect(keptIndex.dispatched).toBe(false);
 
@@ -171,11 +179,14 @@ layer(HostedLive, { excludeTestServices: true })("Tools index cache", (it) => {
         expect(yield* linkedAccountIds(actors.owner, appPath)).toEqual([secondKey.id]);
         const revised = yield* indexTools(actors.owner, app.id, "revised-index");
         expect(revised.names).toEqual(cold.names);
-        const revisedListing = yield* listingRead(revised.request.traceId, "revised-listing");
+        const revisedListing = yield* listingRead(revised.request.traceId, "revised-listing", [
+          "sdk.tools.listing",
+          "app.dispatch",
+        ]);
         expect(revisedListing.dispatched).toBe(true);
 
         const [first, second, third] = yield* Effect.all(
-          [cacheTrips(cold), cacheTrips(revised), cacheTrips(other)],
+          [cacheTrips(cold, app.id), cacheTrips(revised, app.id), cacheTrips(other, app.id)],
           { concurrency: "unbounded" },
         );
 
@@ -202,7 +213,10 @@ layer(HostedLive, { excludeTestServices: true })("Tools index cache", (it) => {
         yield* linkAccount(actors.owner, appPath, "service", account);
         expect(yield* linkedAccountIds(actors.owner, appPath)).toEqual([account]);
         const tool = yield* toolDetail(actors.owner, app.id, cold.names[0] ?? "");
-        const keptTool = yield* listingRead(tool.traceId, "kept-tool");
+        const keptTool = yield* listingRead(tool.traceId, "kept-tool", [
+          "sdk.tools.listing",
+          "sdk.tools.get",
+        ]);
         expect(keptTool.cache).toBe("hit");
         expect(keptTool.source).toBe("listing");
         expect(keptTool.dispatched).toBe(false);

@@ -20,6 +20,9 @@ You can also connect with a [personal access token](/api-keys#connect-an-mcp-cli
 Most clients load MCP servers only at startup. After you add Executor, restart
 the client or open a new session before its tools appear.
 
+Moving from a local Executor or Executor 1 to a self-hosted server? Remove the
+old entry first, and see [Move from a local Executor](/run/self-host#move-from-a-local-executor).
+
 ## ChatGPT
 
 For Executor Cloud, [open the Executor plugin](https://chatgpt.com/plugins/plugin_asdk_app_6acd465c1d148191832781c3c8ab4d99)
@@ -109,8 +112,10 @@ browser the first time the client connects.
 
 ## Connecting to a local server
 
-A local server has no browser sign-in. It authenticates with the API key you
-configured as `EXECUTOR_API_KEY`, sent as a bearer token:
+A local server also signs clients in through your browser, using the dashboard
+you paired with `executor`. A client that cannot sign in can send the local API
+key as a bearer token instead. The port is `4312` unless you changed it with
+`executor service set port`:
 
 <CodeGroup>
 
@@ -135,8 +140,9 @@ npx add-mcp 'http://127.0.0.1:4312/mcp' --transport http --name executor \
 
 </CodeGroup>
 
-The local Connect page shows this with your real key. Keep the local server
-running while the client is connected.
+The background Executor keeps running until you stop it, but it does not start
+with your computer: after a restart, run `executor` or `executor service start`,
+or the client's connection is refused.
 
 ## Choosing where approvals appear
 

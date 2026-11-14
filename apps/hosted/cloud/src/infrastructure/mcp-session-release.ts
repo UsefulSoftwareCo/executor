@@ -22,7 +22,7 @@ import {
   ReleaseRefusal,
   releaseRefusalReport,
 } from "../contracts/release-guard.ts";
-import { telemetryDatasets } from "./telemetry.ts";
+import { telemetryDatasets, telemetryExport } from "./telemetry.ts";
 
 const Bindings = Schema.Array(
   Schema.Struct({
@@ -175,8 +175,9 @@ const sessionTraffic = (since: DateTime.Utc) =>
         [
           "legacy = countif(name == 'cloudflare.invocation' and entrypoint == 'McpSessions')",
           "sessions = countif(name == 'cloudflare.invocation' and entrypoint == 'McpSession')",
-          "initialize = countif(name endswith '/initialize' and ['status.code'] != 'ERROR')",
-          "toolCalls = countif(name endswith '/tools/call' and ['status.code'] != 'ERROR')",
+          // Effect names an MCP request's server span after its JSON-RPC method.
+          "initialize = countif(name == 'initialize' and kind == 'server' and ['status.code'] != 'ERROR')",
+          "toolCalls = countif(name == 'tools/call' and kind == 'server' and ['status.code'] != 'ERROR')",
         ].join(", "),
     ].join(" | ");
     const http = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
@@ -218,6 +219,11 @@ export const mcpSessionRetirementGate = Effect.gen(function* () {
   const blocked = (reason: string) =>
     new McpSessionReleaseBlocked({
       message: `Not deleting McpSessions from ${api}: ${reason} Nothing was changed. Deploy again once the release that forwards to McpSession is live and serving MCP traffic.`,
+    });
+  // The evidence below is the stage's own traces in Axiom.
+  if (!(yield* telemetryExport))
+    return yield* new McpSessionReleaseBlocked({
+      message: `Not deleting McpSessions from ${api}: this test stage does not export telemetry, so there is no MCP traffic evidence to check. Nothing was changed. Deploy it with --telemetry export, and again once it has served MCP traffic.`,
     });
   const server = workers.get("McpServer");
   const serving = server === undefined ? undefined : yield* liveDeployment(accountId, server);

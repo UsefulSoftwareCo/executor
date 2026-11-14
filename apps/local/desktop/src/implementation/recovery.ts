@@ -1,5 +1,5 @@
 /**
- * Isolated, script-free recovery document shown when the local server cannot run. Its buttons are
+ * Isolated, script-free recovery document shown when the background server cannot run. Its buttons are
  * links to `executor-recovery:<action>`, which the main process intercepts in `will-navigate`;
  * the window keeps no preload or IPC bridge.
  */
@@ -24,22 +24,43 @@ const page = (recovery: DesktopRecovery): Page => {
       return {
         title: "Executor could not start its local server",
         detail:
-          "The server program could not be launched. Restart to try again. If this continues, reinstall Executor.",
-        actions: ["restart", "logs", "quit"],
-      };
-    case "ready":
-      return {
-        title: "Executor's local server did not finish starting",
-        detail:
-          "It did not report that it was ready. Restart to try again, or reset Executor's data if it is damaged. Reset keeps a backup.",
+          "Restart to try again. If another program uses Executor's port, choose another with File → Server port… first. If Executor's data is damaged, reset it. Reset keeps a backup.",
         actions: ["restart", "logs", "reset", "quit"],
+      };
+    case "runtime":
+      return {
+        title: "Executor could not prepare its local server",
+        detail:
+          "Its server program could not be copied out of the app. Check free disk space, then restart. If this continues, reinstall Executor.",
+        actions: ["restart", "logs", "quit"],
       };
     case "crash-loop":
       return {
         title: "Executor keeps stopping",
         detail:
-          "Its local server stopped three times within a minute. Restart to try again, or reset Executor's data if it is damaged. Reset keeps a backup.",
+          "Its local server stopped unexpectedly three times within a minute. Restart to try again, or reset Executor's data if it is damaged. Reset keeps a backup.",
         actions: ["restart", "logs", "reset", "quit"],
+      };
+    case "stopped":
+      return {
+        title: "The background Executor was stopped",
+        detail:
+          "It was stopped on purpose, for example by executor service stop in a terminal, so Executor does not start it again by itself. It reconnects as soon as the background Executor runs again, or you can start it now.",
+        actions: ["start", "quit"],
+      };
+    case "dashboard":
+      return {
+        title: "Executor could not load its dashboard",
+        detail:
+          "Its local server is running, but this window could not load the dashboard from it. Restart to try again. Your data has not been changed.",
+        actions: ["restart", "logs", "quit"],
+      };
+    case "migration":
+      return {
+        title: "Executor could not move its data",
+        detail:
+          "Executor now keeps its data with the Executor CLI's, and moving it there failed. Nothing was deleted. Fix what the message below describes, then restart.",
+        actions: ["restart", "quit"],
       };
     case "configuration":
       switch (recovery.reason) {
@@ -81,7 +102,8 @@ const page = (recovery: DesktopRecovery): Page => {
         case "locked":
           return {
             title: "Executor's data is in use",
-            detail: "Another Executor process is using this data directory. Quit it, then restart.",
+            detail:
+              "Another Executor process that is not its background server is using this data directory. Quit it, then restart.",
             actions: ["restart", "logs", "quit"],
           };
         case "io":
@@ -96,6 +118,7 @@ const page = (recovery: DesktopRecovery): Page => {
 };
 
 const labels: Record<RecoveryAction, string> = {
+  start: "Start",
   restart: "Restart",
   logs: "Show logs",
   reset: "Reset data…",
@@ -104,8 +127,21 @@ const labels: Record<RecoveryAction, string> = {
 
 export const recoveryActions = (recovery: DesktopRecovery) => page(recovery).actions;
 
+const escape = (value: string) =>
+  value.replace(
+    /[&<>"']/g,
+    (character) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ??
+      character,
+  );
+
+/** What the server or the migration said, at most this many characters from its end. */
+const messageLimit = 2000;
+
 export const recoveryUrl = (recovery: DesktopRecovery) => {
   const { title, detail, actions } = page(recovery);
+  const said = "detail" in recovery ? recovery.detail.trim().slice(-messageLimit) : "";
+  const message = said === "" ? "" : `<pre>${escape(said)}</pre>`;
   const buttons = actions
     .map(
       (action, index) =>
@@ -124,6 +160,9 @@ export const recoveryUrl = (recovery: DesktopRecovery) => {
   main { max-width: 440px; text-align: center; padding: 32px; }
   h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.5px; margin: 0 0 10px; }
   p { font-size: 14px; line-height: 1.5; margin: 0 0 24px; opacity: 0.65; }
+  pre { font-size: 12px; line-height: 1.45; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere;
+        max-height: 180px; overflow: auto; margin: -8px 0 24px; padding: 10px 12px; border-radius: 6px;
+        background: color-mix(in srgb, CanvasText 6%, transparent); }
   nav { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; }
   a { font-size: 13px; font-weight: 500; padding: 7px 14px; border-radius: 6px; text-decoration: none;
       color: CanvasText; border: 1px solid color-mix(in srgb, CanvasText 20%, transparent); }
@@ -131,7 +170,7 @@ export const recoveryUrl = (recovery: DesktopRecovery) => {
   a.primary { background: CanvasText; color: Canvas; border-color: CanvasText; }
   a.primary:hover { opacity: 0.85; }
 </style>
-<main role="alert"><h1>${title}</h1><p>${detail}</p><nav>${buttons}</nav></main>
+<main role="alert"><h1>${title}</h1><p>${detail}</p>${message}<nav>${buttons}</nav></main>
 </html>`)}`;
 };
 

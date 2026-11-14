@@ -4,7 +4,6 @@ import { WorkflowHost } from "../contracts/workflow-runtime.ts";
 import { RepositoryHost } from "../contracts/source.ts";
 import { StorageHost } from "../contracts/storage.ts";
 import { PrefetchHost } from "../contracts/tools.ts";
-import { OAuthGrantImport } from "../contracts/oauth.ts";
 import { gitSourceStorage } from "./git-sources.ts";
 import { makeRegistry } from "./registry.ts";
 import { remoteRegistry } from "./remote-registry.ts";
@@ -15,17 +14,20 @@ import { storedApp } from "./apps.ts";
 import { initializeAppRepository, recoverAppRepositories } from "./initial-source.ts";
 import { makeWorkflowRuns } from "./workflows.ts";
 /** Compose native operations once for in-process and HTTP callers. */
-import { Crypto, Effect } from "effect";
+import { Effect } from "effect";
+import type { Digest, SecureRandom } from "effect/crypto";
+import { hostCrypto } from "./host-crypto.ts";
 import type { Executor, ExecutorOptions, RemoteExecutorOptions } from "../contracts/executor.ts";
 import { AppId, CredentialsError, NotImplemented, StorageError } from "../contracts/shared.ts";
 import { makeWebhooks } from "./webhooks.ts";
 import { makeAppData } from "./app-storage.ts";
 import { makeAccountConnections } from "./account-connections.ts";
-import { credentialsReadable, makeAccounts, storedAccount } from "./accounts.ts";
+import { makeAccounts, storedAccount } from "./accounts.ts";
 import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
 import { makeOwnerMoves } from "./owner-moves.ts";
 import { SavedOAuthClientsHost } from "../contracts/oauth-clients.ts";
 import { OwnerMovesHost } from "../contracts/owner.ts";
+import { UnremovableWebhooksHost } from "../contracts/webhooks.ts";
 import { makeAccountHealth } from "./account-health.ts";
 import { makeApps } from "./apps.ts";
 import { makeOwners } from "./owners.ts";
@@ -44,9 +46,9 @@ import { AppEventSink, RuntimeProtocolFailed, type Runtime } from "../contracts/
 /** Capture host cryptography; caller owns database and platform resource lifetimes. */
 export const createExecutor = (
   options: ExecutorOptions,
-): Effect.Effect<Executor, CredentialsError, Crypto.Crypto> =>
+): Effect.Effect<Executor, CredentialsError, SecureRandom.SecureRandom | Digest.Digest> =>
   Effect.gen(function* () {
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* hostCrypto;
     const credentials =
       options.credentials ?? (yield* aesGcmCredentials(options.secret, globalThis.crypto));
     const db = database(options.database);
@@ -101,9 +103,11 @@ export const createExecutor = (
       durable: options.cache?.durable,
       background: options.background,
       resolveAccount: oauth.resolveSelected,
-      accountUsable: oauth.usable,
+      accountsUsable: oauth.usableAll,
+      accountsUsableEach: oauth.usableEach,
       crypto,
       lifecycle: options.hooks,
+      hostApi: options.hostApi,
     });
     const workflows = makeWorkflowRuns(
       options.database,
@@ -134,6 +138,7 @@ export const createExecutor = (
         options.git,
         catalog.reads,
         options.blobs,
+        options.markdown,
         options.hooks,
       ),
       workflows: { list: workflows.definitions },
@@ -172,6 +177,7 @@ export const createExecutor = (
       oauth,
       firstPartyClients,
       apps.list,
+      options.hostApi,
     );
     const schedules = makeSchedules(
       options.database,
@@ -186,6 +192,7 @@ export const createExecutor = (
       liveDefinitions: webhooks.liveDefinitions,
       retarget: webhooks.retarget,
       createManaged: webhooks.createManaged,
+      removeManaged: webhooks.removeManaged,
       accountNeedingReconnect: tools.accountNeedingReconnect,
     });
     // App source defines schedules. Each activation removes saved settings for schedules the new
@@ -220,11 +227,6 @@ export const createExecutor = (
           blobs: options.blobs,
         }),
       },
-      [OAuthGrantImport]: {
-        importOAuthGrant: oauth.importGrant,
-        firstPartyClient: oauth.firstPartyClient,
-        credentialsReadable: credentialsReadable(db, credentials),
-      },
       [StorageHost]: {
         transaction: (effect) =>
           db.transaction(effect).pipe(
@@ -234,13 +236,17 @@ export const createExecutor = (
         read: options.database.reactivity.read,
         write: options.database.reactivity.write,
       },
-      [PrefetchHost]: { invocation: tools.prefetchInvocation },
+      [PrefetchHost]: {
+        invocation: tools.prefetchInvocation,
+        searchable: tools.prefetchSearchable,
+      },
       [SavedOAuthClientsHost]: makeSavedOAuthClients(db, credentials, crypto, options.hooks, [
         ...(options.oauth?.savedClientCallbacks ?? []),
         ...(options.oauth?.previousRedirectUris ?? []),
         new URL("/api/oauth/callback", origin).href,
       ]),
       [OwnerMovesHost]: makeOwnerMoves(db, credentials),
+      [UnremovableWebhooksHost]: webhooks.unremovable,
       scheduler: schedules.dispatcher,
       events,
       schedules: schedules.operations,
@@ -288,7 +294,13 @@ export const createExecutor = (
         unlink: webhookSources.unlink,
       },
       webhookSetup: webhooks.webhookSetup,
-      appData: makeAppData(options.database, oauth.resolveSelected, runtime, workflows.controls),
+      appData: makeAppData(
+        options.database,
+        oauth.resolveSelected,
+        runtime,
+        options.hostApi,
+        workflows.controls,
+      ),
       tools: { ...tools, search: search.page },
     };
   });

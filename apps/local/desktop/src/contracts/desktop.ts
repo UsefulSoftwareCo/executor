@@ -1,7 +1,8 @@
 import { Schema } from "effect";
 import { LocalConfigurationReason } from "@executor-js/local-server/auth";
+import { ServiceFailed, ServiceSettingInvalid } from "../../../server/src/contracts/service.ts";
 
-/** Only the child server's exact loopback HTTP origin can host the dashboard. */
+/** Only the background server's exact loopback HTTP origin can host the dashboard. */
 export const LocalOrigin = Schema.String.check(
   Schema.makeFilter((value) => {
     try {
@@ -18,59 +19,32 @@ export const LocalOrigin = Schema.String.check(
   }),
 );
 
-/** Safe desktop failures never include process output, bootstrap tokens or callback URLs. */
+/** Safe desktop failures never include process output, passwords or callback URLs. */
 export class DesktopFailed extends Schema.TaggedError<DesktopFailed>()("DesktopFailed", {
-  stage: Schema.Literals([
-    "configuration",
-    "start",
-    "ready",
-    "server-exit",
-    "window",
-    "renderer",
-    "oauth",
-  ]),
+  stage: Schema.Literals(["configuration", "runtime", "pairing", "window", "renderer", "oauth"]),
 }) {}
 
-/** Private fd4 message; OAuth response parameters must never be copied to a log. */
-export const DesktopCallback = Schema.Struct({
-  version: Schema.Literal(1),
-  url: Schema.RedactedFromValue(
-    Schema.String.check(
-      Schema.makeFilter((value) => {
-        try {
-          const url = new URL(value);
-          return (
-            url.protocol === "http:" &&
-            url.hostname === "127.0.0.1" &&
-            !url.username &&
-            !url.password
-          );
-        } catch {
-          return false;
-        }
-      }),
-    ),
-  ),
-});
-
-/** Private fd4 message sent before the backend exits because its key setup refused to start. */
-export const DesktopConfigurationFailed = Schema.Struct({
-  version: Schema.Literal(1),
-  configuration: LocalConfigurationReason,
-});
-/** Every fd4 line is one of these. The pipe never carries free-form output. */
-export const DesktopBackendMessage = Schema.Union([DesktopCallback, DesktopConfigurationFailed]);
-
 /**
- * Why the window shows the recovery screen instead of the dashboard. A configuration failure keeps
- * the backend's reason; its message stays in diagnostics.
+ * Why the window shows the recovery screen instead of the dashboard. `detail` is what the
+ * background server or the data migration said, shown under the explanation.
  */
 export type DesktopRecovery =
-  | { readonly stage: "start" | "ready" | "crash-loop" }
-  | { readonly stage: "configuration"; readonly reason: LocalConfigurationReason };
+  | { readonly stage: "start"; readonly detail: string }
+  | {
+      readonly stage: "configuration";
+      readonly reason: LocalConfigurationReason;
+      readonly detail: string;
+    }
+  | { readonly stage: "runtime" }
+  | { readonly stage: "crash-loop" }
+  | { readonly stage: "migration"; readonly detail: string }
+  /** The background server runs, but the window could not load its dashboard. */
+  | { readonly stage: "dashboard"; readonly detail: string }
+  /** The background server was stopped on purpose, and none runs yet. */
+  | { readonly stage: "stopped" };
 
 /** Buttons on the script-free recovery page navigate to `executor-recovery:<action>`. */
-export const RecoveryAction = Schema.Literals(["restart", "logs", "reset", "quit"]);
+export const RecoveryAction = Schema.Literals(["start", "restart", "logs", "reset", "quit"]);
 export type RecoveryAction = typeof RecoveryAction.Type;
 
 /**
@@ -126,16 +100,17 @@ export const DesktopPort = Schema.Number.check(
   Schema.isBetween({ minimum: 1024, maximum: 65535 }),
 );
 
-/** `desktop.json` in the desktop data directory. An absent file means the server's default port. */
-export const DesktopSettings = Schema.Struct({
+/**
+ * `desktop.json` in the data directory desktops before the background service used. Only the
+ * one-off migration reads it, to carry its port over to the background service's settings.
+ */
+export const LegacyDesktopSettings = Schema.Struct({
   version: Schema.Literal(1),
   port: DesktopPort,
 });
 
-/** Settings failures never expose the file contents. */
-export class SettingsFailed extends Schema.TaggedError<SettingsFailed>()("SettingsFailed", {
-  reason: Schema.Literals(["invalid", "unavailable", "write"]),
-}) {}
+/** Saving a setting failed. It never exposes the file contents. */
+export class SettingsFailed extends Schema.TaggedError<SettingsFailed>()("SettingsFailed", {}) {}
 
 /** Diagnostics export failures never include the files being collected. */
 export class DiagnosticsFailed extends Schema.TaggedError<DiagnosticsFailed>()(
@@ -143,9 +118,71 @@ export class DiagnosticsFailed extends Schema.TaggedError<DiagnosticsFailed>()(
   {},
 ) {}
 
-/** The rotation child's one stdout line. `message` is sanitized configuration text, never a key. */
-export const RotationResult = Schema.Struct({
-  version: Schema.Literal(1),
-  rotated: Schema.Boolean,
-  message: Schema.String,
+/**
+ * `desktop-runtime.json` beside the server runtime a desktop build bundles. Each build has its own
+ * `build`, so a rebuilt runtime is staged again even when the version did not change.
+ */
+export const DesktopRuntimeBuild = Schema.Struct({
+  version: Schema.String,
+  build: Schema.String.check(Schema.isPattern(/^[a-f0-9]{12}$/u)),
 });
+export type DesktopRuntimeBuild = typeof DesktopRuntimeBuild.Type;
+/** The file name of `DesktopRuntimeBuild` in a bundled or staged runtime. */
+export const desktopRuntimeBuildFile = "desktop-runtime.json";
+
+/** The server starter could not create or read the data directory. */
+export class StarterDirectoryFailed extends Schema.TaggedError<StarterDirectoryFailed>()(
+  "StarterDirectoryFailed",
+  {},
+) {}
+
+/**
+ * What the desktop sends its server starter, an Electron utility process, over that process's
+ * parent port. `Start` starts or joins the background server for `directory` with `program`, as
+ * the CLI's `ensure` does; `version` decides whether a server of another version is replaced. It
+ * is never passed on the command line, since `program.env` may hold keys. `Stop` ends the starter:
+ * one still starting first asks the start attempts it began to exit, as an interrupted `ensure`
+ * does.
+ */
+export const StarterCommand = Schema.TaggedUnion({
+  Start: {
+    directory: Schema.String,
+    version: Schema.Literals(["replace", "ignore"]),
+    program: Schema.Struct({
+      command: Schema.Array(Schema.String),
+      version: Schema.String,
+      env: Schema.Record(Schema.String, Schema.String),
+    }),
+  },
+  Stop: {},
+});
+export type StarterCommand = typeof StarterCommand.Type;
+
+/**
+ * What the server starter reports: `Starting` when it starts a server, replacing one of version
+ * `previous` if given, then one outcome. `Ready` is the server that answered as the registered
+ * one; its password works as the local API key. `Failed` says why no server started or answered.
+ */
+export const StarterReport = Schema.TaggedUnion({
+  Starting: { version: Schema.String, previous: Schema.optionalKey(Schema.String) },
+  Ready: {
+    url: Schema.String,
+    version: Schema.String,
+    pid: Schema.Number,
+    password: Schema.RedactedFromValue(Schema.String),
+    browserOrigin: Schema.optional(Schema.String),
+  },
+  Failed: { error: Schema.Union([ServiceFailed, ServiceSettingInvalid, StarterDirectoryFailed]) },
+});
+export type StarterReport = typeof StarterReport.Type;
+
+/**
+ * Besides its report, the server starter says when it begins a start attempt, with the attempt's
+ * process ID, and when that attempt has exited. The desktop ends the attempts still running if it
+ * has to kill the starter, which then never asks them to exit (see `ensureServer`).
+ */
+export const StarterAttempt = Schema.TaggedUnion({
+  AttemptStarted: { pid: Schema.Number },
+  AttemptExited: { pid: Schema.Number },
+});
+export type StarterAttempt = typeof StarterAttempt.Type;

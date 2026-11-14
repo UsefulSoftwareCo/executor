@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Prepares a GitHub-hosted Ubuntu 24.04 runner to build the patched Bun
 # runtime for one target, the way Bun's own release CI does:
-#   - LLVM 21 from apt.llvm.org (scripts/bootstrap.sh install_llvm)
+#   - LLVM 23.1 from apt.llvm.org (the series scripts/build/ci-images/spec.ts pins)
 #   - the pinned nightly Rust toolchain plus the target's std
 #   - for linux targets, the ubuntu:20.04 glibc sysroot with gcc-13
-#     libstdc++ (scripts/bootstrap.sh install_linux_glibc_sysroot), so the
+#     libstdc++ (spec.ts glibcSysroot), so the
 #     binary needs glibc 2.17 like the official release, not the runner's
 #     glibc
 # darwin targets fetch the macOS SDK from Apple's CDN and windows targets
@@ -34,13 +34,13 @@ sudo apt-get install -y --no-install-recommends \
   automake autoconf libtool nasm xz-utils unzip zip jq skopeo \
   binutils-x86-64-linux-gnu binutils-aarch64-linux-gnu
 
-# LLVM 21 (clang, lld incl. ld64.lld and lld-link, llvm-strip, dsymutil).
+# LLVM 23 (clang, lld incl. ld64.lld and lld-link, llvm-strip, dsymutil).
 llvm_script="$(mktemp)"
 curl -fsSL https://apt.llvm.org/llvm.sh -o "$llvm_script"
-sudo bash "$llvm_script" 21 all
-sudo apt-get install -y --no-install-recommends llvm-21-tools
-echo "/usr/lib/llvm-21/bin" >> "$GITHUB_PATH"
-/usr/lib/llvm-21/bin/clang --version | head -1
+sudo bash "$llvm_script" 23 all
+sudo apt-get install -y --no-install-recommends llvm-23-tools
+echo "/usr/lib/llvm-23/bin" >> "$GITHUB_PATH"
+/usr/lib/llvm-23/bin/clang --version | head -1
 
 # Rust: the toolchain pinned in the Bun checkout's rust-toolchain.toml.
 if ! command -v rustup >/dev/null 2>&1; then

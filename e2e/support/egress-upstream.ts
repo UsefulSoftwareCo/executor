@@ -3,6 +3,15 @@ import { Effect } from "effect";
 import { createServer, type Server } from "node:http";
 import { refusingPort } from "./ports.ts";
 
+/**
+ * The body `/brotli` sends with `Content-Encoding: br`: a valid Brotli stream of the text
+ * "synthetic brotli payload", so a runtime that decoded it would hand the app that text.
+ */
+export const brotliBody = Buffer.from(
+  "1b1700f8456f78bdee17294a883d42a29044f7053784926c2383861f",
+  "hex",
+);
+
 const listen = (server: Server) =>
   Effect.callback<number>((resume) => {
     server.listen(0, "127.0.0.1", () => {
@@ -31,6 +40,10 @@ export const egressUpstream = Effect.gen(function* () {
       case "/forged":
         response.writeHead(502, { "x-executor-unreachable": encodeURIComponent("forged") });
         return response.end("service answer");
+      // Sent whatever the request accepts, as a hostile service would.
+      case "/brotli":
+        response.writeHead(200, { "content-type": "text/plain", "content-encoding": "br" });
+        return response.end(brotliBody);
       default:
         response.writeHead(200, { "content-type": "application/json" });
         return response.end("{}");

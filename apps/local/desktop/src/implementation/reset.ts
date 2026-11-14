@@ -17,8 +17,11 @@ import {
   Semaphore,
 } from "effect";
 import { LocalCredentialService, LocalInstallation } from "@executor-js/local-server/auth";
+import { ServiceFailed, serviceLockFile } from "../../../server/src/contracts/service.ts";
+import { lockDataDirectory } from "../../../server/src/implementation/service-files.ts";
 import { BackupManifest, ResetFailed } from "../contracts/desktop.ts";
-import type { Supervisor } from "./supervisor.ts";
+import type { Connection } from "./connection.ts";
+import { whileHeld } from "./runtime.ts";
 
 const Collector = Schema.Struct({
   state: Schema.Literals(["starting", "running", "restarting", "stopped"]),
@@ -35,9 +38,8 @@ const running = (pid: number) => {
 };
 
 /**
- * The backend's telemetry collector shares its process group, which the supervisor signals once
- * the backend has exited. Wait for it so its database handle does not follow the rename, or on
- * Windows block it.
+ * The background server stops its telemetry collector before it exits. Wait for the collector too,
+ * so its database handle does not follow the rename, or on Windows block it.
  */
 const collectorStopped = (directory: string) =>
   Effect.gen(function* () {
@@ -66,8 +68,8 @@ const stamp = (now: DateTime.Utc) =>
   ).join("")}`;
 
 /**
- * Move `directory` to `backups/data-<stamp>-<random>` and describe it in a manifest. The backend
- * must already be stopped. Any failure before the rename leaves the data in place.
+ * Move `directory` to `backups/data-<stamp>-<random>` and describe it in a manifest. The background
+ * server must already be stopped. Any failure before the rename leaves the data in place.
  */
 export const backupData = (options: {
   readonly directory: string;
@@ -87,18 +89,42 @@ export const backupData = (options: {
     yield* fs
       .makeDirectory(backups, { recursive: true, mode: 0o700 })
       .pipe(Effect.mapError(() => new ResetFailed({ stage: "move" })));
-    // The bootstrap lock proves no other Executor process is setting up this directory.
-    const lockfilePath = path.join(directory, ".bootstrap.lock");
-    const release = yield* Effect.tryPromise({
-      // The lock moves with the directory, so its refresh timer must not throw afterward.
-      try: () => lock(directory, { retries: 0, lockfilePath, onCompromised: () => {} }),
-      catch: () => new ResetFailed({ stage: "lock" }),
-    });
-    yield* options.whileMoving(fs.rename(directory, backup)).pipe(
-      Effect.mapError(() => new ResetFailed({ stage: "move" })),
-      Effect.ensuring(Effect.promise(() => release().catch(() => undefined))),
+    // The server lock proves no server holds this directory, and keeps another client from starting
+    // one while it moves. It is taken by the rule servers use, so a lock a crashed or killed server
+    // left is taken over, and records this process as its owner, so servers treat it as held while
+    // this process runs. The bootstrap lock proves no other process is setting up its keys. Both
+    // locks move with the directory, so their refresh timers must not throw afterward.
+    // proper-lockfile keeps one lock per key in a process, so each lock has its own key, as the
+    // server's own locks do.
+    const take = (key: string, lockfilePath: string, stale: number) =>
+      Effect.acquireRelease(
+        Effect.tryPromise({
+          try: () =>
+            lock(key, {
+              realpath: false,
+              lockfilePath,
+              retries: 0,
+              stale,
+              onCompromised: () => {},
+            }),
+          catch: () => new ResetFailed({ stage: "lock" }),
+        }),
+        (release) => Effect.promise(() => release().catch(() => undefined)),
+      );
+    yield* Effect.scoped(
+      Effect.gen(function* () {
+        yield* lockDataDirectory(directory).pipe(
+          Effect.mapError(() => new ResetFailed({ stage: "lock" })),
+        );
+        yield* take(directory, path.join(directory, ".bootstrap.lock"), 10_000);
+        // A server that was just stopped or killed can keep files in it open for a moment.
+        yield* options
+          .whileMoving(whileHeld(fs.rename(directory, backup)))
+          .pipe(Effect.mapError(() => new ResetFailed({ stage: "move" })));
+      }),
     );
-    yield* fs.remove(path.join(backup, ".bootstrap.lock"), { recursive: true }).pipe(Effect.ignore);
+    for (const held of [serviceLockFile, ".bootstrap.lock"])
+      yield* fs.remove(path.join(backup, held), { recursive: true }).pipe(Effect.ignore);
     yield* Effect.logInfo("Moved Executor data to a backup").pipe(Effect.annotateLogs({ backup }));
 
     // The data is safe from here. A manifest or sync failure is logged but does not undo the move.
@@ -158,14 +184,14 @@ export const backupData = (options: {
   });
 
 const failureDetail: Record<(typeof ResetFailed.Type)["stage"], string> = {
-  stop: "Executor's local server or its telemetry collector did not stop in time.",
+  stop: "Executor's background server or its telemetry collector did not stop in time.",
   lock: "Another Executor process is using the data directory. Quit it and try again.",
   move: "The data directory could not be moved. Close any program using files in it and try again.",
 };
 
-/** Confirm, stop the backend, back up the data, restart and announce the backup. Serialized. */
+/** Confirm, stop the server, back up the data, start it again and announce the backup. Serialized. */
 export const makeResetAction = (options: {
-  readonly supervisor: Supervisor;
+  readonly connection: Connection;
   readonly directory: string;
   readonly backups: string;
   readonly appVersion: string;
@@ -187,22 +213,34 @@ export const makeResetAction = (options: {
         type: "warning",
         title: "Reset Executor data?",
         message: "Start over with fresh Executor data?",
-        detail: `Executor will stop, move all of its data to a backup folder and start again without your apps, accounts or connections. Nothing is deleted. Backups are kept in:\n\n${options.backups}\n\nSaved keys, in the OS credential store or keys.json, are kept for the backup.`,
+        detail: `Executor will stop its background server, move all of its data to a backup folder and start again without your apps, accounts or connections. The Executor CLI uses the same data. Nothing is deleted. Backups are kept in:\n\n${options.backups}\n\nSaved keys, in the OS credential store or keys.json, are kept for the backup.`,
         buttons: ["Reset and back up", "Cancel"],
         defaultId: 1,
         cancelId: 1,
       });
       if (response !== 0) return;
       yield* Effect.logInfo("Resetting Executor data");
-      const result = yield* options.supervisor.whileStopped(
-        backupData({
-          directory: options.directory,
-          backups: options.backups,
-          appVersion: options.appVersion,
-          platform: process.platform,
-          whileMoving: options.whileMoving,
-        }).pipe(Effect.provideContext(services), Effect.result),
-      );
+      const result = yield* options.connection
+        .whileStopped(
+          backupData({
+            directory: options.directory,
+            backups: options.backups,
+            appVersion: options.appVersion,
+            platform: process.platform,
+            whileMoving: options.whileMoving,
+          }).pipe(Effect.provideContext(services)),
+        )
+        .pipe(
+          Effect.mapError((error) =>
+            Schema.is(ResetFailed)(error)
+              ? error
+              : // A process the desktop cannot stop, such as an earlier Executor, uses the data.
+                Schema.is(ServiceFailed)(error) && error.reason === "directory-in-use"
+                ? new ResetFailed({ stage: "lock" })
+                : new ResetFailed({ stage: "stop" }),
+          ),
+          Effect.result,
+        );
       if (Result.isFailure(result)) {
         yield* Effect.logError("Executor data reset failed", result.failure);
         yield* messageBox({

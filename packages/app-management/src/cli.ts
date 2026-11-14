@@ -25,20 +25,17 @@ import { isPlatformError } from "effect/PlatformError";
 import {
   AppId,
   AppName,
-  AppSkillCatalog,
-  AppSkillDocument,
-  AppSkillName,
   CommittedSource,
-  ExecutorApi,
   SourceCommit,
-  SourceFilePath,
   SourceError,
   inlineBytes,
   PackageName,
   hostedExecutorOrigin,
+  compiledFileLimit,
   publicFileLimits,
   sourceLimits,
-  type App,
+  wireRevision,
+  wireRevisionHeader,
 } from "@executor-js/sdk/core";
 import { GitPushRefused, readCommitBlobs } from "@executor-js/app-source/git-client";
 import {
@@ -58,8 +55,14 @@ import {
   HostRecovery,
   HostRequestFailed,
   LoginFailed,
+  SignInStateInvalid,
   SourceRejected,
+  ToolCallRefused,
+  ToolInputInvalid,
+  ToolsSignInRequired,
+  WhoamiUnavailable,
 } from "./client-error.ts";
+import { hostFlag, namedHost, type LocalServer } from "./implementation/hosts.ts";
 import {
   AppAccess,
   AppAccessDenied,
@@ -76,25 +79,13 @@ import {
   sessionRefreshMarginMs,
 } from "./implementation/node-auth.ts";
 
-/** Skill lookups report the host's failure tag or the missing option; never a response body. */
-class SkillLookupFailed extends Schema.TaggedError<SkillLookupFailed>()("SkillLookupFailed", {
-  reason: Schema.String,
-}) {}
-const localOrigin = "http://127.0.0.1:4312";
-const host = Flag.String("host").pipe(
-  Flag.withDescription(
-    `Executor origin. Defaults to EXECUTOR_HOST, then the local server at ${localOrigin}; use ${hostedExecutorOrigin} for hosted Executor`,
-  ),
-  Flag.withFallbackConfig(Config.String("EXECUTOR_HOST")),
-  Flag.withDefault(localOrigin),
-);
 const organization = Flag.String("organization").pipe(
   Flag.withDescription(
     "Hosted organization. Required with EXECUTOR_ACCESS_TOKEN; after executor apps login it defaults to the signed-in organization",
   ),
   Flag.optional,
 );
-const connection = { host, organization };
+const connection = { host: hostFlag, organization };
 const app = Flag.String("app").pipe(
   Flag.withSchema(AppId),
   Flag.withDescription("App ID, such as app_…; executor apps list prints each app's id"),
@@ -110,7 +101,7 @@ const commit = (purpose: string) =>
   );
 const files = Flag.Path("files", { pathType: "either", mustExist: true }).pipe(
   Flag.withDescription(
-    `Complete app source: a directory read recursively (skipping ${ignoredSource.join(", ")}), or a JSON file containing [{"path": "index.ts", "content": "..."}]. It must include a root index.ts. Code outside ui/public/ is UTF-8 text, at most ${formatCount(sourceLimits.files)} files and ${formatBytes(sourceLimits.bytes)}. Files under ui/public/ may be binary: at most ${formatCount(publicFileLimits.files)} files, each at most ${formatCount(publicFileLimits.fileBytes)} bytes. A source larger than ${formatBytes(sourceLimits.bytes)} in total is pushed with Git. The CLI checks this before uploading`,
+    `Complete app source: a directory read recursively (skipping ${ignoredSource.join(", ")}), or a JSON file containing [{"path": "index.ts", "content": "..."}]. It must include a root index.ts. Code outside ui/public/ is UTF-8 text, at most ${formatCount(sourceLimits.files)} files and ${formatBytes(sourceLimits.bytes)}; files under ui/public/ may be binary: at most ${formatCount(publicFileLimits.files)} files, each at most ${formatCount(publicFileLimits.fileBytes)} bytes. A source larger than ${formatBytes(sourceLimits.bytes)} in total is pushed with Git. The CLI checks these limits before uploading. The host's build also refuses any of the app's own JavaScript or TypeScript files over ${formatCount(compiledFileLimit)} bytes; that limit is checked by the host, not before uploading, and does not cover files inside imported packages`,
   ),
 );
 const publication = {
@@ -120,9 +111,33 @@ const publication = {
   ),
   commit: commit("of the published version to install"),
 };
+export type { LocalServer } from "./implementation/hosts.ts";
+/**
+ * The local Executor could not be started or reached for a command without a named or
+ * remembered host. `message` is the local server's own explanation and what to do about it.
+ */
+export class LocalServerUnavailable extends Schema.TaggedError<LocalServerUnavailable>()(
+  "LocalServerUnavailable",
+  { message: Schema.String },
+) {}
+/**
+ * The host one command talks to: the named or remembered origin, or the local server with the
+ * token its resolver supplied. A named host resolves its credential for each request, as a hosted
+ * session can refresh during a long command.
+ */
+interface Host {
+  readonly origin: string;
+  readonly local?: Redacted.Redacted<string>;
+}
 /** Resolve the credential and, for hosted Executor, the organization every request targets. */
-const access = (host: string, organization: Option.Option<string>) =>
+const access = ({ origin: host, local: localToken }: Host, organization: Option.Option<string>) =>
   Effect.gen(function* () {
+    if (localToken !== undefined) {
+      // The local server has no organizations; a hosted one must be named with --host.
+      if (Option.isSome(organization))
+        return yield* new AppClientError({ reason: "authentication" });
+      return { token: localToken, organization: undefined };
+    }
     yield* Schema.decodeUnknownEffect(RegistryOrigin)(host).pipe(
       Effect.mapError(() => new AppClientError({ reason: "authentication" })),
     );
@@ -152,6 +167,7 @@ const transport = (host: string, token: Redacted.Redacted<string>, path = (url: 
         request.pipe(
           HttpClientRequest.updateUrl((url) => host + path(url)),
           HttpClientRequest.bearerToken(token),
+          HttpClientRequest.setHeader(wireRevisionHeader, String(wireRevision)),
         ),
       ),
       HttpClient.transform((response) =>
@@ -219,46 +235,28 @@ const hostedFrameworkApi = frameworkApi("/api/organizations/:organization", AppA
 /** Both hosts serve one app management contract; hosted routes add the organization. */
 type Management = HttpApiClient.ForApi<typeof localManagementApi>["appManagement"];
 type Framework = HttpApiClient.ForApi<typeof localFrameworkApi>["framework"];
-/**
- * Typed clients for one host. App management uses its shared contract. Skill reads use the SDK
- * routes: local serves them under /v1, and hosted serves the same endpoints and
- * schemas under its organization prefix.
- */
-const connect = (host: string, organization: Option.Option<string>) =>
+/** Typed clients for one host. Both hosts serve the shared contracts; hosted adds the organization. */
+const connect = (host: Host, organization: Option.Option<string>) =>
   Effect.gen(function* () {
     const target = yield* access(host, organization);
-    const httpClient = yield* transport(host, target.token);
+    const httpClient = yield* transport(host.origin, target.token);
     if (target.organization === undefined) {
       const client = yield* HttpApiClient.makeWith(localManagementApi, { httpClient });
       const management: Management = client.appManagement;
       const framework: Framework = (yield* HttpApiClient.makeWith(localFrameworkApi, {
         httpClient,
       })).framework;
-      return {
-        management,
-        framework,
-        tenant: {},
-        skills: yield* HttpApiClient.group(ExecutorApi, { group: "skills", httpClient }),
-      };
+      return { management, framework, tenant: {} };
     }
-    const prefix = `/api/organizations/${encodeURIComponent(target.organization)}`;
-    const sdkClient = yield* transport(host, target.token, (url) =>
-      url.replace(/^\/v1\//, `${prefix}/`),
-    );
     const client = yield* HttpApiClient.makeWith(hostedManagementApi, { httpClient });
     const management: Management = client.appManagement;
     const framework: Framework = (yield* HttpApiClient.makeWith(hostedFrameworkApi, { httpClient }))
       .framework;
-    return {
-      management,
-      framework,
-      tenant: { organization: target.organization },
-      skills: yield* HttpApiClient.group(ExecutorApi, { group: "skills", httpClient: sdkClient }),
-    };
+    return { management, framework, tenant: { organization: target.organization } };
   });
 /** Run one app management operation; contract errors stay typed for command diagnostics. */
 const manage = <A, E>(
-  host: string,
+  host: Host,
   organization: Option.Option<string>,
   operation: (
     api: Management,
@@ -280,24 +278,30 @@ const print =
       Effect.flatMap((json) => Console.log(JSON.stringify(json, null, 2))),
     );
 /** The working source the host holds now, with its revision and Git location. */
-const workingSource = (host: string, organization: Option.Option<string>, app: AppId) =>
+const workingSource = (host: Host, organization: Option.Option<string>, app: AppId) =>
   manage(host, organization, (api, tenant) => api.source({ params: { ...tenant, app } }));
 
 /** The credential Git requests carry, the same one the API requests use. */
-const gitAuthorization = (host: string, organization: Option.Option<string>) =>
+const gitAuthorization = (host: Host, organization: Option.Option<string>) =>
   access(host, organization).pipe(Effect.map(({ token }) => `Bearer ${Redacted.value(token)}`));
+
+/** An app's working source as the host returned it. */
+type WorkingSource = Effect.Success<ReturnType<typeof workingSource>>;
 
 /**
  * Save a local source as the commit after `expected`. A source that fits one request is sent as
  * files; a larger one is pushed with Git, sending only the files the app does not already hold.
+ * A caller that already read the working source passes it as `read`: reading a source with many
+ * public files lists and sizes each of them, so a second read is not free.
  */
 const saveSource = (input: {
-  readonly host: string;
+  readonly host: Host;
   readonly organization: Option.Option<string>;
   readonly app: AppId;
   readonly expected: typeof SourceCommit.Type;
   readonly files: ReadonlyArray<LocalFile>;
   readonly message: string;
+  readonly read?: WorkingSource;
 }) =>
   Effect.gen(function* () {
     if (fitsRequest(input.files)) {
@@ -309,7 +313,7 @@ const saveSource = (input: {
         }),
       );
     }
-    const source = yield* workingSource(input.host, input.organization, input.app);
+    const source = input.read ?? (yield* workingSource(input.host, input.organization, input.app));
     if (source.revision.commit !== input.expected)
       return yield* new GitPushRefused({
         reason: "conflict",
@@ -329,81 +333,27 @@ const saveSource = (input: {
     });
   });
 
-/** Skill lookups print the host's result for all deployed apps, one catalog, or one document. */
-const SkillListing = Schema.Struct({
-  catalogs: Schema.Array(AppSkillCatalog),
-  unavailable: Schema.Array(Schema.String),
-});
-/** A skill read the host rejects keeps the host's typed error; other answers keep their status. */
-const skillRead = <A, E>(
-  effect: Effect.Effect<A, E | HttpClientError.HttpClientError | Schema.SchemaError>,
-) => effect.pipe(Effect.catchIf(isTransportFailure, hostFailure));
-/** Skills come from each app's version on the host; the CLI bundles no guidance. */
-const readSkills = (args: {
-  readonly host: string;
-  readonly organization: Option.Option<string>;
-  readonly app: Option.Option<string>;
-  readonly name: Option.Option<typeof AppSkillName.Type>;
-  readonly file: Option.Option<typeof SourceFilePath.Type>;
-}) =>
-  Effect.gen(function* () {
-    if (Option.isNone(args.name) && Option.isSome(args.file))
-      return yield* new SkillLookupFailed({ reason: "Pass --name with --file." });
-    if (Option.isNone(args.app) && Option.isSome(args.name))
-      return yield* new SkillLookupFailed({ reason: "Pass --app with --name." });
-    const { management, tenant, skills } = yield* connect(args.host, args.organization);
-    const apps = yield* management
-      .list({ params: tenant })
-      .pipe(Effect.catchIf(isTransportFailure, hostFailure));
-    // The host resolves the accounts you linked to each app, as the MCP skills tool does.
-    const catalog = (app: App) => skillRead(skills.list({ params: { app: app.id }, query: {} }));
-    if (Option.isNone(args.app)) {
-      const results = yield* Effect.forEach(
-        apps.filter((app) => app.activeVersion !== null),
-        (app) =>
-          catalog(app).pipe(
-            Effect.map((found) => ({ app: app.slug, catalogs: [found] })),
-            Effect.catch(() => Effect.succeed({ app: app.slug, catalogs: undefined })),
-          ),
-        { concurrency: 4 },
-      );
-      return yield* print(SkillListing)({
-        catalogs: results.flatMap((entry) => entry.catalogs ?? []),
-        unavailable: results.flatMap((entry) => (entry.catalogs === undefined ? [entry.app] : [])),
-      });
-    }
-    const slug = args.app.value;
-    const selected = apps.find((app) => app.slug === slug || app.id === slug);
-    if (selected === undefined)
-      return yield* new SkillLookupFailed({
-        reason: `No visible app has slug or ID ${slug}. Run executor apps list to see apps.`,
-      });
-    if (Option.isNone(args.name))
-      return yield* catalog(selected).pipe(Effect.flatMap(print(AppSkillCatalog)));
-    return yield* skillRead(
-      skills.read({
-        params: { app: selected.id, name: args.name.value },
-        query: { file: Option.getOrUndefined(args.file) },
-      }),
-    ).pipe(Effect.flatMap(print(AppSkillDocument)));
-  });
-
-const notSignedIn = `Not signed in to this host. For hosted Executor, run executor apps login --host ${hostedExecutorOrigin} and pass the same --host to each command, or set EXECUTOR_HOST. For a local server (default ${localOrigin}), set EXECUTOR_API_KEY to its API key.`;
-/** What each sign-in failure means and what to do next. */
-const loginFailure: Record<LoginFailed["reason"], string> = {
-  host: `Could not read this host's sign-in settings. Check --host, for example --host ${hostedExecutorOrigin}, and your network connection.`,
-  unsupported:
-    "This host does not support signing in from the CLI. Update it to a release with device sign-in.",
-  registration: "The host did not start a sign-in for the CLI. Try again in a moment.",
-  denied: "Sign-in was cancelled or denied in the browser. Run executor apps login to try again.",
-  expired:
-    "Sign-in was not approved in time. Run executor apps login again and approve it within 10 minutes.",
-  token: "The host did not complete the approved sign-in. Run executor apps login to try again.",
-  context:
-    "Signed in, but the host did not return your organization. Check that your account belongs to an organization, then sign in again.",
-  storage:
-    "Signed in, but the session could not be saved in the system credential store or in ~/.local/state/executor/auth. Check that this directory is writable.",
-};
+const notSignedIn = `Not signed in to this host for app commands. Run executor apps login, which signs in to hosted Executor and makes later commands use it, or executor apps login --host <origin> for another host. Commands use --host, then EXECUTOR_HOST, then the host you signed in to last, then the local background Executor; for a local server at --host, set EXECUTOR_API_KEY to its API key.`;
+/** No credential for a tool command's host. */
+const toolsNotSignedIn = (host: string | undefined) =>
+  host === undefined
+    ? "No Executor host is named or signed in to. Run executor login to sign in to hosted Executor, or pass --host."
+    : `Not signed in to ${host} for tools. Run executor login --host ${host}. For a local server at --host, set EXECUTOR_API_KEY to its API key; EXECUTOR_ACCESS_TOKEN sends a pasted access token instead.`;
+/** What each sign-in failure means and what to do next; `command` is the sign-in to repeat. */
+const loginFailure = (reason: LoginFailed["reason"], command: string): string =>
+  ({
+    host: `Could not read this host's sign-in settings. Check --host, for example --host ${hostedExecutorOrigin}, and your network connection.`,
+    unsupported:
+      "This host does not support signing in from the CLI. Update it to a release with device sign-in.",
+    registration: "The host did not start a sign-in for the CLI. Try again in a moment.",
+    denied: `Sign-in was cancelled or denied in the browser. Run ${command} to try again.`,
+    expired: `Sign-in was not approved in time. Run ${command} again and approve it within 10 minutes.`,
+    token: `The host did not complete the approved sign-in. Run ${command} to try again.`,
+    context:
+      "Signed in, but the host did not return your organization. Check that your account belongs to an organization, then sign in again.",
+    storage:
+      "Signed in, but the session could not be saved in the system credential store or in ~/.local/state/executor/auth. Check that this directory is writable.",
+  })[reason];
 
 /**
  * A failed command, as agents read it: the error code, the HTTP status when the host answered, the
@@ -505,6 +455,8 @@ const hostRequestFailure = (error: HostRequestFailed): AppCommandFailure => {
  * other response text are never included. Undefined for failures outside the apps commands.
  */
 export const describeAppFailure = (error: unknown): AppCommandFailure | undefined => {
+  if (Schema.is(LocalServerUnavailable)(error))
+    return { code: "LocalServerUnavailable", message: error.message };
   if (
     (Schema.is(AppClientError)(error) || Schema.is(AppAccessDenied)(error)) &&
     error.reason === "authentication"
@@ -546,13 +498,38 @@ export const describeAppFailure = (error: unknown): AppCommandFailure | undefine
           message: `Pushing the source with Git failed: ${error.detail}. The app's working source is unchanged.`,
           details: { reason: error.reason },
         };
-  if (Schema.is(SkillLookupFailed)(error))
-    return { code: "SkillLookupFailed", message: error.reason };
   if (Schema.is(LoginFailed)(error))
     return {
       code: "LoginFailed",
-      message: loginFailure[error.reason],
+      message: loginFailure(
+        error.reason,
+        error.signIn === "api" ? "executor apps login" : "executor login",
+      ),
       details: { reason: error.reason },
+    };
+  if (Schema.is(ToolsSignInRequired)(error))
+    return {
+      code: "NotSignedIn",
+      ...(error.host === undefined ? {} : { status: 401 }),
+      message: toolsNotSignedIn(error.host),
+    };
+  if (Schema.is(ToolCallRefused)(error))
+    return {
+      code: error.reason === "tool" ? "ToolFailed" : "ToolRequestRefused",
+      message: error.message === "" ? `The host's ${error.tool} tool failed.` : error.message,
+      details: { tool: error.tool, ...(error.code === undefined ? {} : { code: error.code }) },
+    };
+  if (Schema.is(ToolInputInvalid)(error)) return { code: "InputInvalid", message: error.message };
+  if (Schema.is(WhoamiUnavailable)(error))
+    return {
+      code: "WhoamiUnavailable",
+      status: 404,
+      message: `${error.host} does not report what its tools sign-in reaches; it runs a release from before executor whoami. Tool commands still work with this sign-in.`,
+    };
+  if (Schema.is(SignInStateInvalid)(error))
+    return {
+      code: "SignInStateInvalid",
+      message: `${error.file} is not a record this CLI wrote. Run executor logout to clear it, or remove the file.`,
     };
   if (isPlatformError(error)) return { code: "LocalFileError", message: error.message };
   const wire = encodeOperationError(error);
@@ -600,34 +577,61 @@ export const renderAppFailure = (failure: AppCommandFailure): string =>
 export const encodeAppFailure = (failure: AppCommandFailure): string =>
   JSON.stringify({ error: Schema.encodeSync(AppCommandFailure)(failure) }, null, 2);
 
-/** The executable supplies one platform layer and owns process lifetime. */
-export const appsCommand = (platform: string) =>
-  Command.make("apps").pipe(
+/**
+ * The executable supplies one platform layer and owns process lifetime. `localServer` resolves the
+ * local Executor that commands use when neither --host nor EXECUTOR_HOST names a host; without it,
+ * such a command fails as not signed in.
+ */
+export const appsCommand = <E = never, R = never>(
+  platform: string,
+  localServer?: Effect.Effect<LocalServer, E, R>,
+) => {
+  /** Run with the named or remembered host, or else the local server, resolved once per command. */
+  const withHost = <A, E2, R2>(
+    flag: Option.Option<string>,
+    run: (host: Host) => Effect.Effect<A, E2, R2>,
+  ) =>
+    Effect.gen(function* () {
+      const named = yield* namedHost(flag);
+      if (Option.isSome(named)) return yield* run({ origin: named.value });
+      if (localServer === undefined) return yield* new AppClientError({ reason: "authentication" });
+      const { url, token } = yield* localServer;
+      return yield* run({ origin: url, local: token });
+    });
+  return Command.make("apps").pipe(
     Command.withDescription(
-      `Create, edit, deploy, share, and install apps. Output is JSON on stdout. A failure exits 1 and prints the error's message, code, HTTP status and recovery on stderr; when stdout is not a terminal it also prints them as {"error": {"code", "status", "message", "recovery", "details", "update"}} on stdout; "update" says when a newer CLI release exists. Set EXECUTOR_HOST to skip --host; --organization defaults to the one you signed in to`,
+      `Create, edit, deploy, share, and install apps. Output is JSON on stdout. A failure exits 1 and prints the error's message, code, HTTP status and recovery on stderr; when stdout is not a terminal it also prints them as {"error": {"code", "status", "message", "recovery", "details", "update"}} on stdout; "update" says when a newer CLI release exists. Commands use --host, then EXECUTOR_HOST, then the host you signed in to last, then the local background Executor; --organization defaults to the one you signed in to`,
     ),
     Command.withExamples([
       {
-        command: `executor apps login --host ${hostedExecutorOrigin}`,
+        command: "executor apps login",
         description: "Sign in to hosted Executor once",
       },
       {
-        command: `EXECUTOR_HOST=${hostedExecutorOrigin} executor apps list`,
+        command: "executor apps list",
         description: "List apps on the host you signed in to",
       },
       {
-        command: "executor apps skills --app executor --name app-authoring --file deploy.md",
+        command: "executor skills --app executor --name app-authoring --file deploy.md",
         description: "Read how to write and deploy an app",
       },
     ]),
     Command.withSubcommands([
-      Command.make("login", { host }).pipe(
+      Command.make("login", {
+        host: Flag.String("host").pipe(
+          Flag.withDescription(
+            `Executor origin to sign in to. Defaults to EXECUTOR_HOST, then hosted Executor, ${hostedExecutorOrigin}`,
+          ),
+          Flag.withFallbackConfig(Config.String("EXECUTOR_HOST")),
+          Flag.withDefault(hostedExecutorOrigin),
+        ),
+      }).pipe(
         Command.withDescription(
-          `Sign in to a hosted Executor with a code approved in any browser, for example --host ${hostedExecutorOrigin}`,
+          "Sign in to a hosted Executor for app commands with a code approved in any browser. Later commands use this host by default",
         ),
         Command.withExamples([
           {
-            command: `executor apps login --host ${hostedExecutorOrigin}`,
+            command: "executor apps login",
             description: "Print a link and a code, and wait until it is approved in a browser",
           },
         ]),
@@ -636,10 +640,12 @@ export const appsCommand = (platform: string) =>
       Command.make("list", connection).pipe(
         Command.withDescription("List apps"),
         Command.withHandler((args) =>
-          manage(args.host, args.organization, (api, tenant) =>
-            api
-              .list({ params: tenant, responseMode: "decoded-and-response" })
-              .pipe(Effect.flatMap(printResponse)),
+          withHost(args.host, (host) =>
+            manage(host, args.organization, (api, tenant) =>
+              api
+                .list({ params: tenant, responseMode: "decoded-and-response" })
+                .pipe(Effect.flatMap(printResponse)),
+            ),
           ),
         ),
       ),
@@ -658,44 +664,46 @@ export const appsCommand = (platform: string) =>
           },
         ]),
         Command.withHandler((args) =>
-          Effect.gen(function* () {
-            const local = yield* readSource(args.files);
-            if (fitsRequest(local)) {
-              const files = yield* requestFiles(local);
-              return yield* manage(args.host, args.organization, (api, tenant) =>
-                api
-                  .create({
-                    params: tenant,
-                    payload: { name: args.name, files },
-                    responseMode: "decoded-and-response",
-                  })
-                  .pipe(Effect.flatMap(printResponse)),
-              );
-            }
-            // Too large for one request: create the app from its code, then push the whole
-            // directory, public files included, as its next commit.
-            const [created, response] = yield* manage(args.host, args.organization, (api, tenant) =>
-              requestFiles(codeOnly(local)).pipe(
-                Effect.flatMap((files) =>
-                  api.create({
-                    params: tenant,
-                    payload: { name: args.name, files },
-                    responseMode: "decoded-and-response",
-                  }),
+          withHost(args.host, (host) =>
+            Effect.gen(function* () {
+              const local = yield* readSource(args.files);
+              if (fitsRequest(local)) {
+                const files = yield* requestFiles(local);
+                return yield* manage(host, args.organization, (api, tenant) =>
+                  api
+                    .create({
+                      params: tenant,
+                      payload: { name: args.name, files },
+                      responseMode: "decoded-and-response",
+                    })
+                    .pipe(Effect.flatMap(printResponse)),
+                );
+              }
+              // Too large for one request: create the app from its code, then push the whole
+              // directory, public files included, as its next commit.
+              const [created, response] = yield* manage(host, args.organization, (api, tenant) =>
+                requestFiles(codeOnly(local)).pipe(
+                  Effect.flatMap((files) =>
+                    api.create({
+                      params: tenant,
+                      payload: { name: args.name, files },
+                      responseMode: "decoded-and-response",
+                    }),
+                  ),
                 ),
-              ),
-            );
-            const source = yield* workingSource(args.host, args.organization, created.id);
-            yield* pushSource({
-              url: source.gitUrl,
-              authorization: yield* gitAuthorization(args.host, args.organization),
-              expected: source.revision.commit,
-              remote: source.files,
-              files: local,
-              message: "Add ui/public files",
-            });
-            yield* printResponse([created, response]);
-          }),
+              );
+              const source = yield* workingSource(host, args.organization, created.id);
+              yield* pushSource({
+                url: source.gitUrl,
+                authorization: yield* gitAuthorization(host, args.organization),
+                expected: source.revision.commit,
+                remote: source.files,
+                files: local,
+                message: "Add ui/public files",
+              });
+              yield* printResponse([created, response]);
+            }),
+          ),
         ),
       ),
       Command.make("framework", connection).pipe(
@@ -703,12 +711,14 @@ export const appsCommand = (platform: string) =>
           "Print the exact apps framework version this host runs. Declare it as dependencies.apps in each app's package.json",
         ),
         Command.withHandler((args) =>
-          connect(args.host, args.organization).pipe(
-            Effect.flatMap(({ framework, tenant }) =>
-              framework.release({ params: tenant, responseMode: "decoded-and-response" }),
+          withHost(args.host, (host) =>
+            connect(host, args.organization).pipe(
+              Effect.flatMap(({ framework, tenant }) =>
+                framework.release({ params: tenant, responseMode: "decoded-and-response" }),
+              ),
+              Effect.flatMap(printResponse),
+              Effect.catchIf(isTransportFailure, hostFailure),
             ),
-            Effect.flatMap(printResponse),
-            Effect.catchIf(isTransportFailure, hostFailure),
           ),
         ),
       ),
@@ -726,72 +736,76 @@ export const appsCommand = (platform: string) =>
           "Print an app's working source files and current commit. A ui/public/ file that is not text, or does not fit, is listed as {path, object, size}; pass --out to write every file",
         ),
         Command.withHandler((args) =>
-          Option.match(args.out, {
-            onNone: () =>
-              manage(args.host, args.organization, (api, tenant) =>
-                api
-                  .source({
-                    params: { ...tenant, app: args.app },
-                    responseMode: "decoded-and-response",
-                  })
-                  .pipe(Effect.flatMap(printResponse)),
-              ),
-            onSome: (out) =>
-              Effect.gen(function* () {
-                const fs = yield* FileSystem.FileSystem;
-                const path = yield* Path.Path;
-                if ((yield* fs.exists(out)) && (yield* fs.readDirectory(out)).length > 0)
-                  return yield* new SourceRejected({
-                    reason: "invalid",
-                    detail: `${out} is not empty.`,
-                    paths: [],
-                  });
-                const source = yield* workingSource(args.host, args.organization, args.app);
-                const write = (file: string, bytes: Uint8Array) =>
-                  Effect.gen(function* () {
-                    const target = path.join(out, ...file.split("/"));
-                    yield* fs.makeDirectory(path.dirname(target), { recursive: true });
-                    yield* fs.writeFile(target, bytes);
-                  });
-                const stored = new Map<string, string[]>();
-                for (const file of source.files) {
-                  if ("object" in file)
-                    stored.set(file.object, [...(stored.get(file.object) ?? []), file.path]);
-                  else yield* write(file.path, inlineBytes(file));
-                }
-                // Files listed by their blob come from the app's Git remote.
-                if (stored.size > 0)
-                  yield* readCommitBlobs({
-                    url: source.gitUrl,
-                    authorization: yield* gitAuthorization(args.host, args.organization),
-                    commit: source.revision.commit,
-                    objects: [...stored.keys()],
-                    write: (object, bytes) =>
-                      Effect.forEach(stored.get(object) ?? [], (file) => write(file, bytes), {
-                        discard: true,
-                      }).pipe(Effect.mapError(() => new SourceError({ reason: "storage" }))),
-                  });
-                yield* Console.log(
-                  JSON.stringify(
-                    { revision: source.revision, files: source.files.length, out },
-                    null,
-                    2,
-                  ),
-                );
-              }),
-          }),
+          withHost(args.host, (host) =>
+            Option.match(args.out, {
+              onNone: () =>
+                manage(host, args.organization, (api, tenant) =>
+                  api
+                    .source({
+                      params: { ...tenant, app: args.app },
+                      responseMode: "decoded-and-response",
+                    })
+                    .pipe(Effect.flatMap(printResponse)),
+                ),
+              onSome: (out) =>
+                Effect.gen(function* () {
+                  const fs = yield* FileSystem.FileSystem;
+                  const path = yield* Path.Path;
+                  if ((yield* fs.exists(out)) && (yield* fs.readDirectory(out)).length > 0)
+                    return yield* new SourceRejected({
+                      reason: "invalid",
+                      detail: `${out} is not empty.`,
+                      paths: [],
+                    });
+                  const source = yield* workingSource(host, args.organization, args.app);
+                  const write = (file: string, bytes: Uint8Array) =>
+                    Effect.gen(function* () {
+                      const target = path.join(out, ...file.split("/"));
+                      yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+                      yield* fs.writeFile(target, bytes);
+                    });
+                  const stored = new Map<string, string[]>();
+                  for (const file of source.files) {
+                    if ("object" in file)
+                      stored.set(file.object, [...(stored.get(file.object) ?? []), file.path]);
+                    else yield* write(file.path, inlineBytes(file));
+                  }
+                  // Files listed by their blob come from the app's Git remote.
+                  if (stored.size > 0)
+                    yield* readCommitBlobs({
+                      url: source.gitUrl,
+                      authorization: yield* gitAuthorization(host, args.organization),
+                      commit: source.revision.commit,
+                      objects: [...stored.keys()],
+                      write: (object, bytes) =>
+                        Effect.forEach(stored.get(object) ?? [], (file) => write(file, bytes), {
+                          discard: true,
+                        }).pipe(Effect.mapError(() => new SourceError({ reason: "storage" }))),
+                    });
+                  yield* Console.log(
+                    JSON.stringify(
+                      { revision: source.revision, files: source.files.length, out },
+                      null,
+                      2,
+                    ),
+                  );
+                }),
+            }),
+          ),
         ),
       ),
       Command.make("history", { ...connection, app }).pipe(
         Command.withDescription("List recent commits in an app's private Git history"),
         Command.withHandler((args) =>
-          manage(args.host, args.organization, (api, tenant) =>
-            api
-              .history({
-                params: { ...tenant, app: args.app },
-                responseMode: "decoded-and-response",
-              })
-              .pipe(Effect.flatMap(printResponse)),
+          withHost(args.host, (host) =>
+            manage(host, args.organization, (api, tenant) =>
+              api
+                .history({
+                  params: { ...tenant, app: args.app },
+                  responseMode: "decoded-and-response",
+                })
+                .pipe(Effect.flatMap(printResponse)),
+            ),
           ),
         ),
       ),
@@ -807,9 +821,11 @@ export const appsCommand = (platform: string) =>
           },
         ]),
         Command.withHandler((args) =>
-          manage(args.host, args.organization, (api, tenant) =>
-            api.git({ params: { ...tenant, app: args.app } }),
-          ).pipe(Effect.flatMap((remote) => Console.log(remote.url))),
+          withHost(args.host, (host) =>
+            manage(host, args.organization, (api, tenant) =>
+              api.git({ params: { ...tenant, app: args.app } }),
+            ).pipe(Effect.flatMap((remote) => Console.log(remote.url))),
+          ),
         ),
       ),
       Command.make("commit", {
@@ -838,18 +854,20 @@ export const appsCommand = (platform: string) =>
           },
         ]),
         Command.withHandler((args) =>
-          Effect.gen(function* () {
-            const files = yield* readSource(args.files);
-            const committed = yield* saveSource({
-              host: args.host,
-              organization: args.organization,
-              app: args.app,
-              expected: args.expected,
-              files,
-              message: args.message,
-            });
-            yield* print(CommittedSource)(committed);
-          }),
+          withHost(args.host, (host) =>
+            Effect.gen(function* () {
+              const files = yield* readSource(args.files);
+              const committed = yield* saveSource({
+                host,
+                organization: args.organization,
+                app: args.app,
+                expected: args.expected,
+                files,
+                message: args.message,
+              });
+              yield* print(CommittedSource)(committed);
+            }),
+          ),
         ),
       ),
       Command.make("deploy", {
@@ -882,38 +900,41 @@ export const appsCommand = (platform: string) =>
           },
         ]),
         Command.withHandler((args) =>
-          Effect.gen(function* () {
-            if (Option.isSome(args.commit) === Option.isSome(args.files))
-              return yield* new SourceRejected({
-                reason: "invalid",
-                detail: "Pass exactly one of --commit and --files.",
-                paths: [],
-              });
-            const target = Option.isSome(args.commit)
-              ? args.commit.value
-              : yield* Effect.gen(function* () {
-                  const local = yield* readSource(Option.getOrThrow(args.files));
-                  const head = yield* workingSource(args.host, args.organization, args.app);
-                  const saved = yield* saveSource({
-                    host: args.host,
-                    organization: args.organization,
-                    app: args.app,
-                    expected: head.revision.commit,
-                    files: local,
-                    message: args.message,
-                  });
-                  return saved.revision.commit;
+          withHost(args.host, (host) =>
+            Effect.gen(function* () {
+              if (Option.isSome(args.commit) === Option.isSome(args.files))
+                return yield* new SourceRejected({
+                  reason: "invalid",
+                  detail: "Pass exactly one of --commit and --files.",
+                  paths: [],
                 });
-            yield* manage(args.host, args.organization, (api, tenant) =>
-              api
-                .deploy({
-                  params: { ...tenant, app: args.app },
-                  payload: { commit: target },
-                  responseMode: "decoded-and-response",
-                })
-                .pipe(Effect.flatMap(printResponse)),
-            );
-          }),
+              const target = Option.isSome(args.commit)
+                ? args.commit.value
+                : yield* Effect.gen(function* () {
+                    const local = yield* readSource(Option.getOrThrow(args.files));
+                    const head = yield* workingSource(host, args.organization, args.app);
+                    const saved = yield* saveSource({
+                      host,
+                      organization: args.organization,
+                      app: args.app,
+                      expected: head.revision.commit,
+                      files: local,
+                      message: args.message,
+                      read: head,
+                    });
+                    return saved.revision.commit;
+                  });
+              yield* manage(host, args.organization, (api, tenant) =>
+                api
+                  .deploy({
+                    params: { ...tenant, app: args.app },
+                    payload: { commit: target },
+                    responseMode: "decoded-and-response",
+                  })
+                  .pipe(Effect.flatMap(printResponse)),
+              );
+            }),
+          ),
         ),
       ),
       Command.make("copy", { ...connection, app, name }).pipe(
@@ -921,14 +942,16 @@ export const appsCommand = (platform: string) =>
           "Copy an app into a new app with fresh Git history. Accounts and app data are not copied",
         ),
         Command.withHandler((args) =>
-          manage(args.host, args.organization, (api, tenant) =>
-            api
-              .copy({
-                params: tenant,
-                payload: { from: { app: args.app }, name: args.name },
-                responseMode: "decoded-and-response",
-              })
-              .pipe(Effect.flatMap(printResponse)),
+          withHost(args.host, (host) =>
+            manage(host, args.organization, (api, tenant) =>
+              api
+                .copy({
+                  params: tenant,
+                  payload: { from: { app: args.app }, name: args.name },
+                  responseMode: "decoded-and-response",
+                })
+                .pipe(Effect.flatMap(printResponse)),
+            ),
           ),
         ),
       ),
@@ -937,88 +960,77 @@ export const appsCommand = (platform: string) =>
           "Publish a commit to the app registry. Its package.json name identifies the listing",
         ),
         Command.withHandler((args) =>
-          manage(args.host, args.organization, (api, tenant) =>
-            api
-              .publish({
-                params: { ...tenant, app: args.app },
-                payload: { commit: args.commit },
-                responseMode: "decoded-and-response",
-              })
-              .pipe(Effect.flatMap(printResponse)),
+          withHost(args.host, (host) =>
+            manage(host, args.organization, (api, tenant) =>
+              api
+                .publish({
+                  params: { ...tenant, app: args.app },
+                  payload: { commit: args.commit },
+                  responseMode: "decoded-and-response",
+                })
+                .pipe(Effect.flatMap(printResponse)),
+            ),
           ),
         ),
       ),
       Command.make("catalog", connection).pipe(
         Command.withDescription("List published apps available to install"),
         Command.withHandler((args) =>
-          manage(args.host, args.organization, (api, tenant) =>
-            api
-              .catalog({ params: tenant, query: {}, responseMode: "decoded-and-response" })
-              .pipe(Effect.flatMap(printResponse)),
+          withHost(args.host, (host) =>
+            manage(host, args.organization, (api, tenant) =>
+              api
+                .catalog({ params: tenant, query: {}, responseMode: "decoded-and-response" })
+                .pipe(Effect.flatMap(printResponse)),
+            ),
           ),
         ),
       ),
       Command.make("published", connection).pipe(
         Command.withDescription("List apps this account has published"),
         Command.withHandler((args) =>
-          manage(args.host, args.organization, (api, tenant) =>
-            api
-              .published({ params: tenant, responseMode: "decoded-and-response" })
-              .pipe(Effect.flatMap(printResponse)),
+          withHost(args.host, (host) =>
+            manage(host, args.organization, (api, tenant) =>
+              api
+                .published({ params: tenant, responseMode: "decoded-and-response" })
+                .pipe(Effect.flatMap(printResponse)),
+            ),
           ),
         ),
       ),
       Command.make("install", { ...connection, ...publication, name }).pipe(
         Command.withDescription("Install a published app as a new, independently owned app"),
         Command.withHandler((args) =>
-          manage(args.host, args.organization, (api, tenant) =>
-            api
-              .copy({
-                params: tenant,
-                payload: { from: { package: args.package, commit: args.commit }, name: args.name },
-                responseMode: "decoded-and-response",
-              })
-              .pipe(Effect.flatMap(printResponse)),
+          withHost(args.host, (host) =>
+            manage(host, args.organization, (api, tenant) =>
+              api
+                .copy({
+                  params: tenant,
+                  payload: {
+                    from: { package: args.package, commit: args.commit },
+                    name: args.name,
+                  },
+                  responseMode: "decoded-and-response",
+                })
+                .pipe(Effect.flatMap(printResponse)),
+            ),
           ),
         ),
       ),
       Command.make("unpublish", { ...connection, package: publication.package }).pipe(
         Command.withDescription("Remove a published listing. Installed copies keep working"),
         Command.withHandler((args) =>
-          manage(args.host, args.organization, (api, tenant) =>
-            api
-              .unpublish({
-                params: tenant,
-                payload: { package: args.package },
-                responseMode: "decoded-and-response",
-              })
-              .pipe(Effect.flatMap(printResponse)),
+          withHost(args.host, (host) =>
+            manage(host, args.organization, (api, tenant) =>
+              api
+                .unpublish({
+                  params: tenant,
+                  payload: { package: args.package },
+                  responseMode: "decoded-and-response",
+                })
+                .pipe(Effect.flatMap(printResponse)),
+            ),
           ),
         ),
-      ),
-      Command.make("skills", {
-        ...connection,
-        app: Flag.String("app").pipe(
-          Flag.withDescription("App slug or ID. Omit to list skills from every deployed app"),
-          Flag.optional,
-        ),
-        name: Flag.String("name").pipe(
-          Flag.withSchema(AppSkillName),
-          Flag.withDescription("Skill name to read, for example executor. Requires --app"),
-          Flag.optional,
-        ),
-        file: Flag.String("file").pipe(
-          Flag.withSchema(SourceFilePath),
-          Flag.withDescription(
-            "File within the skill to read instead of SKILL.md. Requires --name",
-          ),
-          Flag.optional,
-        ),
-      }).pipe(
-        Command.withDescription(
-          "List or read app skills served by the host. Start with --app executor --name executor, then read its app-authoring skill before writing an app",
-        ),
-        Command.withHandler(readSkills),
       ),
       Command.make("credential", {
         action: Argument.Literals("action", ["get", "store", "erase"]).pipe(
@@ -1058,3 +1070,4 @@ export const appsCommand = (platform: string) =>
       ),
     ]),
   );
+};

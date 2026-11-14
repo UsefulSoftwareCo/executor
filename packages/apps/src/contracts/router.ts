@@ -48,7 +48,8 @@ export interface AppRouter {
 /**
  * A router whose tools are discovered when read, such as an MCP server or OpenAPI document.
  * Names are relative to the router and may contain dots. `readOnly: true` marks a query;
- * anything else is a mutation. Resolution never requires listing.
+ * anything else is a mutation. `kindConfirmed: true` says the app's code or the protocol, not an
+ * upstream claim, decided the kind. Resolution never requires listing.
  */
 export interface DynamicRouter {
   readonly kind: "dynamic";

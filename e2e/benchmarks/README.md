@@ -105,7 +105,7 @@ own schedule of an app they deploy in `call` (`Perf scheduled runs`) and wait fo
 finish. Those runs are dispatched by the schedule coordinator, whose statements go from wherever
 that object lives, so they measure the background path that placed requests do not. Client time
 includes the coordinator's one-second alarm delay; server time is the run's recorded duration.
-Read `schedule.dispatch` and coordinator `sql.wire` from the stage traces. `load-compare`
+Read `schedule.dispatch` and the coordinator's `db.wire.*` statement timings from the stage traces. `load-compare`
 alternates whole windows between two stages.
 
 ### Idle supervisors
@@ -136,6 +136,21 @@ hop is `mcp.session.forward` minus the object's `http.server` span, read from th
 (`AXIOM_TOKEN`). Each duration comes from its own isolate's clock, so the difference stays valid
 when the gateway and object clocks disagree. The hop includes object activation, transit and
 object CPU after its last I/O, which Cloudflare's I/O clock does not advance through.
+
+### Many session objects
+
+```sh
+$P session-fanout --control $E/stage-control.json --keys $E/fanout-keys.json \
+  --output $E/results/fanout.json --objects 300 --seconds 240 --interval 20 --parallel 2
+```
+
+A session object belongs to one grant, so each API key addresses its own. The command creates
+`--objects` keys in a fixture organization (kept in the private `--keys` file, mode 0600, and
+reused by later runs; key creation waits out sign-in rate limits), opens one MCP session per key,
+and has each make `--parallel` concurrent `execute` calls every `--interval` seconds for
+`--seconds`. It prints failed calls by the text the product returned. Read the branch's
+PgBouncer clients from PlanetScale (`planetscale_pgbouncer_pools_client`, pool `active`) during
+the run: each object that connects directly holds its own (notes/database-pool.md).
 
 ## 5. Flamecharts
 

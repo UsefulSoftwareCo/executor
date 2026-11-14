@@ -320,35 +320,6 @@ const editConflict = (cause: Cause.Cause<HostedError>) =>
     onNone: () => undefined,
   });
 
-/** Connecting without a client swaps to registering one for that sign-in's server, then returns. */
-export function RegisterServiceClient({
-  service,
-  onDone,
-}: {
-  readonly service: OAuthClientService;
-  readonly onDone: () => void;
-}) {
-  const organization = useOrganization();
-  return (
-    <QueryView
-      query={oauthClientsAtom(organization.organization)}
-      Failure={HostedFailure}
-      pending={<DetailSkeleton label="Loading OAuth clients" />}
-    >
-      {(directory) => (
-        <RegisterOAuthClient
-          services={[
-            directory.services.find((known) => known.issuer === service.issuer) ?? service,
-          ]}
-          redirectUri={directory.redirectUri}
-          className=""
-          onDone={onDone}
-        />
-      )}
-    </QueryView>
-  );
-}
-
 function RegisterOAuthClient({
   services,
   redirectUri,
@@ -538,7 +509,6 @@ function OAuthClientForm({
       >
         {(data) => (
           <AudienceInput
-            mode="app"
             subject="this client"
             allowPrivate={allowPrivate}
             privateLabel={privateLabel}

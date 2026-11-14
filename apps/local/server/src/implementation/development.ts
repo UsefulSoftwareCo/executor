@@ -1,5 +1,5 @@
 /** Scoped Vite adapter shared by browser and desktop development hosts. */
-import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpServer, IncomingMessage, ServerResponse } from "node:http";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import {
   dashboardDocument,
@@ -14,6 +14,15 @@ import type { ServerConfig } from "../contracts/config.ts";
 import { StartupFailed } from "../contracts/startup.ts";
 import type { LocalWeb } from "../node.ts";
 
+/** Vite's HMR socket path, served on the dashboard's own origin. */
+const hmrPath = "/@vite/hmr";
+
+/** Vite answers only its own subprotocols; any other upgrade would wait on it forever. */
+const isHmrUpgrade = (incoming: IncomingMessage) =>
+  incoming.headers.upgrade?.toLowerCase() === "websocket" &&
+  ["vite-hmr", "vite-ping"].includes(incoming.headers["sec-websocket-protocol"] ?? "") &&
+  new URL(incoming.url ?? "/", "http://localhost").pathname === hmrPath;
+
 /** Options for one development host. Separate hosts keep separate Vite dependency caches. */
 export type DevelopmentWebOptions = {
   /** Vite cache directory relative to the repository root; Vite's default when omitted. */
@@ -25,29 +34,10 @@ export const developmentWeb = (settings: ServerConfig, options: DevelopmentWebOp
   Effect.gen(function* () {
     const path = yield* Path.Path;
     const root = yield* path.fromFileUrl(new URL("../../../web/", import.meta.url));
-    // HMR gets its own loopback listener on a free port, so concurrent checkouts never collide
-    // and Vite upgrades stay separate from the Effect HTTP server upgrade handler.
-    const hmrServer = yield* Effect.acquireRelease(
-      Effect.sync(() => createHttpServer()),
-      (server) =>
-        Effect.sync(() => {
-          server.closeAllConnections();
-          server.close();
-        }),
-    );
-    const socketPort = yield* Effect.callback<number, StartupFailed>((resume) => {
-      const failed = () => resume(Effect.fail(new StartupFailed({ stage: "dev-server" })));
-      hmrServer.once("error", failed);
-      hmrServer.listen({ host: "127.0.0.1", port: 0 }, () => {
-        const address = hmrServer.address();
-        resume(
-          address === null || typeof address === "string"
-            ? Effect.fail(new StartupFailed({ stage: "dev-server" }))
-            : Effect.succeed(address.port),
-        );
-      });
-      return Effect.sync(() => hmrServer.removeListener("error", failed));
-    });
+    // Vite's HMR socket server, fed the upgrades the asset handler takes for `hmrPath`. It never
+    // listens: the browser reaches HMR at its page's own origin, through any proxy in front of
+    // this server, and Vite stays clear of the Effect HTTP server's own upgrade handler.
+    const hmrServer = createHttpServer();
     const vite = yield* Effect.acquireRelease(
       Effect.tryPromise({
         try: () =>
@@ -66,23 +56,33 @@ export const developmentWeb = (settings: ServerConfig, options: DevelopmentWebOp
                 settings.browserOrigin === undefined
                   ? []
                   : [new URL(settings.browserOrigin).hostname],
-              ws: {
-                host: "127.0.0.1",
-                port: socketPort,
-                clientPort: socketPort,
-                protocol: "ws",
-                server: hmrServer,
-              },
+              // With a server and no port or protocol, the client connects to its page's origin.
+              ws: { server: hmrServer, path: hmrPath },
             },
           }),
         catch: () => new StartupFailed({ stage: "dev-server" }),
       }),
       (server) => Effect.promise(() => server.close()),
     );
+    // The socket belongs to Vite once the upgrade is handed over. The handler waits for it to
+    // close, and Effect then writes nothing to a destroyed socket. A WebSocket client sends nothing
+    // before the handshake answer, so the upgrade has no buffered head to pass on.
+    const hmrUpgrade = (incoming: IncomingMessage) =>
+      Effect.callback<HttpServerResponse.HttpServerResponse>((resume) => {
+        const { socket } = incoming;
+        const closed = () => resume(Effect.succeed(HttpServerResponse.empty()));
+        socket.once("close", closed);
+        hmrServer.emit("upgrade", incoming, socket, Buffer.alloc(0));
+        return Effect.sync(() => socket.off("close", closed));
+      });
     const assets = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const incoming = NodeHttpServerRequest.toIncomingMessage(request);
       const response = NodeHttpServerRequest.toServerResponse(request);
+      // Effect 4.1 may hand over an HTTP/2 request; this development server only speaks HTTP/1.
+      if (!(incoming instanceof IncomingMessage) || !(response instanceof ServerResponse))
+        return HttpServerResponse.empty({ status: 505 });
+      if (isHmrUpgrade(incoming)) return yield* hmrUpgrade(incoming);
       return yield* Effect.callback<HttpServerResponse.HttpServerResponse>((resume) => {
         const cleanup = () => {
           response.off("finish", done);

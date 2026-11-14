@@ -11,12 +11,16 @@ import { formatMoment, useDisplayFormat } from "../hooks/display-format.ts";
 
 type AccountInfo = NonNullable<AccountHealth["info"]>;
 
-/** What one app's latest check means for the reader; tone matches the other status pills. */
+/**
+ * What one app's latest check means for the reader; tone matches the other status pills.
+ * `credentials_rejected` covers a service refusing the credentials and a sign-in that expired
+ * before any request, so its label claims neither.
+ */
 export const describeAccountCheck = (status: AccountCheckStatus) =>
   Match.value(status).pipe(
     Match.when("healthy", () => ({ label: "Working", tone: "good" as const })),
     Match.when("credentials_rejected", () => ({
-      label: "Sign-in rejected",
+      label: "Credentials not working",
       tone: "bad" as const,
     })),
     Match.when("forbidden", () => ({ label: "Missing permission", tone: "warn" as const })),
@@ -43,7 +47,7 @@ const tones = {
 export function AccountCheckDot({ health }: { readonly health: AccountAppHealth | undefined }) {
   const format = useDisplayFormat();
   const check = health?.check;
-  if (check === null || check === undefined) return null;
+  if (check === null || check === undefined || health?.checkable !== true) return null;
   const { label, tone } = describeAccountCheck(check.status);
   const text = `${check.current ? label : `${label} (outdated)`}${check.message === undefined ? "" : `: ${check.message}`}`;
   return (
@@ -139,10 +143,6 @@ export function AccountHealthPanel<E>({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<Cause.Cause<E>>();
   const checkable = health?.apps.some((entry) => entry.checkable) ?? false;
-  const stale =
-    health?.apps.some(
-      (entry) => entry.checkable && (entry.check === null || !entry.check.current),
-    ) ?? false;
   const run = async () => {
     setPending(true);
     setError(undefined);
@@ -150,10 +150,17 @@ export function AccountHealthPanel<E>({
     setPending(false);
     if (Exit.isFailure(exit)) setError(exit.cause);
   };
-  const opened = useRef(false);
+  // Each missing or outdated result is checked once while the panel is open, so a redeploy or new
+  // credentials meanwhile check again.
+  const staleResults =
+    health?.apps
+      .filter((entry) => entry.checkable && (entry.check === null || !entry.check.current))
+      .map((entry) => `${entry.app}:${entry.check?.checkedAt.getTime() ?? "none"}`)
+      .join(",") ?? "";
+  const checked = useRef(new Set<string>());
   useEffect(() => {
-    if (opened.current || !stale) return;
-    opened.current = true;
+    if (staleResults === "" || checked.current.has(staleResults)) return;
+    checked.current.add(staleResults);
     void run();
   });
   return (
@@ -174,7 +181,7 @@ export function AccountHealthPanel<E>({
             return (
               <li key={app.id} className="flex items-center justify-between gap-3 py-2.5">
                 <span className="min-w-0 wrap-anywhere">{app.name}</span>
-                <AccountCheckResult health={entry} />
+                <AccountCheckResult health={entry} checking={pending} />
               </li>
             );
           })}
@@ -197,10 +204,46 @@ export function AccountHealthPanel<E>({
   );
 }
 
-/** One app's latest check, spelled out with its time and, when it failed, the reason given. */
-export function AccountCheckResult({ health }: { readonly health: AccountAppHealth | undefined }) {
-  if (health === undefined || (!health.checkable && health.check === null))
+/**
+ * One app's latest check, spelled out with its time and, when it failed, the reason given. While
+ * `checking`, a missing or outdated result gives way to the check in progress.
+ */
+export function AccountCheckResult({
+  health,
+  checking = false,
+  retry,
+}: {
+  readonly health: AccountAppHealth | undefined;
+  readonly checking?: boolean;
+  /** Offered when checking again could not run, while the result is still missing or outdated. */
+  readonly retry?: (() => void) | undefined;
+}) {
+  if (health === undefined || !health.checkable)
     return <span className="text-[12px] text-muted-foreground">No check</span>;
+  if (checking && health.check?.current !== true)
+    return (
+      <span
+        className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${pills.muted}`}
+        data-check-status="checking"
+        aria-live="polite"
+      >
+        Checking…
+      </span>
+    );
+  if (retry !== undefined && health.check?.current !== true)
+    return (
+      <span className="inline-flex items-center gap-2 text-[12px] text-muted-foreground">
+        <span
+          className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${pills.warn}`}
+          data-check-status="recheck_failed"
+        >
+          Couldn't check
+        </span>
+        <button type="button" className="underline underline-offset-2" onClick={retry}>
+          Try again
+        </button>
+      </span>
+    );
   if (health.check === null)
     return <span className="text-[12px] text-muted-foreground">Not checked</span>;
   const { label, tone } = describeAccountCheck(health.check.status);
@@ -211,6 +254,11 @@ export function AccountCheckResult({ health }: { readonly health: AccountAppHeal
           className={`whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${health.check.current ? pills[tone] : pills.muted}`}
           data-check-status={health.check.status}
           data-check-current={health.check.current}
+          title={
+            health.check.current
+              ? undefined
+              : "Checked before the app was redeployed or the account's credentials changed"
+          }
         >
           {health.check.current ? label : `${label} · outdated`}
         </span>

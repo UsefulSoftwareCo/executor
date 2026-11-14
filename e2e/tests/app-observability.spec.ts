@@ -344,6 +344,14 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
         );
         const spans = exported.data.map((row) => row.span);
         expect(spans.some((span) => span.operationName === "sdk.apps.source")).toBe(false);
+        // The live query's runtime spans name its app and the signed-in caller's organization, so
+        // one app's failing subscriptions can be told from the runtime's.
+        if (target.metadata.target === "cloud")
+          for (const name of ["runtime.cloud.query", "runtime.cloud.changes.connect"])
+            expect(spans.find((span) => span.operationName === name)?.tags, name).toMatchObject({
+              "executor.app.id": app.id,
+              "executor.organization.id": actors.organization.id,
+            });
         const assetTrace = yield* telemetry.query(assetTraceId).pipe(
           Effect.flatMap((result) =>
             result.data.some((row) => row.span.operationName === "http.server GET")
@@ -372,6 +380,28 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
             assetTrace.data.filter((row) => row.span.operationName === "sql.connect"),
             "An authenticated asset shares one SQL connection between app and permission reads",
           ).toHaveLength(1);
+          // A statement records one span: the FumaDB operation that ran it and its wire timing
+          // are attributes of its `sql.execute`, not spans around and under it.
+          const statements = assetTrace.data.filter(
+            (row) => row.span.operationName === "sql.execute",
+          );
+          expect(
+            assetTrace.data.filter(
+              (row) =>
+                row.span.operationName.startsWith("FumaDB.") ||
+                (row.span.operationName === "sql.wire" &&
+                  statements.some((statement) => statement.span.spanId === row.span.parentSpanId)),
+            ),
+            "No span repeats a statement's interval",
+          ).toHaveLength(0);
+          expect(
+            statements.some((row) => row.span.tags["fumadb.operation"] === "findFirst"),
+            "The app read records its FumaDB operation",
+          ).toBe(true);
+          expect(
+            statements.some((row) => row.span.tags["db.wire.ready_ms"] !== undefined),
+            "A statement records its wire timing",
+          ).toBe(true);
         }
         const first = spans.find((span) => span.operationName === "ui.app.first_result");
         const headers = spans.find((span) => span.operationName === "ui.app.subscribe");
@@ -561,7 +591,7 @@ layer(HostedLive, { excludeTestServices: true })("App observability", (it) => {
           to: previous.traceId,
           parent: previous.spanId,
         });
-        // Motel's read API omits native links. The outgoing OTLP assertion above
+        // The collector's read API omits native links. The outgoing OTLP assertion above
         // covers managed targets; the deployed Axiom adapter also exposes stored links.
         if (target.metadata.target === "cloud" && target.metadata.mode === "attached") {
           const deliveredRetry = yield* telemetry.query(retrySpan.traceId).pipe(

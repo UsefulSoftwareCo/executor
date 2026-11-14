@@ -22,6 +22,7 @@ import { type OrganizationPageReads, useOrganizationRoute } from "../components/
 import { createAppListAtoms, resourceInventoryAtom } from "../../contracts/resource-access.ts";
 import { groupsAtom } from "../../contracts/groups.ts";
 import { usePreload } from "@executor-js/ui/dashboard/context";
+import { AddAppMenu } from "../components/add-app.tsx";
 
 /** The groups and the unfiltered list the page opens with. */
 export const appsPageReads: OrganizationPageReads = (organization) => [
@@ -74,11 +75,7 @@ export function AppsPage() {
                 Clear filters
               </Button>
             ) : (
-              <Button asChild>
-                <Link to="/org/$organizationSlug/apps/add" params={{ organizationSlug }}>
-                  Add app
-                </Link>
-              </Button>
+              <AddAppMenu />
             )
           }
         >
@@ -87,13 +84,7 @@ export function AppsPage() {
             : "Add an app or ask a teammate to share one with you."}
         </EmptyState>
       }
-      action={
-        <Button asChild>
-          <Link to="/org/$organizationSlug/apps/add" params={{ organizationSlug }}>
-            Add app
-          </Link>
-        </Button>
-      }
+      action={<AddAppMenu />}
       filters={
         <Popover>
           <PopoverTrigger asChild>

@@ -42,9 +42,16 @@ const suggestedName = (email: string) => email.split("@")[0] ?? "";
 
 /**
  * The signed-in person's identity; it belongs to them, not to any organization. A host that can
- * verify a new address renders its own email setting; otherwise the email is read-only.
+ * verify a new address renders its own email setting; otherwise the email is read-only. A host
+ * that lets people delete themselves renders that last, as `footer`.
  */
-export function ProfilePage({ email }: { readonly email?: (current: string) => ReactNode }) {
+export function ProfilePage({
+  email,
+  footer,
+}: {
+  readonly email?: (current: string) => ReactNode;
+  readonly footer?: (current: { readonly email: string }) => ReactNode;
+}) {
   useDocumentTitle(productTitle(profileTitle));
   const session = Option.getOrUndefined(AsyncResult.value(useAtomValue(sessionAtom)));
   return (
@@ -91,6 +98,7 @@ export function ProfilePage({ email }: { readonly email?: (current: string) => R
           </>
         )}
         <Memberships />
+        {session != null && footer?.({ email: session.user.email })}
       </div>
     </PageFrame>
   );

@@ -1,8 +1,8 @@
 diff --git a/src/bun_core/util.rs b/src/bun_core/util.rs
-index 28006517..160c80d2 100644
+index 2ceeb185..263ced96 100644
 --- a/src/bun_core/util.rs
 +++ b/src/bun_core/util.rs
-@@ -3796,14 +3796,45 @@ fn argv_storage() -> &'static [ZBox] {
+@@ -3765,14 +3765,45 @@ fn argv_storage() -> &'static [ZBox] {
      })
  }
  
@@ -63,10 +63,10 @@ index fb867d89..22904c63 100644
                  .get()
                  .map(|v| v.is_empty() || v == b"0")
 diff --git a/src/jsc/RuntimeTranspilerCache.rs b/src/jsc/RuntimeTranspilerCache.rs
-index 6ad49e14..28aebab2 100644
+index 8d40a1bc..6ccf2e05 100644
 --- a/src/jsc/RuntimeTranspilerCache.rs
 +++ b/src/jsc/RuntimeTranspilerCache.rs
-@@ -611,6 +611,12 @@ impl RuntimeTranspilerCache {
+@@ -645,6 +645,12 @@ impl RuntimeTranspilerCache {
              );
          }
  
@@ -79,7 +79,7 @@ index 6ad49e14..28aebab2 100644
          if let Some(dir) = env_var::BUN_RUNTIME_TRANSPILER_CACHE_PATH.get() {
              if dir.is_empty() || (dir.len() == 1 && dir[0] == b'0') {
                  return 0;
-@@ -842,7 +848,7 @@ impl RuntimeTranspilerCache {
+@@ -877,7 +883,7 @@ impl RuntimeTranspilerCache {
          parser_options: &ParserOptions<'_>,
          used_jsx: bool,
      ) -> bool {
@@ -89,12 +89,12 @@ index 6ad49e14..28aebab2 100644
          }
  
 diff --git a/src/jsc/bindings/ZigGlobalObject.cpp b/src/jsc/bindings/ZigGlobalObject.cpp
-index 1bcd27a1..60b26cab 100644
+index 7f4ae0c3..0f85ea65 100644
 --- a/src/jsc/bindings/ZigGlobalObject.cpp
 +++ b/src/jsc/bindings/ZigGlobalObject.cpp
-@@ -280,6 +280,9 @@ extern "C" long Bun__crashHandlerFromJSCFrame(void*, void*, void*, void*);
- // bun_icu_default_locale.cpp
- extern "C" void Bun__ensureICUDefaultLocale();
+@@ -296,6 +296,9 @@ extern "C" void Bun__VirtualMachine__setSamplingProfilerDirectory(void* bunVM, c
+ // reporter, which crashes if fopen fails. VirtualMachine::write_profiles writes the report instead.
+ static const char8_t* s_samplingProfilerDirectory = nullptr;
  
 +// bun_core::is_standalone_executable(): true for `bun build --compile` output.
 +extern "C" bool Bun__isStandaloneExecutable();
@@ -102,7 +102,7 @@ index 1bcd27a1..60b26cab 100644
  extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(const char* ptr, size_t length), bool evalMode, bool oneShotStartup, bool shortLivedGlobals)
  {
      static std::once_flag jsc_init_flag;
-@@ -360,7 +363,9 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
+@@ -382,7 +385,9 @@ extern "C" void JSCInitialize(const char* envp[], size_t envc, void (*onCrash)(c
                  JSC::Options::thresholdForFTLOptimizeAfterWarmUp() = 1000000;
              }
  
@@ -113,11 +113,22 @@ index 1bcd27a1..60b26cab 100644
                  auto envc_copy = envc;
                  while (envc_copy--) {
                      const char* env = (const char*)envp[envc_copy];
+@@ -440,7 +445,9 @@ extern "C" void JSC__useOptionsForVMPerThread(const char* envp[], size_t envc)
+ {
+     RELEASE_ASSERT(!g_jscConfig.isPermanentlyFrozen());
+     JSC::Options::useConcurrentJIT() = false;
+-    // BUN_JSC_useConcurrentJIT wins, as in JSCInitialize.
++    // BUN_JSC_useConcurrentJIT wins, as in JSCInitialize. Compiled executables ignore it, as they ignore every BUN_JSC_*.
++    if (Bun__isStandaloneExecutable())
++        return;
+     for (size_t i = 0; i < envc; i++) {
+         if (WTF::StringView::fromLatin1(envp[i]).startsWithIgnoringASCIICase("BUN_JSC_useConcurrentJIT="_s))
+             JSC::Options::setOption(envp[i] + 8, false);
 diff --git a/src/resolver/resolver.rs b/src/resolver/resolver.rs
-index 24f019f6..99e9bcf8 100644
+index 5e63425e..0c447b32 100644
 --- a/src/resolver/resolver.rs
 +++ b/src/resolver/resolver.rs
-@@ -2794,8 +2794,11 @@ impl<'a> Resolver<'a> {
+@@ -2877,8 +2877,11 @@ impl<'a> Resolver<'a> {
  
          // try resolve from `NODE_PATH`
          // https://nodejs.org/api/modules.html#loading-from-the-global-folders
@@ -130,12 +141,12 @@ index 24f019f6..99e9bcf8 100644
              .unwrap_or(b"");
          if !node_path.is_empty() {
 diff --git a/src/runtime/bin_entry/mod.rs b/src/runtime/bin_entry/mod.rs
-index 098d8c73..1a6a9058 100644
+index 2169092d..b42bdbb3 100644
 --- a/src/runtime/bin_entry/mod.rs
 +++ b/src/runtime/bin_entry/mod.rs
-@@ -154,6 +154,10 @@ pub(crate) unsafe extern "C" fn main(argc: c_int, argv: *const *const c_char) ->
-     //    for the entire process.
-     unsafe { bun_core::init_argv(argc, argv) };
+@@ -168,6 +168,10 @@ pub(crate) unsafe extern "C" fn main(argc: c_int, argv: *const *const c_char) ->
+         bun_abort_missing_simd();
+     }
  
 +    // 0b. Decide once whether this is a `bun build --compile` executable,
 +    //     before argv (BUN_OPTIONS) or any other environment variable is read.
@@ -145,10 +156,10 @@ index 098d8c73..1a6a9058 100644
      bun_crash_handler::init();
  
 diff --git a/src/runtime/cli/Arguments.rs b/src/runtime/cli/Arguments.rs
-index 8ed18c92..7ced2bf4 100644
+index d2a10546..18c1b69e 100644
 --- a/src/runtime/cli/Arguments.rs
 +++ b/src/runtime/cli/Arguments.rs
-@@ -1013,7 +1013,9 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
+@@ -1056,7 +1056,9 @@ pub(crate) fn parse(cmd: CommandTag, ctx: Context<'_>) -> crate::Result<api::Tra
              let preloads = args.options(b"--preload");
              let preloads2 = args.options(b"--require");
              let preloads3 = args.options(b"--import");
@@ -160,10 +171,10 @@ index 8ed18c92..7ced2bf4 100644
              let total_preloads = ctx.preloads.len()
                  + preloads.len()
 diff --git a/src/runtime/cli/mod.rs b/src/runtime/cli/mod.rs
-index b1046329..c47e3174 100644
+index 9be3a69c..1c8fe8fe 100644
 --- a/src/runtime/cli/mod.rs
 +++ b/src/runtime/cli/mod.rs
-@@ -1168,9 +1168,13 @@ pub mod command {
+@@ -1009,9 +1009,13 @@ pub(crate) mod command {
          // WebView host subprocess entry. Must be before StandaloneModuleGraph,
          // before JSC init, before anything that touches a JS engine. The child
          // runs CFRunLoopRun() as its real main loop — no Bun runtime past this.
@@ -178,7 +189,7 @@ index b1046329..c47e3174 100644
                  // Parse base-10 directly
                  // from bytes; env var values are `&[u8]`, not assumed UTF-8.
                  let fd: u32 = match bun_core::parse_int::<u32>(fd_str, 10).ok() {
-@@ -1189,13 +1193,18 @@ pub mod command {
+@@ -1030,13 +1034,18 @@ pub(crate) mod command {
              }
          }
  
@@ -200,10 +211,10 @@ index b1046329..c47e3174 100644
  
          // Fast path: `bun -v` / `bun --version` / `bun --revision`, the
 diff --git a/src/runtime/jsc_hooks.rs b/src/runtime/jsc_hooks.rs
-index 029b3568..cd76cb4f 100644
+index 920f9c46..dc9bcb4d 100644
 --- a/src/runtime/jsc_hooks.rs
 +++ b/src/runtime/jsc_hooks.rs
-@@ -591,8 +591,19 @@ unsafe fn configure_debugger(
+@@ -558,8 +558,19 @@ unsafe fn configure_debugger(
          return;
      }
  
@@ -226,10 +237,10 @@ index 029b3568..cd76cb4f 100644
      let set_breakpoint_on_first_line = !unix.is_empty() && unix.ends_with(b"?break=1");
      let wait_for_debugger = !unix.is_empty() && unix.ends_with(b"?wait=1");
 diff --git a/src/standalone_graph/StandaloneModuleGraph.rs b/src/standalone_graph/StandaloneModuleGraph.rs
-index 9ab6dbbf..550cd4c5 100644
+index 91c73cb9..23ea99f2 100644
 --- a/src/standalone_graph/StandaloneModuleGraph.rs
 +++ b/src/standalone_graph/StandaloneModuleGraph.rs
-@@ -2710,6 +2710,31 @@ impl StandaloneModuleGraph {
+@@ -3106,6 +3106,31 @@ impl StandaloneModuleGraph {
      /// Loads the standalone module graph from the executable, allocates it on the heap,
      /// sets it globally, and returns the pointer.
      pub fn from_executable() -> crate::Result<Option<*mut StandaloneModuleGraph>> {
@@ -261,7 +272,7 @@ index 9ab6dbbf..550cd4c5 100644
          #[cfg(target_os = "macos")]
          let data = macho::get_data();
          #[cfg(windows)]
-@@ -2724,30 +2749,21 @@ impl StandaloneModuleGraph {
+@@ -3120,30 +3145,21 @@ impl StandaloneModuleGraph {
              target_os = "freebsd"
          )))]
          let data: Option<(*mut u8, usize)> = None;

@@ -1,10 +1,14 @@
-import { requireWorkflowAccess, requireWorkflowReplayAccess } from "./workflow-access.ts";
+import {
+  requireWorkflowAccess,
+  requireWorkflowReplayAccess,
+  workflowRunAccessAs,
+} from "./workflow-access.ts";
 /** Keep product permissions outside the reusable workflow SDK. */
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { requireAppAccess } from "./resource-policy.ts";
+import { requireCurrentAppAccess } from "./resource-policy.ts";
 import { actorManagerOwner, currentOwner, selectedApp } from "./access.ts";
 
 /** Run reads check current membership and the run's accounts; starts use the caller's accounts. */
@@ -42,10 +46,10 @@ export const hostedWorkflowHandlers = HttpApiBuilder.group(HostedApi, "workflows
       Effect.gen(function* () {
         const owner = yield* currentOwner,
           executor = yield* Effect.flatten(HostedExecutor);
-        yield* requireAppAccess(params.app, "use");
+        const { actor } = yield* requireCurrentAppAccess(params.app, "use");
         const page = yield* executor.apps.workflowRuns.list({ ...params, ...query });
         const items = yield* Effect.filter(page.items, (run) =>
-          requireWorkflowAccess(executor, owner, params.app, run.id).pipe(
+          workflowRunAccessAs(executor, owner, params.app, actor, run.id).pipe(
             Effect.as(true),
             Effect.catchTags({
               OrganizationForbidden: () => Effect.succeed(false),

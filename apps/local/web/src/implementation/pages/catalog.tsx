@@ -2,7 +2,7 @@ import { Failure } from "../components/common.tsx";
 import { dashboardAtoms } from "../../contracts/dashboard-bindings.ts";
 import { Link } from "@tanstack/react-router";
 import { CatalogPage as Catalog } from "@executor-js/ui/dashboard/catalog";
-import { Button } from "@executor-js/ui/components/button";
+import { MakeYourOwn } from "../components/add-app.tsx";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft02Icon } from "@hugeicons/core-free-icons";
 
@@ -32,13 +32,8 @@ export function CatalogPage() {
           Apps
         </Link>
       }
-      action={
-        <div className="flex gap-2">
-          <Button variant="outline" asChild>
-            <Link to="/apps/add/custom">Connect a service</Link>
-          </Button>
-        </div>
-      }
+      action={<MakeYourOwn appearance="button" />}
+      create={<MakeYourOwn />}
     />
   );
 }

@@ -70,12 +70,13 @@ export function AppTools(props: AppToolsProps) {
       return (
         <AccountReconnect app={props.app.id} accounts={readiness.accounts} status="Needs sign-in" />
       );
+    // A sign-in that expired or must be renewed by hand is `reconnect` above.
     case "rejected":
       return (
         <AccountReconnect
           app={props.app.id}
           accounts={readiness.accounts}
-          status="Sign-in rejected"
+          status="Credentials refused"
         />
       );
     case "unavailable":

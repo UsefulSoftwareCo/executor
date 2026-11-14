@@ -1,3 +1,4 @@
+import { organizationOwner, type OrganizationId } from "@executor-js/hosted-server";
 import { Schema } from "effect";
 
 /**
@@ -19,6 +20,10 @@ export const BillingCatalog = Schema.Struct({
 });
 /** One catalog is shared by the API and MCP runtime in the same deployment stage. */
 export type BillingCatalog = typeof BillingCatalog.Type;
+
+/** An organization's Autumn customer: namespaced by stage, so stages never share a customer. */
+export const billingCustomerId = (catalog: BillingCatalog, organization: OrganizationId) =>
+  `${catalog.namespace}:${organizationOwner(organization)}`;
 
 /** Free includes three members; Team costs USD 15 per active member per month. */
 export const freeMembers = 3;

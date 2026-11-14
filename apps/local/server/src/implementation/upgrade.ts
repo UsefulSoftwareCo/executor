@@ -2,8 +2,9 @@
  * `executor upgrade`: install a newer release the way this copy was installed. A standalone install
  * downloads the release archive, checks it, and switches to it, keeping the version it replaced for
  * `--rollback`. An npm-family install runs its package manager, after checking that the release's
- * launcher supports this Node. Either way it runs only on request, confirms the new command works,
- * and says when a running server still uses the old version. It never restarts a server.
+ * launcher supports this Node. Either way it runs only on request and confirms the new command
+ * works. Both replace the files a running background server uses, so that server is stopped first
+ * and started again on the new version afterwards, or on this one if the upgrade fails.
  */
 import {
   compareReleaseVersions,
@@ -15,6 +16,7 @@ import {
   Console,
   Duration,
   Effect,
+  Exit,
   Option,
   Path,
   Ref,
@@ -26,14 +28,16 @@ import {
 import { Prompt } from "effect/cli";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { dataDirectoryConfig } from "../contracts/config.ts";
 import { UpgradeFailed } from "../contracts/startup.ts";
-import { runningServer } from "./server-record.ts";
+import { discover, ensure, registered, stop } from "./service-client.ts";
+import { serviceDirectory } from "./service-files.ts";
 import {
   installVersion,
   linkedVersion,
+  type StandaloneInstall,
   standaloneInstall,
   switchVersion,
+  versionExecutable,
 } from "./standalone-install.ts";
 import {
   currentRelease,
@@ -68,14 +72,14 @@ export interface UpgradeOptions {
 }
 
 /**
- * Each package manager's global install. npm can skip the optional dependency that carries the
- * native runtime, which leaves a launcher that cannot start, so it must be asked to include it.
+ * Each package manager's global install. It installs only the launcher, which downloads the
+ * release's runtime the first time it starts.
  */
 const installArgs = (method: GlobalInstaller, version: string): ReadonlyArray<string> => {
   const spec = `executor@${version}`;
   switch (method) {
     case "npm":
-      return ["install", "-g", spec, "--include=optional"];
+      return ["install", "-g", spec];
     case "pnpm":
       return ["add", "-g", spec];
     case "bun":
@@ -180,18 +184,31 @@ const runStreaming = (command: string, args: ReadonlyArray<string>, platform: st
     }),
   );
 
-/** Start `executor --version` the way a shell would, through PATH. */
-const installedVersion = (platform: string) =>
+/** How to start the installed `executor`: through PATH, or a standalone version's executable. */
+type Installed = (args: ReadonlyArray<string>) => {
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+};
+
+/** `executor` the way a shell would start it, through PATH. */
+const onPath =
+  (platform: string): Installed =>
+  (args) =>
+    throughShell(platform, "executor", args);
+
+/** Run the installed `executor` with `args` to exit, with its output captured. */
+const runInstalled = (
+  installed: Installed,
+  args: ReadonlyArray<string>,
+  timeout: Duration.Input,
+  env: Readonly<Record<string, string>> = {},
+) =>
   Effect.scoped(
     Effect.gen(function* () {
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-      const shell = throughShell(platform, "executor", ["--version"]);
+      const { command, args: argv } = installed(args);
       const child = yield* spawner.spawn(
-        ChildProcess.make(shell.command, shell.args, {
-          extendEnv: true,
-          stdout: "pipe",
-          stderr: "pipe",
-        }),
+        ChildProcess.make(command, argv, { extendEnv: true, env, stdout: "pipe", stderr: "pipe" }),
       );
       const [code, stdout, stderr] = yield* Effect.all(
         [
@@ -200,7 +217,7 @@ const installedVersion = (platform: string) =>
           child.stderr.pipe(Stream.decodeText(), Stream.mkString),
         ],
         { concurrency: "unbounded" },
-      ).pipe(Effect.timeout(Duration.seconds(60)));
+      ).pipe(Effect.timeout(timeout));
       return { code: Number(code), stdout: stdout.trim(), stderr: stderr.trim() };
     }),
   );
@@ -229,15 +246,153 @@ const confirm = (
     if (!accepted) return yield* failed("cancelled", "Upgrade cancelled. Nothing was changed.");
   });
 
-/** Say when a server from this data directory still runs another version. */
-const restartNotice = (target: string) =>
+/** The version a development build's server reports. It runs from a checkout, not an install. */
+const developmentVersion = "0.0.0-dev";
+
+/** Say when the background server for this data directory still runs another version. */
+const restartNotice = (directory: string, target: string) =>
   Effect.gen(function* () {
-    const path = yield* Path.Path;
-    const server = yield* runningServer(path.resolve(yield* dataDirectoryConfig));
-    if (server !== undefined && server.version !== target)
-      yield* Console.log(
-        `The Executor server at ${server.url} (process ${server.pid}) is still running ${server.version === undefined ? "a development build" : `v${server.version}`}. Stop it, then start it again with \`${server.command}\` to use v${target}.`,
+    const service = yield* discover(directory);
+    if (Option.isNone(service) || service.value.version === target) return;
+    const running =
+      service.value.version === developmentVersion
+        ? "a development build"
+        : `v${service.value.version}`;
+    yield* Console.log(
+      `The background Executor still runs ${running}. It switches to v${target} the next time you run \`executor\`, or now with \`executor service restart\`.`,
+    );
+  });
+
+/**
+ * What became of this data directory's background server before an upgrade replaced files:
+ * nothing to stop, stopped, or still running because it did not stop.
+ */
+type Paused =
+  | { readonly state: "none" }
+  | { readonly state: "stopped" }
+  | { readonly state: "running"; readonly pid: number; readonly message: string };
+
+/**
+ * Stop the background server, which may run from the files an upgrade is about to replace or
+ * remove. A development build's server runs from its checkout and keeps running.
+ */
+const pauseService = (directory: string) =>
+  Effect.gen(function* () {
+    const service = yield* registered(directory);
+    if (Option.isNone(service) || service.value.version === developmentVersion)
+      return { state: "none" } satisfies Paused;
+    yield* Console.log(
+      `Stopping the background Executor (v${service.value.version}) until the upgrade is done.`,
+    );
+    return yield* stop(directory).pipe(
+      Effect.as<Paused>({ state: "stopped" }),
+      Effect.catch((error) =>
+        Effect.succeed<Paused>({
+          state: "running",
+          pid: service.value.pid,
+          message: error.message,
+        }),
+      ),
+    );
+  });
+
+/**
+ * Run `change` with the background server paused. If it fails or is interrupted after the server
+ * stopped, this CLI, which the failed change left in place, starts the server again.
+ */
+const whilePaused = <A, E, R>(directory: string, paused: Paused, change: Effect.Effect<A, E, R>) =>
+  paused.state !== "stopped"
+    ? change
+    : change.pipe(
+        Effect.onExit((exit) =>
+          Exit.isSuccess(exit)
+            ? Effect.void
+            : ensure(directory, { version: "ignore" }).pipe(
+                Effect.asVoid,
+                Effect.catch(() =>
+                  Console.error(
+                    "The background Executor stopped for the upgrade and could not start again. Start it with `executor service start`.",
+                  ),
+                ),
+              ),
+        ),
       );
+
+/**
+ * After a successful upgrade, start the background server it stopped with the new version's own
+ * `executor service start`, and say whether it runs that version. A server that was not stopped
+ * gets the restart notice instead. A release from before the background service, which a rollback
+ * or a downgrade can install, has no `executor service`: it refuses `service status`, which every
+ * later release answers, and its server runs in the foreground instead.
+ */
+const resumeService = (directory: string, paused: Paused, installed: Installed, version: string) =>
+  Effect.gen(function* () {
+    if (paused.state !== "stopped") return yield* restartNotice(directory, version);
+    const environment = { EXECUTOR_DATA_DIR: directory };
+    const started = yield* runInstalled(
+      installed,
+      ["service", "start"],
+      Duration.minutes(3),
+      environment,
+    ).pipe(Effect.result);
+    const service = yield* discover(directory);
+    if (Option.isSome(service))
+      return service.value.version === version
+        ? yield* Console.log(`Restarted the background Executor on v${version}.`)
+        : yield* restartNotice(directory, version);
+    const status = yield* runInstalled(
+      installed,
+      ["service", "status"],
+      Duration.seconds(30),
+      environment,
+    ).pipe(Effect.result);
+    if (Result.isSuccess(status) && status.success.code !== 0)
+      return yield* Console.error(
+        `v${version} predates the background Executor, so the one stopped for the upgrade was not started again. Run \`executor serve\`, or \`executor\` to also open the dashboard, and keep it running while your agents use Executor.`,
+      );
+    const output =
+      Result.isSuccess(started) && started.success.code !== 0 && started.success.stderr !== ""
+        ? `\n${lastLines(started.success.stderr, 20)}`
+        : "";
+    yield* Console.error(
+      `The background Executor stopped for the upgrade and did not start again on v${version}.${output}\nStart it with \`executor service start\`.`,
+    );
+  });
+
+/** A standalone install's version, started from its own executable. */
+const versionInstalled = (install: StandaloneInstall, version: string, platform: string) =>
+  Effect.map(versionExecutable(install, version, platform), (command): Installed => (args) => ({
+    command,
+    args,
+  }));
+
+/**
+ * Switch a standalone install to `version` with the background server paused. A server that did
+ * not stop keeps the version it runs from installed.
+ */
+const switchPaused = (
+  directory: string,
+  install: StandaloneInstall,
+  version: string,
+  platform: string,
+) =>
+  Effect.gen(function* () {
+    const paused = yield* pauseService(directory);
+    if (paused.state === "running") yield* Console.error(paused.message);
+    yield* whilePaused(
+      directory,
+      paused,
+      Effect.gen(function* () {
+        const running = yield* registered(directory);
+        yield* switchVersion(
+          install,
+          version,
+          platform,
+          Option.toArray(Option.map(running, (service) => service.version)),
+        );
+      }),
+    );
+    return paused;
   });
 
 /** Switch a standalone install back to the version it ran before its last upgrade. */
@@ -247,7 +402,7 @@ const rollback = (options: UpgradeOptions, host: UpgradeHost) =>
     if (Option.isNone(install))
       return yield* failed(
         "not-standalone",
-        "Only an install from the Executor install script keeps a previous version to roll back to. Install the version you want with the package manager you used, such as: npm install -g executor@<version> --include=optional. Nothing was changed.",
+        "Only an install from the Executor install script keeps a previous version to roll back to. Install the version you want with the package manager you used, such as: npm install -g executor@<version>. Nothing was changed.",
       );
     const previous = yield* linkedVersion(install.value.root, "previous");
     if (Option.isNone(previous))
@@ -265,11 +420,17 @@ const rollback = (options: UpgradeOptions, host: UpgradeHost) =>
       options.yes,
       undefined,
     );
-    yield* switchVersion(install.value, previous.value, host.platform);
+    const directory = yield* serviceDirectory;
+    const paused = yield* switchPaused(directory, install.value, previous.value, host.platform);
     yield* Console.log(
       `Switched Executor from v${current} back to v${previous.value}. Run executor upgrade --rollback again to return to v${current}.`,
     );
-    yield* restartNotice(previous.value);
+    yield* resumeService(
+      directory,
+      paused,
+      yield* versionInstalled(install.value, previous.value, host.platform),
+      previous.value,
+    );
   });
 
 export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
@@ -311,7 +472,7 @@ export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
     if (Option.isNone(current))
       return yield* failed(
         "development-build",
-        "This is a development build of Executor without a release version, so it cannot upgrade itself. Install a release with: npm install -g executor@beta --include=optional",
+        "This is a development build of Executor without a release version, so it cannot upgrade itself. Install a release with: npm install -g executor@beta",
       );
 
     const registry = yield* npmRegistry;
@@ -369,7 +530,7 @@ export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
       if (Option.isNone(install))
         return yield* failed(
           "not-standalone",
-          `${host.executable} is not in an install script's versions directory, so executor upgrade cannot replace it. Reinstall with the Executor install script, or with npm: npm install -g executor@${target} --include=optional. Nothing was changed.`,
+          `${host.executable} is not in an install script's versions directory, so executor upgrade cannot replace it. Reinstall with the Executor install script, or with npm: npm install -g executor@${target}. Nothing was changed.`,
         );
       if (compareReleaseVersions(target, current.value) < 0)
         yield* confirm(
@@ -392,11 +553,17 @@ export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
         `Downloading Executor v${target} for ${host.platform}/${host.arch} into ${install.value.root}`,
       );
       yield* installVersion(install.value, target, host.platform, host.arch);
-      yield* switchVersion(install.value, target, host.platform);
+      const directory = yield* serviceDirectory;
+      const paused = yield* switchPaused(directory, install.value, target, host.platform);
       yield* Console.log(
         `Upgraded Executor from v${current.value} to v${target}. v${current.value} stays installed: run executor upgrade --rollback to switch back.`,
       );
-      yield* restartNotice(target);
+      yield* resumeService(
+        directory,
+        paused,
+        yield* versionInstalled(install.value, target, host.platform),
+        target,
+      );
       return;
     }
 
@@ -432,42 +599,70 @@ export const upgrade = (options: UpgradeOptions, host: UpgradeHost) =>
         undefined,
       );
 
-    yield* Console.log(`Upgrading Executor v${current.value} to v${target}: ${command}`);
-    const installed = yield* runStreaming(method, installArgs(method, target), host.platform).pipe(
-      Effect.mapError(() =>
-        failed(
-          "install-failed",
-          `${method} could not be started. Check that it is installed and on your PATH, or choose another with --method. Nothing was changed.`,
-        ),
-      ),
-    );
-    if (installed.code !== 0)
+    // The package manager replaces the files the background server runs from; Windows would refuse
+    // to replace its running executable.
+    const directory = yield* serviceDirectory;
+    const paused = yield* pauseService(directory);
+    if (paused.state === "running")
       return yield* failed(
-        "install-failed",
-        [
-          `${method} exited with code ${installed.code} and did not install Executor v${target}.`,
-          ...(installed.stderr.trim() === ""
-            ? []
-            : [`${method} reported:`, lastLines(installed.stderr, 40)]),
-          `Fix the problem it reports, then run executor upgrade again, or run: ${command}`,
-        ].join("\n"),
+        "service-running",
+        `${paused.message} ${method} would replace the files it runs from, so Executor v${target} was not installed. End process ${paused.pid}, then run executor upgrade again. Nothing was changed.`,
       );
+    yield* Console.log(`Upgrading Executor v${current.value} to v${target}: ${command}`);
+    yield* whilePaused(
+      directory,
+      paused,
+      Effect.gen(function* () {
+        const installed = yield* runStreaming(
+          method,
+          installArgs(method, target),
+          host.platform,
+        ).pipe(
+          Effect.mapError(() =>
+            failed(
+              "install-failed",
+              `${method} could not be started. Check that it is installed and on your PATH, or choose another with --method. Nothing was changed.`,
+            ),
+          ),
+        );
+        if (installed.code !== 0)
+          return yield* failed(
+            "install-failed",
+            [
+              `${method} exited with code ${installed.code} and did not install Executor v${target}.`,
+              ...(installed.stderr.trim() === ""
+                ? []
+                : [`${method} reported:`, lastLines(installed.stderr, 40)]),
+              `Fix the problem it reports, then run executor upgrade again, or run: ${command}`,
+            ].join("\n"),
+          );
 
-    const verify = (detail: string) =>
-      failed(
-        "verify-failed",
-        `${method} installed Executor v${target}, but ${detail} Run \`${host.platform === "win32" ? "where.exe executor" : "type -a executor"}\` to see which executable your shell starts, or reinstall with: ${command}`,
-      );
-    const check = yield* installedVersion(host.platform).pipe(Effect.result);
-    if (Result.isFailure(check)) return yield* verify("`executor --version` could not be started.");
-    if (check.success.code !== 0)
-      return yield* verify(
-        `\`executor --version\` failed with code ${check.success.code}${check.success.stderr === "" ? "." : `:\n${lastLines(check.success.stderr, 20)}\n`}`,
-      );
-    if (check.success.stdout !== `executor v${target}`)
-      return yield* verify(
-        `\`executor --version\` printed "${check.success.stdout}". Another installation may come first on your PATH.`,
-      );
+        const verify = (detail: string) =>
+          failed(
+            "verify-failed",
+            `${method} installed Executor v${target}, but ${detail} Run \`${host.platform === "win32" ? "where.exe executor" : "type -a executor"}\` to see which executable your shell starts, or reinstall with: ${command}`,
+          );
+        // The new launcher's first start downloads and checks its release's runtime.
+        yield* Console.log(
+          `Starting Executor v${target}. Its first start downloads the runtime for this platform.`,
+        );
+        const check = yield* runInstalled(
+          onPath(host.platform),
+          ["--version"],
+          Duration.minutes(15),
+        ).pipe(Effect.result);
+        if (Result.isFailure(check))
+          return yield* verify("`executor --version` could not be started.");
+        if (check.success.code !== 0)
+          return yield* verify(
+            `\`executor --version\` failed with code ${check.success.code}${check.success.stderr === "" ? "." : `:\n${lastLines(check.success.stderr, 20)}\n`}`,
+          );
+        if (check.success.stdout !== `executor v${target}`)
+          return yield* verify(
+            `\`executor --version\` printed "${check.success.stdout}". Another installation may come first on your PATH.`,
+          );
+      }),
+    );
     yield* Console.log(`Upgraded Executor from v${current.value} to v${target}.`);
-    yield* restartNotice(target);
+    yield* resumeService(directory, paused, onPath(host.platform), target);
   });

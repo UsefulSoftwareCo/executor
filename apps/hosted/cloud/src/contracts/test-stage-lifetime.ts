@@ -1,6 +1,12 @@
 /** Preview policy is persisted before provisioning; CI leases are bounded and development may be retained. */
 import { Schema } from "effect";
-import { TestStageSlug } from "../infrastructure/stage.ts";
+
+/** Slugs map one-to-one to the stage's logical database name. */
+export const TestStageSlug = Schema.String.check(
+  Schema.makeFilter((value) => /^[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?$/.test(value), {
+    message: "A test stage slug is 1-42 lowercase letters, digits and hyphens",
+  }),
+);
 
 /** Disposable CI environments have a fixed deadline, including failed deployment attempts. */
 export const testStageLifetimeMilliseconds = 3 * 60 * 60 * 1000;

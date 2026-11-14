@@ -76,6 +76,7 @@ const recordedGoogleSignIn = Effect.gen(function* () {
   return {
     identity,
     redirectUri: authorization.searchParams.get("redirect_uri"),
+    prompt: authorization.searchParams.get("prompt"),
     // Each Better Auth callback the browser passed through, without its query.
     callbacks: visited
       .filter((url) => url.pathname.startsWith("/api/auth/callback/"))
@@ -91,6 +92,8 @@ const ownSignIn = Effect.gen(function* () {
   // The provider returns to the edge's registered callback, which sends the browser to the same
   // path on the browser origin. The proxy's completion endpoint is never reached.
   expect(signIn.redirectUri).toBe(`${edge}/api/auth/callback/google`);
+  // Google lets the person choose among their signed-in accounts instead of reusing one.
+  expect(signIn.prompt).toBe("select_account");
   expect(signIn.callbacks).toEqual([
     `${edge}/api/auth/callback/google`,
     `${browser}/api/auth/callback/google`,

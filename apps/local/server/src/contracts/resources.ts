@@ -11,6 +11,7 @@ import {
   StartWorkflowFields,
   ListWorkflowRuns,
   WorkflowErrors,
+  WorkflowDefinitionErrors,
   WebhookSubscription,
   WebhookErrors,
   WebhookId,
@@ -34,7 +35,7 @@ export const DashboardWorkflows = HttpApiGroup.make("workflows")
         withLegacyKeys({ version: "deployment" }),
       ),
       success: Schema.Array(HostedWorkflow),
-      error: WorkflowErrors,
+      error: WorkflowDefinitionErrors,
     }),
   )
   .add(

@@ -26,6 +26,7 @@ import { managementApp } from "../support/management-app.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { targetHosts } from "../support/role-hosts.ts";
+import { siteless } from "../support/failure-site.ts";
 
 const files = [
   {
@@ -300,10 +301,10 @@ return { items };`,
           "Get the URL of an app that has never been deployed",
           `return await ${tools}.appUi.location({ path: ${JSON.stringify({ ...organization, app: app.id })} });`,
         );
-        expect(
-          (yield* Schema.decodeUnknownEffect(ApiFailure)(location.structuredContent)).execution
-            .error,
-        ).toEqual({
+        const notDeployed = (yield* Schema.decodeUnknownEffect(ApiFailure)(
+          location.structuredContent,
+        )).execution.error;
+        expect({ ...notDeployed, message: siteless(notDeployed.message) }).toEqual({
           message:
             "AppNotDeployed (HTTP 409): The app has no active version to load. Recovery: Open Source and deploy the app before using its tools or accounts. Retryable (unchanged call): no.",
           response: {
@@ -333,11 +334,17 @@ return { items };`,
             "Do not automatically repeat this call or duplicate its change. Executor could not confirm its outcome.",
           instructions: `This call may have changed data or may still complete. A safe read can show effects but cannot rule out later completion. Tell the user what is known and get their agreement before repeating the change. ${readAdvice(`${declared.action} ${declared.instructions}`)} Repairing the cause does not establish whether the earlier call completed.`,
         };
-        expect(
-          (yield* Schema.decodeUnknownEffect(ApiFailure)(taken.structuredContent)).execution.error,
-        ).toEqual({
+        const slugTaken = (yield* Schema.decodeUnknownEffect(ApiFailure)(taken.structuredContent))
+          .execution.error;
+        expect({ ...slugTaken, message: siteless(slugTaken.message) }).toEqual({
           message: `AppSlugTaken (HTTP 409): ${message} Recovery: ${recovery.action} Retryable (unchanged call): no.`,
-          response: { code: "AppSlugTaken", status: 409, message, recovery, retryable: false },
+          response: {
+            code: "AppSlugTaken",
+            status: 409,
+            message,
+            recovery,
+            retryable: false,
+          },
         });
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),

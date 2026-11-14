@@ -1,6 +1,6 @@
 import { hydrated } from "@executor-js/ui/contracts/http";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
-import { refreshAppLinks } from "./app-accounts.ts";
+import { acknowledgeLinkChecks, refreshAppLinks } from "./app-accounts.ts";
 import { discoveryTarget, refreshAppDiscovery } from "./app-discovery.ts";
 import { linkedAccountIds } from "@executor-js/ui/contracts/app-accounts";
 import { acknowledgeResourceAccount, resourceDirectoryAtom } from "./resource-access.ts";
@@ -72,9 +72,12 @@ class AppAccountKey extends Data.Class<{
 const checkAppAccount = Atom.family((key: AppAccountKey) =>
   HostedClient.runtime.fn((_: void, get) =>
     runCheck(get, new AccountKey({ organization: key.organization, account: key.account })).pipe(
-      // The app's Accounts tab shows each linked account's health from the app's links.
-      Effect.tap(() =>
-        Effect.sync(() => refreshAppLinks(get, { organization: key.organization, app: key.app })),
+      // The app's Accounts tab shows each linked account's health from the app's links, which
+      // show the results before the check settles, so the row never falls back to the old ones.
+      Effect.tap((health) =>
+        Effect.sync(() =>
+          acknowledgeLinkChecks(get, { organization: key.organization, app: key.app }, health),
+        ),
       ),
     ),
   ),

@@ -1,7 +1,8 @@
 /** Publish an explicitly supplied set of public skill documents using the standard directory index. */
 import { prepareAppSkills } from "@executor-js/sdk/skill-source";
 import { SourceFiles, type SourceTextFile as SourceFile } from "@executor-js/sdk/core";
-import { Crypto, Effect, Layer } from "effect";
+import { Effect, Layer } from "effect";
+import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
 import { HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } from "effect/http";
 
@@ -13,7 +14,7 @@ import { HttpRouter, HttpServerError, HttpServerRequest, HttpServerResponse } fr
 export const publishedSkillRoutes = (files: Effect.Effect<readonly SourceFile[]>) =>
   Layer.unwrap(
     Effect.gen(function* () {
-      const crypto = yield* Crypto.Crypto;
+      const digest = yield* Digest.Digest;
       const headers = { "cache-control": "no-cache" };
       const publish = Effect.gen(function* () {
         const skills = yield* prepareAppSkills(
@@ -24,9 +25,9 @@ export const publishedSkillRoutes = (files: Effect.Effect<readonly SourceFile[]>
         ).pipe(Effect.orDie);
         const entries = yield* Effect.forEach(skills, (skill) =>
           Effect.gen(function* () {
-            const version = yield* crypto
-              .digest("SHA-256", new TextEncoder().encode(JSON.stringify(skill)))
-              .pipe(Effect.map(Hex.encode), Effect.orDie);
+            const version = yield* digest
+              .digest(Digest.sha256, new TextEncoder().encode(JSON.stringify(skill)))
+              .pipe(Effect.map(Hex.encode));
             return {
               name: skill.name,
               description: skill.description,

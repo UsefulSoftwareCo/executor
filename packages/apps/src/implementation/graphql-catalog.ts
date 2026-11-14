@@ -66,6 +66,8 @@ export const graphqlCatalog = (options: GraphqlCatalogOptions, kinds: OperationK
       name: tool.name,
       description: tool.description,
       readOnly: kindOf(tool) === "query",
+      // The app's `kinds`, or the GraphQL operation type Executor sends.
+      kindConfirmed: true,
     });
     const describe = (tool: GraphqlToolDefinition) => ({
       ...summarize(tool),

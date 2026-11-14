@@ -147,6 +147,18 @@ const answerOf = (read: BatchRead, response: HttpServerResponse.HttpServerRespon
 };
 
 /**
+ * The read's span records the status it answered. The batch request itself answers 200 whatever
+ * its reads answer, so a server error fails the read's own span; a refusal (4xx) is the endpoint's
+ * answer, not a failure.
+ */
+const recordAnswer = ({ status }: BatchAnswer) =>
+  Effect.annotateCurrentSpan(
+    status >= 500
+      ? { "http.response.status_code": status, "executor.outcome": "failed" }
+      : { "http.response.status_code": status },
+  );
+
+/**
  * Run one read through its endpoint's route, under the batch request's identity. Like a request
  * of its own, the read has its own scope, so request-scoped resources such as its database client
  * are its own and are released once it has answered, without holding back its answer.
@@ -172,6 +184,7 @@ const answer = (
         Effect.map(HttpServerError.causeResponse(cause), ([response]) => response),
       ),
       Effect.flatMap((response) => answerOf(read, response)),
+      Effect.tap(recordAnswer),
       Effect.withSpan("dashboard.batch.read", {
         attributes: {
           "http.route": target.route.path,

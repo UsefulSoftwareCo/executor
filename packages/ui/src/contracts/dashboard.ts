@@ -127,7 +127,7 @@ export const AppViewFromUrl = Schema.Union([
 export const AssistantId = Schema.Literals([
   "claude",
   "chatgpt",
-  "cursor",
+  "opencode",
   "claude-code",
   "codex",
   "devin",
@@ -180,6 +180,27 @@ export const currentAccountCheck = (account: AccountSummary, app: AppId) => {
   const check = account.health?.apps.find((entry) => entry.app === app)?.check;
   return check?.current === true ? check : undefined;
 };
+/**
+ * A link with the app results of a check of its account that just ran, so the link shows them
+ * before the next read of the links. Other details, such as the reported identity, wait for it.
+ */
+export const withCheckedApps = <
+  L extends { readonly account: { readonly id: AccountId }; readonly health?: AccountHealth },
+>(
+  link: L,
+  checked: AccountHealth,
+): L =>
+  link.health === undefined || link.account.id !== checked.account
+    ? link
+    : {
+        ...link,
+        health: {
+          ...link.health,
+          apps: link.health.apps.map(
+            (entry) => checked.apps.find((item) => item.app === entry.app) ?? entry,
+          ),
+        },
+      };
 /** A current failed check that does not prove the credentials are bad; the app can still open. */
 export interface AccountCheckWarning<A extends AccountSummary> {
   readonly account: A;

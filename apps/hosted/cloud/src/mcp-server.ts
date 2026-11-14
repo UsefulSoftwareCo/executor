@@ -3,6 +3,7 @@
  * initializes only this Worker: the executor, the MCP grant checks and the protocol servers, not
  * the API with its routes, dashboard, sign-in, email, billing and schedules.
  */
+import { AlchemyContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Layer, Schema } from "effect";
 import { Api } from "./infrastructure/api-worker.ts";
@@ -45,13 +46,19 @@ export default McpServer.make(
     if (globalThis.__ALCHEMY_RUNTIME__) return { main: import.meta.url };
     return {
       main: import.meta.url,
-      build: workerBuild("mcp-server"),
+      // Only `alchemy dev` bundles the local test hooks; deployed builds cannot contain them.
+      build: workerBuild("mcp-server", { localTestHooks: (yield* AlchemyContext).dev }),
       ...(yield* cloudObservability),
       workersDev: false,
       // The API Worker's flags, under which session objects ran before they moved here.
       compatibility: {
         date: "2026-09-08",
-        flags: ["nodejs_compat", "global_fetch_strictly_public", "enable_request_signal"],
+        flags: [
+          "nodejs_compat",
+          "global_fetch_strictly_public",
+          "enable_request_signal",
+          "no_brotli_content_encoding",
+        ],
       },
       env: {
         ...(yield* postHogBindings).env,

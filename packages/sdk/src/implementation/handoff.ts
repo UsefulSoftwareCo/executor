@@ -15,6 +15,8 @@ export interface Handoff<A> {
   readonly await: Effect.Effect<A>;
   /** Settles the handoff once. Returns false when it was already settled. */
   readonly settle: (value: A) => Effect.Effect<boolean>;
+  /** Whether it has settled, so a new waiter would have the value at once. */
+  readonly isSettled: () => boolean;
 }
 
 export const makeHandoff = <A>(): Handoff<A> => {
@@ -32,5 +34,6 @@ export const makeHandoff = <A>(): Handoff<A> => {
         resolve(value);
         return true;
       }),
+    isSettled: () => settled,
   };
 };

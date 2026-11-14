@@ -7,23 +7,23 @@ process that can start the CLI could use them to run its own code inside our
 signed binary. We therefore compile the CLI with a Bun runtime that we patch
 and build ourselves.
 
-`lockdown.patch` applies to Bun `bun-v1.4.2` (commit `744846f8`) with
+`lockdown.patch` applies to Bun `bun-v1.4.4` (commit `38afee6c`) with
 `git apply`. At startup, `main` checks once whether the executable embeds a
 standalone module graph and stores the answer in a process-wide flag. Rust reads
 it through `bun_core::is_standalone_executable()` and C++ through
 `Bun__isStandaloneExecutable()`. When the flag is set, Bun ignores the
 following:
 
-| Vector                                                                                                   | Effect in stock Bun                                                                                                              | Where the patch closes it                                                             |
-| -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| `BUN_BE_BUN`                                                                                             | The executable becomes the full `bun` CLI (`-e`, `run`, `x`, ...)                                                                | `src/runtime/cli/mod.rs`, graph dispatch                                              |
-| `BUN_INTERNAL_WEBVIEW_HOST`                                                                              | Before the graph is checked, the process becomes a WebView host that talks to an inherited fd (macOS)                            | `src/runtime/cli/mod.rs`                                                              |
-| `BUN_OPTIONS`                                                                                            | Spliced into argv: `--preload`, `--require`, `--import`, `--config`, `--cwd`, `--env-file`, `--inspect`, ...                     | `src/bun_core/util.rs`, `argv_view_init`                                              |
-| `BUN_INSPECT`, `BUN_INSPECT_CONNECT_TO`                                                                  | Starts the inspector, either listening or connecting out, which gives full JS control                                            | `src/runtime/jsc_hooks.rs`, `configure_debugger`                                      |
-| `BUN_INSPECT_PRELOAD`                                                                                    | Preloads a module                                                                                                                | `src/runtime/cli/Arguments.rs`                                                        |
-| `BUN_JSC_*`                                                                                              | Sets any JavaScriptCore option, including JIT, memory-safety and internal-API switches                                           | `src/jsc/bindings/ZigGlobalObject.cpp`, `JSCInitialize`                               |
-| `NODE_PATH`                                                                                              | Adds module search roots, which can satisfy optional `require()`s in packages loaded from disk (for example `ws` → `bufferutil`) | `src/resolver/resolver.rs`                                                            |
-| Runtime transpiler cache (`BUN_RUNTIME_TRANSPILER_CACHE_PATH`, `XDG_CACHE_HOME`, `~/Library/Caches/bun`) | Transpiled output for files loaded from disk is read from a user-writable cache                                                  | `src/jsc/RuntimeTranspilerCache.rs`, `src/bundler/cache.rs`: always off when compiled |
+| Vector                                                                                                   | Effect in stock Bun                                                                                                              | Where the patch closes it                                                                   |
+| -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `BUN_BE_BUN`                                                                                             | The executable becomes the full `bun` CLI (`-e`, `run`, `x`, ...)                                                                | `src/runtime/cli/mod.rs`, graph dispatch                                                    |
+| `BUN_INTERNAL_WEBVIEW_HOST`                                                                              | Before the graph is checked, the process becomes a WebView host that talks to an inherited fd (macOS)                            | `src/runtime/cli/mod.rs`                                                                    |
+| `BUN_OPTIONS`                                                                                            | Spliced into argv: `--preload`, `--require`, `--import`, `--config`, `--cwd`, `--env-file`, `--inspect`, ...                     | `src/bun_core/util.rs`, `argv_view_init`                                                    |
+| `BUN_INSPECT`, `BUN_INSPECT_CONNECT_TO`                                                                  | Starts the inspector, either listening or connecting out, which gives full JS control                                            | `src/runtime/jsc_hooks.rs`, `configure_debugger`                                            |
+| `BUN_INSPECT_PRELOAD`                                                                                    | Preloads a module                                                                                                                | `src/runtime/cli/Arguments.rs`                                                              |
+| `BUN_JSC_*`                                                                                              | Sets any JavaScriptCore option, including JIT, memory-safety and internal-API switches                                           | `src/jsc/bindings/ZigGlobalObject.cpp`, `JSCInitialize` and `JSC__useOptionsForVMPerThread` |
+| `NODE_PATH`                                                                                              | Adds module search roots, which can satisfy optional `require()`s in packages loaded from disk (for example `ws` → `bufferutil`) | `src/resolver/resolver.rs`                                                                  |
+| Runtime transpiler cache (`BUN_RUNTIME_TRANSPILER_CACHE_PATH`, `XDG_CACHE_HOME`, `~/Library/Caches/bun`) | Transpiled output for files loaded from disk is read from a user-writable cache                                                  | `src/jsc/RuntimeTranspilerCache.rs`, `src/bundler/cache.rs`: always off when compiled       |
 
 Plain `bun`, without an embedded graph, behaves exactly as upstream.
 
@@ -58,15 +58,30 @@ same build model as Bun's release CI:
   `darwin-x64` runs under Rosetta on Apple silicon.
 
 The binaries and a `SHA256SUMS` file are published to the release
-`bun-runtime-1.4.2-<first 12 hex of sha256(lockdown.patch + build.patch)>`. An existing
+`bun-runtime-1.4.4-<first 12 hex of sha256(lockdown.patch)>`. An existing
 release is never overwritten.
 
-To build locally on macOS (arm64), use LLVM 21, rustup and Bun 1.4.2:
+Builds do not trust the release's own `SHA256SUMS`: `fetch.sh` checks each
+download against the digest pinned in `SHA256SUMS` beside this README, which
+only a reviewed commit changes. After a new release is published, pin it once
+with `bash scripts/releases/bun-runtime/pin.sh <release>` and commit the file;
+until then every build that needs the new runtime stops and prints that command.
+
+`pin.sh` refuses a release whose assets changed after it was published or whose
+assets' digests, as GitHub reports them, differ from its `SHA256SUMS`. It prints
+who published the release, the commit it was built from, and how that commit's
+build inputs differ from the checkout's. A reviewer of a pin change checks that
+output, which the pull request quotes: the release was published by
+`github-actions[bot]`, and its commit's build inputs match the pull request's or
+differ only in lines that cannot change the built files.
+
+To build locally on macOS (arm64), use LLVM 23, rustup and Bun 1.4.2, the Bun
+that Bun 1.4.4's build scripts pin:
 
 ```sh
-git clone --depth 1 --branch bun-v1.4.2 https://github.com/oven-sh/bun.git bun-src
-cd bun-src && git apply ../scripts/releases/bun-runtime/lockdown.patch ../scripts/releases/bun-runtime/build.patch
-export PATH="$(brew --prefix llvm@21)/bin:$PATH"
+git clone --depth 1 --branch bun-v1.4.4 https://github.com/oven-sh/bun.git bun-src
+cd bun-src && git apply ../scripts/releases/bun-runtime/lockdown.patch
+export PATH="$(brew --prefix llvm@23)/bin:$PATH"
 # clang 21 rejects headers in newer SDKs (Xcode betas); the 26.5 CLT SDK works.
 export DEVELOPER_DIR=/Library/Developer/CommandLineTools
 bun scripts/build.ts --profile=release --canary=off   # -> build/release/bun
@@ -75,7 +90,9 @@ bash ../scripts/releases/bun-runtime/smoke.sh build/release/bun
 
 ## Updating Bun
 
-1. Change `BUN_VERSION`, `BUN_TAG` and `BUN_COMMIT` in the workflow.
+1. Change `BUN_VERSION`, `BUN_TAG` and `BUN_COMMIT` in the workflow, and set
+   `BUILD_BUN_VERSION` to the Bun the new tag's `scripts/build/ci-images/spec.ts`
+   pins. Check that `setup-linux.sh` installs the LLVM series it pins.
 2. Check out the new tag and run `git apply --3way lockdown.patch`. Resolve any
    conflicts.
 3. Audit the new version again. Search for new environment variables
@@ -85,9 +102,8 @@ bash ../scripts/releases/bun-runtime/smoke.sh build/release/bun
    `is_standalone_executable()`.
 4. Regenerate the patch with `git diff > lockdown.patch`, build, and run
    `smoke.sh`.
-5. Merge to `main`. The new patch hash produces a new release name.
-
-`build.patch` changes only Bun's build scripts. Release CI builds with `--ci=on`, which sets the
-macOS deployment target, fetches the Windows sysroot and strips checkout paths, but upstream
-also skips the precompiled header in that mode, which its own pipeline never uses, and the C++
-sources then miss declarations the header provides. The patch keeps the precompiled header on.
+5. Build and publish the release (the pull request's `release-local` lane prints
+   how), then pin it: `bash scripts/releases/bun-runtime/pin.sh <release>`, and
+   commit `SHA256SUMS` in the same pull request, quoting `pin.sh`'s output in
+   its description.
+6. Merge to `main`. The new patch hash produces a new release name.

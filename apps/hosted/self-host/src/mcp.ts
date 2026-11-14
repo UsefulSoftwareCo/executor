@@ -16,6 +16,14 @@ import { PgliteClient } from "@effect/sql-pglite";
 import { Config, Effect, RcMap, Schema } from "effect";
 import { HttpServerResponse } from "effect/http";
 
+/**
+ * Protocol sessions a handler keeps in each elicitation mode, by last use, forgetting only sessions
+ * that own no work. A handler stays while its caller keeps calling, and the transport has no session
+ * DELETE, so each client that opened a session for one call, or left without ending its session,
+ * kept about 0.7 KB until restart.
+ */
+const maxSessions = 256;
+
 /** Own protocol sessions in the server scope; the returned handler receives SDK/auth per request. */
 export const selfHostMcp = Effect.gen(function* () {
   // Decoded as McpLimits, so a budget that is not a positive integer stops startup.
@@ -28,10 +36,13 @@ export const selfHostMcp = Effect.gen(function* () {
   const sessions = yield* RcMap.make({
     // Each session keeps what its callers' last tool calls read (CallStateCache).
     lookup: (_key: string) =>
-      Effect.map(makeHostedMcp(undefined, limits), (handler) => ({
-        ...handler,
-        calls: new Map<string, CallState>(),
-      })),
+      Effect.map(
+        makeHostedMcp(undefined, limits, undefined, undefined, maxSessions),
+        (handler) => ({
+          ...handler,
+          calls: new Map<string, CallState>(),
+        }),
+      ),
     idleTimeToLive: "30 minutes",
     capacity: 256,
   });

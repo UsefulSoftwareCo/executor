@@ -8,8 +8,9 @@
 # against the release's SHA256SUMS, unpacks it into ~/.executor/v2/runtime/versions/<version>,
 # points ~/.executor/v2/runtime/current at it and links ~/.local/bin/executor to
 # current/executor. The version it replaces stays as `previous`, so `executor upgrade --rollback`
-# can switch back. Your shell profile is never edited: if ~/.local/bin is not on PATH, the script
-# prints the line to add.
+# can switch back. A running background Executor is stopped first; the next `executor` command
+# starts it on the new version. Your shell profile is never edited: if ~/.local/bin is not on
+# PATH, the script prints the line to add.
 #
 # Settings: EXECUTOR_VERSION (or the first argument), EXECUTOR_INSTALL_DIR (default
 # ~/.executor/v2/runtime), EXECUTOR_BIN_DIR (default ~/.local/bin), EXECUTOR_DOWNLOAD_URL and
@@ -109,6 +110,24 @@ tar -xzf "$temporary/$file" -C "$temporary/unpacked"
 reported="$("$temporary/unpacked/package/executor" --version 2>/dev/null || true)"
 [ "$reported" = "executor v$version" ] ||
   fail "the downloaded Executor did not start on this machine. Nothing was installed."
+
+# A background Executor may run from a version this replaces or removes, so the installed
+# Executor stops it first, as `executor upgrade` does. A version from before the background
+# service has no `executor service` and runs none; a development build's runs from its checkout
+# and is left alone. One that does not stop stops by itself if this removes its executable.
+installed="$root/current/executor"
+if [ -x "$installed" ]; then
+  case "$("$installed" service status </dev/null 2>/dev/null || true)" in
+    *"(version 0.0.0-dev,"*) ;;
+    *"http://"*" (version "*", process "*")") # Registered, whether it answers or not.
+      if "$installed" service stop </dev/null >/dev/null 2>&1; then
+        printf 'Stopped the background Executor; the next executor command starts it on %s.\n' "$version"
+      else
+        printf 'The background Executor did not stop. Run executor service restart once the install is done.\n'
+      fi
+      ;;
+  esac
+fi
 
 # The version directory is complete before anything points at it.
 staged="$root/versions/.$version.$$"

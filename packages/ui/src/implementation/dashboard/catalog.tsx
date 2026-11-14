@@ -3,7 +3,13 @@ import { RegistryContext, useAtomRefresh, useAtomValue } from "@effect/atom-reac
 import { useContext, useState, type ReactNode } from "react";
 import { Cause, Effect, Exit, Option, Predicate } from "effect";
 import type { App, DeployedApp } from "@executor-js/sdk";
-import type { CatalogEntry } from "@executor-js/catalog/contracts";
+import type {
+  CatalogEntry,
+  CatalogFeedState,
+  CatalogListing,
+} from "@executor-js/catalog/contracts";
+import { InformationCircleIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type {
   QueryProps,
   MutationProps,
@@ -11,7 +17,8 @@ import type {
   Inventory,
   Query,
 } from "../../contracts/dashboard.ts";
-import { Empty, LoadingRows, ProviderIcon, SearchInput } from "./common.tsx";
+import { Empty, ProviderIcon, SearchInput } from "./common.tsx";
+import { CatalogCountSkeleton, CatalogPageFrame, CatalogRowsSkeleton } from "./loading.tsx";
 import { Button } from "../components/button.tsx";
 import {
   Dialog,
@@ -21,6 +28,8 @@ import {
   DialogTitle,
 } from "../components/dialog.tsx";
 import { Input } from "../components/input.tsx";
+import { Alert, AlertDescription, AlertTitle } from "../components/alert.tsx";
+import { ErrorNotice } from "./error-notice.tsx";
 import { useIncrementalList } from "./incremental-list.tsx";
 
 /**
@@ -36,6 +45,55 @@ export function installedCatalogApps(apps: readonly App[] | undefined): Readonly
       installed.set(name, app);
   }
   return installed;
+}
+
+/**
+ * Why Executor's official apps are missing from a listing: this instance turned its catalog off, or
+ * the server could not read the feed. Renders nothing when the feed was listed.
+ */
+export function CatalogFeedNotice({
+  feed,
+  retry,
+  retrying,
+  layout,
+}: {
+  readonly feed: CatalogFeedState;
+  readonly retry: () => void;
+  /** The listing is being read again, so Try again shows that it is checking. */
+  readonly retrying: boolean;
+  readonly layout?: "inline" | "compact";
+}) {
+  switch (feed.status) {
+    case "listed":
+      return null;
+    case "unavailable":
+      return (
+        <ErrorNotice
+          error={feed.error}
+          context="Executor could not list the official apps in its app catalog."
+          retry={retry}
+          retrying={retrying}
+          retryStatus="Checking the app catalog"
+          layout={layout}
+        />
+      );
+    case "off":
+      return (
+        <Alert role="note" className="border-border bg-muted/30 [&>svg]:text-muted-foreground">
+          <HugeiconsIcon icon={InformationCircleIcon} size={16} aria-hidden />
+          <AlertTitle role="heading" aria-level={3} className="line-clamp-none leading-5">
+            App catalog turned off
+          </AlertTitle>
+          <AlertDescription className="text-[13px] text-muted-foreground">
+            <p>
+              Executor’s official apps are not listed because this instance’s app catalog is turned
+              off. Whoever runs it can list them by removing{" "}
+              <code className="font-mono text-[12px]">EXECUTOR_CATALOG_URL=off</code>.
+            </p>
+          </AlertDescription>
+        </Alert>
+      );
+  }
 }
 
 /** Runs one catalog entry's install and resolves with that entry's own result. */
@@ -72,14 +130,18 @@ export function CatalogPage<E, IE>({
   InstallFailure,
   back,
   action,
+  create,
   inventory,
   open,
-}: QueryProps<readonly CatalogEntry[], E> & {
+}: QueryProps<CatalogListing, E> & {
   /** The install command for one catalog entry; each row has its own. */
   readonly mutation: (entry: string) => MutationProps<InstallApp, DeployedApp, IE>["mutation"];
   readonly InstallFailure: MutationProps<InstallApp, DeployedApp, IE>["Failure"];
   readonly back: ReactNode;
+  /** The heading's action, beside the title. */
   readonly action?: ReactNode;
+  /** Offers the ways to make an app when nothing here fits. */
+  readonly create?: ReactNode;
   /** The apps already installed; a failed read just leaves every row on Add. */
   readonly inventory: Query<Inventory, unknown>;
   /** A link to the installed app, rendered inside the row's Open button. */
@@ -124,10 +186,11 @@ export function CatalogPage<E, IE>({
   const renaming = conflict !== undefined && adding.has(conflict.entry.id);
   const retry = useAtomRefresh(query);
   const [search, setSearch] = useState("");
-  const templates = AsyncResult.value(result);
+  const listing = AsyncResult.value(result);
+  const feed = Option.isSome(listing) ? listing.value.feed : undefined;
   const term = search.trim().toLowerCase();
   // Name matches come first; the rest keep the feed's order.
-  const entries = (Option.isSome(templates) ? templates.value : [])
+  const entries = (Option.isSome(listing) ? listing.value.apps : [])
     .filter((entry) =>
       `${entry.name} ${entry.package} ${entry.category ?? ""} ${entry.description}`
         .toLowerCase()
@@ -139,28 +202,32 @@ export function CatalogPage<E, IE>({
     );
   const visible = useIncrementalList(entries.length, term, 50);
   return (
-    <div className="page w-full shrink-0 max-w-315 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
-      {back}
-      <div className="page-heading gap-4 flex justify-between items-center min-h-12 mb-4.5 [&_p]:text-muted-foreground [&_p]:text-[13px] [&_p]:mt-1.25 [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere max-[740px]:items-start max-[740px]:mb-4.5 max-[740px]:[&_p]:leading-[1.6] max-[740px]:[&_>_[data-slot='button']]:mt-0.25 max-[740px]:[.setup-page_&]:min-h-0">
-        <div>
-          <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35] [&>span]:text-muted-foreground [&>span]:text-[13px] [&>span]:font-mono [&>span]:font-normal [&>span]:ml-[8px] [&>span]:align-middle">
-            Add app
-          </h1>
-          <p>Find a service to connect.</p>
-        </div>
-        {action}
-      </div>
-      <div className="list-toolbar flex flex-wrap items-center gap-[10px_16px] mb-4">
-        <SearchInput autoFocus value={search} onChange={setSearch} placeholder="Search apps…" />
-        <span className="muted text-muted-foreground">
-          {entries.length.toLocaleString("en-US")} apps
-        </span>
-      </div>
+    <CatalogPageFrame
+      back={back}
+      action={action}
+      toolbar={
+        <>
+          <SearchInput autoFocus value={search} onChange={setSearch} placeholder="Search apps…" />
+          {AsyncResult.isInitial(result) && !entries.length ? (
+            <CatalogCountSkeleton />
+          ) : (
+            <span className="muted min-w-20 text-muted-foreground tabular-nums">
+              {entries.length.toLocaleString("en-US")} apps
+            </span>
+          )}
+        </>
+      }
+    >
       {AsyncResult.isFailure(result) && <Failure cause={result.cause} retry={retry} />}
+      {feed && (
+        <CatalogFeedNotice feed={feed} retry={retry} retrying={AsyncResult.isWaiting(result)} />
+      )}
       {failure && conflict === undefined && <InstallFailure cause={failure} />}
       {!entries.length && AsyncResult.isInitial(result) ? (
-        <LoadingRows />
-      ) : !entries.length && AsyncResult.isFailure(result) ? null : !entries.length ? (
+        <CatalogRowsSkeleton />
+      ) : !entries.length &&
+        (AsyncResult.isFailure(result) ||
+          (!search && feed && feed.status !== "listed")) ? null : !entries.length ? (
         <Empty
           title={search ? "No matching apps" : "No apps available"}
           action={
@@ -168,14 +235,10 @@ export function CatalogPage<E, IE>({
               <Button variant="outline" onClick={() => setSearch("")}>
                 Clear search
               </Button>
-            ) : (
-              action
-            )
+            ) : undefined
           }
         >
-          {search
-            ? "Try another name or connect your own service."
-            : "Connect your own service to get started."}
+          {create ? <MissingApp create={create} /> : "Try another name."}
         </Empty>
       ) : (
         <>
@@ -193,7 +256,7 @@ export function CatalogPage<E, IE>({
                 {(() => {
                   const installed = installedByPackage.get(entry.package);
                   return installed ? (
-                    <Button variant="outline" size="sm" asChild>
+                    <Button variant="outline" size="sm" className="min-w-21" asChild>
                       {open(installed)}
                     </Button>
                   ) : (
@@ -201,6 +264,7 @@ export function CatalogPage<E, IE>({
                       type="button"
                       variant="outline"
                       size="sm"
+                      className="min-w-21"
                       aria-label={`Add ${entry.name}`}
                       disabled={adding.has(entry.id)}
                       onClick={() => void add(entry, entry.name)}
@@ -213,6 +277,11 @@ export function CatalogPage<E, IE>({
             ))}
           </div>
           {visible.sentinel}
+          {create && (
+            <p className="mt-6 text-center text-[13px] text-muted-foreground">
+              <MissingApp create={create} />
+            </p>
+          )}
         </>
       )}
       <Dialog
@@ -269,6 +338,10 @@ export function CatalogPage<E, IE>({
           </form>
         </DialogContent>
       </Dialog>
-    </div>
+    </CatalogPageFrame>
   );
+}
+
+function MissingApp({ create }: { readonly create: ReactNode }) {
+  return <>Can’t find what you’re looking for? {create}</>;
 }

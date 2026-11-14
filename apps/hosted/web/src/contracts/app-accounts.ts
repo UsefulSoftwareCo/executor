@@ -7,9 +7,17 @@ import { hydrated } from "@executor-js/ui/contracts/http";
 import { pollingQuery } from "@executor-js/ui/contracts/polling";
 import { revalidated } from "@executor-js/ui/contracts/refresh";
 import { acknowledge } from "@executor-js/ui/contracts/mutations";
+import { withCheckedApps } from "@executor-js/ui/contracts/dashboard";
 import { Data, Effect } from "effect";
 import { Atom } from "effect/reactivity";
-import type { AccountId, AccountScope, App, AppId, VersionId } from "@executor-js/sdk";
+import type {
+  AccountHealth,
+  AccountId,
+  AccountScope,
+  App,
+  AppId,
+  VersionId,
+} from "@executor-js/sdk";
 import type { OrganizationReference } from "@executor-js/hosted-server/organization";
 import { HostedClient } from "./api.ts";
 import { protectedQuery } from "./protected-query.ts";
@@ -123,6 +131,17 @@ export const refreshAppLinks = (
         new RequirementKey({ organization: key.organization, app: key.app, scope, requirement }),
       ),
     );
+};
+
+/** Show a check's results in the app's links as soon as it finishes, then read them again. */
+export const acknowledgeLinkChecks = (
+  get: Atom.FnContext,
+  key: { readonly organization: OrganizationReference; readonly app: AppId },
+  health: AccountHealth,
+) => {
+  const app = new AppKey(key);
+  for (const list of [appLinks(app), userLinks(app)])
+    acknowledge(get, list, (rows) => rows.map((row) => withCheckedApps(row, health)));
 };
 
 const sameLink = (row: AppAccountLink, key: LinkKey) =>

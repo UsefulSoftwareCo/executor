@@ -10,7 +10,7 @@ import { startLocalServer } from "./node.ts";
 const development = Effect.gen(function* () {
   const settings = yield* localConfiguration(process.platform);
   const web = yield* developmentWeb(settings);
-  const server = yield* startLocalServer(settings, undefined, {
+  const server = yield* startLocalServer(settings, {
     product: "cli",
     web,
     devtools: localDevtools,
@@ -19,7 +19,9 @@ const development = Effect.gen(function* () {
   yield* Console.log(
     `Executor dev: ${settings.browserOrigin ?? server.url}\nUI hot reload is enabled.\nConnect (one use, expires in 5 minutes):\n${Redacted.value(link.url)}`,
   );
-  return yield* Effect.never;
+  // It stops, as every server does, once another server has taken its data directory's lock.
+  const reason = yield* server.stopped;
+  yield* Console.error(`Executor dev stopped: ${reason}.`);
 });
 
 NodeRuntime.runMain(Effect.scoped(development).pipe(Effect.provide(NodeServices.layer)));

@@ -22,6 +22,11 @@ services:
       # JSON array of exact HTTP(S) origins allowed to resolve to private addresses.
       EXECUTOR_URL_ALLOW_HTTP_ORIGINS:
       EXECUTOR_APPS_ALLOW_PRIVATE_FETCH:
+      # Comma-separated addresses of reverse proxies in front of the host; a CIDR range only if it
+      # holds proxies and nothing else. Requests from them take the client's address, which rate
+      # limits count, from X-Forwarded-For, so anything at a listed address can choose its own.
+      # A proxy on this host connects from this network's gateway (`docker inspect`, Gateway).
+      EXECUTOR_TRUSTED_PROXIES:
       # Most app and data Workers kept loaded (default 64). Idle ones above it unload and reload
       # on their next call. An app with a database runs its calls in a data Worker, which counts.
       EXECUTOR_APP_WORKERS:
@@ -31,11 +36,14 @@ services:
       # Off by default. <BETTER_AUTH_URL>/oauth/client-metadata.json serves a client metadata
       # document there, which authorization servers must be able to fetch over public HTTPS.
       EXECUTOR_OAUTH_CLIENT_METADATA_URL:
+      # The official app feed's index.json that onboarding and Add app list. The default is
+      # https://catalog.executor.sh/index.json; set it to off without outbound internet access.
+      EXECUTOR_CATALOG_URL:
       # Public app registry origin. The default is https://api.executor.sh.
       EXECUTOR_REGISTRY_URL:
       # Optional HTTPS app origin base. Localhost derives it from BETTER_AUTH_URL.
       EXECUTOR_APP_UI_BASE_URL:
-      # Unset passthrough entries stay absent; the default is bundled Motel.
+      # Unset passthrough entries stay absent; the default is the bundled collector.
       OTEL_EXPORTER_OTLP_ENDPOINT:
       OTEL_EXPORTER_OTLP_HEADERS:
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:

@@ -151,6 +151,97 @@ export function InventoryPageSkeleton({
   );
 }
 
+/**
+ * Add app's back link, heading, action and search row. The page and its pending view share it, so
+ * the catalog replaces the pending view without moving.
+ */
+export function CatalogPageFrame({
+  back,
+  action,
+  toolbar,
+  children,
+}: {
+  readonly back: ReactNode;
+  readonly action?: ReactNode;
+  readonly toolbar: ReactNode;
+  readonly children: ReactNode;
+}) {
+  return (
+    <div className="page w-full shrink-0 max-w-315 [padding:24px_24px_48px] my-0 mx-auto max-[1000px]:[padding:20px_20px_40px] max-[740px]:[padding:18px_max(16px,_env(safe-area-inset-right))_max(32px,_env(safe-area-inset-bottom))_max(16px,_env(safe-area-inset-left))]">
+      {back}
+      <div className="page-heading gap-4 flex justify-between items-center min-h-12 mb-4.5 [&_p]:text-muted-foreground [&_p]:text-[13px] [&_p]:mt-1.25 [&_>_div]:min-w-0 [&_>_div]:wrap-anywhere max-[740px]:items-start max-[740px]:mb-4.5 max-[740px]:[&_p]:leading-[1.6] max-[740px]:[&_>_[data-slot='button']]:mt-0.25">
+        <div>
+          <h1 className="text-[22px] font-semibold tracking-[-0.035em] leading-[1.35]">
+            App catalog
+          </h1>
+          <p>Ready-made apps for the services you use.</p>
+        </div>
+        {action}
+      </div>
+      <div className="list-toolbar flex flex-wrap items-center gap-[10px_16px] mb-4">{toolbar}</div>
+      {children}
+    </div>
+  );
+}
+
+/** The catalog's app count before the feed arrives, as wide as the loaded count. */
+export function CatalogCountSkeleton() {
+  return (
+    <span aria-hidden className="inline-flex items-center">
+      <Skeleton className="h-4 w-20" />
+      {"\u200b"}
+    </span>
+  );
+}
+
+/** Placeholder catalog rows with the loaded rows' spacing, icon, text and button sizes. */
+export function CatalogRowsSkeleton({ count = 10 }: { readonly count?: number }) {
+  return (
+    <div role="status" aria-label="Loading apps" className="border-t border-t-border">
+      {Array.from({ length: count }, (_, index) => (
+        <div
+          key={index}
+          aria-hidden
+          className="flex min-h-18.5 w-full items-center gap-4 border-b border-b-border px-[12px] py-[15px] max-[740px]:grid max-[740px]:grid-cols-[34px_minmax(0,_1fr)_auto] max-[740px]:gap-[4px_12px] max-[740px]:px-0"
+        >
+          <Skeleton className="size-8.5 shrink-0 rounded-[7px] max-[740px]:row-[1_/_3]" />
+          <div className="flex min-w-0 flex-1 flex-col gap-1.25 max-[740px]:col-[2]">
+            <div className="flex h-[19.5px] items-center">
+              <Skeleton className="h-3.5 w-32 max-w-[60%]" />
+            </div>
+            <div className="flex h-4.5 items-center">
+              <Skeleton className="h-3 w-[min(420px,_80%)]" />
+            </div>
+          </div>
+          <Skeleton className="h-8 w-21 rounded-md max-[740px]:col-[3] max-[740px]:row-[1_/_3] max-[740px]:h-11" />
+        </div>
+      ))}
+      <span className="sr-only">Loading apps…</span>
+    </div>
+  );
+}
+
+/** The app catalog while its code or the catalog feed loads. */
+export function CatalogPageSkeleton({ back }: { readonly back: ReactNode }) {
+  return (
+    <CatalogPageFrame
+      back={back}
+      action={<Skeleton aria-hidden className="h-9 w-37 shrink-0 rounded-md" />}
+      toolbar={
+        <>
+          <Skeleton
+            aria-label="Loading app search"
+            className="h-8.75 w-[min(100%,_340px)] max-[740px]:h-11 max-[740px]:w-full"
+          />
+          <CatalogCountSkeleton />
+        </>
+      }
+    >
+      <CatalogRowsSkeleton />
+    </CatalogPageFrame>
+  );
+}
+
 export const approvalsTitle = "Approvals";
 export const approvalsDescription = "Review scheduled runs before they continue.";
 

@@ -1,8 +1,7 @@
 /**
- * The v1 import retries Autumn's plan reads (`cloud-v1-import.spec.ts`). Sign-in's v1 check and
- * the billing overview answer a person within their own deadlines, so while Autumn is slow they
- * send one read each and say they are unavailable within that deadline, rather than retrying.
- * The faults match every caller of an Autumn route, so this file runs on its own local Cloud.
+ * The billing overview answers a person within its own deadline, so while Autumn is slow it sends
+ * one read and says it is unavailable within that deadline, rather than retrying. The faults match every caller of
+ * an Autumn route, so this file runs on its own local Cloud.
  */
 import { expect, layer } from "@effect/vitest";
 import { Clock, Effect, Layer, Schema } from "effect";
@@ -52,7 +51,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud slow Autumn", (it) => {
           browser = yield* Browser;
         const armed: string[] = [];
         /** Arm a fault on an Autumn route whose reads never answer in time. */
-        const stall = (route: "customers.get" | "plans.list") =>
+        const stall = (route: "plans.list") =>
           emulators
             .failAutumnReads(route, { status: 200, delayMs: neverInTime, times: 3 })
             .pipe(Effect.tap((id) => Effect.sync(() => armed.push(id))));
@@ -61,33 +60,11 @@ layer(TestLive, { excludeTestServices: true })("Cloud slow Autumn", (it) => {
           emulators.autumnFaults.pipe(Effect.map((faults) => 3 - (faults.get(id) ?? 0)));
 
         yield* Effect.gen(function* () {
-          // A new account in an empty, unbilled v1 organization: sign-in asks Autumn its plan.
           const identity = yield* emulators.identity("google");
-          yield* emulators.v1Member(identity.email);
-          const planRead = yield* stall("customers.get");
           yield* browser.use("Open Cloud sign-in", (page) => page.goto("/login"));
           yield* onboarding.chooseSocial("google");
-          const signIn = yield* timed(
-            browser.use("Sign in while Autumn's plan reads stall", (page) =>
-              page
-                .getByRole("button")
-                .filter({ hasText: identity.email })
-                .click()
-                .then(() =>
-                  page
-                    .getByRole("heading", { name: "Unable to open Executor", exact: true })
-                    .waitFor({ state: "visible", timeout: 30_000 }),
-                ),
-            ),
-          );
-          // The check's own ten-second deadline, plus the sign-in around it.
-          expect(signIn.ms).toBeLessThan(15_000);
-          expect(yield* sent(planRead)).toBe(1);
-          yield* browser.checkpoint("v1 check unavailable while Autumn is slow");
-
-          yield* emulators.clearAutumnFault(planRead);
-          yield* browser.use("Retry entry once Autumn answers", (page) =>
-            page.getByRole("link", { name: "Try again", exact: true }).click(),
+          yield* browser.use("Choose the account on the Google emulator", (page) =>
+            page.getByRole("button").filter({ hasText: identity.email }).click(),
           );
           yield* onboarding.prepareTeam;
           yield* browser.use("Create the team", (page) =>

@@ -3,7 +3,7 @@ import { cloudArtifactsTokensLive } from "./artifacts-tokens.ts";
 import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import type { Workflow } from "@cloudflare/workers-types";
-import { Cause, Effect, Schema } from "effect";
+import { Cause, Effect, Result, Schema } from "effect";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import { ScheduleWakeup } from "@executor-js/hosted-server";
 import {
@@ -22,6 +22,7 @@ import { AppDomainController } from "./app-domain-controller-worker.ts";
 import { billingLive } from "../implementation/billing.ts";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { cloudAnalytics } from "../implementation/product-analytics.ts";
+import { jobUnits } from "../contracts/job-outcome.ts";
 import { cloudBackgroundJobs } from "./background-jobs.ts";
 
 /** Each committed lifecycle action has its own workflow, so unrelated failures do not block setup. */
@@ -140,6 +141,7 @@ const ClaimedJobs = Schema.Array(
  * Start by stable outbox ID. A crash after create is recovered by observing the same instance.
  * Once a team installation's workflow exists and has not finished, `installTeam` may also run
  * that job at once (see {@link provisionTeamNow}); its other jobs keep dispatching meanwhile.
+ * A job that fails to dispatch is tried again once its lease ends; the outcome counts it.
  */
 export const dispatchProvisioning = <R>(
   installTeam: (job: string) => Effect.Effect<void, never, R>,
@@ -161,7 +163,7 @@ export const dispatchProvisioning = <R>(
       from candidates where job.id = candidates.id returning job.id, job.kind`.pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(ClaimedJobs)),
       );
-    yield* Effect.forEach(
+    const dispatched = yield* Effect.forEach(
       jobs,
       (job) =>
         Effect.gen(function* () {
@@ -191,9 +193,14 @@ export const dispatchProvisioning = <R>(
             yield* Effect.logError("Provisioning workflow needs attention", { job: job.id });
           if (job.kind === "team" && persisted === "running") yield* installTeam(job.id);
         }).pipe(
-          Effect.catch(() => Effect.logWarning("Provisioning dispatch failed", { job: job.id })),
+          Effect.tapError(() => Effect.logWarning("Provisioning dispatch failed", { job: job.id })),
+          Effect.result,
         ),
-      { concurrency: 4, discard: true },
+      { concurrency: 4 },
+    );
+    return jobUnits(
+      jobs.length,
+      dispatched.filter(Result.isFailure).map((result) => result.failure),
     );
   }).pipe(Effect.mapError(() => new ProvisioningFailed()));
 

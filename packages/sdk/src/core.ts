@@ -6,6 +6,7 @@ export { makeDeclarationCache } from "./implementation/declarations.ts";
 export { declarationConfig } from "./implementation/declaration-config.ts";
 export { evaluatedDeclarations } from "./implementation/evaluated-declarations.ts";
 export { executorHandlers } from "./implementation/handlers.ts";
+export { rejectRequest, requestRejections } from "./implementation/request-rejection.ts";
 export { probeOAuthChallenge } from "./implementation/oauth-probe.ts";
 export { withExecutorUserAgent } from "./implementation/user-agent.ts";
 export { discoverResourceOAuth } from "./implementation/oauth-protocol.ts";
@@ -29,12 +30,22 @@ export {
   type ResolvedAppRuntime,
 } from "./implementation/runtime.ts";
 export { executorDatabase } from "./implementation/storage-migrations.ts";
+export { StorageMigrationFailed } from "./implementation/storage-migration-error.ts";
 export { makeExecutorStorage, type ExecutorDatabase } from "./implementation/storage.ts";
 
 /** Optional Web Crypto adapter; callers retain signing-key custody. */
 export { aesGcmCredentials } from "./implementation/credentials.ts";
 /** Read another host's public catalog over HTTPS. */
 export { remoteRegistry } from "./implementation/remote-registry.ts";
+/** Registry results for clients that read an earlier wire revision. */
+export {
+  packageNameFromRevision,
+  publicationForRevision,
+  publicationsForRevision,
+  readinessForRevision,
+  registryForRevision,
+  scopedNameFor,
+} from "./implementation/wire-revision.ts";
 export { webhookCallback } from "./implementation/webhook-http.ts";
 
 export * from "./contracts/workflows.ts";

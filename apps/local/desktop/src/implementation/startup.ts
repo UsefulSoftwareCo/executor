@@ -1,5 +1,6 @@
-/** Isolated, script-free startup document shown before the local server is ready. */
-export const startupUrl = `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
+/** Isolated, script-free status documents shown before the local server is ready. */
+const statusUrl = (title: string, detail: string) =>
+  `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html>
 <html lang="en">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -12,5 +13,13 @@ export const startupUrl = `data:text/html;charset=utf-8,${encodeURIComponent(`<!
   h1 { font-size: 22px; font-weight: 600; letter-spacing: -0.5px; margin: 0 0 10px; }
   p { font-size: 14px; margin: 0; opacity: 0.65; }
 </style>
-<main role="status"><h1>Starting Executor</h1><p>Your apps will open here.</p></main>
+<main role="status"><h1>${title}</h1><p>${detail}</p></main>
 </html>`)}`;
+
+export const startupUrl = statusUrl("Starting Executor", "Your apps will open here.");
+
+/** Shown while the desktop's old data moves into the CLI's data directory, once. */
+export const movingUrl = statusUrl(
+  "Moving your Executor data…",
+  "Executor now shares its data with the CLI. This happens once and can take a minute.",
+);

@@ -10,6 +10,7 @@ import { localNpmRegistry } from "../support/npm-registry.ts";
 import { scenarios } from "../test-plan.ts";
 import { localEntryCommand } from "../support/local-entry.ts";
 import { withStandInPackage } from "../support/stand-in-package.ts";
+import { fakeBrowserOpener } from "../support/background-service.ts";
 
 const Record = Schema.Struct({
   version: Schema.Literal(1),
@@ -116,9 +117,9 @@ const packagedCli = (options: {
       directory: string,
       port: number,
       extra: Readonly<Record<string, string>>,
-      subcommand = "serve",
+      args: ReadonlyArray<string> = ["serve"],
     ) =>
-      ChildProcess.make(launch.command, [...launch.prefix, subcommand], {
+      ChildProcess.make(launch.command, [...launch.prefix, ...args], {
         cwd: path.dirname(directory),
         env: environment(directory, port, extra),
         extendEnv: false,
@@ -161,7 +162,12 @@ const packagedCli = (options: {
           const stdout = yield* collect(child.stdout);
           const stderr = yield* collect(child.stderr);
           const origin = `http://127.0.0.1:${port}`;
+          // The server listens before it opens storage and answers 503 until it is ready.
           const ready = http.get(`${origin}/auth/session`).pipe(
+            Effect.filterOrFail(
+              (response) => response.status === 200,
+              (response) => new Error(`The server is not ready yet (${response.status})`),
+            ),
             Effect.flatMap((response) => response.json),
             Effect.timeout(2_000),
             Effect.retry({ schedule: Schedule.spaced(200), times: 200 }),
@@ -212,14 +218,14 @@ const packagedCli = (options: {
           return { code: Number(code), message };
         }),
       );
-    /** Run one subcommand to exit and return its exit code and output. */
+    /** Run one command to exit and return its exit code and output. */
     const finish =
-      (subcommand: string) =>
+      (args: ReadonlyArray<string>) =>
       (directory: string, env: Readonly<Record<string, string>> = {}, serverPort?: number) =>
         Effect.scoped(
           Effect.gen(function* () {
             const port = serverPort ?? (yield* freePort);
-            const child = yield* processes.spawn(command(directory, port, env, subcommand));
+            const child = yield* processes.spawn(command(directory, port, env, args));
             const [code, stdout, stderr] = yield* Effect.all(
               [
                 child.exitCode,
@@ -231,8 +237,16 @@ const packagedCli = (options: {
             return { code: Number(code), stdout, stderr };
           }),
         );
-    // Without a server port, `pair` is given a free port: reaching it shows the key was read.
-    return { start, refuse, rotate: finish("rotate-key"), pair: finish("pair"), readRecord };
+    /** `executor --server <url>`: a client of a server it did not start, sent the saved API key. */
+    const client = (url: string) => finish(["--server", url]);
+    return {
+      start,
+      refuse,
+      rotate: finish(["service", "rotate-key"]),
+      pair: finish(["service", "pair"]),
+      client,
+      readRecord,
+    };
   });
 
 it.live(scenarios.localBootstrap.title, () =>
@@ -781,15 +795,17 @@ it.live(scenarios.localBootstrapPair.title, () =>
       const path = yield* Path.Path;
       const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-pair-e2e-" });
       const cli = yield* packagedCli({
-        keys: ["PATH", "HOME", "USERPROFILE", "SystemRoot", "APPDATA", "LOCALAPPDATA"],
+        keys: ["HOME", "USERPROFILE", "SystemRoot", "APPDATA", "LOCALAPPDATA"],
         standIn: root,
       });
+      const browser = yield* fakeBrowserOpener(path.join(root, "browser"));
       const storeFile = path.join(root, "stand-in-store.json");
       const as = (mode: string) => ({
+        ...browser.environment,
+        EXECUTOR_NO_UPDATE_CHECK: "1",
         EXECUTOR_E2E_STAND_IN: mode,
         EXECUTOR_E2E_STAND_IN_FILE: storeFile,
       });
-      const noServer = "No server answered on 127.0.0.1:";
       /** The record and the stand-in store, which pairing must leave as they were. */
       const saved = (directory: string) =>
         Effect.all([
@@ -806,36 +822,48 @@ it.live(scenarios.localBootstrapPair.title, () =>
           );
         });
 
-      // A directory that keeps its keys in the OS store sends the key saved there, which its
-      // running server accepts.
       const ready = path.join(root, "ready");
       yield* cli.start(ready, {
         env: as("granted"),
         during: (port) =>
           Effect.gen(function* () {
             const before = yield* saved(ready);
-            const paired = yield* cli.pair(ready, as("granted"), port);
-            expect(paired.code, paired.stderr).toBe(0);
-            expect(paired.stdout.trim()).toMatch(
-              new RegExp(`^http://127\\.0\\.0\\.1:${port}/#pair=[a-f0-9]{64}$`, "u"),
-            );
+            const origin = `http://127.0.0.1:${port}`;
+            const link = new RegExp(`^http://127\\.0\\.0\\.1:${port}/#pair=[a-f0-9]{64}$`, "u");
+            // `executor service pair` sends the password the running server registered and reads no
+            // keys, so a store that denies access or cannot be found does not stop it.
+            for (const mode of ["granted", "denied", "absent"]) {
+              const paired = yield* cli.pair(ready, as(mode), port);
+              expect(paired.code, paired.stderr).toBe(0);
+              expect(paired.stdout.trim()).toMatch(link);
+            }
+            // A client of a server it did not start sends the key saved where its directory keeps
+            // it, here the OS store, which that server accepts.
+            const joined = yield* cli.client(origin)(ready, as("granted"), port);
+            expect(joined.code, joined.stderr).toBe(0);
+            const lines = joined.stdout.trim().split("\n");
+            expect(lines[0]).toBe(`Executor: ${origin}`);
+            expect(lines[3]).toMatch(link);
+            expect(yield* browser.opened).toEqual([lines[3]]);
             expect(yield* saved(ready)).toEqual(before);
           }),
       });
       const before = yield* saved(ready);
       expect(before[2]).toBe(false);
-      const read = yield* cli.pair(ready, as("granted"));
-      expect(read.code).toBe(1);
-      expect(read.stderr).toContain(noServer);
+      const stopped = yield* cli.pair(ready, as("granted"));
+      expect(stopped.code).toBe(1);
+      expect(stopped.stderr).toContain(`No background Executor is running for ${ready}.`);
       expect(yield* saved(ready)).toEqual(before);
 
-      // Denied store access is reported, and pairing never falls back to a key file.
-      const denied = yield* cli.pair(ready, as("denied"));
+      // The client reads its key before it sends anything, so these fail before any request.
+      const nowhere = `http://127.0.0.1:${yield* freePort}`;
+      // Denied store access is reported, and the client never falls back to a key file.
+      const denied = yield* cli.client(nowhere)(ready, as("denied"));
       expect(denied.code).toBe(1);
       expect(denied.stderr).toContain("Access to the OS credential store was denied");
       expect(denied.stderr).toContain("Nothing was changed.");
       expect(yield* saved(ready)).toEqual(before);
-      const absent = yield* cli.pair(ready, as("absent"));
+      const absent = yield* cli.client(nowhere)(ready, as("absent"));
       expect(absent.code).toBe(1);
       expect(absent.stderr).toContain("OS credential store could not be found");
       expect(yield* saved(ready)).toEqual(before);
@@ -844,7 +872,7 @@ it.live(scenarios.localBootstrapPair.title, () =>
       const lost = path.join(root, "lost");
       yield* record(lost, "ready");
       const lostBefore = yield* saved(lost);
-      const missing = yield* cli.pair(lost, as("granted"));
+      const missing = yield* cli.client(nowhere)(lost, as("granted"));
       expect(missing.code).toBe(1);
       expect(missing.stderr).toContain("OS credential is missing");
       expect(yield* saved(lost)).toEqual(lostBefore);
@@ -853,10 +881,11 @@ it.live(scenarios.localBootstrapPair.title, () =>
       const pending = path.join(root, "pending");
       yield* record(pending, "pending");
       const pendingBefore = yield* saved(pending);
-      const unfinished = yield* cli.pair(pending, as("granted"));
+      const unfinished = yield* cli.client(nowhere)(pending, as("granted"));
       expect(unfinished.code).toBe(1);
       expect(unfinished.stderr).toContain(`${pending} has no saved keys`);
       expect(yield* saved(pending)).toEqual(pendingBefore);
+      expect(yield* browser.opened).toHaveLength(1);
     }),
   ).pipe(Effect.provide(NodeServices.layer), Effect.provide(FetchHttpClient.layer)),
 );

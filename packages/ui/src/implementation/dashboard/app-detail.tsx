@@ -103,7 +103,7 @@ export function AppDetailLayout({
           {back}
         </div>
         <div className="flex flex-wrap items-center gap-x-6 gap-y-4 max-[740px]:min-w-0 max-[740px]:flex-1 max-[740px]:gap-y-2 max-[740px]:py-1.5">
-          <div className="flex min-w-0 flex-1 items-center gap-4 max-[740px]:gap-2.5 max-[740px]:[&_.provider-icon-large]:size-8 max-[740px]:[&_.provider-icon-large]:rounded-[7px] max-[740px]:[&_.provider-icon-large_img]:size-5">
+          <div className="flex min-w-0 flex-1 items-center gap-4 max-[740px]:gap-2.5 max-[740px]:[&_.provider-icon-large]:size-8 max-[740px]:[&_.provider-icon-large]:rounded-[7px]">
             <AppIcon app={app} large />
             <h1
               className="min-w-0 truncate text-2xl font-semibold tracking-tight max-[740px]:text-lg"

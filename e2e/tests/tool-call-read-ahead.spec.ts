@@ -71,9 +71,10 @@ const Execution = Schema.Struct({
   }),
 });
 
-/** One statement of the tool call, with the spans it ran under. */
+/** One statement of the tool call, with the FumaDB operation that ran it and the spans it ran under. */
 interface Statement {
   readonly text: string;
+  readonly operation: string | undefined;
   readonly under: ReadonlyArray<string>;
   readonly start: number;
   readonly end: number;
@@ -86,8 +87,7 @@ const isAccessCheck = (statement: Statement) =>
   statement.text.includes("left join hosted_app_access p on p.id =");
 /** The app read made ahead for the call, outside the SDK's tool call. */
 const isSelectionRead = (statement: Statement) =>
-  statement.under.includes("FumaDB.SqlQuery.findFirst") &&
-  !statement.under.includes("sdk.tools.call");
+  statement.operation === "findFirst" && !statement.under.includes("sdk.tools.call");
 /** The call's own reads of the app and accounts, made when nothing read ahead answered them. */
 const isCallRead = (statement: Statement) => statement.under.includes("sdk.invocation.snapshot");
 
@@ -265,13 +265,15 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
                   span.operationName.startsWith("http.server") && span.tags["url.path"] === "/mcp",
               );
               if (!served)
-                return Effect.fail(new Error("The MCP request's server span must reach Motel"));
+                return Effect.fail(
+                  new Error("The MCP request's server span must reach the collector"),
+                );
               const root = result.data
                 .filter(({ span }) => span.operationName === "mcp.tool.call")
                 .toSorted((a, b) => Date.parse(a.span.startTime) - Date.parse(b.span.startTime))
                 .at(-1);
               if (root === undefined)
-                return Effect.fail(new Error("The tool call must reach Motel"));
+                return Effect.fail(new Error("The tool call must reach the collector"));
               const found: Statement[] = [];
               for (const { span } of result.data) {
                 if (span.operationName !== "sql.execute" && span.operationName !== "sql.pipeline")
@@ -296,6 +298,10 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
                     span.operationName === "sql.pipeline"
                       ? batchMarker
                       : String(span.tags["db.query.text"] ?? "").replace(/\s+/g, " "),
+                  operation:
+                    typeof span.tags["fumadb.operation"] === "string"
+                      ? span.tags["fumadb.operation"]
+                      : undefined,
                   under,
                   start,
                   end: start + span.durationMs,
@@ -303,7 +309,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
               }
               return found.some(isPatCheck)
                 ? Effect.succeed(found.toSorted((a, b) => a.start - b.start))
-                : Effect.fail(new Error("The tool call's statements must reach Motel"));
+                : Effect.fail(new Error("The tool call's statements must reach the collector"));
             }),
             Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
           );

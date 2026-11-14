@@ -32,7 +32,7 @@ import {
   type ExecutorDatabase,
   type Executor,
 } from "@executor-js/sdk/core";
-import { Effect, Layer, Redacted, Result, Schema, Stream } from "effect";
+import { Effect, Layer, Result, Schema, Stream } from "effect";
 import type { SqlClient } from "effect/sql";
 import { ApprovalResponse, approvalElicitation } from "apps/contracts";
 import {
@@ -42,7 +42,7 @@ import {
 } from "@executor-js/mcp/browser";
 import { HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
-import { localRequest, requestOrigin, sessionCookie, type LocalAuth } from "./auth.ts";
+import { localBearer, localRequest, requestOrigin, sessionCookie, type LocalAuth } from "./auth.ts";
 import { createCatalog, deployedCopy } from "@executor-js/catalog";
 import type { LocalOwnerMigration } from "@executor-js/app-management/contracts/local-owners";
 import { connectForApp } from "./account-connections.ts";
@@ -92,7 +92,7 @@ export const dashboardAccess = (config: ServerConfig, auth: LocalAuth) =>
       const request = yield* localRequest(config.port, config.browserOrigin).pipe(
         Effect.mapError(() => new DashboardForbidden()),
       );
-      const bearer = request.headers.authorization === `Bearer ${Redacted.value(config.apiKey)}`;
+      const bearer = localBearer(config, request.headers.authorization);
       const session = yield* auth.valid(request.cookies[sessionCookie(config)]);
       if (!bearer && !session) return yield* Effect.fail(new DashboardUnauthorized());
       return (yield* response).pipe(HttpServerResponse.setHeader("cache-control", "no-store"));
@@ -359,7 +359,7 @@ export const dashboard = (
       const request = yield* localRequest(config.port, config.browserOrigin).pipe(
         Effect.mapError(() => new DashboardForbidden()),
       );
-      const bearer = request.headers.authorization === `Bearer ${Redacted.value(config.apiKey)}`;
+      const bearer = localBearer(config, request.headers.authorization);
       const cookie = request.cookies[sessionCookie(config)];
       const authorize: LiveAccess = bearer
         ? Effect.void

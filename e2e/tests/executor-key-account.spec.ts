@@ -17,6 +17,10 @@ import {
 } from "../support/app-accounts.ts";
 import { saveAndDeploy } from "../support/app-authoring.ts";
 import { managementApp } from "../support/management-app.ts";
+import { legacyStorage } from "../support/legacy-storage.ts";
+import { Resource } from "../support/contracts.ts";
+import { randomUUID } from "node:crypto";
+import { serverControl } from "../support/server-control.ts";
 import { openThroughBrowser } from "../support/in-app-navigation.ts";
 import { advanceToReconciliation, installBrowserClock } from "../support/query-transition.ts";
 const App = Schema.Struct({
@@ -248,7 +252,7 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
               ),
             ).toBe(0);
             yield* browser.use("Team controls stay available", (page) =>
-              page.getByRole("link", { name: "Add app", exact: true }).waitFor(),
+              page.getByRole("button", { name: "Add app", exact: true }).waitFor(),
             );
             yield* browser.checkpoint("One app skeleton while team installation runs");
             yield* held.stop;
@@ -543,6 +547,81 @@ layer(HostedLive, { excludeTestServices: true })("Executor API-key account", (it
         // Linking again is the member's own choice and works on the kept account.
         yield* linkAccount(actors.admin, path, "service", account);
         expect(yield* linkedAccountIds(actors.admin, path)).toEqual([account]);
+      }),
+    ),
+  );
+  it.effect(scenarios.executorAppSetupLeavesVersion.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors;
+        const organization = actors.organization.id;
+        const prefix = `/api/organizations/${organization}`;
+        const { app, account } = yield* managementApp(actors.owner);
+        const path = `${prefix}/apps/${app.id}`;
+        const Version = Schema.Struct({ activeVersion: Schema.String });
+        const Source = Schema.Struct({
+          files: Schema.Array(Schema.Struct({ path: Schema.String, content: Schema.String })),
+        });
+        const source = api.request(actors.owner, "GET", `${path}/source`).pipe(
+          Effect.flatMap((response) => body(Source, response)),
+          Effect.map(({ files }) => ({
+            files: files.toSorted((left, right) => left.path.localeCompare(right.path)),
+          })),
+        );
+        // A version whose files differ from this host's template, as an earlier template's do.
+        const earlier = (yield* source).files.map((file) =>
+          file.path === "index.ts"
+            ? { ...file, content: `${file.content}\n// Synthetic earlier template\n` }
+            : file,
+        );
+        const deployed = yield* saveAndDeploy(actors.owner, path, { files: earlier });
+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+        const version = (yield* body(Schema.Struct({ app: Version }), deployed)).app.activeVersion;
+        // Record it as the version Executor installed, then start the current server over it.
+        yield* legacyStorage([
+          {
+            sql: `UPDATE "organization" SET metadata = jsonb_set(coalesce(metadata::jsonb, '{}'::jsonb), '{executorDefaults}', jsonb_build_object('installed', true, 'app', $2::text, 'deployment', $3::text))::text WHERE id = $1`,
+            params: [organization, app.id, version],
+          },
+        ]);
+        yield* serverControl("start");
+        // A new admin joins, and member setup mints and links their key.
+        const email = `joining-admin-${randomUUID().slice(0, 8)}@example.test`;
+        const invitation = yield* body(
+          Resource,
+          yield* api.request(actors.owner, "POST", "/api/auth/organization/invite-member", {
+            organizationId: organization,
+            email,
+            role: "admin",
+          }),
+        );
+        const joining = yield* api.session();
+        expect(
+          (yield* api.request(joining, "POST", "/api/auth/self-host/register", {
+            invitation: invitation.id,
+            name: "Joining Admin",
+            email,
+            password: "password1234",
+          })).status,
+        ).toBe(200);
+        const joined = yield* managementApp(joining);
+        expect(joined.app.id).toBe(app.id);
+        expect(joined.account).not.toBe(account);
+        // Setup left the organization's version, and the keys that fit it, as they were.
+        expect(
+          (yield* body(Version, yield* api.request(actors.owner, "GET", path))).activeVersion,
+        ).toBe(version);
+        expect((yield* source).files).toEqual(earlier);
+        // The owner's key still fits the app, so calls keep running with it.
+        expect(yield* linkedAccountIds(actors.owner, path)).toEqual([account]);
+        const call = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
+          tool: "context.get",
+          kind: "query",
+          input: {},
+        });
+        expect(call.status, JSON.stringify(call.body)).toBe(200);
       }),
     ),
   );

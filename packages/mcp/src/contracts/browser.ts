@@ -9,7 +9,14 @@ import {
 } from "@executor-js/sdk/core";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { InteractionId, PendingInteraction, ElicitationResponseInvalid } from "./interactions.ts";
-export { InteractionId, PendingInteraction, ElicitationResponseInvalid, ElicitationResponse };
+import { ToolCallReference } from "./call-log.ts";
+export {
+  InteractionId,
+  PendingInteraction,
+  ElicitationResponseInvalid,
+  ElicitationResponse,
+  ToolCallReference,
+};
 
 /** Session routing is public metadata, never an authentication credential. */
 export const BrowserSessionId = Schema.NonEmptyString.check(Schema.isMaxLength(512));
@@ -40,25 +47,50 @@ export const BrowserApprovalAnswer = Schema.Struct({ response: ElicitationRespon
 /**
  * A person's own dashboard run: its result, or the stored request they review before it runs.
  * The host binds the request to that person's run; the review reads the saved call from the server.
+ * `reference` is the host's record of a call whose value says the tool failed; a run that fails
+ * outright carries it on its error, and a successful run has none.
  */
 export const BrowserToolRun = Schema.Union([
-  Schema.Struct({ status: Schema.Literal("completed"), value: Json }),
+  Schema.Struct({
+    status: Schema.Literal("completed"),
+    value: Json,
+    reference: Schema.optionalKey(ToolCallReference),
+  }),
   Schema.Struct({ status: Schema.Literal("approval-required"), requestId: ApprovalRequestId }),
 ]);
 export type BrowserToolRun = typeof BrowserToolRun.Type;
 /**
  * Answering a dashboard run's review resumes the saved call in the same request and returns its
  * outcome. Unlike a delivered approval, the person who answers is the one waiting for the result.
+ * `reference` is the host's record of the call, given when the call did not succeed.
  */
 export const BrowserToolRunAnswer = Schema.Union([
-  Schema.Struct({ status: Schema.Literal("answered"), result: ToolResumeResult }),
-  Schema.Struct({ status: Schema.Literal("unavailable") }),
+  Schema.Struct({
+    status: Schema.Literal("answered"),
+    result: ToolResumeResult,
+    reference: Schema.optionalKey(ToolCallReference),
+  }),
+  /**
+   * The request expired or was already answered. `reference` is the host's record of the call, when
+   * the host can name it to this person.
+   */
+  Schema.Struct({
+    status: Schema.Literal("unavailable"),
+    reference: Schema.optionalKey(ToolCallReference),
+  }),
 ]);
 export type BrowserToolRunAnswer = typeof BrowserToolRunAnswer.Type;
 /** The answer as a dashboard receives it, possibly from the previous release's server. */
 export const BrowserToolRunAnswerReceived = Schema.Union([
-  Schema.Struct({ status: Schema.Literal("answered"), result: ToolResumeResultReceived }),
-  Schema.Struct({ status: Schema.Literal("unavailable") }),
+  Schema.Struct({
+    status: Schema.Literal("answered"),
+    result: ToolResumeResultReceived,
+    reference: Schema.optionalKey(ToolCallReference),
+  }),
+  Schema.Struct({
+    status: Schema.Literal("unavailable"),
+    reference: Schema.optionalKey(ToolCallReference),
+  }),
 ]);
 export type BrowserToolRunAnswerReceived = typeof BrowserToolRunAnswerReceived.Type;
 /**

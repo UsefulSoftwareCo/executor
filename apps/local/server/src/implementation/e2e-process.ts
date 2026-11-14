@@ -56,6 +56,8 @@ if (process.env.EXECUTOR_ENVIRONMENT === "e2e") {
     });
   }
   if (process.env.EXECUTOR_TEST_STOP_FD === "3") {
+    // The pipe is this process's alone. A server this CLI starts gets no fd3, and would fail here.
+    delete process.env.EXECUTOR_TEST_STOP_FD;
     // Bun reads an inherited descriptor only through createConnection, which uses the descriptor
     // and ignores the port its types require; Node reads one only through a Socket.
     const control =

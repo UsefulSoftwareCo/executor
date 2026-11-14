@@ -69,3 +69,19 @@ export const serverControl = (
       controlRequest(action, expectedStatus, body).pipe(Effect.asVoid),
     );
   });
+
+const Stopped = Schema.Struct({ stoppedMs: Schema.Number });
+
+/**
+ * Stop the product and return how long it took to stop: from the request until the product wrote
+ * its exit line or ended. It excludes the coverage the suite collects as the product exits; see
+ * `shutdown` in managed-server.ts.
+ */
+export const stopProductTimed = Effect.gen(function* () {
+  const evidence = yield* Evidence;
+  const text = yield* evidence.step("Product process stop", controlRequest("stop", 200));
+  const { stoppedMs } = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Stopped))(
+    text,
+  ).pipe(Effect.orDie);
+  return stoppedMs;
+});

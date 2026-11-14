@@ -1,7 +1,9 @@
 /** Deterministic provider identity and validation of serialized field declarations. */
-import { type Crypto, Effect, JsonSchema, Redacted, Schema, SchemaRepresentation } from "effect";
+import { Effect, JsonSchema, Redacted, Schema, SchemaRepresentation } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
+import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
-import type { HostAccount } from "apps/contracts";
+import { type HostAccount, withoutHelp } from "apps/contracts";
 import { AccountFieldsInvalid } from "../contracts/account.ts";
 import type {
   FirstPartyOAuthClient,
@@ -14,7 +16,8 @@ import { AuthMethodInvalid, ProviderDefinition } from "../contracts/provider.ts"
 import { ProviderId, StorageError, type Json } from "../contracts/shared.ts";
 import { JsonObject } from "../contracts/shared.ts";
 
-function canonical(value: Json): string {
+/** JSON with object keys sorted, so equal definitions compare equal regardless of key order. */
+export function canonical(value: Json): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (value !== null && typeof value === "object") {
     return `{${Object.entries(value)
@@ -28,21 +31,24 @@ function canonical(value: Json): string {
 /**
  * Equal JSON definitions, regardless of object key order, share a content-derived ID. Declared
  * hosts are not part of it: each account records the hosts it was connected for, so an app that
- * declares other hosts still fills the slot, but sends credentials only where both allow.
- * `shared` is the definition every app with this ID agrees on, without hosts.
+ * declares other hosts still fills the slot, but sends credentials only where both allow. Nor is
+ * setup help: each version's requirements keep the help its app declares, so editing help never
+ * changes the ID, and apps that explain a provider differently share its accounts.
+ * `shared` is the definition every app with this ID agrees on, without hosts or help.
  */
-export const identifyProvider = (definition: ProviderDefinition, crypto: Crypto.Crypto) =>
+export const identifyProvider = (definition: ProviderDefinition, crypto: HostCrypto) =>
   Effect.gen(function* () {
     const parsed = yield* Schema.decodeUnknownEffect(ProviderDefinition)(definition).pipe(
       Effect.mapError(() => new StorageError()),
     );
-    const { hosts: _hosts, ...shared } = parsed;
+    const { hosts: _hosts, ...shared } = withoutHelp(parsed);
     const content = yield* Schema.decodeUnknownEffect(JsonObject)(shared).pipe(
       Effect.mapError(() => new StorageError()),
     );
-    const hash = yield* crypto
-      .digest("SHA-256", new TextEncoder().encode(canonical(content)))
-      .pipe(Effect.mapError(() => new StorageError()));
+    const hash = yield* crypto.digest.digest(
+      Digest.sha256,
+      new TextEncoder().encode(canonical(content)),
+    );
     return { id: ProviderId.make(`prv_${Hex.encode(hash)}`), definition: parsed, shared };
   });
 

@@ -2,7 +2,8 @@
  * Diagnostics export: one zip in Downloads that a user can attach to a report.
  *
  * Only allowlisted log files from the data directory's `diagnostics/` are read. Keys, the
- * installation record, databases, retained builds, the browser profile and Motel's trace store are
+ * installation record, databases, retained builds, the browser profile and the telemetry collector's
+ * store are
  * never opened. Logs already carry redacted values; the export also masks credential shapes
  * (bearer values, pairing and signed-link tokens, 64-character hex keys and credential-named
  * JSON fields) as a second barrier before anything leaves the machine.
@@ -40,9 +41,9 @@ const stamp = (iso: string) => iso.replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z");
 /** Make the "Export diagnostics…" action. Failures show a native dialog without file contents. */
 export const makeExportDiagnosticsAction = (options: {
   readonly directory: string;
-  /** The running backend's origin, if one is running. */
+  /** The background server's origin, if the window is connected to one. */
   readonly origin: () => string | undefined;
-  readonly source: PortSource;
+  readonly portSource: Effect.Effect<PortSource>;
 }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -77,7 +78,7 @@ export const makeExportDiagnosticsAction = (options: {
           node: process.versions.node,
         },
         uptimeSeconds: Math.round(process.uptime()),
-        server: { origin: options.origin() ?? null, portSource: options.source.kind },
+        server: { origin: options.origin() ?? null, portSource: (yield* options.portSource).kind },
         dataDirectory: options.directory,
         files: included,
         // Keys stay in the OS credential store or keys.json; they are never part of an export.
@@ -85,7 +86,7 @@ export const makeExportDiagnosticsAction = (options: {
           "keys and installation record",
           "databases and retained builds",
           "browser profile",
-          "Motel trace storage",
+          "telemetry collector storage",
         ],
       };
       files["manifest.json"] = strToU8(`${JSON.stringify(manifest, null, 2)}\n`);

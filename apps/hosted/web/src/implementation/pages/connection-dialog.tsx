@@ -13,6 +13,7 @@ import { providerDisplayUrl } from "@executor-js/ui/contracts/dashboard";
 import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
 import { QueryResult, useQuery } from "@executor-js/ui/dashboard/context";
 import { connectionAtom } from "../../contracts/apps.ts";
+import type { ClientRecovery } from "../../contracts/navigation.ts";
 import { useOrganizationRoute } from "../components/organization.tsx";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { ConnectionFields } from "./connect-account.tsx";
@@ -75,7 +76,7 @@ export function AccountConnectionDialog({
   onClose,
 }: {
   readonly connectionId?: AccountConnectionId | undefined;
-  readonly client?: "change" | undefined;
+  readonly client?: typeof ClientRecovery.Type | undefined;
   readonly onClose: () => void;
 }) {
   return connectionId === undefined ? null : (
@@ -94,7 +95,7 @@ function ResumedConnectionDialog({
   onClose,
 }: {
   readonly connectionId: AccountConnectionId;
-  readonly client?: "change" | undefined;
+  readonly client?: typeof ClientRecovery.Type | undefined;
   readonly onClose: () => void;
 }) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
@@ -125,6 +126,7 @@ function ResumedConnectionDialog({
           <ConnectionFields
             connection={connection}
             manualClient={client === "change"}
+            editClient={client === "change" ? undefined : client}
             onPendingChange={setBusy}
             onSaved={() => {
               void navigate({
@@ -147,7 +149,7 @@ export function ConnectionEntry({
   client,
 }: {
   readonly connectionId: AccountConnectionId;
-  readonly client?: "change" | undefined;
+  readonly client?: typeof ClientRecovery.Type | undefined;
 }) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
   const navigate = useNavigate();

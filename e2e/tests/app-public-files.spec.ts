@@ -47,8 +47,14 @@ const binary = (prefix: string, size: number) => {
   return Uint8Array.from(bytes);
 };
 
-/** Many small prebuilt chunks, as a bundler's output has. */
-const chunks: PublicFile[] = Array.from({ length: 300 }, (_, index) => ({
+/**
+ * Many small prebuilt chunks, as a bundler's output has. Each public file costs the deploy, the
+ * copy and both removals one store request, so more chunks add time without new behavior: none
+ * of these paths changes with the count below the store's 1,000-name listing page.
+ */
+const chunkCount = 40;
+const lastChunk = chunkCount - 1;
+const chunks: PublicFile[] = Array.from({ length: chunkCount }, (_, index) => ({
   path: `assets/chunk-${index}.js`,
   bytes: text(`export const chunk = ${index};\n`),
   contentType: "text/javascript",
@@ -60,7 +66,7 @@ const publicFiles = (version: string): PublicFile[] => [
     path: "assets/main.js",
     bytes:
       text(`const { instance } = await WebAssembly.instantiateStreaming(fetch("/wasm/add.wasm"));
-const { chunk } = await import("./chunk-299.js");
+const { chunk } = await import("./chunk-${lastChunk}.js");
 document.body.dataset.sum = String(instance.exports.add(2, 3));
 document.body.dataset.chunk = String(chunk);
 document.body.dataset.version = ${JSON.stringify(version)};
@@ -269,9 +275,13 @@ const servedMismatches = (files: ReadonlyArray<PublicFile>, base: string) =>
     ),
   );
 
+/** A spread of the chunks: every fifth from the first, and the last, which the entry imports. */
+const sampledChunks = new Set(
+  chunks.filter((_, index) => index % 5 === 0 || index === lastChunk).map((chunk) => chunk.path),
+);
 /** Every binary file, and a spread of the chunks. */
 const sample = (files: ReadonlyArray<PublicFile>) =>
-  files.filter((file, index) => !file.path.startsWith("assets/chunk-") || index % 25 === 0);
+  files.filter((file) => !file.path.startsWith("assets/chunk-") || sampledChunks.has(file.path));
 
 layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
   it.effect(
@@ -334,7 +344,9 @@ layer(HostedLive, { excludeTestServices: true })("App public files", (it) => {
           yield* openPrivateApp(url);
           // The prebuilt entry ran: wasm instantiated from its served type, and a chunk loaded.
           yield* browser.use("The prebuilt entry runs", (page) =>
-            page.locator('body[data-sum="5"][data-chunk="299"]').waitFor({ state: "attached" }),
+            page
+              .locator(`body[data-sum="5"][data-chunk="${lastChunk}"]`)
+              .waitFor({ state: "attached" }),
           );
           expect(
             yield* browser.use("The relative image loads", (page) =>

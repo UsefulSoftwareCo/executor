@@ -130,7 +130,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP stream lifetime", (i
                 };
                 return found.forward && found.request && found[phase]
                   ? Effect.succeed(found)
-                  : Effect.fail(new Error("The request's spans have not reached Motel"));
+                  : Effect.fail(new Error("The request's spans have not reached the collector"));
               }),
               Effect.retry({ schedule: Schedule.spaced("1 second"), times: 75 }),
             );

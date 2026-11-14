@@ -18,7 +18,7 @@ export async function resolveLauncher() {
   const electronMetadata = JSON.parse(
     await readFile(new URL("../node_modules/electron/package.json", import.meta.url), "utf8"),
   );
-  const revision = `${electronMetadata.version}:3:${root}`;
+  const revision = `${electronMetadata.version}:4:${root}`;
   let previous;
   try {
     previous = await readFile(join(runtime, "revision"), "utf8");
@@ -43,7 +43,7 @@ export async function resolveLauncher() {
       execFileSync("/usr/bin/plutil", ["-replace", key, "-string", value, plist]);
     }
     const preload = `--import="${join(root, "scripts/local-dev.ts")}"`;
-    const script = `#!/bin/sh\nset -eu\nunset ELECTRON_RUN_AS_NODE\ncd ${quote(root)}\nexport PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"\nexport NODE_OPTIONS=${quote(preload)}\nexec ${quote(executable)} ${quote(join(root, "apps/local/desktop"))} --dev "$@" >> ${quote(join(root, ".local/desktop.log"))} 2>&1\n`;
+    const script = `#!/bin/sh\nset -eu\nunset ELECTRON_RUN_AS_NODE\ncd ${quote(root)}\nexport PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"\nexport NODE_OPTIONS=${quote(preload)}\nexport EXECUTOR_DESKTOP_DEV=1\nexec ${quote(executable)} ${quote(join(root, "apps/local/desktop"))} --dev "$@" >> ${quote(join(root, ".local/desktop.log"))} 2>&1\n`;
     await writeFile(launcher, script, { mode: 0o755 });
     execFileSync(
       "/usr/bin/codesign",

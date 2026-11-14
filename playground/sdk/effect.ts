@@ -1,4 +1,7 @@
-/** Native SDK calls compose in the host's Effect fiber. The host supplies Crypto and owns its storage. */
+/**
+ * Native SDK calls compose in the host's Effect fiber. The host supplies `SecureRandom` and
+ * `Digest` from `effect/crypto` and owns its storage.
+ */
 import { Effect } from "effect";
 import { createExecutor, OwnerId, type ExecutorOptions } from "@executor-js/sdk/core";
 

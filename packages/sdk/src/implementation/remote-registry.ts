@@ -1,5 +1,6 @@
 /** Browser-safe public registry reads shared with server-side discovery. */
-import { Clock, Duration, Effect, Option, Schema, Stream } from "effect";
+import { Clock, Duration, Effect, Option, Result, Schema, Stream } from "effect";
+import { issueSummary } from "@executor-js/telemetry/schema-issue";
 import {
   FetchHttpClient,
   HttpClient,
@@ -13,6 +14,7 @@ import {
   RegistryError,
   type Registry,
 } from "../contracts/registry.ts";
+import { wireRevision, wireRevisionHeader } from "../contracts/wire-revision.ts";
 
 const maxResponseBytes = 32 * 1024 * 1024;
 
@@ -50,6 +52,42 @@ const readBody = (response: HttpClientResponse.HttpClientResponse) =>
     }),
   );
 
+/** A registry request that states the wire revision this release reads. */
+const registryRequest = (url: URL) =>
+  HttpClientRequest.get(url).pipe(
+    HttpClientRequest.setHeader(wireRevisionHeader, String(wireRevision)),
+  );
+
+/** A listing's name for a log line, bounded: the registry chose it, and it may not be a package name. */
+const listingLabel = (entry: unknown) =>
+  typeof entry === "object" && entry !== null && "name" in entry && typeof entry.name === "string"
+    ? JSON.stringify(entry.name.slice(0, 140))
+    : "without a name";
+
+/**
+ * Keep the listings this release can read. Each one it cannot is left out and logged with what
+ * failed to decode, so one entry never fails the whole catalog.
+ */
+const readableListings = (entries: ReadonlyArray<unknown>) =>
+  Effect.gen(function* () {
+    const listings: Array<Publication> = [];
+    for (const entry of entries) {
+      const decoded = Schema.decodeUnknownResult(Publication)(entry);
+      if (Result.isSuccess(decoded)) {
+        listings.push(decoded.success);
+        continue;
+      }
+      const issues = [...new Set(issueSummary(decoded.failure.issue))].slice(0, 10).join(", ");
+      yield* Effect.logWarning(
+        `Left out public registry listing ${listingLabel(entry)}, which this Executor release cannot read (${issues}). A newer release reads listings in formats added since this one, not malformed ones.`,
+      );
+    }
+    const unreadable = entries.length - listings.length;
+    if (unreadable > 0)
+      yield* Effect.annotateCurrentSpan("registry.listings_unreadable", unreadable);
+    return listings;
+  });
+
 const parseJson = (bytes: Uint8Array): Option.Option<unknown> => {
   try {
     return Option.some(JSON.parse(new TextDecoder().decode(bytes)));
@@ -66,7 +104,7 @@ export const remoteRegistry = (origin: string): Registry => {
   const read = <A>(operation: string, path: string, schema: Schema.Decoder<A>) => {
     const url = new URL(path, origin);
     return Effect.gen(function* () {
-      const response = yield* HttpClient.execute(HttpClientRequest.get(url)).pipe(
+      const response = yield* HttpClient.execute(registryRequest(url)).pipe(
         Effect.mapError(() => new RegistryError({ reason: "network" })),
       );
       yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
@@ -112,7 +150,7 @@ export const remoteRegistry = (origin: string): Registry => {
       origin,
     );
     return Effect.gen(function* () {
-      const response = yield* HttpClient.execute(HttpClientRequest.get(url)).pipe(
+      const response = yield* HttpClient.execute(registryRequest(url)).pipe(
         Effect.mapError(() => new RegistryError({ reason: "network" })),
       );
       yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
@@ -137,8 +175,8 @@ export const remoteRegistry = (origin: string): Registry => {
     read(
       "list",
       `/api/registry/apps${name === undefined ? "" : `?name=${encodeURIComponent(name)}`}`,
-      Schema.Array(Publication),
-    );
+      Schema.Array(Schema.Unknown),
+    ).pipe(Effect.flatMap(readableListings));
   // Only a settled listing is shared. Concurrent reads of an expired listing each fetch it, so no
   // request ever waits on another's fetch; a Worker isolate cannot resume one request from another.
   let kept: { readonly listings: ReadonlyArray<Publication>; readonly until: number } | undefined;

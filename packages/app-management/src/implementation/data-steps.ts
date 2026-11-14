@@ -16,6 +16,7 @@ import {
   type DataStep,
   type DataStepJournal,
   type DataStepMode,
+  type DataStepRun,
   type DataStepSummary,
 } from "../contracts/data-steps.ts";
 
@@ -85,16 +86,19 @@ const Counts = Schema.Array(
   Schema.Struct({ owner: Schema.String, outcome: Schema.String, count: Schema.Number }),
 );
 
-/**
- * Advance every pending step, in order. Returns `pending` when a step still has work, because the
- * deadline passed, another process holds its lease, or its last pass left items to retry.
- */
-export const runDataSteps = <R>(steps: ReadonlyArray<DataStep<R>>, options: DataStepRunOptions) =>
+/** Advance every pending step, in order, and say what this run did (see {@link DataStepRun}). */
+export const runDataSteps = <R>(
+  steps: ReadonlyArray<DataStep<R>>,
+  options: DataStepRunOptions,
+): Effect.Effect<DataStepRun, DataStepUnavailable, R | SqlClient.SqlClient> =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const journal = sql(`${options.journal}_data_steps`);
     const outcomes = sql(`${options.journal}_data_step_items`);
     const run = options.mode === "apply" ? "apply" : `report:${options.report}`;
+    // Only the caller reads these; the journal, retries and logs do not depend on them.
+    let attempted = 0;
+    let failed = 0;
 
     const advance = (step: DataStep<R>) =>
       Effect.gen(function* () {
@@ -174,6 +178,8 @@ export const runDataSteps = <R>(steps: ReadonlyArray<DataStep<R>>, options: Data
             }),
           );
           cursor = item.id;
+          attempted += 1;
+          if (step.retry.includes(outcome) && !step.expected?.includes(outcome)) failed += 1;
         }
 
         // Items removed since an earlier pass cannot be retried; they no longer need the step.
@@ -229,6 +235,7 @@ export const runDataSteps = <R>(steps: ReadonlyArray<DataStep<R>>, options: Data
         }),
       );
 
-    for (const step of steps) if ((yield* advance(step)) === "pending") return "pending" as const;
-    return "complete" as const;
+    for (const step of steps)
+      if ((yield* advance(step)) === "pending") return { status: "pending", attempted, failed };
+    return { status: "complete", attempted, failed };
   });

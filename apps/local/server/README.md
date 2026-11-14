@@ -8,7 +8,7 @@ Its HTTP, MCP, dashboard, and app UI handlers call that public Effect API.
 
 Read these files in order:
 
-1. `src/bin.ts` runs the CLI; `src/main.ts` is the headless supervisor entry. Both use `src/node.ts` for one scoped local server.
+1. `src/bin.ts` runs the CLI; `src/main.ts` is the headless supervisor entry. Both serve through `src/implementation/server-process.ts`, which uses `src/node.ts` for one scoped local server.
 2. `src/implementation/server.ts` assembles storage, credentials, runtime and HTTP routes.
 3. `src/implementation/storage.ts` opens the native Effect SQL PGlite driver and initializes the fumadb-effect schema.
 4. `aesGcmCredentials` from `@executor-js/sdk/core` encrypts account fields with AES-GCM.
@@ -36,33 +36,37 @@ The repository scripts need no configuration. `scripts/local-dev.ts` keeps data
 and a development key pair in the checkout's ignored `.local/dev/`. `bun run server`
 and `bun run dev` listen behind the shared Portless proxy at
 `https://local.executor.localhost:5394`, or `https://local.<checkout>.executor.localhost:5394`
-in another checkout. `bun run executor` listens on `http://127.0.0.1:4312`.
-Variables that you set win over these defaults. For example:
+in another checkout. `bun run executor` starts or joins the
+[background service](#background-service) for `.local/dev/local` on
+`http://127.0.0.1:4312` and exits; that server keeps running until
+`bun run executor service stop`. Variables that you set win over these defaults.
+For example:
 
 ```sh
 curl -H "Authorization: Bearer $(node -p 'require("./.local/dev/keys.json").apiKey')" \
   https://local.executor.localhost:5394/v1/apps
 ```
 
-Press Ctrl+C to stop. Package-level `bun run start` reads its existing process
-environment only. Relative data paths are resolved from the process working
-directory. `bun run with:local …` loads 1Password values instead; see
-[configuration](../../../README.md#development-configuration).
+Press Ctrl+C to stop `bun run server` or `bun run dev`. Package-level
+`bun run start` reads its existing process environment only. Relative data paths
+are resolved from the process working directory. `bun run with:local …` loads
+1Password values instead; see
+[configuration](../../../DEVELOPMENT.md#development-configuration).
 
 ## Configuration
 
 | Variable                                | Meaning                                                                                                                                                                                     |
 | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `EXECUTOR_DATA_DIR`                     | Directory containing `executor.pglite/`, `browser-auth.pglite/`, and `builds/`; defaults to `.local/executor`.                                                                              |
-| `EXECUTOR_PORT`                         | Loopback listener port; defaults to `4312`.                                                                                                                                                 |
+| `EXECUTOR_DATA_DIR`                     | Directory containing `executor.pglite/`, `browser-auth.pglite/`, `builds/` and the [service files](#background-service); defaults to `.local/executor` (`~/.executor/v2/cli` in releases).  |
+| `EXECUTOR_PORT`                         | Loopback listener port; wins over the background service's `port` setting, then defaults to `4312`. `0` chooses any free port.                                                              |
 | `EXECUTOR_API_KEY`                      | Optional supplied bearer token; set with the encryption key. At least 32 characters.                                                                                                        |
 | `EXECUTOR_ENCRYPTION_KEY`               | Optional supplied AES key; set with the API key. Exactly 64 hexadecimal characters.                                                                                                         |
 | `EXECUTOR_KEY_STORAGE`                  | Optional key storage for a new directory: `file` for `keys.json`, `os` for the OS credential store without the key file fallback. See [Key storage](#key-storage).                          |
 | `EXECUTOR_MCP_TIMEOUT_MS`               | Catalog discovery plus program timeout; defaults to `300000`.                                                                                                                               |
 | `EXECUTOR_MCP_MAX_TOOL_CALLS`           | Admitted calls per execute, including search; defaults to `100`.                                                                                                                            |
-| `EXECUTOR_MCP_MAX_OUTPUT_BYTES`         | Result value/log truncation budget; defaults to `100000`. Protocol metadata and truncation markers add overhead.                                                                            |
 | `EXECUTOR_TOOL_LISTING_FRESH_SECONDS`   | Reuse an app's evaluated tool list this long before refreshing it in the background; defaults to `30`.                                                                                      |
-| `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | Never serve an evaluated tool list older than this; `0` evaluates every list. Defaults to `60`.                                                                                             |
+| `EXECUTOR_TOOL_LISTING_RENEW_SECONDS`   | Renew the tool lists search serves in the background once they are this old; defaults to `86400`.                                                                                           |
+| `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | Never serve an evaluated tool list older than this; `0` evaluates every list. Defaults to `604800`.                                                                                         |
 | `EXECUTOR_TOOL_LISTING_LOAD_SECONDS`    | Stop evaluating an app's tool list after this long when no request is waiting for it; defaults to `45`.                                                                                     |
 | `EXECUTOR_EVALUATION_MEMORY_MB`         | Memory for kept tool lists and app declarations; defaults to `256`.                                                                                                                         |
 | `EXECUTOR_APP_WORKERS`                  | Most app and data Workers kept loaded; defaults to `64`. Idle ones above it unload and reload on their next call. An app with a database runs its calls in a data Worker, which counts too. |
@@ -122,22 +126,173 @@ A refused key setup reports one reason: `credential-unavailable` (the
 directory needs an OS store and there is none), `credential-denied`,
 `credential-missing`, `invalid` (a damaged record or key), `misconfigured`
 (`EXECUTOR_KEY_STORAGE` or supplied keys cannot apply to this directory),
-`locked` or `io`. The desktop backend also sends that reason on its private fd4
-pipe so the desktop can choose recovery actions.
+`locked` or `io`. The desktop receives that reason too, so it can choose
+recovery actions.
 
-`executor rotate-key` replaces the saved API key in place, in the OS credential
+`executor service rotate-key` replaces the saved API key in place, in the OS credential
 store or `keys.json`, and keeps the encryption key, so saved accounts and MCP
 sign-ins keep working. The record is unchanged. A running server keeps using its
-current key until it restarts; the next start also updates the managed Executor
-account. Rotation refuses supplied keys, a directory without saved keys, and a
+current key until it restarts (`executor service restart`); the next start also
+updates the managed Executor account. Rotation refuses supplied keys, a directory without saved keys, and a
 store that is locked or denied, and changes nothing in those cases.
 Account-connection links signed with the old key stop working.
 
 SDK routes, including `/mcp` and `/openapi.json`, require `Authorization: Bearer …`.
+The running server's `server.json` password is accepted wherever the API key is.
 The local token grants access to the whole local instance. Owner filters do not
 represent user authentication. SDK and MCP requests with a browser `Origin`
 header are rejected. Dashboard data requires the same bearer key and permits
 only the configured loopback origin when an `Origin` header is present.
+
+## Background service
+
+One server serves each data directory, and every local client shares it.
+`src/contracts/service.ts` is the contract, `service-client.ts` finds, starts
+and stops the server, and `server-process.ts` runs it. Nothing is installed with
+the OS: no system service, no login item and no idle exit. The server runs until
+something stops it, so after a reboot MCP clients get connection refused until
+something runs `executor` or `executor service start`.
+
+- `executor` starts or joins the server, pairs the browser through
+  `POST /auth/pair`, prints the Executor, MCP and Connect lines, opens the link
+  and exits. It replaces a server that runs another version, as
+  `executor service restart` does. `executor service pair`, client commands
+  without a host (`executor apps`, the tool commands and `executor mcp`), and
+  `executor service start` use whatever version runs. `executor service pair`
+  waits up to 30 seconds for a registered server that is
+  still starting or stopping, or that holds the data directory without
+  answering.
+- The CLI prints or opens a connection link only when it is an `http` or
+  `https` URL without credentials in it. A link from the CLI's own server, the
+  background or private one, must also be on that server's URL or its HTTPS
+  `EXECUTOR_BROWSER_ORIGIN`; anything else fails as an unexpected response.
+- `executor serve` runs the server in the foreground and registers it the same
+  way, so other clients use it while it runs.
+- `executor --standalone` runs a private, unregistered `serve --stdio` child on a
+  free port for as long as the command runs. It keeps the child's stderr until
+  the child is ready, so a refusal reports the child's own reason. The command
+  fails, saying how, if the child stops first. When the command ends it closes
+  the child's stdin and gives it five seconds to stop before the child is
+  killed, which on Windows skips its cleanup.
+  `executor --server <url>` pairs with a server elsewhere, sending
+  `EXECUTOR_API_KEY` or the saved API key.
+- `executor service start|stop|restart|status|get|set|unset|pair|rotate-key` manages it.
+  `status` prints `starting` before the address while the registered server
+  boots, `stopping` once it is asked to stop, and `not responding` while its
+  info request times out but its process still runs, as a hung or suspended
+  server's does. The settings are `port`, `env`
+  (`set env <name> <value>`, `unset env <name>`) and `disabled`. `disabled`
+  makes `executor` and client commands without a host run a private server, as
+  `--standalone` does; `executor service start`, `executor service pair` and the
+  desktop still use the background server. Changing
+  `port` or `env`, or setting `disabled`, saves the setting and then stops the
+  server, so whichever client starts it next, even at once, starts it with the
+  new settings. The desktop then shows that it was stopped and starts none
+  itself.
+- A client command without a host reports a local server that cannot start like
+  its other failures: code `LocalServerUnavailable`, and JSON on stdout when
+  stdout is not a terminal.
+- `executor upgrade` and `--rollback` stop the registered server before a
+  standalone install switches versions, which removes older version
+  directories, or before the package manager runs, which replaces the installed
+  files. Afterwards they run the new version's `executor service start`. A
+  target that refuses `executor service status`, as a release from before the
+  background service does, gets no restart; the upgrade says to run
+  `executor serve` there instead. A failed or interrupted upgrade starts the
+  server again with this CLI. When the server does not stop, a standalone
+  switch keeps its version directory, and an npm, pnpm, Bun or Yarn upgrade
+  stops with `service-running`. A server from a development build is left
+  running.
+- A registered server stops itself, removing its registration, once its
+  executable is no longer the file it started from: every 5 seconds it compares
+  the device, inode, size and modification time of the release executable, or
+  of the Node or Bun that runs the CLI, with those at its start. `brew upgrade`,
+  `npm i -g` and the install script remove or replace that file without asking
+  the server to stop, which would leave it serving from deleted runtime files;
+  the next client then starts the installed version. The install scripts also
+  stop the registered server through the installed `executor service stop`
+  before they replace or prune a version. On Windows a running executable
+  cannot be replaced or removed, so `npm i -g` fails while the server runs.
+
+The port is `EXECUTOR_PORT`, then the `port` setting, then `4312`. A client
+starts detached `serve --service` processes with its own environment (the
+desktop passes its own) plus `env` and the absolute data directory, and waits up
+to two minutes for one to answer. `EXECUTOR_API_KEY` and
+`EXECUTOR_ENCRYPTION_KEY` reach a server it starts, background or private, only
+when both are set; one alone is the client's credential, which it only sends as
+its bearer. A starting server that finds the port held by this directory's
+registered server exits quietly; one that finds another program there fails
+with `port-in-use` at once, and one that finds another Executor there waits up
+to 15 seconds for it to go, then fails saying another Executor holds it. The
+message names `EXECUTOR_PORT` when that chose the port.
+Once a client has its server, it sends SIGTERM to every process it started that
+did not become the registered server, so none can take the port later. A
+foreground or private server whose port this directory's registered server holds
+fails with `directory-in-use` and that server's URL, also when that server does
+not answer within a second but its process still runs. A server that cannot take
+the data directory's lock names the registered server's URL when that server
+proves it answers, or still runs without answering in time; otherwise the
+holder is unregistered, such as a
+`--standalone` server or the desktop moving data, which `executor service stop`
+cannot stop, and the message says so.
+
+The first start that writes `keys.json` prints which file it wrote on stderr,
+which nothing reads for a background server. `executor` and
+`executor service start` repeat that line when the data directory had no
+installation record before they started the server and has a `file` record
+after; they read only the record.
+
+Executor 2 servers before the background service wrote `server.json` as
+`{ pid, version?, url, command }` and took no `.server.lock`. While the process
+such a record names runs and an Executor answers `GET /auth/session` at its URL
+(or does not answer within two seconds), servers and clients refuse the data
+directory with `directory-in-use`, naming that process and its URL, instead of
+opening the same databases. A record whose process runs while nothing answers
+there, or something else does, was left by a killed server whose pid another
+program now has: it is ignored, with a line on stderr, until a server replaces
+it.
+
+| File           | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server.json`  | The running server's `id`, `version`, `url`, `pid`, on Linux and macOS `started` and `boot` (its process, as `.server.lock` records it), and per-process `password`; `group` when it leads its own process group, as a background server does; `browserOrigin` when set. Mode `0600`, replaced atomically, removed on exit. A server stops once the file no longer names it.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `service.json` | The `port`, `env` and `disabled` settings. Mode `0600`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `.server.lock` | Held for the server's lifetime, before storage opens, and by the desktop while it moves or resets data; `owner.json` inside names the holder's process by `pid`, on Linux and macOS with `started` and `boot`, on Windows with the `pipe` it listens on, and its `host` and, for messages, for a server, its loopback `port`. A second server fails with `directory-in-use`. `started` is the start time the operating system keeps: on Linux the clock ticks from boot, on macOS the second, read with `/bin/ps`. `boot` is Linux's boot ID with the reader's pid and time namespaces, and macOS's boot session UUID. A process reads its own as it reads any other process's, so the two are compared for equality. On Windows, Node and Bun read another process's start time only by starting a program such as PowerShell, which takes seconds on a busy machine, so nothing there starts a program to check a lock. The holder listens on a named pipe with a random name, `\\.\pipe\executor-lock-<random>`, from before it takes the lock until after it releases it. Windows removes the pipe as soon as that process exits, also when it is killed, and keeps it while the process is suspended. Opening it connects, or fails at once with EBUSY once a suspended holder's few pipe instances are taken, and both mean it runs; once it has exited, the pipe is not found. The pipe holds no file in the data directory open, so the desktop can rename the directory while it holds the lock. A lock whose owner can be checked is held, however stale its time, while that process runs, as a suspended or sleeping server does: its pid runs on this boot with that start time, or its pipe exists on the host that recorded it. It is taken over at once when that process has exited, also when its pid now names another program, whatever listens on its port. A lock without an owner, as one being taken, one owned on another boot, machine or time namespace, or recorded without a start time or pipe, and one whose owner's start time, this boot or pipe cannot be read now, is taken over once it is 30 seconds stale. A server that cannot read its own start time says so once, on stderr and in its diagnostics log; one that cannot listen on its pipe says so in its log. A takeover is decided once, under `.server.lock.takeover`, and renames the abandoned lock aside before removing it. A holder releases the lock only while `owner.json` still holds the record it wrote, so a host name change does not leave it behind. |
+
+`GET /api/service` answers before storage opens and needs no credential:
+`{ id, version, pid, status }`, with 503 and `starting` until every route is
+served, then 200 and `ready`, and 503 and `stopping` from when it is asked to
+stop, or starts closing, until it exits. A client waits for a stopping server
+to exit instead of joining it or counting it as lost, then starts one if it
+starts servers. Anyone on the machine can read those, so they do
+not identify the server. A client sends `?challenge=<random nonce>`, and a
+server with a password adds `proof`: the base64url HMAC-SHA256 of the nonce,
+keyed with its password. Clients, and a starting server checking who holds its
+port, trust `server.json` only when this route answers with its `id`, `pid`,
+`version` and a `proof` made with the password in that file, so a process that
+took the port after the server died cannot pass as it, and the password is
+never sent before the proof. `POST /api/service/stop` with the registration
+password as bearer shuts the server down gracefully; a server that does not
+exit then gets SIGTERM and SIGKILL. A server that only times out is signalled
+without being sent the password. Each signal goes only to a pid that runs on
+this boot with the start time `server.json` records, or on Windows that the data
+directory's lock names while its pipe exists, checked again before each;
+otherwise the server has exited and its pid may now name another program, or
+that cannot be told, so escalation stops and its registration is removed. A
+start also removes, without waiting, a registration whose process does not
+answer and has exited, or, when that cannot be told, as for one from another
+boot, no longer holds the data directory's lock with a refresh in the last 30
+seconds. A registration with
+`group` is signalled with its process group on POSIX, so its telemetry
+collector and app runtimes stop with it. Both routes refuse requests with an
+`Origin` header. The password changes with every server process, so do not give
+it to MCP clients.
+
+Known limitation: another machine's boot looks like an earlier boot of this
+one. With the data directory on a home directory shared by two machines, a
+client on the machine that does not run the server finds nothing at the
+registered loopback URL, so it removes the registration, and the server on the
+other machine then stops within five seconds. A lock owned on another boot
+stays held while it is refreshed, so the two never open the databases at once.
 
 ## Local dashboard
 
@@ -156,16 +311,19 @@ bun run web:build
 bun run server
 ```
 
-`bun run executor` starts the server and opens a one-use connection link.
-`bun run executor serve` (or `bun run server`) prints the link without opening a
-browser. `bun run executor pair` prints a fresh link for the running server.
+`bun run executor` starts or joins the background server, opens a one-use
+connection link and exits. `bun run executor serve` (or `bun run server`) runs
+the server in the foreground and prints the link without opening a browser.
+`bun run executor service pair` prints a fresh link for the registered server, sent the
+password from its `server.json`. `bun run dev` runs a private server that does
+not register, so `executor service pair` cannot reach it; it holds `.local/dev/local`,
+so stop it before running `bun run executor`.
 A paired dashboard can also issue a new link through `POST /auth/pair`, with its
 session cookie and a valid local Origin. Executor desktop uses this for **File →
 Open in browser**. A bearer key alone still cannot mint a link from browser requests.
-Repository commands run TypeScript source through Node. The npm beta uses
-`executor`, `executor serve`, and `executor pair`, with data in
-`~/.executor/v2/cli`. Build it with `bun run release:cli`; see
-[release packaging](../../../scripts/releases/README.md).
+Repository commands run TypeScript source through Node. Released builds use the
+same commands with data in `~/.executor/v2/cli`. Build one with
+`bun run release:cli`; see [release packaging](../../../scripts/releases/README.md).
 
 The link expires after five minutes and is consumed once. Its token is carried
 in the URL fragment, removed from browser history before exchange, and replaced
@@ -192,34 +350,45 @@ See [reactive storage](../../../notes/reactive-storage.md) for runtime limits. D
 previews both use the local server origin. `src/dev.ts` owns Vite's lifetime;
 the production entry points do not load Vite.
 
-## Desktop startup foundation
+## Hosts and the desktop
 
-The desktop foundation lets a parent launch the same `src/bin.ts --bootstrap-fd 3` process
-with a private pipe at fd3. It sends a JSON `DesktopBootstrap` envelope:
-`{ "version": 1, "token": "<64 lowercase hex characters>" }`, then closes the pipe.
-The parent generates this ephemeral token; it is not a persistent API key.
+`@executor-js/local-server/node` is the composition edge for the CLI's
+foreground, background and private servers. `listenLocal` binds `127.0.0.1` and
+serves the service routes at once, `lockDataDirectory` holds `.server.lock`, and
+only then does `composeLocalServer` open storage and serve the product.
+`startLocalServer` does all three for one private, unregistered server, as
+`bun run dev` does, and stops, like every server, if it loses the lock. Its
+Effect scope owns HTTP, persistence, and auth; closing it interrupts requests
+and closes retained connections. `EXECUTOR_PORT=0` chooses an available
+loopback port.
 
-The server parses and bounds the pipe input, registers the one-use token, and
-writes a credential-free `ServerReady` line to stdout:
-`{ "version": 1, "url": "http://127.0.0.1:<port>" }`. The parent opens that URL with
-`/#pair=<token>` in its renderer, using the same cookie exchange as the browser.
-No token is sent in argv, environment variables, or readiness logs.
-
-`startLocalServer` is exported from `@executor-js/local-server/node` for in-process
-hosts. Its Effect scope owns HTTP, persistence, and auth; closing it interrupts
-requests and closes retained connections. `EXECUTOR_PORT=0` chooses an available
-loopback port. The fd3 protocol is exercised by a real child-process test. The
-[Electron desktop host](../desktop/README.md) now uses this server composition
-with its own entry, Vite middleware, and a private OAuth callback pipe. Run
-`bun run desktop:dev` from the repository root. Distribution packaging and
-a cross-process reconnect manager remain separate work.
+Executor desktop shares the same background service as the CLI. The
+[desktop README](../desktop/README.md) describes how it starts, pairs and
+recovers it. Run `bun run desktop:dev` from the repository root.
 
 ## Connect an MCP client
 
 - Transport: Streamable HTTP
-- URL: `http://127.0.0.1:4312/mcp`
-- Header: `Authorization: Bearer <EXECUTOR_API_KEY>`
+- URL: `http://127.0.0.1:4312/mcp`, or the port `executor service status` prints
+- Header: `Authorization: Bearer <API key>`, the saved local API key or `EXECUTOR_API_KEY`
 - Tools: `skills`, for app documents; `execute`, with a `code` string
+
+A client that starts a command can use `executor mcp` instead, a stdio relay to
+the same endpoint. The client commands live in `packages/app-management`:
+`src/tools-cli.ts` declares `login`, `logout`, `whoami`, the tool commands and
+`mcp`; `src/implementation/hosts.ts` resolves their host (`--host`,
+`EXECUTOR_HOST`, the host signed in to last, then this server);
+`src/implementation/node-auth.ts` keeps each host's app management and tools
+sign-ins; `src/implementation/tools-client.ts` is the MCP client and relay,
+which opens a new host session when the host forgets its own; and
+`src/implementation/paused-calls.ts` keeps the session of a call paused for
+browser approval, which `resume` continues.
+Without a host they reach this server with the registered password, or
+`EXECUTOR_API_KEY` when it is set.
+
+Do not configure a client with the `server.json` password, which changes every
+time the server starts. The client reaches the background server only while it
+runs; after a reboot, run `executor` or `executor service start` first.
 
 The server sends the Executor app's `executor` skill as its MCP instructions.
 Discover the Executor app with `skills({})`, then read that skill with
@@ -304,7 +473,7 @@ See [OAuth notes](../../../notes/oauth.md) for the protocol library and limits.
 
 **Apps → Add app** lists Executor's official apps from the feed at
 `EXECUTOR_CATALOG_URL` (the feed's `index.json`; the default is the published feed at
-`https://catalog.executor.sh/index.json`).
+`https://catalog.executor.sh/index.json`, and `off` lists no feed apps).
 Choosing one installs the app's own source as a copy, the way a published app is
 installed, and then asks for an account through the app's own providers. Choose
 an unused app name; this flow never replaces an existing app. See
@@ -349,7 +518,7 @@ further importer work. Unsupported features fail explicitly before deploying.
 
 Local uses disk-persisted PGlite with the PostgreSQL schema and an in-process
 live coordinator. The host owns each database until shutdown. Only one server
-process may open a data directory. `fumadb-effect/pglite` configures the native
+process may open a data directory; `.server.lock` enforces this. `fumadb-effect/pglite` configures the native
 Effect driver to preserve UTC dates on machines outside UTC.
 
 Existing `executor.sqlite` and `browser-auth.sqlite` files are untouched and are

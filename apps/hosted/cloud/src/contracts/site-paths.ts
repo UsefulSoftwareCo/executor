@@ -3,6 +3,7 @@
  * (`notes/cloud-domains.md`). Its pages run through the Worker on every host, so the deployment
  * and browser origins can send them there; their static files are served from any host.
  */
+import { clientMetadataLogoPath } from "@executor-js/hosted-server/oauth-client-metadata";
 
 /** A path pattern in the form both the router and `run_worker_first` read: exact, or `/*`. */
 export type SitePattern = `/${string}`;
@@ -37,7 +38,10 @@ export const sitePages: ReadonlyArray<SitePattern> = [
  */
 export const v1SitePages: ReadonlyArray<SitePattern> = ["/google-oauth", "/privacy", "/terms"];
 
-/** Static files the site's pages load, which every host serves from its assets. */
+/**
+ * Static files the site's pages load, which every host serves from its assets, and the logo the
+ * OAuth client metadata document names: the document is on the edge, so its logo must be too.
+ */
 export const siteFiles: ReadonlyArray<SitePattern> = [
   "/_astro/*",
   "/authors/*",
@@ -46,6 +50,8 @@ export const siteFiles: ReadonlyArray<SitePattern> = [
   "/apple-touch-icon.png",
   "/og-image.png",
   "/pattern-graph-paper.svg",
+  // v1's dashboard has no `/favicon.png`, so v1 forwards it to v2 like the document.
+  clientMetadataLogoPath,
 ];
 
 /**

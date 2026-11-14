@@ -15,6 +15,8 @@ export class SecretsMethod<Fields extends Schema.Decoder<unknown>> extends Data.
   "secrets",
 )<{
   readonly label: string;
+  /** Markdown the connect form shows above the fields: ordered setup, prerequisites, warnings. */
+  readonly guide?: string;
   readonly fields: Fields;
   /** Fields marked with `plain()` or `raw()`. */
   readonly exposure?: Readonly<Record<string, FieldExposure>>;
@@ -196,6 +198,8 @@ export class OAuth2Method<Response extends Schema.Decoder<unknown>> extends Data
   "oauth2",
 )<{
   readonly config: OAuth2Config;
+  /** Markdown the connect form shows where a user enters an OAuth client for this service. */
+  readonly clientGuide?: string;
   readonly response: Response;
   /** Response fields marked with `plain()` or `raw()`. */
   readonly exposure?: Readonly<Record<string, FieldExposure>>;

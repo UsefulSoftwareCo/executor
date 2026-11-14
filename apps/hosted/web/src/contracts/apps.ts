@@ -15,6 +15,7 @@ import {
   type AccountScope,
   type ProviderId,
   HttpUrl,
+  OAuthClientId,
   type App,
   type Account,
   type AccountId,
@@ -414,6 +415,8 @@ export const PendingOAuth = Schema.Struct({
   /** A reconnect keeps its account name, so completion does not ask for one. */
   reconnect: Schema.optionalKey(Schema.Boolean),
   manualClient: Schema.optionalKey(Schema.Boolean),
+  /** The client this attempt registered, which stays registered if sign-in fails. */
+  registeredClient: Schema.optionalKey(OAuthClientId),
   /** The page the sign-in started from when it is not the app's own: onboarding's account step. */
   returnTo: Schema.optionalKey(OAuthReturn),
 });

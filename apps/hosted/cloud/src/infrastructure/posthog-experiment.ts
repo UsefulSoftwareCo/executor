@@ -6,7 +6,7 @@ import { isResolved } from "alchemy/Diff";
 import * as Provider from "alchemy/Provider";
 import { Effect, Redacted, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
-import { onboardingExperiment } from "../contracts/onboarding.ts";
+import { onboardingExperiment, onboardingSkipExperiment } from "../contracts/onboarding.ts";
 import { PostHogProvisioningFailed } from "./posthog-provider.ts";
 
 const ownership = (key: string) => `[executor-next:${key}]`;
@@ -208,6 +208,91 @@ export const onboardingExperimentDefinition: PostHogExperimentDefinition = {
       name: "Skipped the assistant step",
       goal: "decrease",
       series: [onboardingAction("skip_assistant")],
+    },
+  ],
+  exposure_criteria: { filterTestAccounts: true, multiple_variant_handling: "exclude" },
+  only_count_matured_users: true,
+};
+
+const skipWindow = { ...window, conversion_window: onboardingSkipExperiment.attributionDays };
+
+/**
+ * Skippable or required setup steps, for members creating their first Cloud team, assigned
+ * independently of the order. Its metrics mirror the order experiment's; skipping cannot happen in
+ * `required`, so instead of the skip actions it counts signing out of setup, the only way out of a
+ * required setup and the one leaving that both variants record.
+ */
+export const onboardingSkipExperimentDefinition: PostHogExperimentDefinition = {
+  name: "Onboarding skip: skippable or required setup steps",
+  description: `Members creating their first Cloud team can skip connecting accounts and their assistant (control), or must do both before the dashboard opens; signing out is the only way out. Both end at the first prompt.\n${ownership(onboardingSkipExperiment.flag)}`,
+  feature_flag_key: onboardingSkipExperiment.flag,
+  feature_flag: {
+    ensure_experience_continuity: false,
+    filters: {
+      groups: [{ properties: [], rollout_percentage: 100 }],
+      multivariate: {
+        variants: [
+          { key: "skippable", rollout_percentage: 50 },
+          { key: "required", rollout_percentage: 50 },
+        ],
+      },
+    },
+  },
+  parameters: {
+    variant_notes: {
+      skippable: "Each setup step offers Skip for now",
+      required: "Each setup step waits until done; the dashboard opens after both",
+    },
+  },
+  metrics: [
+    {
+      ...skipWindow,
+      uuid: "9fb8011e-7791-4524-9eb1-8af955f98437",
+      name: "First successful tool call within 7 days",
+      goal: "increase",
+      series: [
+        {
+          kind: "EventsNode",
+          event: "tool_execution_completed",
+          properties: [{ key: "ok", value: ["true"], operator: "exact", type: "event" }],
+        },
+      ],
+    },
+  ],
+  metrics_secondary: [
+    {
+      ...skipWindow,
+      uuid: "d46c48f7-9e30-4d12-89b0-c70b8af82977",
+      name: "MCP agent connected",
+      goal: "increase",
+      series: [
+        {
+          kind: "EventsNode",
+          event: "agent_connected",
+          properties: [{ key: "grant_kind", value: ["mcp"], operator: "exact", type: "event" }],
+        },
+      ],
+    },
+    {
+      ...skipWindow,
+      uuid: "6e2b2d44-f240-47af-ab6d-1412bcd3620e",
+      name: "Account connected",
+      goal: "increase",
+      series: [{ kind: "EventsNode", event: "account_connected" }],
+    },
+    {
+      ...skipWindow,
+      uuid: "8b041cd6-f631-4070-af9c-524be09337c3",
+      name: "Reached the first prompt",
+      goal: "increase",
+      series: [onboardingAction("setup_prompt")],
+    },
+    {
+      ...skipWindow,
+      uuid: "66d40fe8-ccf6-47c0-b637-f5356c0d0438",
+      name: "Signed out of setup",
+      goal: "decrease",
+      series: [onboardingAction("leave_setup")],
     },
   ],
   exposure_criteria: { filterTestAccounts: true, multiple_variant_handling: "exclude" },

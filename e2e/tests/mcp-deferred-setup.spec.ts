@@ -53,7 +53,9 @@ layer(HostedLive, { excludeTestServices: true })("Deferred MCP setup", (it) => {
           );
         yield* browser.use("Fill the MCP server form", (page) =>
           page
-            .goto(`/org/${actors.organization.slug}/apps/add/custom`)
+            .goto(`/org/${actors.organization.slug}/apps`)
+            .then(() => page.getByRole("button", { name: "Add app", exact: true }).click())
+            .then(() => page.getByRole("menuitem", { name: /^From an MCP server/ }).click())
             .then(() => page.getByLabel("App name", { exact: true }).fill(name))
             .then(() =>
               page.getByLabel("MCP server URL", { exact: true }).fill(`${issuer.origin}/mcp`),

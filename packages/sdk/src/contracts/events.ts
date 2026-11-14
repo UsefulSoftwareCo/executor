@@ -85,22 +85,40 @@ export const EventArguments = Schema.Record(Schema.String, EventFilterValue);
 export type EventArguments = typeof EventArguments.Type;
 
 /**
+ * Which events a subscription to a selection receives, as the subscriber wrote it: an app slug and
+ * an event name, an app slug alone for all of its events, or neither for every event of every app
+ * its owner has. Its deliveries carry the app and event beside the data.
+ */
+export const EventSelection = Schema.Struct({
+  app: Schema.optionalKey(Schema.NonEmptyString),
+  event: Schema.optionalKey(Schema.NonEmptyString),
+});
+export type EventSelection = typeof EventSelection.Type;
+
+/**
  * What identifies a subscription. `principal` is the product's identifier for the authenticated
  * subscriber, such as an OAuth grant. `name` is the event name as the subscriber wrote it.
+ * `selection`, when present, is part of the identity, so one subscriber's selections of different
+ * events under the same name stay apart.
  */
 export const EventSubscriptionKey = Schema.Struct({
   principal: Schema.NonEmptyString,
   callbackUrl: Schema.NonEmptyString,
   name: Schema.NonEmptyString,
   arguments: EventArguments,
+  selection: Schema.optionalKey(EventSelection),
 });
 export type EventSubscriptionKey = typeof EventSubscriptionKey.Type;
 
 /** Subscribe, or refresh the subscription with the same key. */
 export interface SubscribeEvent {
   readonly key: EventSubscriptionKey;
-  /** The app and event the name refers to now. A refresh of a saved subscription keeps its own. */
-  readonly target?: { readonly app: AppId; readonly event: EventName };
+  /**
+   * The events the name or selection refers to now: one event of an app, every event of an app
+   * (`event` null), or every event of every app `owner` has. A refresh of a saved subscription
+   * keeps its own.
+   */
+  readonly target?: EventTarget;
   /** The person the principal acts for; products recheck their access before each delivery. */
   readonly subject: string;
   /** A Standard Webhooks `whsec_` secret, chosen by the subscriber. */
@@ -108,6 +126,11 @@ export interface SubscribeEvent {
   /** Suggested lifetime; `null` asks for no expiry, which is granted as the longest lifetime. */
   readonly ttlMs?: number | null;
 }
+
+/** One app's event, all of one app's events, or all events of an owner's apps. */
+export type EventTarget =
+  | { readonly app: AppId; readonly event: EventName | null }
+  | { readonly owner: OwnerId; readonly app: null; readonly event: null };
 
 /** The server's grant. */
 export interface EventSubscriptionGrant {
@@ -119,10 +142,14 @@ export interface EventSubscriptionGrant {
 export const EventSubscription = Schema.Struct({
   id: EventSubscriptionId,
   owner: OwnerId,
-  app: AppId,
-  event: EventName,
+  /** Null for a selection of every app the owner has. */
+  app: Schema.NullOr(AppId),
+  /** Null for a selection of every event of its app, or of every app. */
+  event: Schema.NullOr(EventName),
   name: Schema.NonEmptyString,
   arguments: EventArguments,
+  /** The selection as the subscriber wrote it; null for a subscription to one named event. */
+  selection: Schema.NullOr(EventSelection),
   callbackUrl: Schema.NonEmptyString,
   principal: Schema.NonEmptyString,
   subject: Schema.String,
@@ -220,6 +247,12 @@ export interface EventSender {
 /** What a product checks before each delivery. */
 export interface EventDeliveryAuthority {
   readonly subscription: EventSubscription;
+  /**
+   * The app and event of this occurrence. A subscription to a selection receives several, so a
+   * product checks them, not only the subscription's.
+   */
+  readonly app: AppId;
+  readonly event: EventName;
   /** The account the event came from, or null for an app without accounts. */
   readonly account: AccountId | null;
   /**

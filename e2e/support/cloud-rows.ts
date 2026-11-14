@@ -9,14 +9,10 @@ export interface RowStatement {
 }
 
 /**
- * Apply statements in one transaction to a managed Cloud database: Cloud's own
- * (`sso-database.json`) or the emulated v1 database (`v1-database.json`). Returns each
- * statement's rows.
+ * Apply statements in one transaction to a managed Cloud's own database (`sso-database.json`).
+ * Returns each statement's rows.
  */
-export const writeRows = (
-  database: "sso-database.json" | "v1-database.json",
-  statements: ReadonlyArray<RowStatement>,
-) =>
+export const writeRows = (database: "sso-database.json", statements: ReadonlyArray<RowStatement>) =>
   Effect.gen(function* () {
     const target = yield* Target,
       fs = yield* FileSystem.FileSystem,
@@ -41,4 +37,43 @@ export const writeRows = (
     return yield* Schema.decodeUnknownEffect(
       Schema.fromJsonString(Schema.Array(Schema.Array(Schema.Unknown))),
     )(output);
+  });
+
+/**
+ * Expire the evaluated result `key` kept in a managed Cloud's app data supervisors, as a day
+ * passing does: the supervisor removes it at its next command, so a read of it misses. Returns how
+ * many stored parts were expired.
+ */
+export const expireEvaluated = (key: string) =>
+  Effect.gen(function* () {
+    const target = yield* Target,
+      fs = yield* FileSystem.FileSystem,
+      processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const state = yield* fs
+      .readFileString(`${target.directory}/alchemy-state.json`)
+      .pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.fromJsonString(Schema.Struct({ directory: Schema.String })),
+          ),
+        ),
+      );
+    // Alchemy keeps a stage's state in `.alchemy/state/<app>/<stage>` and its local Durable
+    // Objects in `.alchemy/local`.
+    const output = yield* processes.string(
+      ChildProcess.make(
+        "node",
+        [
+          "apps/hosted/testing/cloud-evaluated-fixture.ts",
+          "--directory",
+          `${state.directory}/../../../local`,
+          "--key",
+          key,
+        ],
+        { env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" }, extendEnv: false },
+      ),
+    );
+    return (yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(Schema.Struct({ expired: Schema.Number })),
+    )(output)).expired;
   });

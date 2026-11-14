@@ -3,10 +3,13 @@ import type { AccountSubmission, OAuthSubmission } from "@executor-js/ui/contrac
 import { RegistryContext, useAtomSet } from "@effect/atom-react";
 import {
   OAuthClientInput,
+  OAuthClientNotFound,
   oauthClientEntryReasons,
   type Account,
   type AppId,
   type HttpUrl,
+  type OAuthClientId,
+  type OAuthClientSelection,
   type Provider,
 } from "@executor-js/sdk";
 import type {
@@ -15,8 +18,9 @@ import type {
   HostedOAuthStartResult,
 } from "@executor-js/hosted-server";
 import { Link } from "@tanstack/react-router";
-import { createContext, useContext, useState } from "react";
-import { Cause, Match, Option, Exit, Schema } from "effect";
+import { createContext, useContext, useRef } from "react";
+import { AtomRegistry } from "effect/reactivity";
+import { Cause, Effect, Match, Option, Exit, Schema } from "effect";
 import { Button } from "@executor-js/ui/components/button";
 import { OAuthFields, OAuthSetup } from "@executor-js/ui/dashboard/oauth-fields";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
@@ -30,7 +34,11 @@ import {
   type OAuthReturn,
 } from "../../contracts/apps.ts";
 import { useOrganizationDetails, useOrganizationRoute } from "../components/organization.tsx";
-import { RegisterServiceClient } from "./oauth-clients.tsx";
+import {
+  oauthClientsAtom,
+  registerOAuthClientAtom,
+  updateOAuthClientAtom,
+} from "../../contracts/oauth-clients.ts";
 
 /**
  * A page other than the app's own that starts account sign-ins, such as onboarding, provides where
@@ -50,12 +58,14 @@ export function ConnectionFields({
   onSaved,
   initialMethod,
   manualClient,
+  editClient,
   onPendingChange,
 }: {
   readonly connection: HostedAccountConnection;
   readonly onSaved: (account: Account) => void;
   readonly initialMethod?: string | undefined;
   readonly manualClient?: boolean | undefined;
+  readonly editClient?: OAuthClientId | undefined;
   readonly onPendingChange?: (pending: boolean) => void;
 }) {
   const { organization, slug: organizationSlug } = useOrganizationRoute();
@@ -89,6 +99,7 @@ export function ConnectionFields({
       redirectUri={connection.redirectUri}
       initialMethod={initialMethod}
       manualClient={manualClient}
+      editClient={editClient}
       submit={submit}
       start={startOAuth}
       onSaved={onSaved}
@@ -103,6 +114,7 @@ export function ConnectionFields({
             redirectUri: value.redirectUri,
             ...(connection.reconnectAccount ? { reconnect: true } : {}),
             manualClient: value.manualClient,
+            ...(value.registeredClient ? { registeredClient: value.registeredClient } : {}),
           },
           value.authorizationUrl,
         )
@@ -118,6 +130,7 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   redirectUri,
   initialMethod,
   manualClient,
+  editClient,
   submit,
   start,
   onSaved,
@@ -132,14 +145,19 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   readonly redirectUri: string;
   readonly initialMethod?: string | undefined;
   readonly manualClient?: boolean | undefined;
+  /** A registered client whose details reopen to be corrected before signing in again. */
+  readonly editClient?: OAuthClientId | undefined;
   readonly submit: (input: AccountSubmission) => Promise<Exit.Exit<Account, HostedError>>;
-  readonly start: (
-    input: OAuthSubmission & { readonly method: string },
-  ) => Promise<
+  readonly start: (input: {
+    readonly method: string;
+    readonly client?: OAuthClientSelection;
+  }) => Promise<
     Exit.Exit<A | Extract<HostedOAuthStartResult, { status: "completed" }>, HostedError>
   >;
   readonly onSaved: (account: Account) => void;
-  readonly onAuthorized: (value: A & { readonly manualClient: boolean }) => void;
+  readonly onAuthorized: (
+    value: A & { readonly manualClient: boolean; readonly registeredClient?: OAuthClientId },
+  ) => void;
   readonly onPendingChange?: (pending: boolean) => void;
 }) {
   const { organization } = useOrganizationRoute();
@@ -149,77 +167,107 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
   const role = useOrganizationDetails()?.role;
   const admin = role !== undefined && role !== "member";
   const registry = useContext(RegistryContext);
-  // Registering replaces the account form, since it is a form itself, then returns to the method.
-  const [registering, setRegistering] = useState<{
-    readonly method: string;
-    readonly issuer: typeof HttpUrl.Type;
-  }>();
-  const [method, setMethod] = useState(initialMethod);
+  const register = useAtomSet(registerOAuthClientAtom(organization), { mode: "promiseExit" });
+  // A client registered before sign-in failed to start is updated on retry, not registered again.
+  const registered = useRef<{
+    readonly issuer: string;
+    readonly clientId: string;
+    readonly id: OAuthClientId;
+  }>(undefined);
   // Reconnects keep their name; a new account is named once saved.
   const saved = (value: Account) => {
     if (!account)
       requestName({ organization, account: value.id, saved: { account: value, provider } });
     onSaved(value);
   };
-  if (registering !== undefined)
-    return (
-      <RegisterServiceClient
-        service={{
-          issuer: registering.issuer,
-          providers: [{ id: provider.id, name: provider.definition.name }],
-        }}
-        onDone={() => {
-          registry.refresh(
-            oauthSetupAtom({ organization, provider: provider.id, method: registering.method }),
+  /**
+   * An administrator's entered client is registered, or a registered one updated, before sign-in
+   * starts, so a failed or cancelled sign-in keeps it. A failure here stays in the form.
+   */
+  const savedClient = (
+    input: OAuthSubmission,
+    issuer: typeof HttpUrl.Type | undefined,
+  ): Promise<Exit.Exit<OAuthClientId | undefined, HostedError>> => {
+    const entered = input.client;
+    if (entered === undefined || !Schema.is(OAuthClientInput)(entered))
+      return Promise.resolve(Exit.succeed(undefined));
+    const { update } = input;
+    if (update !== undefined)
+      return Effect.runPromiseExit(
+        Effect.gen(function* () {
+          const directory = yield* AtomRegistry.getResult(
+            registry,
+            oauthClientsAtom(organization),
+            { suspendOnWaiting: true },
           );
-          setMethod(registering.method);
-          setRegistering(undefined);
-        }}
-      />
+          const current = directory.clients.find((entry) => entry.client.id === update);
+          if (current === undefined) return yield* new OAuthClientNotFound({ client: update });
+          const mutation = updateOAuthClientAtom({ organization, client: update });
+          registry.set(mutation, {
+            ...(entered.clientId === current.client.clientId ? {} : { clientId: entered.clientId }),
+            ...(entered.clientSecret ? { clientSecret: entered.clientSecret } : {}),
+            audience: current.access.audience,
+            revision: current.access.revision,
+          });
+          const saved = yield* AtomRegistry.getResult(registry, mutation, {
+            suspendOnWaiting: true,
+          });
+          return saved.client.id;
+        }),
+      );
+    if (input.register !== true || issuer === undefined)
+      return Promise.resolve(Exit.succeed(undefined));
+    const retried = registered.current;
+    if (retried?.issuer === issuer && retried.clientId === entered.clientId)
+      return savedClient({ ...input, register: false, update: retried.id }, issuer);
+    return register({
+      issuer,
+      clientId: entered.clientId,
+      ...(entered.clientSecret ? { clientSecret: entered.clientSecret } : {}),
+      audience: { kind: "everyone" },
+    }).then((exit) =>
+      Exit.map(exit, (saved) => {
+        registered.current = { issuer, clientId: entered.clientId, id: saved.client.id };
+        return saved.client.id;
+      }),
     );
+  };
   return (
     <AccountForm
       provider={provider}
       {...(account ? { account } : {})}
-      initialMethod={method}
+      initialMethod={initialMethod}
       Failure={HostedFailure}
       submitLabel={account ? "Save credentials" : "Connect account"}
       submit={submit}
       {...(app === undefined || app === null
         ? {}
         : {
-            check: (input: AccountSubmission) =>
-              checkCredentials({ organization, app, provider: provider.id, ...input }),
+            check: {
+              app,
+              run: (input: AccountSubmission) =>
+                checkCredentials({ organization, app, provider: provider.id, ...input }),
+            },
           })}
       onSaved={saved}
       {...(onPendingChange ? { onPendingChange } : {})}
-      oauth={({ method, disabled, onPendingChange, access }) => (
+      oauth={({ method, disabled, clientGuide, onPendingChange, access }) => (
         <OAuthSetup query={oauthSetupAtom({ organization, provider: provider.id, method })}>
           {({ setup, action, refresh }) => (
             <OAuthFields
               providerName={provider.definition.name}
+              clientGuide={clientGuide}
               Failure={HostedFailure}
               setup={setup}
               setupAction={action}
               access={access}
               disabled={disabled}
               manualClient={manualClient}
+              editClient={admin ? editClient : undefined}
+              registerClient={admin}
               {...(account ? { account } : {})}
               redirectUri={redirectUri}
               onPendingChange={onPendingChange}
-              {...(admin && setup !== "unresolved" && setup.grant === "authorization_code"
-                ? {
-                    missingClient: (
-                      <Button
-                        type="button"
-                        className="w-full"
-                        onClick={() => setRegistering({ method, issuer: setup.issuer })}
-                      >
-                        Register OAuth client
-                      </Button>
-                    ),
-                  }
-                : {})}
               requiresClient={(cause) => {
                 const required = Option.exists(Cause.findErrorOption(cause), (error) =>
                   Match.value(error).pipe(
@@ -233,16 +281,34 @@ export function HostedAccountForm<A extends HostedOAuthSignIn>({
                 if (required) refresh();
                 return required;
               }}
-              start={(input: OAuthSubmission) =>
-                start({ method, ...input }).then((exit) =>
-                  Exit.map(exit, (value) => ({
-                    ...value,
-                    // Entered details reopen after a failed return; chosen clients do not.
-                    manualClient:
-                      input.client !== undefined && Schema.is(OAuthClientInput)(input.client),
-                  })),
-                )
-              }
+              start={async (input: OAuthSubmission) => {
+                const saved = await savedClient(
+                  input,
+                  setup !== "unresolved" && setup.grant === "authorization_code"
+                    ? setup.issuer
+                    : undefined,
+                );
+                if (Exit.isFailure(saved)) return Exit.failCause(saved.cause);
+                const registeredClient = saved.value;
+                if (registeredClient !== undefined) refresh();
+                const exit = await start({
+                  method,
+                  ...(registeredClient !== undefined
+                    ? { client: { id: registeredClient } }
+                    : input.client !== undefined
+                      ? { client: input.client }
+                      : {}),
+                });
+                return Exit.map(exit, (value) => ({
+                  ...value,
+                  // Entered details reopen after a failed return; chosen clients do not.
+                  manualClient:
+                    registeredClient === undefined &&
+                    input.client !== undefined &&
+                    Schema.is(OAuthClientInput)(input.client),
+                  ...(registeredClient !== undefined ? { registeredClient } : {}),
+                }));
+              }}
               onAuthorized={(value) => {
                 refresh();
                 if (value.status !== "completed") {

@@ -18,7 +18,10 @@ const projects = 9;
  * - `mixed`: every step writes 500 numbered lines to each stream, with stdout lines split
  *   across two writes around a stderr line;
  * - `hang`: records its pid in `$FAKE_STATE/pids` and runs until killed, ignoring SIGINT and
- *   SIGTERM as the real compiler and framework build do.
+ *   SIGTERM as the real compiler and framework build do;
+ * - `warnings`: the root project prints warnings in the compiler's format, one of them two lines
+ *   long and one for a project option; `apps/docs` prints an error with a second line among
+ *   warnings and exits 2; `apps/marketing` prints a warning and a crash message and exits 101.
  */
 const tsc = `#!/bin/sh
 echo "$*" >> "$FAKE_STATE/ran"
@@ -35,6 +38,26 @@ case "$FAKE_MODE" in
       i=$((i+1))
     done ;;
   hang) trap '' INT TERM; echo $$ >> "$FAKE_STATE/pids"; exec sleep 60 ;;
+  warnings)
+    case "$project" in
+      .)
+        echo 'warning TS377134: Unknown Effect diagnostic rule \`x\` in \`diagnosticSeverity\`. effect(unknownRuleName)'
+        echo 'a.ts(1,1): warning TS377030: This has unknown in the error channel which is not recommended.'
+        echo 'Having an unknown or any error type is not useful. effect(anyUnknownInErrorContext)'
+        echo 'a.ts(2,1): warning TS377057: This module reference uses the \`path\` module. effect(nodeBuiltinImport)'
+        echo 'a.ts(3,1): warning TS377057: This module reference uses the \`path\` module. effect(nodeBuiltinImport)'
+        echo 'b.ts(1,1): warning TS377057: This module reference uses the \`path\` module. effect(nodeBuiltinImport)' ;;
+      apps/docs)
+        echo 'c.ts(1,1): warning TS377057: This module reference uses the \`path\` module. effect(nodeBuiltinImport)'
+        echo "c.ts(4,1): error TS2322: Type 'string' is not assignable to type 'number'."
+        echo "  The second line of the error."
+        echo 'c.ts(5,1): warning TS6133: x is declared but its value is never read.'
+        exit 2 ;;
+      apps/marketing)
+        echo 'd.ts(1,1): warning TS377057: This module reference uses the \`path\` module. effect(nodeBuiltinImport)'
+        echo 'thread main panicked'
+        exit 101 ;;
+    esac ;;
 esac
 `;
 
@@ -86,8 +109,11 @@ type Fakes = Effect.Success<typeof fakes>;
 
 const typecheck = (input: {
   readonly fakes: Fakes;
-  readonly mode: "long" | "mixed" | "hang";
+  readonly mode: "long" | "mixed" | "hang" | "warnings";
   readonly concurrency: string | undefined;
+  readonly warnings?: string | undefined;
+  /** Arguments after `bun run typecheck` or the runner. */
+  readonly args?: ReadonlyArray<string>;
   /** `bun run typecheck`, or the runner without `bun` in front of it. */
   readonly entry?: "bun" | "node";
   /** Runs once the process has started, with its pid and state directory. */
@@ -107,15 +133,17 @@ const typecheck = (input: {
       FAKE_STATE: state,
     };
     if (input.concurrency !== undefined) env.TYPECHECK_CONCURRENCY = input.concurrency;
+    if (input.warnings !== undefined) env.TYPECHECK_WARNINGS = input.warnings;
+    const args = input.args ?? [];
     // The process leads its own process group, as a terminal job or an agent's command does.
     const child = yield* processes.spawn(
       input.entry === "node"
-        ? ChildProcess.make("node", ["scripts/typecheck.ts"], {
+        ? ChildProcess.make("node", ["scripts/typecheck.ts", ...args], {
             cwd: input.fakes.repo,
             env,
             extendEnv: true,
           })
-        : ChildProcess.make("bun", ["run", "typecheck"], {
+        : ChildProcess.make("bun", ["run", "typecheck", ...args], {
             cwd: input.fakes.repo,
             env,
             extendEnv: true,
@@ -255,6 +283,105 @@ layer(NodeServices.layer, { excludeTestServices: true })("Parallel typecheck run
             "m",
           ),
         );
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("an invalid TYPECHECK_WARNINGS fails before any project runs", () =>
+    Effect.gen(function* () {
+      const run = yield* typecheck({
+        fakes: yield* fakes,
+        mode: "warnings",
+        concurrency: "4",
+        warnings: "verbose",
+      });
+      expect(run.exitCode).toBe(1);
+      expect(run.stderr).toContain('TYPECHECK_WARNINGS must be "all" or "summary"');
+      expect(run.ran).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("errors print in full and warnings are counted by rule and file", () =>
+    Effect.gen(function* () {
+      const files = yield* fakes;
+      const runs = yield* Effect.forEach(
+        [undefined, "summary"],
+        (warnings) => typecheck({ fakes: files, mode: "warnings", concurrency: "4", warnings }),
+        { concurrency: "unbounded" },
+      );
+      for (const run of runs) {
+        expect(run.exitCode).toBe(1);
+        const lines = run.stdout.split("\n");
+        expect(lines).toContain(
+          "c.ts(4,1): error TS2322: Type 'string' is not assignable to type 'number'.",
+        );
+        expect(lines).toContain("  The second line of the error.");
+        // A project that fails without an error prints every line, its warning too.
+        expect(lines).toContain("thread main panicked");
+        expect(run.stdout).toMatch(/^d\.ts\(1,1\): warning TS377057: /m);
+        for (const warning of [
+          "a.ts(",
+          "b.ts(",
+          "c.ts(1,",
+          "c.ts(5,",
+          "warning TS377134",
+          "Having",
+        ])
+          expect(
+            lines.filter((line) => line.startsWith(warning)),
+            warning,
+          ).toEqual([]);
+        expect(run.stdout).toMatch(/^── tsc-rs -p \.: ok in .*s, 5 warnings counted at the end$/m);
+        expect(run.stdout).toMatch(
+          /^── tsc-rs -p apps\/docs: failed \(exit 2\) in .*s, 2 warnings counted at the end$/m,
+        );
+        expect(run.stdout).toMatch(
+          /^── tsc-rs -p apps\/marketing: failed \(exit 101\) in [\d.]+s$/m,
+        );
+        expect(run.stdout).toMatch(/^7 warnings by rule, with the files that have the most\. /m);
+        expect(run.stdout).toMatch(
+          /^ +4 {2}nodeBuiltinImport +a\.ts 2, (b\.ts 1, c\.ts 1|c\.ts 1, b\.ts 1)$/m,
+        );
+        expect(run.stdout).toMatch(/^ +1 {2}anyUnknownInErrorContext +a\.ts 1$/m);
+        expect(run.stdout).toMatch(/^ +1 {2}unknownRuleName +\(project options\) 1$/m);
+        expect(run.stdout).toMatch(/^ +1 {2}TS6133 +c\.ts 1$/m);
+        const summary = lines.find((line) => line.startsWith("Typechecked "));
+        expect(summary).toMatch(/^Typechecked 9 of 9 projects .* Failed: /);
+        expect(summary).toContain("tsc-rs -p apps/docs");
+        expect(summary).toContain("tsc-rs -p apps/marketing");
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("--all-warnings and TYPECHECK_WARNINGS=all print every warning", () =>
+    Effect.gen(function* () {
+      const files = yield* fakes;
+      const runs = yield* Effect.all(
+        [
+          typecheck({ fakes: files, mode: "warnings", concurrency: "4", warnings: "all" }),
+          typecheck({ fakes: files, mode: "warnings", concurrency: "4", args: ["--all-warnings"] }),
+          typecheck({
+            fakes: files,
+            mode: "warnings",
+            concurrency: "4",
+            entry: "node",
+            args: ["--all-warnings"],
+          }),
+        ],
+        { concurrency: "unbounded" },
+      );
+      for (const run of runs) {
+        expect(run.exitCode).toBe(1);
+        const lines = run.stdout.split("\n");
+        expect(
+          lines.filter((line) => / warning TS\d+: /.test(line) || line.startsWith("warning TS")),
+        ).toHaveLength(8);
+        expect(lines).toContain(
+          "Having an unknown or any error type is not useful. effect(anyUnknownInErrorContext)",
+        );
+        expect(lines).toContain("  The second line of the error.");
+        expect(run.stdout).not.toContain("warnings by rule");
+        expect(run.stdout).not.toContain("counted at the end");
       }
     }).pipe(Effect.scoped),
   );

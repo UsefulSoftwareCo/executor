@@ -1,7 +1,7 @@
 import { useContext, useState } from "react";
 import { RegistryContext } from "@effect/atom-react";
 import { AtomRegistry } from "effect/reactivity";
-import { Effect } from "effect";
+import { Effect, Exit } from "effect";
 import {
   accountAtom,
   accountUsageAtom,
@@ -9,6 +9,7 @@ import {
   disconnectAccountAtom,
 } from "../../contracts/accounts.ts";
 import {
+  acknowledgeLinkChecks,
   linkAccountAtom,
   requirementChoicesAtom,
   unlinkAccountAtom,
@@ -63,7 +64,11 @@ export function AppAccounts({
     registry.set(check, undefined);
     return Effect.runPromiseExit(
       AtomRegistry.getResult(registry, check, { suspendOnWaiting: true }),
-    );
+    ).then((exit) => {
+      // The rows show the results before the check settles, so they never fall back to the old ones.
+      if (Exit.isSuccess(exit)) acknowledgeLinkChecks({ registry }, app.id, exit.value);
+      return exit;
+    });
   };
   const unused = useUnusedAccountPrompt({
     usage: accountUsageAtom,
@@ -139,6 +144,7 @@ export function AppAccounts({
       <SharedAccounts
         app={app}
         accounts={accounts}
+        canEdit
         Failure={Failure}
         appAccounts={scopeAccounts("app", appLinks)}
         yourAccounts={scopeAccounts("user", userLinks)}

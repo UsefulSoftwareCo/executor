@@ -116,7 +116,8 @@ const withOverrides = (overrides: RouterMeta | undefined) =>
 
 /**
  * Declare a router whose tools are discovered when read. `list` returns tools with names relative
- * to this router; mark queries with `readOnly: true`. `resolve` receives one of those names.
+ * to this router; mark queries with `readOnly: true`, and add `kindConfirmed: true` when your code,
+ * not an upstream service's claim, decides the kind. `resolve` receives one of those names.
  * The router carries the handler contexts of the operations `resolve` returns, so `defineApp`
  * checks them like a static router's.
  */

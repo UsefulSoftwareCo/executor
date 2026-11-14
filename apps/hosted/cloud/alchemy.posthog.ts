@@ -17,6 +17,7 @@ import {
 } from "./src/infrastructure/posthog-reports.ts";
 import {
   onboardingExperimentDefinition,
+  onboardingSkipExperimentDefinition,
   PostHogExperiment,
   postHogExperimentProvider,
   retiredExperimentProvider,
@@ -80,8 +81,16 @@ export default Alchemy.Stack(
       definition: onboardingExperimentDefinition,
       status: "running",
     }).pipe(retain());
+    // Independent of the order experiment. Ended in PostHog on 2026-10-30; an ended experiment
+    // cannot run again.
+    const onboardingSkip = yield* PostHogExperiment("OnboardingSkipExperiment", {
+      projectId: project.id,
+      definition: onboardingSkipExperimentDefinition,
+      status: "stopped",
+    }).pipe(retain());
     return {
       onboardingExperimentId: onboarding.id,
+      onboardingSkipExperimentId: onboardingSkip.id,
       proxyPath: proxy.text.pipe(Output.map((value) => `/api/${Redacted.value(value)}`)),
       dashboardId: dashboard.id,
       projectId: project.id,

@@ -71,10 +71,11 @@ export function ProviderIcon({
   const catalogIcons = useCatalogIcons();
   const [failed, setFailed] = useState<readonly string[]>([]);
   const normalized = name.toLowerCase().trim();
-  const size = large ? 24 : 17;
+  // Fetched large enough to stay sharp in the biggest tile on a 2x screen.
+  const fetchSize = 64;
   const catalog = icons ?? catalogIcons.byName.get(normalized) ?? undefined;
   const domain = url ?? (/^[a-z\d-]+(?:\.[a-z\d-]+)+$/i.test(normalized) ? normalized : null);
-  const source = normalized === "executor" ? "/favicon.png" : faviconUrl(domain, size);
+  const source = normalized === "executor" ? "/favicon.png" : faviconUrl(domain, fetchSize);
   const sources = declared ?? catalogIconSources(catalog);
   const waiting = sources === null && (pending || (icons === undefined && !catalogIcons.settled));
   const own = sources !== null && !failed.includes(sources.light) ? sources : null;
@@ -85,9 +86,10 @@ export function ProviderIcon({
   return (
     <span
       className={cn(
-        "provider-icon w-8.5 h-8.5 border border-border rounded-[7px] inline-flex items-center justify-center bg-background shrink-0 [&_img]:w-4.25 [&_img]:h-4.25 [&_img]:object-contain [&_>_svg]:w-4.25 [&_>_svg]:h-4.25 [&_>_svg]:object-contain max-[740px]:[.catalog-row_>_&]:row-[1_/_3]",
-        large &&
-          "provider-icon-large w-11 h-11 rounded-[9px] [&_img]:w-6 [&_img]:h-6 [&_>_svg]:w-6 [&_>_svg]:h-6",
+        // Logos are bare marks or shaped badges, so every one sits padded on the page background.
+        // The mark scales with the tile, which keeps the padding even wherever a page resizes it.
+        "provider-icon inline-flex size-8.5 shrink-0 items-center justify-center overflow-hidden rounded-[8px] border border-border bg-background [&_img]:size-[70%] [&_img]:object-contain [&_>_svg]:size-1/2 max-[740px]:[.catalog-row_>_&]:row-[1_/_3]",
+        large && "provider-icon-large size-11 rounded-[10px]",
       )}
       aria-hidden
     >
@@ -104,8 +106,8 @@ export function ProviderIcon({
           <img
             src={own.light}
             alt=""
-            width={size}
-            height={size}
+            width={fetchSize}
+            height={fetchSize}
             referrerPolicy="no-referrer"
             data-icon="app"
             onError={fail(own.light)}
@@ -115,8 +117,8 @@ export function ProviderIcon({
         <img
           src={icon}
           alt=""
-          width={size}
-          height={size}
+          width={fetchSize}
+          height={fetchSize}
           referrerPolicy="no-referrer"
           onError={fail(icon)}
         />

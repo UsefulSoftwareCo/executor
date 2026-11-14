@@ -1,7 +1,10 @@
 /** Stale-while-revalidate reads of evaluated app declarations (skills, workflows, webhooks). */
-import { Clock, Deferred, Effect, Exit, Fiber, Option, Schema, type Crypto } from "effect";
+import { Clock, Deferred, Effect, Exit, Fiber, Option, Result, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
+import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
 import {
+  changeCheckMillis,
   declarationFreshness,
   declarationLimits,
   durableHeadStartMillis,
@@ -13,8 +16,10 @@ import {
   type KeptEntry,
   type PendingLoad,
 } from "../contracts/declarations.ts";
-import type { ResourceLifecycle } from "../contracts/executor.ts";
-import { type AccountId, StorageError } from "../contracts/shared.ts";
+import type { HostApi, ResourceLifecycle } from "../contracts/executor.ts";
+import type { AppRequirements } from "../contracts/apps.ts";
+import { appCacheNamespace, type HostApiCheck } from "../contracts/host-api.ts";
+import { type AccountId, type OwnerId, StorageError } from "../contracts/shared.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { makeHandoff } from "./handoff.ts";
 import { resolve, type InvocationSnapshot } from "./tools.ts";
@@ -28,7 +33,10 @@ export const makeDeclarationCache = (
   const loads = new Map<string, PendingLoad>();
   /** When each app's cached upstream data last changed. */
   const changes = new Map<string, number>();
+  /** When each app's latest read of its durable change marker started. */
+  const checks = new Map<string, number>();
   let bytes = 0;
+  let renewals = 0;
   const size = (entry: KeptEntry) => (entry.kind === "json" ? entry.json.length * 2 : entry.bytes);
   const remove = (key: string) => {
     const entry = entries.get(key);
@@ -66,18 +74,45 @@ export const makeDeclarationCache = (
       if (loads.get(key) === load) loads.delete(key);
     },
     changed: (app, at) => {
-      changes.set(app, Math.max(at, changes.get(app) ?? at));
+      if (at <= (changes.get(app) ?? -Infinity)) return;
+      changes.set(app, at);
       for (const [key, entry] of entries) if (entry.app === app && entry.at <= at) remove(key);
     },
     outdated: (app, at) => at <= (changes.get(app) ?? -Infinity),
+    checked: (app) => checks.get(app),
+    check: (app, started) => {
+      checks.set(app, started);
+    },
     usage: () => ({ entries: entries.size, bytes }),
+    renewing: () => {
+      if (renewals >= limits.renewals) return false;
+      renewals += 1;
+      return true;
+    },
+    renewed: () => {
+      renewals = Math.max(0, renewals - 1);
+    },
   };
 };
+
+/**
+ * The host API revision a version's invocations are bound to, when its code reads this host's API.
+ * Their app cache and its kept tool listings are keyed by it, so an API change starts both afresh
+ * rather than serving tools of the previous API. A version that owns a database is bound too: its
+ * data calls run in a facet Worker loaded for the revision, whose network checks the document.
+ */
+export const versionHostApi = (
+  hostApi: HostApi | undefined,
+  version: { readonly requirements: AppRequirements },
+): HostApiCheck | undefined =>
+  hostApi !== undefined && hostApi.reads(version.requirements)
+    ? { revision: hostApi.revision, documents: hostApi.documents }
+    : undefined;
 
 const JsonText = Schema.fromJsonString(Schema.Unknown);
 
 /**
- * Evaluated declarations depend on the build, the invocation scope, the account set and its credential generations. Token renewal keeps a result; reconnecting replaces it. Every read reruns the invocation snapshot; a kept result is served
+ * Evaluated declarations depend on the build (and the host API revision for apps that read it), the invocation scope, the account set and its credential generations. Token renewal keeps a result; reconnecting replaces it. Every read reruns the invocation snapshot; a kept result is served
  * only after the same lifecycle checks that precede credential release in an evaluation.
  */
 export const makeDeclarations = (options: {
@@ -85,15 +120,14 @@ export const makeDeclarations = (options: {
   readonly durable: DurableDeclarations | undefined;
   readonly background: BackgroundWork | undefined;
   readonly resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"];
-  readonly accountUsable: ReturnType<typeof makeOAuth>["usable"];
-  readonly crypto: Crypto.Crypto;
+  readonly accountsUsable: ReturnType<typeof makeOAuth>["usableAll"];
+  readonly accountsUsableEach: ReturnType<typeof makeOAuth>["usableEach"];
+  readonly crypto: HostCrypto;
   readonly lifecycle: ResourceLifecycle | undefined;
+  readonly hostApi: HostApi | undefined;
 }) => {
   const digest = (bytes: Uint8Array) =>
-    options.crypto.digest("SHA-256", bytes).pipe(
-      Effect.map(Hex.encode),
-      Effect.mapError(() => new StorageError()),
-    );
+    options.crypto.digest.digest(Digest.sha256, bytes).pipe(Effect.map(Hex.encode));
   const key = (command: string, state: InvocationSnapshot) =>
     Effect.gen(function* () {
       const selections = state.selections.map(({ slot, accounts }) => [
@@ -112,7 +146,7 @@ export const makeDeclarations = (options: {
             state.app.owner,
             state.app.id,
             state.version.id,
-            state.version.build,
+            appCacheNamespace(state.version.build, versionHostApi(options.hostApi, state.version)),
             // A caller's evaluation and actorless work see different contexts: only one has `user`.
             state.scope,
             selections,
@@ -125,36 +159,79 @@ export const makeDeclarations = (options: {
    * would stop it: a kept result is never served for an account a live read would refuse, such
    * as an OAuth grant that needs reconnecting.
    */
+  /** What {@link authorize} checks for a state: its accounts, by how each use is authorized. */
+  const checksOf = (state: InvocationSnapshot) => {
+    const selected = state.selections.flatMap(({ required, accounts }) =>
+      accounts.map((account) => ({ account, provider: required.definition })),
+    );
+    // Each use is authorized on its own: by the actor's use where a user requirement uses the
+    // account, and by the app link for each app requirement it fills.
+    const { user: linked, app: appUses } = accountAuthority(state.selections);
+    return {
+      selected,
+      linked,
+      appUses,
+      /** Whether the recheck allowed every account the state runs with. */
+      permitted: (allowed: ReadonlySet<AccountId>) =>
+        selected.every(({ account }) => allowed.has(account.id)),
+    };
+  };
   const authorize = (state: InvocationSnapshot) =>
     Effect.gen(function* () {
       const lifecycle = options.lifecycle;
-      const selected = state.selections.flatMap(({ required, accounts }) =>
-        accounts.map((account) => ({ account, provider: required.definition })),
-      );
-      const accounts = selected.map(({ account }) => account);
-      // Each use is authorized on its own: by the actor's use where a user requirement uses the
-      // account, and by the app link for each app requirement it fills.
-      const { user: linked, app: appUses } = accountAuthority(state.selections);
-      const permitted = (allowed: ReadonlySet<AccountId>) =>
-        accounts.every((account) => allowed.has(account.id))
-          ? Effect.void
-          : Effect.fail(new StorageError());
+      const checks = checksOf(state);
       // The actor's use of the app and of every account is one read, alongside the grant checks.
       yield* Effect.all(
         [
           lifecycle === undefined
             ? Effect.void
-            : lifecycle.appResolving(state.app, linked, appUses).pipe(Effect.flatMap(permitted)),
-          Effect.forEach(
-            selected,
-            ({ account, provider }) => options.accountUsable(account, provider),
-            {
-              concurrency: "unbounded",
-              discard: true,
-            },
-          ),
+            : lifecycle
+                .appResolving(state.app, checks.linked, checks.appUses)
+                .pipe(
+                  Effect.flatMap((allowed) =>
+                    checks.permitted(allowed) ? Effect.void : Effect.fail(new StorageError()),
+                  ),
+                ),
+          options.accountsUsable(checks.selected),
         ],
         { concurrency: "unbounded", discard: true },
+      );
+    });
+  /**
+   * {@link authorize} for several states of one owner, each outcome in order: the actor's rechecks
+   * of every app in one call (`appsResolving`) beside one read of every account's grant. A state
+   * the recheck refuses fails as `authorize` fails for it, before its grants are considered.
+   * Failing the whole call, such as for storage, says nothing about any state.
+   */
+  const authorizeAll = (owner: OwnerId, states: ReadonlyArray<InvocationSnapshot>) =>
+    Effect.gen(function* () {
+      const lifecycle = options.lifecycle;
+      const checks = states.map(checksOf);
+      const [rechecked, usable] = yield* Effect.all(
+        [
+          lifecycle === undefined || states.length === 0
+            ? Effect.succeed(undefined)
+            : lifecycle.appsResolving(
+                owner,
+                states.map((state, index) => ({
+                  id: state.app.id,
+                  accounts: checks[index]?.linked ?? [],
+                  appUses: checks[index]?.appUses ?? [],
+                })),
+              ),
+          options.accountsUsableEach(checks.map(({ selected }) => selected)),
+        ],
+        { concurrency: "unbounded" },
+      );
+      return checks.map(
+        (check, index): Result.Result<void, Effect.Error<ReturnType<typeof authorize>>> => {
+          const recheck = rechecked?.[index];
+          if (recheck !== undefined) {
+            if (Result.isFailure(recheck)) return Result.fail(recheck.failure);
+            if (!check.permitted(recheck.success)) return Result.fail(new StorageError());
+          }
+          return usable[index] ?? Result.fail(new StorageError());
+        },
       );
     });
   /** A result another process or isolate kept, if the host keeps results beyond this one. */
@@ -192,9 +269,40 @@ export const makeDeclarations = (options: {
       ? write
       : options.background(write).pipe(Effect.asVoid);
   };
+  /**
+   * Forget what this process keeps of the app from before its cached data last changed, as the
+   * app's durable store recorded it, unless this process started reading that within
+   * `changeCheckMillis`. The read runs as background work, so the caller and the readers beside it
+   * serve what is kept now, and later readers serve what it leaves. Without background work, or
+   * once the host refuses it, the caller waits for the read.
+   */
+  const followChanges = (app: string): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const durable = options.durable;
+      if (durable === undefined) return;
+      const now = yield* Clock.currentTimeMillis;
+      const last = options.cache.checked(app);
+      if (last !== undefined && now - last < changeCheckMillis) return;
+      options.cache.check(app, now);
+      const read = durable.changed(app).pipe(
+        Effect.tap((at) =>
+          Effect.sync(() => {
+            if (at !== undefined) options.cache.changed(app, at);
+          }),
+        ),
+        Effect.asVoid,
+      );
+      const accepted = options.background === undefined ? false : yield* options.background(read);
+      if (!accepted) yield* read;
+    });
   return {
     key,
+    followChanges,
+    /** The host API revision an invocation of this version is bound to; see `versionHostApi`. */
+    hostApi: (version: Parameters<typeof versionHostApi>[1]) =>
+      versionHostApi(options.hostApi, version),
     authorize,
+    authorizeAll,
     recall,
     persist,
     /**
@@ -257,7 +365,7 @@ export const makeDeclarations = (options: {
             kept === undefined ? Effect.void : persist(state.app.id, id, Effect.succeed(kept)),
           ),
         );
-        const current = (entry: KeptEntry | undefined, now: number) =>
+        const fresh = (entry: KeptEntry | undefined, now: number) =>
           entry?.kind === "json" && now - entry.at < declarationFreshness.maxStaleMillis
             ? entry
             : undefined;
@@ -403,7 +511,8 @@ export const makeDeclarations = (options: {
             );
           }),
         );
-        const kept = current(yield* options.cache.get(id), yield* Clock.currentTimeMillis);
+        yield* followChanges(state.app.id);
+        const kept = fresh(yield* options.cache.get(id), yield* Clock.currentTimeMillis);
         if (kept?.kind === "json") return yield* serve(kept);
         if (options.durable === undefined) return yield* miss;
         // Another isolate's result, unless an invalidation seen here replaced it. It is kept here
@@ -416,7 +525,7 @@ export const makeDeclarations = (options: {
                   return undefined;
                 const entry = { kind: "json" as const, app: state.app.id, ...found };
                 yield* options.cache.set(id, entry);
-                return current(entry, yield* Clock.currentTimeMillis);
+                return fresh(entry, yield* Clock.currentTimeMillis);
               }),
             ),
           ),

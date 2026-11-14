@@ -21,8 +21,9 @@ export type FirstPartyOAuthClientDefinition = typeof FirstPartyOAuthClientDefini
  * presets (Calendar, Meet, Gmail, Sheets, Drive, Docs, Slides, Forms, Tasks, People, Photos
  * Library, Photos Picker and Search Console), each with `openid email profile`, and
  * `gmail.modify`, which Gmail connections made before the full-Gmail review keep. It is the scope
- * set submitted for the production app's review. Google reports `email` and `profile` as granted
- * under their `userinfo` names, and a grant holds only allowed scopes, so those two are allowed
+ * set approved for the production app, extended on 2026-10-25 for YouTube, Google Ads,
+ * BigQuery and Apps Script. Apps Script metrics is non-sensitive. Google reports `email` and
+ * `profile` as granted under their `userinfo` names, and a grant holds only allowed scopes, so those two are allowed
  * as well.
  */
 const googleAllowedScopes = [
@@ -60,6 +61,14 @@ const googleAllowedScopes = [
   "https://www.googleapis.com/auth/photoslibrary.readonly.appcreateddata",
   "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
   "https://www.googleapis.com/auth/webmasters",
+  "https://www.googleapis.com/auth/youtube",
+  "https://www.googleapis.com/auth/youtube.force-ssl",
+  "https://www.googleapis.com/auth/adwords",
+  "https://www.googleapis.com/auth/bigquery",
+  "https://www.googleapis.com/auth/script.projects",
+  "https://www.googleapis.com/auth/script.deployments",
+  "https://www.googleapis.com/auth/script.processes",
+  "https://www.googleapis.com/auth/script.metrics",
 ];
 
 /**
@@ -112,8 +121,8 @@ const slackMcpUserScopes = [
  *   `uploads.github.com`, where GitHub takes release asset uploads; and `api.githubcopilot.com`,
  *   GitHub's MCP server. GitHub accepts GitHub App user tokens on all three, and v1 sent this
  *   client's tokens to every GitHub REST operation, uploads included, and to GitHub's MCP server.
- * - `google` is Executor for Google, v1's Google client. `access_type=offline` and
- *   `prompt=consent` make every sign-in return a refresh token. It has no revocation URL: Google
+ * - `google` is Executor for Google, v1's Google client. Like every Google
+ *   sign-in, it sends `access_type=offline` and `prompt=consent`, so each returns a refresh token. It has no revocation URL: Google
  *   revokes every grant a user gave the client at once, so removing one account would end the
  *   user's other Google accounts in every organization. Its tokens go to Google's API hosts.
  * - `slack` is Executor for Slack, v1's Slack MCP client (`apps/cloud/src/engine/first-party-oauth-
@@ -151,7 +160,6 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
     server: {
       authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
       tokenUrl: "https://oauth2.googleapis.com/token",
-      authorizationParams: { access_type: "offline", prompt: "consent" },
     },
     tokenEndpointAuthMethod: "client_secret_post",
     defaultScopes: ["openid", "email", "profile"],

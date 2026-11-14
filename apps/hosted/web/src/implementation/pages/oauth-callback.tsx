@@ -136,11 +136,13 @@ export function OAuthCallbackPage() {
       const organization = organizationSlug;
       // Only the tab that started this connection knows the page it started from.
       const started = Option.filter(stored, (value) => value.connection === connection);
+      const registeredClient = Option.flatMapNullishOr(started, (value) => value.registeredClient);
       const returnTo = Option.getOrUndefined(started)?.returnTo;
       const context = {
         ...resolved.value,
         organization,
         manualClient: Option.exists(started, (value) => value.manualClient === true),
+        ...(Option.isSome(registeredClient) ? { registeredClient: registeredClient.value } : {}),
         ...(returnTo === undefined ? {} : { returnTo }),
       };
       setPending(Option.some(context));
@@ -208,15 +210,20 @@ function OAuthRecoveryActions({
       </Button>
     );
   const context = pending.value;
-  // Entered clients are saved only after a successful sign-in, so a retry reopens their fields.
+  // A client registered for this attempt stays registered, so a retry signs in with it and its
+  // details reopen only to be edited. Other entered clients are account-only, so a retry reopens
+  // their fields.
+  const registered = context.registeredClient;
   const retry =
     recovery === "restart" || recovery === "client"
       ? {
           label: recovery === "client" ? "Update client details" : "Try again",
           search:
-            recovery === "client" || context.manualClient === true
-              ? { client: "change" as const }
-              : {},
+            recovery === "client"
+              ? { client: registered ?? ("change" as const) }
+              : context.manualClient === true
+                ? { client: "change" as const }
+                : {},
         }
       : undefined;
   const primary = retry === undefined && fixPrompt === undefined;
@@ -265,6 +272,20 @@ function OAuthRecoveryActions({
           </Link>
         )}
       </Button>
+      {registered !== undefined && recovery !== "client" && (
+        <Button variant="link" size="sm" className="text-muted-foreground" asChild>
+          <Link
+            to="/org/$organizationSlug/connections/$connectionId"
+            params={{
+              organizationSlug: context.organizationSlug,
+              connectionId: context.connection,
+            }}
+            search={{ client: registered }}
+          >
+            Edit client details
+          </Link>
+        </Button>
+      )}
     </>
   );
 }

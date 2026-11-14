@@ -1,7 +1,12 @@
 import { WorkflowHost, type WorkflowRuntime } from "./workflow-runtime.ts";
-import { WebhookSourceHost, type WebhookSourceDispatcher } from "./webhooks.ts";
+import {
+  UnremovableWebhooksHost,
+  WebhookSourceHost,
+  type UnremovableWebhooks,
+  type WebhookSourceDispatcher,
+} from "./webhooks.ts";
 /** The shared Executor interface and remote client options; projected from ExecutorApi. */
-import { Context, type Effect, type Redacted, type Stream, Schema } from "effect";
+import { Context, type Effect, type Redacted, type Result, type Stream, Schema } from "effect";
 import type { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import type { WebhookSetupApi } from "./webhook-setup.ts";
 import type { ExecutorApi } from "./http.ts";
@@ -10,7 +15,6 @@ import { StorageHost, type Credentials } from "./storage.ts";
 import { PrefetchHost } from "./tools.ts";
 import { SavedOAuthClientsHost } from "./oauth-clients.ts";
 import { OwnerMovesHost } from "./owner.ts";
-import { OAuthGrantImport } from "./oauth.ts";
 import type { ExecutorDatabase } from "../implementation/storage.ts";
 import type { AppRuntime } from "../implementation/runtime.ts";
 import type { OAuthOptions } from "./oauth.ts";
@@ -40,6 +44,7 @@ import type {
   StorageError,
 } from "./shared.ts";
 import type { BlobStorage } from "./blobs.ts";
+import type { MarkdownReader, MarkdownUnavailable } from "./markdown.ts";
 import { RepositoryHost, type RepositoryBackend, type SourceFiles } from "./source.ts";
 import type { RegistryOptions } from "./registry.ts";
 import type { CatalogReadOptions } from "./declarations.ts";
@@ -128,6 +133,23 @@ export interface ResourceLifecycle {
     accounts: readonly Pick<Account, "id" | "owner">[],
     appUses: readonly AppAccountUse[],
   ) => Effect.Effect<ReadonlySet<AccountId>, StorageError>;
+  /**
+   * {@link appResolving} for several apps of one owner at once, for the `CurrentActor`, such as
+   * every app a search reads: a host reads them in one statement. Each app's entry, in order, is
+   * what `appResolving` returns for it, or its refusal. Failing the whole call, such as for
+   * storage, says nothing about any app: the SDK then checks each on its own.
+   */
+  readonly appsResolving: (
+    owner: OwnerId,
+    apps: ReadonlyArray<{
+      readonly id: AppId;
+      readonly accounts: readonly Pick<Account, "id" | "owner">[];
+      readonly appUses: readonly AppAccountUse[];
+    }>,
+  ) => Effect.Effect<
+    ReadonlyArray<Result.Result<ReadonlySet<AccountId>, StorageError>>,
+    StorageError
+  >;
   /**
    * Recheck authority to remove what an app registered upstream, such as a webhook registration,
    * with the accounts it registered with, before acquiring their credentials and again after any
@@ -233,6 +255,22 @@ export interface ExecutorCache {
   readonly toolListings?: Partial<import("./declarations.ts").ToolListingPolicy>;
 }
 
+/**
+ * The API this host serves to apps that sign in to it, such as the built-in Executor app. Those
+ * apps read the API through their own cache, keyed by their build, so an API change their build
+ * cannot see would leave them listing the previous API's tools. The revision is an input of their
+ * app cache and of their kept tool listings: a change starts both afresh. The runner fills such a
+ * cache only with a document of this revision; see `HostApiCheck`.
+ */
+export interface HostApi {
+  /** The SHA-256, in lowercase hex, of the exact document body served at `documents`. */
+  readonly revision: string;
+  /** The URLs this host serves its API document at, one for each origin apps call it at. */
+  readonly documents: ReadonlyArray<string>;
+  /** Whether a version with these requirements signs in to this host, and so reads its API. */
+  readonly reads: (requirements: import("./apps.ts").AppRequirements) => boolean;
+}
+
 /** Caller-owned database, blobs, Git and execution; constructors do not migrate or close them. */
 export interface ExecutorInputs {
   /** Executor tables, app data and the catalog live here. Migrated by the host before use. */
@@ -246,6 +284,12 @@ export interface ExecutorInputs {
   readonly webhookOrigin?: string;
   /** The Git backend behind app source. The executor derives revision storage from it. */
   readonly git: RepositoryBackend;
+  /**
+   * Reads setup help at deploys. Pass `markdownRefusals` from `@executor-js/sdk/markdown` to parse
+   * in process. A reader that parses elsewhere fails with `MarkdownUnavailable` when it gets no
+   * answer, and so does the deploy.
+   */
+  readonly markdown: MarkdownReader;
   readonly blobs: BlobStorage;
   readonly runtime: AppRuntime;
   readonly oauth?: OAuthOptions;
@@ -255,6 +299,8 @@ export interface ExecutorInputs {
   readonly hooks?: ResourceLifecycle;
   readonly workflows?: WorkflowRuntime;
   readonly cache?: ExecutorCache;
+  /** This host's own API, when apps call it; see `HostApi`. */
+  readonly hostApi?: HostApi;
   /** Outbound delivery and authorization for app events. Without it, subscribing is unavailable. */
   readonly events?: import("./events.ts").EventOptions;
   /**
@@ -402,7 +448,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
     /**
      * Host-only: compile source files as `deploy` would and return the requirements they declare,
      * writing nothing: no app, version or source is saved, and the build is neither retained nor
-     * cached. For checks that must not create anything, such as the v1 import's dry run. Fails
+     * cached. For checks that must not create anything. Fails
      * like `deploy`'s build, except that a compiler that did not answer is `BuildUnanswered`.
      */
     readonly build: (input: {
@@ -411,7 +457,11 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
       readonly files: SourceFiles;
     }) => Effect.Effect<
       { readonly requirements: typeof AppRequirements.Type },
-      VersionBuildFailed | BuildMemoryExceeded | BuildUnanswered | StorageError
+      | VersionBuildFailed
+      | BuildMemoryExceeded
+      | BuildUnanswered
+      | MarkdownUnavailable
+      | StorageError
     >;
   };
   readonly [WebhookSourceHost]: WebhookSourceDispatcher;
@@ -421,8 +471,8 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
   readonly [PrefetchHost]: PrefetchHost;
   readonly [SavedOAuthClientsHost]: import("./oauth-clients.ts").SavedOAuthClients;
   readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
-  /** Host-only: the v1 importer's grant import (`notes/v1-import.md`). */
-  readonly [OAuthGrantImport]: OAuthGrantImport;
+  /** Host-only: data step 11's repair of registrations no removal can finish. */
+  readonly [UnremovableWebhooksHost]: UnremovableWebhooks;
   readonly scheduler: import("./scheduler.ts").ScheduleDispatcher;
   /** Host-only: products authorize every event operation before calling it. */
   readonly events: import("./events.ts").ExecutorEvents;
@@ -448,7 +498,7 @@ export type PromiseExecutor = Promisify<
     | typeof PrefetchHost
     | typeof SavedOAuthClientsHost
     | typeof OwnerMovesHost
-    | typeof OAuthGrantImport
+    | typeof UnremovableWebhooksHost
     | "scheduler"
     | "events"
     | "managedAccounts"

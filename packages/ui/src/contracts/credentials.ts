@@ -1,4 +1,4 @@
-import type { OAuthClientSelection } from "@executor-js/sdk";
+import type { OAuthClientId, OAuthClientSelection } from "@executor-js/sdk";
 import { Option, Schema, type Redacted } from "effect";
 import type { ReactNode } from "react";
 
@@ -106,6 +106,8 @@ export interface AccountSubmission {
 export interface AccountOAuthProps {
   readonly method: string;
   readonly disabled: boolean;
+  /** The app's Markdown on creating an OAuth client for this method, shown with client entry. */
+  readonly clientGuide: string | undefined;
   readonly onPendingChange: (pending: boolean) => void;
   /** Where the sign-in goes once it is saved; the OAuth form shows it just above its action. */
   readonly access: ReactNode;
@@ -116,4 +118,8 @@ export interface AccountOAuthProps {
 export interface OAuthSubmission {
   /** Omitted on a reconnect that keeps its account's client. */
   readonly client?: OAuthClientSelection;
+  /** Register the entered client for the organization before signing in with it. */
+  readonly register?: boolean;
+  /** Update this registered client with the entered details before signing in with it. */
+  readonly update?: OAuthClientId;
 }

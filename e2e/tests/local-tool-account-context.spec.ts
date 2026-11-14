@@ -114,6 +114,7 @@ layer(TestLive, { excludeTestServices: true })("Local tool account context", (it
           work,
           personal,
           catalogs: [`/dashboard/api/live/apps/${app.id}/tools`],
+          renderedCatalog: true,
           // The many() requirement uses every linked account. Choosing accounts links exactly
           // those; the unlinked ones stay saved.
           select: (ids) =>

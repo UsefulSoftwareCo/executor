@@ -5,7 +5,6 @@ import {
   Effect,
   FileSystem,
   Layer,
-  Option,
   Ref,
   Result,
   Schedule,
@@ -16,57 +15,170 @@ import {
 import { HttpClient, HttpClientError } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { Actors } from "../support/actors.ts";
-import { SessionClients } from "../support/api.ts";
+import { RequestFailed, SessionClients } from "../support/api.ts";
+import { errorCode, keptCauseParts } from "../support/failure-text.ts";
 import { Target } from "../support/platform.ts";
-import { PreparedScenarios } from "./contracts.ts";
+import { OriginUnreachable, PreparedScenarios, ProvisioningFailure } from "./contracts.ts";
 import { startScenario } from "./scenario.ts";
 import { awaitCompiler } from "./compiler-readiness.ts";
+import { FixtureFailed, fixtureRequest, type FixtureControl } from "./fixtures.ts";
 
 class DomainNotReady extends Schema.TaggedError<DomainNotReady>()("DomainNotReady", {
   reason: Schema.Literals(["http", "transport", "timeout"]),
   status: Schema.optional(Schema.Number),
   code: Schema.optional(Schema.String),
 }) {}
-const TransportDiagnostic = Schema.Struct({
-  code: Schema.optional(
-    Schema.Literals([
-      "ENOTFOUND",
-      "EAI_AGAIN",
-      "ECONNRESET",
-      "ECONNREFUSED",
-      "ETIMEDOUT",
-      "ERR_TLS_CERT_ALTNAME_INVALID",
-      "CERT_HAS_EXPIRED",
-      "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
-      "ERR_SSL_SSLV3_ALERT_HANDSHAKE_FAILURE",
-      "ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE",
-      "ERR_SSL_TLSV1_ALERT_INTERNAL_ERROR",
-    ]),
-  ),
-  cause: Schema.optional(Schema.Unknown),
-});
-const transportCode = (cause: unknown, depth = 0): string | undefined => {
-  if (depth > 3) return undefined;
-  const parsed = Schema.decodeUnknownOption(TransportDiagnostic)(cause);
-  return Option.isNone(parsed)
-    ? undefined
-    : (parsed.value.code ?? transportCode(parsed.value.cause, depth + 1));
+/**
+ * What preparation records about an organization that was not ready: the failing request's method,
+ * path, status, reason, response shape and the masked text of each level of its cause (its name,
+ * code and message; see support/failure-text.ts), or the fixture operation. Never a body, cookie or
+ * credential. Node puts a transport failure's kind only in the innermost causes' messages
+ * ("connect ECONNREFUSED …", "other side closed"), so every level keeps its message.
+ */
+export const preparationFailure = (error: unknown) =>
+  Schema.is(RequestFailed)(error)
+    ? {
+        method: error.method,
+        path: error.path,
+        status: error.status,
+        reason: error.reason,
+        response: error.response,
+        failure: error.failure,
+        causes: keptCauseParts(error),
+      }
+    : Schema.is(FixtureFailed)(error)
+      ? { operation: error.operation, status: error.status, reason: error.reason }
+      : undefined;
+/**
+ * The class of a transport failure, from the innermost causes' messages, where Node puts it
+ * ("ssl/tls alert handshake failure", "other side closed", "connect ECONNREFUSED"), or its code.
+ */
+const transportClass = (causes: ReadonlyArray<string>, code: string | undefined) => {
+  const text = causes.join(" ").toLowerCase();
+  if (text.includes("handshake failure") || text.includes("ssl routines"))
+    return "TLS handshake failure";
+  if (code === "ECONNRESET" || text.includes("econnreset") || text.includes("other side closed"))
+    return "connection reset";
+  if (code === "ECONNREFUSED" || text.includes("econnrefused")) return "connection refused";
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN" || text.includes("enotfound"))
+    return "DNS lookup failed";
+  if (code === "ETIMEDOUT" || code === "UND_ERR_CONNECT_TIMEOUT") return "connection timed out";
+  return code;
 };
+/** What preparation.json records of an unavailable organization, in the scenario's own error. */
+export const provisioningFailure = (
+  organization: UnavailableOrganization,
+): typeof ProvisioningFailure.Type => {
+  const detail = organization.detail;
+  if (detail === undefined || !("path" in detail)) return { failure: organization.failure };
+  const transport = transportClass(detail.causes ?? [], detail.failure?.code);
+  return {
+    failure: organization.failure,
+    request: `${detail.method} ${detail.path}`,
+    ...(detail.failure === undefined
+      ? {}
+      : { stage: detail.failure.stage, elapsedMs: detail.failure.elapsedMs }),
+    ...(transport === undefined ? {} : { transport }),
+  };
+};
+/** An organization preparation could not make ready, as preparation.json lists it. */
+export interface UnavailableOrganization {
+  readonly title: string;
+  readonly id: string;
+  readonly failure: string;
+  readonly detail: ReturnType<typeof preparationFailure>;
+}
+/** The run log's line for each organization preparation could not make ready. */
+export const reportUnavailable = (unavailable: ReadonlyArray<UnavailableOrganization>) =>
+  Effect.forEach(
+    unavailable,
+    ({ title, failure, detail }) =>
+      Console.log(
+        `Cloud organization not ready for "${title}": ${failure}${detail === undefined ? "" : ` ${JSON.stringify(detail)}`}`,
+      ),
+    { discard: true },
+  );
+/** Write preparation.json: what preparation made ready, and each organization it could not. */
+export const writePreparation = (
+  directory: string,
+  record: { readonly unavailableOrganizations: ReadonlyArray<UnavailableOrganization> } & Readonly<
+    Record<string, unknown>
+  >,
+) =>
+  Effect.flatMap(FileSystem.FileSystem, (fs) =>
+    fs.writeFileString(`${directory}/preparation.json`, JSON.stringify(record, null, 2)),
+  );
 interface DomainObservation {
   readonly attempts: number;
+  /** The origin answered HTTPS and the product reports the team's address ready. */
   readonly ready: boolean;
   readonly elapsedMs: number;
+  /** When the origin first answered HTTPS, from the start of the wait. */
+  readonly httpsMs?: number;
+  /** The product's last reported status for the team's address, once HTTPS answered. */
+  readonly reported?: DomainReport["status"];
   readonly lastFailure?: {
     readonly reason: DomainNotReady["reason"];
     readonly status?: number | undefined;
     readonly code?: string | undefined;
   };
+  /** What the domain coordinator last recorded, read once for an origin that never answered. */
+  readonly coordinator?: DomainReport;
 }
 
-/** A real HTTPS response proves DNS and the edge certificate are usable. No TLS checks are disabled. */
+/**
+ * The origin unreachable shape: no HTTPS connection completed within the wait (every attempt
+ * failed in transport, so the product was never asked), with how the run's other origins did.
+ * An origin that answered but was not reported ready, or that failed otherwise, is not this.
+ */
+export const originUnreachable = (
+  observation: DomainObservation | undefined,
+  run: { readonly origins: number; readonly readyElapsedMs: ReadonlyArray<number> },
+): typeof OriginUnreachable.Type | undefined => {
+  if (
+    observation === undefined ||
+    observation.ready ||
+    observation.reported !== undefined ||
+    observation.httpsMs !== undefined ||
+    observation.lastFailure?.reason !== "transport"
+  )
+    return undefined;
+  return {
+    attempts: observation.attempts,
+    waitedMs: observation.elapsedMs,
+    readyOrigins: run.readyElapsedMs.length,
+    origins: run.origins,
+    slowestReadyMs: run.readyElapsedMs.length === 0 ? null : Math.max(...run.readyElapsedMs),
+    ...(observation.coordinator?.certificate === undefined
+      ? {}
+      : { certificate: observation.coordinator.certificate }),
+    ...(observation.coordinator?.since === undefined
+      ? {}
+      : { since: observation.coordinator.since }),
+  };
+};
+const DomainReport = Schema.Struct({
+  status: Schema.Literals(["absent", "pending", "ready", "failed"]),
+  certificate: Schema.optional(Schema.String),
+  since: Schema.optional(Schema.String),
+});
+type DomainReport = typeof DomainReport.Type;
+class DomainNotReported extends Schema.TaggedError<DomainNotReported>()("DomainNotReported", {
+  status: Schema.optional(DomainReport.fields.status),
+}) {}
+
+/**
+ * A real HTTPS response proves DNS and the edge certificate are usable. No TLS checks are disabled.
+ * The product then has to report the address ready: its location read uses the row the domain
+ * pass writes after it observes the certificate, which can lag the certificate by a pass. Both are
+ * infrastructure readiness, so both are waited for here, under the infrastructure deadline, and a
+ * scenario starts with an address its location read already reports ready.
+ */
 const waitForDomain = (
   baseUrl: string,
   organizationSlug: string,
+  scenario: string,
+  fixtures: typeof FixtureControl.Type,
   observe: (value: DomainObservation) => Effect.Effect<void>,
 ) =>
   Effect.gen(function* () {
@@ -99,7 +211,7 @@ const waitForDomain = (
           : HttpClientError.isHttpClientError(error)
             ? new DomainNotReady({
                 reason: "transport",
-                code: transportCode(error.reason.cause),
+                code: errorCode(error.reason.cause),
               })
             : new DomainNotReady({ reason: "timeout" }),
       ),
@@ -116,21 +228,37 @@ const waitForDomain = (
         ),
       ),
       Effect.retry({ schedule: Schedule.spaced("2 seconds") }),
-      Effect.andThen(
+    );
+    const httpsMs = (yield* Clock.currentTimeMillis) - started;
+    yield* fixtureRequest(fixtures, "/domain", { id: scenario }).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(DomainReport)),
+      Effect.mapError(() => new DomainNotReported({})),
+      Effect.flatMap((report) =>
         Clock.currentTimeMillis.pipe(
           Effect.flatMap((now) =>
             observe({
               attempts,
-              ready: true,
+              ready: report.status === "ready",
               elapsedMs: now - started,
+              httpsMs,
+              reported: report.status,
             }),
+          ),
+          Effect.andThen(
+            report.status === "ready"
+              ? Effect.void
+              : Effect.fail(new DomainNotReported({ status: report.status })),
           ),
         ),
       ),
+      Effect.retry({ schedule: Schedule.spaced("2 seconds") }),
     );
   });
 
-/** Certificate issuance and a cold compiler Worker share this deadline, outside every scenario's. */
+/**
+ * Certificate issuance, the domain pass that reports it and a cold compiler Worker share this
+ * deadline, outside every scenario's.
+ */
 const infrastructureDeadline = "5 minutes";
 
 /** The suite owns provisioned actors until individual cleanup or environment teardown, including failed preparation. */
@@ -138,6 +266,8 @@ export const prepareCloudScenarios = (input: {
   readonly target: typeof Target.Service;
   readonly scenarios: readonly { readonly title: string; readonly appOrigin?: true }[];
   readonly appUiBaseUrl: string;
+  /** The attached stage's fixture control, which reads the product's report of each address. */
+  readonly fixtures: typeof FixtureControl.Type;
   readonly workers: number;
 }) =>
   Effect.gen(function* () {
@@ -175,7 +305,12 @@ export const prepareCloudScenarios = (input: {
               // One organization that is not ready within its deadline is a native setup failure
               // for its own scenario; the others still run. The suite scope still releases whatever
               // it created.
-              Effect.mapError((error) => ({ title, id, failure: error._tag })),
+              Effect.mapError((error): UnavailableOrganization => ({
+                title,
+                id,
+                failure: error._tag,
+                detail: preparationFailure(error),
+              })),
               Effect.result,
             );
           },
@@ -187,19 +322,19 @@ export const prepareCloudScenarios = (input: {
     const prepared = provisioned.filter(Result.isSuccess).map((result) => result.success);
     const unavailable = provisioned.filter(Result.isFailure).map((result) => result.failure);
     const actorsReadyAt = yield* Clock.currentTimeMillis;
+    yield* reportUnavailable(unavailable);
     // All domain requests must begin before waiting on the certificate authority.
     // Waiting inside the provisioning loop would serialize issuance in worker-sized batches.
     const domains = prepared.filter((scenario) => scenario.appOrigin);
     const ready = yield* Ref.make<ReadonlySet<string>>(new Set());
     const observations = yield* Ref.make<ReadonlyMap<string, DomainObservation>>(new Map());
-    const fs = yield* FileSystem.FileSystem;
     yield* Console.log(
-      `Cloud actors ready: ${Math.round((actorsReadyAt - started) / 1000)}s (${prepared.length}/${input.scenarios.length} organizations); waiting for ${domains.length} HTTPS domains.`,
+      `Cloud actors ready: ${Math.round((actorsReadyAt - started) / 1000)}s (${prepared.length}/${input.scenarios.length} organizations); waiting for ${domains.length} HTTPS domains to answer and be reported ready.`,
     );
     yield* Effect.forEach(
       domains,
       ({ slug, id }) =>
-        waitForDomain(input.appUiBaseUrl, slug, (observation) =>
+        waitForDomain(input.appUiBaseUrl, slug, id, input.fixtures, (observation) =>
           Ref.update(observations, (values) => new Map([...values, [id, observation]])),
         ).pipe(Effect.tap(() => Ref.update(ready, (ids) => new Set([...ids, id])))),
       // Readiness probes do not occupy scenario workers. Start every origin now;
@@ -211,32 +346,47 @@ export const prepareCloudScenarios = (input: {
         Effect.gen(function* () {
           const finished = yield* Clock.currentTimeMillis;
           const readyDomains = (yield* Ref.get(ready)).size;
-          const domainObservations = yield* Ref.get(observations);
-          yield* fs.writeFileString(
-            `${input.target.directory}/preparation.json`,
-            JSON.stringify(
-              {
-                organizations: prepared.length,
-                unavailableOrganizations: unavailable,
-                domains: domains.length,
-                readyDomains,
-                origins: domains.map(({ id, title, slug }) => ({
-                  id,
-                  title,
-                  slug,
-                  ...domainObservations.get(id),
-                })),
-                compilerAttempts: compiler.attempts,
-                compilerMs: compiler.elapsedMs,
-                actorsMs: actorsReadyAt - started,
-                httpsMs: finished - actorsReadyAt,
-                totalMs: finished - started,
-              },
-              null,
-              2,
+          // For an origin no HTTPS connection reached, ask once what the coordinator last saw.
+          yield* Effect.forEach(
+            [...(yield* Ref.get(observations))].filter(
+              ([, observation]) =>
+                originUnreachable(observation, { origins: 0, readyElapsedMs: [] }) !== undefined,
             ),
+            ([id, observation]) =>
+              fixtureRequest(input.fixtures, "/domain", { id }).pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(DomainReport)),
+                Effect.timeout("5 seconds"),
+                Effect.flatMap((coordinator) =>
+                  Ref.update(
+                    observations,
+                    (values) => new Map([...values, [id, { ...observation, coordinator }]]),
+                  ),
+                ),
+                Effect.ignore,
+              ),
+            { concurrency: "unbounded", discard: true },
           );
-          yield* Console.log(`HTTPS domains ready: ${readyDomains}/${domains.length}.`);
+          const domainObservations = yield* Ref.get(observations);
+          yield* writePreparation(input.target.directory, {
+            organizations: prepared.length,
+            unavailableOrganizations: unavailable,
+            domains: domains.length,
+            readyDomains,
+            origins: domains.map(({ id, title, slug }) => ({
+              id,
+              title,
+              slug,
+              ...domainObservations.get(id),
+            })),
+            compilerAttempts: compiler.attempts,
+            compilerMs: compiler.elapsedMs,
+            actorsMs: actorsReadyAt - started,
+            httpsMs: finished - actorsReadyAt,
+            totalMs: finished - started,
+          });
+          yield* Console.log(
+            `HTTPS domains ready and reported ready: ${readyDomains}/${domains.length}.`,
+          );
         }).pipe(Effect.orDie),
       ),
       // Keep independent cases runnable. Each unavailable origin is a native
@@ -248,13 +398,36 @@ export const prepareCloudScenarios = (input: {
       `Scenario infrastructure: ${Math.round((finished - started) / 1000)}s (${prepared.length} organizations, ${(yield* Ref.get(ready)).size}/${domains.length} HTTPS domains verified).`,
     );
     const readyIds = yield* Ref.get(ready);
+    const finalObservations = yield* Ref.get(observations);
+    const run = {
+      origins: domains.length,
+      readyElapsedMs: domains
+        .filter(({ id }) => readyIds.has(id))
+        .map(({ id }) => finalObservations.get(id)?.elapsedMs)
+        .filter((elapsed) => elapsed !== undefined),
+    };
     return PreparedScenarios.make(
       Object.fromEntries([
-        ...prepared.map(({ title, id, appOrigin }) => [
-          title,
-          { id, status: !appOrigin || readyIds.has(id) ? "ready" : "domain_unavailable" },
+        ...prepared.map(({ title, id, appOrigin }) => {
+          if (!appOrigin || readyIds.has(id)) return [title, { id, status: "ready" }];
+          const unreachable = originUnreachable(finalObservations.get(id), run);
+          return [
+            title,
+            {
+              id,
+              status: "domain_unavailable",
+              ...(unreachable === undefined ? {} : { unreachable }),
+            },
+          ];
+        }),
+        ...unavailable.map((organization) => [
+          organization.title,
+          {
+            id: organization.id,
+            status: "organization_unavailable",
+            provisioning: provisioningFailure(organization),
+          },
         ]),
-        ...unavailable.map(({ title, id }) => [title, { id, status: "organization_unavailable" }]),
       ]),
     );
   });

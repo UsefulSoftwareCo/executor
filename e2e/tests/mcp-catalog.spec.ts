@@ -169,7 +169,13 @@ const control = (origin: string, data?: Schema.Json) =>
     return yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(Stats)));
   });
 
-const source = (url: string, cached: boolean, accounts: boolean, accountless = false) => [
+const source = (
+  url: string,
+  cached: boolean,
+  accounts: boolean,
+  accountless = false,
+  freshFor?: string,
+) => [
   {
     path: "package.json",
     content: JSON.stringify({
@@ -186,6 +192,7 @@ const provider = defineProvider({ name: "Cache fixture", hosts: ${JSON.stringify
 export default defineApp({ user: { accounts: ${accounts ? "{ service: provider.many() }" : "{}"} } }, async ctx => {
   const options = account => ({ url: ${JSON.stringify(url)}, signal: ctx.signal,
     ${cached ? "cache: ctx.cache," : ""}
+    ${freshFor === undefined ? "" : `freshFor: ${JSON.stringify(freshFor)},`}
     ${accountless ? 'headers: { Authorization: "Bearer accountless" },' : ""}
     ...(account ? { account, headers: { "X-Fixture-Variant": account.fields.variant, Authorization: "Bearer " + account.fields.token } } : {}),
   });
@@ -202,17 +209,23 @@ export default defineApp({ user: { accounts: ${accounts ? "{ service: provider.m
   },
 ];
 
-const deploy = (url: string, cached: boolean, accounts = false, accountless = false) =>
+const deploy = (
+  url: string,
+  cached: boolean,
+  accounts = false,
+  accountless = false,
+  freshFor?: string,
+) =>
   Effect.gen(function* () {
     const api = yield* Api;
     const actors = yield* Actors;
     const prefix = `/api/organizations/${actors.organization.id}`;
     const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
       name: `MCP cache ${randomUUID().slice(0, 8)}`,
-      files: source(url, cached, accounts, accountless),
+      files: source(url, cached, accounts, accountless, freshFor),
     });
     expect(response.status).toBe(200);
-    const id = (yield* body(App, response)).id;
+    const { id, slug } = yield* body(App, response);
     const path = `${prefix}/apps/${id}`;
     yield* Effect.addFinalizer(() => api.request(actors.owner, "DELETE", path).pipe(Effect.orDie));
     // The server's tools are mounted under "upstream" beside the app's own refresh query.
@@ -223,7 +236,7 @@ const deploy = (url: string, cached: boolean, accounts = false, accountless = fa
         kind: "query",
         input,
       });
-    return { api, actors, id, path, prefix, call };
+    return { api, actors, id, slug, path, prefix, call };
   });
 
 /** Connect a `service` account whose requests the fixture answers under `variant`. */
@@ -253,6 +266,50 @@ const connectAccount = (app: Effect.Success<ReturnType<typeof deploy>>, variant:
         .pipe(Effect.orDie),
     );
     return account.id;
+  });
+
+const Executed = Schema.Struct({
+  structuredContent: Schema.Struct({
+    execution: Schema.Struct({
+      ok: Schema.Boolean,
+      value: Schema.optional(Schema.Unknown),
+      error: Schema.optional(
+        Schema.Struct({
+          kind: Schema.String,
+          suggestions: Schema.optional(Schema.Array(Schema.String)),
+        }),
+      ),
+    }),
+  }),
+});
+
+/** Run MCP `execute` programs as the app's owner, through an API key of their own. */
+const executeAs = (app: Effect.Success<ReturnType<typeof deploy>>, name: string) =>
+  Effect.gen(function* () {
+    const key = yield* body(
+      Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+      yield* app.api.request(app.actors.owner, "POST", "/api/auth/api-key/create", { name }),
+    );
+    yield* Effect.addFinalizer(() =>
+      app.api
+        .request(app.actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
+        .pipe(Effect.orDie),
+    );
+    const client = yield* (yield* McpClient).connect(key.key, name, {
+      organization: app.actors.organization.id,
+    });
+    return (step: string, code: string) =>
+      client
+        .use(step, (client, signal) =>
+          client.callTool({ name: "execute", arguments: { code } }, undefined, {
+            signal,
+            timeout: 55_000,
+          }),
+        )
+        .pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(Executed)),
+          Effect.map((result) => result.structuredContent.execution),
+        );
   });
 
 layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
@@ -557,6 +614,69 @@ layer(HostedLive, { excludeTestServices: true })("MCP cache", (it) => {
         yield* control(origin, { version: 3, notify: true });
         expect((yield* app.call("fixture_0000")).status).toBe(200);
         expect(yield* revisions("After tools/list_changed")).toEqual(["revision_3"]);
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+
+  it.effect(scenarios.mcpListingUpstreamChange.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const origin = yield* fixture();
+        yield* control(origin, { count: 3, delayMs: 0 });
+        // The app keeps its server's tool list fresh for a second, as it would for five minutes
+        // by default, so its routine refresh runs within the scenario.
+        const app = yield* deploy(`${origin}/mcp`, true, false, false, "1 second");
+        const execute = yield* executeAs(app, "Listing upstream change");
+        const tools = `tools[${JSON.stringify(app.slug)}].upstream`;
+        /** The revision tools search lists for the app. */
+        const searched = (step: string) =>
+          execute(
+            step,
+            `const found = await tools.search({ query: "revision", namespace: ${JSON.stringify(app.slug)}, limit: 50 });
+return found.items.map((item) => item.path.split(".").at(-1)).sort();`,
+          ).pipe(
+            Effect.flatMap((result) =>
+              Schema.decodeUnknownEffect(Schema.Array(Schema.String))(result.value),
+            ),
+            Effect.map((names) => names.filter((name) => name.startsWith("revision_"))),
+          );
+        const called = (step: string, tool: string) =>
+          execute(step, `return (await ${tools}.${tool}({})).structuredContent.tool;`);
+
+        expect(yield* searched("First search")).toEqual(["revision_1"]);
+        const first = yield* called("Call a listed tool", "revision_1");
+        expect(first.value, JSON.stringify(first)).toBe("revision_1");
+        // The listing is kept now: another execute neither evaluates the app nor asks the server.
+        const lists = (yield* control(origin)).counters.list;
+        expect(yield* searched("Kept listing")).toEqual(["revision_1"]);
+        expect((yield* control(origin)).counters.list).toBe(lists);
+
+        // The server replaces its tools without announcing it, as a deploy of it does.
+        yield* control(origin, { version: 2 });
+        // A call of a tool both lists have runs on the app's stale tool list and refreshes it in
+        // the background once it is past its freshness: the server is asked again.
+        yield* Effect.gen(function* () {
+          expect((yield* app.call("fixture_0000")).status).toBe(200);
+          if ((yield* control(origin)).counters.list === lists)
+            return yield* Effect.fail(new Error("The app has not refreshed its tool list yet"));
+        }).pipe(Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 20 }));
+
+        // The refreshed tool list differs, so every kept listing of the app is outdated: the new
+        // tool is called and searched without a redeploy, after at most one change check.
+        const renamed = yield* called("Call the server's new tool", "revision_2").pipe(
+          Effect.flatMap((result) =>
+            result.ok
+              ? Effect.succeed(result)
+              : Effect.fail(new Error(`The new tool is not listed yet: ${JSON.stringify(result)}`)),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("1 second"), times: 25 }),
+        );
+        expect(renamed.value).toBe("revision_2");
+        expect(yield* searched("Search after the server changed")).toEqual(["revision_2"]);
+        const removed = yield* called("Call the server's removed tool", "revision_1");
+        expect(removed.ok).toBe(false);
+        expect(removed.error?.kind).toBe("UnknownTool");
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );

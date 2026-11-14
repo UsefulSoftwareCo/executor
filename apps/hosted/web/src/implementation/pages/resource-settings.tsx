@@ -2,24 +2,21 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import { Option } from "effect";
-import type { AppId, AccountId } from "@executor-js/sdk";
-import { QueryView } from "@executor-js/ui/dashboard/context";
+import type { AppId } from "@executor-js/sdk";
+import { QueryView, usePreload } from "@executor-js/ui/dashboard/context";
 import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
-import {
-  appAccessAtom,
-  accountAccessAtom,
-  shareAppAtom,
-  shareAccountAtom,
-} from "../../contracts/resource-access.ts";
+import { appAccessAtom, shareAppAtom } from "../../contracts/resource-access.ts";
 import { sessionAtom } from "../../contracts/auth.ts";
 import { groupsAtom } from "../../contracts/groups.ts";
 import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 import { SharingEditor } from "../components/sharing.tsx";
-/** These controls change app and account access; linked accounts are separate. */
+/** These controls change app access; accounts and their links are separate. */
 export function AppAccessSettings({ app }: { readonly app: AppId }) {
   const { organization } = useOrganizationRoute();
   const save = useAtomSet(shareAppAtom({ organization, app }), { mode: "promiseExit" });
+  // The editor always needs the groups, so they load alongside the access rather than after it.
+  usePreload(appAccessAtom({ organization, app }), groupsAtom(organization));
   const session = AsyncResult.value(useAtomValue(sessionAtom));
   const user = Option.isSome(session) ? session.value?.user.id : undefined;
   return (
@@ -43,7 +40,6 @@ export function AppAccessSettings({ app }: { readonly app: AppId }) {
                     ? undefined
                     : "Only the app creator and organization admins can change app access."
                 }
-                mode="app"
                 value={access.audience}
                 revision={access.revision}
                 allowPrivate={access.creator !== null}
@@ -54,49 +50,6 @@ export function AppAccessSettings({ app }: { readonly app: AppId }) {
             )}
           </QueryView>
         )}
-      </QueryView>
-    </section>
-  );
-}
-/** Personal accounts remain private; shared account grants are independent of app sharing. */
-export function AccountAccessSettings({ account }: { readonly account: AccountId }) {
-  const { organization } = useOrganizationRoute();
-  const save = useAtomSet(shareAccountAtom({ organization, account }), { mode: "promiseExit" });
-  return (
-    <section className="space-y-4">
-      <QueryView
-        query={accountAccessAtom({ organization, account })}
-        Failure={HostedFailure}
-        pending={<DetailSkeleton label="Loading account access" />}
-      >
-        {(access) =>
-          access.ownership.kind === "personal" ? (
-            <p className="text-sm text-muted-foreground">Personal account · Only you can use it.</p>
-          ) : (
-            <QueryView
-              query={groupsAtom(organization)}
-              Failure={HostedFailure}
-              pending={<DetailSkeleton label="Loading groups" />}
-            >
-              {(data) =>
-                access.ownership.kind === "shared" && (
-                  <SharingEditor
-                    disabledReason={
-                      access.canManage
-                        ? undefined
-                        : "Only the account creator and organization admins can change account access."
-                    }
-                    mode="account"
-                    value={access.ownership.audience}
-                    revision={access.revision}
-                    groups={data.groups}
-                    save={(audience, revision) => save({ audience, revision })}
-                  />
-                )
-              }
-            </QueryView>
-          )
-        }
       </QueryView>
     </section>
   );

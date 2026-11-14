@@ -7,6 +7,7 @@ import { Browser } from "../support/browser.ts";
 import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
+import { noPageErrors } from "../support/page-errors.ts";
 
 /** A plain word, as typed or pasted, carries none of the typed identifier prefixes. */
 const malformed = "notes";
@@ -56,7 +57,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted malformed resource link
         ])
           yield* expectNotFound(path);
         yield* browser.checkpoint("Malformed app link shows the missing-page state");
-        expect(pageErrors).toEqual([]);
+        yield* noPageErrors(pageErrors);
       }),
     ),
   );
@@ -91,7 +92,7 @@ layer(TestLive, { excludeTestServices: true })("Local malformed resource links",
           `/webhooks/${malformed}/${malformed}`,
         ])
           yield* expectNotFound(path);
-        expect(pageErrors).toEqual([]);
+        yield* noPageErrors(pageErrors);
       }),
     ),
   );

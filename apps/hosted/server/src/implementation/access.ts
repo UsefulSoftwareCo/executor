@@ -8,13 +8,15 @@ import {
 import {
   requireAppAccess,
   requireCurrentAppAccess,
-  accountAccesses,
+  ownedAccountIds,
   currentResourceAuthority,
   policyDatabase,
   resourceAuthorityForApp,
   resourceAuthorityForLinks,
+  type AppAccountReads,
   type ResourceAuthority,
 } from "./resource-policy.ts";
+import type { AppAccess } from "../contracts/resource-access.ts";
 import type {
   App,
   AppAccounts,
@@ -29,7 +31,13 @@ import type { ToolIdentity } from "@executor-js/authorization";
 import type { ToolAuthorization } from "./authorization.ts";
 import { Context, Effect, type Exit, Result } from "effect";
 import { HttpServerRequest } from "effect/http";
-import { CurrentUserId, Forbidden } from "../contracts/auth.ts";
+import {
+  BearerAuthentication,
+  CurrentUserId,
+  Forbidden,
+  SessionAuthentication,
+} from "../contracts/auth.ts";
+import { refuse } from "./auth-telemetry.ts";
 import {
   appAccountReads,
   appLinkedAccounts,
@@ -46,18 +54,34 @@ import {
 /** A person's own decisions come from their signed-in browser, never from an API credential. */
 export const browserOnly = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
-  if (request.headers.authorization !== undefined) return yield* new Forbidden();
+  if (request.headers.authorization !== undefined)
+    return yield* refuse("bearer_not_allowed", new Forbidden());
 });
+/** The current organization's slug, from the presented grant or else the browser session. */
+export const currentOrganizationSlug = (
+  auth: SessionAuthentication["Service"],
+  api: BearerAuthentication["Service"],
+) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const headers = new Headers(request.headers);
+    const { organization } = yield* CurrentOrganization;
+    return headers.has("authorization")
+      ? (yield* api.authenticate(headers, organization)).organizationSlug
+      : yield* auth.organizationSlug(headers, organization);
+  });
 /** Membership was checked by middleware; administrative actions require the current role. */
 export const requireOrganizationAdmin = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;
-  if (organization.role === "member") return yield* new OrganizationForbidden();
+  if (organization.role === "member")
+    return yield* refuse("insufficient_role", new OrganizationForbidden());
   return organization;
 });
 /** Only an owner may remove the organization itself. */
 export const requireOrganizationOwner = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;
-  if (organization.role !== "owner") return yield* new OrganizationForbidden();
+  if (organization.role !== "owner")
+    return yield* refuse("insufficient_role", new OrganizationForbidden());
   return organization;
 });
 /** Server-derived owners are the only owners used by hosted HTTP handlers. */
@@ -68,7 +92,7 @@ export const adminOwner = Effect.map(
   (organization) => organization.owner,
 );
 
-/** Account use requires its independent sharing policy as well as the SDK tenant check. */
+/** Account use requires owning the account as well as the SDK tenant check. */
 export const checkAccounts = (owner: OwnerId, accounts: SelectedAccounts) =>
   Effect.flatMap(currentResourceAuthority, (actor) => checkAccountsAs(actor, owner, accounts));
 /**
@@ -86,15 +110,9 @@ export const checkAccountsAs = (
       typeof selection === "string" ? [selection] : selection,
     );
     if (selected.length === 0) return;
-    const policies = new Map(
-      (yield* accountAccesses([...new Set(selected)], actor)).map((access) => [
-        access.account,
-        access,
-      ]),
-    );
+    const owned = yield* ownedAccountIds([...new Set(selected)], actor);
     for (const account of selected) {
-      const access = policies.get(account);
-      if (access === undefined || !access.canUse) return yield* new OrganizationForbidden();
+      if (!owned.has(account)) return yield* new OrganizationForbidden();
       if (owner !== organizationOwner(actor.organization))
         return yield* new AccountNotFound({ account });
     }
@@ -244,19 +262,47 @@ export const selectedVersion = (
       linked,
     );
   });
+/**
+ * The app's active version for an operation that names `version`, or none, with the accounts it
+ * runs with: a version other than the active one is not found, and an app without one is not
+ * deployed.
+ */
+export const pinnedActiveVersion = (
+  selected: { readonly app: App; readonly accounts: AppAccounts },
+  version: VersionId | undefined,
+) =>
+  Effect.gen(function* () {
+    const { app, accounts } = selected;
+    if (version !== undefined && version !== app.activeVersion)
+      return yield* new VersionNotFound({ app: app.id, version });
+    if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
+    // Pin the authorized version so a concurrent promotion cannot silently change the call.
+    return { version: app.activeVersion, accounts };
+  });
 /** New tool discovery and calls use the active build; retained execution is reserved for saved invocations. */
 export const selectedActiveVersion = (
   executor: Executor,
   owner: OwnerId,
   input: { readonly app: AppId; readonly version?: VersionId | undefined },
 ) =>
+  Effect.flatMap(selectedApp(executor, owner, input.app), (selected) =>
+    pinnedActiveVersion(selected, input.version),
+  );
+/**
+ * {@link selectedApp} for an app decided from reads made for many apps at once, such as every app
+ * a search reads: the app as the request's app list read it, the caller's access to it, and the
+ * caller's and the app's links (see `resourceAuthorityForAppsWithLinks`). An app the caller may
+ * not use, or without a policy, is refused as `selectedApp` refuses it; otherwise its accounts are
+ * resolved from those links by the same rules.
+ */
+export const selectedAppFrom = (
+  app: App,
+  access: typeof AppAccess.Type | undefined,
+  links: AppAccountReads,
+) =>
   Effect.gen(function* () {
-    const { app, accounts } = yield* selectedApp(executor, owner, input.app);
-    if (input.version !== undefined && input.version !== app.activeVersion)
-      return yield* new VersionNotFound({ app: app.id, version: input.version });
-    if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
-    // Pin the authorized version so a concurrent promotion cannot silently change the call.
-    return { version: app.activeVersion, accounts };
+    if (access === undefined || !access.canUse) return yield* new OrganizationForbidden();
+    return { app, accounts: yield* callerAccounts(app, Effect.succeed(links)) };
   });
 
 /**
@@ -345,8 +391,18 @@ const checkAppLinked = (app: AppId, linked: AppAccounts["app"]) =>
  * links now is still checked by the caller's use.
  */
 export const checkScopedAccounts = (owner: OwnerId, app: AppId, accounts: AppAccounts) =>
+  Effect.flatMap(currentResourceAuthority, (actor) =>
+    checkScopedAccountsAs(actor, owner, app, accounts),
+  );
+/** {@link checkScopedAccounts} for an actor already resolved in this operation. */
+export const checkScopedAccountsAs = (
+  actor: ResourceAuthority,
+  owner: OwnerId,
+  app: AppId,
+  accounts: AppAccounts,
+) =>
   Effect.gen(function* () {
-    yield* checkAccounts(owner, accounts.user ?? {});
+    yield* checkAccountsAs(actor, owner, accounts.user ?? {});
     yield* checkAppLinked(app, accounts.app);
   });
 /** Pending approvals retain their original accounts even if the caller's links later change. */

@@ -29,6 +29,27 @@ const Failure = Schema.Struct({
   ),
 });
 
+/** A listing whose routers report what could not be listed beside the tools that could. */
+const Listing = Schema.Struct({
+  items: Schema.Array(Schema.Struct({ name: Schema.String, inputSchema: Schema.Unknown })),
+  routers: Schema.Array(
+    Schema.Struct({
+      path: Schema.String,
+      title: Schema.optional(Schema.String),
+      error: Schema.optional(
+        Schema.Struct({
+          _tag: Schema.String,
+          reason: Schema.optional(Schema.String),
+          status: Schema.optional(Schema.Number),
+          accountId: Schema.optional(Schema.String),
+          phase: Schema.optional(Schema.String),
+          upstream: Schema.optional(Schema.Unknown),
+        }),
+      ),
+    }),
+  ),
+});
+
 type Kind = "graphql" | "mcp" | "openapi" | "custom";
 
 const providerErrors = (kind: Kind) =>
@@ -196,16 +217,50 @@ export default defineApp({ user: { accounts: { service: provider.many() } } }, a
         delayMs: 1_500,
         ...(kind === "custom" ? {} : { headers: challenge }),
       });
-      const listed = yield* assertFailure(yield* catalog(), "unauthorized", 401, listing);
-      if (kind !== "custom")
-        expectStated(listed, kind === "mcp" ? "while connecting" : "while listing its tools");
+      if (kind === "mcp") {
+        // Each linked account is its own MCP session. The refused account's error is reported
+        // on the app's router, and the other account's tools stay listed. Like a failure, that
+        // listing is not kept, so the next read finds the account recovered.
+        const response = yield* catalog();
+        expect(response.status, `${kind}: ${JSON.stringify(response.body)}`).toBe(200);
+        const partial = yield* body(Listing, response);
+        expect(partial.items.map((item) => item.name)).toEqual([tool]);
+        expect(partial.routers).toEqual([
+          {
+            path: "",
+            title: "accounts",
+            error: {
+              _tag: "ProviderError",
+              reason: "unauthorized",
+              status: 401,
+              accountId: affected,
+              phase: listing,
+              upstream: {
+                code: "invalid_token",
+                message: "Token [redacted] belongs to another organization",
+              },
+            },
+          },
+        ]);
+        expect(JSON.stringify(response.body)).not.toMatch(
+          new RegExp(`${providerSecretMarker}|synthetic-personal`),
+        );
+      } else {
+        const listed = yield* assertFailure(yield* catalog(), "unauthorized", 401, listing);
+        if (kind !== "custom") expectStated(listed, "while listing its tools");
+      }
       // Lazy MCP sources do not discover tools when listing unrelated webhooks.
       const setup = yield* api.request(actors.owner, "GET", `${path}/webhook-definitions`);
       expect(setup.status, JSON.stringify(setup.body)).toBe(kind === "mcp" ? 200 : 502);
       if (kind === "mcp") expect(setup.body).toEqual([]);
     }
     yield* upstream.configure({ status: 401, phase: "call" });
-    expect((yield* catalog()).status).toBe(200);
+    const recovered = yield* catalog();
+    expect(recovered.status, JSON.stringify(recovered.body)).toBe(200);
+    const whole = yield* body(Listing, recovered);
+    expect(whole.routers.filter((router) => router.error !== undefined)).toEqual([]);
+    // The recovered account can be selected again.
+    if (kind === "mcp") expect(JSON.stringify(whole.items[0]?.inputSchema)).toContain(affected);
     yield* assertFailure(yield* call(), "unauthorized", 401, "call");
     if (kind === "mcp") {
       yield* upstream.configure({ status: 401, phase: "call", headers: challenge });

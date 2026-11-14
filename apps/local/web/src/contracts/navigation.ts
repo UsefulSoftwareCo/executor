@@ -55,7 +55,7 @@ export function localPageTitle(pathname: string): string {
   if (section === "account-connect") return "Connect account";
   if (section === "api" && item === "oauth") return "Connecting account";
   if (section === "apps") {
-    if (item === "add") return action === "custom" ? "Add custom app" : "Add app";
+    if (item === "add") return "App catalog";
     if (action === "delete") return "Delete app";
     if (action === "setup") return "Accounts";
     return item ? "App" : "Apps";

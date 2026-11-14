@@ -60,8 +60,13 @@ export const apiKeyManagement = createAuthMiddleware(async (ctx) => {
     throw new APIError("NOT_FOUND");
 });
 
-/** Native PATs select key authentication instead of the OAuth bearer path. */
-export const isApiKey = (token: string) => token.startsWith("exp_");
+/**
+ * Native PATs select key authentication instead of the OAuth bearer path: `exp_` keys made in v2,
+ * and `sk_` keys v1's WorkOS issued, which Cloud stored when v1 forwarded them
+ * (`notes/v1-shutdown.md`). Both are checked by the same stored hash. Opaque OAuth access tokens
+ * are letters only and JWTs start with `eyJ`, so neither is taken for a key.
+ */
+export const isApiKey = (token: string) => token.startsWith("exp_") || token.startsWith("sk_");
 
 /** Project a native key into current-user authority; deleted users cannot retain access. */
 const identity = (

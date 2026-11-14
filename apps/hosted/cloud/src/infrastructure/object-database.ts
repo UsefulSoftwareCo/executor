@@ -2,7 +2,7 @@
  * Durable Objects keep their database connections across calls. A Worker event owns its own
  * connections and closes them with the event (`invocation-database.ts`); a Durable
  * Object serves many calls in one I/O context, so reconnecting in every call, or in every MCP
- * operation, only repeats the TLS login to PgBouncer.
+ * operation, only repeats the connection setup.
  */
 import type { PgClient } from "@effect/sql-pg";
 import {
@@ -21,18 +21,19 @@ import type { SqlClient } from "effect/sql";
 import {
   ConnectionReservations,
   type OpenedConnections,
+  type cloudDatabaseConnection,
   cloudDatabasePool,
-  cloudDirectDatabaseConnection,
+  type cloudDirectDatabaseConnection,
 } from "./database.ts";
 
 /**
- * An object closes its connections this long after its last call ends. PgBouncer pools in
- * transaction mode, so an idle client connection holds no Postgres backend meanwhile; it counts
- * only toward PgBouncer's client limit (notes/database-pool.md).
+ * An object closes its connections this long after its last call ends. Both routes pool in
+ * transaction mode, so an idle connection holds no Postgres backend meanwhile. A direct one
+ * still takes one of PgBouncer's client slots (notes/database-pool.md).
  *
- * A new connection costs a TLS login of about 70 ms on the next call's critical path. MCP clients
- * often pause longer than 30 seconds between tool calls, so a shorter window reconnects on most
- * of their calls after a pause. Cloudflare keeps an idle Durable Object in memory for 70–140 s
+ * A new connection costs its setup on the next call's critical path, a TLS login of about 70 ms
+ * direct to PgBouncer. MCP clients often pause longer than 30 seconds between tool calls, so a
+ * shorter window reconnects on most of their calls after a pause. Cloudflare keeps an idle Durable Object in memory for 70–140 s
  * after its last request, and the window's open socket and timer keep it there until the window
  * closes, so a window much longer than that would mostly hold objects in memory (billed duration)
  * for calls that rarely come.
@@ -110,9 +111,18 @@ const applicationName = (owner: string) => `executor ${owner}`.slice(0, 63);
  * that never ends therefore keeps its retired window open, and the object's windows together can
  * then hold more than {@link objectConnectionLimit} connections; nothing exercises that yet. Workerd
  * has no teardown hook for evicted objects; eviction drops their sockets.
+ *
+ * `route` is where the connections go. A class with one object per caller, such as the MCP session
+ * objects (one per grant), passes {@link cloudDatabaseConnection}: through Hyperdrive, its objects
+ * share Hyperdrive's bounded pool of PgBouncer clients however many are active. Direct, each active
+ * object would hold PgBouncer clients of its own, and the number of active objects grows with
+ * usage until PgBouncer's client limit refuses new ones (notes/database-pool.md). Only a class
+ * with a fixed number of objects, such as the schedule coordinator, may connect directly.
  */
-export const cloudObjectDatabase = Effect.gen(function* () {
-  const connection = yield* cloudDirectDatabaseConnection;
+export const cloudObjectDatabase = Effect.fn(function* (
+  route: typeof cloudDatabaseConnection | typeof cloudDirectDatabaseConnection,
+) {
+  const connection = yield* route;
   return Effect.fn(function* (owner: string, linger: Duration.Duration = idleWindow) {
     // Owned by the object for its whole life; only windows are ever closed.
     const root = Scope.makeUnsafe();
@@ -153,6 +163,7 @@ export const cloudObjectDatabase = Effect.gen(function* () {
         const sql = yield* Layer.buildWithScope(
           cloudDatabasePool({
             url,
+            route: connection.route,
             maxConnections: objectConnectionLimit,
             idleTimeout: idleWindow,
             applicationName: applicationName(owner),

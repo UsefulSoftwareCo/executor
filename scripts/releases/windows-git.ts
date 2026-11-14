@@ -47,5 +47,7 @@ export const installWindowsGitHttpBackend = (stage: string) =>
     const extracted = path.join(temporary, helper);
     if (hash(yield* fs.readFile(extracted)) !== helperHash)
       return yield* new WindowsGitFailed({ stage: "helper" });
+    // The staged Git keeps nothing else in libexec/git-core (keptGit in runtime-bundle.ts).
+    yield* fs.makeDirectory(path.dirname(path.join(git, helper)), { recursive: true });
     yield* fs.copyFile(extracted, path.join(git, helper));
   }).pipe(Effect.provide(FetchHttpClient.layer), Effect.scoped);

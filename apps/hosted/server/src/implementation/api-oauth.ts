@@ -2,11 +2,11 @@
 import { Effect } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { requestResourceOrigin } from "@executor-js/mcp-auth";
-import { ApiAuthentication } from "../contracts/auth.ts";
+import { BearerAuthentication } from "../contracts/auth.ts";
 
 /** RFC 9728 metadata for the organization management API. */
 export const apiProtectedResource = Effect.gen(function* () {
-  const { issuer, resourceOrigins } = yield* ApiAuthentication;
+  const { issuer, resourceOrigins } = yield* BearerAuthentication;
   const request = yield* HttpServerRequest.HttpServerRequest;
   const resourceOrigin = requestResourceOrigin(resourceOrigins.api, request.headers.host);
   return HttpServerResponse.jsonUnsafe({
@@ -20,7 +20,7 @@ export const apiProtectedResource = Effect.gen(function* () {
 
 /** API discovery starts with a standard bearer challenge; this is not an API operation. */
 export const apiChallenge = Effect.gen(function* () {
-  const { resourceOrigins } = yield* ApiAuthentication;
+  const { resourceOrigins } = yield* BearerAuthentication;
   const request = yield* HttpServerRequest.HttpServerRequest;
   const resourceOrigin = requestResourceOrigin(resourceOrigins.api, request.headers.host);
   return HttpServerResponse.empty({

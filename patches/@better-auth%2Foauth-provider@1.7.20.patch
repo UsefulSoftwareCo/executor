@@ -1,0 +1,363 @@
+diff --git a/dist/authorize-D1IhxxSO.mjs b/dist/authorize-D1IhxxSO.mjs
+index e8ed5d4..6a7e1cb 100644
+--- a/dist/authorize-D1IhxxSO.mjs
++++ b/dist/authorize-D1IhxxSO.mjs
+@@ -1016,6 +1016,8 @@ async function getResource(ctx, opts, identifier) {
+ 			value: identifier
+ 		}]
+ 	});
++	if (!dbResource && opts.resourceSeedMode === "manual" && opts.resources?.some((entry) => (typeof entry === "string" ? entry : entry.identifier) === identifier))
++		throw new APIError("SERVICE_UNAVAILABLE", { message: "OAuth resources have not been provisioned." });
+ 	if (dbResource && opts.cachedResources?.has(identifier)) resourceCache.set(identifier, Object.assign({}, dbResource));
+ 	return dbResource;
+ }
+@@ -1167,7 +1169,8 @@ function getSeedState(ctx, opts) {
+ *
+ * @internal
+ */
+-async function seedResources(ctx, opts) {
++async function seedResources(ctx, opts, strict = false) {
++	if (opts.resourceSeedMode === "manual") return;
+ 	const inputs = collectResourceInputs(opts);
+ 	if (inputs.length === 0) return;
+ 	const mode = opts.resourceSeedMode ?? "insertOnly";
+@@ -1175,6 +1178,7 @@ async function seedResources(ctx, opts) {
+ 	for (const rawInput of inputs) {
+ 		const check = await checkIdentifier(opts, rawInput.identifier);
+ 		if (!check.ok) {
++			if (strict) throw new Error("Invalid OAuth resource identifier during provisioning");
+ 			logger.warn(`oauth-provider: skipping resource seed for ${rawInput.identifier} — ${check.reason}`);
+ 			continue;
+ 		}
+@@ -1539,7 +1543,7 @@ async function createJwtAccessToken(ctx, opts, user, client, audienceClaim, scop
+ 			azp: client.clientId,
+ 			scope: scopes.join(" "),
+ 			sid: overrides?.sid,
+-			iss: jwtPluginOptions?.jwt?.issuer ?? ctx.context.baseURL,
++			iss: opts.issuer ?? jwtPluginOptions?.jwt?.issuer ?? ctx.context.baseURL,
+ 			iat,
+ 			exp,
+ 			jti: generateRandomString(32),
+@@ -1585,7 +1589,7 @@ async function createIdToken(ctx, opts, user, client, scopes, nonce, sessionId,
+ 		acr: "0",
+ 		...customClaims,
+ 		at_hash: atHash,
+-		iss: jwtPluginOptions?.jwt?.issuer ?? ctx.context.baseURL,
++		iss: opts.issuer ?? jwtPluginOptions?.jwt?.issuer ?? ctx.context.baseURL,
+ 		sub: resolvedSub,
+ 		aud: client.clientId,
+ 		nonce,
+@@ -1765,10 +1769,13 @@ async function createRefreshToken(ctx, opts, user, referenceId, authorizationCod
+ 		}],
+ 		increment: {},
+ 		set: rotationUpdate
+-	})) throw new APIError("BAD_REQUEST", {
+-		error_description: "invalid refresh token",
+-		error: "invalid_grant"
+-	});
++	})) {
++		reportRefreshRejected(ctx, opts, "rotation_lost");
++		throw new APIError("BAD_REQUEST", {
++			error_description: "invalid refresh token",
++			error: "invalid_grant"
++		});
++	}
+ 	return {
+ 		id: (await ctx.context.adapter.create({
+ 			model: "oauthRefreshToken",
+@@ -2280,6 +2287,17 @@ async function handleClientCredentialsGrant(ctx, opts) {
+ * Refresh tokens will only allow the same or lesser scopes as the initial authorize request.
+ * To add scopes, you must restart the authorize process again.
+ */
++function reportRefreshRejected(ctx, opts, reason, refreshToken) {
++	try {
++		opts.onRefreshRejected?.({
++			reason,
++			revokedAt: refreshToken?.revoked ? new Date(refreshToken.revoked) : void 0,
++			rotated: !!refreshToken?.rotatedAt
++		});
++	} catch {
++		ctx.context.logger.error("oauth-provider: onRefreshRejected failed");
++	}
++}
+ async function handleRefreshTokenGrant(ctx, opts) {
+ 	const credentials = await extractClientCredentials(ctx, opts, `${ctx.context.baseURL}/oauth2/token`);
+ 	const { clientId: client_id, clientSecret: client_secret, preVerified, authMethod } = destructureCredentials(credentials);
+@@ -2305,18 +2323,27 @@ async function handleRefreshTokenGrant(ctx, opts) {
+ 			value: await getStoredToken(opts.storeTokens, decodedRefresh.token, "refresh_token")
+ 		}]
+ 	});
+-	if (!refreshToken) throw new APIError("BAD_REQUEST", {
+-		error_description: "session not found",
+-		error: "invalid_grant"
+-	});
+-	if (refreshToken.clientId !== client_id) throw new APIError("BAD_REQUEST", {
+-		error_description: "invalid refresh token",
+-		error: "invalid_grant"
+-	});
+-	if (refreshToken.expiresAt < /* @__PURE__ */ new Date()) throw new APIError("BAD_REQUEST", {
+-		error_description: "invalid refresh token",
+-		error: "invalid_grant"
+-	});
++	if (!refreshToken) {
++		reportRefreshRejected(ctx, opts, "unknown_token");
++		throw new APIError("BAD_REQUEST", {
++			error_description: "session not found",
++			error: "invalid_grant"
++		});
++	}
++	if (refreshToken.clientId !== client_id) {
++		reportRefreshRejected(ctx, opts, "other_client", refreshToken);
++		throw new APIError("BAD_REQUEST", {
++			error_description: "invalid refresh token",
++			error: "invalid_grant"
++		});
++	}
++	if (refreshToken.expiresAt < /* @__PURE__ */ new Date()) {
++		reportRefreshRejected(ctx, opts, "expired", refreshToken);
++		throw new APIError("BAD_REQUEST", {
++			error_description: "invalid refresh token",
++			error: "invalid_grant"
++		});
++	}
+ 	if (resources && refreshToken.resources && !resources.every((v) => refreshToken.resources?.includes(v))) throw new APIError("BAD_REQUEST", {
+ 		error_description: "requested resource invalid",
+ 		error: "invalid_target"
+@@ -2340,12 +2367,21 @@ async function handleRefreshTokenGrant(ctx, opts) {
+ 				resources: resources ?? refreshToken.resources
+ 			}));
+ 			if (replay) return replayRefreshTokenRotationResponse(ctx, replay);
++			reportRefreshRejected(ctx, opts, "replay_unavailable", refreshToken);
++			throw new APIError("BAD_REQUEST", {
++				error_description: "invalid refresh token",
++				error: "invalid_grant"
++			});
++		}
++		if (refreshToken.rotatedAt && new Date(refreshToken.rotatedAt).getTime() + (opts.refreshTokenSupersededInterval ?? 0) * 1e3 >= Date.now()) {
++			reportRefreshRejected(ctx, opts, "superseded", refreshToken);
+ 			throw new APIError("BAD_REQUEST", {
+ 				error_description: "invalid refresh token",
+ 				error: "invalid_grant"
+ 			});
+ 		}
+ 		await invalidateRefreshFamily(ctx, client_id, refreshToken.userId);
++		reportRefreshRejected(ctx, opts, "reused", refreshToken);
+ 		throw new APIError("BAD_REQUEST", {
+ 			error_description: "invalid refresh token",
+ 			error: "invalid_grant"
+@@ -2430,7 +2466,7 @@ async function validateJwtAccessToken(ctx, opts, token, clientId) {
+ 	const jwtPlugin = getJwtPlugin(ctx.context);
+ 	const jwtPluginOptions = jwtPlugin.options;
+ 	const userInfoAud = `${ctx.context.baseURL ?? ""}/oauth2/userinfo`;
+-	const expectedIssuer = jwtPluginOptions?.jwt?.issuer ?? ctx.context.baseURL;
++	const expectedIssuer = opts.issuer ?? jwtPluginOptions?.jwt?.issuer ?? ctx.context.baseURL;
+ 	let jwtPayload;
+ 	try {
+ 		const jwksFetch = jwtPluginOptions?.jwks?.remoteUrl ? jwtPluginOptions.jwks.remoteUrl : async () => {
+@@ -2552,7 +2588,7 @@ async function validateOpaqueAccessToken(ctx, opts, token, clientId) {
+ 		payload: {
+ 			...accessTokenClaims,
+ 			active: true,
+-			iss: jwtPluginOptions?.jwt?.issuer ?? ctx.context.baseURL,
++			iss: opts.issuer ?? jwtPluginOptions?.jwt?.issuer ?? ctx.context.baseURL,
+ 			aud: toAudienceClaim(audienceClaim),
+ 			client_id: accessToken.clientId,
+ 			azp: accessToken.clientId,
+@@ -2603,7 +2639,7 @@ async function validateRefreshToken(ctx, opts, token, clientId) {
+ 	return {
+ 		active: true,
+ 		client_id: clientId,
+-		iss: ((opts.disableJwtPlugin ? void 0 : getJwtPlugin(ctx.context))?.options)?.jwt?.issuer ?? ctx.context.baseURL,
++		iss: opts.issuer ?? ((opts.disableJwtPlugin ? void 0 : getJwtPlugin(ctx.context))?.options)?.jwt?.issuer ?? ctx.context.baseURL,
+ 		sub: user?.id,
+ 		sid: sessionId,
+ 		exp: Math.floor(new Date(refreshToken.expiresAt).getTime() / 1e3),
+@@ -3256,7 +3292,7 @@ function authServerMetadata(ctx, opts, overrides) {
+ 	const backchannelSupported = !overrides?.jwt_disabled;
+ 	return {
+ 		scopes_supported: overrides?.scopes_supported,
+-		issuer: validateIssuerUrl(opts?.jwt?.issuer ?? baseURL),
++		issuer: overrides?.issuer ?? validateIssuerUrl(opts?.jwt?.issuer ?? baseURL),
+ 		authorization_endpoint: `${baseURL}/oauth2/authorize`,
+ 		token_endpoint: `${baseURL}/oauth2/token`,
+ 		jwks_uri: overrides?.jwt_disabled ? void 0 : opts?.jwks?.remoteUrl ?? `${baseURL}${opts?.jwks?.jwksPath ?? "/jwks"}`,
+@@ -3309,6 +3345,7 @@ function buildAuthServerMetadata(ctx, opts) {
+ 		jwtPluginOptions,
+ 		clientDiscoveries,
+ 		authMetadata: authServerMetadata(ctx, jwtPluginOptions, {
++			issuer: getIssuer(ctx, opts),
+ 			scopes_supported: opts.advertisedMetadata?.scopes_supported ?? opts.scopes,
+ 			dynamic_client_registration_supported: opts.allowDynamicClientRegistration,
+ 			public_client_supported: publicClientSupported,
+@@ -6180,7 +6217,7 @@ async function revokeJwtAccessToken(ctx, opts, token) {
+ 			jwksFetch,
+ 			jwksCacheKey: jwtPlugin
+ 		});
+-		jwtPayload = (await jwtVerify(token, createLocalJWKSet(jwks), { issuer: jwtPluginOptions?.jwt?.issuer ?? ctx.context.baseURL })).payload;
++		jwtPayload = (await jwtVerify(token, createLocalJWKSet(jwks), { issuer: opts.issuer ?? jwtPluginOptions?.jwt?.issuer ?? ctx.context.baseURL })).payload;
+ 	} catch (error) {
+ 		if (error instanceof errors.JWTExpired || error instanceof errors.JWTInvalid) return null;
+ 		if (error instanceof TypeError || isInvalidJwtError(error)) throw new APIError$1("BAD_REQUEST", {
+@@ -6968,7 +7005,7 @@ const oauthProvider = (options) => {
+ 	const handleIssuerMetadataRequest = async (request, ctx) => {
+ 		const requestPathname = new URL(request.url).pathname;
+ 		const requestPath = ctx.options.advanced?.skipTrailingSlashes ? requestPathname.replace(/\/+$/, "") || "/" : requestPathname;
+-		const issuer = opts.disableJwtPlugin ? ctx.baseURL : getJwtPlugin(ctx)?.options?.jwt?.issuer ?? ctx.baseURL;
++		const issuer = opts.issuer ?? (opts.disableJwtPlugin ? ctx.baseURL : getJwtPlugin(ctx)?.options?.jwt?.issuer ?? ctx.baseURL);
+ 		let issuerPath = "/";
+ 		try {
+ 			issuerPath = new URL(issuer).pathname.replace(/\/$/, "") || "";
+@@ -8128,7 +8165,8 @@ function validateIssuerUrl(issuer) {
+ */
+ function getIssuer(ctx, opts) {
+ 	let issuer;
+-	if (opts.disableJwtPlugin) issuer = ctx.context.baseURL;
++	if (opts.issuer) issuer = opts.issuer;
++	else if (opts.disableJwtPlugin) issuer = ctx.context.baseURL;
+ 	else try {
+ 		issuer = getJwtPlugin(ctx.context).options?.jwt?.issuer ?? ctx.context.baseURL;
+ 	} catch {
+@@ -8545,3 +8583,4 @@ async function signParams(ctx, opts, flags) {
+ }
+ //#endregion
+ export { extractRepeatedResourceFromForm as _, registerClientMetadataDocument as a, oauthClientMetadataSchema as b, isForbiddenCimdClientMetadataField as c, metadataResponse as d, oauthAuthorizationServerMetadata as f, getOAuthProviderApi as g, oidcServerMetadata as h, oauthProvider as i, validatePublicClientJwks as l, oauthProviderOpenIdConfigMetadata as m, DEFAULT_OAUTH_SCOPES as n, client_assertion_exports as o, oauthProviderAuthServerMetadata as p, getOAuthProviderState as r, consumeClientAssertion as s, getIssuer as t, authServerMetadata as u, resolveResourcePolicy as v, ResourceUriSchema as y };
++export { seedResources as seedResourcesForProvisioning };
+diff --git a/dist/index.d.mts b/dist/index.d.mts
+index 10d0acd..4f141d2 100644
+--- a/dist/index.d.mts
++++ b/dist/index.d.mts
+@@ -202,4 +202,7 @@ export declare function consumeClientAssertion(ctx: GenericEndpointContext, opts
+   expectedAudience: string;
+ }): Promise<void>;
+ //#endregion
+-export { type ActiveAccessTokenPayload, type AuthMethod, type AuthServerMetadata, type AuthorizePrompt, type BearerMethodsSupported, type ClientDiscovery, type ClientMetadataResourceFetch, type ClientRegistrationRequest, type Confirmation, DEFAULT_OAUTH_SCOPES, DEVICE_CODE_GRANT_TYPE, type GrantType, type InitialAccessTokenAuthorization, type OAuthAuthenticatedClient, type OAuthAuthorizationQuery, type OAuthClaimExtensionInput, type OAuthClient, type OAuthClientAdministrativeResponse, type OAuthClientAuthenticationInput, type OAuthClientAuthenticationRequest, type OAuthClientAuthenticationResult, type OAuthClientAuthenticationStrategy, type OAuthClientMetadata, type OAuthClientRegistrationResponse, type OAuthClientResource, type OAuthConsent, type OAuthDeviceAuthorizationOptions, type OAuthEndpointErrorResult, type OAuthEndpointRedirectContext, type OAuthErrorCode, type OAuthExtensionGrantHandler, type OAuthExtensionGrantHandlerInput, type OAuthFieldErrorCode, type OAuthFieldErrorCodeMap, type OAuthMetadataExtensionInput, type OAuthOpaqueAccessToken, type OAuthOptions, type OAuthProviderApi, type OAuthProviderExtension, type OAuthRedirectOnError, type OAuthRefreshToken, type OAuthResource, type OAuthResourceInput, type OAuthTokenIssueParams, type OAuthTokenResponse, type OAuthUserInfoExtensionInput, type OIDCMetadata, type Prompt, type ResourceServerMetadata, ResourceUriSchema, type SchemaClient, type Scope, type StoreTokenType, type StoredAuthorizationQuery, type TokenEndpointAuthMethod, type TokenType, type VerificationValue, getIssuer, getOAuthProviderState, oauthClientMetadataSchema, oauthDeviceAuthorization, oauthProvider };
+\ No newline at end of file
++export { type ActiveAccessTokenPayload, type AuthMethod, type AuthServerMetadata, type AuthorizePrompt, type BearerMethodsSupported, type ClientDiscovery, type ClientMetadataResourceFetch, type ClientRegistrationRequest, type Confirmation, DEFAULT_OAUTH_SCOPES, DEVICE_CODE_GRANT_TYPE, type GrantType, type InitialAccessTokenAuthorization, type OAuthAuthenticatedClient, type OAuthAuthorizationQuery, type OAuthClaimExtensionInput, type OAuthClient, type OAuthClientAdministrativeResponse, type OAuthClientAuthenticationInput, type OAuthClientAuthenticationRequest, type OAuthClientAuthenticationResult, type OAuthClientAuthenticationStrategy, type OAuthClientMetadata, type OAuthClientRegistrationResponse, type OAuthClientResource, type OAuthConsent, type OAuthDeviceAuthorizationOptions, type OAuthEndpointErrorResult, type OAuthEndpointRedirectContext, type OAuthErrorCode, type OAuthExtensionGrantHandler, type OAuthExtensionGrantHandlerInput, type OAuthFieldErrorCode, type OAuthFieldErrorCodeMap, type OAuthMetadataExtensionInput, type OAuthOpaqueAccessToken, type OAuthOptions, type OAuthProviderApi, type OAuthProviderExtension, type OAuthRedirectOnError, type OAuthRefreshToken, type OAuthResource, type OAuthResourceInput, type OAuthTokenIssueParams, type OAuthTokenResponse, type OAuthUserInfoExtensionInput, type OIDCMetadata, type Prompt, type ResourceServerMetadata, ResourceUriSchema, type SchemaClient, type Scope, type StoreTokenType, type StoredAuthorizationQuery, type TokenEndpointAuthMethod, type TokenType, type VerificationValue, getIssuer, getOAuthProviderState, oauthClientMetadataSchema, oauthDeviceAuthorization, oauthProvider };
++/** Provision configured resources after migrations; preserve existing policies and reject missing tables. */
++export type OAuthResourceSeedContext = { adapter: Pick<AuthContext["adapter"], "findOne" | "create"> };
++export declare function seedOAuthResources(ctx: OAuthResourceSeedContext, options: OAuthOptions<Scope[]>): Promise<void>;
+\ No newline at end of file
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 9b2564b..1e5a643 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -229,3 +229,8 @@ function oauthDeviceAuthorization(options = {}) {
+ }
+ //#endregion
+ export { DEFAULT_OAUTH_SCOPES, DEVICE_CODE_GRANT_TYPE, ResourceUriSchema, authServerMetadata, consumeClientAssertion, createResourceServerChallenge, extendOAuthProvider, getIssuer, getOAuthProviderApi, getOAuthProviderState, metadataResponse, oauthAuthorizationServerMetadata, oauthClientMetadataSchema, oauthDeviceAuthorization, oauthProvider, oauthProviderAuthServerMetadata, oauthProviderOpenIdConfigMetadata, oidcServerMetadata, verifyOAuthQueryParams };
++
++// Explicit provisioning is insert-only and must finish after migrations.
++import { seedResourcesForProvisioning } from "./authorize-D1IhxxSO.mjs";
++export const seedOAuthResources = (ctx, options) =>
++  seedResourcesForProvisioning(ctx, { ...options, resourceSeedMode: "insertOnly" }, true);
+diff --git a/dist/oauth-CCxTS0dO.d.mts b/dist/oauth-CCxTS0dO.d.mts
+index cb45efe..b5e7fc5 100644
+--- a/dist/oauth-CCxTS0dO.d.mts
++++ b/dist/oauth-CCxTS0dO.d.mts
+@@ -1210,7 +1210,10 @@ interface OAuthOptions<Scopes extends readonly Scope[] = InternallySupportedScop
+    *
+    * @default "insertOnly"
+    */
+-  resourceSeedMode?: "insertOnly" | "merge" | "overwrite";
++  /** "manual" disables automatic seeding; call seedOAuthResources during provisioning. */
++  resourceSeedMode?: "insertOnly" | "merge" | "overwrite" | "manual";
++  /** Issuer identifier when it differs from `baseURL` (endpoints stay on `baseURL`). */
++  issuer?: string;
+   /**
+    * Opt-in cache membership for resources by `identifier`. Mirrors the
+    * {@link OAuthOptions.cachedTrustedClients} pattern.
+@@ -1315,6 +1318,27 @@ interface OAuthOptions<Scopes extends readonly Scope[] = InternallySupportedScop
+    * @default 0
+    */
+   refreshTokenReuseInterval?: number;
++  /**
++   * Seconds after rotation that presenting the rotated refresh token is refused
++   * without revoking the family. Clients that keep stale copies, such as an
++   * idle instance sharing a grant, would otherwise revoke every sibling. Later
++   * reuse, and reuse of a token revoked other than by rotation, still revokes
++   * the family.
++   *
++   * @default 0
++   */
++  refreshTokenSupersededInterval?: number;
++  /**
++   * Observes why a refresh grant was refused; a throw is logged and never changes the answer.
++   * `reused` means reuse detection revoked every refresh token of the client and user.
++   * `superseded` means a rotated token arrived within `refreshTokenSupersededInterval`.
++   * `revokedAt` is when the presented token was revoked, and `rotated` whether rotation revoked it.
++   */
++  onRefreshRejected?: (rejection: {
++    reason: "unknown_token" | "other_client" | "expired" | "replay_unavailable" | "superseded" | "reused" | "rotation_lost";
++    revokedAt?: Date;
++    rotated: boolean;
++  }) => void;
+   /**
+    * The amount of time in seconds that the authorization code is valid for.
+    *
+diff --git a/dist/oauth-D7QYRdb3.d.mts b/dist/oauth-D7QYRdb3.d.mts
+index 8ee8904..c1cf153 100644
+--- a/dist/oauth-D7QYRdb3.d.mts
++++ b/dist/oauth-D7QYRdb3.d.mts
+@@ -102,7 +102,6 @@ declare function buildOAuthDeviceGrant(): {
+     resource: {
+       oneOf: ({
+         type: string;
+-        items?: undefined;
+       } | {
+         type: string;
+         items: {
+@@ -776,9 +775,6 @@ declare const oauthProvider: <O extends OAuthOptions<Scope[]>>(options: O) => {
+             required: false;
+             schema: {
+               type: "string";
+-              format?: undefined;
+-              minimum?: undefined;
+-              items?: undefined;
+             };
+             description: string;
+           } | {
+@@ -787,9 +783,6 @@ declare const oauthProvider: <O extends OAuthOptions<Scope[]>>(options: O) => {
+             required: true;
+             schema: {
+               type: "string";
+-              format?: undefined;
+-              minimum?: undefined;
+-              items?: undefined;
+             };
+             description: string;
+           } | {
+@@ -799,8 +792,6 @@ declare const oauthProvider: <O extends OAuthOptions<Scope[]>>(options: O) => {
+             schema: {
+               type: "string";
+               format: string;
+-              minimum?: undefined;
+-              items?: undefined;
+             };
+             description: string;
+           } | {
+@@ -810,8 +801,6 @@ declare const oauthProvider: <O extends OAuthOptions<Scope[]>>(options: O) => {
+             schema: {
+               type: "integer";
+               minimum: number;
+-              format?: undefined;
+-              items?: undefined;
+             };
+             description: string;
+           } | {
+@@ -823,8 +812,6 @@ declare const oauthProvider: <O extends OAuthOptions<Scope[]>>(options: O) => {
+               items: {
+                 type: "string";
+               };
+-              format?: undefined;
+-              minimum?: undefined;
+             };
+             description: string;
+           })[];
+@@ -1073,7 +1060,6 @@ declare const oauthProvider: <O extends OAuthOptions<Scope[]>>(options: O) => {
+                       oneOf: ({
+                         type: string;
+                         description: string;
+-                        items?: undefined;
+                       } | {
+                         type: string;
+                         items: {

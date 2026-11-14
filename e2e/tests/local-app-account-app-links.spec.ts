@@ -16,7 +16,7 @@ import {
 import { appsManifest } from "../support/apps-release.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
-import { Evidence } from "../support/evidence.ts";
+import { Evidence, Telemetry } from "../support/evidence.ts";
 import {
   callLocalQuery,
   linkLocal,
@@ -532,6 +532,18 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
             }
           }).pipe(Effect.orDie),
         );
+        const evidence = yield* Evidence,
+          telemetry = yield* Telemetry;
+        /** The tags of the last request's `sdk.webhooks.deliver` span, once it is delivered. */
+        const deliveredSpan = Effect.gen(function* () {
+          const trace = (yield* evidence.requests).at(-1)?.traceId;
+          if (trace === undefined)
+            return yield* Effect.die("The delivery's trace was not recorded");
+          const spans = yield* telemetry.settled(trace, (spans) =>
+            spans.some(({ operationName }) => operationName === "sdk.webhooks.deliver"),
+          );
+          return spans.find(({ operationName }) => operationName === "sdk.webhooks.deliver")?.tags;
+        });
         const ready =
           (account: string, actor: string | null) => (rows: readonly WebhookSourceRow[]) =>
             rows.some(
@@ -561,6 +573,23 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
         );
         expect(delivered.status, JSON.stringify(delivered.body)).toBe(200);
         expect(delivered.body).toEqual({ hasUser: false, account: shared, source: shared });
+        // Its span records the app's answer by its status.
+        expect(yield* deliveredSpan).toMatchObject({ "executor.webhook.response_status": "200" });
+        // A body over the transport limit is answered 413, as the callback declares, and the
+        // request's own span says why.
+        const oversized = yield* api.request(
+          yield* api.session(),
+          "POST",
+          new URL(hook.callbackUrl).pathname,
+          { pad: "x".repeat(1024 * 1024) },
+        );
+        expect(oversized.status).toBe(413);
+        const oversizedTrace = (yield* evidence.requests).at(-1)?.traceId;
+        if (oversizedTrace === undefined)
+          return yield* Effect.die("The oversized delivery's trace was not recorded");
+        yield* telemetry.settled(oversizedTrace, (spans) =>
+          spans.some(({ tags }) => tags["executor.webhook.refusal"] === "body-too-large"),
+        );
 
         // An account linked only for the local user is its own source, running as the user.
         yield* linkLocal(agent, app.id, "mine", personal);
@@ -613,7 +642,11 @@ export default defineApp({ app: { accounts: { x: service } }, user: { accounts: 
           new URL(hook.callbackUrl).pathname,
           { id: "event-two" },
         );
-        expect(late.status, JSON.stringify(late.body)).not.toBe(200);
+        expect(late.status, JSON.stringify(late.body)).toBe(410);
+        // A refused delivery's span says why, by a fixed label.
+        const refused = yield* deliveredSpan;
+        expect(refused).toMatchObject({ "executor.webhook.refusal": "inactive" });
+        expect(refused).not.toHaveProperty("executor.webhook.response_status");
       }),
     ),
   );
@@ -976,7 +1009,6 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({
                 name: "execute",
                 arguments: {
                   code: `const first = await tools[${slug}].who({});
-await tools[${slug}].enter({});
 await tools[${slug}].hold({});
 let second;
 try { second = await tools[${slug}].who({}); } catch (error) { second = { refused: String(error.message) }; }
@@ -996,7 +1028,7 @@ return { first, second };`,
             Effect.flatMap((response) => body(Completed, response)),
           );
         yield* untilHeld(
-          call("entered", "query").pipe(
+          call("holding", "query").pipe(
             Effect.flatMap((called) => Schema.decodeUnknownEffect(Schema.Boolean)(called.value)),
           ),
         );

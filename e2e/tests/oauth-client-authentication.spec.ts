@@ -150,6 +150,8 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
             const account = yield* body(Resource, completed);
 
             const refreshes = exchanged.refreshes;
+            // Services such as GitLab ask for the sign-in's callback again on refresh.
+            yield* issuer.configure({ requireRefreshRedirectUri: redirect.redirectUri });
             const read = yield* api.request(
               actors.owner,
               "POST",
@@ -163,6 +165,8 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
             ).toBe(200);
             expect(yield* body(Read, read)).toEqual({ refreshed: true });
             expect(renewed.refreshes).toBeGreaterThan(refreshes);
+            expect(renewed.refreshRedirectUri).toBe(redirect.redirectUri);
+            expect(renewed.refreshChecks).toMatchObject({ redirect: true });
 
             const revocations = renewed.revocations.length;
             expect(

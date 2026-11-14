@@ -485,7 +485,7 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
             const dialog = page.getByRole("dialog", { name: `Connect ${name}`, exact: true });
             return dialog.waitFor({ state: "visible" }).then(() => dialog);
           });
-          // A field's hint is part of its label, so read the inputs in declaration order.
+          // Read each field's input in declaration order.
           const types = yield* browser.use("Read each field's input type", () =>
             form
               .locator("input")
@@ -493,34 +493,78 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
           );
           // A plain field is not secret, so it is shown; secret fields stay masked.
           expect(types).toEqual(["text", "password", "password"]);
-          const { explained, destination, access } = yield* browser.use(
-            "Read what the app gets",
-            () =>
-              Promise.all([
-                form
-                  .locator("[data-credential-access]")
-                  .evaluateAll((lines) =>
-                    lines.map((line) => line.getAttribute("data-credential-access")),
+          const { lines, placement } = yield* browser.use("Read what the app gets", () =>
+            Promise.all([
+              form
+                .locator("[data-credential-access]")
+                .evaluateAll((all) =>
+                  all.map((line) => [
+                    line.getAttribute("data-credential-access"),
+                    line.textContent,
+                  ]),
+                ),
+              form.evaluate((element) => {
+                const notice = element.querySelector("[data-credential-hosts]");
+                const follows = (earlier: Element | null | undefined) =>
+                  earlier != null &&
+                  notice !== null &&
+                  (earlier.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING) !==
+                    0;
+                const submit = element.querySelector("button[type=submit]");
+                return {
+                  afterFields: follows([...element.querySelectorAll("input")].at(-1)),
+                  beforeSubmit:
+                    notice !== null &&
+                    submit !== null &&
+                    (notice.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING) !==
+                      0,
+                  marks: [...element.querySelectorAll("[data-field-access]")].map((mark) =>
+                    mark.getAttribute("data-field-access"),
                   ),
-                form.locator("[data-credential-hosts]").textContent(),
-                form
-                  .locator("[data-field-access]")
-                  .evaluateAll((marks) =>
-                    marks.map((mark) => mark.getAttribute("data-field-access")),
-                  ),
-              ]).then(([explained, destination, access]) => ({ explained, destination, access })),
+                };
+              }),
+            ]).then(([lines, placement]) => ({ lines, placement })),
           );
           if (host === null) {
-            // Without hosts the app reads every secret: only that explainer shows, asking for hosts.
-            expect(explained).toEqual(["readable"]);
-            expect(destination).toContain("ask your agent to use stubbed secrets");
-            expect(access).toEqual(["readable", "readable"]);
+            // Without hosts the app reads every secret: one line says so and how to limit that.
+            expect(lines).toEqual([
+              [
+                "readable",
+                "The app can read these values and send them anywhere. You can ask your agent to limit where they are sent.",
+              ],
+            ]);
           } else {
-            // Each tag the form shows is explained once: the hidden token and the raw field.
-            expect(explained).toEqual(["hidden", "readable"]);
-            expect(destination).toContain("The app and your agent only get a placeholder");
-            expect(destination).toContain(`real value on requests to ${host}.`);
-            expect(access).toEqual(["hidden", "readable"]);
+            // Each tag the form shows gets one line: the hidden token's and the raw field's.
+            expect(lines).toEqual([
+              [
+                "hidden",
+                `Hidden values are only sent to ${host}. The app and your agent get a placeholder.`,
+              ],
+              ["readable", "The app can read the other values and send them anywhere."],
+            ]);
+          }
+          // The lines sit between the last field and the submit button, and each secret field
+          // keeps its mark: the token's, then the raw field's.
+          expect(placement).toEqual({
+            afterFields: true,
+            beforeSubmit: true,
+            marks: host === null ? ["readable", "readable"] : ["hidden", "readable"],
+          });
+          // The dialog's animations end first, so the checkpoint shows the form as people see it.
+          // A cancelled animation rejects `finished`; it has ended all the same.
+          yield* browser.use("Wait for the dialog to settle", () =>
+            form.evaluate((dialog) =>
+              Promise.allSettled(
+                dialog.getAnimations({ subtree: true }).map((animation) => animation.finished),
+              ).then(() => undefined),
+            ),
+          );
+          yield* browser.checkpoint(
+            host === null
+              ? "Connect form for a provider without hosts"
+              : "Connect form for a provider with hosts and a raw field",
+          );
+          if (host !== null) {
             const tooltip = yield* browser.use("Hover the hidden field's mark", (page) =>
               form
                 .getByRole("img", { name: "Hidden from app" })
@@ -668,6 +712,33 @@ layer(HostedLive, { excludeTestServices: true })("Credential hosts", (it) => {
         expect(
           Schema.decodeUnknownSync(Schema.fromJsonString(ReceivedRequest))(replies[0]!.text),
         ).toMatchObject({ authorization: replies[0]!.echoed });
+      }),
+    ),
+  );
+
+  // Docker names containers and services with underscores, such as `n8n_server_1`, and an app
+  // on the same network reaches the service by that name. `.localhost` names resolve to loopback.
+  it.effect(scenarios.credentialHostsUnderscore.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { deploy, connect, call } = yield* scenario;
+        const upstream = yield* credentialUpstream;
+        const host = `n8n_server_1.localhost:${upstream.port}`;
+        const name = `Credential hosts ${randomUUID().slice(0, 8)}`;
+        const { path, app } = yield* deploy(name, credentialApp({ name, host, health: null }));
+        expect(app.requirements.accounts.service).toBeDefined();
+        const values = synthetic();
+        yield* connect(path, name, values);
+        const { token } = yield* call(path, Fields, "fields", {});
+        expect(token).toMatch(handle);
+
+        const sent = yield* call(path, Sent, "send", { url: `http://${host}/underscore` });
+        expect(sent.status, sent.text).toBe(200);
+        const received = (yield* upstream.received).find(
+          (entry) => new URL(entry.url, upstream.origin).pathname === "/underscore",
+        );
+        expect(received?.authorization).toBe(`Bearer ${values.token}`);
       }),
     ),
   );

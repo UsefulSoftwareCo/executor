@@ -25,9 +25,12 @@ Git source tree and the binary package includes `licenses/git-GPL-2.0.txt`.
 
 The native project also bundles Git LFS and Git Credential Manager. Their
 versions and binary checksums are recorded in its `dependencies.json`.
-`git-lfs-notices.txt` adds Git LFS's license, Go runtime license and the notices
-from its pinned Go modules. Git Credential Manager's license and third-party
-notices remain in the distributed Git tree.
+Executor's binaries leave both out, with the network transports and scripted
+tools: they keep only the `git` executable, `git http-backend`, the libraries
+those load and `git init`'s templates (`keptGit` in
+`scripts/releases/runtime-bundle.ts`). `git-lfs-notices.txt` adds Git LFS's
+license, Go runtime license and the notices from its pinned Go modules, for
+releases that shipped it.
 
 Windows is a separate build: dugite repackages MinGit rather than compiling the
 POSIX source. Its source packages retain upstream code, patches, `PKGBUILD` recipes

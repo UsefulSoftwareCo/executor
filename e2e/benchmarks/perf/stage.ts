@@ -76,6 +76,9 @@ export const serveStage = (input: {
             "retained",
             "--background",
             "active",
+            // The harness reads its spans back from Axiom.
+            "--telemetry",
+            "export",
             "--owner",
             "Perf harness 0925",
             "--no-input",

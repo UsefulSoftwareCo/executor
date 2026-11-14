@@ -1,66 +1,73 @@
-/** Local API key rotation. The backend owns key storage, so rotation runs its entry after it stops. */
+/**
+ * Local API key rotation. The CLI owns key storage, so the desktop runs `executor service rotate-key` while
+ * the background server is stopped, then starts it again with the new key.
+ */
 import { dialog } from "electron";
-import { Effect, Schema, Semaphore, Stream } from "effect";
+import { Effect, Semaphore, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { RotationResult } from "../contracts/desktop.ts";
+
+/** How much of a failed rotation's message is shown. */
+const messageLimit = 2000;
 
 const show = (options: Electron.MessageBoxOptions) =>
   Effect.promise(() => dialog.showMessageBox(options));
 
 /**
- * Rotate with the backend entry once no server holds the data directory. The result is one
- * stdout line; its message is the server's sanitized configuration text and never a key.
+ * Run `service rotate-key` with the CLI `command`, in its environment `env`, on `directory`. Its stderr
+ * holds the CLI's sanitized message when it fails, and never a key.
  */
-export const rotateAfterStop = (options: {
-  readonly executable: string;
-  readonly entry: string;
-  readonly cwd: string;
+export const rotateKey = (options: {
+  readonly command: ReadonlyArray<string>;
+  readonly env: Readonly<Record<string, string | undefined>>;
   readonly directory: string;
 }) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const result = yield* Effect.scoped(
+    const [executable = "", ...args] = options.command;
+    return yield* Effect.scoped(
       Effect.gen(function* () {
         const child = yield* spawner.spawn(
-          ChildProcess.make(options.executable, [options.entry, "--rotate-api-key"], {
-            cwd: options.cwd,
-            env: { ELECTRON_RUN_AS_NODE: "1", EXECUTOR_DATA_DIR: options.directory },
-            extendEnv: true,
+          ChildProcess.make(executable, [...args, "service", "rotate-key"], {
+            env: { ...options.env, EXECUTOR_DATA_DIR: options.directory },
+            extendEnv: false,
             stdin: "ignore",
-            stdout: "pipe",
-            stderr: "ignore",
+            stdout: "ignore",
+            stderr: "pipe",
           }),
         );
-        const output = yield* child.stdout.pipe(Stream.decodeText, Stream.mkString);
-        yield* child.exitCode;
-        const line = output.trim().split("\n").at(-1) ?? "";
-        return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(RotationResult))(line);
+        const [message, code] = yield* Effect.all(
+          [child.stderr.pipe(Stream.decodeText, Stream.mkString), child.exitCode],
+          { concurrency: 2 },
+        );
+        return { rotated: code === 0, message: message.trim().slice(-messageLimit) };
       }),
-    ).pipe(
-      Effect.tapCause((cause) => Effect.logError("Desktop key rotation did not finish", cause)),
-      Effect.catch(() =>
-        Effect.succeed(
-          RotationResult.make({
-            version: 1,
-            rotated: false,
-            message: "Executor could not run the key rotation. The API key was not changed.",
-          }),
-        ),
-      ),
     );
-    yield* show(
-      result.rotated
-        ? {
-            type: "info",
-            message: "The local API key was rotated.",
-            detail:
-              "Executor restarts now. Update scripts and clients that used the previous key. Browser sessions and MCP sign-ins are kept.",
-          }
-        : { type: "error", message: "The local API key was not rotated.", detail: result.message },
-    );
-  });
+  }).pipe(
+    Effect.tapCause((cause) => Effect.logError("Desktop key rotation did not finish", cause)),
+    Effect.catch(() => Effect.succeed({ rotated: false, message: "" })),
+  );
 
-/** Confirm rotation, then hand the caller the work to run once the backend has stopped. */
+/** Tell the person how the rotation went. */
+export const announceRotation = (result: { readonly rotated: boolean; readonly message: string }) =>
+  show(
+    result.rotated
+      ? {
+          type: "info",
+          message: "The local API key was rotated.",
+          detail:
+            "Executor's background server restarted with the new key. Update scripts and clients that used the previous key. Browser sessions and MCP sign-ins are kept.",
+        }
+      : {
+          type: "error",
+          message: "The local API key was not rotated.",
+          detail:
+            result.message === ""
+              ? "Executor could not run the key rotation. The API key was not changed."
+              : result.message,
+        },
+  );
+
+/** Confirm rotation, then hand the caller the work to run while the server is stopped. */
 export const makeRotateKeyAction = (request: () => void) =>
   Effect.gen(function* () {
     const lock = yield* Semaphore.make(1);
@@ -81,7 +88,7 @@ export const makeRotateKeyAction = (request: () => void) =>
         type: "warning",
         message: "Rotate the local API key?",
         detail:
-          "Executor restarts with a new key. Scripts and clients that send the current key stop working until you update them. Saved accounts, browser sessions and MCP sign-ins are kept.",
+          "Executor's background server restarts with a new key. Scripts and clients that send the current key, including the Executor CLI when EXECUTOR_API_KEY is set, stop working until you update them. Saved accounts, browser sessions and MCP sign-ins are kept.",
         buttons: ["Rotate and restart", "Cancel"],
         defaultId: 1,
         cancelId: 1,

@@ -24,8 +24,10 @@ returns `FeedbackDisabled`.
 ## What is sent
 
 Each event carries an anonymous install ID, made on first start and kept in the
-data directory, plus the product (`cli`, `desktop` or `self-host`) and its
-version.
+data directory, plus the product and its version. The product is `self-host` or
+`cli`: the desktop app uses the command line's background Executor, which sends
+its events as `cli`. Desktop app releases from before the background Executor
+send `desktop`.
 
 - **Startup:** product, version, release channel, operating system,
   architecture, and the number of apps and accounts. Self-host adds the number

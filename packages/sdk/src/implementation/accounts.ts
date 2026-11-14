@@ -1,7 +1,8 @@
 import { AccountWorkflowsActive } from "../contracts/account.ts";
-import { AccountWebhooksActive } from "../contracts/account.ts";
+import { AccountWebhookDependent, AccountWebhooksActive } from "../contracts/account.ts";
 /** Reusable account operations. Owners remain lookup predicates, not authorization. */
-import { Clock, type Crypto, Effect, Option, Redacted, Schema } from "effect";
+import { Clock, Effect, Redacted, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import {
   Account,
   AccountNotFound,
@@ -46,6 +47,60 @@ export const storedAccount = (db: Query, account: AccountId, owner?: OwnerId) =>
   });
 
 /**
+ * New credentials for an account end the wait of the webhook sources that failed on it: each
+ * checks its accounts again at the next tick, without waiting out its retry delay. A source whose
+ * attempt is in progress keeps its lease. A source waiting on another of its accounts keeps
+ * waiting until that account's own change or its next delay. Run in the credential write's
+ * transaction.
+ */
+export const resumeWaitingSources = (tx: Query, account: AccountId) =>
+  query(() =>
+    tx.updateMany("webhookSources", {
+      where: (b) =>
+        b.and(b("account", "=", account), b("failure", "=", "accounts"), b("lease", "is", null)),
+      set: { leaseUntil: new Date(0), retries: 0 },
+    }),
+  );
+
+/**
+ * The subscriptions that still use an account, oldest ID first. A live one uses its source and
+ * every account its registration ran with, which removing it at the provider needs. A disabled
+ * one waits for a person to remove it at the provider, which runs no app code, so it keeps only its
+ * source: confirming the removal in the dashboard needs access to that account. A stopped one uses
+ * none, and neither does a dependency row whose subscription has gone.
+ */
+const webhookDependents = (tx: Query, account: AccountId) =>
+  Effect.gen(function* () {
+    const links = yield* query(() =>
+      tx.findMany("webhookAccounts", {
+        select: ["subscription"],
+        where: (b) => b("account", "=", account),
+      }),
+    );
+    if (links.length === 0) return [];
+    const rows = yield* query(() =>
+      tx.findMany("webhooks", {
+        select: ["id", "app", "status", "sourceAccount"],
+        where: (b) =>
+          b.and(
+            b(
+              "id",
+              "in",
+              links.map((link) => link.subscription),
+            ),
+            b("status", "!=", "stopped"),
+          ),
+        orderBy: ["id", "asc"],
+      }),
+    );
+    return yield* Schema.decodeUnknownEffect(Schema.Array(AccountWebhookDependent))(
+      rows
+        .filter((row) => row.status !== "disabled" || row.sourceAccount === account)
+        .map((row) => ({ app: row.app, subscription: row.id, status: row.status })),
+    ).pipe(Effect.mapError(() => new StorageError()));
+  });
+
+/**
  * An account created without a name starts with the owner's first free "Default" label for its
  * provider, so it can be named once its identity is known. Read inside the creating transaction.
  */
@@ -78,7 +133,7 @@ export interface RemovedGrant {
 export const makeAccounts = (
   db: Query,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   lifecycle?: ResourceLifecycle,
   /** Best-effort provider-side revocation; it never fails and runs only after the delete commits. */
   revokeRemoved?: (removed: RemovedGrant) => Effect.Effect<void>,
@@ -100,9 +155,7 @@ export const makeAccounts = (
         input.fields,
       );
       const identity = {
-        id: AccountId.make(
-          `acc_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-        ),
+        id: AccountId.make(`acc_${yield* crypto.random.uuidV4()}`),
         owner: input.owner,
         provider: provider.id,
         method: input.method,
@@ -180,6 +233,7 @@ export const makeAccounts = (
             set: { encryptedCredentials, credentialGeneration: account.credentialGeneration + 1 },
           }),
         );
+        yield* resumeWaitingSources(tx, account.id);
         return yield* Schema.decodeUnknownEffect(Account)(account).pipe(
           Effect.mapError(() => new StorageError()),
         );
@@ -205,10 +259,13 @@ export const makeAccounts = (
                 set: { createdAt: row.createdAt },
               }),
             );
-            const linked = yield* query(() =>
-              tx.findFirst("webhookAccounts", { where: (b) => b("account", "=", row.id) }),
-            );
-            if (linked !== null) return yield* new AccountWebhooksActive({ account: row.id });
+            // Every holder refuses the deletion; products narrow only which ones the refusal names.
+            const dependents = yield* webhookDependents(tx, row.id);
+            if (dependents.length > 0)
+              return yield* new AccountWebhooksActive({
+                account: row.id,
+                dependents: { visible: dependents, hidden: 0 },
+              });
             const workflow = yield* query(() =>
               tx.findFirst("workflowAccounts", { where: (b) => b("account", "=", row.id) }),
             );
@@ -219,9 +276,13 @@ export const makeAccounts = (
               );
               yield* lifecycle.accountRemoving(account);
             }
-            // A source whose subscriptions have all stopped goes with its account.
+            // A source whose subscriptions have all stopped goes with its account, as do the
+            // dependency rows of subscriptions that no longer use it.
             yield* query(() =>
               tx.deleteMany("webhookSources", { where: (b) => b("account", "=", input.account) }),
+            );
+            yield* query(() =>
+              tx.deleteMany("webhookAccounts", { where: (b) => b("account", "=", input.account) }),
             );
             const grant = yield* query(() =>
               tx.findFirst("oauthGrants", { where: (b) => b("id", "=", input.account) }),
@@ -332,40 +393,3 @@ export const makeAccounts = (
         : ({ state: "saved", reconnectAt, credentialsFingerprint } satisfies AccountSignIn);
     }).pipe(Effect.withSpan("sdk.accounts.signIn")),
 });
-
-/**
- * Whether an account's stored credentials decrypt with this deployment's key, and, when its
- * method signs in with OAuth, whether its grant exists and decrypts as a grant. Reads only and
- * returns no value. A missing account is unreadable.
- */
-export const credentialsReadable = (db: Query, credentials: Credentials) => (account: AccountId) =>
-  Effect.gen(function* () {
-    const stored = yield* storedAccount(db, account).pipe(
-      Effect.map(Option.some),
-      Effect.catchTag("AccountNotFound", () => Effect.succeed(Option.none<StoredAccount>())),
-    );
-    if (Option.isNone(stored)) return false;
-    const fields = yield* credentials
-      .decrypt(account, stored.value.encryptedCredentials)
-      .pipe(Effect.option);
-    if (Option.isNone(fields)) return false;
-    const row = yield* query(() =>
-      db.findFirst("providers", { where: (b) => b("id", "=", stored.value.provider) }),
-    );
-    if (row === null) return false;
-    const provider = yield* Schema.decodeUnknownEffect(Provider)(row).pipe(
-      Effect.mapError(() => new StorageError()),
-    );
-    const method = provider.definition.auth[stored.value.method];
-    if (method === undefined) return false;
-    if (method.type === "secrets") return true;
-    const grant = yield* query(() =>
-      db.findFirst("oauthGrants", { where: (b) => b("id", "=", account) }),
-    );
-    if (grant === null) return false;
-    const decoded = yield* credentials.decrypt(account, Redacted.make(grant.encrypted)).pipe(
-      Effect.flatMap((value) => Schema.decodeUnknownEffect(OAuthGrant)(Redacted.value(value))),
-      Effect.option,
-    );
-    return Option.isSome(decoded);
-  }).pipe(Effect.withSpan("sdk.accounts.credentialsReadable"));

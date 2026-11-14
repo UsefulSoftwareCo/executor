@@ -60,7 +60,14 @@ with `setup: { instructions: "...", signingSecret: "executor" }`.
 Keep `handle` and both schemas. `state` describes the private setup fields;
 use `object({})` if only a signing secret is needed. `executor` means the operator
 copies a generated secret into the provider; `provider` means they paste the
-provider's secret into Executor's secure page.
+provider's secret into Executor's secure page. A version that keeps `signingSecret`
+and the fields `state` accepts keeps the subscription, callback URL and secret,
+also when an earlier version is activated again; reordering fields is no change.
+Changing either needs a new setup at the provider.
+
+An `app` webhook's subscription comes from linking an account to the app, so
+`webhooks.create` refuses it with `reason: "input"` and a message saying so;
+find it with `webhooks.list`.
 
 When creation returns `setup-required`, request `webhookLinks.link({ path: { app, subscription } })` (local) or
 the hosted `setupLink` operation and show the URL to the user. Do not ask for

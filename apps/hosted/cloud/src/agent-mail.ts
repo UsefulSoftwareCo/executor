@@ -18,7 +18,7 @@ export default AgentMailReceiver.make(
   Effect.succeed({
     main: import.meta.url,
     workersDev: false,
-    compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+    compatibility: { date: "2026-09-08", flags: ["nodejs_compat", "no_brotli_content_encoding"] },
   }),
   Effect.gen(function* () {
     const mailbox = yield* Cloudflare.KV.WriteNamespace(AgentMailbox);

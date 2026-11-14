@@ -15,16 +15,23 @@
  *   scenario no other covers a line of adds no line coverage.
  * - `cover <out> <file...>` writes a small set of scenarios that covers every line, and the rest.
  * - `check <baseline> <file...>` fails when a target covers fewer lines than the baseline records,
- *   beyond the run-to-run noise in `tolerance`.
- * - `baseline <baseline> <file...>` writes the baseline from collected runs.
+ *   beyond the run-to-run noise in that target's `tolerance`. A rise past it fails nothing: a pull
+ *   request usually runs only its selected scenarios, so a rise first shows after merge. The check
+ *   prints a warning annotation and a job summary line with the command that records the run.
+ * - `baseline <baseline> <file...>` writes the baseline from collected runs. Pass one run's files:
+ *   it counts the union of every file, so several runs record more than any one run covers.
  *
- * A target's covered lines differ a little between runs of the same tree: timing decides some
- * paths, such as retries and cache races. Two full runs of one tree differed by under 0.2%. The
- * baseline therefore records totals, not lines, and allows 0.4%.
+ * A target's covered lines differ between runs of the same tree: timing decides some paths, such as
+ * retries and cache races. The baseline therefore records totals, not lines, and each target allows
+ * twice its measured spread. In 20 full runs of main on near-unchanged code, local varied by 0.15%
+ * and self-host by 0.21%. Cloud, which counts only Chromium's page coverage, varied by 0.58%: a
+ * page's coverage is read once, when its context closes, and Chromium keeps no coverage for a
+ * document the page has navigated away from. A scenario that navigates loses its earlier documents'
+ * lines, and in about half of runs some of them still appear, so a few scenarios decide the spread.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Console, Effect, FileSystem, Path, Schema } from "effect";
+import { Config, Console, Effect, FileSystem, Option, Path, Schema } from "effect";
 import { scenarios } from "./test-plan.ts";
 
 class CoverageFailed extends Schema.TaggedError<CoverageFailed>()("CoverageFailed", {
@@ -52,9 +59,14 @@ const Collected = Schema.Struct({
 });
 type Collected = typeof Collected.Type;
 const Baseline = Schema.Struct({
-  /** Fraction of a target's covered lines a run may lose to timing before the check fails. */
-  tolerance: Schema.Number,
-  targets: Schema.Record(Schema.String, Schema.Struct({ covered: Schema.Number })),
+  targets: Schema.Record(
+    Schema.String,
+    Schema.Struct({
+      covered: Schema.Number,
+      /** Fraction of the target's covered lines a run may lose to timing before the check fails. */
+      tolerance: Schema.Number,
+    }),
+  ),
 });
 
 const encodeLines = (lines: Iterable<number>) => {
@@ -643,13 +655,14 @@ const check = (baselineFile: string, files: ReadonlyArray<string>) =>
     );
     const measured = totals(yield* readCollected(files));
     const problems: string[] = [];
-    for (const [target, { covered: expected }] of Object.entries(baseline.targets)) {
+    const rises: string[] = [];
+    for (const [target, { covered: expected, tolerance }] of Object.entries(baseline.targets)) {
       const actual = measured[target]?.covered;
       if (actual === undefined) {
         problems.push(`${target}: no coverage was collected`);
         continue;
       }
-      const floor = Math.floor(expected * (1 - baseline.tolerance));
+      const floor = Math.floor(expected * (1 - tolerance));
       yield* Console.log(
         `${target}: ${actual} lines covered; baseline ${expected}, floor ${floor}.`,
       );
@@ -657,9 +670,34 @@ const check = (baselineFile: string, files: ReadonlyArray<string>) =>
         problems.push(
           `${target}: ${actual} lines covered, below the baseline's ${expected} by more than the tolerance (floor ${floor})`,
         );
-      else if (actual > expected * (1 + baseline.tolerance))
+      else if (actual > expected * (1 + tolerance))
+        rises.push(
+          `${target}: ${actual} lines covered, above the baseline's ${expected} by more than ${tolerance * 100}%`,
+        );
+    }
+    if (rises.length > 0) {
+      const run = yield* Config.all([
+        Config.String("GITHUB_RUN_ID"),
+        Config.String("GITHUB_REPOSITORY"),
+      ]).pipe(Config.option);
+      const record = `node e2e/coverage.ts baseline ${baselineFile} .local/line-coverage/*/line-coverage.json`;
+      const command = Option.match(run, {
+        onNone: () => [record],
+        onSome: ([id, repository]) => [
+          `gh run download ${id} --repo ${repository} --pattern 'line-coverage-*' --dir .local/line-coverage`,
+          record,
+        ],
+      });
+      for (const rise of rises)
         yield* Console.log(
-          `${target}: coverage rose past the tolerance; raise the baseline with \`node e2e/coverage.ts baseline\`.`,
+          `::warning title=Line coverage rose past the baseline::${rise}. Record it: ${command.join(" && ")}`,
+        );
+      const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
+      if (Option.isSome(summary))
+        yield* fs.writeFileString(
+          summary.value,
+          `\n**Line coverage rose past the baseline.** ${rises.join("; ")}. Record this run as the baseline in a pull request:\n\n\`\`\`sh\n${command.join("\n")}\n\`\`\`\n`,
+          { flag: "a" },
         );
     }
     if (problems.length > 0)
@@ -671,16 +709,20 @@ const check = (baselineFile: string, files: ReadonlyArray<string>) =>
 const baseline = (baselineFile: string, files: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const previous = yield* fs.readFileString(baselineFile).pipe(
-      Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Baseline))),
-      Effect.map(({ tolerance }) => tolerance),
-      Effect.orElseSucceed(() => 0.004),
+    const previous = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Baseline))(
+      yield* fs.readFileString(baselineFile),
     );
-    const targets = totals(yield* readCollected(files));
-    yield* fs.writeFileString(
-      baselineFile,
-      `${JSON.stringify({ tolerance: previous, targets }, null, 2)}\n`,
-    );
+    const measured = totals(yield* readCollected(files));
+    const targets: Record<string, { covered: number; tolerance: number }> = {};
+    for (const [target, { covered }] of Object.entries(measured)) {
+      const known = previous.targets[target];
+      if (known === undefined)
+        return yield* new CoverageFailed({
+          message: `${target} is not in ${baselineFile}. Add it with its tolerance, twice the spread of its covered lines over several full runs.`,
+        });
+      targets[target] = { covered, tolerance: known.tolerance };
+    }
+    yield* fs.writeFileString(baselineFile, `${JSON.stringify({ targets }, null, 2)}\n`);
     yield* Console.log(`Wrote ${baselineFile}: ${JSON.stringify(targets)}`);
   });
 

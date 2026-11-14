@@ -30,6 +30,11 @@ export interface DataStep<R> {
   /** Outcomes that a later pass revisits. The step is complete once a pass ends without them. */
   readonly retry: ReadonlyArray<string>;
   /**
+   * Retry outcomes that are not failures, such as a concurrent edit the next pass retries. Their
+   * items are revisited like any retry outcome but do not count as failed items.
+   */
+  readonly expected?: ReadonlyArray<string>;
+  /**
    * Whether a report still walks the items after the step has applied, as an independent check
    * of its result under a new report label. Otherwise an applied step has nothing to report.
    */
@@ -56,6 +61,19 @@ export const DataStepSummary = Schema.Struct({
   owners: Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.Int)),
 });
 export type DataStepSummary = typeof DataStepSummary.Type;
+
+/**
+ * What one run of the pending steps did. `pending` when a step still has work: the deadline passed,
+ * another process holds its lease, or its last pass left items to retry. `attempted` counts the
+ * items the run handled and recorded, and `failed` those of them that ended with one of their
+ * step's retry outcomes that is not `expected`, such as `failed` (but not a retried `conflict`). A run that only waited for a lease or a
+ * backoff, or ran out of time, has no failed items.
+ */
+export interface DataStepRun {
+  readonly status: "complete" | "pending";
+  readonly attempted: number;
+  readonly failed: number;
+}
 
 /** The prefix of the single log line each finished pass writes, followed by its JSON summary. */
 export const dataStepLogPrefix = "Data step pass finished: ";

@@ -2,7 +2,6 @@
 import { Random } from "alchemy";
 import { Config, Effect, Option, Redacted, Schema } from "effect";
 import { testStage } from "./stage.ts";
-import { v1McpForwardSecretName } from "./v1-import-settings.ts";
 
 const SigningSecret = Schema.Redacted(Schema.String.check(Schema.isMinLength(32)));
 /** AES-GCM credentials need exactly 32 raw bytes, hex encoded. */
@@ -52,19 +51,41 @@ export const cloudSecrets = Effect.gen(function* () {
   return { authSecret: yield* authSecret.text, encryptionKey } satisfies CloudSecrets;
 });
 
+/** The secret v1 signs forwarded MCP requests with, shared with v1's `V2_MCP_FORWARD_SECRET`. */
+export const v1McpForwardSecretName = "V1_MCP_FORWARD_SECRET";
+
+/**
+ * The secret v1 signs session handoffs with, shared with v1's `V2_SESSION_HANDOFF_SECRET`: v1's
+ * dashboard sends a signed-in member of a moved organization to `/api/v1-handoff` with a token
+ * signed with it, so they need not sign in again (`v1-session-handoff.ts`).
+ */
+export const v1SessionHandoffSecretName = "V1_SESSION_HANDOFF_SECRET";
+
+/**
+ * A secret v1 shares with this deployment. GitHub Actions passes an unset secret as an empty
+ * string, so empty means unset; a deployment without it accepts nothing v1 signs with it.
+ */
+const v1SharedSecret = (name: string) =>
+  Effect.gen(function* () {
+    const secret = (yield* Config.Redacted(name).pipe(Config.option)).pipe(
+      Option.filter((value) => Redacted.value(value) !== ""),
+    );
+    if (
+      Option.isSome(secret) &&
+      Option.isNone(Schema.decodeUnknownOption(SigningSecret)(secret.value))
+    )
+      return yield* Effect.die(new Error(`${name} must be at least 32 characters`));
+    return secret;
+  });
+
 /**
  * The secret v1 signs the MCP requests it forwards with (`v1-mcp-forward.ts`), shared with v1's
- * `V2_MCP_FORWARD_SECRET`. A deployment without it accepts no forwarded request. GitHub Actions
- * passes an unset secret as an empty string, so empty means unset.
+ * `V2_MCP_FORWARD_SECRET`.
  */
-export const v1McpForwardSecret = Effect.gen(function* () {
-  const secret = (yield* Config.Redacted(v1McpForwardSecretName).pipe(Config.option)).pipe(
-    Option.filter((value) => Redacted.value(value) !== ""),
-  );
-  if (
-    Option.isSome(secret) &&
-    Option.isNone(Schema.decodeUnknownOption(SigningSecret)(secret.value))
-  )
-    return yield* Effect.die(new Error(`${v1McpForwardSecretName} must be at least 32 characters`));
-  return secret;
-});
+export const v1McpForwardSecret = v1SharedSecret(v1McpForwardSecretName);
+
+/**
+ * The secret v1 signs session handoffs with (`v1-session-handoff.ts`), shared with v1's
+ * `V2_SESSION_HANDOFF_SECRET`. Without it every handoff opens the sign-in page.
+ */
+export const v1SessionHandoffSecret = v1SharedSecret(v1SessionHandoffSecretName);

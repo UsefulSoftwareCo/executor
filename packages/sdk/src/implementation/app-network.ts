@@ -13,6 +13,7 @@
  */
 import { Schema } from "effect";
 import { RecordedMessage } from "@executor-js/utils/recorded-message";
+import { hostApiChangingCode } from "../contracts/host-api.ts";
 
 /**
  * Executor's app network failed before the service answered an app's request. The request may have
@@ -60,11 +61,31 @@ export const networkUnreachableResponse = (unreachable: NetworkUnreachable) =>
   });
 
 /**
+ * The mark of a response Executor's app network returned instead of the host API's document,
+ * because the document's revision is not the one the app's cache belongs to; see `HostApiCheck`.
+ * The app's `fetch` rejects with `hostApiChangingCode` and this message, so the app keeps nothing
+ * and its caller is told to retry. Only that network sets it, as for `networkUnreachableHeader`.
+ */
+export const hostApiChangingStatus = 503;
+export const hostApiChangingHeader = "x-executor-api-changing";
+export const hostApiChangingMessage =
+  "Executor's API is changing (a deploy is in progress). Retry shortly.";
+
+/** The marked response the app isolate turns into a rejected `fetch` with `hostApiChangingCode`. */
+export const hostApiChangingResponse = () =>
+  new Response(null, {
+    status: hostApiChangingStatus,
+    statusText: "API changing",
+    headers: { [hostApiChangingHeader]: "1", "retry-after": "1" },
+  });
+
+/**
  * The first module of every app isolate. Before app code loads, it replaces the platform's `fetch`
  * wherever the global scope holds it (workerd defines it on the scope's prototype), so a marked
  * response rejects with a `TypeError`, as the platform's `fetch` does when its network fails. Every
  * other response is returned unchanged. The platform's `fetch` and the built-ins that read the mark
  * are captured here, so app code can neither reach the unwrapped `fetch` nor hide the mark. A
+ * refused host API document rejects the same way, with `hostApiChangingCode` as its `code`. A
  * rejection for the subrequest limit is replaced by `SubrequestLimitReached`, which says what the
  * limit means for the call and keeps the platform's error as its cause.
  */
@@ -101,11 +122,16 @@ async function fetch(input, init) {
     if (error instanceof PlatformError && apply(test, limited, [error.message])) throw new SubrequestLimitReached(error);
     throw error;
   }
-  const message = apply(status, response, []) === ${networkUnreachableStatus} ? apply(header, apply(headers, response, []), [${JSON.stringify(networkUnreachableHeader)}]) : null;
-  if (message === null) return response;
+  const code = apply(status, response, []);
+  const message = code === ${networkUnreachableStatus} ? apply(header, apply(headers, response, []), [${JSON.stringify(networkUnreachableHeader)}]) : null;
+  const changing = code === ${hostApiChangingStatus} && apply(header, apply(headers, response, []), [${JSON.stringify(hostApiChangingHeader)}]) !== null;
+  if (message === null && !changing) return response;
   const stream = apply(body, response, []);
   if (stream !== null) await apply(cancel, stream, []);
-  throw new Rejection(decode(message));
+  if (message !== null) throw new Rejection(decode(message));
+  const rejection = new Rejection(${JSON.stringify(hostApiChangingMessage)});
+  defineProperty(rejection, "code", { value: ${JSON.stringify(hostApiChangingCode)}, enumerable: true, writable: true, configurable: true });
+  throw rejection;
 }
 for (let scope = globalThis; scope !== null; scope = getPrototypeOf(scope)) {
   const own = getOwnPropertyDescriptor(scope, "fetch");

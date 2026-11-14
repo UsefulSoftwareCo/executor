@@ -32,7 +32,7 @@ export default Marketing.make(
       workersDev: false,
       build: workerBuild("marketing"),
       ...(yield* cloudObservability),
-      compatibility: { date: "2026-09-08", flags: ["nodejs_compat"] },
+      compatibility: { date: "2026-09-08", flags: ["nodejs_compat", "no_brotli_content_encoding"] },
       // Only explicitly public paths below can read this binding. Dashboard files stay private.
       assets: {
         directory: site.outdir,

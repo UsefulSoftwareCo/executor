@@ -12,8 +12,10 @@
     "./mcp/browser": "./src/contracts/mcp-browser.ts",
     "./organization": "./src/contracts/organization.ts",
     "./groups": "./src/contracts/groups.ts",
+    "./tool-call-log": "./src/contracts/tool-call-log.ts",
     "./resource-access": "./src/contracts/resource-access.ts",
     "./oauth-clients": "./src/contracts/oauth-clients.ts",
+    "./oauth-client-metadata": "./src/contracts/oauth-client-metadata.ts",
     "./database": "./src/implementation/database.ts",
     "./resource-lifecycle": "./src/implementation/resource-lifecycle.ts",
     "./events": "./src/implementation/events.ts",
@@ -29,9 +31,9 @@
     "./document": "./src/implementation/document.ts"
   },
   "dependencies": {
-    "@better-auth/api-key": "1.7.5",
-    "@better-auth/core": "1.7.5",
-    "@better-auth/oauth-provider": "1.7.5",
+    "@better-auth/api-key": "1.7.20",
+    "@better-auth/core": "1.7.20",
+    "@better-auth/oauth-provider": "1.7.20",
     "@executor-js/app-management": "workspace:*",
     "@executor-js/app-templates": "workspace:*",
     "@executor-js/authorization": "workspace:*",
@@ -43,8 +45,8 @@
     "@executor-js/telemetry": "workspace:*",
     "@executor-js/utils": "workspace:*",
     "apps": "workspace:*",
-    "better-auth": "1.7.5",
-    "effect": "4.0.1"
+    "better-auth": "1.7.20",
+    "effect": "4.1.4"
   },
   "devDependencies": {}
 }

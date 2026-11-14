@@ -23,6 +23,23 @@ export interface TeamDomain {
   readonly slug: string;
 }
 
+/** Alchemy's logical ID, and so its journal FQN, for a team's wildcard record. */
+const teamResource = (team: TeamDomain) => `team-${team.slug}`;
+
+/**
+ * Which of `count` partial stacks owns a journal row. A partial stack's desired teams and its
+ * journal view hash the same FQN, so its plan only deletes orphans of its own.
+ */
+export const appDomainShard = (fqn: string, count: number) => {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < fqn.length; index++)
+    hash = Math.imul(hash ^ fqn.charCodeAt(index), 0x01000193);
+  return (hash >>> 0) % count;
+};
+
+export const teamDomainShard = (team: TeamDomain, count: number) =>
+  appDomainShard(teamResource(team), count);
+
 const ObservedRecord = Schema.Struct({
   id: Schema.NonEmptyString,
   name: Schema.String,
@@ -267,7 +284,7 @@ export const reconcileAppDomainStack = (input: {
       );
       yield* Effect.gen(function* () {
         yield* Effect.forEach(input.teams, (team) =>
-          DnsRecord(`team-${team.slug}`, {
+          DnsRecord(teamResource(team), {
             zoneId: input.zoneId,
             zoneName: input.zoneName,
             name: `*.${team.slug}.${input.suffix}`,

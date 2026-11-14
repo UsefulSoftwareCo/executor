@@ -1,10 +1,12 @@
 /**
- * Request decoding rejections are client errors. Effect's HTTP API answers them
- * with an empty 400 before any handler runs, so the request span is the only
- * place that can record why. Incident reporting skips them.
+ * Request decoding rejections are client errors, rejected before any handler runs. Product APIs
+ * answer them with `RequestInvalid` through their `RequestRejection` middleware, which records
+ * them here; other endpoints answer an empty 400, and this reporter records why on the request
+ * span. Incident reporting skips them.
  */
-import { Context, Effect, ErrorReporter, Option, type SchemaIssue, Tracer } from "effect";
+import { Context, Effect, ErrorReporter, Option, Tracer } from "effect";
 import { HttpApiError } from "effect/http-api";
+import { issueSummary } from "./schema-issue.ts";
 
 /** Request parts the caller supplies. Response encoding failures (Body, ResponseHeaders) are server faults. */
 const requestKinds: ReadonlySet<HttpApiError.HttpApiSchemaError["kind"]> = new Set([
@@ -19,29 +21,27 @@ export const isRequestRejection = (error: unknown): error is HttpApiError.HttpAp
   HttpApiError.HttpApiSchemaError.is(error) && requestKinds.has(error.kind);
 
 const maxIssues = 10;
-const segment = (key: PropertyKey) =>
-  typeof key === "number" ? `[${key}]` : `.${String(key).slice(0, 64)}`;
-
-/** Issue locations and categories only. Values, messages and annotations can echo request content. */
-const issueSummary = (issue: SchemaIssue.Issue, path: string): ReadonlyArray<string> => {
-  switch (issue._tag) {
-    case "Pointer":
-      return issueSummary(issue.issue, path + issue.path.map(segment).join(""));
-    case "Encoding":
-      return issueSummary(issue.issue, path);
-    case "Composite":
-      return issue.issues.flatMap((inner) => issueSummary(inner, path));
-    // A union lists why each member rejected the value.
-    case "AnyOf":
-      return issue.issues.length === 0
-        ? [`${path}: AnyOf`]
-        : issue.issues.flatMap((inner) => issueSummary(inner, path));
-    default:
-      return [`${path}: ${issue._tag}`];
-  }
+/** Record a rejection on the span that owns the rejected request. */
+const record = (error: HttpApiError.HttpApiSchemaError, context: Context.Context<never>) => {
+  const span = Context.getOption(context, Tracer.ParentSpan);
+  if (Option.isNone(span) || span.value._tag !== "Span") return;
+  // Union members can repeat the same finding.
+  const issues = [...new Set(issueSummary(error.cause.issue, "$"))];
+  span.value.attribute("error.type", "HttpApiSchemaError");
+  span.value.attribute("executor.request.rejection.kind", error.kind);
+  span.value.attribute(
+    "executor.request.rejection.issues",
+    [
+      ...issues.slice(0, maxIssues),
+      ...(issues.length > maxIssues ? [`+${issues.length - maxIssues} more`] : []),
+    ].join(", "),
+  );
 };
 
-/** Record the rejection on the span that owns the rejected request. */
+/** Record a request rejection on the current request's span, for code that answers it itself. */
+export const recordRequestRejection = (error: HttpApiError.HttpApiSchemaError) =>
+  Effect.withFiber((fiber) => Effect.sync(() => record(error, fiber.context)));
+
 const recorder: ErrorReporter.ErrorReporter = {
   [ErrorReporter.TypeId]: ErrorReporter.TypeId,
   report: ({ cause, fiber }) => {
@@ -49,19 +49,7 @@ const recorder: ErrorReporter.ErrorReporter = {
       const error =
         reason._tag === "Fail" ? reason.error : reason._tag === "Die" ? reason.defect : undefined;
       if (!isRequestRejection(error)) continue;
-      const span = Context.getOption(fiber.context, Tracer.ParentSpan);
-      if (Option.isNone(span) || span.value._tag !== "Span") return;
-      // Union members can repeat the same finding.
-      const issues = [...new Set(issueSummary(error.cause.issue, "$"))];
-      span.value.attribute("error.type", "HttpApiSchemaError");
-      span.value.attribute("executor.request.rejection.kind", error.kind);
-      span.value.attribute(
-        "executor.request.rejection.issues",
-        [
-          ...issues.slice(0, maxIssues),
-          ...(issues.length > maxIssues ? [`+${issues.length - maxIssues} more`] : []),
-        ].join(", "),
-      );
+      record(error, fiber.context);
       return;
     }
   },

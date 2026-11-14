@@ -13,20 +13,8 @@ import { Evidence } from "../support/evidence.ts";
 import { Workspace, helloIndex, helloPackage } from "../support/app-authoring.ts";
 import { appsVersion, declaredApps } from "../support/apps-release.ts";
 import { localEntryCommand } from "../support/local-entry.ts";
+import { throughPipe } from "../support/pipe-readers.ts";
 
-const Catalogs = Schema.fromJsonString(
-  Schema.Struct({
-    catalogs: Schema.Array(
-      Schema.Struct({
-        app: Schema.Struct({ slug: Schema.String }),
-        skills: Schema.Array(Schema.Struct({ name: Schema.String })),
-      }),
-    ),
-  }),
-);
-const Document = Schema.fromJsonString(
-  Schema.Struct({ content: Schema.String, files: Schema.Array(Schema.String) }),
-);
 const Created = Schema.fromJsonString(Schema.Struct({ id: Schema.String }));
 const Release = Schema.fromJsonString(Schema.Struct({ version: Schema.String }));
 /** A failed command's stdout when a program reads it: the error as the CLI describes it. */
@@ -81,11 +69,20 @@ const cli = Effect.gen(function* () {
   );
   const home = yield* fs.makeTempDirectoryScoped({ prefix: "executor-apps-cli-" });
   const origin = target.metadata.origin;
+  const environment = (signedIn: boolean, extra: Record<string, string> = {}) => ({
+    PATH: process.env.PATH ?? "",
+    HOME: home,
+    // Release scenarios never send product analytics, even from a build with a baked key.
+    DO_NOT_TRACK: "1",
+    ...(signedIn ? { EXECUTOR_API_KEY: Redacted.value(target.apiKey) } : {}),
+    ...extra,
+  });
   const run = (
     args: readonly string[],
     signedIn: boolean,
     cwd?: string,
     extra: Record<string, string> = {},
+    slowReader = false,
   ) =>
     evidence.step(
       `executor apps ${args.join(" ")}`,
@@ -98,20 +95,16 @@ const cli = Effect.gen(function* () {
               {
                 cwd,
                 extendEnv: false,
-                env: {
-                  PATH: process.env.PATH ?? "",
-                  HOME: home,
-                  // Release scenarios never send product analytics, even from a build with a baked key.
-                  DO_NOT_TRACK: "1",
-                  ...(signedIn ? { EXECUTOR_API_KEY: Redacted.value(target.apiKey) } : {}),
-                  ...extra,
-                },
+                env: environment(signedIn, extra),
                 stdout: "pipe",
                 stderr: "pipe",
                 forceKillAfter: "3 seconds",
               },
             ),
           );
+          // A slow reader takes nothing until the CLI exits or has waited a second for the
+          // pipe, which holds 64 KiB.
+          if (slowReader) yield* child.exitCode.pipe(Effect.timeoutOption("1 second"));
           const [code, stdout, stderr] = yield* Effect.all(
             [
               child.exitCode,
@@ -124,7 +117,7 @@ const cli = Effect.gen(function* () {
         }),
       ),
     );
-  return { run, origin, fs };
+  return { run, origin, fs, entry, environment };
 });
 
 layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
@@ -141,72 +134,11 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         yield* evidence.json("signed-out.json", signedOut);
         expect(signedOut.code).toBe(1);
         expect(signedOut.stderr).toContain(
-          "run executor apps login --host https://api.executor.sh and pass the same --host",
+          "Run executor apps login, which signs in to hosted Executor and makes later commands use it, or executor apps login --host <origin> for another host.",
         );
         expect(signedOut.stderr).toContain(
-          "For a local server (default http://127.0.0.1:4312), set EXECUTOR_API_KEY",
+          "Commands use --host, then EXECUTOR_HOST, then the host you signed in to last, then the local background Executor; for a local server at --host, set EXECUTOR_API_KEY to its API key.",
         );
-
-        const listed = yield* run(["skills", "--host", origin], true);
-        yield* evidence.json("skills-list.json", listed);
-        expect(listed.code, listed.stderr).toBe(0);
-        const catalogs = yield* Schema.decodeUnknownEffect(Catalogs)(listed.stdout);
-        expect(
-          catalogs.catalogs
-            .find((catalog) => catalog.app.slug === "executor")
-            ?.skills.map((skill) => skill.name)
-            .toSorted(),
-        ).toEqual(["app-authoring", "code-mode", "executor"]);
-
-        // Agents read the entry skill first; it links to the authoring guide.
-        const entry = yield* run(
-          ["skills", "--host", origin, "--app", "executor", "--name", "executor"],
-          true,
-        );
-        expect(entry.code, entry.stderr).toBe(0);
-        const entryDocument = yield* Schema.decodeUnknownEffect(Document)(entry.stdout);
-        expect(entryDocument.content).toContain("# Executor");
-        expect(entryDocument.content).toContain("`app-authoring`");
-        expect(entryDocument.files).toContain("feedback.md");
-
-        const guide = yield* run(
-          ["skills", "--host", origin, "--app", "executor", "--name", "app-authoring"],
-          true,
-        );
-        expect(guide.code, guide.stderr).toBe(0);
-        const document = yield* Schema.decodeUnknownEffect(Document)(guide.stdout);
-        expect(document.content).toContain("# Build an Executor app");
-        expect(document.files).toContain("ui.md");
-
-        const topic = yield* run(
-          [
-            "skills",
-            "--host",
-            origin,
-            "--app",
-            "executor",
-            "--name",
-            "app-authoring",
-            "--file",
-            "ui.md",
-          ],
-          true,
-        );
-        expect(topic.code, topic.stderr).toBe(0);
-        expect((yield* Schema.decodeUnknownEffect(Document)(topic.stdout)).content).toContain(
-          "withOptimisticUpdate",
-        );
-
-        const missingName = yield* run(["skills", "--host", origin, "--file", "ui.md"], true);
-        expect(missingName.code).toBe(1);
-        expect(missingName.stderr).toContain("Pass --name with --file.");
-
-        const unknownApp = yield* run(
-          ["skills", "--host", origin, "--app", "missing-app-slug"],
-          true,
-        );
-        expect(unknownApp.code).toBe(1);
-        expect(unknownApp.stderr).toContain("No visible app has slug or ID missing-app-slug.");
 
         // A source directory is read recursively, without dependency or Git folders.
         const source = yield* fs.makeTempDirectoryScoped({ prefix: "executor-apps-source-" });
@@ -291,6 +223,75 @@ layer(TestLive, { excludeTestServices: true })("Local apps CLI", (it) => {
         expect(after.files.find((file) => file.path === "lib/label.ts")?.content).toBe(
           'export const label = "edited";\n',
         );
+      }),
+    ),
+  );
+  it.effect(scenarios.localAppsCliPipedOutput.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const target = yield* Target,
+          evidence = yield* Evidence,
+          api = yield* Api;
+        const { run, origin, fs, entry, environment } = yield* cli;
+        const session = yield* api.session();
+        // About 2 MiB, thirty times what a pipe holds; numbered lines show where a cut fell.
+        const notes = Array.from(
+          { length: 40_000 },
+          (_, line) => `line ${line} ${"x".repeat(40)}\n`,
+        ).join("");
+        const source = yield* fs.makeTempDirectoryScoped({ prefix: "executor-apps-piped-" });
+        yield* fs.writeFileString(`${source}/index.ts`, helloIndex);
+        yield* fs.writeFileString(`${source}/package.json`, `${helloPackage(appsVersion)}\n`);
+        yield* fs.writeFileString(`${source}/notes.txt`, notes);
+        const created = yield* run(
+          ["create", "--host", origin, "--name", "CLI piped source", "--files", source],
+          true,
+        );
+        expect(created.code, created.stderr).toBe(0);
+        const app = yield* Schema.decodeUnknownEffect(Created)(created.stdout);
+        yield* Effect.addFinalizer(() =>
+          session
+            .send("DELETE", `/v1/apps/${app.id}`, undefined, {
+              authorization: `Bearer ${Redacted.value(target.apiKey)}`,
+            })
+            .pipe(Effect.orDie),
+        );
+
+        // The release executable's output stopped at the 65,536 bytes the pipe took first, with
+        // exit code 0, and a program parsing it read JSON cut mid-string.
+        const read = yield* run(
+          ["source", "--host", origin, "--app", app.id],
+          true,
+          undefined,
+          {},
+          true,
+        );
+        const printed = Buffer.byteLength(read.stdout);
+        yield* evidence.json("piped-source.json", {
+          code: read.code,
+          stdoutBytes: printed,
+          stderr: read.stderr,
+        });
+        expect(read.code, read.stderr).toBe(0);
+        expect(printed).toBeGreaterThan(notes.length);
+        const files = (yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Deployed))(
+          read.stdout,
+        )).files;
+        expect(files.find((file) => file.path === "notes.txt")?.content).toBe(notes);
+
+        // A reader that closes the pipe early, as `| head -c 100` does, ends the command quietly.
+        // An unhandled EPIPE failed it with exit code 1 and a stack trace.
+        const head = yield* throughPipe(
+          { mode: "head", bytes: 100 },
+          localEntryCommand(entry, ["apps", "source", "--host", origin, "--app", app.id]),
+          environment(true),
+        );
+        yield* evidence.json("head-c-100.json", head);
+        expect(head.read).toBeGreaterThanOrEqual(100);
+        expect(head.stderr).toBe("");
+        expect(head.code).toBe(0);
+        expect(head.millisecondsAfterClose).toBeLessThan(5_000);
       }),
     ),
   );

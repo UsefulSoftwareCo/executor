@@ -14,27 +14,20 @@ import {
 } from "effect";
 import { Hex } from "effect/encoding";
 import { lock } from "proper-lockfile";
+import { config } from "../contracts/config.ts";
+import { dataDirectoryConfig } from "../contracts/service.ts";
 import {
-  config,
-  dataDirectoryConfig,
   keyStorageConfig,
+  keyStorageInvalid,
   type KeyStorage,
-} from "../contracts/config.ts";
-import {
-  LocalConfigurationReason,
+  LocalConfigurationError,
+  type LocalConfigurationReason,
   LocalCredentialService,
   LocalInstallation as Installation,
 } from "../contracts/auth.ts";
 import { desktopPairing } from "../contracts/startup.ts";
-
-/** Safe startup instructions. Key values are never displayed; native error text is sanitized. */
-export class LocalConfigurationError extends Schema.TaggedError<LocalConfigurationError>()(
-  "LocalConfigurationError",
-  {
-    reason: LocalConfigurationReason,
-    message: Schema.String,
-  },
-) {}
+import { writeAtomically } from "./atomic-file.ts";
+import { readSettings } from "./service-files.ts";
 
 const Keys = Schema.Struct({
   apiKey: Schema.RedactedFromValue(Schema.String.check(Schema.isMinLength(32))),
@@ -139,6 +132,10 @@ const keyFileUnusable = (
 
 const randomKey = () => Redacted.make(Hex.encode(crypto.getRandomValues(new Uint8Array(32))));
 
+/** The line a first start that saved its keys to keys.json writes on stderr. */
+const keyFileNotice = (keyFile: string, chosen: boolean) =>
+  `${chosen ? "EXECUTOR_KEY_STORAGE=file" : "OS credential store not found"}; keys saved to ${keyFile}`;
+
 /** Hold the directory's bootstrap lock for the current scope. */
 const lockDirectory = (directory: string, message: string) =>
   Effect.gen(function* () {
@@ -152,40 +149,6 @@ const lockDirectory = (directory: string, message: string) =>
       (unlock) => Effect.promise(() => unlock()),
     );
   });
-
-/** Stage, fsync and atomically rename so an interrupted write never leaves a partial file. */
-const writeAtomically = (
-  platform: string,
-  directory: string,
-  destination: string,
-  contents: string,
-) =>
-  Effect.scoped(
-    Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const temporary = yield* fs.makeTempDirectoryScoped({
-        directory,
-        prefix: ".bootstrap-",
-      });
-      const staged = path.join(temporary, path.basename(destination));
-      yield* Effect.scoped(
-        Effect.gen(function* () {
-          const file = yield* fs.open(staged, { flag: "wx", mode: 0o600 });
-          yield* file.writeAll(new TextEncoder().encode(contents));
-          yield* file.sync;
-        }),
-      );
-      // The create mode is masked by umask; set it explicitly as v1 did.
-      yield* fs.chmod(staged, 0o600);
-      yield* fs.rename(staged, destination);
-      // Windows does not allow opening directories as ordinary file handles.
-      if (platform !== "win32") {
-        const parent = yield* fs.open(directory);
-        yield* parent.sync;
-      }
-    }),
-  );
 
 /** One installation's OS credential. Construction failures mean the store is absent. */
 const credentialEntry = (id: string) =>
@@ -292,22 +255,23 @@ const configure = (directory: string, keys: typeof Keys.Type) =>
   });
 
 /** Resolve one profile's keys. Existing data never causes a new credential to be generated. */
+/**
+ * The key storage a new data directory asks for. Servers read it before creating anything, so an
+ * invalid value changes nothing.
+ */
+export const keyStorageSetting = keyStorageConfig.pipe(
+  Effect.mapError(
+    () => new LocalConfigurationError({ reason: "misconfigured", message: keyStorageInvalid }),
+  ),
+);
+
 export const localConfiguration = (platform: string) =>
   Effect.scoped(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
       // Read before touching the directory, so an invalid value changes nothing.
-      const keyStorage = yield* keyStorageConfig.pipe(
-        Effect.mapError(
-          () =>
-            new LocalConfigurationError({
-              reason: "misconfigured",
-              message:
-                'EXECUTOR_KEY_STORAGE must be "file" (keep keys in keys.json) or "os" (OS credential store only), or unset. Nothing was changed.',
-            }),
-        ),
-      );
+      const keyStorage = yield* keyStorageSetting;
       const { directory, marker, keyFile, explicitApi, explicitEncryption } = yield* dataDirectory;
 
       yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
@@ -390,24 +354,23 @@ export const localConfiguration = (platform: string) =>
       }
 
       const generated = () => Keys.make({ apiKey: randomKey(), encryptionKey: randomKey() });
-      const saveKeyFile = (notice: string) =>
+      const saveKeyFile = (chosen: boolean) =>
         Effect.gen(function* () {
           const keys = generated();
           yield* writeFile(keyFile, yield* encodeKeys(keys));
           yield* writeMarker("file");
           // stdout is the desktop readiness protocol; this notice belongs on stderr.
-          yield* Console.error(`${notice}${keyFile}`);
+          yield* Console.error(keyFileNotice(keyFile, chosen));
           return yield* configure(directory, keys);
         });
-      if (Option.contains(keyStorage, "file"))
-        return yield* saveKeyFile("EXECUTOR_KEY_STORAGE=file; keys saved to ");
+      if (Option.contains(keyStorage, "file")) return yield* saveKeyFile(true);
       // Denied access leaves the pending record and no key file, so the next start
       // prompts again and can still fall back if the store turns out to be absent.
       const storeFailed = (failure: StoreFailure) =>
         failure.kind === "denied"
           ? Effect.fail(denied(failure.reason, platform, firstStart))
           : firstStart && Option.isNone(keyStorage)
-            ? saveKeyFile("OS credential store not found; keys saved to ")
+            ? saveKeyFile(false)
             : Effect.fail(unavailable(failure.reason, firstStart));
 
       const store = yield* readCredential(platform, installation.id).pipe(Effect.result);
@@ -442,7 +405,42 @@ export const localConfiguration = (platform: string) =>
   );
 
 /**
- * Read the API key a client of one directory's running server sends, such as `executor pair`.
+ * Run `start`, which may start this directory's background server, and repeat the line that server
+ * wrote if its first start saved the keys to keys.json: nothing reads a background server's stderr.
+ * Only the installation record is read, never the keys.
+ */
+export const withKeyFileNotice = <A, E, R>(directory: string, start: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const path = yield* Path.Path;
+    const recorded = readInstallation(path.join(directory, "installation.json")).pipe(
+      Effect.map(Option.map(({ state }) => state)),
+      Effect.orElseSucceed(() => Option.none()),
+    );
+    const before = yield* recorded;
+    const result = yield* start;
+    if (Option.isNone(before) && Option.contains(yield* recorded, "file")) {
+      // The server ran with this environment and its saved `env`, as `ensure` starts it.
+      const env = yield* readSettings(directory).pipe(
+        Effect.map((settings) => settings.env ?? {}),
+        Effect.orElseSucceed(() => ({})),
+      );
+      const base = yield* ConfigProvider.ConfigProvider;
+      const storage = yield* keyStorageConfig.pipe(
+        Effect.provideService(
+          ConfigProvider.ConfigProvider,
+          ConfigProvider.fromUnknown(env).pipe(ConfigProvider.orElse(base)),
+        ),
+        Effect.orElseSucceed(() => Option.none()),
+      );
+      yield* Console.error(
+        keyFileNotice(path.join(directory, "keys.json"), Option.contains(storage, "file")),
+      );
+    }
+    return result;
+  });
+
+/**
+ * Read the API key a client of one directory's running server sends, such as `executor service pair`.
  * Unlike `localConfiguration` it never creates the directory, a record or keys, and takes no
  * lock: every bootstrap write is atomic and saves keys before the record that names them.
  * A supplied EXECUTOR_API_KEY is sent instead of the saved key. Clients never need the

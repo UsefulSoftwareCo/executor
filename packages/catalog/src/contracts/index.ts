@@ -2,6 +2,9 @@
 export {
   CatalogAuth,
   CatalogEntry,
+  CatalogFeedState,
+  CatalogListing,
+  catalogTurnedOff,
   CatalogFeed,
   CatalogFeedSource,
   CatalogIcon,
@@ -10,9 +13,11 @@ export {
   CatalogQuery,
   CatalogRecovery,
   CatalogUnavailable,
+  CatalogFeedUnavailable,
   filterCatalog,
   PreparedApp,
   officialCatalogUrl,
+  catalogFeedSetting,
 } from "./catalog.ts";
 export { customSetupRecovery, unknownEntryRecovery } from "./setup.ts";
 export type { Catalog, CatalogHost, CatalogSource } from "./catalog.ts";

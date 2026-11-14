@@ -7,7 +7,7 @@ import { Api, body } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
-import { awaitAnalytics } from "../support/instance-analytics.ts";
+import { awaitAnalyticsWholeEnvironment } from "../support/instance-analytics.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -87,7 +87,7 @@ export default defineApp({}, async () => ({ tools: router({
             message: "Search analytics delivery fence",
           })).status,
         ).toBe(200);
-        const { text, events } = yield* awaitAnalytics((events) =>
+        const { text, events } = yield* awaitAnalyticsWholeEnvironment((events) =>
           events.some(
             (event) =>
               event.event === "product_operation_completed" && event.properties.area === "feedback",

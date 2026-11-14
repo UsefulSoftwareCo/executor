@@ -62,9 +62,11 @@ export const dashboardReplay: SessionRecordingOptions = {
   collectFonts: false,
   inlineStylesheet: true,
   captureCanvas: { recordCanvas: false },
-  // rrweb also uses this callback for its required page metadata. Keep only a fixed route label.
-  maskCapturedNetworkRequestFn: (request) =>
-    Object.keys(request).length === 1 && typeof request.name === "string"
-      ? { ...request, name: `${location.origin}/dashboard` }
-      : null,
+  // rrweb also uses this callback for its required page metadata. Keep only the page's path, which
+  // replayPageAllowed has already vetted; drop the query string and hash.
+  maskCapturedNetworkRequestFn: (request) => {
+    if (Object.keys(request).length !== 1 || typeof request.name !== "string") return null;
+    const url = new URL(request.name, location.origin);
+    return { ...request, name: `${url.origin}${url.pathname}` };
+  },
 };

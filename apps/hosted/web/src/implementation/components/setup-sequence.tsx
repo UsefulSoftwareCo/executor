@@ -7,25 +7,27 @@ import {
   type ReactNode,
 } from "react";
 import { Link, useNavigate } from "@tanstack/react-router";
-import type { SetupOrder } from "@executor-js/hosted-server/setup";
+import type { SetupOrder, SetupSkip, SetupStep } from "@executor-js/hosted-server/setup";
 import type { AssistantId } from "@executor-js/ui/contracts/dashboard";
 import type { SetupHandoff } from "../../contracts/navigation.ts";
 import { reportBrowserUsage, type BrowserUsage } from "../../contracts/product-analytics.ts";
 import { useOrganizationRoute } from "./organization.tsx";
 
 /**
- * The order a team's setup steps run in, and whether the team is in Cloud's onboarding
- * experiment. Cloud reads it for the team before the first step renders; other hosts provide
- * none and show accounts first.
+ * The order a team's setup steps run in and whether they can be skipped, each with whether the
+ * member is in that Cloud onboarding experiment. Cloud reads it for the team before the first step
+ * renders; other hosts provide none and show skippable steps, accounts first.
  */
 export interface SetupSequence {
   readonly order: SetupOrder;
   readonly enrolled: boolean;
+  readonly skip: { readonly variant: SetupSkip; readonly enrolled: boolean };
 }
 
 const SetupSequenceContext = createContext<SetupSequence>({
   order: "accounts_first",
   enrolled: false,
+  skip: { variant: "skippable", enrolled: false },
 });
 
 export function SetupSequenceProvider({
@@ -38,8 +40,7 @@ export function SetupSequenceProvider({
   return <SetupSequenceContext value={value}>{children}</SetupSequenceContext>;
 }
 
-/** The two steps before the first prompt. */
-export type SetupStep = "accounts" | "assistant";
+export type { SetupStep };
 
 const steps: Record<SetupOrder, readonly [SetupStep, SetupStep]> = {
   accounts_first: ["accounts", "assistant"],
@@ -75,13 +76,19 @@ const destination = (
 /**
  * The team's setup order as destinations: the first step, and the one after each step, given
  * the assistant handoff known there. A step's one forward action leads to `after` whether it
- * skips or continues; skipping the assistant just carries no handoff. Steps report their onboarding events through `report`,
- * which adds the experiment variant for an enrolled team and the assistant a step is for.
+ * skips or continues; skipping the assistant just carries no handoff. Steps report their onboarding
+ * events through `report`, which adds each experiment's variant for an enrolled member and the
+ * assistant a step is for.
  */
 export function useSetupSequence() {
   const sequence = use(SetupSequenceContext);
   const order = steps[sequence.order];
   return {
+    /**
+     * The member's steps cannot be skipped: each forward button waits until its step is done, and
+     * the server keeps the dashboard closed until both are.
+     */
+    required: sequence.skip.variant === "required",
     first: destination(order[0], undefined),
     /** The step after `step`; none after the last one, which leads to the first prompt. */
     ahead: (step: SetupStep): SetupStep | undefined => order[order.indexOf(step) + 1],
@@ -93,6 +100,7 @@ export function useSetupSequence() {
         action,
         outcome,
         ...(sequence.enrolled ? { onboarding_variant: sequence.order } : {}),
+        ...(sequence.skip.enrolled ? { onboarding_skip_variant: sequence.skip.variant } : {}),
         ...(assistant === undefined ? {} : { assistant }),
       }),
   };

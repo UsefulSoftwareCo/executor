@@ -9,6 +9,7 @@ import { connectLocalAccount } from "../support/app-accounts.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
+import { noPageErrors } from "../support/page-errors.ts";
 
 /** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
@@ -116,7 +117,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools:router(
           yield* browser.use(`${label} shows its content after hydration`, (page) =>
             page.getByText(content).first().waitFor(),
           );
-          expect(failures, `${label} hydrates to the server's markup`).toEqual([]);
+          yield* noPageErrors(failures, `${label} hydrates to the server's markup`);
         }
         yield* browser.checkpoint("Local pages hydrate to their server-rendered markup");
       }),

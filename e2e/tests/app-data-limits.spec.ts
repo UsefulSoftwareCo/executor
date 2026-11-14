@@ -1,6 +1,9 @@
 /**
  * App SQL rules: migrations are the database and their history cannot change, queries never
  * commit anything, transactions are synchronous, and large reads and writes are not capped.
+ *
+ * Each rule set is its own scenario with its own app, so each deploys only what it proves: the
+ * migration history about ten times, the rest once or a few times.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -107,75 +110,80 @@ const BuildFailed = Schema.Struct({
 });
 const Active = Schema.Struct({ activeVersion: Schema.String });
 
+/** Deploys, calls and reads of the scenario's apps, as the organization's owner. */
+const appData = Effect.gen(function* () {
+  const api = yield* Api,
+    actors = yield* Actors;
+  const prefix = `/api/organizations/${actors.organization.id}/apps`;
+  const deployNew = (name: string, sources: readonly unknown[]) =>
+    Effect.gen(function* () {
+      const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
+        name: `${name} ${randomUUID().slice(0, 8)}`,
+        files: sources,
+      });
+      expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+      const app = yield* body(App, deployed);
+      yield* Effect.addFinalizer(() =>
+        api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
+      );
+      return app;
+    });
+  const call = (
+    id: string,
+    tool: keyof typeof kinds,
+    input: Record<string, number | string> = {},
+  ) =>
+    api.request(actors.owner, "POST", `${prefix}/${id}/tools/call`, {
+      tool,
+      kind: kinds[tool],
+      input,
+    });
+  const failure = (
+    id: string,
+    tool: keyof typeof kinds,
+    input: Record<string, number | string> = {},
+  ) =>
+    Effect.gen(function* () {
+      const response = yield* call(id, tool, input);
+      expect(response.status, JSON.stringify(response.body)).toBe(502);
+      return (yield* body(CallFailed, response)).reason;
+    });
+  const active = (id: string) =>
+    api
+      .request(actors.owner, "GET", `${prefix}/${id}`)
+      .pipe(Effect.flatMap((response) => body(Active, response)));
+  return { api, actors, prefix, deployNew, call, failure, active };
+});
+
+const kinds = {
+  count: "query",
+  pairs: "query",
+  seed: "mutation",
+  keywordNames: "query",
+  hiddenWrite: "query",
+  hiddenTable: "query",
+  tableExists: "query",
+  bindings: "query",
+  listed: "query",
+  loosen: "query",
+  violate: "mutation",
+  defer: "query",
+  loosenAndWrite: "mutation",
+  caughtFailure: "mutation",
+  awaiting: "mutation",
+  escaped: "mutation",
+} as const;
+
 layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
-  it.effect(scenarios.appDataLimits.title, (context) =>
+  it.effect(scenarios.appDataMigrationHistory.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const api = yield* Api,
-          actors = yield* Actors;
-        const prefix = `/api/organizations/${actors.organization.id}/apps`;
-        const deployNew = (name: string, sources: readonly unknown[]) =>
-          Effect.gen(function* () {
-            const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
-              name: `${name} ${randomUUID().slice(0, 8)}`,
-              files: sources,
-            });
-            expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
-            const app = yield* body(App, deployed);
-            yield* Effect.addFinalizer(() =>
-              api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
-            );
-            return app;
-          });
+        const { api, actors, prefix, deployNew, active } = yield* appData;
+        const app = yield* deployNew("Data migrations", files);
 
-        const app = yield* deployNew("Data limits", files);
-        const kinds = {
-          count: "query",
-          pairs: "query",
-          seed: "mutation",
-          keywordNames: "query",
-          hiddenWrite: "query",
-          hiddenTable: "query",
-          tableExists: "query",
-          bindings: "query",
-          listed: "query",
-          loosen: "query",
-          violate: "mutation",
-          defer: "query",
-          loosenAndWrite: "mutation",
-          caughtFailure: "mutation",
-          awaiting: "mutation",
-          escaped: "mutation",
-        } as const;
-        const call = (
-          tool: keyof typeof kinds,
-          input: Record<string, number | string> = {},
-          id = app.id,
-        ) =>
-          api.request(actors.owner, "POST", `${prefix}/${id}/tools/call`, {
-            tool,
-            kind: kinds[tool],
-            input,
-          });
-        const failure = (
-          tool: keyof typeof kinds,
-          id = app.id,
-          input: Record<string, number | string> = {},
-        ) =>
-          Effect.gen(function* () {
-            const response = yield* call(tool, input, id);
-            expect(response.status, JSON.stringify(response.body)).toBe(502);
-            return (yield* body(CallFailed, response)).reason;
-          });
-
-        // A failing deploy names the file and SQLite's reason, applies none of its migrations,
-        // and leaves the previous version active.
-        const active = () =>
-          api
-            .request(actors.owner, "GET", `${prefix}/${app.id}`)
-            .pipe(Effect.flatMap((response) => body(Active, response)));
-        const before = yield* active();
+        // A refused deploy leaves the previous version active.
+        const before = yield* active(app.id);
         const rejectedWith = (sources: readonly unknown[]) =>
           Effect.gen(function* () {
             const rejected = yield* api.request(
@@ -187,24 +195,9 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
             expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
             const failed = yield* body(BuildFailed, rejected);
             expect(failed.stage).toBe("migrate");
-            expect(yield* active()).toEqual(before);
+            expect(yield* active(app.id)).toEqual(before);
             return failed.reason;
           });
-        const typo = yield* rejectedWith([
-          ...files,
-          {
-            path: "migrations/0002_good.sql",
-            content: "CREATE TABLE applied_first (id TEXT);\n",
-          },
-          { path: "migrations/0003_typo.sql", content: "CREATE TABL typo (id TEXT);\n" },
-        ]);
-        expect(typo).toContain("migrations/0003_typo.sql failed");
-        expect(typo).toContain("syntax error");
-        expect(typo).toContain("No migrations were applied");
-        expect(
-          yield* body(Schema.Number, yield* call("tableExists", { name: "applied_first" })),
-        ).toBe(0);
-
         // Applied migrations cannot be edited, renamed or removed; a misnamed file is refused.
         expect(
           yield* rejectedWith([
@@ -233,6 +226,113 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
         expect(
           yield* rejectedWith([...files, { path: "migrations/next.sql", content: "SELECT 1;\n" }]),
         ).toContain("migrations/next.sql: migrations are files directly in migrations/");
+      }),
+    ),
+  );
+
+  it.effect(scenarios.appDataMigrationApply.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, deployNew, call, active } = yield* appData;
+        const app = yield* deployNew("Data migrations", files);
+        const tableExists = (name: string) =>
+          call(app.id, "tableExists", { name }).pipe(
+            Effect.flatMap((response) => body(Schema.Number, response)),
+          );
+
+        // A failing deploy names the file and SQLite's reason, applies none of its migrations,
+        // and leaves the previous version active.
+        const before = yield* active(app.id);
+        const rejectedWith = (sources: readonly unknown[]) =>
+          Effect.gen(function* () {
+            const rejected = yield* api.request(
+              actors.owner,
+              "POST",
+              `${prefix}/${app.id}/deploy`,
+              { files: sources },
+            );
+            expect(rejected.status, JSON.stringify(rejected.body)).toBe(422);
+            const failed = yield* body(BuildFailed, rejected);
+            expect(failed.stage).toBe("migrate");
+            expect(yield* active(app.id)).toEqual(before);
+            return failed.reason;
+          });
+        const typo = yield* rejectedWith([
+          ...files,
+          {
+            path: "migrations/0002_good.sql",
+            content: "CREATE TABLE applied_first (id TEXT);\n",
+          },
+          { path: "migrations/0003_typo.sql", content: "CREATE TABL typo (id TEXT);\n" },
+        ]);
+        expect(typo).toContain("migrations/0003_typo.sql failed");
+        expect(typo).toContain("syntax error");
+        expect(typo).toContain("No migrations were applied");
+        expect(yield* tableExists("applied_first")).toBe(0);
+
+        // Comments after a migration's last statement are not a statement, and the file's hash
+        // still covers them, so deploying it again changes nothing.
+        const commented = {
+          path: "migrations/0002_commented.sql",
+          content:
+            "-- Notes for the next migration.\nCREATE TABLE commented (note TEXT DEFAULT '-- kept');\n-- A trailing comment.\n/* And a block. */\n",
+        };
+        for (const attempt of [1, 2]) {
+          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/${app.id}/deploy`, {
+            files: [...files, commented],
+          });
+          expect(deployed.status, `${attempt}: ${JSON.stringify(deployed.body)}`).toBe(200);
+        }
+        expect(yield* tableExists("commented")).toBe(1);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.appDataWithoutDatabase.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, deployNew, failure, active } = yield* appData;
+        // Without migrations an app has no database, and its SQL says how to add one.
+        const plain = yield* deployNew("No database", withoutDatabase);
+        expect(yield* failure(plain.id, "count")).toContain("This app has no database");
+
+        // Reactivating a version from before the app had migrations does not let a later
+        // deploy drop them.
+        const plainPath = `${prefix}/${plain.id}`;
+        const first = yield* active(plain.id);
+        const migrated = yield* api.request(actors.owner, "POST", `${plainPath}/deploy`, {
+          files: [...withoutDatabase, items],
+        });
+        expect(migrated.status, JSON.stringify(migrated.body)).toBe(200);
+        const second = yield* active(plain.id);
+        const reactivated = yield* api.request(actors.owner, "POST", `${plainPath}/activate`, {
+          version: first.activeVersion,
+          expectedVersion: second.activeVersion,
+        });
+        expect(reactivated.status, JSON.stringify(reactivated.body)).toBe(200);
+        const dropped = yield* api.request(actors.owner, "POST", `${plainPath}/deploy`, {
+          files: withoutDatabase,
+        });
+        expect(dropped.status, JSON.stringify(dropped.body)).toBe(422);
+        expect((yield* body(BuildFailed, dropped)).reason).toContain(
+          "this app's database has applied migrations, but the build has no migrations/",
+        );
+      }),
+    ),
+  );
+
+  it.effect(scenarios.appDataQueries.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { deployNew, call: callIn, failure: failureIn } = yield* appData;
+        const app = yield* deployNew("Data queries", files);
+        const call = (tool: keyof typeof kinds, input: Record<string, number | string> = {}) =>
+          callIn(app.id, tool, input);
+        const failure = (tool: keyof typeof kinds, input: Record<string, number | string> = {}) =>
+          failureIn(app.id, tool, input);
 
         // Calls have no row budget: pairing 400 rows reads about 160,000, and one call writes
         // 20,000 rows.
@@ -264,57 +364,10 @@ layer(HostedLive, { excludeTestServices: true })("App data limits", (it) => {
         // A statement binds at most 100 values, and the error names the limit; a longer list
         // binds once as a JSON array.
         expect(yield* body(Schema.Number, yield* call("bindings", { count: 100 }))).toBe(1);
-        expect(yield* failure("bindings", app.id, { count: 101 })).toContain(
+        expect(yield* failure("bindings", { count: 101 })).toContain(
           "A statement can bind at most 100 values, but this one binds 101.",
         );
         expect(yield* body(Schema.Number, yield* call("listed", { count: 500 }))).toBe(500);
-
-        // Without migrations an app has no database, and its SQL says how to add one.
-        const plain = yield* deployNew("No database", withoutDatabase);
-        expect(yield* failure("count", plain.id)).toContain("This app has no database");
-
-        // Reactivating a version from before the app had migrations does not let a later
-        // deploy drop them.
-        const plainPath = `${prefix}/${plain.id}`;
-        const activeOf = () =>
-          api
-            .request(actors.owner, "GET", plainPath)
-            .pipe(Effect.flatMap((response) => body(Active, response)));
-        const first = yield* activeOf();
-        const migrated = yield* api.request(actors.owner, "POST", `${plainPath}/deploy`, {
-          files: [...withoutDatabase, items],
-        });
-        expect(migrated.status, JSON.stringify(migrated.body)).toBe(200);
-        const second = yield* activeOf();
-        const reactivated = yield* api.request(actors.owner, "POST", `${plainPath}/activate`, {
-          version: first.activeVersion,
-          expectedVersion: second.activeVersion,
-        });
-        expect(reactivated.status, JSON.stringify(reactivated.body)).toBe(200);
-        const dropped = yield* api.request(actors.owner, "POST", `${plainPath}/deploy`, {
-          files: withoutDatabase,
-        });
-        expect(dropped.status, JSON.stringify(dropped.body)).toBe(422);
-        expect((yield* body(BuildFailed, dropped)).reason).toContain(
-          "this app's database has applied migrations, but the build has no migrations/",
-        );
-
-        // Comments after a migration's last statement are not a statement, and the file's hash
-        // still covers them, so deploying it again changes nothing.
-        const commented = {
-          path: "migrations/0002_commented.sql",
-          content:
-            "-- Notes for the next migration.\nCREATE TABLE commented (note TEXT DEFAULT '-- kept');\n-- A trailing comment.\n/* And a block. */\n",
-        };
-        for (const attempt of [1, 2]) {
-          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/${app.id}/deploy`, {
-            files: [...files, commented],
-          });
-          expect(deployed.status, `${attempt}: ${JSON.stringify(deployed.body)}`).toBe(200);
-        }
-        expect(yield* body(Schema.Number, yield* call("tableExists", { name: "commented" }))).toBe(
-          1,
-        );
       }),
     ),
   );

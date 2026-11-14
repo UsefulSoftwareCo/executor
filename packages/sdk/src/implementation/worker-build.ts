@@ -17,6 +17,7 @@ import { sourceImports } from "./worker-source-imports.ts";
 import { serverSourceMap, sourceLocation } from "./worker-source-map.ts";
 import { wasmBuild } from "./worker-wasm-build.ts";
 import { jsonModules } from "./worker-json-modules.ts";
+import { compiledFiles } from "./worker-compiled-files.ts";
 import { serverFilesModule, serverFilesSource } from "./worker-bridge.ts";
 import { workerDependencies } from "./worker-dependencies.ts";
 import apps from "apps/package.json" with { type: "json" };
@@ -178,6 +179,7 @@ export const compileWorkerApp = (
     const wasm = wasmBuild(filesystem, path);
     const json = jsonModules(files, entry);
     const sourceMap = serverSourceMap(entry);
+    const sizes = compiledFiles(filesystem);
     const compiled = yield* Effect.tryPromise({
       try: () =>
         createApp({
@@ -199,9 +201,11 @@ export const compileWorkerApp = (
             // own lookup of the asset file then reaches the source resolver.
             ...(browser === undefined ? [] : [browser.plugin]),
             sourceImports(filesystem, path),
+            // Last: it sees only the files the bundler itself loads and compiles.
+            sizes.plugin,
           ],
         }),
-      catch: (cause) => json.failure() ?? compileFailure(cause),
+      catch: (cause) => sizes.failure() ?? json.failure() ?? compileFailure(cause),
     });
     const map = sourceMap.map();
     if (map === undefined)

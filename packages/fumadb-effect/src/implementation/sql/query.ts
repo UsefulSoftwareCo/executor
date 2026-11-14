@@ -11,7 +11,7 @@
  * the row back by id), `SELECT TOP (n)` and `OFFSET ... FETCH NEXT` on MSSQL,
  * and `COUNT(*)` coming back as a bigint on PostgreSQL and CockroachDB.
  */
-import { DateTime, Effect, Equal, Option, Result } from "effect";
+import { Array as Arr, DateTime, Effect, Equal, Option, Result } from "effect";
 import { Statement } from "effect/sql";
 import { SqlClient } from "effect/sql/SqlClient";
 import { QueryError } from "../../contracts/errors.ts";
@@ -67,6 +67,20 @@ const computedSelect = (
 
 /** Join fragments with a single space, without adding parentheses. */
 const spaced = Statement.join(" ", false, "");
+
+/**
+ * Label a query's statements with the FumaDB operation and table that ran them. The operation
+ * has no span of its own: each statement's `sql.execute` span already covers its interval, so a
+ * wrapper span would only repeat it. A nested operation, such as an upsert's read back, labels
+ * its own statements.
+ */
+const operation =
+  (name: string) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>, table: AnyTable): Effect.Effect<A, E, R> =>
+    Effect.annotateSpans(effect, {
+      "fumadb.operation": name,
+      "db.collection.name": table.names.sql,
+    });
 
 /** `NULL`, absent, or `Option.none()`: a join value that can never match a row. */
 const isAbsentKey = (value: unknown): boolean =>
@@ -561,27 +575,29 @@ export const makeSqlOrmAdapter = (
   const findManyImpl: (
     table: AnyTable,
     options: CompiledFindOptions,
-  ) => Effect.Effect<Array<Row>, OrmError, SqlClient> = Effect.fn("FumaDB.SqlQuery.findMany")(
-    function* (table: AnyTable, options: CompiledFindOptions) {
-      return yield* findRows(table, options);
-    },
-  );
+  ) => Effect.Effect<Array<Row>, OrmError, SqlClient> = Effect.fnUntraced(function* (
+    table: AnyTable,
+    options: CompiledFindOptions,
+  ) {
+    return yield* findRows(table, options);
+  }, operation("findMany"));
 
-  // One span per call: a nested findMany span would repeat this one's interval.
+  // Reads through findRows, not findMany, so its statements are labelled findFirst.
   const findFirstImpl: (
     table: AnyTable,
     options: CompiledFindOptions,
-  ) => Effect.Effect<Row | null, OrmError, SqlClient> = Effect.fn("FumaDB.SqlQuery.findFirst")(
-    function* (table: AnyTable, options: CompiledFindOptions) {
-      const records = yield* findRows(table, { ...options, limit: 1 });
-      return records[0] ?? null;
-    },
-  );
+  ) => Effect.Effect<Row | null, OrmError, SqlClient> = Effect.fnUntraced(function* (
+    table: AnyTable,
+    options: CompiledFindOptions,
+  ) {
+    const records = yield* findRows(table, { ...options, limit: 1 });
+    return records[0] ?? null;
+  }, operation("findFirst"));
 
   const countImpl: (
     table: AnyTable,
     options: { readonly where: Condition | undefined },
-  ) => Effect.Effect<number, OrmError, SqlClient> = Effect.fn("FumaDB.SqlQuery.count")(function* (
+  ) => Effect.Effect<number, OrmError, SqlClient> = Effect.fnUntraced(function* (
     table: AnyTable,
     options: { readonly where: Condition | undefined },
   ) {
@@ -601,7 +617,7 @@ export const makeSqlOrmAdapter = (
       });
     }
     return count;
-  });
+  }, operation("count"));
 
   /** Read one row back by its id, for providers or statements without a returning clause. */
   const selectById: (
@@ -656,7 +672,7 @@ export const makeSqlOrmAdapter = (
    */
   const insertFragment = (
     sql: SqlClient,
-    rows: ReadonlyArray<Record<string, unknown>>,
+    rows: Arr.NonEmptyReadonlyArray<Record<string, unknown>>,
     returning: Statement.Fragment | undefined,
   ): Statement.Fragment => {
     const aligned = alignColumns(rows);
@@ -682,11 +698,11 @@ export const makeSqlOrmAdapter = (
    * single column list. A column another row sets is inserted as `NULL` here.
    */
   const alignColumns = (
-    rows: ReadonlyArray<Record<string, unknown>>,
-  ): Array<Record<string, unknown>> => {
+    rows: Arr.NonEmptyReadonlyArray<Record<string, unknown>>,
+  ): Arr.NonEmptyArray<Record<string, unknown>> => {
     const keys = new Set<string>();
     for (const row of rows) for (const key of Object.keys(row)) keys.add(key);
-    return rows.map((row) => {
+    return Arr.map(rows, (row) => {
       const out: Record<string, unknown> = {};
       for (const key of keys) out[key] = row[key] ?? null;
       return out;
@@ -694,7 +710,7 @@ export const makeSqlOrmAdapter = (
   };
 
   const createImpl: (table: AnyTable, values: Row) => Effect.Effect<Row, OrmError, SqlClient> =
-    Effect.fn("FumaDB.SqlQuery.create")(function* (table: AnyTable, values: Row) {
+    Effect.fnUntraced(function* (table: AnyTable, values: Row) {
       const sql = yield* SqlClient;
       const prepared = yield* prepareValues(table, values, true);
 
@@ -733,62 +749,62 @@ export const makeSqlOrmAdapter = (
         });
       }
       return row;
-    });
+    }, operation("create"));
 
   const createManyImpl: (
     table: AnyTable,
     values: ReadonlyArray<Row>,
-  ) => Effect.Effect<Array<{ readonly _id: unknown }>, OrmError, SqlClient> = Effect.fn(
-    "FumaDB.SqlQuery.createMany",
-  )(function* (table: AnyTable, values: ReadonlyArray<Row>) {
-    if (values.length === 0) return [];
-    const sql = yield* SqlClient;
-    const prepared = yield* Effect.forEach(values, (value) => prepareValues(table, value, true));
-    const encoded = prepared.map((item) => item.encoded);
-    // One INSERT per parameter budget; several chunks run in one transaction so the batch stays atomic.
-    const columnCount = Math.max(1, Object.keys(table.columns).length);
-    const rowsPerStatement = Math.max(1, Math.floor(parameterBudget(provider) / columnCount));
-    const chunks = chunk(encoded, rowsPerStatement);
-    const insertAll = Effect.forEach(
-      chunks,
-      (rows) => sql`INSERT INTO ${sql(table.names.sql)} ${insertFragment(sql, rows, undefined)}`,
-      { discard: true },
-    );
-    yield* chunks.length > 1 ? sql.withTransaction(insertAll) : insertAll;
-    const idName = table.getIdColumn().names.sql;
-    return encoded.map((row) => ({ _id: row[idName] }));
-  });
+  ) => Effect.Effect<Array<{ readonly _id: unknown }>, OrmError, SqlClient> = Effect.fnUntraced(
+    function* (table: AnyTable, values: ReadonlyArray<Row>) {
+      if (values.length === 0) return [];
+      const sql = yield* SqlClient;
+      const prepared = yield* Effect.forEach(values, (value) => prepareValues(table, value, true));
+      const encoded = prepared.map((item) => item.encoded);
+      // One INSERT per parameter budget; several chunks run in one transaction so the batch stays atomic.
+      const columnCount = Math.max(1, Object.keys(table.columns).length);
+      const rowsPerStatement = Math.max(1, Math.floor(parameterBudget(provider) / columnCount));
+      const chunks = Arr.chunksOf(encoded, rowsPerStatement);
+      const insertAll = Effect.forEach(
+        chunks,
+        (rows) => sql`INSERT INTO ${sql(table.names.sql)} ${insertFragment(sql, rows, undefined)}`,
+        { discard: true },
+      );
+      yield* chunks.length > 1 ? sql.withTransaction(insertAll) : insertAll;
+      const idName = table.getIdColumn().names.sql;
+      return encoded.map((row) => ({ _id: row[idName] }));
+    },
+    operation("createMany"),
+  );
 
   const updateManyImpl: (
     table: AnyTable,
     options: { readonly where: Condition | undefined; readonly set: Row },
-  ) => Effect.Effect<void, OrmError, SqlClient> = Effect.fn("FumaDB.SqlQuery.updateMany")(
-    function* (
-      table: AnyTable,
-      options: { readonly where: Condition | undefined; readonly set: Row },
-    ) {
-      const sql = yield* SqlClient;
-      const prepared = yield* prepareValues(table, options.set, false);
-      if (Object.keys(prepared.encoded).length === 0) return;
-      const parts: Array<Statement.Fragment> = [
-        sql`UPDATE ${sql(table.names.sql)} SET ${assignments(sql, prepared.encoded)}`,
-      ];
-      if (options.where !== undefined) parts.push(yield* whereClause(sql, options.where));
-      yield* sql`${spaced(parts)}`;
-    },
-  );
+  ) => Effect.Effect<void, OrmError, SqlClient> = Effect.fnUntraced(function* (
+    table: AnyTable,
+    options: { readonly where: Condition | undefined; readonly set: Row },
+  ) {
+    const sql = yield* SqlClient;
+    const prepared = yield* prepareValues(table, options.set, false);
+    if (Object.keys(prepared.encoded).length === 0) return;
+    const parts: Array<Statement.Fragment> = [
+      sql`UPDATE ${sql(table.names.sql)} SET ${assignments(sql, prepared.encoded)}`,
+    ];
+    if (options.where !== undefined) parts.push(yield* whereClause(sql, options.where));
+    yield* sql`${spaced(parts)}`;
+  }, operation("updateMany"));
 
   const deleteManyImpl: (
     table: AnyTable,
     options: { readonly where: Condition | undefined },
-  ) => Effect.Effect<void, OrmError, SqlClient> = Effect.fn("FumaDB.SqlQuery.deleteMany")(
-    function* (table: AnyTable, options: { readonly where: Condition | undefined }) {
-      const sql = yield* SqlClient;
-      const parts: Array<Statement.Fragment> = [sql`DELETE FROM ${sql(table.names.sql)}`];
-      if (options.where !== undefined) parts.push(yield* whereClause(sql, options.where));
-      yield* sql`${spaced(parts)}`;
-    },
-  );
+  ) => Effect.Effect<void, OrmError, SqlClient> = Effect.fnUntraced(function* (
+    table: AnyTable,
+    options: { readonly where: Condition | undefined },
+  ) {
+    const sql = yield* SqlClient;
+    const parts: Array<Statement.Fragment> = [sql`DELETE FROM ${sql(table.names.sql)}`];
+    if (options.where !== undefined) parts.push(yield* whereClause(sql, options.where));
+    yield* sql`${spaced(parts)}`;
+  }, operation("deleteMany"));
 
   /** Update the row with this id, returning it when `returning` is set. */
   const updateById: (
@@ -840,78 +856,79 @@ export const makeSqlOrmAdapter = (
   const upsertImpl: (
     table: AnyTable,
     options: CompiledUpsert,
-  ) => Effect.Effect<Row | undefined, OrmError, SqlClient> = Effect.fn("FumaDB.SqlQuery.upsert")(
-    function* (table: AnyTable, options: CompiledUpsert) {
-      const sql = yield* SqlClient;
-      const idColumn = table.getIdColumn();
-      const prepared = yield* prepareValues(table, options.update, false);
+  ) => Effect.Effect<Row | undefined, OrmError, SqlClient> = Effect.fnUntraced(function* (
+    table: AnyTable,
+    options: CompiledUpsert,
+  ) {
+    const sql = yield* SqlClient;
+    const idColumn = table.getIdColumn();
+    const prepared = yield* prepareValues(table, options.update, false);
 
-      // Equality on the supplied primary key has an exact conflict target. Let the
-      // database arbitrate concurrent inserts instead of racing a read then create.
-      const condition = options.where;
-      if (
-        (provider === "postgresql" || provider === "cockroachdb" || provider === "sqlite") &&
-        condition !== undefined &&
-        Condition.$is("Compare")(condition) &&
-        condition.column.isId &&
-        condition.operator === "=" &&
-        !isAbsentKey(condition.value) &&
-        Equal.equals(condition.value, options.create[idColumn.ormName])
-      ) {
-        const created = yield* prepareValues(table, options.create, true);
-        const conflict =
-          Object.keys(prepared.encoded).length === 0
-            ? sql`DO NOTHING`
-            : sql`DO UPDATE SET ${sql.update(prepared.encoded)}`;
-        const statement = sql`INSERT INTO ${sql(table.names.sql)} ${insertFragment(sql, [created.encoded], undefined)} ON CONFLICT (${sql(idColumn.names.sql)}) ${conflict}`;
-        if (!options.returning) {
-          yield* statement;
-          return undefined;
-        }
-        const rows = yield* sql<RawRow>`${statement} RETURNING ${returningList(sql, table)}`;
-        const row = rows[0];
-        return row === undefined
-          ? yield* selectById(table, condition.value)
-          : yield* Effect.fromResult(decodeResult(row, table));
-      }
-
-      // MSSQL has no row count on `.raw`, so the update reports itself through
-      // `OUTPUT INSERTED`: one round trip when a row already exists.
-      if (provider === "mssql" && Object.keys(prepared.encoded).length > 0) {
-        const output = options.returning
-          ? outputList(sql, table)
-          : sql`${sql(`INSERTED.${idColumn.names.sql}`)} AS ${sql(idColumn.ormName)}`;
-        const parts: Array<Statement.Fragment> = [
-          sql`UPDATE TOP (1) ${sql(table.names.sql)} SET ${assignments(sql, prepared.encoded)} OUTPUT ${output}`,
-        ];
-        if (options.where !== undefined) parts.push(yield* whereClause(sql, options.where));
-        const rows = yield* sql<RawRow>`${spaced(parts)}`;
-        const row = rows[0];
-        if (row !== undefined)
-          return options.returning ? yield* Effect.fromResult(decodeResult(row, table)) : undefined;
-        if (options.returning) return yield* createImpl(table, options.create);
-        yield* createManyImpl(table, [options.create]);
+    // Equality on the supplied primary key has an exact conflict target. Let the
+    // database arbitrate concurrent inserts instead of racing a read then create.
+    const condition = options.where;
+    if (
+      (provider === "postgresql" || provider === "cockroachdb" || provider === "sqlite") &&
+      condition !== undefined &&
+      Condition.$is("Compare")(condition) &&
+      condition.column.isId &&
+      condition.operator === "=" &&
+      !isAbsentKey(condition.value) &&
+      Equal.equals(condition.value, options.create[idColumn.ormName])
+    ) {
+      const created = yield* prepareValues(table, options.create, true);
+      const conflict =
+        Object.keys(prepared.encoded).length === 0
+          ? sql`DO NOTHING`
+          : sql`DO UPDATE SET ${sql.update(prepared.encoded)}`;
+      const statement = sql`INSERT INTO ${sql(table.names.sql)} ${insertFragment(sql, [created.encoded], undefined)} ON CONFLICT (${sql(idColumn.names.sql)}) ${conflict}`;
+      if (!options.returning) {
+        yield* statement;
         return undefined;
       }
+      const rows = yield* sql<RawRow>`${statement} RETURNING ${returningList(sql, table)}`;
+      const row = rows[0];
+      return row === undefined
+        ? yield* selectById(table, condition.value)
+        : yield* Effect.fromResult(decodeResult(row, table));
+    }
 
-      const existing = yield* findManyImpl(table, {
-        select: [idColumn.ormName],
-        computed: [],
-        where: options.where,
-        orderBy: undefined,
-        join: undefined,
-        limit: 1,
-        offset: undefined,
-      });
-      const found = existing[0];
-      if (found === undefined) {
-        if (options.returning) return yield* createImpl(table, options.create);
-        yield* createManyImpl(table, [options.create]);
-        return undefined;
-      }
-      return yield* updateById(table, found[idColumn.ormName], options.update, options.returning);
-    },
-  );
+    // MSSQL has no row count on `.raw`, so the update reports itself through
+    // `OUTPUT INSERTED`: one round trip when a row already exists.
+    if (provider === "mssql" && Object.keys(prepared.encoded).length > 0) {
+      const output = options.returning
+        ? outputList(sql, table)
+        : sql`${sql(`INSERTED.${idColumn.names.sql}`)} AS ${sql(idColumn.ormName)}`;
+      const parts: Array<Statement.Fragment> = [
+        sql`UPDATE TOP (1) ${sql(table.names.sql)} SET ${assignments(sql, prepared.encoded)} OUTPUT ${output}`,
+      ];
+      if (options.where !== undefined) parts.push(yield* whereClause(sql, options.where));
+      const rows = yield* sql<RawRow>`${spaced(parts)}`;
+      const row = rows[0];
+      if (row !== undefined)
+        return options.returning ? yield* Effect.fromResult(decodeResult(row, table)) : undefined;
+      if (options.returning) return yield* createImpl(table, options.create);
+      yield* createManyImpl(table, [options.create]);
+      return undefined;
+    }
+
+    const existing = yield* findManyImpl(table, {
+      select: [idColumn.ormName],
+      computed: [],
+      where: options.where,
+      orderBy: undefined,
+      join: undefined,
+      limit: 1,
+      offset: undefined,
+    });
+    const found = existing[0];
+    if (found === undefined) {
+      if (options.returning) return yield* createImpl(table, options.create);
+      yield* createManyImpl(table, [options.create]);
+      return undefined;
+    }
+    return yield* updateById(table, found[idColumn.ormName], options.update, options.returning);
+  }, operation("upsert"));
 
   return {
     tables: schema.tables,

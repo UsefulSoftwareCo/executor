@@ -4,7 +4,6 @@
  */
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { packagedRuntimeEnvironment } from "./runtime-env.mjs";
 import type { StandaloneRelease } from "./runtime-bundle.ts";
 
 /** The install directory, from the bundle's banner. */
@@ -12,10 +11,9 @@ declare const __executorRoot: string;
 /** The release identity, defined at build time. */
 declare const executorRelease: StandaloneRelease;
 
-Object.assign(
-  process.env,
-  packagedRuntimeEnvironment(process.env, join(__executorRoot, "runtime", "git")),
-);
+// The server's Git host runs the Git beside the executable, which the bundled dugite cannot locate
+// from its module path. Other processes keep the caller's PATH and Git.
+process.env.EXECUTOR_GIT_DIRECTORY = join(__executorRoot, "runtime", "git");
 process.env.EXECUTOR_DATA_DIR ??= join(homedir(), ".executor", "v2", "cli");
 process.env.EXECUTOR_BUILD_VERSION = executorRelease.version;
 // The npm launcher names itself; started directly, the executable's own location shows how it

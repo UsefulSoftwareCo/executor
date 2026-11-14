@@ -44,7 +44,7 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard loading", (it) => {
         ]) {
           for (const section of ["apps", "accounts"] as const) {
             yield* browser.use("Open a page that reads neither section", (page) =>
-              page.goto(`/org/${actors.organization.slug}/connect`),
+              page.goto(`/org/${actors.organization.slug}/organization`),
             );
             yield* Effect.scoped(
               Effect.gen(function* () {

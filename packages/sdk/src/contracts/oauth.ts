@@ -2,9 +2,9 @@ import { UserFacingError, type ErrorPresentation } from "@executor-js/utils/user
 import { ApiError } from "@executor-js/utils/api-error";
 /** Host-owned OAuth configuration and encrypted protocol records. */
 import type { UrlPolicy } from "@executor-js/utils/url-policy";
-import { AuthMethodName, type AuthMethodInvalid, type ProviderNotFound } from "./provider.ts";
-import { AccountConnectionId, type CredentialsError, type StorageError } from "./shared.ts";
-import { Schema, type Effect, type Redacted } from "effect";
+import { AuthMethodName } from "./provider.ts";
+import { AccountConnectionId } from "./shared.ts";
+import { Match, Schema } from "effect";
 import {
   CredentialHost,
   OAuthAuthorizationParams,
@@ -46,12 +46,51 @@ export const OAuthStartResult = Schema.Union([
 ]);
 export type OAuthStartResult = typeof OAuthStartResult.Type;
 
+/**
+ * Where a sign-in's RFC 8707 resource indicator came from, or why it sends none:
+ * - `declared`: the provider's own `resource`; `resource: null` declares none.
+ * - `metadata`: the protected-resource metadata of the URL the provider discovers from.
+ * - `operator`: this instance's own OAuth client for the service, which may set none. A provider's
+ *   `resource` does not apply to it.
+ * - `inferred_scope_audience`: none, because Executor inferred from the authorization server's own
+ *   metadata (a `/v2.0` issuer with `cloud_instance_name`, as Microsoft identity platform publishes)
+ *   that it takes the token's audience from the scopes, so it did not send the resource the
+ *   protected-resource metadata names. Executor does not verify that inference; a declared
+ *   `resource` is always sent.
+ * - `none`: none, because the provider declares no `resource` and no metadata names one.
+ */
+export const OAuthResourceSource = Schema.Literals([
+  "declared",
+  "metadata",
+  "operator",
+  "inferred_scope_audience",
+  "none",
+]);
+export type OAuthResourceSource = typeof OAuthResourceSource.Type;
+/**
+ * The resource indicator a sign-in sends on its authorization request, exchange and renewals, and
+ * where it came from. `value` is null when it sends none, and `source` then says why.
+ */
+export const OAuthResourceIndicator = Schema.Union([
+  Schema.Struct({
+    value: HttpUrl,
+    source: Schema.Literals(["declared", "metadata", "operator"]),
+  }),
+  Schema.Struct({
+    value: Schema.Null,
+    source: Schema.Literals(["declared", "operator", "inferred_scope_audience", "none"]),
+  }),
+]);
+export type OAuthResourceIndicator = typeof OAuthResourceIndicator.Type;
+
 const clientSetup = {
   /** `automatic`: a client metadata document or dynamic registration can supply a client. */
   mode: Schema.Literals(["automatic", "client-required"]),
   scopes: Schema.Array(Schema.String),
   /** Signing in uses the instance's own OAuth client, named here; see `FirstPartyOAuthClient`. */
   firstParty: Schema.optionalKey(Schema.Struct({ label: Schema.NonEmptyString })),
+  /** The resource indicator sign-in sends, or why it sends none. */
+  resource: OAuthResourceIndicator,
 };
 /** Safe form metadata resolved from provider code and discovery. Never contains client IDs or secrets. */
 export const OAuthClientSetup = Schema.Union([
@@ -349,7 +388,10 @@ export const FirstPartyOAuthServer = Schema.Struct({
    * reports `repo,gist` whatever separator the request used. Defaults to whitespace only.
    */
   grantedScopeSeparator: Schema.optionalKey(Schema.NonEmptyString),
-  /** Extra authorization request parameters, such as `{ access_type: "offline" }`. */
+  /**
+   * Extra authorization request parameters. Google's `access_type=offline` and `prompt=consent`
+   * are always sent to Google, so they need not be listed.
+   */
   authorizationParams: Schema.optionalKey(OAuthAuthorizationParams),
   tokenRequestFormat: Schema.optionalKey(OAuthTokenRequestFormat),
   tokenResponse: Schema.optionalKey(OAuthTokenResponse),
@@ -707,6 +749,8 @@ export const OAuthCompletionReason = Schema.Literals([
   "registered_client_rejected",
   "registered_client_incompatible",
   "exchange_failed",
+  // The service refused the RFC 8707 resource indicator, at authorization or the exchange.
+  "resource_rejected",
   "destination_blocked",
   "service_unavailable",
   "rate_limited",
@@ -727,6 +771,96 @@ const restart = (
   agentFixable: false,
 });
 
+/**
+ * The service answered RFC 8707's `invalid_target` to a sign-in, which refuses a missing, unknown
+ * or unaccepted resource indicator. The recovery goes to whoever can change what the sign-in sends:
+ * the app's OAuth settings for a provider's declaration, its discovered metadata or its absence,
+ * and the instance administrator for the operator's client, which a provider's `resource` does
+ * not change. A refusal whose indicator Executor did not record names no one.
+ */
+const resourceRejected = (resource: OAuthResourceIndicator | undefined): ErrorPresentation => {
+  const declare =
+    "Declare the provider's `resource` as the identifier the service documents, or `resource: null` if it takes no resource indicator, then start a fresh sign-in.";
+  const declareOne =
+    "If the service documents a resource identifier, declare it as the provider's `resource`, then start a fresh sign-in.";
+  const administrator = {
+    action: "Ask the instance administrator to check the OAuth client’s resource.",
+    instructions: (sent: string) =>
+      `${sent} This instance's own OAuth client for the service sets it, and a provider's \`resource\` does not apply to that client, so changing the app does not change this request. The instance administrator can compare the client's resource with the identifier the service documents.`,
+  };
+  const app = "Set the resource the service documents in the app’s OAuth settings.";
+  const recovery =
+    resource === undefined
+      ? {
+          recovery: {
+            action: "Start a fresh sign-in.",
+            instructions:
+              "Executor did not record which resource indicator this sign-in sent. Start a fresh sign-in; if the service refuses it too, the new failure names the indicator and who can change it.",
+          },
+          agentFixable: false,
+        }
+      : resource.source === "operator"
+        ? {
+            recovery: {
+              action: administrator.action,
+              instructions: administrator.instructions(
+                resource.value === null
+                  ? "Executor sent no RFC 8707 resource indicator."
+                  : `Executor sent the RFC 8707 resource indicator ${resource.value}.`,
+              ),
+            },
+            agentFixable: false,
+          }
+        : {
+            recovery: {
+              action: app,
+              instructions:
+                resource.value === null
+                  ? Match.value(resource.source).pipe(
+                      Match.when(
+                        "declared",
+                        () =>
+                          `Executor sent no RFC 8707 resource indicator, because the provider declares \`resource: null\`. ${declareOne}`,
+                      ),
+                      Match.when(
+                        "inferred_scope_audience",
+                        () =>
+                          `Executor sent no RFC 8707 resource indicator. The authorization server's metadata has a \`/v2.0\` issuer and a \`cloud_instance_name\`, as Microsoft identity platform's does, so Executor inferred that the server takes the token's audience from the requested scopes and did not send the resource its protected-resource metadata names. Executor did not verify this, and the service refused the sign-in, so it may need a resource. A declared \`resource\` is always sent: declare the identifier the service documents as the provider's \`resource\`, then start a fresh sign-in.`,
+                      ),
+                      Match.when(
+                        "none",
+                        () =>
+                          `Executor sent no RFC 8707 resource indicator: the provider declares no \`resource\`, and no protected-resource metadata it discovers from names one. ${declareOne}`,
+                      ),
+                      Match.exhaustive,
+                    )
+                  : Match.value(resource.source).pipe(
+                      Match.when(
+                        "metadata",
+                        () =>
+                          `Executor sent the RFC 8707 resource indicator ${resource.value}, which the service's protected-resource metadata names. The provider declares no \`resource\`, so declaring that same value sends the same request. A service's API and its MCP server can have different identifiers. ${declare}`,
+                      ),
+                      Match.when(
+                        "declared",
+                        () =>
+                          `Executor sent the RFC 8707 resource indicator ${resource.value}, which the provider declares as its \`resource\`. Compare it with the identifier the service documents, including any path and trailing slash. ${declare}`,
+                      ),
+                      Match.exhaustive,
+                    ),
+            },
+          };
+  return {
+    title: "Service refused the requested resource",
+    description:
+      resource === undefined
+        ? "The service reported a missing or unknown resource indicator, so it issued no token."
+        : resource.value === null
+          ? "The service reported a missing or unknown resource indicator. This sign-in sent none, so it got no token."
+          : "The service refused the resource indicator this sign-in sent, so it issued no token.",
+    ...recovery,
+  };
+};
+
 /** Sign-in completion failed. Saved account credentials are not changed. */
 export const OAuthCompletionFailed = UserFacingError.define({
   tag: "OAuthCompletionFailed",
@@ -737,9 +871,11 @@ export const OAuthCompletionFailed = UserFacingError.define({
     cause: Schema.optional(OAuthFailureCause),
     serviceError: Schema.optional(OAuthServiceError),
     retryAfter: RetryAfter,
+    /** With `resource_rejected`, the indicator the sign-in sent, or why it sent none. */
+    resource: Schema.optional(OAuthResourceIndicator),
   },
   recorded: ({ reason, cause }) => oauthRecorded("Sign-in completion failed", reason, cause),
-  presentation: ({ reason, cause, serviceError, retryAfter }) =>
+  presentation: ({ reason, cause, serviceError, retryAfter, resource }) =>
     withCause(
       (
         {
@@ -886,6 +1022,7 @@ export const OAuthCompletionFailed = UserFacingError.define({
                 "Inspect the app’s OAuth token endpoint, client authentication method, callback configuration, and requested scopes. Fix verified configuration errors and start a fresh sign-in; never replay a consumed code.",
             },
           },
+          resource_rejected: resourceRejected(resource),
           destination_blocked: {
             title: "OAuth address blocked",
             description:
@@ -984,6 +1121,7 @@ export const oauthCompletionRecovery = {
   registered_client_rejected: "restart",
   registered_client_incompatible: "configuration",
   exchange_failed: "configuration",
+  resource_rejected: "configuration",
   destination_blocked: "configuration",
   service_unavailable: "restart",
   rate_limited: "restart",
@@ -1325,6 +1463,8 @@ export const OAuthAttempt = Schema.Struct({
   /** An entered client registered under the attempt's owner once it completes. */
   saveClient: Schema.optionalKey(Schema.Literal(true)),
   resource: Schema.optional(HttpUrl),
+  /** Where `resource` came from, so a refusal can say. Attempts started before it was kept lack it. */
+  resourceSource: Schema.optional(OAuthResourceSource),
   /** Token request encoding and nested grant location, as the provider declared them. */
   tokenRequestFormat: Schema.optional(OAuthTokenRequestFormat),
   tokenResponse: Schema.optional(OAuthTokenResponse),
@@ -1377,6 +1517,12 @@ export const OAuthGrant = Schema.Union([
     oauthClient: Schema.optionalKey(OAuthClientId),
     refreshToken: Schema.optional(Schema.NonEmptyString),
     /**
+     * The callback the sign-in sent, sent again on each refresh for servers that require it.
+     * Imported grants renew as the product that issued them did, and grants saved before it was
+     * retained renew as they did, so both omit it.
+     */
+    redirectUri: Schema.optional(HttpUrl),
+    /**
      * Scopes each refresh asks for again, space-separated. Only imported grants carry them, as the
      * product that issued the grant sent them; other refreshes ask for none, keeping what was
      * granted (RFC 6749 §6).
@@ -1409,6 +1555,8 @@ export const OAuthGrant = Schema.Union([
     expiresAt: Schema.optional(Schema.Number),
     fields: JsonObject,
     refreshToken: Schema.optional(Schema.NonEmptyString),
+    /** The callback the sign-in sent, kept across host callback changes; see the grant above. */
+    redirectUri: Schema.optional(HttpUrl),
     /**
      * Scopes each refresh asks for again. Only imported grants carry them, as the product that
      * issued the grant sent them; see the other authorization code grant's `scopes`.
@@ -1426,102 +1574,3 @@ export type OAuthFirstPartyGrant = Extract<
 /** Whether a grant was issued to the operator's client. */
 export const isFirstPartyGrant = (grant: OAuthGrant): grant is OAuthFirstPartyGrant =>
   "firstParty" in grant;
-
-/**
- * An account whose OAuth grant was issued by another product, as the Executor v1 importer saves
- * it (`notes/v1-import.md`). Internal to that importer and deleted with it; not part of the HTTP
- * or Promise API. The grant was issued either to a client the product registered, which the
- * account keeps (`client`), or to one of the operator's own clients (`firstParty`), which must
- * be the same client at the authorization server: the same client ID, so its refresh token is
- * valid for it.
- */
-export type ImportOAuthGrant = {
-  readonly owner: OwnerId;
-  readonly provider: ProviderId;
-  readonly method: string;
-  readonly label: string;
-  /** The callback the client was registered with, for an authorization-code grant. */
-  readonly redirectUri?: string | undefined;
-  readonly accessToken: Redacted.Redacted<string>;
-  readonly refreshToken?: Redacted.Redacted<string> | undefined;
-  /** Epoch milliseconds when the access token expires. */
-  readonly expiresAt?: number | undefined;
-} & (
-  | {
-      /** The client the grant was issued to, with its secret. */
-      readonly client: Redacted.Redacted<OAuthRegistration>;
-      /**
-       * How renewals ask for a token, as the product that issued the grant did. It replaces what
-       * the provider's method declares: the token endpoint, the scopes asked for again (none when
-       * empty) and the RFC 8707 resource (none when absent).
-       */
-      readonly renewal: {
-        readonly tokenEndpoint: string;
-        readonly scopes: readonly string[];
-        readonly resource?: string | undefined;
-      };
-    }
-  | {
-      /**
-       * The operator's client the grant was issued to. The account's token is managed, and the
-       * grant renews and is revoked with the operator's current configuration, as one a sign-in
-       * with that client saves.
-       */
-      readonly firstParty: FirstPartyOAuthClientId;
-      /**
-       * The hosts the app the account is imported for declares for the provider, which a
-       * connection would grant it; the client's tokens must reach every one of them, or the
-       * app's calls to the others would be refused.
-       */
-      readonly hosts: readonly string[];
-      /** The scopes renewals ask for again (none when empty); each must be one the client allows. */
-      readonly renewal: { readonly scopes: readonly string[] };
-    }
-);
-/**
- * Why a grant to one of the operator's clients cannot be imported: the operator does not offer
- * that client (`unavailable`), the provider's method would not sign in with it (`method`), the
- * grant holds a scope the client does not allow (`scopes`), or the client's tokens do not reach
- * every host the account's app declares (`hosts`, with the `unreachable` ones). Internal to the v1
- * importer.
- */
-export class OAuthGrantNotImportable extends Schema.TaggedError<OAuthGrantNotImportable>()(
-  "OAuthGrantNotImportable",
-  {
-    reason: Schema.Literals(["unavailable", "method", "scopes", "hosts"]),
-    unreachable: Schema.optionalKey(Schema.Array(Schema.String)),
-  },
-) {}
-/**
- * One of the operator's clients as the importer checks a grant against it, without its secret. Its
- * client ID is public; the importer compares it with the one v1's grants were issued to.
- */
-export type FirstPartyOAuthClientDescription = Omit<FirstPartyOAuthClient, "clientSecret">;
-/** Host-only access to {@link ImportOAuthGrant}. */
-export const OAuthGrantImport = Symbol("executor.OAuthGrantImport");
-export interface OAuthGrantImport {
-  /**
-   * Save the account, its encrypted grant (ready to use and renew) and its client in one
-   * transaction, as completing a sign-in does. The provider's method must be OAuth with the same
-   * grant. Runs the provider's discovery, but no token request.
-   */
-  readonly importOAuthGrant: (
-    input: ImportOAuthGrant,
-  ) => Effect.Effect<
-    typeof Account.Type,
-    | StorageError
-    | CredentialsError
-    | ProviderNotFound
-    | AuthMethodInvalid
-    | OAuthSetupFailed
-    | OAuthGrantNotImportable
-  >;
-  /** The operator's client `id` when it is offered here, which its credentials being set decides. */
-  readonly firstPartyClient: (id: string) => FirstPartyOAuthClientDescription | undefined;
-  /**
-   * Whether an imported account's stored credentials, and its OAuth grant when its method signs in
-   * with one, decrypt with this deployment's key. Reads only and returns no value; an import
-   * verifies its accounts with it.
-   */
-  readonly credentialsReadable: (account: AccountId) => Effect.Effect<boolean, StorageError>;
-}

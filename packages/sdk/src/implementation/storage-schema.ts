@@ -837,7 +837,7 @@ const retriedWebhookSources = table("executor_webhook_sources", {
   retries: column("retries", Schema.Int).default(0),
 }).unique("executor_webhook_sources_app_account", ["app", "account"]);
 
-/** Tables of the 4.0.15 layout, the current one. */
+/** Tables of the 4.0.15 layout; 4.0.16 only adds indexes. */
 export const version4015Tables = {
   ...version4014Tables,
   webhookSources: retriedWebhookSources,
@@ -853,3 +853,43 @@ export const scopedRunKeyIndex =
 /** One app schedule per declaration; members' copies stay unique by `executor_schedules_copy`. */
 export const appScheduleIndex =
   "CREATE UNIQUE INDEX IF NOT EXISTS executor_schedules_app ON executor_schedules (app, name) WHERE actor IS NULL";
+
+/**
+ * Indexes added in 4.0.16 for reads that scanned the whole table before. Each webhook source tick
+ * reads the sources waiting to run, saved intent first and then retries, and skips every `ready`
+ * source, nearly all of them; each index holds only the sources one of those reads takes. Account
+ * checks are read by account. The 4.0.3 layout declared them unique by account and app, but the
+ * 4.0.6 layout declares the table again without it, and databases have no such index; a check's
+ * ID, its account and app, still keeps one per pair. In the order the account and app removal
+ * paths write: webhook sources, then account checks.
+ */
+export const queueReadIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_webhook_sources_intent ON executor_webhook_sources (lease_until) WHERE status = 'pending' AND lease IS NULL",
+  "CREATE INDEX IF NOT EXISTS executor_webhook_sources_retry ON executor_webhook_sources (lease_until) WHERE status <> 'ready'",
+  "CREATE INDEX IF NOT EXISTS executor_account_checks_account_app ON executor_account_checks (account, app)",
+] as const;
+
+/**
+ * Version 4.0.17 lets a subscription select events as the subscriber wrote them: every event of
+ * one app (`event` null), or every event of every app its owner has (`app` and `event` null).
+ * `selection` keeps that choice, `{ app?, event? }`, and is null for a subscription to one named
+ * event; deliveries of a selection carry the app and event beside the data. Every row written
+ * before it names one app and one event and has no selection.
+ */
+const selectingEventSubscriptions = table("executor_event_subscriptions", {
+  ...eventSubscriptions.columns,
+  app: column("app", Schema.NullOr(AppId), { type: "varchar(255)" }).default(null),
+  event: column("event", Schema.NullOr(Schema.String), { type: "varchar(64)" }).default(null),
+  selection: column("selection", Schema.NullOr(Schema.Json)).default(null),
+});
+
+/** Tables of the 4.0.17 layout, the current one. */
+export const version4017Tables = {
+  ...version4015Tables,
+  eventSubscriptions: selectingEventSubscriptions,
+};
+
+/** Selections across an owner's apps are matched by owner. */
+export const eventSelectionIndexes = [
+  "CREATE INDEX IF NOT EXISTS executor_event_subscriptions_owner_selection ON executor_event_subscriptions (owner, status) WHERE app IS NULL",
+] as const;

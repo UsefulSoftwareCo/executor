@@ -5,6 +5,7 @@
  */
 import { Clock, Effect, Schema } from "effect";
 import {
+  EvaluatedChanged,
   EvaluatedEntry,
   EvaluatedWritten,
   evaluatedLimits,
@@ -78,6 +79,23 @@ export const evaluatedDeclarations = <E>(
         Effect.logWarning("Evaluated result read failed", error).pipe(Effect.as(undefined)),
       ),
       Effect.withSpan("storage.evaluated.read", { attributes: { "executor.app.id": app } }),
+    ),
+  changed: (app) =>
+    Effect.gen(function* () {
+      const reply = yield* timed("storage.evaluated.rpc_ms", send(app, { operation: "changed" }));
+      // A supervisor from before `changed` answers it as a miss: nothing is known.
+      const found = Schema.decodeUnknownOption(EvaluatedChanged)(reply);
+      if (found._tag === "None") return undefined;
+      yield* annotateSupervisor(found.value.supervisor);
+      yield* Effect.annotateCurrentSpan("storage.evaluated.changed", found.value.changed ?? 0);
+      return found.value.changed ?? undefined;
+    }).pipe(
+      Effect.timeout(readMillis),
+      // Unknown, as when it never changed; the next check asks again.
+      Effect.catch((error) =>
+        Effect.logWarning("App cache change read failed", error).pipe(Effect.as(undefined)),
+      ),
+      Effect.withSpan("storage.evaluated.changed", { attributes: { "executor.app.id": app } }),
     ),
   set: (app, key, entry) =>
     Effect.gen(function* () {
