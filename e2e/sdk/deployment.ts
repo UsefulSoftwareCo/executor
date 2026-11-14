@@ -96,8 +96,10 @@ export const startDeployment = ({
       ),
     );
     // Runs before the destroy above (finalizers run last-registered first), after the fixture
-    // process has stopped: a stalled organization removal's Workflow instance is deleted with
-    // the stage, so its record is read now. It never fails or holds up the teardown.
+    // process has stopped and so after the suite's end-of-run removal check
+    // (`removal-settlement.ts`), which runs inside the suite before this scope closes: a stalled
+    // organization removal's Workflow instance is deleted with the stage, so its record is read
+    // now. It never fails or holds up the teardown.
     yield* Effect.addFinalizer(() =>
       captureRemovalStalls(slug, directory).pipe(
         Effect.timeout("3 minutes"),

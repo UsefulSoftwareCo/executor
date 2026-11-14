@@ -1446,6 +1446,52 @@ export const scenarios = plan({
       local: na("Local has no organizations; its scenario lifecycle uses independent processes."),
     },
   },
+  fixtureRemovalSettlement: {
+    fixtures: "actors",
+    file: "fixture-removal-settlement.spec.ts",
+    title:
+      "A Cloud scenario's clean-up returns once its organization's removal is accepted while the removal cannot start, and the end-of-run removal check names that scenario, its phase and since when until the removal finishes, then finds the organization, the removal and its users gone",
+    sdkScenarios: ["Stalled removal organization"],
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host has a single instance organization and no organization removal."),
+      local: na("Local has no hosted organizations."),
+    },
+  },
+  fixtureRemovalSettlementMany: {
+    fixtures: "actors",
+    file: "fixture-removal-settlement.spec.ts",
+    title:
+      "The end-of-run removal check answers each look within its request limit while one of 24 accepted removals cannot delete its users, finishes the other 23 meanwhile, and finishes the last once its users can be deleted",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host has a single instance organization and no organization removal."),
+      local: na("Local has no hosted organizations."),
+    },
+  },
+  fixtureRemovalSettlementDropped: {
+    fixtures: "actors",
+    file: "fixture-removal-settlement.spec.ts",
+    title:
+      "The end-of-run removal check asks again after a dropped request and counts a removal finished only from an answer that says so",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host has a single instance organization and no organization removal."),
+      local: na("Local has no hosted organizations."),
+    },
+  },
+  fixtureRemovalSettlementDone: {
+    fixtures: "actors",
+    file: "fixture-removal-settlement.spec.ts",
+    title:
+      "The end-of-run removal check keeps waiting for a removal recorded done while its organization row is still there",
+    sdkScenarios: ["Done removal organization"],
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host has a single instance organization and no organization removal."),
+      local: na("Local has no hosted organizations."),
+    },
+  },
   cloudSsoOidc: {
     fixtures: "actors",
     file: "cloud-sso.spec.ts",

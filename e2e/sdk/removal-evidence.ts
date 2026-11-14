@@ -1,12 +1,13 @@
 /**
- * Save what Cloudflare knows about an organization removal that a scenario's clean-up waited for
+ * Save what Cloudflare knows about an organization removal that the end-of-run check waited for
  * in vain, before the stage that holds it is destroyed.
  *
- * The fixture server (`apps/hosted/testing/scenario-server.ts`) appends one line to
- * `removal-stalls.jsonl` when a removal is still not done at the end of its wait: the
- * organization, its Workflow instance id and the status the stage's database gave. The fixture
- * server holds no Cloudflare credentials, so the deployed runner, which owns the stage, reads
- * that file just before it destroys the stage and writes `removal-stalls.json` beside it:
+ * The end-of-run check (`removal-settlement.ts`) appends one line to `removal-stalls.jsonl` in
+ * the stage's directory for each removal still not done when it stops waiting, from the fixture
+ * server's last answer: the scenario it belonged to, the organization, the phase the removal was
+ * in and since when, its Workflow instance id and the status the stage's database gave. Neither
+ * holds Cloudflare credentials, so the deployed runner, which owns the stage, reads that file just
+ * before it destroys the stage and writes `removal-stalls.json` beside it:
  *
  * - the `OrganizationRemoval` Workflow instance of each stalled removal, as Cloudflare reports it
  *   (status, every step with its attempts and errors). Destroying the stage deletes the Workflow
@@ -37,10 +38,13 @@ export const removalEvidenceFile = "removal-stalls.json";
 
 /** One removal the fixture server stopped waiting for. */
 export const RemovalStall = Schema.Struct({
+  scenario: Schema.optional(Schema.String),
+  label: Schema.optional(Schema.String),
   organization: Schema.String,
   instance: Schema.NullOr(Schema.String),
   status: Schema.NullOr(Schema.String),
   phase: Schema.String,
+  since: Schema.optional(Schema.String),
   at: Schema.String,
 });
 export type RemovalStall = typeof RemovalStall.Type;
@@ -241,7 +245,7 @@ export const captureRemovalStalls = (
       const state = record.instance as { status?: unknown; error?: unknown };
       yield* Console.log(
         mask(
-          `Organization removal not finished within its clean-up's wait (database: ${
+          `Organization removal${record.stall.label === undefined ? "" : ` for "${record.stall.label}" (scenario ${record.stall.scenario ?? "unknown"})`} not finished at the end-of-run check: ${record.stall.phase}${record.stall.since === undefined ? "" : ` since ${record.stall.since}`} (database: ${
             record.stall.status ?? "no record"
           }; Workflow instance: ${
             typeof state.status === "string" ? state.status : `unread, ${String(state.error)}`

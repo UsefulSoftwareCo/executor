@@ -4,7 +4,7 @@ import { secret } from "../support/failure-text.ts";
 import { randomBytes } from "node:crypto";
 import { Target } from "../support/platform.ts";
 import { startManagedServer } from "../support/managed-server.ts";
-import { OriginUnreachable, ScenarioId } from "./contracts.ts";
+import { OriginUnreachable, ProvisioningFailure, ScenarioId } from "./contracts.ts";
 import { platformSignatures } from "../platform-signatures.ts";
 
 /** A prerequisite failed within its own deadline, before scenario work could start. */
@@ -14,11 +14,21 @@ export class ScenarioPreparationFailed extends Schema.TaggedError<ScenarioPrepar
     reason: Schema.Literals(["organization_unavailable", "domain_unavailable"]),
     /** Present when no HTTPS connection to the origin completed: the origin unreachable shape. */
     unreachable: Schema.optional(OriginUnreachable),
+    /** Why the organization was not provisioned, when preparation recorded it. */
+    provisioning: Schema.optional(ProvisioningFailure),
   },
 ) {
   override get message() {
-    if (this.reason === "organization_unavailable")
-      return "The scenario's organization and identities were not provisioned within the setup deadline";
+    if (this.reason === "organization_unavailable") {
+      const failed = this.provisioning;
+      if (failed === undefined || failed.failure === "TimeoutError")
+        return "The scenario's organization and identities were not provisioned within the setup deadline";
+      // Any other failure ended provisioning early: say which request, where, and how.
+      const where = [failed.stage, failed.transport]
+        .filter((part) => part !== undefined)
+        .join(", ");
+      return `The scenario's organization and identities could not be provisioned: ${failed.request ?? "provisioning"} failed with ${failed.failure}${where === "" ? "" : ` (${where})`}${failed.elapsedMs === undefined ? "" : ` after ${failed.elapsedMs} ms`}`;
+    }
     if (this.unreachable !== undefined) return unreachableText(this.unreachable);
     return "The scenario's HTTPS app origin did not answer, or was not reported ready, within the infrastructure deadline";
   }
@@ -57,6 +67,7 @@ export const prepareScenario = (
       return yield* new ScenarioPreparationFailed({
         reason: prepared.status,
         ...(prepared.unreachable === undefined ? {} : { unreachable: prepared.unreachable }),
+        ...(prepared.provisioning === undefined ? {} : { provisioning: prepared.provisioning }),
       });
     const fs = yield* FileSystem.FileSystem;
     if (base.metadata.target === "cloud")
