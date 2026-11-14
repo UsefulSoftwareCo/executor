@@ -2,7 +2,6 @@
  * Who a v1 organization's v2 organization is for (`notes/v1-import.md`, decisions 8, 13 and 17),
  * and which plan v1 bills it on, decided from WorkOS and Autumn alone.
  */
-import { freePlans } from "../v1-membership.ts";
 import type { V1Membership, V1User } from "./source.ts";
 
 /**
@@ -103,6 +102,9 @@ export type V1Billing =
   | { readonly kind: "paid"; readonly plans: readonly string[] };
 
 const enterprisePlan = (plan: string) => plan === "enterprise" || plan.startsWith("enterprise-");
+
+/** v1's plans that cost nothing. Every other plan, including ones added later, is paid. */
+export const freePlans: ReadonlyArray<string> = ["free", "free-pay-as-you-go"];
 
 /** v1 plans that move to v2's Free plan (decision 30). */
 export const grandfatheredPlans: ReadonlyArray<string> = ["hobby", "professional"];

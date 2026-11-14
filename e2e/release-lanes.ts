@@ -27,6 +27,7 @@
  * start it. Paths are GitHub's glob patterns: `*` within one path segment, `**` across
  * them.
  */
+import { packagedEngineInputs, packagedEngineSpecs } from "./packaged-engine.ts";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
 class ReleaseLanesFailed extends Schema.TaggedError<ReleaseLanesFailed>()("ReleaseLanesFailed", {
@@ -310,6 +311,12 @@ export interface ReleaseSources {
   readonly matrixSuites: ReadonlyArray<string>;
   /** The packages the suites start at run time, as globs over their workspace packages. */
   readonly harness: ReadonlyArray<string>;
+  /**
+   * What the packaged engine's scenarios depend on beyond the rest of the image's suite: the
+   * files that make the image's engine differ (e2e/packaged-engine.ts), the scenarios, and the
+   * files only they import.
+   */
+  readonly packagedEngine: ReadonlyArray<string>;
 }
 
 export const releaseSources = Effect.gen(function* () {
@@ -324,7 +331,25 @@ export const releaseSources = Effect.gen(function* () {
     });
   const inputs = (files: ReadonlySet<string>) =>
     [...files].filter((file) => !(file in notSuiteInputs)).sort();
+  // The files only the packaged engine's scenarios import: theirs, less what the rest of the
+  // image's suite (its other spec files, config and setup) imports.
+  const engineScenarios = yield* suiteFiles(root, {}, packagedEngineSpecs);
+  const rest = yield* suiteFiles(root, {}, [
+    ...Object.keys(suites.docker),
+    "e2e/docker-release-networks.ts",
+    ...[...docker].filter(
+      (file) =>
+        file.startsWith("e2e/tests/") &&
+        !(packagedEngineSpecs as ReadonlyArray<string>).includes(file),
+    ),
+  ]);
   return {
+    packagedEngine: [
+      ...new Set([
+        ...packagedEngineInputs,
+        ...[...engineScenarios].filter((file) => !rest.has(file)),
+      ]),
+    ].sort(),
     local: yield* workspaceClosure(root, artifactRoots.local),
     image: yield* workspaceClosure(root, artifactRoots.image),
     docker: inputs(docker),
@@ -366,6 +391,8 @@ export const lanesFor = (sources: ReleaseSources, changed: ReadonlyArray<string>
   return {
     "release-docker": matching(paths["release-docker"]),
     "release-local": matching(paths["release-local"]),
+    /** Of those, the files that also start the packaged engine's scenarios. */
+    "release-docker-engine": matching(sources.packagedEngine),
   };
 };
 

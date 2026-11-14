@@ -249,26 +249,33 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
         ),
       ),
     );
-  return {
-    eventDefinitions: (input) =>
-      Effect.gen(function* () {
-        const policy = yield* authority;
-        yield* refuse(
-          permitsApp(policy, input.app) ? undefined : { reason: "app", app: input.app },
-        );
-        const definitions = yield* backend.eventDefinitions(input);
-        return definitions.filter((definition) => permitsEvent(policy, input.app, definition.name));
-      }),
-    findEventSubscription: (key) => backend.findEventSubscription(key),
-    subscribeEvent: (input) =>
-      checkEvent(input.target.app, input.target.event).pipe(
-        Effect.andThen(() => backend.subscribeEvent(input)),
+  /** All of an app's events need the app in the grant. */
+  const checkSelectedApp = (app: AppId) =>
+    authority.pipe(
+      Effect.flatMap((policy) =>
+        refuse(permitsApp(policy, app) ? undefined : { reason: "app", app }),
       ),
+    );
+  return {
+    findEventSubscription: (key) => backend.findEventSubscription(key),
+    // A selection of several events needs only what it names; each delivery then checks the
+    // occurrence's app and event, and drops one the grant does not include.
+    subscribeEvent: (input) =>
+      (input.target.app === null
+        ? authority
+        : input.target.event === null
+          ? checkSelectedApp(input.target.app)
+          : checkEvent(input.target.app, input.target.event)
+      ).pipe(Effect.andThen(() => backend.subscribeEvent(input))),
     // Stopping a subscription needs only the app; a grant narrowed since may still clean up.
     unsubscribeEvent: (input) =>
       authority.pipe(
         Effect.flatMap((policy) =>
-          refuse(permitsApp(policy, input.app) ? undefined : { reason: "app", app: input.app }),
+          refuse(
+            input.app === null || permitsApp(policy, input.app)
+              ? undefined
+              : { reason: "app", app: input.app },
+          ),
         ),
         Effect.andThen(() => backend.unsubscribeEvent(input)),
       ),

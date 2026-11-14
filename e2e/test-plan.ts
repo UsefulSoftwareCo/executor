@@ -7540,6 +7540,17 @@ export const scenarios = plan({
       local: na("Local uses PGlite, not this PostgreSQL pool."),
     },
   },
+  cloudDatabaseConnectionRepeat: {
+    fixtures: "actors",
+    file: "cloud-database-placement.spec.ts",
+    title:
+      "Cloud's database pool runs a statement whose connection the far end dropped once more on a fresh connection, unless it may have changed data or is in a transaction",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host uses PGlite, not this PostgreSQL pool."),
+      local: na("Local uses PGlite, not this PostgreSQL pool."),
+    },
+  },
   toolCallBatch: {
     fixtures: "actors",
     file: "tool-call-batch.spec.ts",
@@ -9297,7 +9308,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "mcp-events.spec.ts",
     title:
-      "an MCP client lists app events, subscribes with a verified webhook and receives signed, retried, filtered deliveries until it unsubscribes or loses access",
+      "an MCP client lists the one event every caller is offered, subscribes to an app's event with a verified webhook and receives signed, retried, filtered deliveries until it unsubscribes or loses access",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -9337,11 +9348,22 @@ export const scenarios = plan({
       local: na("This scenario uses hosted personal access token and webhook routes."),
     },
   },
+  mcpEventSelections: {
+    fixtures: "actors",
+    file: "mcp-events-selections.spec.ts",
+    title:
+      "the one listed event selects every app's events, one app's or one event's with its filters, as separate subscriptions whose deliveries name their app and event, including an app deployed after subscribing",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted personal access token and webhook routes."),
+    },
+  },
   mcpEventGrants: {
     fixtures: "actors",
     file: "mcp-events-grants.spec.ts",
     title:
-      "an OAuth grant selects an app's events beside its tools, all by default or by name, and selecting none hides them, refuses subscribing and stops its deliveries",
+      "an OAuth grant selects an app's events beside its tools, all by default or by name, and selecting none refuses subscribing and stops its deliveries, while a selection of every app keeps delivering the apps the grant still includes",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -9351,7 +9373,7 @@ export const scenarios = plan({
   localMcpEvents: {
     file: "local-mcp-events.spec.ts",
     title:
-      "local delivers MCP events to a verified loopback receiver, retries a refused delivery and stops after unsubscribing",
+      "local delivers MCP events to a verified loopback receiver, retries a refused delivery, stops after unsubscribing and delivers a selection of every app with each event's app and name",
     targets: {
       local: scheduled,
       "self-host": na("Self-host and Cloud cover events in the MCP events scenarios."),
@@ -9657,35 +9679,6 @@ export const scenarios = plan({
     title: "Cloud onboarding skip experiment skippable still skips both steps to the dashboard",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
-  // The v1 check reads the emulated v1 database only a managed local Cloud has, and its
-  // scenarios write that database; deployed stages leave the check off.
-  v1SignInStop: {
-    file: "cloud-v1-sign-in.spec.ts",
-    title:
-      "Cloud sign-in keeps a new v1 organization member on v1 and fails closed while WorkOS is unavailable",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1SignInInvited: {
-    file: "cloud-v1-sign-in.spec.ts",
-    title:
-      "Cloud sign-in keeps a new v1 organization member who joins an invited team from creating another, and fails closed while WorkOS is unavailable",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1SignInExisting: {
-    file: "cloud-v1-sign-in.spec.ts",
-    title: "Cloud sign-in skips the v1 check for accounts from before it and for v2 team members",
-    targets: {
-      ...cloudOnboarding,
-      // Backdating an account writes the managed Cloud's own database.
-      cloud: managedCloud,
-    },
-  },
-  v1SignInEmpty: {
-    file: "cloud-v1-sign-in.spec.ts",
-    title:
-      "Cloud sign-in admits members of only empty free or moved v1 organizations, keeps members of paid or nonempty ones on v1, and fails closed while v1's database is unavailable",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
   // The import reads the emulated v1 WorkOS, Vault and database only a managed local Cloud has.
   v1ImportRun: {
     file: "cloud-v1-import.spec.ts",
@@ -9727,6 +9720,47 @@ export const scenarios = plan({
     file: "cloud-v1-session-handoff.spec.ts",
     title:
       "Cloud v1 import opens v2 sign-in without a session for a handoff with a wrong signature, an expired or too long-lived token, another audience or version, a WorkOS user the import never mapped, or a member who has left the organization",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ShutdownMcpUrls: {
+    fixtures: "actors",
+    file: "cloud-v1-shutdown.spec.ts",
+    title:
+      "Cloud's edge serves v1's MCP URLs after v1 shuts down: discovery names each URL and v2's issuer, an AuthKit token or none gets that URL's challenge, a v2 grant signed in for a v1 slug reaches the organization it moved to though its v2 slug differs and another team holds the v1 slug, merged organizations' slugs and the org_ id reach the same one, and an unknown slug, a non-member and a key that names no organization are refused",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ShutdownToolkitUrls: {
+    fixtures: "actors",
+    file: "cloud-v1-shutdown.spec.ts",
+    title:
+      "Cloud's edge serves v1's toolkit URLs after v1 shuts down: a grant signed in for one is bound to the caller's own copy, with or without the organization in the URL, a key there is narrowed to the copy, a member without a copy is refused, and another grant is sent to sign in for the toolkit",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ShutdownSdkSignIn: {
+    fixtures: "actors",
+    file: "cloud-v1-shutdown.spec.ts",
+    title:
+      "An MCP SDK client holding AuthKit's registration and tokens for a v1 URL rediscovers v2's authorization server once it is refused, signs in there once and lists its tools",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ShutdownConsentPage: {
+    fixtures: "actors",
+    file: "cloud-v1-shutdown.spec.ts",
+    title:
+      "A person approves a client for one of v1's MCP URLs on Cloud's consent page in the browser, and the grant lists the URL's tools",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ShutdownEdgePages: {
+    fixtures: "actors",
+    file: "cloud-v1-shutdown.spec.ts",
+    title:
+      "Cloud's edge serves v1's client ID metadata documents byte for byte and the site's own terms, privacy and Google OAuth pages after v1 shuts down, redirects v1's dashboards to the organizations they moved to and v1's sign-in to v2's, shows a page for a connected-account sign-in v1 started, and answers 410 for the rest of v1's API",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
+  v1ShutdownApiKeyCapture: {
+    file: "cloud-v1-shutdown.spec.ts",
+    title:
+      "Cloud validates a v1 WorkOS API key it does not hold against v1's WorkOS on its first use, stores it as a native key of its owner pinned to the organization it moved to, and then serves it on v1's URLs, v2's MCP and v2's API with WorkOS refusing every call; an unknown key is refused and not asked about again soon, an unanswered WorkOS is a retryable 503, and a key of an organization that did not move, or one its owner deleted in v2, is not stored; the import records the organization's v1 URLs and the backfill writes them again",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ImportToolkitCalls: {
@@ -9921,7 +9955,7 @@ export const scenarios = plan({
   slowAutumnDeadlines: {
     file: "cloud-autumn-slow.spec.ts",
     title:
-      "Cloud sign-in's v1 check and the billing overview each send one Autumn read while Autumn is slow, and say they are unavailable within their own deadlines",
+      "Cloud's billing overview sends one Autumn read while Autumn is slow, and says it is unavailable within its own deadline",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   localSkills: {

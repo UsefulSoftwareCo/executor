@@ -28,7 +28,7 @@ import {
   type GrantTarget,
 } from "@executor-js/mcp-auth";
 import { ConnectionPolicy, connectionGrantPolicy } from "@executor-js/mcp-auth/connections";
-import { Clock, Context, Effect, Option, Schema } from "effect";
+import { Clock, Context, Effect, Option, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { ApiKeyId, ApiKeyMetadata } from "../contracts/api-keys.ts";
 import {
@@ -534,12 +534,31 @@ const holdsRole = (memberships: string, organization: string) =>
       ),
   });
 
-const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerRequest) =>
+/**
+ * What a host does with an API key it does not hold. It may store one another issuer vouches for
+ * as a native key (Cloud: the WorkOS keys of Executor v1, `notes/v1-shutdown.md`) and answer
+ * whether it stored it; the key is then read again and checked exactly as any native key. It fails
+ * with `AuthenticationUnavailable` when it cannot tell, which is an outage to retry, never an
+ * accepted key.
+ */
+export interface UnknownApiKeys {
+  /** Runs on the bearer check's own database client. */
+  readonly store: (
+    token: Redacted.Redacted<string>,
+  ) => Effect.Effect<boolean, AuthenticationUnavailable, SqlClient.SqlClient>;
+}
+
+const patAccess = (
+  sql: SqlClient.SqlClient,
+  token: string,
+  request: BearerRequest,
+  unknownKeys: UnknownApiKeys | undefined,
+) =>
   Effect.gen(function* () {
     const header = request.headers.get("x-executor-organization");
     yield* recordCredential({ kind: "api_key" });
     const hash = yield* storedHash(token);
-    const load = Effect.gen(function* () {
+    const read = Effect.gen(function* () {
       const rows = yield* loadPat(
         sql,
         hash,
@@ -547,12 +566,25 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
         request.organization ?? null,
         header,
       );
-      if (rows[0] === undefined) return yield* unauthorized("unknown");
-      return yield* Schema.decodeUnknownEffect(PatRow)(rows[0]).pipe(
-        Effect.mapError(() => unavailable),
+      if (rows[0] === undefined) return Option.none();
+      return Option.some(
+        yield* Schema.decodeUnknownEffect(PatRow)(rows[0]).pipe(Effect.mapError(() => unavailable)),
       );
     });
-    const first = yield* load;
+    const load = Effect.flatMap(read, (row) =>
+      Option.isSome(row) ? Effect.succeed(row.value) : Effect.fail(unauthorized("unknown")),
+    );
+    const found = yield* read;
+    // A key this deployment does not hold may be one the host stores now; it is then read again.
+    const stored =
+      Option.isNone(found) &&
+      unknownKeys !== undefined &&
+      (yield* unknownKeys.store(Redacted.make(token)).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError(() => unavailable),
+      ));
+    const first = Option.isSome(found) ? found.value : stored ? yield* load : undefined;
+    if (first === undefined) return yield* unauthorized("unknown");
     // A concurrent commit changed the key first; its committed state decides. Another change
     // again is an outage to retry, not a refused key. In a tool call's batch (StatementBatch) only
     // the first statement joins the batch; this second read runs after it, in its own snapshot.
@@ -612,6 +644,7 @@ const patAccess = (sql: SqlClient.SqlClient, token: string, request: BearerReque
 export const mcpBearerAccess = (
   origins: HostedOAuthOrigins,
   request: BearerRequest & { readonly mode?: ApprovalMode | undefined },
+  unknownKeys?: UnknownApiKeys,
 ) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -626,7 +659,7 @@ export const mcpBearerAccess = (
         access: grant.access,
       });
     }
-    const key = yield* patAccess(sql, token, request);
+    const key = yield* patAccess(sql, token, request, unknownKeys);
     const mode = request.mode ?? "model";
     return McpAccess.make({
       userId: key.userId,
@@ -693,7 +726,11 @@ export const describeMcpAccess = (access: McpAccess) =>
   });
 
 /** Executor API authority for an OAuth grant or a PAT, with the organization's slug. */
-export const apiBearerAccess = (origins: HostedOAuthOrigins, request: BearerRequest) =>
+export const apiBearerAccess = (
+  origins: HostedOAuthOrigins,
+  request: BearerRequest,
+  unknownKeys?: UnknownApiKeys,
+) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const token = bearer(request.headers);
@@ -701,7 +738,7 @@ export const apiBearerAccess = (origins: HostedOAuthOrigins, request: BearerRequ
     const access: Omit<ApiBearerAccess, "organizationSlug"> & {
       readonly organizationSlug: string | null;
     } = isApiKey(token)
-      ? yield* patAccess(sql, token, request).pipe(
+      ? yield* patAccess(sql, token, request, unknownKeys).pipe(
           Effect.map((key) => ({
             userId: key.userId,
             key: { id: key.id },

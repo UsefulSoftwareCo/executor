@@ -300,8 +300,6 @@ export const startCloudEnvironment = (input: {
       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
       CLOUD_DEV_EXTERNAL_DATABASE: "true",
       EXECUTOR_EMULATORS: JSON.stringify(reveal(fixture).services),
-      // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
-      V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
       V1_DATABASE_URL: `postgresql://${v1DatabaseReader}:${v1ReaderPassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
       V1_IMPORT_OPERATOR_TOKEN: v1ImportOperatorToken,
       // Imports freeze and cut over each organization in the emulated v1 through this login.

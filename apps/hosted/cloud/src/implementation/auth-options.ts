@@ -171,7 +171,6 @@ export const cloudAuthOptions = (
   onSignup?: (userId: string) => Promise<void>,
   onLogin?: (userId: string) => Promise<void>,
   onOperation?: (usage: NativeAuthUsage) => Promise<void>,
-  allowsOrganization?: (userId: string) => Promise<boolean>,
   grants?: GrantObservers,
   onProviderPhoto?: (refresh: ProviderPhotoRefresh) => void,
 ) => {
@@ -397,11 +396,6 @@ export const cloudAuthOptions = (
           : {
               membershipLimit: (_user, organization) => billing.memberLimit(organization.id),
             }),
-        // Team setup's v1 decision also governs Better Auth's own create endpoint, so a
-        // signed-in account that belongs on Executor v1 cannot create a v2 organization here.
-        ...(allowsOrganization === undefined
-          ? {}
-          : { allowUserToCreateOrganization: (user) => allowsOrganization(user.id) }),
         disableOrganizationDeletion: true,
         requireEmailVerificationOnInvitation: true,
         sendInvitationEmail: ({ email, id, organization }) =>

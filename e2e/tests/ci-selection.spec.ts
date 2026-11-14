@@ -10,7 +10,14 @@ import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { collectorChanged, collectorInputs } from "../collector-inputs.ts";
+import dockerReleaseConfig from "../docker-release.config.ts";
 import { lanesFor, releaseSources, releaseSuiteConfigs } from "../release-lanes.ts";
+import {
+  packagedEngineDependency,
+  packagedEngineSpecs,
+  packagedEngineUnchanged,
+  packagedEngineVariable,
+} from "../packaged-engine.ts";
 import { closureOf } from "../save-path.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -340,7 +347,8 @@ const startedBy = {
   "e2e-self-host-scale": ["self-host-inventory", "self-host-catalog"],
   "e2e-cloud": ["cloud-runners"],
   "release-docker": ["release-docker"],
-  "release-local": ["release-local"],
+  "release-local-cli": ["release-local"],
+  "release-local-desktop": ["release-local"],
 } as const;
 type E2eJob = keyof typeof startedBy;
 const e2eJobs = Object.keys(startedBy) as ReadonlyArray<E2eJob>;
@@ -402,11 +410,19 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       const run = yield* select({});
       expect(run.exitCode).toBe(0);
       expect(Object.keys(run.outputs).sort()).toEqual(
-        [...jobs, ...runnerOutputs, ...laneOutputs, "collector", "full"].sort(),
+        [
+          ...jobs,
+          ...runnerOutputs,
+          ...laneOutputs,
+          "release-docker-engine",
+          "collector",
+          "full",
+        ].sort(),
       );
       for (const job of [...jobs, ...runnerOutputs]) expect(run.outputs[job], job).not.toBe("");
       // Executor releases runs the whole release matrix on main after merge instead.
-      for (const lane of laneOutputs) expect(run.outputs[lane], lane).toBe("");
+      for (const lane of [...laneOutputs, "release-docker-engine"])
+        expect(run.outputs[lane], lane).toBe("");
       expect(run.outputs.full).toBe("true");
       expect(run.summary).toContain("Full suite: this run is not for a pull request.");
     }),
@@ -1787,10 +1803,12 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       // comparisons here, in one process, keeps this case to the few select runs below; each
       // run starts the selection program and reads the save path again (about 2 s in CI).
       const sources = yield* releaseSources;
-      const lanes = (compared: ReadonlyArray<string>) =>
-        Object.values(lanesFor(sources, compared)).map((matched) =>
-          matched.length > 0 ? "true" : "",
+      const lanes = (compared: ReadonlyArray<string>) => {
+        const matched = lanesFor(sources, compared);
+        return [matched["release-docker"], matched["release-local"]].map((files) =>
+          files.length > 0 ? "true" : "",
         );
+      };
       const cases: ReadonlyArray<readonly [ReadonlyArray<string>, readonly [string, string]]> = [
         // A file the released-image suite imports, and the image's own inputs.
         [["e2e/support/docker-release-server.ts"], ["true", ""]],
@@ -1873,6 +1891,158 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       );
       expect(runs[0]!.summary).toContain("release-local: skipped, no file it reads changed.");
     }),
+  );
+
+  it.effect(
+    "the release-docker lane runs the packaged engine's scenarios only for a change to what makes the image's engine differ",
+    () =>
+      Effect.gen(function* () {
+        const sources = yield* releaseSources;
+        const decide = (compared: ReadonlyArray<string>) => {
+          const matched = lanesFor(sources, compared);
+          return [matched["release-docker"], matched["release-docker-engine"]].map((files) =>
+            files.length > 0 ? "true" : "",
+          );
+        };
+        for (const file of [
+          "apps/hosted/self-host/scripts/package-runtime.ts",
+          "apps/hosted/self-host/Dockerfile",
+          "apps/hosted/self-host/workerd.json",
+          "apps/hosted/self-host/src/worker.ts",
+          "packages/sdk/src/implementation/binding-workerd-apps.ts",
+          // The image's process supervisor, which starts and stops its workerd.
+          "apps/hosted/self-host/native/main.go",
+          "apps/hosted/self-host/native/go.mod",
+          "apps/hosted/self-host/entrypoint.sh",
+          "e2e/packaged-engine.ts",
+          // A support file only the packaged engine's scenarios import, and each scenario.
+          "e2e/support/docker-workflows.ts",
+          ...packagedEngineSpecs,
+        ])
+          expect(decide([file]), file).toEqual(["true", "true"]);
+        // The image's ordinary source, a support file the rest of its suite shares, and the source
+        // lanes' own engine declaration run the lane without them.
+        for (const file of [
+          "apps/hosted/server/src/index.ts",
+          "apps/hosted/self-host/src/main.ts",
+          "e2e/support/docker-release-server.ts",
+          "e2e/tests/docker-release.spec.ts",
+          "packages/sdk/src/implementation/workerd-apps.ts",
+        ])
+          expect(decide([file]), file).toEqual(["true", ""]);
+
+        // The select job writes it, and runs them without a comparison or with one GitHub cut short.
+        const runs = yield* Effect.forEach(
+          [
+            ["apps/hosted/self-host/scripts/package-runtime.ts"],
+            ["apps/hosted/server/src/index.ts"],
+            "unknown",
+            Array.from({ length: 300 }, (_, index) => `notes/file-${index}.md`),
+          ] as const,
+          (compared) => select({ body: block("none"), compared }),
+          { concurrency: "unbounded" },
+        );
+        for (const run of runs) expect(run.exitCode, run.log).toBe(0);
+        expect(
+          runs.map((run) => [run.outputs["release-docker"], run.outputs["release-docker-engine"]]),
+        ).toEqual([
+          ["true", "true"],
+          ["true", ""],
+          ["true", "true"],
+          ["true", "true"],
+        ]);
+        expect(runs[0]!.summary).toContain(
+          "release-docker runs the packaged engine's scenarios, for apps/hosted/self-host/scripts/package-runtime.ts.",
+        );
+        expect(runs[1]!.summary).toContain(
+          "release-docker runs without the packaged engine's scenarios",
+        );
+      }),
+  );
+
+  it.effect(
+    "a re-pinned or re-patched engine runtime runs the packaged engine's scenarios and the source engine scenarios",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const names = yield* fs.readDirectory("patches");
+        const hashed = (yield* processes.string(
+          ChildProcess.make("git", [
+            "hash-object",
+            ...guardedFiles,
+            ...names.map((name) => `patches/${name}`),
+          ]),
+        ))
+          .trim()
+          .split("\n");
+        const guarded = hashed.slice(0, guardedFiles.length),
+          blobs = hashed.slice(guardedFiles.length);
+        const runtimePatch = `${packagedEngineDependency.replace("/", "%2F")}@`;
+        expect(names.some((name) => name.startsWith(runtimePatch))).toBe(true);
+        // Main as this checkout, except for the blob ID it lists for the runtime's patch.
+        const patches = names
+          .map(
+            (name, index) =>
+              `${name.startsWith(runtimePatch) ? "0".repeat(40) : blobs[index]} ${name}`,
+          )
+          .join("\n");
+        const run = yield* select({
+          body: block("none"),
+          compared: [`patches/${names.find((name) => name.startsWith(runtimePatch))}`],
+          main: {
+            "package.json": yield* fs.readFileString("package.json"),
+            patches,
+            ...guardedListings(guarded),
+          },
+        });
+        expect(run.exitCode, run.log).toBe(0);
+        expect(run.outputs["release-docker-engine"], run.summary).toBe("true");
+        expect(run.summary).toContain(
+          `release-docker runs the packaged engine's scenarios, for ${packagedEngineDependency}'s pin or patch.`,
+        );
+        expect(run.summary).toContain(
+          "A dependency patch differs from main, so its guards run: mcp-protocol-versions.spec.ts, local-workflow-engine-steps.spec.ts, local-workflow-engine-memory.spec.ts, workflow-durability.spec.ts",
+        );
+      }),
+  );
+
+  it.effect(
+    "no single edit to the image suite's include or exclude, the engine list or the lane variable leaves a packaged engine scenario out of main's paced check without failing here",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const included = dockerReleaseConfig.test?.include ?? [];
+        // Every engine scenario on disk is one the lane chooses by its inputs, so a new one cannot
+        // run unconditionally on pull requests by being left out of the list, and each is in the
+        // image suite's include, which main's paced check and every release run in full.
+        const onDisk = (yield* fs.readDirectory("e2e/tests"))
+          .filter((name) =>
+            /^docker-release-workflow-.*\.spec\.ts$|^workflow-engine\.spec\.ts$/.test(name),
+          )
+          .map((name) => `e2e/tests/${name}`)
+          .sort();
+        expect([...packagedEngineSpecs].sort()).toEqual(onDisk);
+        for (const spec of packagedEngineSpecs) expect(included, spec).toContain(spec);
+        // Without the lane's variable, as on main and in every release run, nothing is excluded:
+        // an exclude that drops a scenario unconditionally drops it from the paced check too.
+        expect(dockerReleaseConfig.test?.exclude ?? []).toEqual([]);
+        expect(process.env[packagedEngineVariable]).toBeUndefined();
+        // Every released-image spec file on disk is in that include: dropping one from it drops
+        // it from both, so it also needs the file deleted.
+        for (const name of yield* fs.readDirectory("e2e/tests"))
+          if (/^docker-(?:release|oauth)/.test(name) || name === "workflow-engine.spec.ts")
+            expect(included, name).toContain(`e2e/tests/${name}`);
+        // Only CI's release-docker lane can leave them out, by the select output; no release run.
+        expect(yield* fs.readFileString(".github/workflows/release-artifacts.yml")).not.toContain(
+          packagedEngineVariable,
+        );
+        const checks = yield* fs.readFileString(".github/workflows/checks.yml");
+        expect(checks.split(packagedEngineVariable).length - 1).toBe(1);
+        expect(checks).toContain(
+          `${packagedEngineVariable}: \${{ needs.select.outputs.release-docker-engine == '' && '${packagedEngineUnchanged}' || 'changed' }}`,
+        );
+      }),
   );
 
   it.effect(
@@ -2001,6 +2171,287 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "notSuiteInputs in e2e/release-lanes.ts lists files the released-image suite no longer imports: e2e/test-plan.ts. Remove them.",
       );
     }),
+  );
+
+  it.effect(
+    "a build run narrows to named targets and job kinds; a check or a publication refuses to",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-narrow-" });
+        const metadata = (env: Readonly<Record<string, string>>) =>
+          Effect.gen(function* () {
+            const output = path.join(directory, crypto.randomUUID());
+            yield* fs.writeFileString(output, "");
+            const child = yield* processes.spawn(
+              ChildProcess.make("node", ["scripts/releases/workflow.ts"], {
+                env: {
+                  GITHUB_OUTPUT: output,
+                  GITHUB_EVENT_NAME: "workflow_dispatch",
+                  GITHUB_REF: "refs/heads/main",
+                  RELEASE_NOTARIZE: "false",
+                  ...env,
+                },
+                extendEnv: true,
+              }),
+            );
+            const [log, exitCode] = yield* Effect.all(
+              [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+              { concurrency: "unbounded" },
+            );
+            const values = Object.fromEntries(
+              (yield* fs.readFileString(output))
+                .split("\n")
+                .filter((line) => line !== "")
+                .map((line) => [
+                  line.slice(0, line.indexOf("=")),
+                  line.slice(line.indexOf("=") + 1),
+                ]),
+            ) as Record<string, string>;
+            const names = (key: string) =>
+              values[key] === undefined
+                ? []
+                : (
+                    JSON.parse(values[key]) as { include: ReadonlyArray<Record<string, string>> }
+                  ).include
+                    .map((entry) =>
+                      entry.platform === undefined ? entry.arch : `${entry.platform}-${entry.arch}`,
+                    )
+                    .sort();
+            return {
+              exitCode,
+              log,
+              run: ["local", "checks", "cli", "recovery", "docker"].filter(
+                (kind) => values[`run_${kind}`] === "true",
+              ),
+              narrowed: values.narrowed,
+              cli: names("cli_matrix"),
+              local: names("local_matrix"),
+              docker: names("docker_matrix"),
+              recovery: names("recovery_matrix"),
+              macosArm64: values.macos_arm64,
+            };
+          }).pipe(Effect.scoped);
+
+        // One kind on one target: only its matrix has entries, and only it runs.
+        const cli = yield* metadata({
+          RELEASE_CHANNEL: "build",
+          RELEASE_TARGETS: "win32-x64",
+          RELEASE_JOBS: "cli",
+        });
+        expect(cli.exitCode, cli.log).toBe(0);
+        expect(cli).toMatchObject({
+          narrowed: "true",
+          run: ["cli"],
+          cli: ["win32-x64", "win32-x64"],
+          local: [],
+          docker: [],
+          recovery: [],
+          macosArm64: "false",
+        });
+        // Targets narrow every kind, the image's architectures included; a kind the target does
+        // not have, such as Linux arm64's installed CLI suite, runs nothing.
+        const arm = yield* metadata({ RELEASE_CHANNEL: "build", RELEASE_TARGETS: "linux-arm64" });
+        expect(arm.exitCode, arm.log).toBe(0);
+        expect(arm).toMatchObject({
+          run: ["local", "checks", "recovery", "docker"],
+          cli: [],
+          local: ["linux-arm64"],
+          docker: ["arm64"],
+        });
+        // An unnarrowed build runs every kind on every target.
+        const full = yield* metadata({ RELEASE_CHANNEL: "build" });
+        expect(full).toMatchObject({
+          narrowed: "false",
+          run: ["local", "checks", "cli", "recovery", "docker"],
+          docker: ["amd64", "arm64"],
+          macosArm64: "true",
+        });
+
+        // A check and a publication always run everything: narrowing them is refused.
+        for (const channel of ["check", "beta", "latest"]) {
+          const refused = yield* metadata({ RELEASE_CHANNEL: channel, RELEASE_JOBS: "cli" });
+          expect(refused.exitCode, channel).not.toBe(0);
+          expect(refused.log).toContain(
+            `Only a build run can be narrowed to targets or jobs; a ${channel} run runs everything.`,
+          );
+        }
+        const notarized = yield* metadata({
+          RELEASE_CHANNEL: "build",
+          RELEASE_NOTARIZE: "true",
+          RELEASE_TARGETS: "darwin-arm64",
+        });
+        expect(notarized.exitCode).not.toBe(0);
+        expect(notarized.log).toContain("A notarizing build tests the notarized app");
+        // A selection that leaves every kind empty tests nothing, so it is refused.
+        for (const [targets, jobs, message] of [
+          ["win32-x64", "docker", "no docker runs on win32-x64"],
+          ["linux-arm64", "cli", "no cli runs on linux-arm64"],
+        ] as const) {
+          const empty = yield* metadata({
+            RELEASE_CHANNEL: "build",
+            RELEASE_TARGETS: targets,
+            RELEASE_JOBS: jobs,
+          });
+          expect(empty.exitCode, empty.log).not.toBe(0);
+          expect(empty.log).toContain(`This selection is empty: ${message}.`);
+        }
+        const unknown = yield* metadata({ RELEASE_CHANNEL: "build", RELEASE_JOBS: "publish" });
+        expect(unknown.exitCode).not.toBe(0);
+        expect(unknown.log).toContain("Unknown publish.");
+
+        // A narrowed build is named apart, so Beta and the red-matrix issue, which read
+        // "Executor releases (build)" as the whole matrix, do not count it, and it reports nothing.
+        const workflow = yield* fs.readFileString(".github/workflows/release-artifacts.yml");
+        expect(workflow).toContain(
+          "inputs.channel == 'build' && (inputs.targets != '' || inputs.jobs != '') && format('build, {0} on {1}'",
+        );
+        expect(workflow).toContain(
+          "(inputs.channel == 'build' && inputs.targets == '' && inputs.jobs == '')",
+        );
+      }),
+  );
+
+  it.effect(
+    "a release run requires every job kind unless a narrowed build left it out, and checks the CLI's signature before anything publishes",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const workflow = yield* fs.readFileString(".github/workflows/release-artifacts.yml");
+        const lines = workflow.split("\n");
+        // The releases job's script, run as its step runs it.
+        const start = lines.indexOf("  releases:");
+        const run = lines.findIndex((line, index) => index > start && line === "        run: |");
+        const script = lines
+          .slice(run + 1)
+          .filter((line, index, rest) => rest.slice(0, index + 1).every((l) => /^ {10}|^$/.test(l)))
+          .map((line) => line.slice(10))
+          .join("\n");
+        const kinds = ["local", "checks", "recovery", "cli", "docker"] as const;
+        const gateWith = (narrowed: boolean, skipped: (typeof kinds)[number]) =>
+          Effect.gen(function* () {
+            const outputs = {
+              narrowed: String(narrowed),
+              macos_arm64: "false",
+              notarize: "false",
+              publish: "false",
+              ...Object.fromEntries(kinds.map((kind) => [`run_${kind}`, String(kind !== skipped)])),
+            };
+            const needs = {
+              pace: { result: "skipped", outputs: {} },
+              metadata: { result: "success", outputs },
+              "git-sources": { result: "success", outputs: {} },
+              "bun-runtime": { result: "success", outputs: {} },
+              "local-macos-arm64": { result: "skipped", outputs: {} },
+              "recovery-notarized": { result: "skipped", outputs: {} },
+              archives: { result: "success", outputs: {} },
+              publish: { result: "skipped", outputs: {} },
+              ...Object.fromEntries(
+                kinds.map((kind) => [
+                  kind,
+                  { result: kind === skipped ? "skipped" : "success", outputs: {} },
+                ]),
+              ),
+            };
+            const child = yield* processes.spawn(
+              ChildProcess.make("bash", ["-e", "-c", script], {
+                env: { NEEDS: JSON.stringify(needs), CHECK: "false" },
+                extendEnv: true,
+              }),
+            );
+            const [log, exitCode] = yield* Effect.all(
+              [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+              { concurrency: "unbounded" },
+            );
+            return { log, exitCode };
+          }).pipe(Effect.scoped);
+        for (const kind of kinds) {
+          // A whole-matrix run whose kind came out empty and was skipped fails.
+          const whole = yield* gateWith(false, kind);
+          expect(whole.exitCode, `${kind}: ${whole.log}`).toBe(1);
+          expect(whole.log).toContain(`::error::${kind}: needed, but skipped`);
+          // A narrowed build that left it out passes.
+          const narrowed = yield* gateWith(true, kind);
+          expect(narrowed.exitCode, `${kind}: ${narrowed.log}`).toBe(0);
+        }
+
+        // The CLI's own signature, on every notarizing run, after Apple accepted it and before
+        // anything publishes; the steps before it keep their names and order.
+        expect(workflow).toContain(
+          [
+            "      - name: Wait for Apple to accept the CLI's notarization",
+            "        if: runner.os == 'macOS' && github.ref == 'refs/heads/main'",
+          ].join("\n"),
+        );
+        const step = workflow.indexOf(
+          "      - name: Verify the CLI executable's Developer ID signature",
+        );
+        expect(step).toBeGreaterThan(
+          workflow.indexOf("Wait for Apple to accept the CLI's notarization"),
+        );
+        expect(workflow.slice(step).split("\n").slice(1, 2)).toEqual([
+          "        if: needs.metadata.outputs.notarize == 'true' && runner.os == 'macOS'",
+        ]);
+        const body = workflow.slice(step, workflow.indexOf("\n      - ", step + 1));
+        expect(body).toContain('codesign --verify --strict --verbose=2 "$executable"');
+        expect(body).toContain("grep -q '^Authority=Developer ID Application: '");
+      }),
+  );
+
+  it.effect(
+    "a release run from a branch other than main uses no environment and no secret but its own token",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const onMain = "github.ref == 'refs/heads/main'";
+        // The release workflow and every workflow it calls.
+        const pending = [".github/workflows/release-artifacts.yml"];
+        const read: Array<string> = [];
+        while (pending.length > 0) {
+          const file = pending.pop()!;
+          if (read.includes(file)) continue;
+          read.push(file);
+          const text = yield* fs.readFileString(file);
+          for (const match of text.matchAll(/uses: \.\/(\.github\/workflows\/[\w.-]+\.ya?ml)/g))
+            pending.push(match[1]!);
+          // A called workflow gets no secret but those named, and none is named here.
+          expect(text, file).not.toMatch(/secrets:\s*inherit/);
+          for (const [index, line] of text.split("\n").entries()) {
+            const where = `${file}:${index + 1}: ${line.trim()}`;
+            // The release environment, only on main: its name is empty on any other ref.
+            const environment = /^\s*environment:\s*(.*)$/.exec(line);
+            if (environment !== null)
+              expect(environment[1], where).toBe(`\${{ ${onMain} && 'release' || '' }}`);
+            // Every secret but the run's own token is read alone, and only when the ref is main.
+            for (const expression of line.matchAll(/\$\{\{(.*?)\}\}/g)) {
+              const named = [...expression[1]!.matchAll(/secrets\.(\w+)/g)].map((m) => m[1]!);
+              if (named.every((name) => name === "GITHUB_TOKEN")) continue;
+              expect(expression[1]!.trim(), where).toMatch(
+                /^github\.ref == 'refs\/heads\/main' && (?:runner\.os == 'macOS' && )?secrets\.\w+ \|\| ''$/,
+              );
+            }
+            expect(line.replace(/\$\{\{.*?\}\}/g, ""), where).not.toContain("secrets.");
+          }
+        }
+        expect(read).toContain(".github/workflows/bun-runtime.yml");
+        // Only main's runs sign the macOS CLI or wait for Apple.
+        const release = yield* fs.readFileString(".github/workflows/release-artifacts.yml");
+        // Exactly these commands: on main, and only on main, macOS signs (local also notarizes).
+        const lines = release.split("\n").map((entry) => entry.trim());
+        expect(lines).toContain(
+          'if [[ "$RUNNER_OS" == macOS && "$GITHUB_REF" == refs/heads/main ]]; then bun run release:cli --notarize --submission="$RUNNER_TEMP/cli-notarization"; else bun run release:cli; fi',
+        );
+        expect(lines).toContain(
+          'if [[ "$RUNNER_OS" == macOS && "$GITHUB_REF" == refs/heads/main ]]; then bun run release:cli --sign; else bun run release:cli; fi',
+        );
+        expect(lines.filter((entry) => entry.includes("release:cli --"))).toHaveLength(2);
+        expect(release).toContain(
+          "      - name: Wait for Apple to accept the CLI's notarization\n        if: runner.os == 'macOS' && github.ref == 'refs/heads/main'\n",
+        );
+      }),
   );
 
   it.effect("a check tests Linux x64 and the image; publishing and builds test everything", () =>
@@ -2153,33 +2604,34 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               .flatMap((line) => /^ {6}- name: (.+)$/.exec(line)?.[1] ?? []);
           });
         const own = "Read the release identity";
-        /**
-         * The local release job's steps with the checks job's tests where local ran them, after
-         * staging the apps package: release-local runs both jobs' steps for Linux x64, in one job.
-         */
-        const localAndChecks = Effect.gen(function* () {
-          const local = yield* steps(".github/workflows/release-artifacts.yml", "local");
-          const checks = yield* steps(".github/workflows/release-artifacts.yml", "checks");
-          const staged = local.indexOf("Stage the apps package") + 1;
-          const tests = checks.slice(checks.indexOf("Stage the apps package") + 1);
-          return [...local.slice(0, staged), ...tests, ...local.slice(staged)];
-        });
+        // Each lane job runs one release job's steps for Linux x64 or amd64, less those listed.
         const lanes = [
           ["release-docker", "docker", ["Push the tested architecture without moving a channel"]],
           [
-            "release-local",
+            "release-local-cli",
+            "checks",
+            [
+              // For publication: the archives job compares it with the cli and local jobs'.
+              "Record the tested archive's digest",
+              // Windows and macOS only.
+              "Install Chromium on desktop runners",
+              "Smoke-test the installed CLI",
+            ],
+          ],
+          [
+            "release-local-desktop",
             "local",
             [
               // Windows and macOS only, or the check of a target without the packaged tests.
               "Diagnose Windows npm archive failure",
               "Install Chromium on desktop runners",
-              "Smoke-test the installed CLI",
               "Sign and notarize public macOS installers",
               "Verify macOS installer and update archive",
               "Verify the macOS update archive keeps a valid signature",
               "Verify Windows long-path support survives both packages",
               "Verify Apple signing and notarization",
               "Wait for Apple to accept the CLI's notarization",
+              "Verify the CLI executable's Developer ID signature",
               // For publication: the archives job compares it with the cli and checks jobs'.
               "Record the published archive's digest",
               // The archives job compares it with the recovery parts' apps, which this lane lacks.
@@ -2192,10 +2644,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         for (const [lane, job, omitted] of lanes) {
           const ran = yield* steps(".github/workflows/checks.yml", lane);
           expect(ran, lane).toContain(own);
-          const released =
-            job === "local"
-              ? yield* localAndChecks
-              : yield* steps(".github/workflows/release-artifacts.yml", job);
+          const released = yield* steps(".github/workflows/release-artifacts.yml", job);
           for (const name of omitted) expect(released, `${job} still has ${name}`).toContain(name);
           expect(
             ran.filter((name) => name !== own),
@@ -2276,6 +2725,46 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         );
         expect(failing[5]!.log).toContain(
           "::error::select: failure, so the E2E jobs did not run its selection",
+        );
+      }),
+  );
+  it.effect(
+    "the e2e check fails when either release-local job of a selected lane fails, is cancelled or is skipped",
+    () =>
+      Effect.gen(function* () {
+        const outputs = { "release-local": "true" };
+        const results = (change: Partial<Record<E2eJob, string>> = {}) =>
+          ({
+            ...Object.fromEntries(
+              e2eJobs.map((job) => [job, chosen(outputs, job) ? "success" : "skipped"]),
+            ),
+            ...change,
+          }) as Record<E2eJob, string>;
+        // The lane is two jobs, and selecting it selects both.
+        expect(e2eJobs.filter((job) => chosen(outputs, job))).toEqual([
+          "release-local-cli",
+          "release-local-desktop",
+        ]);
+        const passed = yield* gate({ result: "success", outputs }, results());
+        expect(passed.exitCode, passed.log).toBe(0);
+        for (const job of ["release-local-cli", "release-local-desktop"] as const)
+          for (const result of ["failure", "cancelled", "skipped"]) {
+            const run = yield* gate({ result: "success", outputs }, results({ [job]: result }));
+            expect(run.exitCode, `${job} ${result}: ${run.log}`).toBe(1);
+            expect(run.log).toContain(`::error::${job}: selected, but ${result}`);
+          }
+        // Unselected, both must be skipped: one that ran anyway fails the check too.
+        const unselected = yield* gate(
+          { result: "success", outputs: {} },
+          {
+            ...results(),
+            "release-local-cli": "skipped",
+            "release-local-desktop": "success",
+          },
+        );
+        expect(unselected.exitCode, unselected.log).toBe(1);
+        expect(unselected.log).toContain(
+          "::error::release-local-desktop: not selected, but success",
         );
       }),
   );
@@ -2559,9 +3048,10 @@ layer(NodeServices.layer)("Release check after a push to main", (it) => {
         const text = yield* fs.readFileString(".github/workflows/release-artifacts.yml");
         // A check is the repository dispatch release-check.yml sends, and runs on main alone.
         expect(text).toContain("  repository_dispatch:\n    types: [release-check]\n");
-        // beta-due.ts and matrix-issue.sh tell a build by its title.
+        // beta-due.ts and matrix-issue.sh tell a build by its title; a narrowed build is named
+        // apart from it.
         expect(text).toContain(
-          "run-name: Executor releases (${{ github.event_name == 'repository_dispatch' && 'check' || inputs.channel }})",
+          "run-name: Executor releases (${{ github.event_name == 'repository_dispatch' && 'check' || inputs.channel == 'build' && (inputs.targets != '' || inputs.jobs != '') && format('build, {0} on {1}', inputs.jobs || 'every job', inputs.targets || 'every target') || inputs.channel }})",
         );
         expect(text).toContain("        options: [build, beta, latest]");
         for (const job of ["pace", "metadata", "releases", "report"])

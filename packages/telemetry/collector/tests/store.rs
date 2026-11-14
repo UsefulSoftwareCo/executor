@@ -1,5 +1,6 @@
 //! The store: resent and changed spans, trace summaries, resource references, that an export is
-//! all or nothing, and which files it refuses. `process.rs` interrupts a real first start.
+//! all or nothing, and creating a new file. `retention.rs` covers a file of another format or
+//! application. `process.rs` interrupts a real first start.
 
 use std::path::PathBuf;
 
@@ -442,49 +443,4 @@ fn a_new_file_is_created_with_this_format() {
     );
     drop(connection);
     store::open(&scratch.database()).expect("reopens");
-}
-
-#[test]
-fn a_store_of_another_format_or_shape_is_refused_and_left_alone() {
-    for (name, setup, message) in [
-        (
-            "newer",
-            format!("PRAGMA user_version = {};", FORMAT + 1),
-            "newer",
-        ),
-        (
-            "foreign",
-            "CREATE TABLE other (x);".to_owned(),
-            "not a telemetry store",
-        ),
-        (
-            "altered",
-            "DROP INDEX spans_start;".to_owned(),
-            "do not match",
-        ),
-    ] {
-        let scratch = Scratch::new(name);
-        drop(store::open(&scratch.database()).expect("creates"));
-        if name == "foreign" {
-            std::fs::remove_file(scratch.database()).expect("remove");
-            let _ = std::fs::remove_file(scratch.database().with_extension("sqlite-wal"));
-            let _ = std::fs::remove_file(scratch.database().with_extension("sqlite-shm"));
-        }
-        let raw = Connection::open(scratch.database()).expect("raw");
-        raw.execute_batch(&setup).expect("setup");
-        let tables = count(&raw, "SELECT count(*) FROM sqlite_schema");
-        let version = count(&raw, "PRAGMA user_version");
-        drop(raw);
-        let error = store::open(&scratch.database()).expect_err("refused");
-        assert!(error.contains(message), "{name}: {error}");
-        let raw = Connection::open(scratch.database()).expect("raw");
-        assert_eq!(
-            (
-                count(&raw, "SELECT count(*) FROM sqlite_schema"),
-                count(&raw, "PRAGMA user_version")
-            ),
-            (tables, version),
-            "{name}: the file changed"
-        );
-    }
 }

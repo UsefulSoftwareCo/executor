@@ -5,6 +5,7 @@ import {
   authOptions,
   recordCaller,
   type HostedOAuthOrigins,
+  type UnknownApiKeys,
   mcpBrowserGrantError,
   describeMcpAccess,
   mcpBearerAccess,
@@ -22,6 +23,7 @@ import {
   v1ForwardAccess,
   v1ForwardBrowserAccess,
 } from "../implementation/v1-mcp-forward.ts";
+import { legacyToolkitAccess } from "../implementation/v1-legacy-mcp.ts";
 import { organizationTables } from "./app-sessions.ts";
 import { AuthDatabase, type AuthDatabaseService } from "./auth-database.ts";
 import { invocationSql } from "./invocation-database.ts";
@@ -87,6 +89,8 @@ export const mcpAuthentication = (
   bound: Effect.Effect<readonly [{ readonly api: McpGrantApi }, <A>(run: () => A) => A]>,
   withSql: <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) => Effect.Effect<A, E>,
   v1Forward: Option.Option<Redacted.Redacted<string>>,
+  /** Executor v1's WorkOS keys, stored the first time one is seen (`v1-captured-api-keys.ts`). */
+  unknownKeys?: UnknownApiKeys,
 ) =>
   Layer.effect(
     McpAuthentication,
@@ -95,9 +99,13 @@ export const mcpAuthentication = (
         ...origins,
         authenticate: (headers, mode, organization) =>
           withSql(
-            isV1Forward(headers)
+            (isV1Forward(headers)
               ? v1ForwardAccess(v1Forward, { headers, mode, organization })
-              : mcpBearerAccess(origins, { headers, mode, organization }),
+              : mcpBearerAccess(origins, { headers, mode, organization }, unknownKeys)
+            ).pipe(
+              // A request the edge rewrote from a v1 toolkit URL serves the caller's own copy.
+              Effect.flatMap((access) => legacyToolkitAccess(headers, access)),
+            ),
           ).pipe(
             Effect.tap(({ access, userId }) => recordCaller(access.organization, userId)),
             Effect.withSpan("auth.authenticate"),

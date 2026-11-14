@@ -18,6 +18,8 @@ export const resourceOriginsAtom = Atom.make<ResourceOrigins | null>(null).pipe(
       Schema.Struct({
         mcp: Schema.NonEmptyArray(Schema.String),
         api: Schema.NonEmptyArray(Schema.String),
+        // Consent for one of Executor v1's MCP URLs needs it after hydration (`legacyMcpTarget`).
+        legacyMcp: Schema.optional(Schema.String),
       }),
     ),
   }),

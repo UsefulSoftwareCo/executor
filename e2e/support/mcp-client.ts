@@ -27,6 +27,8 @@ const make = Effect.gen(function* () {
         readonly whileApproving?: Effect.Effect<void, unknown>;
         /** Another origin that serves the product's MCP endpoint, such as a Cloud role host. */
         readonly origin?: string;
+        /** Another MCP path than `/mcp`, such as one of Executor v1's URLs Cloud's edge serves. */
+        readonly path?: string;
       } = {},
     ) =>
       Effect.gen(function* () {
@@ -141,7 +143,9 @@ const make = Effect.gen(function* () {
               );
             }),
           );
-        const endpoint = new URL(`${options.origin ?? target.metadata.origin}/mcp`);
+        const endpoint = new URL(
+          `${options.origin ?? target.metadata.origin}${options.path ?? "/mcp"}`,
+        );
         if (options.connection !== undefined)
           endpoint.searchParams.set("connection", options.connection);
         if (options.mode !== undefined) endpoint.searchParams.set("elicitation_mode", options.mode);

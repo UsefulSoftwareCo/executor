@@ -42,6 +42,10 @@ import { cloudOrigin, productionStage, stageName } from "./src/infrastructure/st
 import { AppCatalog } from "./src/infrastructure/app-catalog.ts";
 import { productionOAuthProxyCheck } from "./src/infrastructure/deploy-settings.ts";
 import { testStageEdge, testStageRoleHostRecords } from "./src/infrastructure/role-hosts.ts";
+import {
+  ExecutorShHostnameProvider,
+  executorShHostname,
+} from "./src/infrastructure/executor-sh.ts";
 
 /** Every Worker the stack deploys. `scripts/worker-builds.ts` builds the same layers. */
 export const cloudWorkers = Layer.mergeAll(
@@ -66,6 +70,7 @@ export default Alchemy.Stack(
       Cloudflare.providers(),
       Command.providers(),
       AppDomainLifecycleProvider(),
+      ExecutorShHostnameProvider(),
       // No PlanetScale resources or credentials are needed for local cloud development.
       Docker.providers(),
       Layer.unwrap(
@@ -90,12 +95,14 @@ export default Alchemy.Stack(
     yield* authEmailInfrastructure.pipe(Effect.orDie);
     const api = yield* Api;
     if (!(yield* AlchemyContext).dev) {
-      yield* Marketing;
+      const marketing = yield* Marketing;
       yield* testStageRoleHostRecords;
       // Production serves the official app feed every deployed stage reads.
       if (Option.getOrUndefined(yield* stageName) === productionStage) yield* AppCatalog;
       // A test stage plays v1's edge itself; production's edge is v1's.
-      if (Option.isSome(yield* testStageEdge)) yield* Edge;
+      const edge = Option.isSome(yield* testStageEdge) ? yield* Edge : undefined;
+      // Who serves `executor.sh` (`CLOUD_EXECUTOR_SH`): v1 unless switched to the gateway.
+      yield* executorShHostname({ gateway: marketing.workerName, edge: edge?.workerName });
     }
     const appBase = yield* cloudAppUiBase.pipe(Effect.orDie);
     if (appBase !== undefined) {

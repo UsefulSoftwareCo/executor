@@ -113,7 +113,7 @@ is a development build. The release workflow fetches the runtime from the
 patch changed.
 
 A pull request that changes the lockdown patch has no runtime release yet, so CI's
-`release-local` lane fails and names the command that builds one from its branch:
+`release-local` lane (both its jobs) fails and names the command that builds one from its branch:
 `gh workflow run bun-runtime.yml --ref <branch> -f publish=true`, which anyone with
 write access can run. The release is named by the Bun version and the patch hash
 only, so main's runs, publishing ones included, use it from then on. If the

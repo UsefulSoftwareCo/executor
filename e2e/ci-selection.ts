@@ -57,6 +57,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createHash } from "node:crypto";
 import { collectorChanged } from "./collector-inputs.ts";
 import { lanesFor, releaseSources } from "./release-lanes.ts";
+import { packagedEngineDependency } from "./packaged-engine.ts";
 import { savePathFiles } from "./save-path.ts";
 import { Target } from "./report-model.ts";
 import { exactly, split } from "./scenario-parts.ts";
@@ -163,18 +164,16 @@ const jobs = {
     runner: 1,
 
     pattern:
-      "Cloud app queries read current authorization|Cloud onboarding|Cloud sign-in (?:keeps a new v1|skips the v1 check|admits members of only empty free or moved v1)|Cloud OAuth callbacks|Cloud OAuth token requests record|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser failures reach error collectors|browser error reports reach Sentry while|browser telemetry stays quiet on an idle page|Browser connection failures explain|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer|refuses every stored state Better Auth refuses|Billing reconciles only while visible|A dashboard read refreshed while in flight|Cloud finishes a slow app's tool listing|Cloud remembers a stalled tool listing|Cloud keeps serving aged search rows when it stops their renewal|Cloud MCP session objects make|Cloud MCP request spans say whether|database failure while verifying an API key|use one API key together|Cloud cron wakes the schedule coordinator|schedule coordinator closes its database connections|Cloud runs a due schedule and requested webhook source setup while|app evaluation failures explain the likely cause|runtime limit matched from an app Worker|client request rejections are recorded on their request span|failure text reaches its caller|scheduled runs record whether the app's code|an app request Executor's network failed to send|an app's fetch receives a Brotli-encoded response|MCP tool calls deliver their tool name and outcome|Executor time|Owners delete an organization with every app|Hosted MCP negotiates older protocol versions|Hosted MCP ends a cancelled call|Cloud lists each build's browser files|Hosted dashboard runs of approval-gated tools|Hosted dashboard approval",
+      "Cloud app queries read current authorization|Cloud onboarding|Cloud OAuth callbacks|Cloud OAuth token requests record|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser failures reach error collectors|browser error reports reach Sentry while|browser telemetry stays quiet on an idle page|Browser connection failures explain|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer|refuses every stored state Better Auth refuses|Billing reconciles only while visible|A dashboard read refreshed while in flight|Cloud finishes a slow app's tool listing|Cloud remembers a stalled tool listing|Cloud keeps serving aged search rows when it stops their renewal|Cloud MCP session objects make|Cloud MCP request spans say whether|database failure while verifying an API key|use one API key together|Cloud cron wakes the schedule coordinator|schedule coordinator closes its database connections|Cloud runs a due schedule and requested webhook source setup while|app evaluation failures explain the likely cause|runtime limit matched from an app Worker|client request rejections are recorded on their request span|failure text reaches its caller|scheduled runs record whether the app's code|an app request Executor's network failed to send|an app's fetch receives a Brotli-encoded response|MCP tool calls deliver their tool name and outcome|Executor time|Owners delete an organization with every app|Hosted MCP negotiates older protocol versions|Hosted MCP ends a cancelled call|Cloud lists each build's browser files|Hosted dashboard runs of approval-gated tools|Hosted dashboard approval",
   },
   // The scenarios above share one local Cloud and collector, and their span and latency checks
-  // stall when more scenarios load it. These assert no such bound, so they start their own. The
-  // v1 import is here too: v1 sign-in fails the next v1 membership read on its Cloud's shared
-  // WorkOS emulator, and the import reads memberships on every request.
+  // stall when more scenarios load it. These assert no such bound, so they start their own.
   "cloud-product": {
     target: "cloud",
     runner: 3,
 
     pattern:
-      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization|A person deletes their own user|On Cloud a slow tool call log write",
+      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Cloud's database pool runs a statement whose connection|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)|Cloud validates a v1 WorkOS API key|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization|A person deletes their own user|On Cloud a slow tool call log write",
   },
   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
   // load kept the team installation's workflow span from arriving within its 30-second wait, so
@@ -183,7 +182,7 @@ const jobs = {
     target: "cloud",
     runner: 5,
     pattern:
-      "cloud role hosts serve only|a grant is for its one resource|role host resource seed|Cloud request spans name the host|Cloud sign-in explains that a passkey|Cloud connected-account sign-ins return through|Cloud serves its site for the edge|keep serving the published skills index|Apps directory on the edge reads|Cloud's API host serves the SDK|Cloud's own social sign-ins on app\\.|hosted wildcard routes trace their template|Cloud links the site's anonymous visitor",
+      "cloud role hosts serve only|a grant is for its one resource|role host resource seed|Cloud's edge serves v1|An MCP SDK client holding AuthKit|A person approves a client for one of v1's MCP URLs|Cloud request spans name the host|Cloud sign-in explains that a passkey|Cloud connected-account sign-ins return through|Cloud serves its site for the edge|keep serving the published skills index|Apps directory on the edge reads|Cloud's API host serves the SDK|Cloud's own social sign-ins on app\\.|hosted wildcard routes trace their template|Cloud links the site's anonymous visitor",
   },
   "cloud-workers": {
     target: "cloud",
@@ -244,7 +243,7 @@ const jobs = {
   "cloud-autumn": {
     target: "cloud",
     runner: 4,
-    pattern: "Cloud sign-in's v1 check and the billing overview",
+    pattern: "Cloud's billing overview sends one Autumn read while Autumn is slow",
   },
   // This counts every request in local Cloud's single session object isolate, so another
   // scenario's MCP request in flight would change its count.
@@ -624,7 +623,15 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
  * compared with main, not the pull request's base, so the top of a stack counts every layer.
  */
 const patchGuards: Readonly<Record<string, ReadonlyArray<string>>> = {
-  "@alchemy.run/cloudflare-runtime": ["mcp-protocol-versions.spec.ts"],
+  // Its workflow worker is the products' workflow engine: the local engine scenarios and the
+  // durability scenarios prove its behaviour from source, and the release-docker lane runs the
+  // image's packaged engine scenarios too (e2e/packaged-engine.ts).
+  "@alchemy.run/cloudflare-runtime": [
+    "mcp-protocol-versions.spec.ts",
+    "local-workflow-engine-steps.spec.ts",
+    "local-workflow-engine-memory.spec.ts",
+    "workflow-durability.spec.ts",
+  ],
   "@opencode-ai/codemode": [
     "mcp-catalog.spec.ts",
     "mcp-execute-concurrency.spec.ts",
@@ -664,7 +671,7 @@ const pinned = (
 const blobId = (bytes: Uint8Array) =>
   createHash("sha1").update(`blob ${bytes.byteLength}\0`).update(bytes).digest("hex");
 
-/** Guard spec files for every dependency this tree pins differently from main. */
+/** The guarded dependencies this tree pins or patches differently from main. */
 const guardedPatches = (mainManifest: string, mainPatches: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -683,11 +690,10 @@ const guardedPatches = (mainManifest: string, mainPatches: string) =>
     const headBlobs = new Map<string, string>();
     for (const path of Object.values(head.patchedDependencies ?? {}))
       if (yield* fs.exists(path)) headBlobs.set(path, blobId(yield* fs.readFile(path)));
-    return Object.entries(patchGuards).flatMap(([dependency, specs]) =>
-      pinned(main, dependency, (path) => mainBlobs.get(path)) ===
-      pinned(head, dependency, (path) => headBlobs.get(path))
-        ? []
-        : specs,
+    return Object.keys(patchGuards).filter(
+      (dependency) =>
+        pinned(main, dependency, (path) => mainBlobs.get(path)) !==
+        pinned(head, dependency, (path) => headBlobs.get(path)),
     );
   });
 
@@ -1237,7 +1243,7 @@ NodeRuntime.runMain(
     );
     // Main's pinned dependencies and patches: patch guard scenarios run when they differ. The
     // workflow names the default branch; without it there is no main to compare with.
-    const guarded =
+    const repinned =
       read === undefined || defaultBranch === ""
         ? []
         : yield* guardedPatches(
@@ -1254,6 +1260,7 @@ NodeRuntime.runMain(
               '.[] | "\\(.sha) \\(.name)"',
             ]),
           );
+    const guarded = [...new Set(repinned.flatMap((dependency) => patchGuards[dependency]!))];
     const guardedByFile =
       read === undefined || defaultBranch === ""
         ? []
@@ -1293,12 +1300,29 @@ NodeRuntime.runMain(
         ? undefined
         : compared === undefined || compared.length >= compareFileLimit
           ? { "release-docker": ["(every file)"], "release-local": ["(every file)"] }
-          : lanesFor(yield* releaseSources, compared);
+          : (({ "release-docker": docker, "release-local": local }) => ({
+              "release-docker": docker,
+              "release-local": local,
+            }))(lanesFor(yield* releaseSources, compared));
     // The collector's own job, from the same comparison: for a pull request everything since it
     // left main, so a stack's top layer covers every layer; for a push the pushed range. Without a
     // comparison, as on a manual run, or with one GitHub cut short, it runs.
     const collector =
       compared === undefined || compared.length >= compareFileLimit || collectorChanged(compared);
+    // The image's packaged engine scenarios, within the release-docker lane: when the comparison
+    // is cut short, or the pull request changes what makes that engine differ from the source
+    // lanes' (e2e/packaged-engine.ts) or re-pins or re-patches its runtime.
+    const engine =
+      read === undefined
+        ? undefined
+        : compared === undefined || compared.length >= compareFileLimit
+          ? ["(every file)"]
+          : [
+              ...lanesFor(yield* releaseSources, compared)["release-docker-engine"],
+              ...(repinned.includes(packagedEngineDependency)
+                ? [`${packagedEngineDependency}'s pin or patch`]
+                : []),
+            ];
     const files =
       named === undefined || "all" in named
         ? undefined
@@ -1414,6 +1438,7 @@ NodeRuntime.runMain(
       ...Object.entries(lanes ?? { "release-docker": [], "release-local": [] }).map(
         ([lane, matched]) => `${lane}=${matched.length > 0 ? "true" : ""}`,
       ),
+      `release-docker-engine=${(engine ?? []).length > 0 ? "true" : ""}`,
       `collector=${collector}`,
       // Line coverage is comparable only between runs of every scenario.
       `full=${files === undefined}`,
@@ -1475,6 +1500,13 @@ NodeRuntime.runMain(
               ? `${lane}: skipped, no file it reads changed.`
               : `${lane}: runs, for ${matched.slice(0, 5).join(", ")}${matched.length > 5 ? ` and ${matched.length - 5} more` : ""}.`,
           )),
+      ...(lanes === undefined || lanes["release-docker"].length === 0
+        ? []
+        : [
+            (engine ?? []).length === 0
+              ? "release-docker runs without the packaged engine's scenarios: nothing that makes the image's engine differ changed (e2e/packaged-engine.ts). Main's paced check runs them."
+              : `release-docker runs the packaged engine's scenarios, for ${engine!.slice(0, 5).join(", ")}.`,
+          ]),
       "",
       collector
         ? "collector-native: runs (e2e/collector-inputs.ts)."

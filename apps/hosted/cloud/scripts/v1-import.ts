@@ -8,8 +8,8 @@
  *              starts only as many as have room, and the command waits --pause seconds while
  *              the deployment is full. It prints the cursor after each batch; to resume a walk
  *              that stopped, pass the last one printed as --after. The bound holds v1's
- *              database, WorkOS and the compiler to a few organizations at a time, beside the v1
- *              sign-in check that reads the same database. Before raising it, watch the
+ *              database, WorkOS and the compiler to a few organizations at a time. Before
+ *              raising it, watch the
  *              `build.memory_retry` span attribute on `runtime.cloud.compiler.request` spans: it
  *              marks builds that ran out of the shared compiler's memory and were retried alone.
  *              Raise the bound only while it stays rare. Dry runs write only their reports.

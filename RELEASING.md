@@ -141,6 +141,20 @@ run. A push and a scheduled tick decide alike:
   `gh workflow run release-artifacts.yml --ref main -f channel=build`. A run still
   pacing or building holds nothing, since the publishing run tests every platform
   on the commit it publishes and publishes only when all pass.
+- A build run can be narrowed, to prove one job on one platform without paying
+  for the whole matrix (a full build costs about USD 7; the installed CLI suite
+  on Windows alone about USD 1.40):
+  `gh workflow run release-artifacts.yml --ref <branch> -f channel=build -f targets=win32-x64 -f jobs=cli`.
+  `targets` takes `linux-x64`, `linux-arm64`, `darwin-x64`, `darwin-arm64` and
+  `win32-x64`; `jobs` takes `local`, `checks`, `cli`, `recovery` and `docker`;
+  both are comma-separated, and empty means all. Its `releases` job requires only
+  what it ran, and `archives` checks the parts it ran but skips the comparison of
+  tested and published archives, which needs every packaging job. It is titled
+  `(build, <jobs> on <targets>)`, so Beta and the red-matrix issue, which read a
+  `(build)` run as the whole matrix, never count it; wait for it with that title
+  (`ci-wait --workflow "Executor releases (build, cli on win32-x64)" --dispatched`).
+  Checks, publications and notarizing builds always run everything, and refuse
+  to be narrowed.
 - When npm lists the committed version, main has commits after that version's
   `Release 2.0.0-beta.N` commit, and npm published it at least six hours ago,
   it commits `Release 2.0.0-beta.N+1` to `main` and dispatches **Executor

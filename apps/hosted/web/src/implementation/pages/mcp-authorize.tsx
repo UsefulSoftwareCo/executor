@@ -5,7 +5,12 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 import { Cause, Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
-import { grantTarget, type GrantTarget } from "@executor-js/mcp-auth/grants";
+import {
+  grantTarget,
+  legacyMcpTarget,
+  type GrantTarget,
+  type LegacyMcpPath,
+} from "@executor-js/mcp-auth/grants";
 import {
   McpConsentActions,
   McpConsentDestination,
@@ -31,7 +36,13 @@ export function McpAuthorizePage() {
   const query = page.search.slice(1),
     params = new URLSearchParams(query);
   const clientId = params.get("client_id") ?? "";
-  const target = grantTarget(resourceOrigins, params.getAll("resource"));
+  const resources = params.getAll("resource");
+  const target = grantTarget(resourceOrigins, resources);
+  // One of Executor v1's MCP URLs names its organization and toolkit itself.
+  const legacy =
+    resources.length === 1 && resources[0] !== undefined
+      ? legacyMcpTarget(resourceOrigins, resources[0])?.path
+      : undefined;
   const client = useAtomValue(mcpClientAtom(clientId));
   const organizations = useAtomValue(organizationsAtom);
   if (
@@ -51,6 +62,7 @@ export function McpAuthorizePage() {
     <McpConsent
       query={query}
       target={target}
+      legacy={legacy}
       client={client.value.client_name ?? "An application"}
       destination={consentDestination(params.get("redirect_uri"))}
       organizations={organizations.value}
@@ -61,12 +73,14 @@ export function McpAuthorizePage() {
 function McpConsent({
   query,
   target,
+  legacy,
   client,
   destination,
   organizations,
 }: {
   readonly query: string;
   readonly target: GrantTarget;
+  readonly legacy: LegacyMcpPath | undefined;
   readonly client: string;
   readonly destination: string | undefined;
   readonly organizations: readonly OrganizationSummary[];
@@ -74,7 +88,7 @@ function McpConsent({
   const consent = useAtomSet(mcpConsentAtom, { mode: "promiseExit" });
   const state = useAtomValue(mcpConsentAtom);
   const [error, setError] = useState<string | null>(null);
-  const choices = useGrantChoices({ target, organizations, disabled: state.waiting });
+  const choices = useGrantChoices({ target, legacy, organizations, disabled: state.waiting });
   const decide = async (accept: boolean) => {
     const action = accept ? "approve_connection" : "decline_connection";
     reportBrowserUsage({ area: "mcp", action, outcome: "started" });

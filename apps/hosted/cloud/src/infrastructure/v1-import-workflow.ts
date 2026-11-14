@@ -13,6 +13,7 @@ import { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import { Cause, Clock, Context, Effect, Layer, Option, Predicate, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import { SqlClient } from "effect/sql";
 import { V1ImportDatabase, V1ImportUnavailable, V1OrganizationId } from "../contracts/v1-import.ts";
 import {
   V1ImportAggregate,
@@ -47,6 +48,7 @@ import { V1MovedState } from "../implementation/v1-import/moved-flag.ts";
 import { existingOrganization } from "../implementation/v1-import/identity.ts";
 import { removeImported } from "../implementation/v1-import/rollback.ts";
 import { makeImportStore } from "../implementation/v1-import/store.ts";
+import { forgetLegacyUrls } from "../implementation/v1-legacy-urls.ts";
 import { importRefusal, movedFlag, writesRefused } from "../implementation/v1-import/writes.ts";
 import { AppBuilds } from "./blobs.ts";
 import { cloudBackgroundJobs } from "./background-jobs.ts";
@@ -776,6 +778,10 @@ export const v1ImportRoutes = (workflow: Workflow) =>
               delete from private_v1_import_map
               where v1_org_id = ${organization} and v1_kind <> 'user'
             `;
+            // Its v1 URLs are v1's again.
+            yield* forgetLegacyUrls(organization).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            );
             yield* sql`
               update private_v1_import_org set state = 'rolled_back', updated_at = now()
               where v1_org_id = ${organization}

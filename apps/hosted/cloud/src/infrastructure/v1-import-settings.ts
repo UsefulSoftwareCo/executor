@@ -65,8 +65,8 @@ export const v1ImportSourceSetting = Config.Literals(
 ).pipe(Config.withDefault<V1ImportSource>("emulated"));
 
 /**
- * The credentials of the live source, named apart from production's so they never turn on the
- * emulated sign-in check, which reads `V1_WORKOS_API_KEY` and `V1_DATABASE_URL`.
+ * The credentials of the live source, named apart from production's so they never reach the
+ * emulated v1 source, which reads `V1_DATABASE_URL`.
  */
 export const v1LiveSettings = {
   workosKey: "V1_LIVE_WORKOS_API_KEY",
@@ -85,6 +85,27 @@ export const v1LiveSourceDryRunOnly =
   "CLOUD_V1_IMPORT_SOURCE=live runs only dry runs; unset CLOUD_V1_IMPORT and CLOUD_V1_IMPORT_WRITES";
 /** What to set for the live source. */
 export const missingV1LiveSetting = (name: string) => `CLOUD_V1_IMPORT_SOURCE=live needs ${name}`;
+
+/** v1's production WorkOS API key in the Agents vault ("Work OS API Key Prod"). A reference only. */
+export const v1WorkosKeyReference = "op://Agents/svyzpaqa3tfi27ckajfyjwp66a/credential";
+
+const storedBy =
+  "and run `bun run ci:deploy`, which stores it in the GitHub production environment that " +
+  "`.github/workflows/deploy.yml` passes to the Worker";
+
+/**
+ * What to set when production has no v1 WorkOS key, which the import and the WorkOS API key check
+ * read (`v1-api-key-settings.ts`).
+ */
+export const missingV1WorkosKey =
+  "V1_WORKOS_API_KEY is required on the production stage (v2): add " +
+  `\`V1_WORKOS_API_KEY=${v1WorkosKeyReference}\` to .env.ci.op ${storedBy}.`;
+
+/** What to set when production does not name v1's database, which the import reads. */
+export const missingV1PlanetscaleDatabase =
+  "V1_PLANETSCALE_DATABASE_NAME is required on the production stage (v2): set it in .env.ci.op " +
+  "to v1's PlanetScale database (`V1_PLANETSCALE_DATABASE_NAME=executor`), on which the deploy " +
+  `creates a role that inherits only \`pg_read_all_data\`, ${storedBy}.`;
 
 /** The shortest operator token accepted: a guess must be out of reach. */
 export const v1ImportOperatorTokenMinLength = 32;

@@ -913,12 +913,6 @@ const make = Effect.gen(function* () {
         users: [{ ...user, email_verified: true }],
       }).pipe(Effect.asVoid),
     /**
-     * Make an email an active member of a new organization in the emulated v1 WorkOS, and return
-     * that organization's WorkOS id. The organization starts empty and unbilled.
-     */
-    v1Member: (email: string) =>
-      v1Workspace([email]).pipe(Effect.map((created) => created.organization)),
-    /**
      * A new organization in the emulated v1 WorkOS whose active members are these emails, and the
      * first member's WorkOS user id, which v1 rows use as `subject`.
      */
@@ -1246,6 +1240,80 @@ const make = Effect.gen(function* () {
       ),
       Effect.map(({ faults }) => new Map(faults.map((fault) => [fault.id, fault.remaining]))),
     ),
+    /**
+     * A WorkOS API key of a v1 member in one of their organizations, as v1's dashboard made them:
+     * its WorkOS id and its plaintext value.
+     */
+    v1ApiKey: (user: string, organization: string) =>
+      request(
+        value.services.workos.baseUrl,
+        `/user_management/users/${encodeURIComponent(user)}/api_keys`,
+        { organization_id: organization, name: `Synthetic key ${randomUUID().slice(0, 6)}` },
+        value.services.workos.token,
+      ).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.Struct({ id: Schema.String, value: heldValue(Schema.NonEmptyString) }),
+          ),
+        ),
+        Effect.mapError((error) =>
+          error instanceof EmulatorFailed
+            ? error
+            : new EmulatorFailed({ operation: "Create a v1 API key", reason: "invalid response" }),
+        ),
+      ),
+    /**
+     * Refuse the next `times` WorkOS API key validations with `status`. Only Cloud's v1 key check
+     * calls that route, so scenarios that do not present v1 keys never consume the fault. Returns
+     * the fault's id.
+     */
+    failV1KeyValidations: (fault: { status: number; times: number }) =>
+      request(
+        value.services.workos.baseUrl,
+        "/_emulate/faults",
+        {
+          match: { method: "POST", pathPattern: "/api_keys/validations" },
+          response: {
+            status: fault.status,
+            body: { code: "synthetic_outage" },
+            headers: { [armedFaultHeader]: "1" },
+          },
+          times: fault.times,
+        },
+        value.services.workos.token,
+      ).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.Struct({ fault: Schema.Struct({ id: Schema.String }) }),
+          ),
+        ),
+        Effect.map((armed) => armed.fault.id),
+      ),
+    /** How many calls each armed WorkOS fault still answers, by id; spent faults are absent. */
+    workosFaults: request(
+      value.services.workos.baseUrl,
+      "/_emulate/faults",
+      undefined,
+      value.services.workos.token,
+    ).pipe(
+      Effect.flatMap(
+        Schema.decodeUnknownEffect(
+          Schema.Struct({
+            faults: Schema.Array(Schema.Struct({ id: Schema.String, remaining: Schema.Number })),
+          }),
+        ),
+      ),
+      Effect.map(({ faults }) => new Map(faults.map((fault) => [fault.id, fault.remaining]))),
+    ),
+    /** Disarm a WorkOS fault, spent or not. */
+    clearWorkosFault: (id: string) =>
+      request(
+        value.services.workos.baseUrl,
+        `/_emulate/faults/${encodeURIComponent(id)}`,
+        undefined,
+        value.services.workos.token,
+        "DELETE",
+      ).pipe(Effect.asVoid),
     /** Disarm an Autumn fault, spent or not. */
     clearAutumnFault: (id: string) =>
       request(
@@ -1255,19 +1323,6 @@ const make = Effect.gen(function* () {
         value.services.billing.token,
         "DELETE",
       ).pipe(Effect.asVoid),
-    /**
-     * Fail the next membership read once. Only accounts seeded with `v1Member` reach that read,
-     * so other scenarios sharing this emulator never consume the fault. The v1 import reads
-     * memberships on every request, so its scenarios run on another local Cloud.
-     */
-    failNextV1MembershipRead: request(value.services.workos.baseUrl, "/_emulate/faults", {
-      match: { method: "GET", pathPattern: "/user_management/organization_memberships" },
-      response: {
-        status: 503,
-        body: { error: "temporarily_unavailable" },
-        headers: { [armedFaultHeader]: "1" },
-      },
-    }).pipe(Effect.asVoid),
     received: (email: string) =>
       messages(email).pipe(Effect.map((rows) => rows.map((row) => row.id))),
     /**

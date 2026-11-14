@@ -207,11 +207,6 @@ export const hostedMcpBackend = Effect.gen(function* () {
         : call;
     });
   const backend = {
-    eventDefinitions: (input) =>
-      Effect.gen(function* () {
-        yield* eventApp(input.app);
-        return yield* (yield* sdk).events.definitions(input);
-      }).pipe((work) => observe("eventDefinitions", work, "read")),
     findEventSubscription: (key) =>
       Effect.gen(function* () {
         const { principal } = yield* subscriber;
@@ -221,12 +216,19 @@ export const hostedMcpBackend = Effect.gen(function* () {
     subscribeEvent: ({ key, ...input }) =>
       Effect.gen(function* () {
         const { principal, subject } = yield* subscriber;
+        const { target } = input;
         // A saved subscription can name an app the caller no longer sees; to them it has no event.
-        yield* eventApp(input.target.app).pipe(
-          Effect.catchTag("AppNotFound", () => Effect.fail(new EventNotFound({ kind: "event" }))),
-        );
+        // A selection of every app is the organization's; each delivery checks its app.
+        if (target.app !== null)
+          yield* eventApp(target.app).pipe(
+            Effect.catchTag("AppNotFound", () => Effect.fail(new EventNotFound({ kind: "event" }))),
+          );
         return yield* (yield* sdk).events.subscribe({
           ...input,
+          target:
+            target.app === null
+              ? { owner: organization.owner, app: null, event: null }
+              : { app: target.app, event: target.event },
           key: { ...key, principal },
           subject,
         });
