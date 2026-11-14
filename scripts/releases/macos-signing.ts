@@ -1,6 +1,8 @@
 /** Choose one macOS signing identity per build; no signing secret reaches persistent storage. */
 import { Config, Console, Effect, FileSystem, Option, Path, Redacted, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { fileURLToPath } from "node:url";
+import { staple } from "./macos-staple.ts";
 
 /** The macOS section electron-builder needs for the chosen signing mode. */
 export interface MacSigningConfiguration {
@@ -343,7 +345,7 @@ const notarizeDiskImages = (keychain: { readonly file: string }, directory: stri
         // Apple and is not a credential.
         "inherit",
       );
-      yield* succeed("/usr/bin/xcrun", ["stapler", "staple", image], `Stapling ${name}`);
+      yield* staple(image);
     }
     // Reading the directory and spawning are infrastructure, not a signing
     // decision; a failure here ends the build the same way `succeed` does.
@@ -381,7 +383,13 @@ export const developerIdMac = (options: {
         // The identity is explicit, so nothing may be discovered.
         CSC_IDENTITY_AUTO_DISCOVERY: "false",
         ...(options.notarize
-          ? { APPLE_KEYCHAIN: keychain.file, APPLE_KEYCHAIN_PROFILE: notaryProfile }
+          ? {
+              APPLE_KEYCHAIN: keychain.file,
+              APPLE_KEYCHAIN_PROFILE: notaryProfile,
+              // @electron/notarize's patched stapleApp staples the app through staple.ts, which
+              // repeats only a failure to reach Apple's ticket service (macos-staple.ts).
+              EXECUTOR_STAPLE_SCRIPT: fileURLToPath(new URL("./staple.ts", import.meta.url)),
+            }
           : {}),
       },
       signDiskImages: true,

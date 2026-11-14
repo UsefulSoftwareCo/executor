@@ -108,6 +108,7 @@
     "e2e:apps-bumped": "vitest run --config e2e/apps-bumped.config.ts",
     "e2e:apps-job": "vitest run --config e2e/apps-job.config.ts",
     "e2e:collector-job": "vitest run --config e2e/collector-job.config.ts",
+    "e2e:macos-staple": "vitest run --config e2e/macos-staple.config.ts",
     "e2e:apps-published": "vitest run --config e2e/apps-published.config.ts",
     "e2e:ci-selection": "vitest run --config e2e/ci-selection.config.ts",
     "e2e:deploy-decision": "vitest run --config e2e/deploy-decision.config.ts",
@@ -228,7 +229,8 @@
     "@distilled.cloud/aws@1.0.0-rc.13": "patches/@distilled.cloud%2Faws@1.0.0-rc.13.patch",
     "effect@4.1.4": "patches/effect@4.1.4.patch",
     "@effect/sql-pg@4.1.4": "patches/@effect%2Fsql-pg@4.1.4.patch",
-    "@effect/sql-pglite@4.1.4": "patches/@effect%2Fsql-pglite@4.1.4.patch"
+    "@effect/sql-pglite@4.1.4": "patches/@effect%2Fsql-pglite@4.1.4.patch",
+    "@electron/notarize@2.5.0": "patches/@electron%2Fnotarize@2.5.0.patch"
   },
   "trustedDependencies": [
     "dugite",
