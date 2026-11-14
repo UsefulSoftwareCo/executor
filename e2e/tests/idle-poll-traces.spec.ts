@@ -157,9 +157,13 @@ layer(TestLive, { excludeTestServices: true })("Idle poll traces", (it) => {
             yield* legacyStorage(statements);
             const from = yield* Clock.currentTimeMillis;
             yield* serverControl("start");
-            // Each poll runs every one or two seconds and the product exports every second.
-            return yield* exported(collector, from, Number.MAX_SAFE_INTEGER).pipe(
-              Effect.map(failedRoots),
+            // Each poll runs every one or two seconds and the product exports every second. Each
+            // expected operation is its own search: one over every span the restarted server
+            // exports matches more than the collector answers at once.
+            return yield* Effect.forEach(Object.keys(expected), (operation) =>
+              exported(collector, from, Number.MAX_SAFE_INTEGER, operation),
+            ).pipe(
+              Effect.map((found) => failedRoots(found.flat())),
               Effect.repeat({
                 schedule: Schedule.spaced("1 second"),
                 until: (found) =>

@@ -78,9 +78,10 @@ class CloudStartFailed extends Schema.TaggedError<CloudStartFailed>()("CloudStar
 const readinessDeadline = "10 minutes";
 
 /**
- * Motels behind this Cloud's collector. Six scenario workers provisioning organizations at once
- * export about 1,500 spans a second, as much as one Motel stores; four keep up with several times
- * that and still leave a 16-vCPU runner most of its cores.
+ * Collectors behind this Cloud's collector router. Six scenario workers provisioning organizations
+ * at once export about 1,500 spans a second, as much as one Motel stored; four Motels kept up with
+ * several times that. The Rust collector stores more than one Motel did; the count is unchanged
+ * until one has been measured in this job (`serveShardedOtlpCollector`).
  */
 const collectorShards = 4;
 

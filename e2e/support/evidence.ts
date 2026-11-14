@@ -120,11 +120,53 @@ export type SpanScope = Scope<
 /** One delivered span. */
 export type DeliveredSpan = (typeof SpanQuery.Type)["data"][number]["span"];
 
-/** Motel queries read delivered spans through HTTP. No in-process instrumentation assertions. */
+/** The most matches the collector returns for one span search. */
+export const searchLimit = 500;
+
+/**
+ * A search the collector cut off at its limit holds only some of the matching spans. A check that
+ * read it would assert on part of the data: an absence it reports could be a span past the limit.
+ * So it is a defect, never retried; the search must be narrowed (a trace, an owned id, a time
+ * window or an attribute) until it fits.
+ */
+export const refuseTruncated = (found: typeof SpanQuery.Type, url: URL) =>
+  found.meta?.truncated === true
+    ? Effect.die(
+        new Error(
+          `The collector's span search ${url.pathname}${url.search} matched more than ${found.meta.returned ?? searchLimit} spans and answered only those; narrow the search so a check reads all of them`,
+        ),
+      )
+    : Effect.void;
+
+/** One page of a log list: its logs, and whether more follow and where. */
+const LogPage = Schema.Struct({
+  data: Schema.Array(Schema.Json),
+  meta: Schema.optionalKey(
+    Schema.Struct({
+      truncated: Schema.Boolean,
+      nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    }),
+  ),
+});
+/** The most pages a log read takes before it gives up: 20,000 logs at 500 a page. */
+const logPages = 40;
+
+/** Collector queries read delivered spans through HTTP. No in-process instrumentation assertions. */
 export class Telemetry extends Context.Service<
   Telemetry,
   {
+    /**
+     * A trace's delivered spans, whole. A trace the collector answers in part (`meta.truncated`)
+     * is a defect, never retried: a check must not read part of a trace as all of it.
+     */
     readonly query: (traceId: string) => Effect.Effect<typeof SpanQuery.Type, TelemetryUnavailable>;
+    /**
+     * A trace's spans as the collector answers them, whole or in part, `meta` included. Only for
+     * evidence, which keeps the marker beside the spans.
+     */
+    readonly stored: (
+      traceId: string,
+    ) => Effect.Effect<typeof SpanQuery.Type, TelemetryUnavailable>;
     /**
      * The spans of the scenario's own traces once `ready` holds for them. A Cloud isolate exports
      * the spans that have ended with whichever request flushes next, so a trace arrives in pieces:
@@ -210,12 +252,13 @@ export class Telemetry extends Context.Service<
                   const url = new URL("/api/spans/search", yield* origin);
                   url.searchParams.set("operation", operation);
                   url.searchParams.set("lookback", "1d");
-                  url.searchParams.set("limit", "10000");
+                  url.searchParams.set("limit", String(searchLimit));
                   if (traceId !== undefined) url.searchParams.set("traceId", traceId);
                   for (const [key, value] of Object.entries(attributes))
                     url.searchParams.set(`attr.${key}`, value);
                   return yield* read(url).pipe(
                     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(SpanQuery))),
+                    Effect.tap((found) => refuseTruncated(found, url)),
                   );
                 }),
               ),
@@ -250,7 +293,7 @@ export class Telemetry extends Context.Service<
             return searchIn(operation, { ...attributes, [attribute]: value }, undefined);
           }),
         );
-      const query = (id: string) =>
+      const stored = (id: string) =>
         attached
           ? cloud.trace(id).pipe(Effect.mapError(() => new TelemetryUnavailable()))
           : safe(
@@ -263,12 +306,54 @@ export class Telemetry extends Context.Service<
                 }),
               ),
             );
+      /**
+       * Every log of a list, read a page at a time through the collector's cursor, as one
+       * `{data}` JSON text. A list still cut off with no cursor to continue (the Cloud router's
+       * merged search has none), or longer than `logPages` pages, is a defect, never retried: a
+       * check must not read part of it as all.
+       */
       const logs = (url: (base: string) => URL) =>
         attached
           ? Effect.fail(new TelemetryUnavailable())
-          : safe(Effect.scoped(Effect.flatMap(origin, (base) => read(url(base)))));
+          : safe(
+              Effect.scoped(
+                Effect.gen(function* () {
+                  const page = url(yield* origin);
+                  page.searchParams.set("limit", String(searchLimit));
+                  const data: Array<Schema.Json> = [];
+                  for (let read_ = 1; ; read_++) {
+                    const found = yield* read(page).pipe(
+                      Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(LogPage))),
+                    );
+                    data.push(...found.data);
+                    if (found.meta?.truncated !== true) return JSON.stringify({ data });
+                    const cursor = found.meta.nextCursor;
+                    if (cursor === undefined || cursor === null || read_ >= logPages)
+                      return yield* Effect.die(
+                        new Error(
+                          `The collector's log list ${page.pathname}${page.search} holds more than it answered and cannot be read whole; narrow it so a check reads every log`,
+                        ),
+                      );
+                    page.searchParams.set("cursor", cursor);
+                  }
+                }),
+              ),
+            );
+      const query = (id: string) =>
+        stored(id).pipe(
+          Effect.tap((found) =>
+            found.meta?.truncated === true
+              ? Effect.die(
+                  new Error(
+                    `The collector answered trace ${id} in part (${found.meta.returned ?? "?"} of ${found.meta.spanCount ?? "?"} spans); a check cannot read it as the whole trace`,
+                  ),
+                )
+              : Effect.void,
+          ),
+        );
       return {
         query,
+        stored,
         settled: (traces, ready) => {
           const list = Effect.isEffect(traces)
             ? traces
@@ -616,12 +701,12 @@ export const scenarioEvidence = (
           const entry = (
             traceId: string,
             kept: ReadonlyArray<string>,
-            query: typeof telemetry.query,
+            query: typeof telemetry.stored,
           ) =>
             query(traceId).pipe(
               Effect.map((value) => ({ id: traceId, kept, ...value })),
               Effect.catch(() =>
-                Effect.succeed({ id: traceId, kept, error: "Motel query failed" }),
+                Effect.succeed({ id: traceId, kept, error: "The collector query failed" }),
               ),
             );
           // The server exports its spans every second, so the requests just before the failure
@@ -632,7 +717,7 @@ export const scenarioEvidence = (
             traceId: string,
             spanId: string,
           ): Effect.Effect<typeof SpanQuery.Type, TelemetryUnavailable> =>
-            telemetry.query(traceId).pipe(
+            telemetry.stored(traceId).pipe(
               Effect.flatMap((found) =>
                 Effect.gen(function* () {
                   if (
@@ -647,7 +732,7 @@ export const scenarioEvidence = (
             );
           const read = ({ traceId, spanId, kept }: Planned) =>
             spanId === undefined
-              ? entry(traceId, kept, telemetry.query)
+              ? entry(traceId, kept, telemetry.stored)
               : entry(traceId, kept, (id) => delivered(id, spanId));
           const size = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
           let used = 0;

@@ -14,25 +14,30 @@ import {
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createServer } from "node:http";
 import { SpanQuery } from "./contracts.ts";
+import { refuseTruncated, searchLimit } from "./evidence.ts";
 
-/** workerd's control message once the collector socket accepts connections. */
-const Listening = Schema.Struct({
-  event: Schema.Literal("listen"),
-  socket: Schema.Literal("motel"),
-  port: Schema.Number,
-});
+/** The collector's one line on stdout once it accepts connections on its TCP port. */
+const Listening = Schema.Struct({ event: Schema.Literal("listening"), port: Schema.Number });
+
+/** Bounds a scenario sets on its own collector, as the collector's flags name them. */
+export interface CollectorBounds {
+  readonly maxStoreMb?: number | undefined;
+  readonly retentionHours?: number | undefined;
+  readonly maxPending?: number | undefined;
+  readonly maxExportBytes?: number | undefined;
+}
 
 /**
- * Serve one Motel from the bundle `e2e:prepare` built, storing its data in `diagnostics/<name>`
- * and its output in `<name>.log`. Every target in a run serves the same bundle directory, and a
- * build replaces it, so nothing in a run builds it. `bounds` replaces the values of the bundle's
- * own `MOTEL_OTEL_*` settings in a copy of its config, beside a copy of its worker.
+ * Serve one collector from the build `e2e:prepare` made, storing its data in `diagnostics/<name>`
+ * and its log in `<name>.log`. Every target in a run starts the same executable, and a build
+ * replaces it, so nothing in a run builds it. `bounds` are passed as its flags; the rest keep the
+ * collector's defaults, which are the product's.
  */
-const serveMotel = (
+const serveCollector = (
   directory: string,
   name: string,
   log: string,
-  bounds: Readonly<Record<string, string>> = {},
+  bounds: CollectorBounds = {},
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -40,61 +45,37 @@ const serveMotel = (
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const data = path.join(directory, "data/diagnostics", name);
     yield* fs.makeDirectory(data, { recursive: true });
-    const bundle = path.resolve("packages/telemetry/dist/motel");
-    if (!(yield* fs.exists(path.join(bundle, "motel.capnp"))))
-      return yield* Effect.die("Run bun run e2e:prepare to build the telemetry collector first.");
-    let config = path.join(bundle, "motel.capnp");
-    if (Object.keys(bounds).length > 0) {
-      let text = yield* fs.readFileString(config);
-      for (const [setting, value] of Object.entries(bounds)) {
-        const binding = `(name="${setting}",text="`;
-        if (!text.includes(binding))
-          return yield* Effect.die(`The collector's config has no ${setting} setting.`);
-        text = text.replace(
-          new RegExp(`\\(name="${setting}",text="[^"]*"\\)`),
-          `${binding}${value}")`,
-        );
-      }
-      config = path.join(directory, `${name}.capnp`);
-      yield* fs.writeFileString(config, text, { mode: 0o600 });
-      yield* fs.copyFile(path.join(bundle, "motel.mjs"), path.join(directory, "motel.mjs"));
-    }
-    // The bundle's config names its directories and socket; this supplies their paths and a free port.
-    const child = yield* processes.spawn(
-      ChildProcess.make(
-        path.resolve("node_modules/.bin", process.platform === "win32" ? "workerd.exe" : "workerd"),
-        [
-          "serve",
-          "--control-fd=3",
-          `--directory-path=motel-data=${data}`,
-          `--directory-path=motel-assets=${path.join(bundle, "web/dist")}`,
-          "--socket-addr=motel=127.0.0.1:0",
-          config,
-        ],
-        {
-          cwd: data,
-          stdin: "ignore",
-          stdout: "pipe",
-          stderr: "pipe",
-          additionalFds: { fd3: { type: "output" } },
-          forceKillAfter: "3 seconds",
-        },
-      ),
+    const executable = path.resolve(
+      "packages/telemetry/dist/collector",
+      process.platform === "win32" ? "executor-collector.exe" : "executor-collector",
     );
-    yield* Effect.forEach(
-      [child.stdout, child.stderr],
-      (output) =>
-        output.pipe(
-          Stream.decodeText,
-          Stream.runForEach((text) =>
-            fs.writeFileString(path.join(directory, log), text, { flag: "a", mode: 0o600 }),
-          ),
-          Effect.forkScoped,
-        ),
-      { discard: true },
+    if (!(yield* fs.exists(executable)))
+      return yield* Effect.die("Run bun run e2e:prepare to build the telemetry collector first.");
+    const flags = [
+      ["--max-store-mb", bounds.maxStoreMb],
+      ["--retention-hours", bounds.retentionHours],
+      ["--max-pending", bounds.maxPending],
+      ["--max-export-bytes", bounds.maxExportBytes],
+    ].flatMap(([flag, value]) => (value === undefined ? [] : [`${flag}=${value}`]));
+    const child = yield* processes.spawn(
+      ChildProcess.make(executable, ["serve", `--data=${data}`, "--listen=127.0.0.1:0", ...flags], {
+        cwd: directory,
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        // It stops within 2.5 seconds of SIGTERM.
+        forceKillAfter: "3 seconds",
+      }),
+    );
+    yield* child.stderr.pipe(
+      Stream.decodeText,
+      Stream.runForEach((text) =>
+        fs.writeFileString(path.join(directory, log), text, { flag: "a", mode: 0o600 }),
+      ),
+      Effect.forkScoped,
     );
     const ready = yield* Deferred.make<string>();
-    yield* child.getOutputFd(3).pipe(
+    yield* child.stdout.pipe(
       Stream.decodeText,
       Stream.splitLines,
       Stream.runForEach((line) =>
@@ -105,7 +86,17 @@ const serveMotel = (
       ),
       Effect.forkScoped,
     );
-    return yield* Deferred.await(ready).pipe(Effect.timeout("20 seconds"));
+    // The listening line, or the collector's exit if it could not start: it says why in its log.
+    return yield* Deferred.await(ready).pipe(
+      Effect.raceFirst(
+        child.exitCode.pipe(
+          Effect.flatMap((code) =>
+            Effect.die(`The collector exited ${code} before listening; see ${log}.`),
+          ),
+        ),
+      ),
+      Effect.timeout("20 seconds"),
+    );
   });
 
 /** Name the collector's query URL in `data/diagnostics/collector.json`, where readers find it. */
@@ -120,13 +111,10 @@ const announce = (directory: string, url: string) =>
     );
   });
 
-/** One Motel, as a scenario that owns its own collector uses it, with any `bounds` it sets. */
-export const serveOtlpCollector = (
-  directory: string,
-  bounds: Readonly<Record<string, string>> = {},
-) =>
+/** One collector, as a scenario that owns its own collector uses it, with any `bounds` it sets. */
+export const serveOtlpCollector = (directory: string, bounds: CollectorBounds = {}) =>
   Effect.gen(function* () {
-    const url = yield* serveMotel(directory, "motel", "collector.log", bounds);
+    const url = yield* serveCollector(directory, "collector", "collector.log", bounds);
     yield* announce(directory, url);
     return url;
   });
@@ -146,10 +134,15 @@ export const ownCollectorSpans = (
       Effect.gen(function* () {
         const url = new URL("/api/spans/search", collector);
         if (window.operation !== undefined) url.searchParams.set("operation", window.operation);
-        url.searchParams.set("lookback", "1h");
-        url.searchParams.set("limit", "10000");
+        // The collector looks back whole minutes from now: as few as cover the window's start.
+        const minutes = Math.max(1, Math.ceil((Date.now() - window.from) / 60_000) + 1);
+        url.searchParams.set("lookback", `${minutes}m`);
+        url.searchParams.set("limit", String(searchLimit));
         const response = yield* http.get(url.href);
-        return yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(SpanQuery)));
+        return yield* response.json.pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(SpanQuery)),
+          Effect.tap((found) => refuseTruncated(found, url)),
+        );
       }),
     ).pipe(
       Effect.map(({ data }) =>
@@ -203,6 +196,8 @@ const LogExport = Schema.fromJsonString(
 /** The parts of a query answer the router merges: its items, and the limit that bounds them. */
 const Listing = Schema.StructWithRest(Schema.Struct({ data: Schema.Array(Schema.Json) }), [Json]);
 const SpanItem = Schema.Struct({ span: Schema.Struct({ startTime: Schema.String }) });
+/** A list the collector cut off at its limit. */
+const Truncated = Schema.Struct({ meta: Schema.Struct({ truncated: Schema.Literal(true) }) });
 
 /**
  * Which collector holds a trace. OTLP JSON names a trace in hex, or in base64 from exporters that
@@ -217,26 +212,27 @@ const shardOf = (traceId: string | undefined, shards: number) => {
 };
 
 /**
- * Several Motels behind one OTLP and query endpoint, each holding the traces whose ID it is given.
+ * Several collectors behind one OTLP and query endpoint, each holding the traces whose ID it is
+ * given.
  *
- * One Motel stores about 1,500 spans a second: SQLite indexes every attribute of every span on a
- * single thread. The managed Cloud job's six workers send more than that while they provision their
- * organizations, so one collector refused exports with 429 until the product's three-second export
- * budget ran out and dropped them, and scenarios waiting for those spans failed. A deployed stage
- * exports to a collector that keeps up. Splitting the traces gives each Motel a share of the load and
- * of the data its queries read.
+ * The managed Cloud job's six workers export together while they provision their organizations.
+ * Motel, the collector this harness first ran, stored about 1,500 spans a second and refused them;
+ * so the job split the traces over several. The Rust collector stores about 24,000 spans a second
+ * on a desktop (its README, "Disk use and the write-ahead log"); whether one would keep up with the
+ * job has not been measured, so the split and its count are unchanged.
  *
- * Each export is split by trace and sent to the Motels holding those traces. When one refuses its
+ * Each export is split by trace and sent to the collectors holding those traces. When one refuses its
  * part, the export is answered with that refusal, so the exporter resends it as it would to one
- * Motel; spans are stored by their IDs, so the parts already stored are replaced, not repeated. A
- * trace's reads go to its Motel; a search across traces asks every Motel and merges the answers.
+ * collector; spans are stored by their IDs, so the parts already stored are replaced, not repeated. A
+ * trace's reads go to its collector; a search across traces asks every collector and merges the
+ * answers.
  */
 export const serveShardedOtlpCollector = (directory: string, shards: number) =>
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
-    const motels = yield* Effect.forEach(
+    const collectors = yield* Effect.forEach(
       Array.from({ length: shards }, (_, index) => index),
-      (index) => serveMotel(directory, `motel-${index}`, `collector-${index}.log`),
+      (index) => serveCollector(directory, `collector-${index}`, `collector-${index}.log`),
       { concurrency: "unbounded" },
     );
     const answer = (response: HttpClientResponse.HttpClientResponse) =>
@@ -252,16 +248,18 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
           }),
         ),
       );
-    const post = (motel: string, path: string, body: HttpBody.HttpBody) =>
-      Effect.scoped(http.post(new URL(path, motel).href, { body }).pipe(Effect.flatMap(answer)));
-    const get = (motel: string, url: string) =>
-      Effect.scoped(http.get(new URL(url, motel).href).pipe(Effect.flatMap(answer)));
+    const post = (collector: string, path: string, body: HttpBody.HttpBody) =>
+      Effect.scoped(
+        http.post(new URL(path, collector).href, { body }).pipe(Effect.flatMap(answer)),
+      );
+    const get = (collector: string, url: string) =>
+      Effect.scoped(http.get(new URL(url, collector).href).pipe(Effect.flatMap(answer)));
 
-    /** Send each Motel its part; the first refusal, if any, answers the whole export. */
+    /** Send each collector its part; the first refusal, if any, answers the whole export. */
     const ingest = (parts: ReadonlyMap<number, unknown>, path: string) =>
       Effect.forEach(
         [...parts],
-        ([shard, part]) => post(motels[shard]!, path, HttpBody.jsonUnsafe(part)),
+        ([shard, part]) => post(collectors[shard]!, path, HttpBody.jsonUnsafe(part)),
         { concurrency: "unbounded" },
       ).pipe(
         Effect.map(
@@ -357,7 +355,7 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
       const text = new TextDecoder().decode(bytes);
       const path = new URL(request.url, "http://collector").pathname;
       const unchanged = post(
-        motels[0]!,
+        collectors[0]!,
         path,
         HttpBody.uint8Array(bytes, request.headers["content-type"]),
       );
@@ -401,25 +399,25 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
       return yield* unchanged;
     });
 
-    /** A trace's reads go to the Motel holding it. */
+    /** A trace's reads go to the collector holding it. */
     const trace = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const id = new URL(request.url, "http://collector").pathname.split("/")[3];
-      return yield* get(motels[shardOf(id, shards)]!, request.url);
+      return yield* get(collectors[shardOf(id, shards)]!, request.url);
     });
-    /** A search names one trace, or asks every Motel and returns the newest matches first. */
+    /** A search names one trace, or asks every collector and returns the newest matches first. */
     const search = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const url = new URL(request.url, "http://collector");
       const traceId = url.searchParams.get("traceId");
-      if (traceId !== null) return yield* get(motels[shardOf(traceId, shards)]!, request.url);
-      // Each Motel's matches, or the answer of the first that could not search.
+      if (traceId !== null) return yield* get(collectors[shardOf(traceId, shards)]!, request.url);
+      // Each collector's matches, or the answer of the first that could not search.
       const answers = yield* Effect.forEach(
-        motels,
-        (motel) =>
+        collectors,
+        (collector) =>
           Effect.scoped(
             http
-              .get(new URL(request.url, motel).href)
+              .get(new URL(request.url, collector).href)
               .pipe(
                 Effect.flatMap(
                   (
@@ -446,15 +444,21 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
           found._tag === "Some" ? found.value.span.startTime : "",
         );
       const limit = Number(url.searchParams.get("limit") ?? Number.POSITIVE_INFINITY);
-      const data = listings
+      const matched = listings
         .flatMap((listing) => listing.data)
-        .sort((a, b) => start(b).localeCompare(start(a)))
-        .slice(0, limit);
-      return HttpServerResponse.jsonUnsafe({ data });
+        .sort((a, b) => start(b).localeCompare(start(a)));
+      const data = matched.slice(0, limit);
+      // Cut off when any collector had more than it returned, or the merge kept fewer than matched.
+      const truncated =
+        matched.length > data.length ||
+        listings.some((listing) =>
+          Schema.decodeUnknownOption(Truncated)(listing).pipe(Option.isSome),
+        );
+      return HttpServerResponse.jsonUnsafe({ data, meta: { truncated, returned: data.length } });
     });
-    const ingestStatus = Effect.forEach(motels, (motel) =>
+    const ingestStatus = Effect.forEach(collectors, (collector) =>
       Effect.scoped(
-        http.get(new URL("/api/ingest", motel).href).pipe(Effect.flatMap((r) => r.json)),
+        http.get(new URL("/api/ingest", collector).href).pipe(Effect.flatMap((r) => r.json)),
       ),
     ).pipe(Effect.map((shards) => HttpServerResponse.jsonUnsafe({ shards })));
 

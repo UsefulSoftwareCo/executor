@@ -69,7 +69,7 @@ const authentication = (traceId: string, reads: number) =>
         result.data.filter(({ span }) => span.operationName === "dashboard.batch.read").length ===
         reads
           ? Effect.succeed(result.data)
-          : Effect.fail(new Error("The completed batch trace must reach Motel")),
+          : Effect.fail(new Error("The completed batch trace must reach the collector")),
       ),
       Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
       Effect.timeout("25 seconds"),

@@ -48,7 +48,9 @@ that publish build the collector without restoring from the cache, because an en
 cache scope is not proof of what built it; the cache rules judge restores by workflow file, so the
 paced check and `build` runs build it too (`.github/actions/collector`). A narrowed build runs a
 collector job only for the targets its packaging jobs run on, and none when it runs only the image.
-Nothing packages the collector yet; Motel is still the bundled collector.
+Every packaging job packages the collector it fetched, executable before anything is signed, and
+builds the viewer the CLI and desktop serve from it; the image builds its own collector in its
+Dockerfile's `collector` stage.
 
 A Bun runtime release built from a pull request's branch, as one that changes the
 lockdown patch needs, is the one main's publishing runs use from then on. If that

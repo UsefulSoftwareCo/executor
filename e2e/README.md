@@ -22,7 +22,8 @@ bun run e2e:prepare
 bun run e2e:self-host
 ```
 
-`e2e:prepare` builds the dashboards, app framework, bundled Motel and shared
+`e2e:prepare` builds the dashboards, app framework, the telemetry collector (with cargo; it needs
+[rustup](https://rustup.rs), which installs the toolchain the crate pins) and its viewer, and the shared
 workerd runtime artifact. Run it again after changing these inputs. It caches each
 build step's outputs in `~/.cache/executor-e2e-prepare` (or `$EXECUTOR_E2E_CACHE`)
 under a hash of the step's inputs: the files git sees in its packages and their
@@ -110,7 +111,8 @@ job; it adds a warning and a line to the run's summary with that command for the
 - `BrowserDriver`: scoped Playwright process, shared by a suite.
 - `Browser`: isolated context per case, with an Effect `use` boundary for SDK calls.
 - `Evidence`: named steps, screenshots, request timings and the final outcome.
-- `Telemetry`: queries spans that actually reached Motel over HTTP.
+- `Telemetry`: queries spans that actually reached the collector over HTTP. A trace the collector
+  answered in part fails the read; failure evidence keeps its `meta` marker.
 - `McpOAuth`: public discovery, registration, PKCE, recorded browser consent, refresh and revocation.
 - `McpClient`: scoped official MCP protocol clients with safe method/revision/trace evidence.
 - `ClaudeClient`: real Claude Code in a Terminal Control PTY, with an injected model API.
@@ -147,7 +149,8 @@ tokens. Its header lists what it cannot catch. Read secrets with `reveal`, and c
 expect no page errors use `noPageErrors`, which lists each message, and the browser keeps every
 page and console error in `page-errors.json`.
 
-`e2e:prepare` builds the dashboards, app framework, bundled Motel and shared
+`e2e:prepare` builds the dashboards, app framework, the telemetry collector (with cargo; it needs
+[rustup](https://rustup.rs), which installs the toolchain the crate pins) and its viewer, and the shared
 workerd runtime artifact. Run it again after changing these inputs. It caches each
 build step's outputs in `~/.cache/executor-e2e-prepare` (or `$EXECUTOR_E2E_CACHE`)
 under a hash of the step's inputs: the files git sees in its packages and their
@@ -235,7 +238,8 @@ job; it adds a warning and a line to the run's summary with that command for the
 - `BrowserDriver`: scoped Playwright process, shared by a suite.
 - `Browser`: isolated context per case, with an Effect `use` boundary for SDK calls.
 - `Evidence`: named steps, screenshots, request timings and the final outcome.
-- `Telemetry`: queries spans that actually reached Motel over HTTP.
+- `Telemetry`: queries spans that actually reached the collector over HTTP. A trace the collector
+  answered in part fails the read; failure evidence keeps its `meta` marker.
 - `McpOAuth`: public discovery, registration, PKCE, recorded browser consent, refresh and revocation.
 - `McpClient`: scoped official MCP protocol clients with safe method/revision/trace evidence.
 - `ClaudeClient`: real Claude Code in a Terminal Control PTY, with an injected model API.
@@ -499,13 +503,13 @@ refresh tokens. A slow renewal holds its claim while other calls wait, a renewal
 survives its caller disconnecting, and `docker kill` mid-renewal followed by an
 immediate `docker start` recovers the grant within an execute deadline.
 
-| Command                 | Target                                                          | Current coverage                                              |
-| ----------------------- | --------------------------------------------------------------- | ------------------------------------------------------------- |
-| `bun run e2e:self-host` | Fresh Node/PGlite self-host                                     | Shared hosted scenario, password login, account volume, Motel |
-| `bun run e2e:local`     | Fresh Node/PGlite local product                                 | Pairing, replay rejection, dashboard access and reload        |
-| `bun run e2e:cloud`     | Managed local Cloud Worker + Postgres, or explicit attached URL | Cloud onboarding, shared hosted behavior and MCP              |
-| `bun run e2e:parity`    | Self-host and Cloudflare                                        | Identical role/account and MCP scenarios on both              |
-| `bun run e2e:all`       | All three                                                       | All applicable tests in one combined report                   |
+| Command                 | Target                                                          | Current coverage                                                  |
+| ----------------------- | --------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `bun run e2e:self-host` | Fresh Node/PGlite self-host                                     | Shared hosted scenario, password login, account volume, collector |
+| `bun run e2e:local`     | Fresh Node/PGlite local product                                 | Pairing, replay rejection, dashboard access and reload            |
+| `bun run e2e:cloud`     | Managed local Cloud Worker + Postgres, or explicit attached URL | Cloud onboarding, shared hosted behavior and MCP                  |
+| `bun run e2e:parity`    | Self-host and Cloudflare                                        | Identical role/account and MCP scenarios on both                  |
+| `bun run e2e:all`       | All three                                                       | All applicable tests in one combined report                       |
 
 With no `E2E_CLOUD_URL`, the Cloud target starts the real Alchemy Worker and a
 throwaway Postgres container on fresh ports. It provisions its external services
@@ -752,18 +756,18 @@ the recorded page. Query strings/fragments are omitted. Playwright renders the
 bar images and scoped ffmpeg processes compose the MP4; the tested page is never
 modified. Raw video and trace artifacts remain in the case directory.
 
-The server log and complete Motel database remain under each target's run folder.
+The server log and the collector's complete database remain under each target's run folder.
 Saved trace samples are not a full trace archive. The telemetry test checks actual
 server spans, status and the presence of SQL spans; client spans cannot satisfy it. While
 running, `data/diagnostics/collector.json` identifies the collector query URL.
 
-Managed Cloud's collector is four Motels behind one router (`serveShardedOtlpCollector` in
-`support/otlp-collector.ts`). One Motel stores about 1,500 spans a second, and six workers
-provisioning their organizations export more than that; a single Motel refused thousands of
-exports a run, which the product dropped once its three-second export budget ran out. The router
-splits each export by trace ID, sends a trace's reads to its Motel, and merges searches across
-all four. Each Motel keeps its database in `data/diagnostics/motel-<n>` and its log in
-`collector-<n>.log`; `GET /api/ingest` on the router lists each one's refused exports.
+Managed Cloud's collector is four collectors behind one router (`serveShardedOtlpCollector` in
+`support/otlp-collector.ts`). The split dates from Motel, which stored about 1,500 spans a second
+while six workers provisioning their organizations exported more; a single Motel refused thousands
+of exports a run. Whether one Rust collector keeps up there has not been measured, so the split
+stays. The router splits each export by trace ID, sends a trace's reads to its collector, and
+merges searches across all four. Each keeps its database in `data/diagnostics/collector-<n>` and
+its log in `collector-<n>.log`; `GET /api/ingest` on the router lists each one's refused exports.
 
 All runs use synthetic identities. Private run directories and session files are
 ignored by Git. They can still contain session cookies and should not be published.
@@ -946,7 +950,7 @@ hold duration, never deployment credentials, into the test process.
 ## Existing failure
 
 The original 1,000-account run preserved every account and selection but lost later
-server telemetry before it reached Motel. That delivery assertion remains enabled;
+server telemetry before it reached the collector. That delivery assertion remains enabled;
 this runner migration does not relax its timeout or reduce the default data volume.
 
 ## Driver references
@@ -977,7 +981,7 @@ a failed subscription followed by a linked retry, and live access revocation.
 Each scenario owns its app and organization. The retry scenario requires both
 the failed attempt and its native link to reach the collector.
 
-Self-host reads actual delivery through Motel. For a dedicated deployed Cloud
+Self-host reads actual delivery through the bundled collector. For a dedicated deployed Cloud
 stage, bind `E2E_AXIOM_TOKEN` through the credential launcher and set
 `E2E_AXIOM_DATASET=executor-next-test-traces` together with the normal attached
 stage URL and private synthetic actor file. The query adapter reads only the

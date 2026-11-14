@@ -1,7 +1,7 @@
 /**
- * A scenario-owned OTLP destination: its own Motel behind a proxy that refuses chosen exports the
+ * A scenario-owned OTLP destination: its own collector behind a proxy that refuses chosen exports the
  * way a collector shedding load does. Exports carrying no planned marker, and a marked export once
- * its refusals run out, reach Motel unchanged. Nothing is shared with the target's collector.
+ * its refusals run out, reach the collector unchanged. Nothing is shared with the target's collector.
  */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { Clock, Effect, FileSystem, Layer, Ref, Schema } from "effect";
@@ -68,11 +68,11 @@ export const throttlingCollector = Effect.gen(function* () {
     directory: target.directory,
     prefix: "collector",
   });
-  const motel = yield* serveOtlpCollector(directory);
+  const collector = yield* serveOtlpCollector(directory);
   const plans = yield* Ref.make<ReadonlyMap<string, ReadonlyArray<Refusal>>>(new Map());
   const arrivals = yield* Ref.make<ReadonlyMap<string, ReadonlyArray<Arrival>>>(new Map());
   const appTraces = yield* Ref.make<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
-  /** Record the traces of app isolate spans that reached Motel, by the app they came from. */
+  /** Record the traces of app isolate spans that reached the collector, by the app they came from. */
   const recordAppTraces = (text: string) =>
     Ref.update(appTraces, (all) => {
       const decoded = Schema.decodeUnknownOption(AppTraceExport)(text);
@@ -93,7 +93,7 @@ export const throttlingCollector = Effect.gen(function* () {
   const forward = (path: string, bytes: Uint8Array, contentType: string | undefined) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const response = yield* http.post(new URL(path, motel).href, {
+        const response = yield* http.post(new URL(path, collector).href, {
           body: HttpBody.uint8Array(bytes, contentType),
         });
         return HttpServerResponse.uint8Array(new Uint8Array(yield* response.arrayBuffer), {
@@ -150,15 +150,24 @@ export const throttlingCollector = Effect.gen(function* () {
     /** Every export containing `marker` that reached the proxy. */
     arrivals: (marker: string) =>
       Ref.get(arrivals).pipe(Effect.map((all) => all.get(marker) ?? [])),
-    /** The traces whose app isolate spans for `app` reached Motel. */
+    /** The traces whose app isolate spans for `app` reached the collector. */
     appTraces: (app: string) =>
       Ref.get(appTraces).pipe(Effect.map((all) => all.get(app) ?? new Set<string>())),
-    /** The spans of one trace that Motel stored. */
+    /** The spans of one trace that the collector stored, whole: a trace answered in part dies. */
     query: (traceId: string) =>
       Effect.scoped(
-        http.get(new URL(`/api/traces/${traceId}/spans`, motel).href).pipe(
+        http.get(new URL(`/api/traces/${traceId}/spans`, collector).href).pipe(
           Effect.flatMap((response) => response.json),
           Effect.flatMap(Schema.decodeUnknownEffect(SpanQuery)),
+          Effect.tap((found) =>
+            found.meta?.truncated === true
+              ? Effect.die(
+                  new Error(
+                    `The collector answered trace ${traceId} in part (${found.meta.returned ?? "?"} of ${found.meta.spanCount ?? "?"} spans); a check cannot read it as the whole trace`,
+                  ),
+                )
+              : Effect.void,
+          ),
         ),
       ),
   };

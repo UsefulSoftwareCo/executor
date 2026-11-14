@@ -127,9 +127,12 @@ Its `cargo test` suite in `tests/` is limited to seven files, which share
   export limit emptying the store and a raised one keeping it, every
   transition of the
   read gate, a gate opening when checkpoints fail, readers held at the gate so
-  exports are not refused, reads during eviction, and resident memory returned
-  after a burst.
-  These would be E2E scenarios, but nothing in `e2e/` builds the binary yet.
+  exports are not refused, reads during eviction, resident memory returned
+  after a burst, and the viewer's files: served only from what was read at start,
+  never a path a request names, only GET and HEAD, and every viewer directory it
+  cannot serve ending the start before the store is touched.
+  These run the binary alone, with stores, clocks and resource limits a scenario
+  through the product cannot set up.
 
 CI runs it in the `collector-native` job when the crate, its build script
 (`packages/telemetry/scripts/build-collector.ts`) or the `collector` and `rustup` actions in
@@ -449,9 +452,9 @@ scenarios on Linux instead of moving them to a Mac.
   site and dashboard, with its own origins, into the one `apps/hosted/cloud/.generated/site`
   that both serve. On a full run `cloud-product` passes what one local Cloud holds, and each of
   its local Clouds has a runner of its own; the longest, about five and a half minutes, waits out
-  the MCP session restore scenario's 270-second idle. Each runner builds the apps package and
-  Motel once before its runs; runs only serve that Motel bundle, because every target in a run
-  shares it.
+  the MCP session restore scenario's 270-second idle. Each runner builds the apps package and the
+  telemetry collector and its viewer once before its runs; runs only start that build, because
+  every target in a run shares it.
 - `e2e` passes when `select` succeeded, every E2E job it chose passed and every other one was
   skipped; it runs even after a cancellation, which fails it. The matrix runners' check
   names change with the selection, so this is the one E2E check to require.

@@ -39,7 +39,7 @@ const diskUrl = (path: string) =>
 /**
  * Retry only an unfinished bootstrap. A completed import is immutable, and normal
  * opens never read the legacy directory again. The host holds the exclusive
- * product volume lock while this operation runs. Motel is not involved.
+ * product volume lock while this operation runs. The telemetry collector is not involved.
  */
 export const prepareProductFilesystem = (storage: DurableObjectStorage, legacy: LegacyDatabase) =>
   Effect.gen(function* () {

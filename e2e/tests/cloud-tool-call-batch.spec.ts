@@ -258,7 +258,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud tool call batch", (it) =
                           .map(({ span }) => span.tags["executor.mcp.object_id"])
                           .find((id) => id !== undefined),
                       })
-                    : Effect.fail(new Error("The tool calls' spans have not all reached Motel"));
+                    : Effect.fail(
+                        new Error("The tool calls' spans have not all reached the collector"),
+                      );
                 }),
                 Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
               );
@@ -588,14 +590,14 @@ try {
               }),
               Effect.filterOrFail(
                 done,
-                () => new Error("The slow log writes have not reached Motel"),
+                () => new Error("The slow log writes have not reached the collector"),
               ),
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
             );
 
           /**
            * Wait for the app's own spans, which the app runtime forwards from the app's isolate
-           * once its call ends, to reach Motel in `traces`; return their operations.
+           * once its call ends, to reach the collector in `traces`; return their operations.
            */
           const appSpans = (
             traces: ReadonlyArray<string>,
@@ -610,13 +612,13 @@ try {
               ),
               Effect.filterOrFail(
                 (names) => needed.every((name) => names.includes(name)),
-                () => new Error("The app's forwarded spans have not reached Motel"),
+                () => new Error("The app's forwarded spans have not reached the collector"),
               ),
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
             );
 
           yield* evidence.step(
-            "A log write that ends long after its call answered still reaches Motel",
+            "A log write that ends long after its call answered still reaches the collector",
             Effect.gen(function* () {
               yield* slowLog("insert");
               const started = performance.now();
@@ -632,7 +634,7 @@ try {
           );
 
           yield* evidence.step(
-            "A call that waits for input answered by a second request does not wait for its slow log write, which still reaches Motel",
+            "A call that waits for input answered by a second request does not wait for its slow log write, which still reaches the collector",
             Effect.gen(function* () {
               // The call ends, and writes its row, while the second request is served.
               yield* slowLog("insert");

@@ -55,7 +55,7 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createHash } from "node:crypto";
-import { collectorChanged } from "./collector-inputs.ts";
+import { collectorChanged, collectorScenarios } from "./collector-inputs.ts";
 import { lanesFor, releaseSources } from "./release-lanes.ts";
 import { packagedEngineDependency } from "./packaged-engine.ts";
 import { savePathFiles } from "./save-path.ts";
@@ -1325,6 +1325,8 @@ NodeRuntime.runMain(
             ...named,
             ...guarded,
             ...guardedByFile,
+            // A collector input changed: the scenarios that exercise it run too.
+            ...(collector ? collectorScenarios : []),
             ...changedSpecs.filter((file) => jobFiles.has(file)),
             ...[...deployedOnlyRun].map((title) => fileOf.get(title)!),
           ]);
@@ -1478,6 +1480,12 @@ NodeRuntime.runMain(
       ...(guardedByFile.length === 0
         ? []
         : ["", `A guarded file differs from main, so its guards run: ${guardedByFile.join(", ")}`]),
+      ...(!collector || files === undefined
+        ? []
+        : [
+            "",
+            `A collector input changed (e2e/collector-inputs.ts), so the scenarios that exercise it run: ${collectorScenarios.join(", ")}`,
+          ]),
       ...(saveChanged && files !== undefined
         ? [
             "",

@@ -1,60 +1,70 @@
-/** Effect owns the bundled Motel workerd process and restarts it after unexpected exits. */
-import { createRequire } from "node:module";
+/** Effect owns the bundled telemetry collector process and restarts it after unexpected exits. */
 import { Deferred, Effect, FileSystem, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-/** workerd's control message once the collector socket accepts connections. */
+/** The collector's one line on stdout, once it accepts connections on its TCP port. */
 const Listening = Schema.Struct({
-  event: Schema.Literal("listen"),
-  socket: Schema.Literal("motel"),
+  event: Schema.Literal("listening"),
   port: Schema.Number.check(
     Schema.makeFilter((port) => Number.isInteger(port) && port > 0 && port < 65_536),
   ),
 });
 
-const WorkerdPackage = Schema.Struct({ default: Schema.String });
+/**
+ * The bounds a local host gives its collector: the ones it gave Motel, a week of telemetry in at
+ * most 1 GiB and exports of at most 16 MiB, and four exports at once.
+ */
+const bounds = [
+  "--retention-hours=168",
+  "--max-store-mb=1024",
+  "--max-export-bytes=16777216",
+  "--max-pending=4",
+];
+
+/** Where a build of this package keeps the collector and the viewer it serves. */
+export interface CollectorFiles {
+  /** The `executor-collector` executable. */
+  readonly executable: string;
+  /** The viewer's build, served at the collector's origin root. */
+  readonly viewer: string;
+}
 
 /**
- * Serve the Motel bundle with the workerd executable the runtime already ships. The bundle's
- * config names its data and asset directories; the host supplies their paths and the port.
- * Port 0 binds any free port, which workerd reports on descriptor 3.
+ * Serve the collector on loopback. Port 0 binds any free port, which the collector reports in its
+ * listening line.
  */
-const serveMotel = (bundle: string, data: string, port: number) =>
+const serveCollector = (files: CollectorFiles, data: string, port: number) =>
   Effect.gen(function* () {
     const path = yield* Path.Path;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const workerd = yield* Effect.try(() => createRequire(import.meta.url)("workerd")).pipe(
-      Effect.flatMap(Schema.decodeUnknownEffect(WorkerdPackage)),
-    );
     const child = yield* processes.spawn(
       ChildProcess.make(
-        workerd.default,
+        files.executable,
         [
           "serve",
-          "--control-fd=3",
-          `--directory-path=motel-data=${data}`,
-          `--directory-path=motel-assets=${path.join(bundle, "web/dist")}`,
-          `--socket-addr=motel=127.0.0.1:${port}`,
-          path.join(bundle, "motel.capnp"),
+          `--data=${data}`,
+          `--listen=127.0.0.1:${port}`,
+          `--viewer=${files.viewer}`,
+          ...bounds,
         ],
         {
-          // A process's working directory cannot be removed or renamed on Windows. workerd can
-          // outlive the parent's reported exit while it terminates, so it never runs inside data.
-          cwd: bundle,
+          // A process's working directory cannot be removed or renamed on Windows. The collector
+          // can outlive the parent's reported exit while it terminates, so it never runs inside data.
+          cwd: path.dirname(files.executable),
           stdin: "ignore",
           stdout: "pipe",
           stderr: "pipe",
-          additionalFds: { fd3: { type: "output" } },
-          // workerd does not watch its parent. It shares the parent's process group on POSIX and
-          // Node's kill-on-close job on Windows, so stopping the parent also stops workerd.
+          // The collector does not watch its parent. It shares the parent's process group on POSIX
+          // and Node's kill-on-close job on Windows, so stopping the parent also stops it.
           detached: false,
+          // It stops within 2.5 seconds of SIGTERM, keeping every export it acknowledged.
           killSignal: "SIGTERM",
           forceKillAfter: 3_000,
         },
       ),
     );
     const listening = yield* Deferred.make<number>();
-    yield* child.getOutputFd(3).pipe(
+    yield* child.stdout.pipe(
       Stream.decodeText,
       Stream.splitLines,
       Stream.runForEach((line) =>
@@ -69,13 +79,13 @@ const serveMotel = (bundle: string, data: string, port: number) =>
   });
 
 /** Start supervision immediately; only exports await the collector's first ready address. */
-export const startCollector = (directory: string, bundle: string) =>
+export const startCollector = (directory: string, files: CollectorFiles) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const initial = yield* Deferred.make<string>();
     const statusPath = path.join(directory, "collector.json");
-    const data = path.join(directory, "motel");
+    const data = path.join(directory, "collector");
     yield* fs.makeDirectory(data, { recursive: true, mode: 0o700 });
     let pid: number | undefined;
     // A restart keeps the first bound port, so exporters keep one address.
@@ -98,20 +108,16 @@ export const startCollector = (directory: string, bundle: string) =>
     yield* Effect.addFinalizer(() => status("stopped").pipe(Effect.orDie));
     const run = Effect.scoped(
       Effect.gen(function* () {
-        const { child, listening } = yield* serveMotel(bundle, data, port);
+        const { child, listening } = yield* serveCollector(files, data, port);
         pid = child.pid;
-        yield* Effect.forEach(
-          [child.stdout, child.stderr],
-          (output) =>
-            output.pipe(
-              Stream.decodeText,
-              Stream.splitLines,
-              Stream.runForEach((line) =>
-                Effect.logInfo(line).pipe(Effect.annotateLogs({ process: "motel" })),
-              ),
-              Effect.forkScoped,
-            ),
-          { discard: true },
+        // Its own log: JSON lines on stderr.
+        yield* child.stderr.pipe(
+          Stream.decodeText,
+          Stream.splitLines,
+          Stream.runForEach((line) =>
+            Effect.logInfo(line).pipe(Effect.annotateLogs({ process: "collector" })),
+          ),
+          Effect.forkScoped,
         );
         yield* listening.pipe(
           Effect.tap((bound) =>

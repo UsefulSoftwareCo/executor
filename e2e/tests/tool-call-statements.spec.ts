@@ -200,7 +200,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
                   (entry) => entry.span.tags["http.response.status_code"] === "200",
                 );
                 if (root === undefined || !complete)
-                  return Effect.fail(new Error("The completed server trace must reach Motel"));
+                  return Effect.fail(
+                    new Error("The completed server trace must reach the collector"),
+                  );
                 const byId = new Map(result.data.map(({ span }) => [span.spanId, span]));
                 const path = (spanId: string | null) => {
                   const names: string[] = [];
@@ -239,7 +241,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call statements", (it) =>
                     path(span.parentSpanId) !== undefined,
                 );
                 return reads.length === 0 || write === undefined || logWrites.length === 0
-                  ? Effect.fail(new Error("SQL descendants and the log's write must reach Motel"))
+                  ? Effect.fail(
+                      new Error("SQL descendants and the log's write must reach the collector"),
+                    )
                   : Effect.succeed({
                       reads,
                       logWrites,

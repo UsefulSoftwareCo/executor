@@ -1,11 +1,11 @@
 # Telemetry viewer
 
 Executor telemetry: the trace and log viewer for the bundled telemetry collector. Its source is Motel's `web/`
-viewer at the revision `packages/telemetry/motel/source.json` pins, under Motel's MIT license
+viewer in [`UsefulSoftwareCo/motel`](https://github.com/UsefulSoftwareCo/motel) at `b1783f4d344fd2e0fa584ef00b3e71838a8a1e03`, under Motel's MIT license
 (`LICENSE`). The AI calls page is removed, and `src/contracts/api.ts` declares only the routes the
 viewer reads, with the response shapes that Motel revision returns.
 
-Nothing serves this build yet: Motel still serves its own viewer.
+The collector serves this build when it is started with `--viewer <dir>` (its README, The viewer).
 
 ## Build
 
@@ -13,7 +13,7 @@ Nothing serves this build yet: Motel still serves its own viewer.
 bun run --cwd packages/telemetry/viewer build
 ```
 
-This writes `packages/telemetry/dist/collector/viewer/`: `index.html` and hashed files under
+This writes `packages/telemetry/dist/viewer/`, beside the collector's own `dist/collector/`, which its build replaces whole: `index.html` and hashed files under
 `assets/`, and the notices for the code in them:
 
 - `runtime-packages.txt` lists, as `name@version`, every package the bundler put into the

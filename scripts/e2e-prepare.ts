@@ -1,14 +1,22 @@
 /**
- * Builds what the e2e servers load: the staged `apps` package and its tarball, Motel, the workerd
+ * Builds what the e2e servers load: the staged `apps` package and its tarball, the telemetry
+ * collector and its viewer, the workerd
  * host bundle, the two dashboards and the pinned npm archives the suite's registry serves. Each step's outputs are cached under a hash of its inputs,
  * so a rift that has not changed a step's inputs restores its outputs instead of building them.
  *
  * A step's inputs are the files git sees (tracked, or untracked and not ignored) in its
  * directories and in the workspace packages they depend on, the root files every build reads, the
- * Node and Bun versions and the environment variables the builds read.
+ * Node and Bun versions and the environment variables the builds read. A package's files leave out
+ * the workspace packages inside it (each is an input only of the steps that depend on it) and
+ * `notPackageSources`.
  *
  * The cache lives in `$EXECUTOR_E2E_CACHE`, or `~/.cache/executor-e2e-prepare`. CI and
  * `--no-cache` build every step without reading or writing it.
+ *
+ * `--skip <step>` neither runs a step nor reads or changes its outputs: something else provides them.
+ * CI skips `collector:build` and then fetches the run's one collector build into
+ * `packages/telemetry/dist/collector` (checks.yml), so its jobs need no Rust toolchain; a job whose
+ * fetch fails stops before any scenario starts.
  */
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -26,6 +34,12 @@ type Step = {
   /** Steps whose outputs this step reads. Their keys are part of this step's key. */
   readonly after: ReadonlyArray<string>;
   readonly outputs: ReadonlyArray<string>;
+  /**
+   * `false`: always run the command, never this cache. The collector's build script keeps its own
+   * identity (toolchain, C compiler, linker, Cargo config) and its own store, and checks the
+   * pinned toolchain; a cache keyed on less would skip both.
+   */
+  readonly cached?: false;
 };
 
 const steps: ReadonlyArray<Step> = [
@@ -39,17 +53,25 @@ const steps: ReadonlyArray<Step> = [
     outputs: ["packages/apps/dist"],
   },
   {
-    // The Motel fork is pinned by revision in motel/source.json and has its own lockfile.
-    name: "telemetry:build",
-    command: ["bun", "run", "telemetry:build"],
+    // The telemetry collector. Its build script runs every time: it checks the pinned toolchain,
+    // computes the build's whole identity and copies an unchanged build from its own store in a
+    // fraction of a second (packages/telemetry/collector/README.md, Release builds).
+    name: "collector:build",
+    command: ["bun", "run", "collector:build"],
     packages: [],
-    files: [
-      "packages/telemetry/package.json",
-      "packages/telemetry/motel",
-      "packages/telemetry/scripts",
-    ],
+    files: ["packages/telemetry/collector", "packages/telemetry/scripts/build-collector.ts"],
     after: [],
-    outputs: ["packages/telemetry/dist/motel"],
+    outputs: ["packages/telemetry/dist/collector"],
+    cached: false,
+  },
+  {
+    // The trace viewer the collector serves.
+    name: "viewer:build",
+    command: ["bun", "run", "viewer:build"],
+    packages: ["packages/telemetry/viewer"],
+    files: [],
+    after: [],
+    outputs: ["packages/telemetry/dist/viewer"],
   },
   {
     name: "e2e:runtime",
@@ -97,6 +119,16 @@ const steps: ReadonlyArray<Step> = [
 ];
 
 /**
+ * Files inside a workspace package that are not its sources: no build of its dependents reads
+ * them. The collector's crate and build script sit in `@executor-js/telemetry`, but only
+ * `collector:build` reads them, and it names them itself.
+ */
+const notPackageSources = [
+  "packages/telemetry/collector",
+  "packages/telemetry/scripts/build-collector.ts",
+];
+
+/**
  * Root files the builds read: the manifest and lockfile, dependency patches, the base tsconfig,
  * and `.gitignore`, which Tailwind reads to choose the files it scans for class names.
  */
@@ -110,6 +142,23 @@ process.env.EXECUTOR_DASHBOARD_SOURCEMAP = "hidden";
 const keep = 20;
 
 const useCache = !process.env.CI && !process.argv.includes("--no-cache");
+const skipped = new Set<string>();
+for (let index = 2; index < process.argv.length; index++) {
+  const arg = process.argv[index];
+  if (arg === "--no-cache") continue;
+  if (arg !== "--skip") {
+    console.error(`Unknown argument ${arg}. Options: --no-cache, --skip <step>.`);
+    process.exit(2);
+  }
+  const name = process.argv[++index] ?? "";
+  if (!steps.some((step) => step.name === name)) {
+    console.error(
+      `--skip names no step: ${JSON.stringify(name)}. Steps: ${steps.map((step) => step.name).join(", ")}.`,
+    );
+    process.exit(2);
+  }
+  skipped.add(name);
+}
 const cacheRoot =
   process.env.EXECUTOR_E2E_CACHE ?? path.join(os.homedir(), ".cache", "executor-e2e-prepare");
 
@@ -172,20 +221,40 @@ const hashFile = (file: string) => {
   return hash;
 };
 
+/** The files git sees under `paths`: tracked, or untracked and not ignored. */
+const gitFiles = (paths: ReadonlyArray<string>): ReadonlyArray<string> =>
+  paths.length === 0
+    ? []
+    : execFileSync("git", ["ls-files", "-z", "-co", "--exclude-standard", "--", ...paths], {
+        encoding: "utf8",
+        maxBuffer: 256 * 1024 * 1024,
+      })
+        .split("\0")
+        .filter(Boolean);
+
+const within = (file: string, directory: string) =>
+  file === directory || file.startsWith(`${directory}/`);
+
+/** A package's own files: without the workspace packages inside it and `notPackageSources`. */
+const packageFiles = (found: string) => {
+  const directory = found.split(path.sep).join("/");
+  const left = [
+    ...notPackageSources,
+    ...[...workspaces.values()]
+      .map((other) => other.split(path.sep).join("/"))
+      .filter((other) => other !== directory && within(other, directory)),
+  ];
+  return gitFiles([directory]).filter((file) => !left.some((out) => within(file, out)));
+};
+
 const keys = new Map<string, string>();
 const keyOf = (step: Step) => {
-  const paths = [...rootFiles, ...step.files, ...closure(step.packages)];
-  const files = execFileSync(
-    "git",
-    ["ls-files", "-z", "-co", "--exclude-standard", "--", ...paths],
-    {
-      encoding: "utf8",
-      maxBuffer: 256 * 1024 * 1024,
-    },
-  )
-    .split("\0")
-    .filter(Boolean)
-    .sort();
+  const files = [
+    ...new Set([
+      ...gitFiles([...rootFiles, ...step.files]),
+      ...closure(step.packages).flatMap(packageFiles),
+    ]),
+  ].sort();
   const hash = createHash("sha256");
   hash.update(
     JSON.stringify({
@@ -243,8 +312,12 @@ const store = (step: Step, entry: string) => {
 const started = performance.now();
 const summary: Array<string> = [];
 for (const step of steps) {
+  if (skipped.has(step.name)) {
+    summary.push(`${step.name}: skipped, provided elsewhere`);
+    continue;
+  }
   const stepStarted = performance.now();
-  const key = useCache ? keyOf(step) : undefined;
+  const key = useCache && step.cached !== false ? keyOf(step) : undefined;
   if (key !== undefined) keys.set(step.name, key);
   const entry = key === undefined ? undefined : path.join(cacheRoot, step.name, key);
   if (entry !== undefined && fs.existsSync(entry)) {
@@ -255,13 +328,31 @@ for (const step of steps) {
     summary.push(`${step.name}: cached`);
   } else {
     const [command, ...args] = step.command;
-    const run = spawnSync(command!, args, { stdio: "inherit" });
+    // A step can leave lines for the summary in this file: the collector's build says so when the
+    // shared store it stores builds in cannot be written.
+    const notes = path.join(
+      os.tmpdir(),
+      `executor-prepare-notes-${process.pid}-${step.name.replace(/\W/gu, "-")}`,
+    );
+    fs.rmSync(notes, { force: true });
+    const run = spawnSync(command!, args, {
+      stdio: "inherit",
+      env: { ...process.env, EXECUTOR_PREPARE_NOTES: notes },
+    });
+    const noted = fs.existsSync(notes)
+      ? fs.readFileSync(notes, "utf8").split("\n").filter(Boolean)
+      : [];
+    fs.rmSync(notes, { force: true });
     if (run.status !== 0) {
       console.error(`\n${step.name} failed (${run.signal ?? `exit ${run.status}`}).`);
       process.exit(run.status ?? 1);
     }
     if (entry !== undefined) store(step, entry);
-    summary.push(`${step.name}: built`);
+    summary.push(
+      `${step.name}: built in ${((performance.now() - stepStarted) / 1000).toFixed(1)}s`,
+    );
+    for (const line of new Set(noted)) summary.push(`  ${step.name}: ${line}`);
+    continue;
   }
   summary[summary.length - 1] += ` in ${((performance.now() - stepStarted) / 1000).toFixed(1)}s`;
 }

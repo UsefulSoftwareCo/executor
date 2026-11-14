@@ -75,7 +75,7 @@ const session = (name: string) =>
     return { raw };
   });
 
-/** A trace's span named `name`, once Motel has it. Reading Motel sends the server nothing. */
+/** A trace's span named `name`, once the collector has it. Reading it sends the server nothing. */
 const delivered = (traceId: string, name: string, attempts: number) =>
   Effect.gen(function* () {
     const telemetry = yield* Telemetry;
@@ -84,7 +84,7 @@ const delivered = (traceId: string, name: string, attempts: number) =>
       Effect.flatMap((spans) => {
         const found = spans.find((span) => span.operationName === name);
         return found === undefined
-          ? Effect.fail(new Error(`${name} has not reached Motel`))
+          ? Effect.fail(new Error(`${name} has not reached the collector`))
           : Effect.succeed(found);
       }),
       Effect.retry({ schedule: Schedule.spaced("250 millis"), times: attempts }),

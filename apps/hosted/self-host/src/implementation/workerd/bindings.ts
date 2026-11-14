@@ -192,7 +192,7 @@ export const bindingHttpClient = (
   });
 
 /** The bundled collector's internal origin; it names a service binding, never a network address. */
-export const collectorOrigin = "http://motel.internal";
+export const collectorOrigin = "http://collector.internal";
 
 /**
  * Telemetry exports to the bundled collector go through its service binding, which the host

@@ -1194,7 +1194,9 @@ export const scenarios = plan({
     title: "App cache failures during evaluation keep their safe reason in responses and traces",
     targets: {
       "self-host": scheduled,
-      cloud: na("Uses the shared runtime contract; self-host delivers its traces to Motel."),
+      cloud: na(
+        "Uses the shared runtime contract; self-host delivers its traces to its bundled collector.",
+      ),
       local: na("Hosted API fixture; the runtime and collector are shared with Local."),
     },
   },
@@ -2538,7 +2540,7 @@ export const scenarios = plan({
     title: "SDK batches invocation accounts and finished workflow history",
     targets: {
       "self-host": scheduled,
-      cloud: na("This query budget reads the self-host Motel collector."),
+      cloud: na("This query budget reads the self-host collector."),
       local: na("This scenario uses hosted organization routes."),
     },
   },
@@ -2549,7 +2551,7 @@ export const scenarios = plan({
       "Tool invocations resolve one committed set of linked accounts without holding a transaction",
     targets: {
       "self-host": scheduled,
-      cloud: na("This scenario reads SQL spans from the self-host Motel collector."),
+      cloud: na("This scenario reads SQL spans from the self-host collector."),
       local: na("This scenario uses hosted organization routes."),
     },
   },
@@ -7448,7 +7450,7 @@ export const scenarios = plan({
     title: "MCP and API bearer authentication reads its grant in one SQL statement",
     targets: {
       "self-host": scheduled,
-      cloud: na("This scenario reads SQL spans from the self-host Motel collector."),
+      cloud: na("This scenario reads SQL spans from the self-host collector."),
       local: na("Local uses its instance credential."),
     },
   },
@@ -7459,7 +7461,7 @@ export const scenarios = plan({
       "An MCP tool call checks its access and links in one statement and its caller in one more",
     targets: {
       "self-host": scheduled,
-      cloud: na("This scenario reads SQL spans from the self-host Motel collector."),
+      cloud: na("This scenario reads SQL spans from the self-host collector."),
       local: na("Local has no hosted organization policies."),
     },
   },
@@ -7606,7 +7608,7 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: na(
-        "Reads SQL spans from the self-host Motel collector; cloud-tool-call-batch.spec.ts covers Cloud's batch.",
+        "Reads SQL spans from the self-host collector; cloud-tool-call-batch.spec.ts covers Cloud's batch.",
       ),
       local: na("Local has no hosted organization policies."),
     },
@@ -9578,6 +9580,30 @@ export const scenarios = plan({
       ),
     },
   },
+  telemetryViewer: {
+    file: "telemetry-viewer.spec.ts",
+    title:
+      "The local collector serves the trace viewer: its trace list, a trace, a reload, an unknown trace and the logs filters",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "The image's collector has no address a browser can reach, so it serves no viewer.",
+      ),
+      cloud: na("Cloud exports to its own collector, not the bundled one."),
+    },
+  },
+  telemetryPartialTrace: {
+    file: "telemetry-partial-trace.spec.ts",
+    title:
+      "A trace the collector answers in part fails a check that reads it and stays marked in evidence",
+    targets: {
+      "self-host": scheduled,
+      local: na(
+        "The suite's span reader is the same on every target; the self-host run covers it.",
+      ),
+      cloud: na("Attached Cloud reads Axiom, which answers no trace in part."),
+    },
+  },
   telemetryStoreIdleAtBound: {
     file: "telemetry-store-bound.spec.ts",
     title:
@@ -11025,10 +11051,10 @@ export const scenarios = plan({
   telemetry: {
     fixtures: "actors",
     file: "hosted.spec.ts",
-    title: "real requests reach Motel with correlated server spans",
+    title: "real requests reach the collector with correlated server spans",
     targets: {
       "self-host": scheduled,
-      cloud: na("Cloud exports to Axiom; this test checks the self-host Motel collector."),
+      cloud: na("Cloud exports to Axiom; this test checks the self-host collector."),
       local: na("This test checks hosted organization routes and self-host service spans."),
     },
   },

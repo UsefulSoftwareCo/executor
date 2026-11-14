@@ -1,9 +1,11 @@
 /**
  * The bundled collector, once its store is full, keeps the traces it holds while an idle server
- * trickles in small exports, instead of evicting the oldest for every export.
+ * trickles in small exports, instead of evicting the oldest for every export. It evicts in steps
+ * after it answers an export, so the scenario waits on its own status (`/api/ingest`'s
+ * `store.maintenancePending` and `store.draining`) for each eviction to finish, never a fixed time.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, FileSystem, Schedule, Schema } from "effect";
 import { HttpBody, HttpClient } from "effect/http";
 import { randomBytes } from "node:crypto";
 import { TestLive, withCase } from "../support/case.ts";
@@ -19,6 +21,12 @@ const idleExports = 20;
 const Evictions = Schema.Struct({
   evictions: Schema.Struct({ passes: Schema.Number, traces: Schema.Number }),
 });
+/** Whether retention has finished: no eviction or free pages left to do. */
+const Retention = Schema.Struct({
+  store: Schema.Struct({ maintenancePending: Schema.Boolean, draining: Schema.Boolean }),
+});
+/** How long retention may take to finish after an export: a step is bounded in rows. */
+const retentionFinishes = "20 seconds";
 
 const attribute = (key: string, value: string) => ({ key, value: { stringValue: value } });
 
@@ -72,9 +80,7 @@ layer(TestLive, { excludeTestServices: true })("Telemetry store bound", (it) => 
           directory: target.directory,
           prefix: "collector",
         });
-        const collector = yield* serveOtlpCollector(directory, {
-          MOTEL_OTEL_MAX_DB_SIZE_MB: String(boundMegabytes),
-        });
+        const collector = yield* serveOtlpCollector(directory, { maxStoreMb: boundMegabytes });
         const send = (traceIds: ReadonlyArray<string>, spans: number) =>
           Effect.scoped(
             http.post(new URL("/v1/traces", collector).href, {
@@ -93,13 +99,30 @@ layer(TestLive, { excludeTestServices: true })("Telemetry store bound", (it) => 
             Effect.map(({ evictions }) => evictions),
           );
         const newId = () => randomBytes(16).toString("hex");
+        // The collector's status once retention has finished. Its first status read after an
+        // export's 200 already says whether that export left work to do.
+        const settled = ingestStatus.pipe(
+          Effect.flatMap((status) =>
+            Schema.decodeUnknownEffect(Retention)(status).pipe(
+              Effect.flatMap(({ store }) =>
+                store.maintenancePending || store.draining
+                  ? Effect.fail("Retention has not finished")
+                  : Effect.succeed(status),
+              ),
+            ),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("100 millis") }),
+          Effect.timeout(retentionFinishes),
+        );
 
-        // Fill the store, two 40-span traces an export, until it evicts its first trace.
+        // Fill the store, two 40-span traces an export, until it evicts its first trace, and let
+        // that eviction finish.
         const sent: Array<string> = [];
         while (sent.length === 0 || (yield* stored(sent[0]!))) {
           const traceIds = [newId(), newId()];
           expect(yield* send(traceIds, 40)).toBe(200);
           sent.push(...traceIds);
+          yield* settled;
         }
         // Traces are evicted oldest first, so the ones still stored are a suffix of those sent.
         let low = 0;
@@ -110,21 +133,21 @@ layer(TestLive, { excludeTestServices: true })("Telemetry store bound", (it) => 
           else low = middle + 1;
         }
         const oldest = sent[low]!;
-        const filled = yield* ingestStatus;
+        const filled = yield* settled;
 
         // An idle server's exports, about half a MiB in all, after the store first evicted.
         const idle = Array.from({ length: idleExports }, newId);
         for (const traceId of idle) expect(yield* send([traceId], 10)).toBe(200);
+        const afterIdle = yield* settled;
 
         expect(yield* stored(oldest), "The oldest stored trace is still stored").toBe(true);
         for (const traceId of idle) expect(yield* stored(traceId)).toBe(true);
         // The export that crossed the bound evicted down to the low-water mark in one pass.
         const passes = yield* evictions(filled);
         expect(passes.passes, "Filling the store took one eviction pass").toBe(1);
-        expect(
-          yield* evictions(yield* ingestStatus),
-          "No idle export started an eviction pass",
-        ).toEqual(passes);
+        expect(yield* evictions(afterIdle), "No idle export started an eviction pass").toEqual(
+          passes,
+        );
       }),
     ),
   );
