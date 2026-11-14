@@ -1,5 +1,18 @@
-import { Fragment, useState, type ComponentType, type ReactNode, type SVGProps } from "react";
-import { ArrowUpRight01Icon, McpServerIcon, ZoomInAreaIcon } from "@hugeicons/core-free-icons";
+import {
+  createContext,
+  Fragment,
+  useContext,
+  useState,
+  type ComponentType,
+  type ReactNode,
+  type SVGProps,
+} from "react";
+import {
+  ArrowRight01Icon,
+  ArrowUpRight01Icon,
+  McpServerIcon,
+  ZoomInAreaIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AssistantId } from "../../contracts/dashboard.ts";
 import { publicDocsBaseUrl } from "../../contracts/documentation.ts";
@@ -82,9 +95,12 @@ const Command = ({ children }: { readonly children: string }) => (
 /** The exact MCP URL, copyable where a step asks for it. */
 export function EndpointField({
   endpoint,
+  label = "Copy MCP URL",
   className,
 }: {
   readonly endpoint: string;
+  /** What the copy button says to assistive tech, for a value other than the MCP URL. */
+  readonly label?: string;
   readonly className?: string;
 }) {
   return (
@@ -103,7 +119,7 @@ export function EndpointField({
           </Fragment>
         ))}
       </code>
-      <CopyButton code={endpoint} label="Copy MCP URL" text="Copy" size="sm" inline />
+      <CopyButton code={endpoint} label={label} text="Copy" size="sm" inline />
     </div>
   );
 }
@@ -206,6 +222,33 @@ const openAiPluginGuide = (name: "ChatGPT" | "Codex"): AssistantGuide => ({
       </>
     ),
 });
+
+/**
+ * What a host adds to the assistant guides. Nothing here replaces a guide: quick setup leads with
+ * one click and keeps the steps one click away, extra assistants sit beside the built-in ones, and
+ * screenshots swap in captures that show the host's own name.
+ */
+export interface AssistantGuideExtensions {
+  readonly quickSetup?: Partial<Record<AssistantId, ReactNode>>;
+  readonly assistants?: readonly ExtraAssistant[];
+  readonly screenshots?: Partial<Record<AssistantId, string>>;
+}
+
+/** An assistant the host sets up itself, placed right after a built-in one. */
+export interface ExtraAssistant {
+  readonly id: string;
+  readonly name: string;
+  readonly logo: ComponentType<SVGProps<SVGSVGElement>>;
+  readonly after: AssistantId;
+  /** Shown under its name, like a built-in guide's method. */
+  readonly method: string;
+  readonly link?: { readonly href: string; readonly label: string };
+  readonly content: ReactNode;
+}
+
+const AssistantGuideExtensionsContext = createContext<AssistantGuideExtensions>({});
+export const AssistantGuideExtensionsProvider = AssistantGuideExtensionsContext.Provider;
+const useAssistantGuideExtensions = () => useContext(AssistantGuideExtensionsContext);
 
 const assistantGuides = (endpoint: string): Record<AssistantId, AssistantGuide> => ({
   claude: {
@@ -477,29 +520,33 @@ export const assistantName = (assistant: AssistantId): string =>
   assistantGuides("")[assistant].name;
 
 /** Assistant logos as a grid of choices; `selected` marks the current one when the choice persists. */
-export function AssistantChoices({
+export function AssistantChoices<Id extends string = AssistantId>({
   selected,
   onSelect,
 }: {
-  readonly selected?: AssistantId;
-  readonly onSelect: (assistant: AssistantId) => void;
+  readonly selected?: AssistantId | Id;
+  readonly onSelect: (assistant: AssistantId | Id) => void;
 }) {
   const guides = assistantGuides("");
+  const { assistants: extras = [] } = useAssistantGuideExtensions();
+  const choices = AssistantId.literals.flatMap((id) => [
+    { id, name: guides[id].name, logo: guides[id].logo },
+    ...extras.filter((extra) => extra.after === id),
+  ]);
   return (
     <div
       className="flex flex-wrap gap-1.5 @md:grid @md:grid-cols-5"
       role="group"
       aria-label="Choose your assistant"
     >
-      {AssistantId.literals.map((id) => {
-        const item = guides[id];
+      {choices.map((item) => {
         const ItemLogo = item.logo;
         return (
           <button
-            key={id}
+            key={item.id}
             type="button"
-            aria-pressed={selected === undefined ? undefined : selected === id}
-            onClick={() => onSelect(id)}
+            aria-pressed={selected === undefined ? undefined : selected === item.id}
+            onClick={() => onSelect(item.id as AssistantId | Id)}
             className="flex min-w-0 items-center gap-2 rounded-lg border py-1 pr-3 pl-1 text-[13px] leading-4 @md:flex-col @md:gap-1.5 @md:not-aria-pressed:border-transparent @md:px-1 @md:pt-2.5 @md:pb-2 @md:text-[12px] text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 aria-pressed:border-foreground/20 aria-pressed:bg-muted aria-pressed:text-foreground max-[740px]:min-h-11"
           >
             <span className="flex size-7 shrink-0 items-center justify-center rounded-md border bg-background shadow-xs @md:size-8">
@@ -524,7 +571,7 @@ export function AssistantGuideSteps({
   guide,
   className,
 }: {
-  readonly guide: AssistantGuide;
+  readonly guide: Pick<AssistantGuide, "steps">;
   readonly className?: string;
 }) {
   return (
@@ -564,7 +611,7 @@ export function AssistantGuideLink({
   className,
   children,
 }: {
-  readonly guide: AssistantGuide;
+  readonly guide: Pick<AssistantGuide, "link">;
   readonly className?: string;
   readonly children?: ReactNode;
 }) {
@@ -589,33 +636,25 @@ export function AssistantSetupGuide({
   readonly assistant: AssistantId;
 }) {
   const guide = useAssistantGuide(endpoint, assistant);
-  const Logo = guide.logo;
-  return (
-    <article
-      aria-label={`${guide.name} setup`}
-      className="@container overflow-hidden rounded-xl border bg-card"
-    >
-      <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border bg-background">
-          <Logo className="size-5" />
-        </span>
-        <div className="min-w-0 flex-1 basis-40">
-          <h3 className="text-sm font-medium">Add Executor to {guide.name}</h3>
-          <p className="text-xs text-muted-foreground">{guide.method}</p>
-        </div>
-        <AssistantGuideLink guide={guide} className="w-full @md:w-auto" />
-      </header>
+  const extensions = useAssistantGuideExtensions();
+  const quick = extensions.quickSetup?.[assistant];
+  const capture = extensions.screenshots?.[assistant];
+  const screenshot =
+    guide.screenshot &&
+    (capture === undefined ? guide.screenshot : { ...guide.screenshot, src: capture });
+  const steps = (
+    <>
       <div
         className={
-          guide.screenshot && !guide.screenshot.wide
+          screenshot && !screenshot.wide
             ? "grid gap-4 p-4 @2xl:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] @2xl:gap-6"
             : "p-4"
         }
       >
         <AssistantGuideSteps guide={guide} />
-        {guide.screenshot && (
-          <div className={guide.screenshot.wide ? "mt-4" : undefined}>
-            <SetupScreenshot {...guide.screenshot} />
+        {screenshot && (
+          <div className={screenshot.wide ? "mt-4" : undefined}>
+            <SetupScreenshot {...screenshot} />
           </div>
         )}
       </div>
@@ -624,23 +663,123 @@ export function AssistantSetupGuide({
           {guide.note}
         </footer>
       )}
+    </>
+  );
+  return (
+    <AssistantGuideCard
+      name={guide.name}
+      logo={guide.logo}
+      title={`Add Executor to ${guide.name}`}
+      method={quick === undefined ? guide.method : "One-click setup"}
+      link={<AssistantGuideLink guide={guide} className="w-full @md:w-auto" />}
+    >
+      {quick === undefined ? steps : <QuickSetup quick={quick}>{steps}</QuickSetup>}
+    </AssistantGuideCard>
+  );
+}
+
+/** The frame every assistant's guide shares: its logo, title and method above the content. */
+function AssistantGuideCard({
+  name,
+  logo: Logo,
+  title,
+  method,
+  link,
+  children,
+}: {
+  readonly name: string;
+  readonly logo: ComponentType<SVGProps<SVGSVGElement>>;
+  readonly title: string;
+  readonly method: string;
+  readonly link?: ReactNode;
+  readonly children: ReactNode;
+}) {
+  return (
+    <article
+      aria-label={`${name} setup`}
+      className="@container overflow-hidden rounded-xl border bg-card"
+    >
+      <header className="flex flex-wrap items-center gap-3 border-b px-4 py-3">
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg border bg-background">
+          <Logo className="size-5" />
+        </span>
+        <div className="min-w-0 flex-1 basis-40">
+          <h3 className="text-sm font-medium">{title}</h3>
+          <p className="text-xs text-muted-foreground">{method}</p>
+        </div>
+        {link}
+      </header>
+      {children}
     </article>
+  );
+}
+
+/** A host's one-click setup first; the guide's own steps stay one click away. */
+function QuickSetup({
+  quick,
+  children,
+}: {
+  readonly quick: ReactNode;
+  readonly children: ReactNode;
+}) {
+  return (
+    <>
+      <div className="p-4">{quick}</div>
+      <details className="group border-t">
+        <summary className="flex cursor-pointer list-none items-center gap-1.5 px-4 py-2.5 text-xs text-muted-foreground outline-none hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 [&::-webkit-details-marker]:hidden">
+          <HugeiconsIcon
+            icon={ArrowRight01Icon}
+            strokeWidth={2}
+            size={14}
+            className="transition-transform group-open:rotate-90"
+            aria-hidden
+          />
+          <span className="group-open:hidden">Show manual steps</span>
+          <span className="hidden group-open:inline">Hide manual steps</span>
+        </summary>
+        <div className="border-t">{children}</div>
+      </details>
+    </>
+  );
+}
+
+/** A host's own assistant, in the same frame as the built-in guides. */
+function ExtraAssistantGuide({ assistant }: { readonly assistant: ExtraAssistant }) {
+  return (
+    <AssistantGuideCard
+      name={assistant.name}
+      logo={assistant.logo}
+      title={`Add Executor to ${assistant.name}`}
+      method={assistant.method}
+      link={<AssistantGuideLink guide={assistant} className="w-full @md:w-auto" />}
+    >
+      <div className="p-4">{assistant.content}</div>
+    </AssistantGuideCard>
   );
 }
 
 /** The assistant choices above the chosen assistant's guide, for pages that keep both in view. */
 export function AssistantInstallInstructions({ endpoint }: { readonly endpoint: string }) {
-  const [selected, setSelected] = useState<AssistantId>("claude");
+  const [selected, setSelected] = useState<string>("claude");
+  const extra = useAssistantGuideExtensions().assistants?.find(({ id }) => id === selected);
   return (
     <section aria-labelledby="assistant-setup-title" className="@container min-w-0">
       <h2 id="assistant-setup-title" className="text-sm font-medium">
         Connect an assistant
       </h2>
       <div className="mt-3">
-        <AssistantChoices selected={selected} onSelect={setSelected} />
+        <AssistantChoices<string> selected={selected} onSelect={setSelected} />
       </div>
       <div className="mt-4">
-        <AssistantSetupGuide endpoint={endpoint} assistant={selected} />
+        {extra ? (
+          <ExtraAssistantGuide assistant={extra} />
+        ) : (
+          <AssistantSetupGuide
+            key={selected}
+            endpoint={endpoint}
+            assistant={selected as AssistantId}
+          />
+        )}
       </div>
     </section>
   );
@@ -715,6 +854,7 @@ export function McpInstallInstructions({
   docs = publicDocsBaseUrl,
   next = "help me get my first app set up",
   token,
+  tabs = [],
   children,
 }: {
   readonly endpoint: string;
@@ -723,6 +863,12 @@ export function McpInstallInstructions({
   readonly next?: string;
   /** Bearer-token setup for scripts and headless agents, where the product offers tokens. */
   readonly token?: ReactNode;
+  /** More ways in that the host offers, after the built-in tabs. */
+  readonly tabs?: readonly {
+    readonly value: string;
+    readonly label: string;
+    readonly content: ReactNode;
+  }[];
   readonly children?: ReactNode;
 }) {
   const prompt = mcpSetupPrompt(endpoint, docs, next);
@@ -758,6 +904,11 @@ export function McpInstallInstructions({
               Personal access token
             </TabsTrigger>
           )}
+          {tabs.map((tab) => (
+            <TabsTrigger key={tab.value} value={tab.value}>
+              {tab.label}
+            </TabsTrigger>
+          ))}
         </TabsList>
         <TabsContent value="assistant" className="mt-4">
           <AssistantInstallInstructions endpoint={endpoint} />
@@ -805,6 +956,11 @@ export function McpInstallInstructions({
             {token}
           </TabsContent>
         )}
+        {tabs.map((tab) => (
+          <TabsContent key={tab.value} value={tab.value} className="mt-4">
+            {tab.content}
+          </TabsContent>
+        ))}
       </Tabs>
       {children && (
         <p className="field-hint mt-4 text-xs leading-5 text-muted-foreground">{children}</p>
