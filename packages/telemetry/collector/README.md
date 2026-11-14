@@ -21,10 +21,79 @@ the built binary: stop signals, its socket, acknowledging only stored exports, g
 nesting at the size limit, an interrupted first start, a drain killed part way, a store of another
 format, the write-ahead log's bound under load and resident memory after a burst (Linux with
 glibc only).
-CI runs them in the `collector-native` job when the crate changes.
+CI runs them in the `collector-native` job when the crate, its build script or its CI actions
+change; that job also builds, checks and smoke-tests the linux-x64 release executable.
 
 `rust-toolchain.toml` pins the toolchain. Every dependency is pinned to an exact version in
 `Cargo.toml` and `Cargo.lock`.
+
+### Release builds
+
+`packages/telemetry/scripts/build-collector.ts` builds the executable that ships, for one release
+target, and is the only way it should be built for packaging (`bun run collector:build` builds for
+this machine). It needs rustup, which installs the pinned toolchain and the target's standard
+library itself.
+
+```sh
+node packages/telemetry/scripts/build-collector.ts [--target <target>] build check smoke
+node packages/telemetry/scripts/build-collector.ts [--target <target>] --key
+```
+
+| Target         | Rust target                 | Built on               | Floor                    |
+| -------------- | --------------------------- | ---------------------- | ------------------------ |
+| `linux-x64`    | `x86_64-unknown-linux-gnu`  | Linux x64              | glibc symbols up to 2.35 |
+| `linux-arm64`  | `aarch64-unknown-linux-gnu` | Linux arm64            | glibc symbols up to 2.35 |
+| `darwin-arm64` | `aarch64-apple-darwin`      | macOS on Apple Silicon | macOS 11.0               |
+| `darwin-x64`   | `x86_64-apple-darwin`       | macOS on Apple Silicon | macOS 10.15              |
+| `win32-x64`    | `x86_64-pc-windows-msvc`    | Windows x64            | static C runtime         |
+
+- `build` writes `packages/telemetry/dist/collector/`: the executable, `NOTICE` (Motel's licence),
+  `licenses/` (the licence files of every crate linked into the executable, and the Rust standard
+  library's `COPYRIGHT-library.html`), `cargo-packages.txt` (those crates as `name@version`) and
+  `identity`. It does nothing when `identity` already holds the current key. Path prefixes from
+  the build machine are remapped, Windows links the C runtime statically, and macOS builds set
+  `MACOSX_DEPLOYMENT_TARGET`. Every Rust and C tool runs with the pinned toolchain named in
+  `RUSTUP_TOOLCHAIN`, which outranks a `rustup override`, and with only the variables that find
+  the tools (`PATH`, the homes, the Windows system directories): `CC`, `CFLAGS`, `RUSTFLAGS`,
+  `CARGO_*` other than `CARGO_HOME`, `LIBSQLITE3_FLAGS` and every other variable are dropped.
+  Each crate linked into the executable must have at least one primary licence file (its declared
+  `license_file`, or a top-level `LICENSE*`, `LICENCE*`, `COPYING*` or `UNLICENSE*`); a `NOTICE`,
+  `COPYRIGHT` or third-party file is copied beside it but never counts as one. This proves a
+  licence file is present, not that the files cover every licence in the crate's SPDX
+  expression.
+- `check` fails when the executable is not the target's architecture, is over 15 MiB, contains a
+  build machine path, or exceeds its floor: on Linux, a glibc symbol newer than 2.35 or a shared
+  library other than libc, libm, libgcc_s and the loader; on macOS, a different `minos` or a
+  library outside `/usr/lib` and `/System/Library`; on Windows, an import of the C runtime DLLs or
+  an embedded manifest without `longPathAware`. `build.rs` embeds `windows.manifest`: bundled
+  SQLite opens files with plain Win32 paths, so without it a store path over 260 characters fails
+  even where the machine allows long paths (found by the first Windows smoke test).
+- `smoke` checks the 15 MiB cap too, then starts the executable on a temporary port with a store
+  path over 260 characters, checks `GET /api/health`, stores one span, one log and a span whose
+  attribute sits inside 64 key-value lists (decoding runs on the collector's own thread stack,
+  measured only on x86-64 Linux), checks `GET /api/ingest`, stops it and starts it again on the
+  same store. When the test fails or ends, every collector it started is killed and waited for, up
+  to 5 seconds each, and its directory removed; a SIGKILL of the test's own Node process skips
+  that. It needs neither git nor Rust. On Windows it can only terminate the process, so
+  the stop on Ctrl-Break is not exercised there.
+- `--key` installs the pinned toolchain if needed and prints the artifact identity: a SHA-256 of
+  the crate's files (tracked, or untracked and not ignored), the build script, the target, the
+  Rust toolchain's `rustc -vV` and `cargo -vV`, and the C compiler and linker that environment
+  finds.
+
+The identity's promise is for a clean environment: no Cargo config file anywhere Cargo would read
+one (`config.toml` or `config` in `.cargo` in the crate's directory or any directory above it,
+or in Cargo's home). That is every CI and release runner. Cargo's home is `CARGO_HOME` when it is
+set and not empty, otherwise `.cargo` in the home directory, and the script gives every tool it
+runs that same absolute path; a relative `CARGO_HOME` is refused. Anything at a config path that
+is not a regular file (a directory, a link to one, a link to nothing) is an error. That is this
+script's own rule, deliberately stricter than Cargo, which ignores a link to nothing: no key is
+made while anything but a readable config file sits at a config path. In such an environment two
+builds with the same identity have produced the same bytes in every case tested, and `build`
+skips a build whose `identity` already matches. If any Cargo config file is in effect, `build`
+says which in one line, runs cargo without that shortcut (cargo makes its own up-to-date decision), and writes an
+identity that no key can equal; `--key` fails, and `.github/actions/collector` treats that as an
+error.
 
 ## Run
 

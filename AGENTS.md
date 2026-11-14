@@ -94,7 +94,12 @@ Its `cargo test` suite in `tests/` is limited to five files:
   after a burst. These would be E2E scenarios, but nothing in `e2e/` builds the binary
   yet.
 
-CI runs it in the `collector-native` job when the crate changes.
+CI runs it in the `collector-native` job when the crate, its build script
+(`packages/telemetry/scripts/build-collector.ts`) or the `collector` and `rustup` actions in
+`.github/actions/` change (`e2e/collector-inputs.ts`). The job then builds the release executable for linux-x64 through
+`.github/actions/collector`, checks its glibc floor and libraries, smoke-tests it on the runner and
+on Ubuntu 22.04. A run on main saves it to the cache under its identity; a pull request's run
+restores main's entry when the identity matches and otherwise builds from scratch, saving nothing.
 
 Tests are not sacred. Delete a scenario when it no longer proves behavior a user
 or public API caller depends on, or when other scenarios already cover it. Say

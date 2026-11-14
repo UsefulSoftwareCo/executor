@@ -214,6 +214,38 @@ NodeRuntime.runMain(
       (JSON.parse(values[key]) as { include: ReadonlyArray<unknown> }).include.length > 0
         ? "true"
         : "false";
+    // The collector is built for each target a job that packages the CLI runtime runs on, and only
+    // those: every packaging job of a target downloads that one build (.github/actions/collector).
+    // The image and the notarized recovery parts package nothing.
+    const packagedOn = new Set(
+      (
+        [
+          "local_matrix",
+          "local_macos_arm64_matrix",
+          "checks_matrix",
+          "cli_matrix",
+          "recovery_matrix",
+        ] as const
+      ).flatMap((key) =>
+        (
+          JSON.parse(values[key]) as {
+            include: ReadonlyArray<{ readonly platform: string; readonly arch: string }>;
+          }
+        ).include.map((entry) => `${entry.platform}-${entry.arch}`),
+      ),
+    );
+    const collector = {
+      collector_matrix: JSON.stringify({
+        include: targets
+          .filter((target) => packagedOn.has(`${target.platform}-${target.arch}`))
+          .map((target) => ({
+            target: `${target.platform}-${target.arch}`,
+            platform: target.platform,
+            arch: target.arch,
+            runner: target.runner,
+          })),
+      }),
+    };
     const kinds = {
       narrowed: narrowed ? "true" : "false",
       run_local: included("local_matrix"),
@@ -221,6 +253,11 @@ NodeRuntime.runMain(
       run_cli: included("cli_matrix"),
       run_recovery: included("recovery_matrix"),
       run_docker: included("docker_matrix"),
+      run_collector:
+        (JSON.parse(collector.collector_matrix) as { include: ReadonlyArray<unknown> }).include
+          .length > 0
+          ? "true"
+          : "false",
     };
     // A narrowed run must still run something, and a whole-matrix run, a check or a publication
     // must run every kind: one left empty would pass untested.
@@ -241,7 +278,7 @@ NodeRuntime.runMain(
       );
     yield* fs.writeFileString(
       output,
-      Object.entries({ ...values, ...kinds })
+      Object.entries({ ...values, ...collector, ...kinds })
         .map(([key, value]) => `${key}=${value}\n`)
         .join(""),
       { flag: "a" },

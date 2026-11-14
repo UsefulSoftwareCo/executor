@@ -123,6 +123,18 @@ it again from main's scripts. Keying the release name on a hash of the whole
 `scripts/releases/bun-runtime/` directory, not the patch alone, would make this
 automatic; it is not done yet.
 
+The Rust telemetry collector is built by `packages/telemetry/scripts/build-collector.ts` (see the
+crate's README). The release workflow's `collector` job builds each target once per run from the
+`collector_matrix` that `workflow.ts` writes: the targets the run's packaging jobs (`local`,
+`local-macos-arm64`, `checks`, `cli`, `recovery`) run on, after any narrowing, so Linux x64 only
+in a check and none in a build of only the image, whose `releases` gate then expects the
+`collector` job skipped. It always builds; no release run restores or saves it. The packaging jobs do not
+`need` it: each waits for its own target's collector job with `collector-job.ts` and then
+downloads the build into `packages/telemetry/dist/collector/` before "Package the CLI runtime".
+`collector-job.ts` and the Deploy workflow's `apps-job.ts` share `job-wait.ts`, which follows one
+job of the run through the jobs API, fails as soon as that job ends without success or an answer
+leaves doubt, and fails at its deadline in elapsed time otherwise.
+
 The install scripts are `apps/docs/public/install.sh` and `install.ps1`, served
 at `https://executor.sh/docs/`. The publish job writes the Homebrew formula
 (`scripts/releases/homebrew.ts`) to the tap named by the `HOMEBREW_TAP`

@@ -759,6 +759,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "ci-selection.config.ts": () => import("./ci-selection.config.ts"),
   "ci-supersede.config.ts": () => import("./ci-supersede.config.ts"),
   "ci-repeat.config.ts": () => import("./ci-repeat.config.ts"),
+  "collector-job.config.ts": () => import("./collector-job.config.ts"),
   "workflow-caches.config.ts": () => import("./workflow-caches.config.ts"),
   "telemetry-event-lifetime.config.ts": () => import("./telemetry-event-lifetime.config.ts"),
   "cli-startup-imports.config.ts": () => import("./cli-startup-imports.config.ts"),

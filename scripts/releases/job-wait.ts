@@ -119,6 +119,10 @@ const attemptFrom = (name: string) =>
     }),
   );
 
+/** A limit of `seconds`, in whole minutes when it is some, for a message. */
+const spoken = (seconds: number) =>
+  seconds % 60 === 0 ? `${seconds / 60} minute${seconds === 60 ? "" : "s"}` : `${seconds} s`;
+
 /** How to wait for one job and what to say about it. */
 export type JobWait = {
   /** The job's name as the jobs API lists it, such as `apps` or `collector (linux-x64)`. */
@@ -127,8 +131,12 @@ export type JobWait = {
   readonly minutes: number;
   /** The failure for a job that ended `conclusion`; `url` is its page, when the API gave one. */
   readonly ended: (conclusion: string, url: string | undefined) => string;
-  /** The failure for a job still unfinished at the deadline; `reason` is the last answer. */
-  readonly late: (reason: string) => string;
+  /**
+   * The failure for a job still unfinished at the deadline; `reason` is the last answer and
+   * `limit` the limit in force, such as "15 minutes", or "2 s" when `JOB_WAIT_LIMIT_SECONDS`
+   * shortened it.
+   */
+  readonly late: (reason: string, limit: string) => string;
   /** What to print once it succeeded. */
   readonly succeeded: string;
 };
@@ -279,7 +287,8 @@ export const waitForJob = (options: JobWait) =>
     yield* follow.pipe(
       Effect.timeoutOrElse({
         duration: Duration.seconds(limit),
-        orElse: () => Effect.fail(new JobWaitFailed({ message: options.late(last) })),
+        orElse: () =>
+          Effect.fail(new JobWaitFailed({ message: options.late(last, spoken(limit)) })),
       }),
     );
     yield* Console.log(options.succeeded);
