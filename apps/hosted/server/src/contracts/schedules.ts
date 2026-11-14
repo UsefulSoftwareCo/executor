@@ -11,6 +11,7 @@ import {
   ScheduledRunId,
   ScheduleErrors,
   ScheduleId,
+  ScheduleName,
   type ScheduleAuthority,
 } from "@executor-js/sdk/core";
 import {
@@ -40,7 +41,7 @@ export class ScheduleWakeup extends Context.Service<ScheduleWakeup, Effect.Effec
 ) {}
 const organization = { organization: OrganizationReference };
 const app = { ...organization, app: AppId };
-const copy = { ...app, name: Schema.NonEmptyString, copy: ScheduleId };
+const copy = { ...app, name: ScheduleName, copy: ScheduleId };
 const prefix = "/api/organizations/:organization";
 const errors = [...ScheduleErrors, OrganizationForbidden, Forbidden] as const;
 /**
@@ -68,7 +69,7 @@ export const HostedSchedules = HttpApiGroup.make("schedules")
   )
   .add(
     HttpApiEndpoint.patch("configure", `${prefix}/apps/:app/schedules/:name`, {
-      params: { ...app, name: Schema.NonEmptyString },
+      params: { ...app, name: ScheduleName },
       payload: Schema.Struct({
         enabled: Schema.Boolean,
         approvalMode: Schema.optional(ScheduleApprovalMode),
@@ -85,7 +86,7 @@ export const HostedSchedules = HttpApiGroup.make("schedules")
   )
   .add(
     HttpApiEndpoint.post("runNow", `${prefix}/apps/:app/schedules/:name/run`, {
-      params: { ...app, name: Schema.NonEmptyString },
+      params: { ...app, name: ScheduleName },
       success: ScheduleSettings,
       error: errors,
     }),
