@@ -8,6 +8,17 @@ import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+
+import { collectorChanged, collectorInputs, collectorScenarios } from "../collector-inputs.ts";
+import dockerReleaseConfig from "../docker-release.config.ts";
+import { lanesFor, releaseSources, releaseSuiteConfigs } from "../release-lanes.ts";
+import {
+  packagedEngineDependency,
+  packagedEngineSpecs,
+  packagedEngineUnchanged,
+  packagedEngineVariable,
+} from "../packaged-engine.ts";
+import { closureOf } from "../save-path.ts";
 import { scenarios } from "../test-plan.ts";
 
 const jobs = [
@@ -20,16 +31,22 @@ const jobs = [
   "cloud-domains",
   "cloud-workers",
   "cloud-locks",
+  "cloud-removal-recovery",
   "cloud-batch",
+  "cloud-export-hang",
+  "cloud-listings",
   "cloud-autumn",
   "cloud-isolate",
-  "cloud-v1-bound",
+  "cloud-telemetry-flush",
+  "cloud-connections",
   "cloud-rate-limit",
   "cloud-rollback",
   "cloud-oauth-proxy-preview",
 ];
 /** The outputs that start the E2E runners: each sharded job's parts and the Cloud runners. */
 const runnerOutputs = ["local-shards", "self-host-shards", "cloud-runners"];
+/** The release lanes, which only a pull request runs (e2e/release-lanes.ts). */
+const laneOutputs = ["release-docker", "release-local"];
 const cloudJobs = jobs.filter((job) => job.startsWith("cloud"));
 
 /** A sharded job's matrix entries: each part's name, such as 2/3, and its pattern. */
@@ -47,8 +64,8 @@ const block = (...lines: ReadonlyArray<string>) =>
 
 /**
  * A `gh` that answers the select job's reads from files beside it: the description (`body.<n>`),
- * the open pull requests based on the branch (`above.<n>`), the changed files and main's contents
- * (`main/<path with / as _>`).
+ * the open pull requests based on the branch (`above.<n>`), the changed files, the files changed
+ * between the run's comparison ends (`compared`) and main's contents (`main/<path with / as _>`).
  * The nth read of a kind returns its nth answer, and the last answer once they run out, so a case
  * can edit the description while the job waits.
  */
@@ -56,6 +73,7 @@ const stubGh = `#!/bin/sh
 dir=$(dirname "$0")
 case "$*" in
   "pr list "*) kind=above ;;
+  *"/compare/"*) exec jq -r "$4" "$dir/compared.json" ;;
   *"/files "*) cat "$dir/files"; exit ;;
   *"/contents/"*) exec cat "$dir/main/$(echo "$*" | sed 's|.*/contents/||; s|[?].*||' | tr / _)" ;;
   *) kind=body ;;
@@ -71,11 +89,16 @@ cat "$dir/$kind.$read"
  * bodies, or of `stackedAbove` answers, is what successive reads return. The job waits `wait`
  * seconds, none by default, for an incomplete description. It runs the checkout's selector unless
  * `root` names a fixture tree. `main` answers the reads of main's contents by repository path;
- * without it the job has no default branch and compares nothing with main.
+ * without it the job has no default branch and compares nothing with main. `compared` lists the
+ * files changed since main or the previous main commit, none by default; `"unknown"` gives the job
+ * no comparison, as on a manual run.
  */
 const select = (input: {
   readonly body?: string | ReadonlyArray<string>;
   readonly changed?: ReadonlyArray<string>;
+  readonly compared?: ReadonlyArray<string> | "unknown";
+  /** Files the comparison lists as renamed, with the name each had before. */
+  readonly renamed?: ReadonlyArray<{ readonly from: string; readonly to: string }>;
   readonly main?: Readonly<Record<string, string>>;
   readonly stackedAbove?: string | ReadonlyArray<string>;
   readonly wait?: number;
@@ -103,6 +126,20 @@ const select = (input: {
     yield* answers("body", input.body ?? "");
     yield* answers("above", input.stackedAbove ?? "");
     yield* fs.writeFileString(path.join(bin, "files"), (input.changed ?? []).join("\n"));
+    const compared = input.compared ?? [];
+    if (compared !== "unknown")
+      yield* fs.writeFileString(
+        path.join(bin, "compared.json"),
+        JSON.stringify({
+          files: [
+            ...compared.map((filename) => ({ filename })),
+            ...(input.renamed ?? []).map(({ from, to }) => ({
+              filename: to,
+              previous_filename: from,
+            })),
+          ],
+        }),
+      );
     yield* fs.makeDirectory(path.join(bin, "main"));
     for (const [file, text] of Object.entries(input.main ?? {}))
       yield* fs.writeFileString(path.join(bin, "main", file.replaceAll("/", "_")), text);
@@ -114,6 +151,9 @@ const select = (input: {
           E2E_PULL_REQUEST: input.body === undefined ? "" : "1",
           E2E_HEAD_REF: "layer",
           E2E_DEFAULT_BRANCH: input.main === undefined ? "" : "main",
+          ...(compared === "unknown"
+            ? {}
+            : { E2E_COMPARE_BASE: "main", E2E_COMPARE_HEAD: "0123456789abcdef" }),
           E2E_DESCRIPTION_WAIT_SECONDS: String(input.wait ?? 0),
           E2E_DESCRIPTION_POLL_SECONDS: "0.05",
           GITHUB_REPOSITORY: "owner/repository",
@@ -162,6 +202,9 @@ const fixture = (files: Readonly<Record<string, string>> = {}) =>
     yield* fs.copyFile("package.json", path.join(root, "package.json"));
     yield* fs.copy(path.join(".github", "workflows"), path.join(root, ".github", "workflows"));
     yield* fs.symlink(path.resolve("node_modules"), path.join(root, "node_modules"));
+    // The selection reads the source a save runs (e2e/save-path.ts).
+    for (const tree of ["apps", "packages", "playground"])
+      yield* fs.symlink(path.resolve(tree), path.join(root, tree));
     for (const [file, text] of Object.entries(files))
       yield* fs.writeFileString(path.join(root, file), text);
     return root;
@@ -175,20 +218,32 @@ interface SavedRun {
   readonly target: "local" | "self-host" | "cloud";
   readonly status?: (title: string) => string;
   readonly files?: (file: string) => boolean;
+  /** A failed scenario's failure message, as Vitest saves it. */
+  readonly failure?: (title: string) => string | undefined;
+  /** Hosted emulator calls that needed a retry, saved as `emulatorRequest` saves them. */
+  readonly emulatorRetries?: ReadonlyArray<unknown>;
 }
 
 /**
  * `node e2e/ci-selection.ts verify <suite>` over runs saved as the E2E jobs save them, each with
  * every scenario the plan schedules on its target. `status` says how one ended; passed by default.
  */
-const verify = (suite: string, saved: ReadonlyArray<SavedRun>) =>
+const verify = (
+  suite: string,
+  saved: ReadonlyArray<SavedRun>,
+  /** Database connection readings, saved as a deployed run's stage writes them. */
+  connections: ReadonlyArray<Record<string, unknown>> = [],
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-ci-coverage-" });
     for (const [index, run] of saved.entries()) {
-      const files = new Map<string, Array<{ title: string; status: string }>>();
+      const files = new Map<
+        string,
+        Array<{ title: string; status: string; failureMessages: ReadonlyArray<string> }>
+      >();
       for (const scenario of Object.values(scenarios))
         if (
           scenario.targets[run.target].status === "scheduled" &&
@@ -196,7 +251,13 @@ const verify = (suite: string, saved: ReadonlyArray<SavedRun>) =>
         )
           files.set(scenario.file, [
             ...(files.get(scenario.file) ?? []),
-            { title: scenario.title, status: run.status?.(scenario.title) ?? "passed" },
+            {
+              title: scenario.title,
+              status: run.status?.(scenario.title) ?? "passed",
+              failureMessages: [run.failure?.(scenario.title)].filter(
+                (message) => message !== undefined,
+              ),
+            },
           ]);
       const report = path.join(
         directory,
@@ -207,6 +268,11 @@ const verify = (suite: string, saved: ReadonlyArray<SavedRun>) =>
         "diagnostics",
       );
       yield* fs.makeDirectory(report, { recursive: true });
+      const retries = path.join(report, "..", "emulator-retries");
+      for (const [number, record] of (run.emulatorRetries ?? []).entries()) {
+        yield* fs.makeDirectory(retries, { recursive: true });
+        yield* fs.writeFileString(path.join(retries, `${number}.json`), JSON.stringify(record));
+      }
       yield* fs.writeFileString(
         path.join(report, "results.json"),
         JSON.stringify({
@@ -215,6 +281,14 @@ const verify = (suite: string, saved: ReadonlyArray<SavedRun>) =>
             assertionResults,
           })),
         }),
+      );
+    }
+    for (const [index, reading] of connections.entries()) {
+      const stage = path.join(directory, "deployed-planetscale-connection-results", `e2e-${index}`);
+      yield* fs.makeDirectory(stage, { recursive: true });
+      yield* fs.writeFileString(
+        path.join(stage, "database-connections.json"),
+        JSON.stringify(reading),
       );
     }
     const child = yield* processes.spawn(
@@ -242,8 +316,20 @@ const workflowJob = (name: string) =>
     expect(start, name).toBeGreaterThan(-1);
     const end = lines.findIndex((line, index) => index > start && /^ {0,2}\S/.test(line));
     const body = lines.slice(start + 1, end === -1 ? undefined : end);
-    const field = (key: string) =>
-      body.find((line) => line.startsWith(`    ${key}: `))?.slice(`    ${key}: `.length);
+    // A flow list too long for one line is written over several, from `[` to `]`.
+    const field = (key: string) => {
+      const at = body.findIndex(
+        (line) => line === `    ${key}:` || line.startsWith(`    ${key}: `),
+      );
+      if (at === -1) return undefined;
+      const inline = body[at]!.slice(`    ${key}:`.length).trim();
+      if (inline !== "") return inline;
+      const close = body.findIndex((line, index) => index > at && line.trim() === "]");
+      return `[${body
+        .slice(at + 2, close)
+        .map((line) => line.trim().replace(/,$/, ""))
+        .join(", ")}]`;
+    };
     const run = body.findIndex((line) => line === "        run: |");
     const script = body
       .slice(run + 1)
@@ -255,10 +341,22 @@ const workflowJob = (name: string) =>
 
 /** The select outputs that start each E2E job, as its `if` in checks.yml reads them. */
 const startedBy = {
+  // The run's one collector build, for every job below that starts or packages it.
+  collector: [
+    "local-shards",
+    "self-host-shards",
+    "self-host-inventory",
+    "self-host-catalog",
+    "cloud-runners",
+    "release-local",
+  ],
   "e2e-local": ["local-shards"],
   "e2e-self-host": ["self-host-shards"],
   "e2e-self-host-scale": ["self-host-inventory", "self-host-catalog"],
   "e2e-cloud": ["cloud-runners"],
+  "release-docker": ["release-docker"],
+  "release-local-cli": ["release-local"],
+  "release-local-desktop": ["release-local"],
 } as const;
 type E2eJob = keyof typeof startedBy;
 const e2eJobs = Object.keys(startedBy) as ReadonlyArray<E2eJob>;
@@ -299,20 +397,47 @@ const gate = (
 /** This suite's own config, rewritten only in a fixture tree. */
 const ownConfig = "e2e/ci-selection.config.ts";
 
+/** Files `fileGuards` in e2e/ci-selection.ts watches; main lists each in its directory. */
+const guardedFiles = ["packages/sdk/src/implementation/app-protocols.ts"];
+/**
+ * Main's listings of the guarded files' directories, with each file's blob ID in this checkout
+ * unless `changed` gives another.
+ */
+const guardedListings = (blobs: ReadonlyArray<string>, changed: Record<string, string> = {}) => {
+  const listings: Record<string, string> = {};
+  guardedFiles.forEach((file, index) => {
+    const directory = file.slice(0, file.lastIndexOf("/"));
+    listings[directory] = `${listings[directory] ?? ""}${changed[file] ?? blobs[index]} ${file}\n`;
+  });
+  return listings;
+};
+
 layer(NodeServices.layer)("CI E2E selection", (it) => {
   it.effect("a push to main runs every job's full pattern", () =>
     Effect.gen(function* () {
       const run = yield* select({});
       expect(run.exitCode).toBe(0);
-      expect(Object.keys(run.outputs).sort()).toEqual([...jobs, ...runnerOutputs, "full"].sort());
+      expect(Object.keys(run.outputs).sort()).toEqual(
+        [
+          ...jobs,
+          ...runnerOutputs,
+          ...laneOutputs,
+          "release-docker-engine",
+          "collector",
+          "full",
+        ].sort(),
+      );
       for (const job of [...jobs, ...runnerOutputs]) expect(run.outputs[job], job).not.toBe("");
+      // Executor releases runs the whole release matrix on main after merge instead.
+      for (const lane of [...laneOutputs, "release-docker-engine"])
+        expect(run.outputs[lane], lane).toBe("");
       expect(run.outputs.full).toBe("true");
       expect(run.summary).toContain("Full suite: this run is not for a pull request.");
     }),
   );
 
   it.effect(
-    "a full run splits local and self-host by spec file and spreads Cloud over three runners",
+    "a full run splits local and self-host by spec file and spreads Cloud over four runners",
     () =>
       Effect.gen(function* () {
         const [main, all, named] = yield* Effect.all(
@@ -328,8 +453,8 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         for (const run of [main, all]) {
           expect(run.exitCode, run.log).toBe(0);
           for (const [job, target, names] of [
-            ["local", "local", ["1/2", "2/2"]],
-            ["self-host", "self-host", ["1/3", "2/3", "3/3"]],
+            ["local", "local", ["1/3", "2/3", "3/3"]],
+            ["self-host", "self-host", Array.from({ length: 12 }, (_, index) => `${index + 1}/12`)],
           ] as const) {
             const parts = shards(run.outputs, job);
             expect(parts.map(({ shard }) => shard)).toEqual(names);
@@ -354,25 +479,33 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
             );
           }
           const runners = cloudRunners(run.outputs);
+          // A full run's cloud-product passes what one local Cloud holds.
+          const productParts = Math.ceil(
+            Number(/\| cloud-product \| (\d+) \|/.exec(run.summary)![1]) / 30,
+          );
+          expect(productParts).toBeGreaterThan(1);
           expect(runners.map(({ name }) => name)).toEqual([
-            "cloud, cloud-autumn, cloud-isolate, cloud-v1-bound",
-            "cloud-workers, cloud-locks, cloud-batch, cloud-rollback",
-            "cloud-product, cloud-domains, cloud-rate-limit, cloud-oauth-proxy-preview",
+            "cloud",
+            "cloud-isolate, cloud-telemetry-flush, cloud-connections",
+            ...Array.from(
+              { length: productParts },
+              (_, index) => `cloud-product ${index + 1}/${productParts}`,
+            ),
+            "cloud-workers, cloud-locks, cloud-batch, cloud-autumn",
+            "cloud-domains, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview",
+            "cloud-removal-recovery, cloud-export-hang, cloud-listings",
           ]);
           // Each Cloud job's pattern is on exactly one runner and empty on the others. The runner
-          // runs it unchanged, except cloud-product past what one local Cloud holds: its local
-          // Clouds together run exactly the scenarios its pattern does, each once, and keep each
-          // spec file's scenarios on one.
+          // runs it unchanged, except cloud-product past what one local Cloud holds: each of its
+          // local Clouds has a runner of its own, and together they run exactly the scenarios its
+          // pattern does, each once, and keep each spec file's scenarios on one.
           for (const job of cloudJobs) {
-            const values = runners.map((runner) => runner[job]);
-            expect(
-              values.filter((value) => value === ""),
-              job,
-            ).toHaveLength(runners.length - 1);
-            const value = values.find((value) => value !== "");
-            if (value === run.outputs[job]) continue;
+            const on = runners.flatMap((runner) =>
+              runner[job] === undefined || runner[job] === "" ? [] : [runner[job]],
+            );
+            if (on.length === 1 && on[0] === run.outputs[job]) continue;
             expect(job).toBe("cloud-product");
-            const parts = (value ?? "").split("\n");
+            const parts = on;
             const full = new RegExp(run.outputs[job]!);
             const partOf = new Map<string, number>();
             let count = 0;
@@ -394,7 +527,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           }
         }
         expect(main.summary).toMatch(
-          /\| cloud-locks \| \d+ \| e2e-cloud \(cloud-workers, cloud-locks, cloud-batch, cloud-rollback\) \|/,
+          /\| cloud-locks \| \d+ \| e2e-cloud \(cloud-workers, cloud-locks, cloud-batch, cloud-autumn\) \|/,
         );
 
         // A selection runs each job on one runner, and starts only the Cloud runners it needs.
@@ -461,12 +594,12 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         ["billing.spec.ts", "e2e/billing.config.ts: bun run e2e:billing. No workflow runs it."],
         [
           "docker-release.spec.ts",
-          "e2e/docker-release.config.ts in Executor releases (.github/workflows/release-artifacts.yml)",
+          "e2e/docker-release.config.ts in Checks (.github/workflows/checks.yml) and Executor releases (.github/workflows/release-artifacts.yml)",
         ],
         // Planned, but its scenarios run only against the release archive.
         [
           "local-bootstrap.spec.ts",
-          "e2e/local-bootstrap.config.ts in Executor releases (.github/workflows/release-artifacts.yml)",
+          "e2e/local-bootstrap.config.ts in Checks (.github/workflows/checks.yml) and Executor releases (.github/workflows/release-artifacts.yml)",
         ],
         [
           "ci-selection.spec.ts",
@@ -609,9 +742,13 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         // More than one local Cloud holds, so the case is not vacuous.
         expect(selected.length).toBeGreaterThan(30);
         const fileOf = new Map(Object.values(scenarios).map((s) => [s.title, s.file]));
-        const runner = cloudRunners(run.outputs).find((entry) => entry["cloud-product"] !== "");
-        const parts = runner!["cloud-product"]!.split("\n").map(titlesOf);
+        // Each local Cloud has a runner of its own.
+        const runners = cloudRunners(run.outputs).filter((entry) => entry["cloud-product"] !== "");
+        const parts = runners.map((entry) => titlesOf(entry["cloud-product"]!));
         expect(parts).toHaveLength(Math.ceil(selected.length / 30));
+        expect(runners.map(({ name }) => name)).toEqual(
+          parts.map((_, index) => `cloud-product ${index + 1}/${parts.length}`),
+        );
         // Every selected scenario runs once, and a spec file's scenarios share one local Cloud.
         expect(parts.flat().sort()).toEqual([...selected].sort());
         const partOfFile = new Map<string, number>();
@@ -623,7 +760,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           }
         });
         expect(run.summary).toContain(
-          `| cloud-product | ${selected.length} | e2e-cloud (cloud-product), ${parts.length} local Clouds split by spec file |`,
+          `| cloud-product | ${selected.length} | ${runners.map(({ name }) => `e2e-cloud (${name})`).join(", ")}: ${parts.length} local Clouds split by spec file |`,
         );
       }),
   );
@@ -722,17 +859,18 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-        const protocols = "packages/sdk/src/implementation/app-protocols.ts";
         const names = yield* fs.readDirectory("patches");
-        const [current = "", ...blobs] = (yield* processes.string(
+        const hashed = (yield* processes.string(
           ChildProcess.make("git", [
             "hash-object",
-            protocols,
+            ...guardedFiles,
             ...names.map((name) => `patches/${name}`),
           ]),
         ))
           .trim()
           .split("\n");
+        const guarded = hashed.slice(0, guardedFiles.length),
+          blobs = hashed.slice(guardedFiles.length);
         // Main as this checkout, except for the blob ID it lists for effect's patch.
         const patches = names
           .map(
@@ -745,7 +883,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           main: {
             "package.json": yield* fs.readFileString("package.json"),
             patches,
-            "packages/sdk/src/implementation": `${current} ${protocols}\n`,
+            ...guardedListings(guarded),
           },
         });
         expect(run.exitCode, run.log).toBe(0);
@@ -766,22 +904,25 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         const protocols = "packages/sdk/src/implementation/app-protocols.ts";
         const names = yield* fs.readDirectory("patches");
         // Git's own blob IDs for the working tree, as the contents API lists main's.
-        const [current = "", ...patchBlobs] = (yield* processes.string(
+        const hashed = (yield* processes.string(
           ChildProcess.make("git", [
             "hash-object",
-            protocols,
+            ...guardedFiles,
             ...names.map((name) => `patches/${name}`),
           ]),
         ))
           .trim()
           .split("\n");
+        const guarded = hashed.slice(0, guardedFiles.length),
+          patchBlobs = hashed.slice(guardedFiles.length),
+          current = guarded[0] ?? "";
         const patches = names.map((name, index) => `${patchBlobs[index]} ${name}`);
         const manifest = yield* fs.readFileString("package.json");
         // Main as this checkout, except for the blob ID it lists for the host's protocols.
         const main = (protocolsBlob: string) => ({
           "package.json": manifest,
           patches: patches.join("\n"),
-          "packages/sdk/src/implementation": `${protocolsBlob} ${protocols}\n`,
+          ...guardedListings(guarded, { [protocols]: protocolsBlob }),
         });
         const [same, changed] = yield* Effect.all(
           [
@@ -804,6 +945,170 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "App builds retain their selected npm framework across rebuilds",
         );
       }),
+  );
+
+  it.effect(
+    "a scenario new to the deployed suite needs the description to say how it was verified on a deployed stage",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const names = yield* fs.readDirectory("patches");
+        const hashed = (yield* processes.string(
+          ChildProcess.make("git", [
+            "hash-object",
+            ...guardedFiles,
+            ...names.map((name) => `patches/${name}`),
+          ]),
+        ))
+          .trim()
+          .split("\n");
+        const plan = yield* fs.readFileString("e2e/test-plan.ts");
+        const manifest = yield* fs.readFileString("package.json");
+        // Main as this checkout, with the plan main had: a deployed scenario's title is one main
+        // does not have, so this pull request adds it to the deployed suite.
+        const title = "Cloud product links follow the deployment origin";
+        expect(plan).toContain(JSON.stringify(title));
+        const main = (mainPlan: string | undefined) => ({
+          "package.json": manifest,
+          patches: names
+            .map((name, index) => `${hashed[guardedFiles.length + index]} ${name}`)
+            .join("\n"),
+          ...guardedListings(hashed.slice(0, guardedFiles.length)),
+          ...(mainPlan === undefined ? {} : { "e2e/test-plan.ts": mainPlan }),
+        });
+        const without = plan.replace(
+          JSON.stringify(title),
+          JSON.stringify("Cloud product links followed an earlier origin"),
+        );
+        const changed = ["e2e/tests/deployment-links.spec.ts"];
+        const verified =
+          "Verified on a deployed stage: bun run e2e:deployed --database planetscale --test-name 'Cloud product links' passed on a synthetic stage";
+        const [refused, stated, emptyStatement, known, unreadable] = yield* Effect.all(
+          [
+            select({ body: block("none"), changed, main: main(without) }),
+            select({ body: `${block("none")}\n${verified}\n`, changed, main: main(without) }),
+            select({
+              body: `${block("none")}\nVerified on a deployed stage:\n`,
+              changed,
+              main: main(without),
+            }),
+            select({ body: block("none"), changed, main: main(plan) }),
+            select({ body: block("none"), changed, main: main(undefined) }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(refused.exitCode).toBe(1);
+        expect(refused.log).toContain("These scenarios are new to the deployed suite.");
+        expect(refused.log).toContain(`- deployment-links.spec.ts: ${title}`);
+        expect(refused.log).toContain(
+          `bun run e2e:deployed --database planetscale --test-name '^(?:${title})$'`,
+        );
+        expect(refused.log).toContain(
+          '"Verified on a deployed stage: <command, run or stage, and result>"',
+        );
+        // A statement of how it was verified lets it through; a bare heading does not.
+        expect(stated.exitCode, stated.log).toBe(0);
+        expect(emptyStatement.exitCode).toBe(1);
+        expect(emptyStatement.log).toContain("These scenarios are new to the deployed suite.");
+        // A changed scenario main already has is not new, so an ordinary change passes.
+        expect(known.exitCode, known.log).toBe(0);
+        expect(known.log).not.toContain("new to the deployed suite");
+        // Main's plan unreadable: the check says it was skipped and does not fail the run.
+        expect(unreadable.exitCode, unreadable.log).toBe(0);
+        expect(unreadable.log).toContain(
+          "Could not read main's e2e/test-plan.ts, so whether this pull request adds scenarios to the deployed suite was not checked.",
+        );
+      }),
+  );
+
+  it.effect(
+    "a stack's top layer answers for the deployed scenarios its lower layers add, whatever it changes itself",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const names = yield* fs.readDirectory("patches");
+        const hashed = (yield* processes.string(
+          ChildProcess.make("git", [
+            "hash-object",
+            ...guardedFiles,
+            ...names.map((name) => `patches/${name}`),
+          ]),
+        ))
+          .trim()
+          .split("\n");
+        const plan = yield* fs.readFileString("e2e/test-plan.ts");
+        const manifest = yield* fs.readFileString("package.json");
+        const title = "Cloud product links follow the deployment origin";
+        const main = (mainPlan: string) => ({
+          "package.json": manifest,
+          patches: names
+            .map((name, index) => `${hashed[guardedFiles.length + index]} ${name}`)
+            .join("\n"),
+          ...guardedListings(hashed.slice(0, guardedFiles.length)),
+          "e2e/test-plan.ts": mainPlan,
+        });
+        const without = plan.replace(
+          JSON.stringify(title),
+          JSON.stringify("Cloud product links followed an earlier origin"),
+        );
+        // The top layer changes only groups.spec.ts; a lower layer, which skipped, added the
+        // deployed scenario in deployment-links.spec.ts. The comparison since main holds both.
+        const changed = ["e2e/tests/groups.spec.ts"];
+        const compared = ["e2e/tests/groups.spec.ts", "e2e/tests/deployment-links.spec.ts"];
+        const verified =
+          "Verified on a deployed stage: bun run e2e:deployed --database planetscale --test-name 'Cloud product links' passed on a synthetic stage";
+        const [refused, stated, known, uncompared, cutShort] = yield* Effect.all(
+          [
+            select({ body: block("none"), changed, compared, main: main(without) }),
+            select({
+              body: `${block("none")}\n${verified}\n`,
+              changed,
+              compared,
+              main: main(without),
+            }),
+            select({ body: block("none"), changed, compared, main: main(plan) }),
+            // Without a full comparison the check reads every spec file: it may ask for a line a
+            // stack did not need, but never lets a new deployed scenario through unseen.
+            select({ body: block("none"), changed, compared: "unknown", main: main(without) }),
+            select({
+              body: block("none"),
+              changed,
+              compared: Array.from({ length: 300 }, (_, index) => `notes/file-${index}.md`),
+              main: main(without),
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(refused.exitCode).toBe(1);
+        expect(refused.log).toContain("These scenarios are new to the deployed suite.");
+        expect(refused.log).toContain(`- deployment-links.spec.ts: ${title}`);
+        expect(stated.exitCode, stated.log).toBe(0);
+        // A title main already has is not new, wherever the stack changed it.
+        expect(known.exitCode, known.log).toBe(0);
+        expect(known.log).not.toContain("new to the deployed suite");
+        for (const run of [uncompared, cutShort]) {
+          expect(run.exitCode).toBe(1);
+          expect(run.log).toContain(`- deployment-links.spec.ts: ${title}`);
+        }
+      }),
+  );
+
+  it.effect("a stack's top layer refuses a spec file a lower layer added that no job runs", () =>
+    Effect.gen(function* () {
+      const root = yield* fixture({ "e2e/tests/orphan.spec.ts": "export {};\n" });
+      const run = yield* select({
+        root,
+        body: block("none"),
+        changed: ["e2e/tests/groups.spec.ts"],
+        compared: ["e2e/tests/groups.spec.ts", "e2e/tests/orphan.spec.ts"],
+      });
+      expect(run.exitCode).toBe(1);
+      expect(run.log).toContain(
+        "No CI job runs these spec files, because neither e2e/test-plan.ts nor an e2e/*.config.ts includes them: orphan.spec.ts.",
+      );
+    }),
   );
 
   it.effect("a changed spec file that no plan or config includes fails", () =>
@@ -903,6 +1208,170 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         }).pipe(Effect.scoped),
       { discard: true },
     ),
+  );
+
+  it.effect(
+    "the save path reads imports with a parser: wildcard exports, dynamic imports after a regular expression, no method calls or template text, and it fails closed",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "executor-save-path-" });
+        const write = (file: string, text: string) =>
+          fs
+            .makeDirectory(path.dirname(path.join(root, file)), { recursive: true })
+            .pipe(Effect.andThen(fs.writeFileString(path.join(root, file), text)));
+        yield* write("package.json", JSON.stringify({ workspaces: ["packages/*"] }));
+        yield* write(
+          "packages/lib/package.json",
+          JSON.stringify({ name: "@example/lib", exports: { "./parts/*": "./src/parts/*.ts" } }),
+        );
+        yield* write("packages/lib/src/parts/a.ts", "export const a = 1;\n");
+        yield* write(
+          "entry.ts",
+          [
+            'import { a } from "@example/lib/parts/a";',
+            // An app's source a template writes imports its own files.
+            'const app = `import x from "./generated.ts";\n${a ? `import y from "./other.ts"` : ""}`;',
+            "export { a, app };",
+          ].join("\n"),
+        );
+        // Method calls named `from` are not imports, and a regular expression with a quote and a
+        // backtick does not hide the dynamic import after it.
+        yield* write(
+          "calls.ts",
+          [
+            'const bytes = Buffer.from("./missing");',
+            'const letters = Array.from(".");',
+            'const quoted = /["`]/;',
+            'const later = await import("./later.ts");',
+            "export { bytes, letters, quoted, later };",
+          ].join("\n"),
+        );
+        yield* write("later.ts", "export const later = 1;\n");
+        yield* write("broken.ts", 'import { gone } from "./gone.ts";\nexport { gone };\n');
+        yield* write("unparsable.ts", "export const = ;\n");
+        expect([...(yield* closureOf(root, ["entry.ts"]))].sort()).toEqual([
+          "entry.ts",
+          "packages/lib/src/parts/a.ts",
+        ]);
+        expect([...(yield* closureOf(root, ["calls.ts"]))].sort()).toEqual([
+          "calls.ts",
+          "later.ts",
+        ]);
+        // A file the parser cannot read fails the computation, naming it.
+        const unparsed = yield* closureOf(root, ["entry.ts", "unparsable.ts"]).pipe(Effect.flip);
+        expect(unparsed.message).toContain("unparsable.ts");
+        const failed = yield* closureOf(root, ["entry.ts", "broken.ts"]).pipe(Effect.flip);
+        expect(failed.message).toContain("cannot follow these imports");
+        expect(failed.message).toContain("broken.ts: ./gone.ts");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "the webhook source lookup runs when a file a save runs or reads changed, or when nothing says it did not",
+    () =>
+      Effect.gen(function* () {
+        const lookup = scenarios.webhookSourceLookup.title;
+        const runs = yield* Effect.all(
+          {
+            route: select({
+              body: block("none"),
+              compared: ["apps/hosted/server/src/implementation/accounts.ts"],
+            }),
+            // Reached only through the SDK's exports, not named anywhere by hand.
+            storage: select({
+              body: block("none"),
+              compared: ["packages/fumadb-effect/src/implementation/sql/query.ts"],
+            }),
+            schema: select({
+              body: block("none"),
+              compared: ["apps/hosted/server/src/implementation/resource-schema.ts"],
+            }),
+            elsewhere: select({ body: block("none"), compared: ["apps/marketing/src/pages.ts"] }),
+            manual: select({ body: block("none"), compared: "unknown" }),
+            // GitHub lists at most 300 files of a comparison; a longer one may hide a save's file.
+            tooLongToList: select({
+              body: block("none"),
+              compared: Array.from({ length: 300 }, (_, index) => `apps/file-${index}.ts`),
+            }),
+          },
+          { concurrency: 4 },
+        );
+        const ran = Object.fromEntries(
+          Object.entries(runs).map(([name, run]) => {
+            expect(run.exitCode, `${name}: ${run.log}`).toBe(0);
+            const selected = run.outputs["cloud-locks"] ?? "";
+            return [name, selected !== "" && new RegExp(selected).test(lookup)];
+          }),
+        );
+        expect(ran).toEqual({
+          route: true,
+          storage: true,
+          schema: true,
+          elsewhere: false,
+          manual: true,
+          tooLongToList: true,
+        });
+        expect(runs.storage.summary).toContain(
+          "A file a save runs or reads differs from main (e2e/save-path.ts), so these run in cloud-locks: webhook-source-lookup.spec.ts",
+        );
+      }),
+  );
+
+  it.effect(
+    "the harness scenarios run when a harness path changed, or when nothing says it did not",
+    () =>
+      Effect.gen(function* () {
+        const harness = scenarios.failureEvidence.title;
+        const runs = yield* Effect.all(
+          {
+            push: select({}),
+            pushChangingHarness: select({ compared: ["e2e/support/evidence.ts"] }),
+            manual: select({ compared: "unknown" }),
+            product: select({
+              body: block("groups.spec.ts"),
+              compared: ["apps/local/server/src/bin.ts", "e2e/tests/groups.spec.ts"],
+            }),
+            harnessWithNone: select({ body: block("none"), compared: ["e2e/setup.ts"] }),
+            lockfile: select({ body: block("none"), compared: ["bun.lock"] }),
+            tooLongToList: select({
+              body: block("none"),
+              compared: Array.from({ length: 300 }, (_, index) => `apps/file-${index}.ts`),
+            }),
+            named: select({ body: block("failure-evidence.spec.ts") }),
+          },
+          { concurrency: 4 },
+        );
+        const ran = Object.fromEntries(
+          Object.entries(runs).map(([name, run]) => {
+            expect(run.exitCode, `${name}: ${run.log}`).toBe(0);
+            const selected = run.outputs["self-host"] ?? "";
+            return [name, selected !== "" && new RegExp(selected).test(harness)];
+          }),
+        );
+        expect(ran).toEqual({
+          push: false,
+          pushChangingHarness: true,
+          manual: true,
+          product: false,
+          harnessWithNone: true,
+          lockfile: true,
+          tooLongToList: true,
+          named: true,
+        });
+        // A full run that runs them puts them in one of the job's parts.
+        expect(
+          shards(runs.pushChangingHarness.outputs, "self-host").some(({ pattern }) =>
+            new RegExp(pattern).test(harness),
+          ),
+        ).toBe(true);
+        expect(
+          shards(runs.push.outputs, "self-host").some(({ pattern }) =>
+            new RegExp(pattern).test(harness),
+          ),
+        ).toBe(false);
+      }),
   );
 
   it.effect("none, all and skip keep their meaning", () =>
@@ -1040,6 +1509,192 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
     }),
   );
 
+  it.effect("a deployed run counts its scenario runs that failed on each platform signature", () =>
+    Effect.gen(function* () {
+      const cloud = Object.values(scenarios)
+        .filter((scenario) => scenario.targets.cloud.status === "scheduled")
+        .map((scenario) => scenario.title);
+      const [first, second, third, fourth, fifth, sixth] = cloud;
+      const messages: Record<string, string> = {
+        [first!]:
+          "RequestFailed: Cloudflare's Workers runtime answered 502 Bad Gateway itself; our Worker did not answer (ray 8f0c1a2b3c4d5e6f-AMS): POST /api/x returned HTTP 502 without a JSON response",
+        [second!]:
+          "RequestFailed: Cloudflare's Workers runtime answered 502 Bad Gateway itself; our Worker did not answer (ray 0f0c1a2b3c4d5e6f-AMS): GET /api/y returned HTTP 502 without a JSON response",
+        [third!]:
+          "RequestFailed: Request lost before any response: the client saw the connection reset with no response after 41 ms: POST /api/z failed (request)",
+        // Our own 502 failing a scenario is not a platform signature.
+        [fourth!]: "AssertionError: expected 502 to be 200 // Object.is equality",
+        [fifth!]:
+          "ScenarioPreparationFailed: No HTTPS connection to the scenario's app origin completed within the infrastructure wait (149 attempts in 299 s); 25 of the run's 26 app origins became ready, the slowest after 191 s. The domain coordinator last saw its certificate pending_validation since 2026-01-01T00:00:00.000Z.",
+        // An origin that answered and was not reported ready may be ours: not counted.
+        [sixth!]:
+          "ScenarioPreparationFailed: The scenario's HTTPS app origin did not answer, or was not reported ready, within the infrastructure deadline",
+      };
+      const [counted, none] = yield* Effect.all(
+        [
+          verify("deployed", [
+            {
+              target: "cloud",
+              status: (title) => (title in messages ? "failed" : "passed"),
+              failure: (title) => messages[title],
+            },
+          ]),
+          verify("deployed", [{ target: "cloud" }]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(counted.exitCode, counted.log).toBe(0);
+      expect(counted.log).toContain(
+        "Scenario runs that failed on a platform signature: 2 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 1 on a request lost before any response, 1 on an app origin no HTTPS connection reached within preparation's wait.",
+      );
+      // Zero is reported too, so a rise shows against it.
+      expect(none.exitCode, none.log).toBe(0);
+      expect(none.log).toContain(
+        "Scenario runs that failed on a platform signature: 0 on Cloudflare's runtime answering 502 itself (our Worker did not answer), 0 on a request lost before any response, 0 on an app origin no HTTPS connection reached within preparation's wait.",
+      );
+    }),
+  );
+
+  it.effect("a deployed run counts its stages by database connection latency", () =>
+    Effect.gen(function* () {
+      const [read, unread, none] = yield* Effect.all(
+        [
+          verify(
+            "deployed",
+            [{ target: "cloud" }],
+            [
+              {
+                source: "hyperdrive",
+                level: "normal",
+                averageMs: 4.2,
+                worstMinuteMs: 31,
+                minutes: 12,
+                queries: 9000,
+              },
+              {
+                source: "hyperdrive",
+                level: "elevated",
+                averageMs: 12.3,
+                worstMinuteMs: 71,
+                minutes: 11,
+                queries: 8000,
+              },
+              {
+                source: "spans",
+                level: "severe",
+                averageMs: 92.6,
+                worstMinuteMs: 362,
+                minutes: 13,
+                queries: 8500,
+                note: "Cloudflare's Hyperdrive analytics could not be read",
+              },
+            ],
+          ),
+          verify(
+            "deployed",
+            [{ target: "cloud" }],
+            [
+              {
+                source: "unavailable",
+                level: "unknown",
+                note: "The run has no credentials to read it",
+              },
+            ],
+          ),
+          verify("deployed", [{ target: "cloud" }]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      // It informs and never fails a run.
+      expect(read.exitCode, read.log).toBe(0);
+      expect(read.log).toContain(
+        "Database connection latency of deployed stages: 1 severe (averaging 50 ms or a minute at 300 ms), 1 elevated (10 ms or 100 ms), 1 normal, 0 unread; the highest averaged 92.6 ms with a worst minute of 362 ms, read from hyperdrive and spans.",
+      );
+      expect(unread.exitCode, unread.log).toBe(0);
+      expect(unread.log).toContain(
+        "Database connection latency of deployed stages: 0 severe (averaging 50 ms or a minute at 300 ms), 0 elevated (10 ms or 100 ms), 0 normal, 1 unread, read from unavailable.",
+      );
+      expect(none.exitCode, none.log).toBe(0);
+      expect(none.log).toContain(
+        "Database connection latency of deployed stages: 0 severe (averaging 50 ms or a minute at 300 ms), 0 elevated (10 ms or 100 ms), 0 normal, 0 unread; no stage recorded a reading.",
+      );
+    }),
+  );
+
+  it.effect("a full run counts the hosted emulator calls that needed a retry", () =>
+    Effect.gen(function* () {
+      const retry = (scenario: string | undefined, outcome: string, attempts: number) => ({
+        ...(scenario === undefined ? {} : { scenario }),
+        operation: "POST /_emulate/seed",
+        emulator: "workos/executor-onboarding-… #0123456789ab",
+        failures: Array.from(
+          { length: outcome === "answered" ? attempts - 1 : attempts },
+          () => "HTTP 500, cf-ray 0a1b2c3d4e5f6071-LAX",
+        ),
+        outcome,
+        attempts,
+        elapsedMs: attempts * 1_000,
+      });
+      const [counted, none] = yield* Effect.all(
+        [
+          verify("ci", [
+            { target: "local" },
+            { target: "self-host", emulatorRetries: [retry("Seeded dashboard", "answered", 2)] },
+            {
+              target: "cloud",
+              emulatorRetries: [
+                retry(undefined, "answered", 2),
+                retry("Cloud v1 import", "failed", 3),
+                retry("Cloud v1 import", "answered", 2),
+              ],
+            },
+          ]),
+          verify("deployed", [{ target: "cloud" }]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(counted.exitCode, counted.log).toBe(0);
+      expect(counted.log).toContain(
+        "Hosted emulator calls that needed a retry: 4 (2 scenarios, 1 while setting up); 1 still failed after retrying. Worst: POST /_emulate/seed on workos/executor-onboarding-… #0123456789ab, 3 attempts over 3.0 s (failed; HTTP 500, cf-ray 0a1b2c3d4e5f6071-LAX; HTTP 500, cf-ray 0a1b2c3d4e5f6071-LAX; HTTP 500, cf-ray 0a1b2c3d4e5f6071-LAX).",
+      );
+      // Zero is reported too, beside the platform signatures.
+      expect(none.exitCode, none.log).toBe(0);
+      expect(none.log).toContain("Hosted emulator calls that needed a retry: 0.");
+      // A record that cannot be read is reported; it never fails the coverage check.
+      const unreadable = yield* verify("deployed", [
+        { target: "cloud", emulatorRetries: [{ operation: "POST /_emulate/seed" }] },
+      ]);
+      expect(unreadable.exitCode, unreadable.log).toBe(0);
+      expect(unreadable.log).toContain(
+        "The hosted emulator calls that needed a retry could not be counted.",
+      );
+    }),
+  );
+
+  it.effect("an unreadable database connection record is reported, never failed on", () =>
+    Effect.gen(function* () {
+      const run = yield* verify(
+        "deployed",
+        [{ target: "cloud" }],
+        [
+          { source: "hyperdrive", level: "unlisted-level" },
+          {
+            source: "hyperdrive",
+            level: "normal",
+            averageMs: 4.2,
+            worstMinuteMs: 31,
+            minutes: 12,
+            queries: 9000,
+          },
+        ],
+      );
+      expect(run.exitCode, run.log).toBe(0);
+      expect(run.log).toContain(
+        "Database connection latency of deployed stages: 0 severe (averaging 50 ms or a minute at 300 ms), 0 elevated (10 ms or 100 ms), 1 normal, 0 unread; the highest averaged 4.2 ms with a worst minute of 31 ms, read from hyperdrive. 1 database connection record could not be read.",
+      );
+    }),
+  );
+
   it.effect("a sharded job's parts count together, and a missing part fails the full run", () =>
     Effect.gen(function* () {
       // Three parts by spec file, as e2e-self-host's runners save them.
@@ -1095,10 +1750,14 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-domains",
         "cloud-workers",
         "cloud-locks",
+        "cloud-removal-recovery",
         "cloud-batch",
+        "cloud-export-hang",
+        "cloud-listings",
         "cloud-autumn",
         "cloud-isolate",
-        "cloud-v1-bound",
+        "cloud-telemetry-flush",
+        "cloud-connections",
         "cloud-rate-limit",
         "cloud-rollback",
         "cloud-oauth-proxy-preview",
@@ -1142,6 +1801,919 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(exitCode).toBe(1);
       expect(log).toContain("is not in a run directory named for its target");
     }).pipe(Effect.scoped),
+  );
+
+  it.effect("a pull request runs each release lane for the files it reads, since main", () =>
+    Effect.gen(function* () {
+      // The lanes for a comparison, as the select job writes them from `lanesFor`: the job reads
+      // the release sources once and decides each lane from the changed files. Deciding the
+      // comparisons here, in one process, keeps this case to the few select runs below; each
+      // run starts the selection program and reads the save path again (about 2 s in CI).
+      const sources = yield* releaseSources;
+      const lanes = (compared: ReadonlyArray<string>) => {
+        const matched = lanesFor(sources, compared);
+        return [matched["release-docker"], matched["release-local"]].map((files) =>
+          files.length > 0 ? "true" : "",
+        );
+      };
+      const cases: ReadonlyArray<readonly [ReadonlyArray<string>, readonly [string, string]]> = [
+        // A file the released-image suite imports, and the image's own inputs.
+        [["e2e/support/docker-release-server.ts"], ["true", ""]],
+        // A support file both a local suite and the released-image suite import.
+        [["e2e/support/evidence.ts"], ["true", "true"]],
+        // Support files only the packaged CLI and desktop suites import.
+        [["e2e/support/ports.ts"], ["", "true"]],
+        [
+          ["e2e/support/os-credential.ts", "e2e/support/stand-in-package.ts"],
+          ["", "true"],
+        ],
+        // What else the image's build and both lanes' steps read.
+        [["bunfig.toml"], ["true", ""]],
+        [["playground/demo-apps/live-inbox/package.json"], ["true", ""]],
+        [[".github/actions/e2e-tools/action.yml"], ["true", "true"]],
+        [["apps/hosted/self-host/Dockerfile"], ["true", ""]],
+        // The scripts the image lane's steps run to pull its bases and build it; the local lane
+        // reads every release script.
+        [["scripts/releases/pull-image-bases.sh"], ["true", "true"]],
+        [["scripts/releases/background.sh"], ["true", "true"]],
+        // The image's server, which the fixtures' scenario server also runs on.
+        [["apps/hosted/server/src/index.ts"], ["true", "true"]],
+        [["apps/hosted/testing/src/scenario-server.ts"], ["true", "true"]],
+        // The CLI's and the desktop app's source: their own packages, as pull request #4028's
+        // startup change was, and packaging.
+        [["apps/local/server/src/bin.ts"], ["", "true"]],
+        [["apps/local/web/src/main.tsx"], ["", "true"]],
+        [["apps/cli/src/main.ts"], ["", "true"]],
+        // A workspace package both are built from, and the dependencies both install.
+        [["packages/app-management/src/tools-cli.ts"], ["true", "true"]],
+        [
+          ["packages/sdk/src/index.ts", "packages/apps/src/index.ts"],
+          ["true", "true"],
+        ],
+        [["bun.lock"], ["true", "true"]],
+        // The Rust collector, a crate inside a package both are built from, and its build script.
+        [["packages/telemetry/collector/src/http.rs"], ["true", "true"]],
+        [["packages/telemetry/collector/Cargo.lock"], ["true", "true"]],
+        [["packages/telemetry/scripts/build-collector.ts"], ["true", "true"]],
+        // The actions that build it: the release-local jobs build or restore the collector through
+        // them before packaging it; the image builds its own in its Dockerfile.
+        [[".github/actions/collector/action.yml"], ["", "true"]],
+        [[".github/actions/rustup/action.yml"], ["", "true"]],
+        [["apps/docs/public/install.sh"], ["", "true"]],
+        [["scripts/releases/config.ts"], ["true", "true"]],
+        // The lanes' own definition runs both.
+        [[".github/workflows/checks.yml"], ["true", "true"]],
+        // A support file the suite does not import, the scenario list it imports only for its
+        // schema, and what only the matrix after merge runs start neither.
+        [
+          ["e2e/support/billing.ts", "e2e/test-plan.ts"],
+          ["", ""],
+        ],
+        [
+          ["e2e/tests/desktop-recovery.spec.ts", ".github/workflows/release-artifacts.yml"],
+          ["", ""],
+        ],
+        // Packages only Cloud and the site are built from.
+        [
+          ["apps/hosted/cloud/src/worker.ts", "apps/marketing/src/index.ts"],
+          ["", ""],
+        ],
+      ];
+      for (const [compared, expected] of cases)
+        expect(lanes(compared), JSON.stringify(compared).slice(0, 120)).toEqual(expected);
+
+      // The select job itself: it writes the lanes `lanesFor` gives, and runs both without a
+      // comparison or with one GitHub cut short.
+      const runs = yield* Effect.forEach(
+        [
+          ["e2e/support/docker-release-server.ts"],
+          "unknown",
+          Array.from({ length: 300 }, (_, index) => `notes/file-${index}.md`),
+        ] as const,
+        (compared) => select({ body: block("none"), compared }),
+        { concurrency: "unbounded" },
+      );
+      for (const run of runs) expect(run.exitCode, run.log).toBe(0);
+      expect(
+        runs.map((run) => [run.outputs["release-docker"], run.outputs["release-local"]]),
+      ).toEqual([
+        ["true", ""],
+        ["true", "true"],
+        ["true", "true"],
+      ]);
+      expect(runs[0]!.summary).toContain(
+        "release-docker: runs, for e2e/support/docker-release-server.ts.",
+      );
+      expect(runs[0]!.summary).toContain("release-local: skipped, no file it reads changed.");
+    }),
+  );
+
+  it.effect(
+    "the release-docker lane runs the packaged engine's scenarios only for a change to what makes the image's engine differ",
+    () =>
+      Effect.gen(function* () {
+        const sources = yield* releaseSources;
+        const decide = (compared: ReadonlyArray<string>) => {
+          const matched = lanesFor(sources, compared);
+          return [matched["release-docker"], matched["release-docker-engine"]].map((files) =>
+            files.length > 0 ? "true" : "",
+          );
+        };
+        for (const file of [
+          "apps/hosted/self-host/scripts/package-runtime.ts",
+          "apps/hosted/self-host/Dockerfile",
+          "apps/hosted/self-host/workerd.json",
+          "apps/hosted/self-host/src/worker.ts",
+          "packages/sdk/src/implementation/binding-workerd-apps.ts",
+          // The image's process supervisor, which starts and stops its workerd.
+          "apps/hosted/self-host/native/main.go",
+          "apps/hosted/self-host/native/go.mod",
+          "apps/hosted/self-host/entrypoint.sh",
+          "e2e/packaged-engine.ts",
+          // A support file only the packaged engine's scenarios import, and each scenario.
+          "e2e/support/docker-workflows.ts",
+          ...packagedEngineSpecs,
+        ])
+          expect(decide([file]), file).toEqual(["true", "true"]);
+        // The image's ordinary source, a support file the rest of its suite shares, and the source
+        // lanes' own engine declaration run the lane without them.
+        for (const file of [
+          "apps/hosted/server/src/index.ts",
+          "apps/hosted/self-host/src/main.ts",
+          "e2e/support/docker-release-server.ts",
+          "e2e/tests/docker-release.spec.ts",
+          "packages/sdk/src/implementation/workerd-apps.ts",
+        ])
+          expect(decide([file]), file).toEqual(["true", ""]);
+
+        // The select job writes it, and runs them without a comparison or with one GitHub cut short.
+        const runs = yield* Effect.forEach(
+          [
+            ["apps/hosted/self-host/scripts/package-runtime.ts"],
+            ["apps/hosted/server/src/index.ts"],
+            "unknown",
+            Array.from({ length: 300 }, (_, index) => `notes/file-${index}.md`),
+          ] as const,
+          (compared) => select({ body: block("none"), compared }),
+          { concurrency: "unbounded" },
+        );
+        for (const run of runs) expect(run.exitCode, run.log).toBe(0);
+        expect(
+          runs.map((run) => [run.outputs["release-docker"], run.outputs["release-docker-engine"]]),
+        ).toEqual([
+          ["true", "true"],
+          ["true", ""],
+          ["true", "true"],
+          ["true", "true"],
+        ]);
+        expect(runs[0]!.summary).toContain(
+          "release-docker runs the packaged engine's scenarios, for apps/hosted/self-host/scripts/package-runtime.ts.",
+        );
+        expect(runs[1]!.summary).toContain(
+          "release-docker runs without the packaged engine's scenarios",
+        );
+      }),
+  );
+
+  it.effect(
+    "a re-pinned or re-patched engine runtime runs the packaged engine's scenarios and the source engine scenarios",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const names = yield* fs.readDirectory("patches");
+        const hashed = (yield* processes.string(
+          ChildProcess.make("git", [
+            "hash-object",
+            ...guardedFiles,
+            ...names.map((name) => `patches/${name}`),
+          ]),
+        ))
+          .trim()
+          .split("\n");
+        const guarded = hashed.slice(0, guardedFiles.length),
+          blobs = hashed.slice(guardedFiles.length);
+        const runtimePatch = `${packagedEngineDependency.replace("/", "%2F")}@`;
+        expect(names.some((name) => name.startsWith(runtimePatch))).toBe(true);
+        // Main as this checkout, except for the blob ID it lists for the runtime's patch.
+        const patches = names
+          .map(
+            (name, index) =>
+              `${name.startsWith(runtimePatch) ? "0".repeat(40) : blobs[index]} ${name}`,
+          )
+          .join("\n");
+        const run = yield* select({
+          body: block("none"),
+          compared: [`patches/${names.find((name) => name.startsWith(runtimePatch))}`],
+          main: {
+            "package.json": yield* fs.readFileString("package.json"),
+            patches,
+            ...guardedListings(guarded),
+          },
+        });
+        expect(run.exitCode, run.log).toBe(0);
+        expect(run.outputs["release-docker-engine"], run.summary).toBe("true");
+        expect(run.summary).toContain(
+          `release-docker runs the packaged engine's scenarios, for ${packagedEngineDependency}'s pin or patch.`,
+        );
+        expect(run.summary).toContain(
+          "A dependency patch differs from main, so its guards run: mcp-protocol-versions.spec.ts, local-workflow-engine-steps.spec.ts, local-workflow-engine-memory.spec.ts, workflow-durability.spec.ts",
+        );
+      }),
+  );
+
+  it.effect(
+    "no single edit to the image suite's include or exclude, the engine list or the lane variable leaves a packaged engine scenario out of main's paced check without failing here",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const included = dockerReleaseConfig.test?.include ?? [];
+        // Every engine scenario on disk is one the lane chooses by its inputs, so a new one cannot
+        // run unconditionally on pull requests by being left out of the list, and each is in the
+        // image suite's include, which main's paced check and every release run in full.
+        const onDisk = (yield* fs.readDirectory("e2e/tests"))
+          .filter((name) =>
+            /^docker-release-workflow-.*\.spec\.ts$|^workflow-engine\.spec\.ts$/.test(name),
+          )
+          .map((name) => `e2e/tests/${name}`)
+          .sort();
+        expect([...packagedEngineSpecs].sort()).toEqual(onDisk);
+        for (const spec of packagedEngineSpecs) expect(included, spec).toContain(spec);
+        // Without the lane's variable, as on main and in every release run, nothing is excluded:
+        // an exclude that drops a scenario unconditionally drops it from the paced check too.
+        expect(dockerReleaseConfig.test?.exclude ?? []).toEqual([]);
+        expect(process.env[packagedEngineVariable]).toBeUndefined();
+        // Every released-image spec file on disk is in that include: dropping one from it drops
+        // it from both, so it also needs the file deleted.
+        for (const name of yield* fs.readDirectory("e2e/tests"))
+          if (/^docker-(?:release|oauth)/.test(name) || name === "workflow-engine.spec.ts")
+            expect(included, name).toContain(`e2e/tests/${name}`);
+        // Only CI's release-docker lane can leave them out, by the select output; no release run.
+        expect(yield* fs.readFileString(".github/workflows/release-artifacts.yml")).not.toContain(
+          packagedEngineVariable,
+        );
+        const checks = yield* fs.readFileString(".github/workflows/checks.yml");
+        expect(checks.split(packagedEngineVariable).length - 1).toBe(1);
+        expect(checks).toContain(
+          `${packagedEngineVariable}: \${{ needs.select.outputs.release-docker-engine == '' && '${packagedEngineUnchanged}' || 'changed' }}`,
+        );
+      }),
+  );
+
+  it.effect(
+    "collector-native runs for a change to each collector input, and for nothing else",
+    () =>
+      Effect.sync(() => {
+        // One line per entry of collectorInputs (e2e/collector-inputs.ts): a file the entry covers.
+        const inputs: Record<string, string> = {
+          "packages/telemetry/collector/": "packages/telemetry/collector/src/main.rs",
+          "packages/telemetry/scripts/build-collector.ts":
+            "packages/telemetry/scripts/build-collector.ts",
+          ".github/actions/collector/": ".github/actions/collector/action.yml",
+          ".github/actions/rustup/": ".github/actions/rustup/action.yml",
+        };
+        expect(Object.keys(inputs).sort()).toEqual([...collectorInputs].sort());
+        for (const [input, file] of Object.entries(inputs))
+          expect(collectorChanged([file]), input).toBe(true);
+        for (const file of [
+          "packages/telemetry/src/isolate.ts",
+          "packages/telemetry/collector-notes.md",
+          "e2e/tests/collector.spec.ts",
+          // Another script beside the build script.
+          "packages/telemetry/scripts/check-notices.ts",
+          ".github/actions/setup/action.yml",
+          ".github/actions/collector-notes.md",
+        ])
+          expect(collectorChanged([file]), file).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "the select job starts collector-native when a collector input changed, and only then",
+    () =>
+      Effect.gen(function* () {
+        const crate = "packages/telemetry/collector/src/store.rs";
+        // A pull request, everything since main; a push to main, the pushed range.
+        const runs = yield* Effect.forEach(
+          [
+            { body: block("none"), compared: [crate, "notes/collector.md"] },
+            { body: block("none"), compared: ["apps/cli/src/main.ts"] },
+            { compared: [crate] },
+            { compared: ["apps/cli/src/main.ts"] },
+          ],
+          (input) => select(input),
+          { concurrency: "unbounded" },
+        );
+        for (const run of runs) expect(run.exitCode, run.log).toBe(0);
+        expect(runs.map((run) => run.outputs.collector)).toEqual([
+          "true",
+          "false",
+          "true",
+          "false",
+        ]);
+        expect(runs[0]!.summary).toContain("collector-native: runs (e2e/collector-inputs.ts).");
+        expect(runs[1]!.summary).toContain(
+          "collector-native: skipped, no collector input changed (e2e/collector-inputs.ts).",
+        );
+        // A crate change runs the scenarios that exercise the collector, whatever the block names;
+        // another change runs none of them.
+        for (const file of collectorScenarios) {
+          expect(runs[0]!.summary, file).toContain(file);
+          expect(runs[1]!.summary, file).not.toContain(file);
+        }
+        expect(runs[0]!.summary).toContain(
+          "A collector input changed (e2e/collector-inputs.ts), so the scenarios that exercise it run",
+        );
+        expect(runs[0]!.outputs["self-host"]).toContain(
+          "The bundled collector at its size bound keeps its traces",
+        );
+        expect(runs[1]!.summary).toContain("No E2E scenarios");
+      }),
+  );
+
+  it.effect(
+    "collector-native runs without a comparison, or one cut short, and for a stack's top layer",
+    () =>
+      Effect.gen(function* () {
+        const crate = "packages/telemetry/collector/src/ingest.rs";
+        const runs = yield* Effect.forEach(
+          [
+            { body: block("none"), compared: "unknown" as const },
+            {
+              body: block("none"),
+              compared: Array.from({ length: 300 }, (_, index) => `notes/file-${index}.md`),
+            },
+            // The lower layer changed the crate and skips; the top layer compares with main, so
+            // its comparison holds the lower layer's change too.
+            { body: block("skip"), stackedAbove: "12", compared: [crate] },
+            { body: block("none"), compared: [crate, "e2e/tests/example.spec.ts"] },
+          ],
+          (input) => select(input),
+          { concurrency: "unbounded" },
+        );
+        for (const run of runs) expect(run.exitCode, run.log).toBe(0);
+        expect(runs[0]!.outputs.collector).toBe("true");
+        expect(runs[1]!.outputs.collector).toBe("true");
+        expect(runs[2]!.outputs).toEqual({ skip: "true" });
+        expect(runs[3]!.outputs.collector).toBe("true");
+      }),
+  );
+
+  it.effect("a file renamed out of a lane's path starts that lane by its old name", () =>
+    Effect.gen(function* () {
+      const run = yield* select({
+        body: block("none"),
+        renamed: [
+          {
+            from: "e2e/support/docker-release-server.ts",
+            to: "e2e/fixtures/docker-release-server.ts",
+          },
+          { from: "apps/local/server/src/bin.ts", to: "notes/bin.ts" },
+        ],
+      });
+      expect(run.exitCode, run.log).toBe(0);
+      expect([run.outputs["release-docker"], run.outputs["release-local"]]).toEqual([
+        "true",
+        "true",
+      ]);
+      expect(run.summary).toContain(
+        "release-docker: runs, for e2e/support/docker-release-server.ts.",
+      );
+    }),
+  );
+
+  it.effect("a skipped stack layer runs no release lane; the layer above runs them", () =>
+    Effect.gen(function* () {
+      const run = yield* select({
+        body: block("skip"),
+        stackedAbove: "12",
+        compared: ["apps/cli/src/main.ts", "e2e/support/docker-release-server.ts"],
+      });
+      expect(run.exitCode, run.log).toBe(0);
+      expect(run.outputs).toEqual({ skip: "true" });
+    }),
+  );
+
+  it.effect("an import the released-image suite no longer makes ends its exception", () =>
+    Effect.gen(function* () {
+      const root = yield* fixture({
+        "e2e/docker-release.config.ts":
+          'import { defineConfig } from "vitest/config";\nexport default defineConfig({ test: { include: ["e2e/tests/docker-release.spec.ts"] } });\n',
+        "e2e/tests/docker-release.spec.ts": 'import { it } from "vitest";\nit("runs", () => {});\n',
+      });
+      const run = yield* select({ body: block("none"), root });
+      expect(run.exitCode, run.log).toBe(1);
+      expect(run.log).toContain(
+        "notSuiteInputs in e2e/release-lanes.ts lists files the released-image suite no longer imports: e2e/test-plan.ts. Remove them.",
+      );
+    }),
+  );
+
+  it.effect(
+    "a build run narrows to named targets and job kinds; a check or a publication refuses to",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-narrow-" });
+        const metadata = (env: Readonly<Record<string, string>>) =>
+          Effect.gen(function* () {
+            const output = path.join(directory, crypto.randomUUID());
+            yield* fs.writeFileString(output, "");
+            const child = yield* processes.spawn(
+              ChildProcess.make("node", ["scripts/releases/workflow.ts"], {
+                env: {
+                  GITHUB_OUTPUT: output,
+                  GITHUB_EVENT_NAME: "workflow_dispatch",
+                  GITHUB_REF: "refs/heads/main",
+                  RELEASE_NOTARIZE: "false",
+                  ...env,
+                },
+                extendEnv: true,
+              }),
+            );
+            const [log, exitCode] = yield* Effect.all(
+              [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+              { concurrency: "unbounded" },
+            );
+            const values = Object.fromEntries(
+              (yield* fs.readFileString(output))
+                .split("\n")
+                .filter((line) => line !== "")
+                .map((line) => [
+                  line.slice(0, line.indexOf("=")),
+                  line.slice(line.indexOf("=") + 1),
+                ]),
+            ) as Record<string, string>;
+            const names = (key: string) =>
+              values[key] === undefined
+                ? []
+                : (
+                    JSON.parse(values[key]) as { include: ReadonlyArray<Record<string, string>> }
+                  ).include
+                    .map((entry) =>
+                      entry.platform === undefined ? entry.arch : `${entry.platform}-${entry.arch}`,
+                    )
+                    .sort();
+            return {
+              exitCode,
+              log,
+              run: ["local", "checks", "cli", "recovery", "docker", "collector"].filter(
+                (kind) => values[`run_${kind}`] === "true",
+              ),
+              narrowed: values.narrowed,
+              cli: names("cli_matrix"),
+              local: names("local_matrix"),
+              docker: names("docker_matrix"),
+              recovery: names("recovery_matrix"),
+              collector: names("collector_matrix"),
+              macosArm64: values.macos_arm64,
+            };
+          }).pipe(Effect.scoped);
+
+        // One kind on one target: only its matrix has entries, and only it runs.
+        const cli = yield* metadata({
+          RELEASE_CHANNEL: "build",
+          RELEASE_TARGETS: "win32-x64",
+          RELEASE_JOBS: "cli",
+        });
+        expect(cli.exitCode, cli.log).toBe(0);
+        expect(cli).toMatchObject({
+          narrowed: "true",
+          run: ["cli", "collector"],
+          cli: ["win32-x64", "win32-x64"],
+          collector: ["win32-x64"],
+          local: [],
+          docker: [],
+          recovery: [],
+          macosArm64: "false",
+        });
+        // Targets narrow every kind, the image's architectures included; a kind the target does
+        // not have, such as Linux arm64's installed CLI suite, runs nothing.
+        const arm = yield* metadata({ RELEASE_CHANNEL: "build", RELEASE_TARGETS: "linux-arm64" });
+        expect(arm.exitCode, arm.log).toBe(0);
+        expect(arm).toMatchObject({
+          run: ["local", "checks", "recovery", "docker", "collector"],
+          cli: [],
+          local: ["linux-arm64"],
+          docker: ["arm64"],
+          collector: ["linux-arm64"],
+        });
+        // The collector is built once for each target a packaging job runs on, and for no other.
+        for (const [targets, jobs, built] of [
+          ["", "", ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"]],
+          ["darwin-x64", "local", ["darwin-x64"]],
+          ["linux-arm64", "recovery", ["linux-arm64"]],
+          ["darwin-arm64,win32-x64", "checks", ["darwin-arm64", "win32-x64"]],
+          ["linux-x64", "docker,cli", ["linux-x64"]],
+        ] as const) {
+          const selected = yield* metadata({
+            RELEASE_CHANNEL: "build",
+            RELEASE_TARGETS: targets,
+            RELEASE_JOBS: jobs,
+          });
+          expect(selected.exitCode, selected.log).toBe(0);
+          expect(selected.collector, `${targets} ${jobs}`).toEqual(built);
+          expect(selected.run.includes("collector"), `${targets} ${jobs}`).toBe(true);
+        }
+        // Only the image, which packages no CLI runtime: no collector job runs.
+        const image = yield* metadata({ RELEASE_CHANNEL: "build", RELEASE_JOBS: "docker" });
+        expect(image.exitCode, image.log).toBe(0);
+        expect(image).toMatchObject({ narrowed: "true", run: ["docker"], collector: [] });
+        // An unnarrowed build runs every kind on every target.
+        const full = yield* metadata({ RELEASE_CHANNEL: "build" });
+        expect(full).toMatchObject({
+          narrowed: "false",
+          run: ["local", "checks", "cli", "recovery", "docker", "collector"],
+          docker: ["amd64", "arm64"],
+          macosArm64: "true",
+        });
+
+        // A check and a publication always run everything: narrowing them is refused.
+        for (const channel of ["check", "beta", "latest"]) {
+          const refused = yield* metadata({ RELEASE_CHANNEL: channel, RELEASE_JOBS: "cli" });
+          expect(refused.exitCode, channel).not.toBe(0);
+          expect(refused.log).toContain(
+            `Only a build run can be narrowed to targets or jobs; a ${channel} run runs everything.`,
+          );
+        }
+        const notarized = yield* metadata({
+          RELEASE_CHANNEL: "build",
+          RELEASE_NOTARIZE: "true",
+          RELEASE_TARGETS: "darwin-arm64",
+        });
+        expect(notarized.exitCode).not.toBe(0);
+        expect(notarized.log).toContain("A notarizing build tests the notarized app");
+        // A selection that leaves every kind empty tests nothing, so it is refused.
+        for (const [targets, jobs, message] of [
+          ["win32-x64", "docker", "no docker runs on win32-x64"],
+          ["linux-arm64", "cli", "no cli runs on linux-arm64"],
+        ] as const) {
+          const empty = yield* metadata({
+            RELEASE_CHANNEL: "build",
+            RELEASE_TARGETS: targets,
+            RELEASE_JOBS: jobs,
+          });
+          expect(empty.exitCode, empty.log).not.toBe(0);
+          expect(empty.log).toContain(`This selection is empty: ${message}.`);
+        }
+        const unknown = yield* metadata({ RELEASE_CHANNEL: "build", RELEASE_JOBS: "publish" });
+        expect(unknown.exitCode).not.toBe(0);
+        expect(unknown.log).toContain("Unknown publish.");
+
+        // A narrowed build is named apart, so Beta and the red-matrix issue, which read
+        // "Executor releases (build)" as the whole matrix, do not count it, and it reports nothing.
+        const workflow = yield* fs.readFileString(".github/workflows/release-artifacts.yml");
+        expect(workflow).toContain(
+          "inputs.channel == 'build' && (inputs.targets != '' || inputs.jobs != '') && format('build, {0} on {1}'",
+        );
+        expect(workflow).toContain(
+          "(inputs.channel == 'build' && inputs.targets == '' && inputs.jobs == '')",
+        );
+      }),
+  );
+
+  it.effect(
+    "a release run requires every job kind unless a narrowed build left it out, and checks the CLI's signature before anything publishes",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const workflow = yield* fs.readFileString(".github/workflows/release-artifacts.yml");
+        const lines = workflow.split("\n");
+        // The releases job's script, run as its step runs it.
+        const start = lines.indexOf("  releases:");
+        const run = lines.findIndex((line, index) => index > start && line === "        run: |");
+        const script = lines
+          .slice(run + 1)
+          .filter((line, index, rest) => rest.slice(0, index + 1).every((l) => /^ {10}|^$/.test(l)))
+          .map((line) => line.slice(10))
+          .join("\n");
+        // The collector job is a kind here too: skipped only when a narrowed build of only the
+        // image left it out.
+        const kinds = ["local", "checks", "recovery", "cli", "docker", "collector"] as const;
+        const gateWith = (narrowed: boolean, skipped: (typeof kinds)[number]) =>
+          Effect.gen(function* () {
+            const outputs = {
+              narrowed: String(narrowed),
+              macos_arm64: "false",
+              notarize: "false",
+              publish: "false",
+              ...Object.fromEntries(kinds.map((kind) => [`run_${kind}`, String(kind !== skipped)])),
+            };
+            const needs = {
+              pace: { result: "skipped", outputs: {} },
+              metadata: { result: "success", outputs },
+              "git-sources": { result: "success", outputs: {} },
+              "bun-runtime": { result: "success", outputs: {} },
+              "local-macos-arm64": { result: "skipped", outputs: {} },
+              "recovery-notarized": { result: "skipped", outputs: {} },
+              archives: { result: "success", outputs: {} },
+              publish: { result: "skipped", outputs: {} },
+              ...Object.fromEntries(
+                kinds.map((kind) => [
+                  kind,
+                  { result: kind === skipped ? "skipped" : "success", outputs: {} },
+                ]),
+              ),
+            };
+            const child = yield* processes.spawn(
+              ChildProcess.make("bash", ["-e", "-c", script], {
+                env: { NEEDS: JSON.stringify(needs), CHECK: "false" },
+                extendEnv: true,
+              }),
+            );
+            const [log, exitCode] = yield* Effect.all(
+              [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+              { concurrency: "unbounded" },
+            );
+            return { log, exitCode };
+          }).pipe(Effect.scoped);
+        for (const kind of kinds) {
+          // A whole-matrix run whose kind came out empty and was skipped fails.
+          const whole = yield* gateWith(false, kind);
+          expect(whole.exitCode, `${kind}: ${whole.log}`).toBe(1);
+          expect(whole.log).toContain(`::error::${kind}: needed, but skipped`);
+          // A narrowed build that left it out passes.
+          const narrowed = yield* gateWith(true, kind);
+          expect(narrowed.exitCode, `${kind}: ${narrowed.log}`).toBe(0);
+        }
+
+        // The CLI's own signature, on every notarizing run, after Apple accepted it and before
+        // anything publishes; the steps before it keep their names and order.
+        expect(workflow).toContain(
+          [
+            "      - name: Wait for Apple to accept the CLI's notarization",
+            "        if: runner.os == 'macOS' && github.ref == 'refs/heads/main'",
+          ].join("\n"),
+        );
+        const step = workflow.indexOf(
+          "      - name: Verify the CLI executable's Developer ID signature",
+        );
+        expect(step).toBeGreaterThan(
+          workflow.indexOf("Wait for Apple to accept the CLI's notarization"),
+        );
+        expect(workflow.slice(step).split("\n").slice(1, 2)).toEqual([
+          "        if: needs.metadata.outputs.notarize == 'true' && runner.os == 'macOS'",
+        ]);
+        const body = workflow.slice(step, workflow.indexOf("\n      - ", step + 1));
+        expect(body).toContain('codesign --verify --strict --verbose=2 "$executable"');
+        expect(body).toContain("grep -q '^Authority=Developer ID Application: '");
+      }),
+  );
+
+  it.effect(
+    "a release run from a branch other than main uses no environment and no secret but its own token",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const onMain = "github.ref == 'refs/heads/main'";
+        // The release workflow and every workflow it calls.
+        const pending = [".github/workflows/release-artifacts.yml"];
+        const read: Array<string> = [];
+        while (pending.length > 0) {
+          const file = pending.pop()!;
+          if (read.includes(file)) continue;
+          read.push(file);
+          const text = yield* fs.readFileString(file);
+          for (const match of text.matchAll(/uses: \.\/(\.github\/workflows\/[\w.-]+\.ya?ml)/g))
+            pending.push(match[1]!);
+          // A called workflow gets no secret but those named, and none is named here.
+          expect(text, file).not.toMatch(/secrets:\s*inherit/);
+          for (const [index, line] of text.split("\n").entries()) {
+            const where = `${file}:${index + 1}: ${line.trim()}`;
+            // The release environment, only on main: its name is empty on any other ref.
+            const environment = /^\s*environment:\s*(.*)$/.exec(line);
+            if (environment !== null)
+              expect(environment[1], where).toBe(`\${{ ${onMain} && 'release' || '' }}`);
+            // Every secret but the run's own token is read alone, and only when the ref is main.
+            for (const expression of line.matchAll(/\$\{\{(.*?)\}\}/g)) {
+              const named = [...expression[1]!.matchAll(/secrets\.(\w+)/g)].map((m) => m[1]!);
+              if (named.every((name) => name === "GITHUB_TOKEN")) continue;
+              expect(expression[1]!.trim(), where).toMatch(
+                /^github\.ref == 'refs\/heads\/main' && (?:runner\.os == 'macOS' && )?secrets\.\w+ \|\| ''$/,
+              );
+            }
+            expect(line.replace(/\$\{\{.*?\}\}/g, ""), where).not.toContain("secrets.");
+          }
+        }
+        expect(read).toContain(".github/workflows/bun-runtime.yml");
+        // Only main's runs sign the macOS CLI or wait for Apple.
+        const release = yield* fs.readFileString(".github/workflows/release-artifacts.yml");
+        // Exactly these commands: on main, and only on main, macOS signs (local also notarizes).
+        const lines = release.split("\n").map((entry) => entry.trim());
+        expect(lines).toContain(
+          'if [[ "$RUNNER_OS" == macOS && "$GITHUB_REF" == refs/heads/main ]]; then bun run release:cli --notarize --submission="$RUNNER_TEMP/cli-notarization"; else bun run release:cli; fi',
+        );
+        expect(lines).toContain(
+          'if [[ "$RUNNER_OS" == macOS && "$GITHUB_REF" == refs/heads/main ]]; then bun run release:cli --sign; else bun run release:cli; fi',
+        );
+        expect(lines.filter((entry) => entry.includes("release:cli --"))).toHaveLength(2);
+        expect(release).toContain(
+          "      - name: Wait for Apple to accept the CLI's notarization\n        if: runner.os == 'macOS' && github.ref == 'refs/heads/main'\n",
+        );
+      }),
+  );
+
+  it.effect("a check tests Linux x64 and the image; publishing and builds test everything", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-release-matrix-" });
+      const targets = (channel: string, notarize = false, ref = "refs/heads/main") =>
+        Effect.gen(function* () {
+          const output = path.join(directory, channel);
+          yield* fs.writeFileString(output, "");
+          const child = yield* processes.spawn(
+            ChildProcess.make("node", ["scripts/releases/workflow.ts"], {
+              env: {
+                GITHUB_OUTPUT: output,
+                GITHUB_EVENT_NAME: "workflow_dispatch",
+                GITHUB_REF: ref,
+                RELEASE_CHANNEL: channel,
+                RELEASE_NOTARIZE: String(notarize),
+              },
+              extendEnv: true,
+            }),
+          );
+          const [log, exitCode] = yield* Effect.all(
+            [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+            { concurrency: "unbounded" },
+          );
+          expect(exitCode, log).toBe(0);
+          const values = Object.fromEntries(
+            (yield* fs.readFileString(output))
+              .split("\n")
+              .filter((line) => line !== "")
+              .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
+          );
+          const names = (key: string) =>
+            (JSON.parse(values[key]!) as { include: ReadonlyArray<Record<string, string>> }).include
+              .map((entry) =>
+                entry.platform === undefined ? entry.arch : `${entry.platform}-${entry.arch}`,
+              )
+              .sort();
+          return {
+            publish: values.publish,
+            macosArm64: values.macos_arm64,
+            local: names("matrix"),
+            localJob: names("local_matrix"),
+            localMacosArm64: names("local_macos_arm64_matrix"),
+            checks: names("checks_matrix"),
+            recovery: names("recovery_matrix"),
+            notarized: names("notarized_recovery_matrix"),
+            cli: names("cli_matrix"),
+            docker: names("docker_matrix"),
+          };
+        }).pipe(Effect.scoped);
+      // The CLI suite runs in two parts and desktop crash recovery in three, each on its own runner.
+      const parts = (names: ReadonlyArray<string>, count: number) =>
+        names.flatMap((name) => Array.from({ length: count }, () => name));
+      // macOS arm64 packages in local-macos-arm64, which the notarized recovery parts wait for
+      // alone; the other targets stay in local.
+      expect(yield* targets("check")).toEqual({
+        publish: "false",
+        macosArm64: "false",
+        local: ["linux-x64"],
+        localJob: ["linux-x64"],
+        localMacosArm64: [],
+        checks: ["linux-x64"],
+        recovery: parts(["linux-x64"], 3),
+        notarized: [],
+        cli: parts(["linux-x64"], 2),
+        docker: ["amd64", "arm64"],
+      });
+      expect(yield* targets("build")).toEqual({
+        publish: "false",
+        macosArm64: "true",
+        local: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        localJob: ["darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        localMacosArm64: ["darwin-arm64"],
+        checks: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        recovery: parts(["darwin-arm64", "linux-arm64", "linux-x64", "win32-x64"], 3),
+        notarized: [],
+        cli: parts(["linux-x64", "win32-x64"], 2),
+        docker: ["amd64", "arm64"],
+      });
+      // A publishing run, in the channel the CLI's version names, tests the macOS app it
+      // notarizes, after local has built it.
+      const { version } = JSON.parse(yield* fs.readFileString("apps/cli/package.json")) as {
+        readonly version: string;
+      };
+      const notarized = {
+        macosArm64: "true",
+        local: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        localJob: ["darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        localMacosArm64: ["darwin-arm64"],
+        checks: ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"],
+        recovery: parts(["linux-arm64", "linux-x64", "win32-x64"], 3),
+        notarized: parts(["darwin-arm64"], 3),
+        cli: parts(["linux-x64", "win32-x64"], 2),
+        docker: ["amd64", "arm64"],
+      };
+      expect(yield* targets(version.includes("-beta.") ? "beta" : "latest")).toEqual({
+        publish: "true",
+        ...notarized,
+      });
+      // A build asked to notarize tests the notarized macOS app the same way, and publishes nothing.
+      expect(yield* targets("build", true)).toEqual({ publish: "false", ...notarized });
+      // Notarizing signs and notarizes the desktop app with the company's Developer ID, so only main may ask.
+      const refused = yield* Effect.gen(function* () {
+        const output = path.join(directory, "branch-notarize");
+        yield* fs.writeFileString(output, "");
+        const child = yield* processes.spawn(
+          ChildProcess.make("node", ["scripts/releases/workflow.ts"], {
+            env: {
+              GITHUB_OUTPUT: output,
+              GITHUB_EVENT_NAME: "workflow_dispatch",
+              GITHUB_REF: "refs/heads/some-branch",
+              RELEASE_CHANNEL: "build",
+              RELEASE_NOTARIZE: "true",
+            },
+            extendEnv: true,
+          }),
+        );
+        const [log, exitCode] = yield* Effect.all(
+          [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+          { concurrency: "unbounded" },
+        );
+        return { log, exitCode, written: yield* fs.readFileString(output) };
+      }).pipe(Effect.scoped);
+      expect(refused.exitCode, refused.log).not.toBe(0);
+      expect(refused.log).toContain("Notarize from main: it signs and notarizes the desktop app.");
+      expect(refused.written, "a refused run decides no matrix").toBe("");
+      // A build from a branch without notarize still runs.
+      expect((yield* targets("build", false, "refs/heads/some-branch")).publish).toBe("false");
+    }),
+  );
+
+  it.effect(
+    "each release lane runs its release job's steps for one platform, minus publishing",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        /** The names of a job's named steps, in order, from the workflow's block YAML. */
+        const steps = (file: string, job: string) =>
+          Effect.gen(function* () {
+            const lines = (yield* fs.readFileString(file)).split("\n");
+            const begin = lines.indexOf(`  ${job}:`);
+            expect(begin, `${file}: ${job}`).toBeGreaterThan(-1);
+            const end = lines.findIndex((line, index) => index > begin && /^ {0,2}\S/.test(line));
+            return lines
+              .slice(begin + 1, end === -1 ? undefined : end)
+              .flatMap((line) => /^ {6}- name: (.+)$/.exec(line)?.[1] ?? []);
+          });
+        const own = "Read the release identity";
+        // Each lane job runs one release job's steps for Linux x64 or amd64, less those listed.
+        const lanes = [
+          ["release-docker", "docker", ["Push the tested architecture without moving a channel"]],
+          [
+            "release-local-cli",
+            "checks",
+            [
+              // For publication: the archives job compares it with the cli and local jobs'.
+              "Record the tested archive's digest",
+              // Windows and macOS only.
+              "Install Chromium on desktop runners",
+              "Smoke-test the installed CLI",
+            ],
+          ],
+          [
+            "release-local-desktop",
+            "local",
+            [
+              // Windows and macOS only, or the check of a target without the packaged tests.
+              "Diagnose Windows npm archive failure",
+              "Install Chromium on desktop runners",
+              "Sign and notarize public macOS installers",
+              "Verify macOS installer and update archive",
+              "Verify the macOS update archive keeps a valid signature",
+              "Verify Windows long-path support survives both packages",
+              "Verify Apple signing and notarization",
+              "Wait for Apple to accept the CLI's notarization",
+              "Verify the CLI executable's Developer ID signature",
+              // For publication: the archives job compares it with the cli and checks jobs'.
+              "Record the published archive's digest",
+              // The archives job compares it with the recovery parts' apps, which this lane lacks.
+              "Record the packaged desktop app's digest",
+              // Runs only when the job failed; the lane's own e2e evidence covers CI.
+              "Gather the failed scenarios' evidence",
+            ],
+          ],
+        ] as const;
+        for (const [lane, job, omitted] of lanes) {
+          const ran = yield* steps(".github/workflows/checks.yml", lane);
+          expect(ran, lane).toContain(own);
+          const released = yield* steps(".github/workflows/release-artifacts.yml", job);
+          for (const name of omitted) expect(released, `${job} still has ${name}`).toContain(name);
+          expect(
+            ran.filter((name) => name !== own),
+            lane,
+          ).toEqual(released.filter((name) => !(omitted as ReadonlyArray<string>).includes(name)));
+        }
+      }),
   );
 
   it.effect("the e2e check runs after a cancellation and skips only for a skipped layer", () =>
@@ -1217,5 +2789,431 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "::error::select: failure, so the E2E jobs did not run its selection",
         );
       }),
+  );
+  it.effect("the e2e check names a failed collector job as the cause of the jobs that waited", () =>
+    Effect.gen(function* () {
+      const outputs = { "local-shards": "1/1", "release-local": "true" };
+      const results = Object.fromEntries(
+        e2eJobs.map((job) => [job, chosen(outputs, job) ? "failure" : "skipped"]),
+      ) as Record<E2eJob, string>;
+      const failed = yield* gate({ result: "success", outputs }, results);
+      expect(failed.exitCode).toBe(1);
+      expect(failed.log).toContain(
+        "::error::collector (linux-x64): failure. The E2E jobs that wait for its build fail with it; rerun that job first.",
+      );
+      expect(failed.log).toContain("::error::e2e-local: selected, but failure");
+      // A collector that succeeded is never named as a cause.
+      const passed = yield* gate(
+        { result: "success", outputs },
+        { ...results, collector: "success" },
+      );
+      expect(passed.exitCode).toBe(1);
+      expect(passed.log).not.toContain("The E2E jobs that wait for its build fail with it");
+    }),
+  );
+  it.effect(
+    "the e2e check fails when either release-local job of a selected lane fails, is cancelled or is skipped",
+    () =>
+      Effect.gen(function* () {
+        const outputs = { "release-local": "true" };
+        const results = (change: Partial<Record<E2eJob, string>> = {}) =>
+          ({
+            ...Object.fromEntries(
+              e2eJobs.map((job) => [job, chosen(outputs, job) ? "success" : "skipped"]),
+            ),
+            ...change,
+          }) as Record<E2eJob, string>;
+        // The lane is two jobs, and selecting it selects both, and the collector build they package.
+        expect(e2eJobs.filter((job) => chosen(outputs, job))).toEqual([
+          "collector",
+          "release-local-cli",
+          "release-local-desktop",
+        ]);
+        const passed = yield* gate({ result: "success", outputs }, results());
+        expect(passed.exitCode, passed.log).toBe(0);
+        for (const job of ["release-local-cli", "release-local-desktop"] as const)
+          for (const result of ["failure", "cancelled", "skipped"]) {
+            const run = yield* gate({ result: "success", outputs }, results({ [job]: result }));
+            expect(run.exitCode, `${job} ${result}: ${run.log}`).toBe(1);
+            expect(run.log).toContain(`::error::${job}: selected, but ${result}`);
+          }
+        // Unselected, both must be skipped: one that ran anyway fails the check too.
+        const unselected = yield* gate(
+          { result: "success", outputs: {} },
+          {
+            ...results(),
+            collector: "skipped",
+            "release-local-cli": "skipped",
+            "release-local-desktop": "success",
+          },
+        );
+        expect(unselected.exitCode, unselected.log).toBe(1);
+        expect(unselected.log).toContain(
+          "::error::release-local-desktop: not selected, but success",
+        );
+      }),
+  );
+});
+
+/**
+ * A `gh` for e2e/release-check.ts: `run list` answers the runs in `runs.json` with the event its
+ * `-e` names, as GitHub filters, `run view N` answers
+ * `jobs-N.json`, and `api <compare path> --jq <filter>` applies the filter to `compared.json` with
+ * jq, as gh does. A `fails` file beside it makes `run list` fail.
+ */
+const stubCheckGh = `#!/bin/sh
+dir=$(dirname "$0")
+case "$1 $2" in
+  "run list") [ -f "$dir/fails" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
+    while [ $# -gt 0 ]; do [ "$1" = -e ] && event=$2; shift; done
+    exec jq --arg event "$event" '[.[] | select(.event == $event)] | map(del(.event))' "$dir/runs.json" ;;
+  "run view") exec cat "$dir/jobs-$3.json" ;;
+  api*) exec jq -r "$4" "$dir/compared.json" ;;
+esac
+echo "stub gh: unsupported: $*" >&2
+exit 2
+`;
+
+/** A dispatched Executor releases run on main, newest first in `checks`. */
+interface DispatchedRun {
+  readonly id: number;
+  readonly sha: string;
+  readonly title?: string;
+  readonly status?: "queued" | "in_progress" | "completed";
+  readonly conclusion?: "success" | "failure" | "cancelled";
+  readonly pace?: "success" | "failure";
+  /** The metadata job; skipped when the matrix did not run. */
+  readonly metadata?: "success" | "skipped";
+}
+
+const head = "f".repeat(40);
+
+/**
+ * `node e2e/release-check.ts` for a push of `head`, with these dispatched runs on main and these
+ * files changed since the base it picks, in the checkout or a fixture tree `root`.
+ */
+const decideCheck = (input: {
+  readonly checks: ReadonlyArray<DispatchedRun>;
+  readonly changed?: ReadonlyArray<string>;
+  readonly renamed?: ReadonlyArray<{ readonly from: string; readonly to: string }>;
+  readonly status?: string;
+  readonly fails?: boolean;
+  readonly root?: string;
+}) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-release-check-" });
+    const bin = path.join(directory, "bin");
+    yield* fs.makeDirectory(bin);
+    yield* fs.writeFileString(path.join(bin, "gh"), stubCheckGh);
+    yield* fs.chmod(path.join(bin, "gh"), 0o755);
+    if (input.fails === true) yield* fs.writeFileString(path.join(bin, "fails"), "");
+    yield* fs.writeFileString(
+      path.join(bin, "runs.json"),
+      JSON.stringify(
+        input.checks.map((check) => ({
+          databaseId: check.id,
+          // A check is a repository dispatch; a build or a publication is a workflow dispatch.
+          event: check.title === undefined ? "repository_dispatch" : "workflow_dispatch",
+          status: check.status ?? "completed",
+          conclusion:
+            (check.status ?? "completed") === "completed" ? (check.conclusion ?? "success") : "",
+          headSha: check.sha,
+          url: `https://github.com/owner/repository/actions/runs/${check.id}`,
+        })),
+      ),
+    );
+    for (const check of input.checks)
+      yield* fs.writeFileString(
+        path.join(bin, `jobs-${check.id}.json`),
+        JSON.stringify({
+          jobs: [
+            { name: "pace", conclusion: check.pace ?? "success" },
+            { name: "metadata", conclusion: check.metadata ?? "success" },
+          ],
+        }),
+      );
+    yield* fs.writeFileString(
+      path.join(bin, "compared.json"),
+      JSON.stringify({
+        status: input.status ?? "ahead",
+        files: [
+          ...(input.changed ?? []).map((filename) => ({ filename })),
+          ...(input.renamed ?? []).map(({ from, to }) => ({
+            filename: to,
+            previous_filename: from,
+          })),
+        ],
+      }),
+    );
+    const output = path.join(directory, "output");
+    const summary = path.join(directory, "summary");
+    yield* fs.writeFileString(output, "");
+    yield* fs.writeFileString(summary, "");
+    const child = yield* processes.spawn(
+      ChildProcess.make("node", ["e2e/release-check.ts"], {
+        cwd: input.root,
+        env: {
+          PATH: `${bin}:${process.env.PATH ?? ""}`,
+          GITHUB_REPOSITORY: "owner/repository",
+          RELEASE_CHECK_HEAD: head,
+          GITHUB_OUTPUT: output,
+          GITHUB_STEP_SUMMARY: summary,
+        },
+        extendEnv: true,
+      }),
+    );
+    const [log, exitCode] = yield* Effect.all(
+      [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+      { concurrency: "unbounded" },
+    );
+    return {
+      exitCode,
+      log,
+      output: yield* fs.readFileString(output),
+      summary: yield* fs.readFileString(summary),
+    };
+  }).pipe(Effect.scoped);
+
+const tested: DispatchedRun = { id: 70, sha: "a".repeat(40) };
+
+layer(NodeServices.layer)("Release check after a push to main", (it) => {
+  it.effect("a change to what a release lane builds or runs starts the check", () =>
+    Effect.gen(function* () {
+      for (const changed of [
+        ["apps/local/server/src/bin.ts"],
+        ["packages/sdk/src/index.ts"],
+        ["e2e/support/docker-release-server.ts"],
+        ["e2e/tests/desktop-recovery.spec.ts"],
+        [".github/workflows/release-artifacts.yml"],
+        ["bun.lock"],
+        ["packages/telemetry/collector/src/http.rs"],
+        ["packages/telemetry/scripts/build-collector.ts"],
+        // The actions the matrix's collector jobs run.
+        [".github/actions/collector/action.yml"],
+        [".github/actions/rustup/action.yml"],
+      ]) {
+        const result = yield* decideCheck({ checks: [tested], changed });
+        expect(result.exitCode, result.log).toBe(0);
+        expect(result.output, changed[0]).toBe("run=true\n");
+        expect(result.summary).toContain(`these changed: \`"${changed[0]}"\``);
+      }
+      const renamed = yield* decideCheck({
+        checks: [tested],
+        renamed: [{ from: "e2e/support/docker-release-server.ts", to: "notes/server.ts" }],
+      });
+      expect(renamed.output, renamed.log).toBe("run=true\n");
+    }),
+  );
+
+  it.effect("a change nothing in a release lane reads skips it, saying why", () =>
+    Effect.gen(function* () {
+      const result = yield* decideCheck({
+        checks: [tested],
+        changed: ["notes/ci.md", "apps/hosted/cloud/src/worker.ts", "e2e/support/billing.ts"],
+      });
+      expect(result.exitCode, result.log).toBe(0);
+      expect(result.output).toBe("run=false\n");
+      expect(result.summary).toContain(
+        `Skipped: no file a release lane builds or runs changed since ${"a".repeat(40)}`,
+      );
+      const same = yield* decideCheck({ checks: [{ id: 71, sha: head }] });
+      expect(same.output, same.log).toBe("run=false\n");
+    }),
+  );
+
+  it.effect("the comparison starts at the last check that tested main, or will", () =>
+    Effect.gen(function* () {
+      const base = (checks: ReadonlyArray<DispatchedRun>) =>
+        decideCheck({ checks, changed: ["notes/ci.md"] }).pipe(
+          Effect.map((result) => result.summary),
+        );
+      // Builds, cancelled checks and checks that tested nothing are passed over.
+      expect(
+        yield* base([
+          { id: 75, sha: "1".repeat(40), title: "Executor releases (build)" },
+          { id: 74, sha: "2".repeat(40), conclusion: "cancelled" },
+          {
+            id: 73,
+            sha: "3".repeat(40),
+            pace: "failure",
+            conclusion: "failure",
+            metadata: "skipped",
+          },
+          { id: 72, sha: "4".repeat(40), title: "Executor releases (beta)" },
+          tested,
+        ]),
+      ).toContain(`runs/70 tests`);
+      // A check still queued or pacing will test its commit.
+      expect(
+        yield* base([{ id: 76, sha: "5".repeat(40), status: "in_progress" }, tested]),
+      ).toContain("runs/76 tests");
+    }),
+  );
+
+  it.effect("a file a release suite starts importing counts without editing a list", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fixture({ "e2e/release-new-helper.ts": "export const helper = 1;\n" });
+      yield* fs.symlink(path.resolve("scripts"), path.join(root, "scripts"));
+      for (const directory of ["support", "sdk"])
+        yield* fs.symlink(path.resolve("e2e", directory), path.join(root, "e2e", directory));
+      for (const name of yield* fs.readDirectory("e2e/tests"))
+        yield* fs.copyFile(path.join("e2e/tests", name), path.join(root, "e2e/tests", name));
+      const changed = ["e2e/release-new-helper.ts"];
+      const before = yield* decideCheck({ checks: [tested], changed, root });
+      expect(before.output, before.log).toBe("run=false\n");
+      const spec = path.join(root, "e2e/tests/docker-release.spec.ts");
+      yield* fs.writeFileString(
+        spec,
+        `import { helper } from "../release-new-helper.ts";\nvoid helper;\n${yield* fs.readFileString(spec)}`,
+      );
+      const after = yield* decideCheck({ checks: [tested], changed, root });
+      expect(after.output, after.log).toBe("run=true\n");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("without a base, a full comparison or GitHub, it runs or fails, never skips", () =>
+    Effect.gen(function* () {
+      const none = yield* decideCheck({
+        checks: [{ id: 77, sha: "6".repeat(40), conclusion: "cancelled" }],
+      });
+      expect(none.output, none.log).toBe("run=true\n");
+      expect(none.summary).toContain("no earlier check on main tested a commit");
+      const diverged = yield* decideCheck({
+        checks: [tested],
+        status: "diverged",
+        changed: ["notes/ci.md"],
+      });
+      expect(diverged.output, diverged.log).toBe("run=true\n");
+      const long = yield* decideCheck({
+        checks: [tested],
+        changed: Array.from({ length: 300 }, (_, index) => `notes/${index}.md`),
+      });
+      expect(long.output, long.log).toBe("run=true\n");
+      const failed = yield* decideCheck({
+        checks: [tested],
+        fails: true,
+        changed: ["notes/ci.md"],
+      });
+      expect(failed.exitCode).not.toBe(0);
+      expect(failed.output).toBe("");
+      expect(failed.log).toContain("HTTP 502: Bad Gateway");
+    }),
+  );
+
+  it.effect("the workflow starts the check unless the decision passed and said to skip it", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const text = yield* fs.readFileString(".github/workflows/release-check.yml");
+      expect(text).toContain("  push:\n    branches: [main]\n");
+      expect(text).toContain("  schedule:\n");
+      expect(text).not.toContain("paths:");
+      const decide = text.slice(text.indexOf("\n  decide:\n"), text.indexOf("\n  dispatch:\n"));
+      const dispatch = text.slice(text.indexOf("\n  dispatch:\n"));
+      // The job that runs the checkout's code holds no write token; the one that starts the
+      // check checks nothing out.
+      expect(decide).toContain("run: node e2e/release-check.ts");
+      expect(decide).not.toMatch(/^ {6}[\w-]+: write$/m);
+      expect(dispatch).toMatch(/^ {6}contents: write$/m);
+      expect(dispatch).not.toContain("actions/checkout");
+      expect(dispatch).not.toContain("./.github/actions");
+      expect(dispatch).toContain(
+        "if: ${{ !cancelled() && (needs.decide.result != 'success' || needs.decide.outputs.run != 'false') }}",
+      );
+      expect(dispatch).toContain(
+        'gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" -f event_type=release-check',
+      );
+    }),
+  );
+
+  it.effect(
+    "the names the gate, the pace job and the issue script look up are in the workflow",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const text = yield* fs.readFileString(".github/workflows/release-artifacts.yml");
+        // A check is the repository dispatch release-check.yml sends, and runs on main alone.
+        expect(text).toContain("  repository_dispatch:\n    types: [release-check]\n");
+        // beta-due.ts and matrix-issue.sh tell a build by its title; a narrowed build is named
+        // apart from it.
+        expect(text).toContain(
+          "run-name: Executor releases (${{ github.event_name == 'repository_dispatch' && 'check' || inputs.channel == 'build' && (inputs.targets != '' || inputs.jobs != '') && format('build, {0} on {1}', inputs.jobs || 'every job', inputs.targets || 'every target') || inputs.channel }})",
+        );
+        expect(text).toContain("        options: [build, beta, latest]");
+        for (const job of ["pace", "metadata", "releases", "report"])
+          expect(text, job).toContain(`\n  ${job}:\n`);
+        // beta-due.ts tells a publishing run from a build by this metadata step.
+        expect(text).toContain("      - name: Check the apps release is published unchanged\n");
+      }),
+  );
+
+  it.effect("every suite the release workflows run is a release suite the lanes follow", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const configs = (file: string) =>
+        fs
+          .readFileString(file)
+          .pipe(
+            Effect.map((text) => [
+              ...new Set(
+                [...text.matchAll(/--config (e2e\/[\w.-]+\.config\.ts)/g)].map(
+                  (match) => match[1]!,
+                ),
+              ),
+            ]),
+          );
+      const released = yield* configs(".github/workflows/release-artifacts.yml");
+      expect([...released].sort()).toEqual(releaseSuiteConfigs);
+      for (const config of yield* configs(".github/workflows/checks.yml"))
+        expect(releaseSuiteConfigs, config).toContain(config);
+    }),
+  );
+
+  it.effect(
+    "the CLI suite's runner, its pinned packages and the scenario server start a check",
+    () =>
+      Effect.gen(function* () {
+        for (const changed of [
+          ["scripts/e2e-npm-packages.ts"],
+          ["e2e/npm-packages.json"],
+          ["e2e/run.ts"],
+          ["e2e/setup.ts"],
+          ["e2e/check-boundary.ts"],
+          ["apps/hosted/testing/src/scenario-server.ts"],
+        ]) {
+          const result = yield* decideCheck({ checks: [tested], changed });
+          expect(result.output, changed[0]).toBe("run=true\n");
+        }
+      }),
+  );
+
+  it.effect("a check whose pace passed but whose matrix did not run is no base", () =>
+    Effect.gen(function* () {
+      const result = yield* decideCheck({
+        checks: [
+          { id: 78, sha: "7".repeat(40), conclusion: "success", metadata: "skipped" },
+          tested,
+        ],
+        changed: ["notes/ci.md"],
+      });
+      expect(result.output, result.log).toBe("run=false\n");
+      expect(result.summary).toContain("runs/70 tests");
+    }),
+  );
+
+  it.effect("a file name reaches the summary and the log quoted, whatever it holds", () =>
+    Effect.gen(function* () {
+      const result = yield* decideCheck({
+        checks: [tested],
+        changed: ["apps/cli/`x`\n::error::@someone.ts"],
+      });
+      expect(result.output, result.log).toBe("run=true\n");
+      expect(result.summary).toContain('`"apps/cli/\\u0060x\\u0060\\n::error::@someone.ts"`');
+      expect(result.log.split("\n").some((line) => line.startsWith("::"))).toBe(false);
+    }),
   );
 });

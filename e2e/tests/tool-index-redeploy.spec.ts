@@ -75,9 +75,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool index after redeploy", (i
         // Connecting an account from the app links it to the app.
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {
-            destination: { kind: "personal" },
-          }),
+          yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "service"), {}),
         );
         const submitted = yield* api.request(
           actors.owner,
@@ -183,7 +181,7 @@ return await ${tools}.status({});`,
         ]);
         expect(sameProgram.execution.error?.kind).toBe("UnknownTool");
         expect(sameProgram.execution.error?.suggestions).toEqual([
-          `This execute loaded '${app.slug}' from version ${recovered} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. Otherwise use search to find the app's tools.`,
+          `This execute loaded '${app.slug}' from version ${recovered} when it first reached the app. If the app was deployed after that, call its new tools in a new execute. If the tool was added to the service behind the app, Executor is checking the app for new tools now; they appear within a few minutes, so call it again in a new execute. Otherwise use search to find the app's tools.`,
         ]);
         const nextProgram = yield* execute(
           "Call the new tool in the next execute",

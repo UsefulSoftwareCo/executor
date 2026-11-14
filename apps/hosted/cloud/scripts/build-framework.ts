@@ -1,6 +1,13 @@
-/** Generate the Executor app's skills and framework reference for Cloud. */
+/**
+ * Generate the Executor app's skills and framework reference for Cloud, and the revision of the
+ * API the Executor app reads. Generating the API document takes too long for a request's isolate.
+ */
 import { generateFrameworkReference } from "../../../../packages/apps/scripts/reference.mjs";
 import { readExecutorSkillDocuments } from "@executor-js/app-templates/executor";
+import { hostedApiRevision } from "@executor-js/hosted-server";
+import { executorCloudApiDocument } from "../src/contracts/api.ts";
+import { builtApiOrigin } from "../src/contracts/browser.ts";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import { Effect, FileSystem, Path } from "effect";
@@ -20,5 +27,14 @@ NodeRuntime.runMain(
         "framework-reference.json": JSON.stringify(reference),
       }),
     );
-  }).pipe(Effect.provide(NodeServices.layer)),
+    // Every deployed stage serves these exact bytes; see `servesBuiltApiDocument`.
+    yield* fs.writeFileString(
+      path.join(root, "apps/hosted/cloud/.generated/executor-api-revision.json"),
+      JSON.stringify({
+        revision: yield* hostedApiRevision(
+          JSON.stringify(executorCloudApiDocument(builtApiOrigin)),
+        ),
+      }),
+    );
+  }).pipe(Effect.provide([NodeServices.layer, NodeCrypto.layerDigest])),
 );

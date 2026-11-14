@@ -1,10 +1,13 @@
 ---
 title: Command line
-description: "Install Executor on your machine. Keep your apps, accounts and data local."
+description: "Install the executor command. Run Executor on your machine, or sign in to hosted Executor and call your tools from a shell."
 ---
 
-The local server runs Executor on one machine for one person. It holds your
-accounts, runs your apps, and serves an MCP endpoint for your agents.
+The `executor` command does two jobs. It runs Executor on your machine, for one
+person: the local server holds your accounts, runs your apps and serves an MCP
+endpoint for your agents. It is also a client of any Executor, local, hosted or
+self-hosted: it signs in, calls your tools from a shell, and serves them to MCP
+clients over stdio.
 
 ## Install and start
 
@@ -22,10 +25,11 @@ browser and exits. Executor keeps running until you stop it; see
 with its runtime, dashboard, Git and workerd beside it; no source checkout, Node
 or Bun is needed to run it.
 
-The npm package is a small launcher: npm installs the executable for your
-platform as an optional dependency. If `executor` reports that its native
-runtime is missing, npm skipped optional dependencies; install again with
-`--include=optional`.
+The npm package is a small launcher. The first time a version starts, it
+downloads that release's archive for your platform from the public GitHub
+release, checks it against the SHA-256 the package records, and keeps it in
+`~/.executor/v2/launcher/<version>`. Set `EXECUTOR_DOWNLOAD_URL` to use a mirror
+of the releases.
 
 The install script keeps each release in `~/.executor/v2/runtime/versions/`,
 points `~/.executor/v2/runtime/current` at the one in use and links
@@ -61,41 +65,107 @@ value that does not match the directory stops startup and changes nothing.
 | Command | Purpose |
 | --- | --- |
 | `executor` | Start the background Executor if it is not running, open the dashboard and exit. |
-| `executor service` | Start, stop and configure the background Executor. |
 | `executor serve` | Run Executor in this terminal, without opening a browser, until you press Ctrl+C. |
-| `executor pair` | Print a new connection link for the background Executor. |
+| `executor service` | Start, stop and configure the background Executor, print a connection link and replace its API key. |
+| `executor login`, `logout`, `whoami` | Sign in to an Executor host for tools, sign out, and show what the sign-in reaches. See [Use your tools from a shell](#use-your-tools-from-a-shell). |
+| `executor search`, `describe`, `call`, `execute`, `resume`, `skills` | Call your tools from a shell. |
+| `executor mcp` | Serve your tools to an MCP client over stdio. |
 | `executor apps` | Create, edit, deploy and install apps. See [Author an app](/author-an-app). |
 | `executor upgrade` | Install the newest release the way Executor was installed; `--rollback` returns to the previous one. |
-| `executor rotate-key` | Replace the saved API key. Run `executor service restart`, then update clients that used the old key. |
-
-`executor pair` asks the background Executor for a link, waiting up to 30
-seconds while it starts, stops or does not respond. It only reads: it never
-starts Executor or creates a data directory or keys. When you set
-`EXECUTOR_API_KEY`, it sends that key instead, to the background Executor or,
-when none runs, to the server on `EXECUTOR_PORT`.
 
 ### Coming from Executor 1
 
-Executor 2 answers the old commands with the command to run instead.
+Executor 2 does not have Executor 1's `web`, `open`, `daemon`, `install`,
+`tools`, `server` or `docs` commands; running one reports an unknown command.
 
 | Executor 1 | Executor 2 |
 | --- | --- |
 | `executor web` | `executor` starts the background Executor if needed and opens the dashboard. |
-| `executor open` | `executor pair` prints a connection link for the background Executor. |
+| `executor open` | `executor service pair` prints a connection link for the background Executor. |
 | `executor daemon run` | `executor service start` starts the background Executor without opening a browser. It runs until `executor service stop`. |
 | `executor install`, `executor service install` | Nothing to install. `executor` or `executor service start` starts the background Executor, which runs until you stop it; it does not start with your computer. |
 | `executor service uninstall` | Nothing to remove. `executor service stop` stops the background Executor. |
-| `executor mcp` | The background Executor serves MCP over HTTP at `http://127.0.0.1:4312/mcp`; see [Connect an agent](#connect-an-agent). |
-| `executor call`, `executor tools`, `executor resume` | Agents call tools through the MCP endpoint. |
-| `executor server` | No server profiles. `executor apps` commands take `--host`, and `executor rotate-key` replaces `executor server rotate-token`. |
-| `executor login` | `executor apps login --host https://api.executor.sh` signs in to hosted Executor for app commands. |
+| `executor tools` | `executor search` and `executor describe`. |
+| `executor call`, `executor resume`, `executor mcp`, `executor login` | Executor 2 has commands with these names; see [Use your tools from a shell](#use-your-tools-from-a-shell). |
+| `executor server` | No server profiles. Commands take `--host` and remember the host you signed in to last; `executor service rotate-key` replaces `executor server rotate-token`. |
 | `executor docs` | Open [executor.sh/docs](https://executor.sh/docs). |
+
+## Use your tools from a shell
+
+`executor login` signs in to hosted Executor. It prints a link and a code; open
+the link in any browser where you are signed in, check the code and approve.
+On that page you choose which apps the sign-in reaches and how approvals are
+answered. Sign in to a self-hosted Executor with `--host`:
+
+```sh
+executor login
+executor login --host https://executor.example.com
+```
+
+The sign-in is saved in your operating system's credential store, or, on a
+machine without one, in a file under `~/.local/state/executor/auth` that only
+you can read. It renews itself. `executor whoami` prints the host, its
+organization, what the sign-in reaches, its approval mode and whether
+`executor apps` is signed in too. `executor logout` removes this computer's
+sign-ins for the host.
+
+Every client command, the tool commands, `executor mcp` and `executor apps`,
+talks to one host: `--host`, then `EXECUTOR_HOST`, then the host you signed in
+to last, with `executor login` or `executor apps login`. With none of these, it
+uses the background Executor on this computer, which starts if needed, with
+its API key. `executor logout` forgets the host it signs out of, so commands go
+back to the background Executor. Set `EXECUTOR_ACCESS_TOKEN` to send a pasted
+access token instead of a saved sign-in.
+
+The tool commands call the [MCP tools](/mcp#the-tools) of the same name and
+print the result as JSON on stdout. A failure exits with status 1 and prints the
+error's message, code and next step on stderr; when stdout is not a terminal, it
+also prints them as `{"error": {...}}` on stdout.
+
+| Command | Arguments |
+| --- | --- |
+| `executor search [query]` | `--namespace <app>`, `--limit <n>`, `--offset <n>` |
+| `executor describe <path>...` | One to 20 exact paths from `search`. |
+| `executor call [path]` | `--input <json>` or `--input-file <file>`, `-` for standard input. Without a path, the input is a JSON array of `{ "path", "input" }` calls, which run concurrently. The input defaults to `{}`. |
+| `executor execute` | `--code <program>` or `--file <file>`, `-` for standard input. |
+| `executor resume <request-id>` | `--action accept\|decline\|cancel`, and `--content <json>` or `--content-file <file>` for the form's fields. In browser mode pass only the ID. |
+| `executor skills` | `--app <slug>`, `--name <skill>`, `--file <path>`, `--version <id>`, `--revision <revision>` |
+
+```sh
+executor search "github issues"
+executor call tools.github.issues.list --input '{"repo":"acme/web"}' > issues.json
+executor execute --file report.js > report.json
+```
+
+Redirect a large result to a file and read the part you need, instead of
+passing it whole to your agent. When a call needs approval or input, the
+command prints the pending request, with `approvalUrl` in browser mode. Answer
+it with `executor resume`; never run the call again to continue it. A browser
+approval belongs to the MCP session the call was made in, so the CLI keeps that
+session's ID, which grants nothing, under `~/.local/state/executor/paused` until
+the request is answered, and `executor resume` continues it.
+
+### Serve your tools to an MCP client
+
+`executor mcp` is a stdio MCP server for clients that start a command, such as
+Claude Code:
+
+```sh
+claude mcp add executor -- executor mcp
+```
+
+It passes every message to the host's MCP endpoint, including approvals and
+questions the host asks the client, with your sign-in, which it renews as it
+runs. It tells the agent that the `executor` command is available in its shell.
+When the host no longer knows its MCP session, as after the host restarts, it
+opens a new one and sends the request again, so the client keeps working.
+Without a sign-in, it serves the background Executor on this computer.
 
 ## The background Executor
 
 Each data directory has one background Executor that every command shares. The
-first command that needs it starts it: `executor`, `executor service start` or
-an `executor apps` command. It keeps running after that command exits, until you
+first command that needs it starts it: `executor`, `executor service start`, or
+a client command without a host, such as `executor apps list` or `executor search`. It keeps running after that command exits, until you
 run `executor service stop`. Nothing is installed with your operating system, so
 it does not start again after you restart your computer: MCP clients cannot
 connect until you run `executor` or `executor service start`.
@@ -138,12 +208,20 @@ with npm, pnpm, Bun or Yarn.
 | `executor service get [setting]` | Print every setting as JSON, or one setting. |
 | `executor service set <setting> <value>` | Change a setting. |
 | `executor service unset <setting>` | Remove a setting. |
+| `executor service pair` | Print a new connection link for the background Executor. |
+| `executor service rotate-key` | Replace the saved API key. Run `executor service restart`, then update clients that used the old key. |
+
+`executor service pair` asks the background Executor for a link, waiting up to
+30 seconds while it starts, stops or does not respond. It only reads: it never
+starts Executor or creates a data directory or keys. When you set
+`EXECUTOR_API_KEY`, it sends that key instead, to the background Executor or,
+when none runs, to the server on `EXECUTOR_PORT`.
 
 | Setting | Purpose |
 | --- | --- |
 | `port` | The port it listens on. `EXECUTOR_PORT` wins over it; the default is `4312`. Each data directory's background Executor needs its own port. |
 | `env` | Extra environment variables for it: `executor service set env <name> <value>`, `executor service unset env <name>`. |
-| `disabled` | `true` makes `executor`, and `executor apps` commands without `--host` or `EXECUTOR_HOST`, run a private server for the command instead, as `--standalone` does. `executor service start`, `executor pair` and the desktop app still use the background Executor. |
+| `disabled` | `true` makes `executor`, and client commands without a host, run a private server for the command instead, as `--standalone` does. `executor service start`, `executor service pair` and the desktop app still use the background Executor. |
 
 Changing `port` or `env`, or setting `disabled` to `true`, stops the background
 Executor; the next command that needs it starts it with the new settings. It
@@ -190,6 +268,8 @@ and a directory using `keys.json` needs that file.
 
 Use the dashboard's **Connect** card to add the local MCP endpoint to your
 agent. See [Add an MCP client](/mcp-clients) for Claude Code, Cursor and Codex.
+A client that starts a command can run `executor mcp` instead; see
+[Serve your tools to an MCP client](#serve-your-tools-to-an-mcp-client).
 The client connects to the background Executor. After you restart your
 computer, run `executor` or `executor service start` first; until then the
 client's connection is refused. If you change the port, update the client's URL.

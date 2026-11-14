@@ -7,6 +7,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { desktopUpdateFeed, desktopUpdateFile, nativePlatform, release } from "./config.ts";
 import { developerIdMac, unsignedMac } from "./macos-signing.ts";
 import { installNodeRuntime } from "./node-runtime.ts";
+import { smokePackagedCollector } from "./standalone.ts";
 import {
   DesktopRuntimeBuild,
   desktopRuntimeBuildFile,
@@ -170,6 +171,8 @@ const build = Effect.gen(function* () {
     signing.env,
   );
   yield* signing.finalize(artifacts);
+  // The app's own copy of the collector, as it ships: every unpacked app this build wrote.
+  yield* smokePackagedCollector(root, target, artifacts);
   if (updates && !process.argv.includes("--dir")) {
     const metadata = path.join(artifacts, desktopUpdateFile(target, release.channel));
     if (!(yield* fs.exists(metadata)))

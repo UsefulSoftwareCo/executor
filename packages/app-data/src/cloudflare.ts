@@ -10,12 +10,14 @@ import type {
 import { Clock, Deferred, Effect, Exit, Result, Schema, Semaphore } from "effect";
 import { fingerprint } from "./implementation/fingerprint.ts";
 import { AppDatabaseError } from "./contracts/database.ts";
+import { HostApiCheck } from "./contracts/host-api.ts";
 import { CacheCommand, CacheError, CacheReply } from "@executor-js/app-cache/contracts";
 import { holdLeases } from "@executor-js/app-cache";
 import { discardsEvaluated } from "@executor-js/app-cache/changes";
 import { sqliteCache } from "@executor-js/app-cache/sqlite";
 import { evaluatedStore } from "./implementation/evaluated.ts";
 import type {
+  EvaluatedChanged,
   EvaluatedEntry,
   EvaluatedSupervisor,
   EvaluatedWritten,
@@ -34,6 +36,11 @@ export const FacetInvocation = Schema.Struct({
   identity: Schema.NonEmptyString,
   body: Schema.String,
   cacheNamespace: Schema.optionalKey(Schema.String),
+  /**
+   * The host API revision `cacheNamespace` belongs to, for an app that reads its host's API. The
+   * facet Worker's network is bound to it, so `identity` names the revision too.
+   */
+  hostApi: Schema.optionalKey(HostApiCheck),
   write: Schema.Boolean,
   /**
    * The bundle's calls may run alongside other calls of the same execution context. Bundles built
@@ -207,10 +214,11 @@ export const makeFacetSupervisor = (
   state: DurableObjectState,
   loader: Pick<WorkerLoader, "get">,
   /**
-   * Network the facet's global `fetch` uses, bound to its app. It substitutes credential handles
-   * and applies the host's routing rules.
+   * Network the facet's global `fetch` uses, bound to its app and to the host API revision its
+   * cache belongs to, when it reads its host's API. It substitutes credential handles and applies
+   * the host's routing rules.
    */
-  globalOutbound: (app: string) => Fetcher,
+  globalOutbound: (app: string, hostApi: HostApiCheck | undefined) => Fetcher,
   /**
    * Whether this object is the supervisor named for `app`, from its own ID (for example
    * `state.id.equals(namespace.idFromName(app))`). Its storage is that app's, so it refuses an
@@ -339,18 +347,21 @@ export const makeFacetSupervisor = (
       });
     const evaluated = evaluatedStore(state.storage);
     const cached = sqliteCache(state.storage);
-    // Every cache command, from the host or from an invocation, passes here, so an invalidation
-    // is recorded for evaluated results before any caller can read them again.
+    // Every cache command, from the host or from an invocation, passes here, so a change is
+    // recorded for evaluated results before any caller can read them again: an invalidation, an
+    // explicit refresh, or any command that replaced a value with different data, such as a
+    // routine background refresh that found a changed MCP tool list.
     const store = (namespace: string, command: unknown) =>
       cached(namespace, command).pipe(
-        Effect.tap(() =>
-          discardsEvaluated(command)
+        Effect.tap(({ replaced }) =>
+          replaced || discardsEvaluated(command)
             ? Clock.currentTimeMillis.pipe(
                 Effect.flatMap(evaluated.changed),
                 Effect.mapError(() => new CacheError({ reason: "storage" })),
               )
             : Effect.void,
         ),
+        Effect.map(({ reply }) => reply),
       );
     const cache = (namespace: string, command: unknown) =>
       store(namespace, command).pipe(
@@ -405,16 +416,16 @@ export const makeFacetSupervisor = (
           state.facets.abort("data", "Fresh subrequest allowance");
           starts.recycled = true;
         }
-        if (!unloadReplacedFacets) return yield* select(name, invocation.app, load, starts);
+        if (!unloadReplacedFacets) return yield* select(name, invocation, load, starts);
         // Also covers a facet an evicted supervisor left loaded, which `active` never saw.
         const replaced = loadedFacets.get(supervisor);
         loadedFacets.set(supervisor, { name, loaded });
         if (replaced !== undefined && replaced.loaded !== loaded) yield* unloadReplaced(replaced);
-        return yield* select(name, invocation.app, load, starts);
+        return yield* select(name, invocation, load, starts);
       });
     const select = (
       name: string,
-      app: string,
+      invocation: Pick<typeof FacetInvocation.Type, "app" | "hostApi">,
       load: () => Promise<typeof FacetBundle.Type>,
       starts: FacetStarts,
     ) =>
@@ -434,7 +445,7 @@ export const makeFacetSupervisor = (
                   compatibilityDate: "2026-07-30",
                   // The strictly-public flag would override this outbound and bypass it.
                   compatibilityFlags: ["nodejs_compat", "no_brotli_content_encoding"],
-                  globalOutbound: globalOutbound(app),
+                  globalOutbound: globalOutbound(invocation.app, invocation.hostApi),
                 };
               });
               return { class: worker.getDurableObjectClass("ExecutorAppData") };
@@ -678,7 +689,7 @@ export const makeFacetSupervisor = (
         runningIn(trace).pipe(
           Effect.flatMap(({ supervisor }) =>
             evaluated.command(command).pipe(
-              Effect.map((reply): EvaluatedEntry | EvaluatedWritten =>
+              Effect.map((reply): EvaluatedEntry | EvaluatedWritten | EvaluatedChanged =>
                 typeof reply === "boolean"
                   ? { kept: reply, supervisor }
                   : reply === null

@@ -1,6 +1,7 @@
 /** Native approval delivery holds only the active MCP request; codemode remains parked while the user decides. */
 import { Clock, Effect, Option, Schema } from "effect";
 import { McpSchema } from "effect/ai";
+import { ElicitationResponse } from "apps/contracts";
 import { NativeElicitationFailed } from "../contracts/elicitation.ts";
 import type { McpBackend } from "../contracts/backend.ts";
 import type { ApprovalMode, makeExecutions } from "./executions.ts";
@@ -44,6 +45,12 @@ export const executeNative = (
               McpReverseOperationError: () =>
                 Effect.fail(new NativeElicitationFailed({ reason: "transport" })),
             }),
+            // The client's `_meta` may hold any value; a resume keeps only JSON.
+            Effect.flatMap((answer) =>
+              Schema.decodeUnknownEffect(ElicitationResponse)(answer).pipe(
+                Effect.mapError(() => new NativeElicitationFailed({ reason: "transport" })),
+              ),
+            ),
             Effect.timeoutOrElse({
               duration: remaining,
               orElse: () => Effect.fail(new NativeElicitationFailed({ reason: "expired" })),

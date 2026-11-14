@@ -1,11 +1,20 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, type ComponentProps, type ReactNode } from "react";
+import { HugeiconsIcon } from "@hugeicons/react";
+import { FilterIcon } from "@hugeicons/core-free-icons";
 import { useHydrated } from "@executor-js/ui/hooks/hydrated";
 import { OrganizationSettingsPending } from "./organization-settings-pending.tsx";
 import { AddAppBack } from "./add-app.tsx";
+import { Button } from "@executor-js/ui/components/button";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
+import { SearchInput } from "@executor-js/ui/dashboard/common";
 import { AppDetailPending } from "@executor-js/ui/dashboard/app-loading";
 import { PageFrame, PageHeader } from "@executor-js/ui/dashboard/page";
 import { parseAppSearch } from "../../contracts/navigation.ts";
+import {
+  appliedFilterCount,
+  parseToolCallSearch,
+  type ToolCallSearch,
+} from "../../contracts/tool-calls.ts";
 import { Link, useLocation } from "@tanstack/react-router";
 import {
   ApprovalCardPending,
@@ -39,6 +48,83 @@ export function GroupsLoading() {
     >
       Loading groups…
     </div>
+  );
+}
+
+export const activityTitle = "Activity";
+export const activityDescription =
+  "Which tools were called, by whom, and how each call ended. Calls are kept for 30 days.";
+
+/** The Activity page's heading, the same while the page or its list loads. */
+export function ActivityFrame({ children }: { readonly children: ReactNode }) {
+  return (
+    <PageFrame>
+      <PageHeader title={activityTitle} description={activityDescription} />
+      {children}
+    </PageFrame>
+  );
+}
+
+export const activitySearchPlaceholder = "Search or paste a reference";
+
+/** The button that opens the Filter menu, with how many filters are applied. */
+export function ActivityFilterButton({
+  count,
+  ...props
+}: { readonly count: number } & Omit<ComponentProps<typeof Button>, "children">) {
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      aria-label={count === 0 ? "Filter" : `Filter, ${count} applied`}
+      {...props}
+    >
+      <HugeiconsIcon icon={FilterIcon} strokeWidth={2} aria-hidden />
+      Filter
+      {count > 0 && (
+        <span
+          aria-hidden
+          className="rounded-full bg-foreground px-1.5 text-[11px] leading-4.5 text-background"
+        >
+          {count}
+        </span>
+      )}
+    </Button>
+  );
+}
+
+/**
+ * The search field and Filter button as the page shows them for this address, before the page can
+ * use them. They look the same as the page's own, so the toolbar does not change when it arrives;
+ * until then they take no input, which would be lost.
+ */
+export function ActivityToolbarPending({ search }: { readonly search: ToolCallSearch }) {
+  return (
+    <div inert className="mb-2.5 flex items-center gap-2">
+      <SearchInput
+        value={search.q ?? ""}
+        onChange={() => {}}
+        placeholder={activitySearchPlaceholder}
+      />
+      <ActivityFilterButton count={appliedFilterCount(search)} />
+    </div>
+  );
+}
+
+/**
+ * The list before its first page arrives. Whether it holds calls is unknown, so it shows no rows:
+ * only the count line and the space the list starts in.
+ */
+export function ActivityListPending() {
+  return (
+    <>
+      <div className="mb-3 flex min-h-6 items-center">
+        <Skeleton className="h-3.5 w-48" />
+      </div>
+      <div className="min-h-64 border-t">
+        <LoadingAnnouncement>Loading tool calls…</LoadingAnnouncement>
+      </div>
+    </>
   );
 }
 
@@ -160,6 +246,13 @@ export function PagePending({
       <GroupsFrame>
         <GroupsLoading />
       </GroupsFrame>
+    );
+  if (page === "activity")
+    return (
+      <ActivityFrame>
+        <ActivityToolbarPending search={parseToolCallSearch(search)} />
+        <ActivityListPending />
+      </ActivityFrame>
     );
   if (page === "webhooks")
     return (

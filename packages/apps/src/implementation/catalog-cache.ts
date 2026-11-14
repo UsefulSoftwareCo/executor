@@ -1,6 +1,6 @@
 /** Revisioned catalog storage shared by remote protocols. Executables are never persisted. */
 import { CacheError } from "@executor-js/app-cache";
-import { Deferred, Duration, Effect, Exit, Schema } from "effect";
+import { Deferred, Duration, Effect, Exit, Fiber, Schema } from "effect";
 import type { AccountCredential, AppCache, CacheLoadContext } from "../contracts/cache.ts";
 import { JsonObject, type JsonValue } from "../contracts/schema.ts";
 import { fromPromise, method, toPromise } from "./authoring.ts";
@@ -53,6 +53,8 @@ export const catalogScope = <E>(
 };
 
 const schema = <A>(decoder: Schema.Decoder<A>) => wrap(decoder, false);
+/** Part writes a refresh keeps in flight at once. */
+const flushConcurrency = 4;
 
 /**
  * The revision this isolate last saw for each catalog, by the store key of its manifest. That key
@@ -191,6 +193,10 @@ export const catalogCache = <A extends { readonly name: string }, S>(
         let batch: { key: JsonValue; value: JsonValue }[] = [];
         let batchBytes = 0;
         let flushes = 0;
+        // Parts are immutable and independent, so writes need not land in order. A few stay in
+        // flight while the next batch is built; the oldest is awaited first, bounding memory. A
+        // refresh that fails interrupts the writes it left in flight.
+        const writing: Fiber.Fiber<void, unknown>[] = [];
         const flush = () =>
           Effect.suspend(() => {
             const entries = batch;
@@ -198,7 +204,10 @@ export const catalogCache = <A extends { readonly name: string }, S>(
             batch = [];
             batchBytes = 0;
             if (!entries.length) return Effect.void;
-            return fromPromise(method(context.cache, "write"), "cache")(entries, retention).pipe(
+            const write = fromPromise(method(context.cache, "write"), "cache")(
+              entries,
+              retention,
+            ).pipe(
               Effect.withSpan("app.cache.flush", {
                 attributes: {
                   "cache.flush.index": flushes++,
@@ -207,6 +216,11 @@ export const catalogCache = <A extends { readonly name: string }, S>(
                 },
               }),
             );
+            return Effect.gen(function* () {
+              const oldest = writing.length >= flushConcurrency ? writing.shift() : undefined;
+              if (oldest !== undefined) yield* Fiber.join(oldest);
+              writing.push(yield* Effect.forkScoped(write));
+            });
           });
         const append = (entry: { key: JsonValue; value: JsonValue }) =>
           Effect.gen(function* () {
@@ -249,6 +263,7 @@ export const catalogCache = <A extends { readonly name: string }, S>(
         yield* pageOut();
         yield* summaryOut();
         yield* flush();
+        for (const fiber of writing) yield* Fiber.join(fiber);
         // The cache publishes this manifest only after all parts, under its fenced loader lease.
         return {
           revision,
@@ -256,7 +271,7 @@ export const catalogCache = <A extends { readonly name: string }, S>(
           summaries,
           ...(header === undefined ? {} : { header: yield* json(header) }),
         };
-      });
+      }).pipe(Effect.scoped);
     const getOptions = {
       key,
       schema: schema(Manifest),

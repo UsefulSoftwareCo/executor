@@ -4,6 +4,7 @@ import { Stage } from "alchemy/Stage";
 import { singleResourceOrigin, type ResourceOrigins } from "@executor-js/hosted-server";
 import { isLoopbackHostname } from "@executor-js/utils/url-policy";
 import { Config, Effect, Option, Schema } from "effect";
+import { TestStageSlug } from "../contracts/test-stage-lifetime.ts";
 
 export const testStagePrefix = "test-";
 
@@ -15,13 +16,6 @@ export const productionStage = "v2";
  * existing Worker identity when the public site moves to its separate marketing gateway.
  */
 export const productionApiWorkerName = "executor-next-hosted-api-v2-qs32brgjwvt7ytx4";
-
-/** Slugs map one-to-one to the stage's logical database name. */
-export const TestStageSlug = Schema.String.check(
-  Schema.makeFilter((value) => /^[a-z0-9](?:[a-z0-9-]{0,40}[a-z0-9])?$/.test(value), {
-    message: "A test stage slug is 1-42 lowercase letters, digits and hyphens",
-  }),
-);
 
 export interface TestStage {
   readonly name: string;
@@ -63,17 +57,31 @@ export const testStage = Effect.gen(function* () {
   });
 });
 
+/**
+ * A configured public origin. The OAuth issuer takes its scheme as configured, so a deployed stage
+ * must serve HTTPS; Better Auth no longer rewrites an HTTP issuer to HTTPS for it. Cloud development
+ * runs on a loopback origin, as `cloudEmulators` and the session cookie name tell it apart, and may
+ * use plain HTTP there.
+ */
 const Origin = Schema.String.check(
   Schema.makeFilter(
     (value) => {
       try {
         const url = new URL(value);
-        return (url.protocol === "http:" || url.protocol === "https:") && url.origin === value;
+        return (
+          (url.protocol === "https:" ||
+            (url.protocol === "http:" && isLoopbackHostname(url.hostname))) &&
+          url.origin === value
+        );
       } catch {
         return false;
       }
     },
-    { message: "BETTER_AUTH_URL must be an HTTP(S) origin without a trailing slash" },
+    {
+      message:
+        "BETTER_AUTH_URL must be an HTTPS origin without a trailing slash. Only Cloud " +
+        "development on a loopback host may use plain HTTP.",
+    },
   ),
 );
 
@@ -129,6 +137,12 @@ export interface RoleHosts {
    * forwarding Worker serves `edge.<slug>.<test domain>`; a local run's Worker serves it itself.
    */
   readonly edge: string;
+  /**
+   * The host v1's AuthKit served its sign-in from: `https://signin.executor.sh` in production,
+   * `signin.` under the stage's domain elsewhere. v2 answers it so that MCP clients holding
+   * AuthKit's sign-in move to v2 (`notes/v1-shutdown.md`, "AuthKit").
+   */
+  readonly authKit: string;
   /** The domain the role hosts live under, and the passkey relying party. */
   readonly domain: string;
   /** None when the hosts come from `EXECUTOR_ROLE_HOSTS_DOMAIN`, which only local runs set. */
@@ -204,6 +218,7 @@ const roleHostsAt = (deployment: string) =>
           // Production's domain is `executor.sh` itself. A test stage or local run serves its
           // deployment at the domain, so its edge takes the `edge.` label under it.
           edge: hostname === domain ? at("edge") : `${protocol}//${domain}${suffix}`,
+          authKit: at("signin"),
           domain,
           zone,
         };
@@ -253,11 +268,14 @@ const resourceOriginsFor = (
 ): ResourceOrigins => {
   if (Option.isNone(roles)) return singleResourceOrigin(deployment);
   const { mcp, api } = roles.value.origins;
+  // The edge serves v1's MCP URLs, each its own resource, once v1 shuts down
+  // (`notes/v1-shutdown.md`). Before then v1 owns those paths and its edge never forwards them.
+  const legacyMcp = roles.value.edge;
   switch (canonical) {
     case "deployment":
-      return { mcp: [deployment, mcp], api: [deployment, api] };
+      return { mcp: [deployment, mcp], api: [deployment, api], legacyMcp };
     case "role":
-      return { mcp: [mcp, deployment], api: [api, deployment] };
+      return { mcp: [mcp, deployment], api: [api, deployment], legacyMcp };
   }
 };
 

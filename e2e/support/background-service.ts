@@ -17,13 +17,19 @@ import {
   Layer,
   Option,
   Path,
-  Redacted,
+  Queue,
   Ref,
   Schedule,
   Schema,
   Stream,
 } from "effect";
-import { HttpClient, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
+import {
+  HttpClient,
+  HttpRouter,
+  HttpServer,
+  HttpServerRequest,
+  HttpServerResponse,
+} from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { createHmac } from "node:crypto";
@@ -32,14 +38,31 @@ import { Evidence } from "./evidence.ts";
 import { Target } from "./platform.ts";
 import { connectionRefused, freePort } from "./ports.ts";
 import { localEntryCommand } from "./local-entry.ts";
+import { heldValue, reveal } from "./failure-text.ts";
 
 /** `server.json`: the process that serves a data directory and how to reach it. */
+/** What `executor` prints when it starts a background server. */
+export const starting = "Starting background Executor...";
+
+/** Serve `routes` on a loopback port, by default a free one, for the current scope; its URL. */
+export const serving = <E, R>(routes: Layer.Layer<never, E, R>, port = 0) =>
+  Effect.gen(function* () {
+    const services = yield* Layer.build(
+      HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
+        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port })),
+      ),
+    );
+    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+    if (!("port" in server.address)) return yield* Effect.die("Fixture must listen on TCP");
+    return `http://127.0.0.1:${server.address.port}`;
+  });
+
 export const ServiceRegistration = Schema.Struct({
   id: Schema.String,
   version: Schema.String,
   url: Schema.String,
   pid: Schema.Number,
-  password: Schema.RedactedFromValue(Schema.String),
+  password: heldValue(Schema.RedactedFromValue(Schema.String)),
 });
 export type ServiceRegistration = typeof ServiceRegistration.Type;
 const RegistrationJson = Schema.fromJsonString(ServiceRegistration);
@@ -82,7 +105,7 @@ export const stoppingServer = (server: ServiceRegistration) =>
           ...(challenge === null
             ? {}
             : {
-                proof: createHmac("sha256", Redacted.value(server.password))
+                proof: createHmac("sha256", reveal(server.password))
                   .update(challenge)
                   .digest("base64url"),
               }),
@@ -148,10 +171,145 @@ export class ServiceCliFailed extends Schema.TaggedError<ServiceCliFailed>()("Se
 
 const otherUser = Schema.is(Schema.Struct({ code: Schema.Literal("EPERM") }));
 /** Signal 0 checks that a process exists; EPERM means it exists under another user. */
-const alive = (pid: number) =>
+export const alive = (pid: number) =>
   Effect.try({ try: () => process.kill(pid, 0), catch: otherUser }).pipe(
     Effect.match({ onSuccess: () => true, onFailure: (exists) => exists }),
   );
+
+/** A Windows start time could not be read: no answer is a guess, so the scenario fails. */
+class StartTimeUnreadable extends Schema.TaggedError<StartTimeUnreadable>()("StartTimeUnreadable", {
+  message: Schema.String,
+}) {}
+
+/**
+ * Prints the start time of each process ID read from stdin, in 100-nanosecond ticks, or `none`
+ * when no process has the ID.
+ */
+const startTimeScript = [
+  "$ErrorActionPreference = 'Stop'",
+  "while ($null -ne ($line = [Console]::In.ReadLine())) {",
+  "  try { $ticks = (Get-Process -Id ([int]$line)).StartTime.ToUniversalTime().Ticks } catch { $ticks = 'none' }",
+  "  [Console]::Out.WriteLine($ticks); [Console]::Out.Flush()",
+  "}",
+].join("\n");
+
+/**
+ * Windows: a reader of process start times for the current scope, from one PowerShell. Windows
+ * keeps no start time a Node program reads without starting a process, and starting PowerShell
+ * took over ten seconds on a busy release runner: a liveness poll that started one each time got
+ * a single answer in a ten-second window. This one starts once, when the harness that polls is
+ * created, and then answers each question in milliseconds.
+ */
+export const windowsStartTimes = Effect.gen(function* () {
+  const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+  const questions = yield* Queue.unbounded<Uint8Array>();
+  /** Callers waiting for an answer, in the order their questions were written. */
+  const waiting: Array<Deferred.Deferred<Option.Option<string>, StartTimeUnreadable>> = [];
+  const child = yield* processes.spawn(
+    ChildProcess.make(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", startTimeScript],
+      { stdin: Stream.fromQueue(questions), stderr: "ignore" },
+    ),
+  );
+  const unanswered = (message: string) =>
+    Effect.sync(() => {
+      for (const deferred of waiting.splice(0))
+        Deferred.doneUnsafe(deferred, Effect.fail(new StartTimeUnreadable({ message })));
+    });
+  yield* child.stdout.pipe(
+    Stream.decodeText(),
+    Stream.splitLines,
+    Stream.runForEach((line) =>
+      Effect.sync(() => {
+        const answer = line.trim();
+        const deferred = waiting.shift();
+        if (deferred !== undefined)
+          Deferred.doneUnsafe(
+            deferred,
+            Effect.succeed(/^\d+$/u.test(answer) ? Option.some(answer) : Option.none()),
+          );
+      }),
+    ),
+    Effect.ignore,
+    Effect.andThen(unanswered("PowerShell stopped answering start time questions")),
+    Effect.forkScoped,
+  );
+  const encoder = new TextEncoder();
+  return (pid: number) =>
+    Effect.gen(function* () {
+      const deferred = Deferred.makeUnsafe<Option.Option<string>, StartTimeUnreadable>();
+      // Queue the caller and its question together, so answers keep the questions' order.
+      yield* Effect.sync(() => {
+        waiting.push(deferred);
+        Queue.offerUnsafe(questions, encoder.encode(`${pid}\n`));
+      });
+      return yield* Deferred.await(deferred);
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: "60 seconds",
+        orElse: () =>
+          Effect.fail(
+            new StartTimeUnreadable({
+              message: `PowerShell gave no start time for ${pid} in 60 s`,
+            }),
+          ),
+      }),
+      Effect.orDie,
+    );
+});
+
+/**
+ * Windows: when the process a process ID names now started, in 100-nanosecond ticks, from a
+ * PowerShell started for this one question. Windows soon gives a freed process ID to another
+ * process, often another `executor.exe`: the next server, or a command another scenario runs at the
+ * same time. An image name cannot tell those apart; a start time can. Polls use
+ * `windowsStartTimes`, which starts PowerShell once.
+ */
+export const windowsStartTime = (pid: number) =>
+  Effect.gen(function* () {
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    return yield* processes
+      .lines(
+        ChildProcess.make(
+          "powershell.exe",
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
+          ],
+          { stderr: "ignore" },
+        ),
+      )
+      .pipe(
+        Effect.map((lines) =>
+          Option.fromNullishOr(
+            lines.map((line) => line.trim()).find((line) => /^\d+$/u.test(line)),
+          ),
+        ),
+        Effect.orElseSucceed(() => Option.none<string>()),
+      );
+  });
+
+/**
+ * Whether `pid` still names the process that started at `recorded`. A process ID that names no
+ * process answers at once, without reading a start time; one that names a process started at
+ * another time is a reused ID. Without a recorded start time, the ID alone decides.
+ */
+export const sameProcess = <R>(
+  pid: number,
+  recorded: string | undefined,
+  probe: {
+    readonly alive: (pid: number) => Effect.Effect<boolean, never, R>;
+    readonly startTime: (pid: number) => Effect.Effect<Option.Option<string>, never, R>;
+  },
+) =>
+  Effect.gen(function* () {
+    if (!(yield* probe.alive(pid))) return false;
+    if (recorded === undefined) return true;
+    return Option.contains(yield* probe.startTime(pid), recorded);
+  });
 
 /**
  * End a background server as a crash would: nothing it runs on shutdown runs. Its child processes,
@@ -427,40 +585,20 @@ export const backgroundServiceCli = (options: { readonly port?: number } = {}) =
         }),
       );
 
-    /**
-     * Windows: the program a process ID names now, by its image name. Windows soon gives a process
-     * ID that was freed to another process, often one that the next server starts.
-     */
-    const imageOf = (pid: number) =>
-      processes
-        .lines(
-          ChildProcess.make("tasklist", ["/fi", `PID eq ${pid}`, "/fo", "csv", "/nh"], {
-            stderr: "ignore",
-          }),
-        )
-        .pipe(
-          Effect.map((lines) =>
-            Option.fromNullishOr(
-              lines
-                .map((line) => /^"([^"]+)","(\d+)"/u.exec(line))
-                .find((match) => match !== null && Number(match[2]) === pid)?.[1],
-            ),
-          ),
-          Effect.orElseSucceed(() => Option.none<string>()),
-        );
-    /** On Windows, the image each server this scenario saw ran as. */
-    const images = new Map<number, string>();
+    // One PowerShell answers every start time question this harness asks; it starts here, before
+    // any poll's window opens.
+    const startOf =
+      process.platform === "win32"
+        ? yield* windowsStartTimes
+        : () => Effect.succeed(Option.none<string>());
+    /** On Windows, when each server this scenario saw started. */
+    const starts = new Map<number, string>();
     /**
      * Whether `pid` still names a process. On Windows a server's ID counts only while it names a
-     * process with the image that server ran as, since the ID may already name another process.
+     * process that started when that server did, since the ID may already name another process.
      */
     const running = (pid: number) =>
-      Effect.gen(function* () {
-        if (!(yield* alive(pid))) return false;
-        const image = images.get(pid);
-        if (image === undefined) return true;
-        return Option.contains(yield* imageOf(pid), image);
-      });
+      sameProcess(pid, starts.get(pid), { alive, startTime: startOf });
     /** Every server this scenario saw registered, by id, for cleanup. */
     const seen = new Map<string, ServiceRegistration>();
     /** The registered server, if `server.json` exists. */
@@ -469,9 +607,9 @@ export const backgroundServiceCli = (options: { readonly port?: number } = {}) =
       const text = yield* fs.readFileString(registrationFile);
       const value = yield* Schema.decodeUnknownEffect(RegistrationJson)(text);
       seen.set(value.id, value);
-      if (process.platform === "win32" && !images.has(value.pid)) {
-        const image = yield* imageOf(value.pid);
-        if (Option.isSome(image)) images.set(value.pid, image.value);
+      if (process.platform === "win32" && !starts.has(value.pid)) {
+        const start = yield* startOf(value.pid);
+        if (Option.isSome(start)) starts.set(value.pid, start.value);
       }
       return Option.some(value);
     });

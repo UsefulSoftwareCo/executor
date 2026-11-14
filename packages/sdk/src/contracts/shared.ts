@@ -1,8 +1,8 @@
-import { ApiError } from "@executor-js/utils/api-error";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { callPresentation, MayHaveWritten } from "./call-presentation.ts";
 /** Shared contract primitives: IDs, ownership, JSON, pagination and write-only secrets. */
 import { Schema } from "effect";
+import { HttpApiMiddleware } from "effect/http-api";
 export { AccountId, HttpUrl } from "apps/contracts";
 
 /**
@@ -38,8 +38,13 @@ export type ProviderId = typeof ProviderId.Type;
 export const WebhookId = Id("whk");
 export type WebhookId = typeof WebhookId.Type;
 
-/** Id of an App (see `apps.ts`), prefix `app_`. */
-export const AppId = Id("app");
+/**
+ * Id of an App (see `apps.ts`), prefix `app_`. Tool signatures show schema descriptions, so the
+ * description tells agents which value to pass.
+ */
+export const AppId = Id("app").annotate({
+  description: "App ID, such as app_…, from the app's `id`. An app's slug or name is not accepted.",
+});
 
 export type AppId = typeof AppId.Type;
 
@@ -149,14 +154,61 @@ export const CredentialsError = UserFacingError.define({
 /** Parsed CredentialsError failure. */
 export type CredentialsError = typeof CredentialsError.Type;
 
-/** Invalid SDK input; submitted fields are never included in the error. */
-export const RequestInvalid = ApiError.define({
+/** The part of an HTTP request an operation's schema rejected. */
+export const RequestPart = Schema.Literals(["path", "headers", "query", "body"]);
+export type RequestPart = typeof RequestPart.Type;
+
+/**
+ * One place a request did not match its operation's schema: a JSON path into the rejected part,
+ * such as `$.files`, and what the schema expects there. Executor's schemas state the expectation;
+ * the submitted value is not repeated.
+ */
+export const RequestIssue = Schema.Struct({ path: Schema.String, expected: Schema.String });
+export type RequestIssue = typeof RequestIssue.Type;
+
+const requestInvalidDescription =
+  "Executor could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.";
+
+/**
+ * Invalid SDK input; submitted fields are never included in the error. A request its operation's
+ * schema rejected names the part and each place that did not match.
+ */
+export const RequestInvalid = UserFacingError.define({
   tag: "RequestInvalid",
   status: 400,
-  message:
-    "Executor could not accept this request's input. Check it against the operation's schema; submitted values are not repeated here.",
+  fields: {
+    part: Schema.optionalKey(RequestPart),
+    issues: Schema.optionalKey(Schema.Array(RequestIssue)),
+  },
+  recorded: ({ part }) =>
+    part === undefined
+      ? requestInvalidDescription
+      : `Executor rejected this request's ${part} because it does not match the operation's schema.`,
+  presentation: ({ part, issues }) => ({
+    title: "Request input not accepted",
+    description:
+      part === undefined || issues === undefined || issues.length === 0
+        ? requestInvalidDescription
+        : `Executor rejected this request's ${part} because it does not match the operation's schema: ${issues
+            .map((issue) => `${issue.path}: ${issue.expected}`)
+            .join("; ")}.`,
+    recovery: {
+      action: "Correct the input and send the request again.",
+      instructions:
+        "Read each listed path and what the operation's schema expects there, correct those values, and send the corrected request. Read the operation's input schema for the full shape. Sending the same input again fails the same way.",
+    },
+  }),
 });
 export type RequestInvalid = typeof RequestInvalid.Type;
+
+/**
+ * Answers a request its endpoint's schema rejects with `RequestInvalid`. Every product API applies
+ * it to every endpoint, so each operation's published errors include that response.
+ */
+export class RequestRejection extends HttpApiMiddleware.Service<RequestRejection>()(
+  "executor/RequestRejection",
+  { error: RequestInvalid },
+) {}
 
 /** Opaque pending account setup identity; hosts enforce access separately. */
 export const AccountConnectionId = Id("con");

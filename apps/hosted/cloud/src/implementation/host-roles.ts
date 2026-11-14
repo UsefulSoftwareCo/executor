@@ -7,9 +7,12 @@
  * - `app.` (the browser origin) serves the dashboard, sign-in and the dashboard API. MCP and its
  *   resource discovery are not there: `mcp.` serves them.
  * - `mcp.` and `api.` answer only from their own routers, so any other path there is the
- *   router's 404, as for an unknown path anywhere.
- * - The edge (`executor.sh`) answers only the requests v1 forwards (`servedOnEdge`), from its
- *   own router.
+ *   router's 404, as for an unknown path anywhere. `api.` also answers MCP resource discovery,
+ *   naming the canonical MCP resource on `mcp.`, so the host the CLI signs in to names it.
+ * - The edge (`executor.sh`) answers from its own router: today only the requests v1 forwards
+ *   reach it, and once v1 shuts down everything there (`notes/v1-shutdown.md`).
+ * - v1's AuthKit host (`signin.executor.sh`) answers from its own table (`v1-authkit.ts`) and
+ *   serves nothing else; it reaches the Worker only once its record is proxied.
  * - The deployment origin (`v2.executor.sh`) and any other host keep the full product, except
  *   browser pages, which redirect permanently to the same path on the browser origin, and site
  *   pages, which redirect permanently to the edge. Its homepage goes to the dashboard for a
@@ -24,29 +27,42 @@
  */
 import { Effect, Option } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
-import type { CloudHosts, HostRole } from "../infrastructure/stage.ts";
+import type { CloudHosts, HostRole, RoleHosts } from "../infrastructure/stage.ts";
 import { isBrowserPage, isMcpPath } from "../contracts/browser-pages.ts";
-import { servedOnEdge } from "../contracts/edge-paths.ts";
 import { isSitePage } from "../contracts/site-paths.ts";
 
 /** The host of the URL a request arrived at; never a forwarding header. */
 const requestHost = (request: HttpServerRequest.HttpServerRequest) =>
   URL.parse(request.originalUrl)?.host;
 
-type Route = HostRole | "edge" | "deployment";
+type Route = HostRole | "edge" | "authkit" | "deployment";
+
+/** The role host or edge `host` is, if it is one of them. */
+const roleHostOf = (roles: RoleHosts, host: string | undefined) => {
+  if (host === new URL(roles.origins.app).host) return "app";
+  if (host === new URL(roles.origins.mcp).host) return "mcp";
+  if (host === new URL(roles.origins.api).host) return "api";
+  if (host === new URL(roles.edge).host) return "edge";
+  if (host === new URL(roles.authKit).host) return "authkit";
+  return undefined;
+};
 
 /** The part of the product a request's host names. */
 const routeOf = (hosts: CloudHosts, host: string | undefined): Route =>
   Option.match(hosts.roles, {
     onNone: () => "deployment" as const,
-    onSome: (roles): Route => {
-      if (host === new URL(roles.origins.app).host) return "app";
-      if (host === new URL(roles.origins.mcp).host) return "mcp";
-      if (host === new URL(roles.origins.api).host) return "api";
-      if (host === new URL(roles.edge).host) return "edge";
-      return "deployment";
-    },
+    onSome: (roles): Route => roleHostOf(roles, host) ?? "deployment",
   });
+
+/**
+ * The role of the host a request to any Cloud Worker was sent to, for records of every Worker's
+ * invocations. The API Worker serves an unnamed host as the deployment origin; here such a host is
+ * `other`, because other Workers receive other hosts: an app's own domain, or the upstream of a
+ * request an app sends out.
+ */
+export const hostRoleOf = (hosts: CloudHosts, host: string | undefined): Route | "other" =>
+  (Option.isSome(hosts.roles) ? roleHostOf(hosts.roles.value, host) : undefined) ??
+  (host === new URL(hosts.deployment).host ? "deployment" : "other");
 
 /** The same path and query on `origin`. */
 const sameRequestAt = (request: HttpServerRequest.HttpServerRequest, origin: string) => {
@@ -86,7 +102,7 @@ const annotateHost = (request: HttpServerRequest.HttpServerRequest, role: Route)
  * hosts, `main` serves every request. Either way the request's span names its host and role.
  */
 export const withRoleHosts =
-  <E1, R1, E2, R2, E3, R3>(
+  <E1, R1, E2, R2, E3, R3, E4, R4>(
     hosts: CloudHosts,
     /** Whether the request carries a session cookie: a routing hint, never authority. */
     hasSession: (headers: HttpServerRequest.HttpServerRequest["headers"]) => boolean,
@@ -94,6 +110,7 @@ export const withRoleHosts =
       readonly mcp: Effect.Effect<HttpServerResponse.HttpServerResponse, E1, R1>;
       readonly api: Effect.Effect<HttpServerResponse.HttpServerResponse, E2, R2>;
       readonly edge: Effect.Effect<HttpServerResponse.HttpServerResponse, E3, R3>;
+      readonly authKit: Effect.Effect<HttpServerResponse.HttpServerResponse, E4, R4>;
     },
   ) =>
   <E, R>(main: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
@@ -130,7 +147,10 @@ export const withRoleHosts =
             case "api":
               return yield* handlers.api;
             case "edge":
-              return servedOnEdge(url) ? yield* handlers.edge : notFound;
+              // The edge's own router answers every path it serves and 404s the rest.
+              return yield* handlers.edge;
+            case "authkit":
+              return yield* handlers.authKit;
             case "deployment":
               if (page && isSitePage(pathname)) return yield* redirectTo(edge, 308);
               if (page && pathname === "/" && !hasSession(request.headers))

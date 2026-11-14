@@ -1,7 +1,8 @@
 /** Read delivered Cloud traces through Axiom's public query API; never log credentials or raw failures. */
-import { Clock, Config, Effect, Option, Redacted, Schema } from "effect";
+import { Clock, Config, Effect, Option, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { SpanQuery } from "./contracts.ts";
+import { reveal, secretConfig } from "./failure-text.ts";
 
 const Tabular = Schema.Struct({
   status: Schema.Struct({ isPartial: Schema.Boolean }),
@@ -20,7 +21,8 @@ const Row = Schema.Struct({
   serviceName: Schema.String,
   startTime: Schema.String,
   durationMs: Schema.Number,
-  status: Schema.String,
+  // Effect 4.1 leaves a span that did not fail unset, which Axiom stores as no status code.
+  status: Schema.NullOr(Schema.String),
   tags: Schema.NullOr(Schema.Record(Schema.String, Schema.Json)),
   standard: Schema.Record(Schema.String, Schema.Json),
   build: Schema.NullOr(Schema.String),
@@ -114,14 +116,14 @@ const attributeColumn = (name: string) =>
 
 /**
  * Queries remain limited to the current run's time window and to filters built from validated
- * terms: one trace, or one operation whose attributes match exactly.
+ * terms: one trace, or one operation whose attributes match exactly, in one trace or any.
  */
 export const axiomSpans = Effect.gen(function* () {
   const client = yield* HttpClient.HttpClient;
   const start = yield* Clock.currentTimeMillis;
   const query = (filter: string) =>
     Effect.gen(function* () {
-      const token = yield* Config.Redacted("E2E_AXIOM_TOKEN");
+      const token = yield* secretConfig("E2E_AXIOM_TOKEN");
       const organization = yield* Config.option(Config.NonEmptyString("E2E_AXIOM_ORG_ID"));
       const dataset = yield* Config.String("E2E_AXIOM_DATASET").pipe(
         Effect.flatMap(
@@ -132,7 +134,7 @@ export const axiomSpans = Effect.gen(function* () {
       const request = yield* HttpClientRequest.post(
         "https://api.axiom.co/v1/datasets/_apl?format=tabular",
       ).pipe(
-        HttpClientRequest.setHeader("authorization", `Bearer ${Redacted.value(token)}`),
+        HttpClientRequest.setHeader("authorization", `Bearer ${reveal(token)}`),
         HttpClientRequest.setHeaders(
           Option.isSome(organization) ? { "x-axiom-org-id": organization.value } : {},
         ),
@@ -197,13 +199,26 @@ export const axiomSpans = Effect.gen(function* () {
       Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u)))(
         traceId,
       ).pipe(Effect.flatMap((id) => query(`trace_id == '${id}'`))),
-    search: (operation: string, attributes: Readonly<Record<string, string>>) =>
+    /** One operation whose attributes match exactly, in one trace when `traceId` names one. */
+    search: (
+      operation: string,
+      attributes: Readonly<Record<string, string>>,
+      traceId?: string | undefined,
+    ) =>
       Effect.forEach([operation, ...Object.entries(attributes).flat()], (term) =>
         Schema.decodeUnknownEffect(Term)(term),
       ).pipe(
-        Effect.flatMap(() =>
+        Effect.andThen(
+          traceId === undefined
+            ? Effect.succeed(undefined)
+            : Schema.decodeUnknownEffect(Schema.String.check(Schema.isPattern(/^[a-f0-9]{32}$/u)))(
+                traceId,
+              ),
+        ),
+        Effect.flatMap((trace) =>
           query(
             [
+              ...(trace === undefined ? [] : [`trace_id == '${trace}'`]),
               `name == '${operation}'`,
               ...Object.entries(attributes).map(
                 ([name, value]) => `tostring(${attributeColumn(name)}) == '${value}'`,

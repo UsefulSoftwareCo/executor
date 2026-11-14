@@ -4,15 +4,17 @@
  * schemas under the batch request's identity, streaming each answer as it finishes.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Schedule, Schema } from "effect";
+import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
+import { replaceResponses } from "../support/browser-responses.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { openInApp, openThroughBrowser } from "../support/in-app-navigation.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { batchedReads, batchPath } from "../support/read-batches.ts";
-import { Evidence } from "../support/evidence.ts";
+import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 import { targetHosts } from "../support/role-hosts.ts";
 import { serverControl } from "../support/server-control.ts";
@@ -293,21 +295,18 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         // A batch reply that ends early fails every read it did not answer, as a lost request
         // fails, instead of leaving it waiting.
         let unanswered = 0;
-        yield* browser.use("Cut each batch reply off after its first answer", (page) =>
-          page.route(
-            (url) => url.pathname === batchPath,
-            (route) =>
-              route.fetch().then((response) =>
-                response.text().then((text) => {
-                  const lines = text.split("\n").filter((line) => line !== "");
-                  unanswered += batchedReads(route.request().postData()).length - 1;
-                  return route.fulfill({ response, body: `${lines[0] ?? ""}\n` });
-                }),
-              ),
-          ),
-        );
+        yield* replaceResponses(`*${batchPath}*`, (response) => {
+          if (new URL(response.url).pathname !== batchPath) return "unchanged";
+          const contentType = response.headers["content-type"];
+          if (contentType === undefined) throw new Error("A batch reply has no content type");
+          return response.body().then((text) => {
+            const lines = text.split("\n").filter((line) => line !== "");
+            unanswered += batchedReads(response.requestBody).length - 1;
+            return { status: response.status, body: `${lines[0] ?? ""}\n`, contentType };
+          });
+        });
         yield* browser.use("Open a page that does not read the app", (page) =>
-          page.goto(`/org/${actors.organization.slug}/connect`),
+          page.goto(`/org/${actors.organization.slug}/organization`),
         );
         yield* browser.use("Record the dashboard's failed reads", (page) =>
           page.evaluate(() => {
@@ -334,6 +333,98 @@ layer(HostedLive, { excludeTestServices: true })("Dashboard read batches", (it) 
         );
         expect(unanswered).toBeGreaterThan(0);
         expect(failures).toContain("BrowserTransportFailed");
+      }),
+    ),
+  );
+
+  it.effect(scenarios.dashboardReadStatus.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const actors = yield* Actors;
+        const browser = yield* Browser;
+        const telemetry = yield* Telemetry;
+        const evidence = yield* Evidence;
+        const organization = actors.organization.id;
+        const prefix = `/api/organizations/${organization}`;
+        // Listing this app's tools fails on the server: its factory throws.
+        const failing = yield* deploy(
+          "Failing batched read",
+          'throw new Error("Synthetic factory failure");',
+        );
+        const index = "/api/organizations/:organization/apps/:app/tools/index";
+        const planned: ReadonlyArray<{ readonly read: Read; readonly route: string }> = [
+          { read: { group: "viewer", endpoint: "get", path: "/api/viewer" }, route: "/api/viewer" },
+          {
+            read: {
+              group: "tools",
+              endpoint: "index",
+              params: { organization, app: "app_missing" },
+              path: `${prefix}/apps/app_missing/tools/index`,
+            },
+            route: index,
+          },
+          {
+            read: {
+              group: "tools",
+              endpoint: "index",
+              params: { organization, app: failing.id },
+              path: `${prefix}/apps/${failing.id}/tools/index`,
+            },
+            route: index,
+          },
+        ];
+        // Each read joins a trace of its own, as a page's reads do, so its span is found by it.
+        const reads = planned.map(({ read, route }) => {
+          const traceId = randomUUID().replaceAll("-", "");
+          return {
+            route,
+            traceId,
+            read: { ...read, extra: { traceparent: `00-${traceId}-${traceId.slice(0, 16)}-01` } },
+          };
+        });
+
+        yield* browser.login(actors.owner);
+        yield* browser.use("Open the organization's apps", (page) =>
+          page.goto(`/org/${actors.organization.slug}`),
+        );
+        const batch = yield* batchFromPage(reads.map(({ read }) => read));
+        expect(batch.status).toBe(200);
+        expect(contents(batch.batched)).toEqual(batch.direct);
+        const [found, missing, failed] = batch.direct.map((answer) => answer.status);
+        expect(found).toBe(200);
+        expect(missing).toBeGreaterThanOrEqual(400);
+        expect(missing).toBeLessThan(500);
+        expect(failed).toBe(502);
+
+        // The batch answered 200, but each read's span records the status it answered itself. A
+        // refusal is the endpoint's answer; only a server error fails the span.
+        const spans: Array<unknown> = [];
+        for (const [position, { route, traceId, read }] of reads.entries()) {
+          const status = batch.direct[position]?.status;
+          const span = yield* telemetry.query(traceId).pipe(
+            Effect.flatMap((result) => {
+              const delivered = result.data.find(
+                ({ span }) => span.operationName === "dashboard.batch.read",
+              );
+              return delivered === undefined
+                ? Effect.fail(new Error("Missing delivered dashboard.batch.read span"))
+                : Effect.succeed(delivered.span);
+            }),
+            Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 80 }),
+          );
+          expect(span.tags, read.path).toMatchObject({
+            "http.route": route,
+            "http.response.status_code": String(status),
+            "executor.batch.read": `${read.group}.${read.endpoint}`,
+          });
+          expect(span.status, read.path).toBe(status === 502 ? "error" : "ok");
+          expect(span.tags["executor.outcome"], read.path).toBe(
+            status === 502 ? "failed" : undefined,
+          );
+          spans.push(span);
+        }
+        yield* evidence.json("batched-read-spans.json", spans);
       }),
     ),
   );

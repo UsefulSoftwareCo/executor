@@ -54,6 +54,7 @@ import {
   type WorkflowHostCommand,
 } from "../contracts/workerd-host.ts";
 import { LoadedWorkerBuild } from "../contracts/worker-build.ts";
+import { HostApiCheck } from "../contracts/host-api.ts";
 import {
   describeBuildCause,
   RuntimeAppsDependencyMissing,
@@ -139,7 +140,10 @@ const failure = () => new WorkflowFailure({ reason: "engine", retryable: true })
 const buildFailed = (stage: RuntimeBuildFailed["stage"], cause: unknown) =>
   new RuntimeBuildFailed({ stage, message: describeBuildCause(cause) });
 /** What the runner binds to one app's outbound network. App code cannot set it. */
-const OutboundProps = Schema.Struct({ app: Schema.NonEmptyString });
+const OutboundProps = Schema.Struct({
+  app: Schema.NonEmptyString,
+  hostApi: Schema.optionalKey(HostApiCheck),
+});
 type OutboundProps = typeof OutboundProps.Type;
 /** Handles are sealed with a key derived from the secret only this host and its runner share. */
 const credentials = (env: Environment) => credentialKey(env.CREDENTIAL_SECRET);
@@ -157,8 +161,10 @@ const credentials = (env: Environment) => credentialKey(env.CREDENTIAL_SECRET);
 export class AppOutbound extends WorkerEntrypoint<Environment> {
   async fetch(request: Request): Promise<Response> {
     const self = this.env.SELF === undefined ? undefined : URL.parse(this.env.SELF_ORIGIN)?.origin;
+    const props = Schema.decodeUnknownSync(OutboundProps)(this.ctx.props);
     return credentialFetch(request, {
-      app: Schema.decodeUnknownSync(OutboundProps)(this.ctx.props).app,
+      app: props.app,
+      ...(props.hostApi === undefined ? {} : { hostApi: props.hostApi }),
       key: await Effect.runPromise(credentials(this.env)),
       // Refuse a private destination by name, before the public-only network refuses its
       // address with an error app code cannot tell apart from any other connection failure.
@@ -178,8 +184,10 @@ const OutboundExports = Schema.Struct({
 /** The loopback binding to `AppOutbound` that workerd supplies on every context's exports. */
 const appOutbound =
   (context: { readonly exports: unknown }) =>
-  (app: string): Fetcher =>
-    Schema.decodeUnknownSync(OutboundExports)(context.exports).AppOutbound({ props: { app } });
+  (app: string, hostApi: HostApiCheck | undefined): Fetcher =>
+    Schema.decodeUnknownSync(OutboundExports)(context.exports).AppOutbound({
+      props: hostApi === undefined ? { app } : { app, hostApi },
+    });
 const rpcOptions = { onSendError: () => new Error("App runtime request failed") };
 const json = Schema.decodeUnknownSync(Schema.Json);
 const hostRequest = (env: Environment, command: WorkflowHostCommand) =>
@@ -359,6 +367,7 @@ class AppApi extends RpcTarget {
                 : null,
             }),
           ),
+          Effect.map((value) => ({ value })),
         ),
       ),
     );
@@ -497,6 +506,7 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
               {
                 app: seed.app,
                 build: seed.build,
+                ...(seed.hostApi === undefined ? {} : { hostApi: seed.hostApi }),
                 database: false,
                 accounts,
                 command: { operation: "workflow-run", name: seed.name, input: seed.input },

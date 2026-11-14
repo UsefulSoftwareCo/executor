@@ -58,6 +58,7 @@ export {
   ValidationError,
 } from "./contracts/schema.ts";
 export {
+  type FieldHelp,
   type Fields,
   type Infer,
   type ObjectSchema,
@@ -192,16 +193,23 @@ type WithoutReservedParams<Config> = Config extends unknown
   : never;
 
 /**
- * Declare a secrets method without requiring an Effect schema from the author. `request` says
- * where its secret fields may be sent, such as `({ token }) => bearer(token)`; it runs once, here.
+ * Declare a secrets method without requiring an Effect schema from the author. Give each field a
+ * `description` saying where to find its value; add a `guide` only for ordered setup,
+ * prerequisites or warnings. Both are Markdown whose links are absolute https URLs, with no HTML
+ * or images, and indentation common to their lines is removed, so a template literal can be
+ * indented. `request` says where its secret fields may be sent, such as
+ * `({ token }) => bearer(token)`; it runs once, here.
  */
 export const secrets = <const F extends Fields>(options: {
   readonly label: string;
+  /** Markdown the connect form shows above the fields, at most 4,000 characters. */
+  readonly guide?: string;
   readonly fields: ObjectSchema<F>;
   readonly request?: RequestPlacements<keyof F & string>;
 }): SecretsMethod<ObjectSchema<F>> =>
   nativeSecrets({
     label: options.label,
+    ...(options.guide === undefined ? {} : { guide: options.guide }),
     fields: accountDecoder(options.fields),
     ...exposureOf(options.fields),
     // SAFETY: the callback receives references named by the schema's own keys.
@@ -213,6 +221,14 @@ export const secrets = <const F extends Fields>(options: {
   });
 
 /**
+ * Markdown the connect form shows where a user enters an OAuth client: where to create one at this
+ * service and what to choose there, at most 4,000 characters. Executor's own steps and the
+ * redirect URL to copy come before it. Links are absolute https URLs, with no HTML or images, and
+ * indentation common to its lines is removed.
+ */
+type ClientGuide = { readonly clientGuide?: string };
+
+/**
  * Declare OAuth discovery/endpoints and an optional app-visible response projection.
  * `authorizationParams` adds service-defined sign-in parameters; a declared `authorizationUrl`
  * keeps its own query. Neither can set host-owned parameters, and each parameter appears once.
@@ -220,23 +236,26 @@ export const secrets = <const F extends Fields>(options: {
  * `({ access_token }) => bearer(access_token)`; it runs once, here.
  */
 export function oauth2(
-  options: OAuth2Config & {
-    readonly request?: RequestPlacements<"access_token">;
-  },
+  options: OAuth2Config &
+    ClientGuide & {
+      readonly request?: RequestPlacements<"access_token">;
+    },
 ): OAuth2Method<typeof OAuth2AccessToken>;
 export function oauth2<Response extends Schema<unknown, boolean>>(
-  options: OAuth2Config & {
-    readonly response: Response;
-    readonly request?: RequestPlacements<FieldNameOf<Response>>;
-  },
+  options: OAuth2Config &
+    ClientGuide & {
+      readonly response: Response;
+      readonly request?: RequestPlacements<FieldNameOf<Response>>;
+    },
 ): OAuth2Method<Response>;
 export function oauth2(
-  options: OAuth2Config & {
-    readonly response?: Schema<unknown, boolean>;
-    readonly request?: unknown;
-  },
+  options: OAuth2Config &
+    ClientGuide & {
+      readonly response?: Schema<unknown, boolean>;
+      readonly request?: unknown;
+    },
 ): OAuth2Method<Schema<unknown, boolean>> {
-  const { response = OAuth2AccessToken, request, ...config } = options;
+  const { response = OAuth2AccessToken, request, clientGuide, ...config } = options;
   return Effect.runSync(
     oauth2Effect(
       config,
@@ -244,6 +263,7 @@ export function oauth2(
       exposureOf(response).exposure,
       // SAFETY: the callback receives references named by the response projection's own keys.
       placementsOf("OAuth", response, request as RequestPlacements<string> | undefined).request,
+      clientGuide,
     ),
   );
 }

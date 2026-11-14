@@ -1,5 +1,5 @@
 /** Revisioned OpenAPI sources. Calls read a manifest, one operation and only its schema dependencies. */
-import { Clock, Deferred, Effect, Option, Schema, Duration } from "effect";
+import { Clock, Deferred, Effect, Option, Result, Schema, Duration } from "effect";
 import { RouterMeta } from "../contracts/router.ts";
 import { parse as parseYamlStrictly } from "yaml";
 import { CORE_SCHEMA, load as loadYaml } from "js-yaml";
@@ -862,14 +862,20 @@ export const liveOpenapiRouter = (options: OpenapiSourceOptions): RouterDeclarat
   // Every operation, in the document's order, which the summaries keep.
   const operationsFor = (manifest: typeof Manifest.Type) =>
     Effect.gen(function* () {
-      const summaries = yield* summariesFor(manifest);
-      if (summaries === undefined) return undefined;
-      const buckets = yield* read(
-        manifest.revision,
-        "operations",
-        range(manifest.operations),
-        Bucket,
+      // Both read the manifest's revision, so they read together; the summaries' failure is
+      // reported first, as when the operations were read after them.
+      const [listed, stored] = yield* Effect.all(
+        [
+          Effect.result(summariesFor(manifest)),
+          Effect.result(read(manifest.revision, "operations", range(manifest.operations), Bucket)),
+        ],
+        { concurrency: "unbounded" },
       );
+      if (Result.isFailure(listed)) return yield* Effect.fail(listed.failure);
+      const summaries = listed.success;
+      if (summaries === undefined) return undefined;
+      if (Result.isFailure(stored)) return yield* Effect.fail(stored.failure);
+      const buckets = stored.success;
       const all: OpenapiOperation[] = [];
       for (const { name } of summaries) {
         const bucket = buckets[bucketOf(name, manifest.operations)];

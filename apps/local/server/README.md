@@ -51,7 +51,7 @@ Press Ctrl+C to stop `bun run server` or `bun run dev`. Package-level
 `bun run start` reads its existing process environment only. Relative data paths
 are resolved from the process working directory. `bun run with:local …` loads
 1Password values instead; see
-[configuration](../../../README.md#development-configuration).
+[configuration](../../../DEVELOPMENT.md#development-configuration).
 
 ## Configuration
 
@@ -65,7 +65,8 @@ are resolved from the process working directory. `bun run with:local …` loads
 | `EXECUTOR_MCP_TIMEOUT_MS`               | Catalog discovery plus program timeout; defaults to `300000`.                                                                                                                               |
 | `EXECUTOR_MCP_MAX_TOOL_CALLS`           | Admitted calls per execute, including search; defaults to `100`.                                                                                                                            |
 | `EXECUTOR_TOOL_LISTING_FRESH_SECONDS`   | Reuse an app's evaluated tool list this long before refreshing it in the background; defaults to `30`.                                                                                      |
-| `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | Never serve an evaluated tool list older than this; `0` evaluates every list. Defaults to `60`.                                                                                             |
+| `EXECUTOR_TOOL_LISTING_RENEW_SECONDS`   | Renew the tool lists search serves in the background once they are this old; defaults to `86400`.                                                                                           |
+| `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | Never serve an evaluated tool list older than this; `0` evaluates every list. Defaults to `604800`.                                                                                         |
 | `EXECUTOR_TOOL_LISTING_LOAD_SECONDS`    | Stop evaluating an app's tool list after this long when no request is waiting for it; defaults to `45`.                                                                                     |
 | `EXECUTOR_EVALUATION_MEMORY_MB`         | Memory for kept tool lists and app declarations; defaults to `256`.                                                                                                                         |
 | `EXECUTOR_APP_WORKERS`                  | Most app and data Workers kept loaded; defaults to `64`. Idle ones above it unload and reload on their next call. An app with a database runs its calls in a data Worker, which counts too. |
@@ -128,7 +129,7 @@ directory needs an OS store and there is none), `credential-denied`,
 `locked` or `io`. The desktop receives that reason too, so it can choose
 recovery actions.
 
-`executor rotate-key` replaces the saved API key in place, in the OS credential
+`executor service rotate-key` replaces the saved API key in place, in the OS credential
 store or `keys.json`, and keeps the encryption key, so saved accounts and MCP
 sign-ins keep working. The record is unchanged. A running server keeps using its
 current key until it restarts (`executor service restart`); the next start also
@@ -155,9 +156,10 @@ something runs `executor` or `executor service start`.
 - `executor` starts or joins the server, pairs the browser through
   `POST /auth/pair`, prints the Executor, MCP and Connect lines, opens the link
   and exits. It replaces a server that runs another version, as
-  `executor service restart` does. `executor pair`, `executor apps` without
-  `--host` or `EXECUTOR_HOST`, and `executor service start` use whatever version
-  runs. `executor pair` waits up to 30 seconds for a registered server that is
+  `executor service restart` does. `executor service pair`, client commands
+  without a host (`executor apps`, the tool commands and `executor mcp`), and
+  `executor service start` use whatever version runs. `executor service pair`
+  waits up to 30 seconds for a registered server that is
   still starting or stopping, or that holds the data directory without
   answering.
 - The CLI prints or opens a connection link only when it is an `http` or
@@ -174,20 +176,20 @@ something runs `executor` or `executor service start`.
   killed, which on Windows skips its cleanup.
   `executor --server <url>` pairs with a server elsewhere, sending
   `EXECUTOR_API_KEY` or the saved API key.
-- `executor service start|stop|restart|status|get|set|unset` manages it.
+- `executor service start|stop|restart|status|get|set|unset|pair|rotate-key` manages it.
   `status` prints `starting` before the address while the registered server
   boots, `stopping` once it is asked to stop, and `not responding` while its
   info request times out but its process still runs, as a hung or suspended
   server's does. The settings are `port`, `env`
   (`set env <name> <value>`, `unset env <name>`) and `disabled`. `disabled`
-  makes `executor` and `executor apps` without `--host` or `EXECUTOR_HOST` run
-  a private server, as `--standalone` does; `executor service start`,
-  `executor pair` and the desktop still use the background server. Changing
+  makes `executor` and client commands without a host run a private server, as
+  `--standalone` does; `executor service start`, `executor service pair` and the
+  desktop still use the background server. Changing
   `port` or `env`, or setting `disabled`, saves the setting and then stops the
   server, so whichever client starts it next, even at once, starts it with the
   new settings. The desktop then shows that it was stopped and starts none
   itself.
-- `executor apps` without `--host` reports a local server that cannot start like
+- A client command without a host reports a local server that cannot start like
   its other failures: code `LocalServerUnavailable`, and JSON on stdout when
   stdout is not a terminal.
 - `executor upgrade` and `--rollback` stop the registered server before a
@@ -312,9 +314,9 @@ bun run server
 `bun run executor` starts or joins the background server, opens a one-use
 connection link and exits. `bun run executor serve` (or `bun run server`) runs
 the server in the foreground and prints the link without opening a browser.
-`bun run executor pair` prints a fresh link for the registered server, sent the
+`bun run executor service pair` prints a fresh link for the registered server, sent the
 password from its `server.json`. `bun run dev` runs a private server that does
-not register, so `executor pair` cannot reach it; it holds `.local/dev/local`,
+not register, so `executor service pair` cannot reach it; it holds `.local/dev/local`,
 so stop it before running `bun run executor`.
 A paired dashboard can also issue a new link through `POST /auth/pair`, with its
 session cookie and a valid local Origin. Executor desktop uses this for **File →
@@ -370,6 +372,19 @@ recovers it. Run `bun run desktop:dev` from the repository root.
 - URL: `http://127.0.0.1:4312/mcp`, or the port `executor service status` prints
 - Header: `Authorization: Bearer <API key>`, the saved local API key or `EXECUTOR_API_KEY`
 - Tools: `skills`, for app documents; `execute`, with a `code` string
+
+A client that starts a command can use `executor mcp` instead, a stdio relay to
+the same endpoint. The client commands live in `packages/app-management`:
+`src/tools-cli.ts` declares `login`, `logout`, `whoami`, the tool commands and
+`mcp`; `src/implementation/hosts.ts` resolves their host (`--host`,
+`EXECUTOR_HOST`, the host signed in to last, then this server);
+`src/implementation/node-auth.ts` keeps each host's app management and tools
+sign-ins; `src/implementation/tools-client.ts` is the MCP client and relay,
+which opens a new host session when the host forgets its own; and
+`src/implementation/paused-calls.ts` keeps the session of a call paused for
+browser approval, which `resume` continues.
+Without a host they reach this server with the registered password, or
+`EXECUTOR_API_KEY` when it is set.
 
 Do not configure a client with the `server.json` password, which changes every
 time the server starts. The client reaches the background server only while it
@@ -458,7 +473,7 @@ See [OAuth notes](../../../notes/oauth.md) for the protocol library and limits.
 
 **Apps → Add app** lists Executor's official apps from the feed at
 `EXECUTOR_CATALOG_URL` (the feed's `index.json`; the default is the published feed at
-`https://catalog.executor.sh/index.json`).
+`https://catalog.executor.sh/index.json`, and `off` lists no feed apps).
 Choosing one installs the app's own source as a copy, the way a published app is
 installed, and then asks for an account through the app's own providers. Choose
 an unused app name; this flow never replaces an existing app. See

@@ -19,7 +19,7 @@ import {
   type ScheduleControls,
   type ScheduleCopyControls,
 } from "../../contracts/schedules.ts";
-import { QueryView, useDashboard, useQuery } from "./context.tsx";
+import { QueryView, useDashboard, usePreload, useQuery } from "./context.tsx";
 import { Alert } from "../components/alert.tsx";
 import { DisabledTooltip } from "../components/disabled-tooltip.tsx";
 import { Button } from "../components/button.tsx";
@@ -105,6 +105,7 @@ type ListProps<E> = {
 };
 function LiveSchedules<E>(props: ListProps<E>) {
   const { bindings, Failure } = props;
+  usePreload(bindings.definitions, bindings.settings);
   const discovery = useQuery(bindings.definitions);
   return (
     <SchedulesLayout>

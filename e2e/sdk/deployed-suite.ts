@@ -1,8 +1,12 @@
 import { Effect } from "effect";
+import { recordDatabaseConnections } from "./database-connections.ts";
 import { startDeployment } from "./deployment.ts";
 import { runSuite } from "./suite.ts";
 
-/** Deploy once, run the selected committed cases in parallel, and await owned environment cleanup. */
+/**
+ * Deploy once, run the selected committed cases in parallel, record how long the stage waited for
+ * database connections, and await owned environment cleanup.
+ */
 export const runDeployedSuite = (input: {
   readonly database: "neon" | "planetscale";
   readonly name: string;
@@ -16,6 +20,6 @@ export const runDeployedSuite = (input: {
         name: input.name,
         workers: input.workers,
         attachment: environment,
-      });
+      }).pipe(Effect.ensuring(recordDatabaseConnections(environment)));
     }),
   );

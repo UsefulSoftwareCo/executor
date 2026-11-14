@@ -1,6 +1,5 @@
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
-import { AccountGrants } from "./proofs/account-access.ts";
 /** Sharing writes are atomic; metadata visibility and credential use remain separate. */
 import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
@@ -13,7 +12,6 @@ import { CurrentOrganization } from "../contracts/organization.ts";
 import {
   AccessConflict,
   type AppAudience,
-  type SharedAudience,
   type AccessRevision,
 } from "../contracts/resource-access.ts";
 import { requireGroupSharing } from "./group-sharing.ts";
@@ -23,9 +21,8 @@ import {
   currentResourceAuthority,
   lockCurrentActor as lockActor,
   applicationAccesses,
-  accountAccesses,
+  ownedAccountIds,
   requireAppAccess,
-  requireAccountAccess,
 } from "./resource-policy.ts";
 
 /** Shared resource listing for the normal app/account lists and an explicit management view. */
@@ -34,7 +31,7 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
     const actor = yield* currentResourceAuthority;
     const executor = yield* Effect.flatten(HostedExecutor);
     const { owner } = yield* CurrentOrganization;
-    const policy = yield* CurrentAuthorization;
+    const policy = yield* CurrentPolicy;
     const apps = yield* executor.apps.list({ owner, ids: permittedAppIds(policy) });
     const appPolicies = new Map(
       (yield* applicationAccesses(
@@ -72,17 +69,14 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
           })
       ).map((entry) => [entry.account, entry]),
     );
-    const accountPolicies = new Map(
-      (yield* accountAccesses(
-        accounts.map((account) => account.id),
-        actor,
-      )).map((access) => [access.account, access]),
+    // Owners both use and manage their accounts, so both views list the same ones.
+    const owned = yield* ownedAccountIds(
+      accounts.map((account) => account.id),
+      actor,
     );
     const accountEntries = yield* Effect.forEach(accounts, (account) =>
       Effect.gen(function* () {
-        const access = accountPolicies.get(account.id);
-        if (access === undefined || !(view === "managed" ? access.canManage : access.canUse))
-          return [];
+        if (!owned.has(account.id)) return [];
         let provider = providers.get(account.provider);
         if (provider === undefined) {
           provider = yield* executor.accounts.provider({ owner, account: account.id });
@@ -90,9 +84,7 @@ export const resourceDirectory = (view: "available" | "managed" = "available") =
         }
         const checks = health.get(account.id);
         return [
-          checks === undefined
-            ? { account, access, provider }
-            : { account, access, provider, health: checks },
+          checks === undefined ? { account, provider } : { account, provider, health: checks },
         ];
       }),
     );
@@ -135,39 +127,6 @@ export const shareApp = (
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
-/**
- * Personal account ownership cannot be changed by editing shared-account grants. The share grant
- * checks management up front; it is checked again under the transaction's lock.
- */
-export const shareAccount = (
-  audience: typeof SharedAudience.Type,
-  revision: typeof AccessRevision.Type,
-) =>
-  Effect.gen(function* () {
-    const { account } = yield* AccountGrants.share;
-    const sql = yield* policyDatabase;
-    yield* sql.withTransaction(
-      Effect.gen(function* () {
-        const actor = yield* lockActor;
-        const access = yield* requireAccountAccess(account, "manage");
-        if (access.ownership.kind === "personal")
-          return yield* new AccessConflict({ reason: "personal_account" });
-        if (audience.kind === "groups")
-          yield* requireGroupSharing(sql, actor.organization, actor.user, audience.groups);
-        const changed =
-          yield* sql`update hosted_account_access set audience = ${audience.kind}, revision = gen_random_uuid()::text
-      where account_id = ${account} and organization_id = ${actor.organization} and revision = ${revision} returning account_id`;
-        if (changed.length !== 1) return yield* new AccessConflict({ reason: "changed" });
-        yield* sql`delete from hosted_account_groups where account_id = ${account}`;
-        if (audience.kind === "groups")
-          for (const group of audience.groups)
-            yield* sql`insert into hosted_account_groups (organization_id, account_id, group_id) values (${actor.organization}, ${account}, ${group})`;
-      }),
-    );
-    return yield* requireAccountAccess(account, "read");
-  }).pipe(
-    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
-  );
 /** Both hosted products register the same authenticated policy handlers. */
 export const hostedResourceAccessHandlers = HttpApiBuilder.group(
   HostedApi,
@@ -179,8 +138,6 @@ export const hostedResourceAccessHandlers = HttpApiBuilder.group(
         .handle("app", ({ params }) => requireAppAccess(params.app, "read"))
         .handle("shareApp", ({ params, payload }) =>
           shareApp(params.app, payload.audience, payload.revision),
-        )
-        .handle("account", () => Effect.map(AccountGrants.inspect, (grant) => grant.access))
-        .handle("shareAccount", ({ payload }) => shareAccount(payload.audience, payload.revision));
+        );
     }),
 );

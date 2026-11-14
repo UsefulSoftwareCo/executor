@@ -12,8 +12,9 @@ import { SchedulesGroup } from "./schedules.ts";
 import { ToolsGroup } from "./tools.ts";
 import { AppSkillsGroup } from "./skills.ts";
 import { PublicationsGroup, RegistryGroup } from "./publications.ts";
+import { RequestRejection } from "./shared.ts";
 
-/** The one contract artifact; everything else projects from it. */
+/** The one contract artifact; everything else projects from it. Every endpoint declares request rejections. */
 export const ExecutorApi = HttpApi.make("executor")
   .add(AccountsGroup)
   .add(AccountConnectionsGroup)
@@ -28,6 +29,7 @@ export const ExecutorApi = HttpApi.make("executor")
   .add(AppWorkflowsGroup)
   .add(AppWorkflowRunsGroup)
   .add(PublicationsGroup)
-  .add(RegistryGroup);
+  .add(RegistryGroup)
+  .middleware(RequestRejection);
 
 export type ExecutorApi = typeof ExecutorApi;

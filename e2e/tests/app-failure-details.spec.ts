@@ -418,7 +418,9 @@ export default defineApp({}, {});`,
           retryable: true,
         });
         expect(failure.message).toContain(appMarker);
-        expect(failure.message).toMatch(/ Retryable \(unchanged call\): yes\.$/);
+        expect(failure.message).toMatch(
+          / Retryable \(unchanged call\): yes\. Phase: [a-z]+\. Reference: [0-9a-f]{32}\.$/,
+        );
         const cacheRetryable = (tool: string) =>
           client
             .use(`Call the app query ${tool}`, (client, signal) =>
@@ -472,7 +474,9 @@ export default defineApp({}, {});`,
             ),
           ),
         );
-        expect(written.message).toMatch(/ Retryable \(unchanged call\): no\.$/);
+        expect(written.message).toMatch(
+          / Retryable \(unchanged call\): no\. Phase: [a-z]+\. Reference: [0-9a-f]{32}\.$/,
+        );
       }).pipe(Effect.provide(Layer.mergeAll(McpOAuth.layer, McpClient.layer))),
     ),
   );

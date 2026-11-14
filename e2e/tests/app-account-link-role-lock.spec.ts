@@ -33,18 +33,10 @@ layer(HostedLive, { excludeTestServices: true })("App account link role lock", (
           fixture
             .links(actor)
             .pipe(Effect.map((links) => links.map((link) => [link.requirement, link.account.id])));
-        const first = yield* fixture.connect(actors.owner, "app", "service", "synthetic-role-one", {
-          kind: "shared",
-          audience: { kind: "everyone" },
-        });
-        const second = yield* fixture.connect(
-          actors.owner,
-          "app",
-          "service",
-          "synthetic-role-two",
-          { kind: "shared", audience: { kind: "everyone" } },
-        );
-        // Connecting the second account replaced the first's link.
+        // The admin connects their own account, then the owner connects theirs, which replaces the
+        // admin's link.
+        const first = yield* fixture.connect(actors.admin, "app", "service", "synthetic-role-one");
+        const second = yield* fixture.connect(actors.owner, "app", "service", "synthetic-role-two");
         expect(yield* linked()).toEqual([["service", second]]);
 
         const locks = yield* cloudLocks;
@@ -60,7 +52,7 @@ layer(HostedLive, { excludeTestServices: true })("App account link role lock", (
           params: [actors.organization.id, ids.admin],
         });
 
-        // The admin links the first account; its checks before the lock still read `admin`.
+        // The admin links their account again; its checks before the lock still read `admin`.
         const request = yield* Effect.forkChild(fixture.link(actors.admin, "service", first));
         yield* locks
           .run({

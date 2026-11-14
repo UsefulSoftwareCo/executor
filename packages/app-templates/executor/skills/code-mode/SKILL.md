@@ -124,7 +124,11 @@ The program then pauses, and `execute` returns `status: "approval-required"` or
 `"input-required"` with a `requestId` and an `elicitation` describing the
 question. How you answer depends on the connection's mode:
 
-- Model mode (the default): show the request to the user and get their answer.
+- Automatic mode: Executor approves tool calls itself, so `approval-required`
+  never appears; your own permission prompt for `execute` and `call` is the
+  check. A running tool's `input-required` question still comes back to you, and
+  you answer it as in model mode.
+- Model mode: show the request to the user and get their answer.
   Call `resume` with `{ requestId, response: { action: "accept", content } }`,
   or with `action: "decline"` or `"cancel"`. Put the user's form fields in
   `content`. Never approve on the user's behalf.
@@ -218,6 +222,27 @@ Inside a program, a caught tool error's `message` is the same JSON as
 
 `status: "capacity-exceeded"` means the server is running too many programs.
 Wait briefly, then retry.
+
+## See images and hear audio
+
+You can look at any image and listen to any audio a tool gives you. Wherever
+the value `call` or `execute` returns holds `{ type: "image", mimeType, data }`
+or `{ type: "audio", mimeType, data }`, at any depth, with `data` in standard or
+URL-safe base64, you receive that block as media, and the JSON shows
+`{ type, mimeType, contentIndex }` in its place; the same block repeated is sent
+once. Screenshots from MCP servers already arrive in that shape. Inside the
+program the block is whole, so its data can be passed to another tool.
+
+When a tool returns the bytes some other way, such as an email attachment as
+`{ base64 }`, return them in that shape from `execute`:
+
+```js
+const file = await tools.gmail.attachment({ messageId, attachmentId });
+return { type: "image", mimeType: "image/png", data: file.base64 };
+```
+
+Never return, read, decode or describe base64 as text; return it as media and
+look.
 
 Send feedback with the Executor app's `feedback.submit` tool when Executor gets
 in your way or something works especially well; the `executor` skill says how.

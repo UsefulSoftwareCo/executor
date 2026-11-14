@@ -157,19 +157,44 @@ export function wrap<T, Optional extends boolean>(
   };
 }
 
-/** A string, optionally with a minimum length. No coercion. */
-export function string(options: { readonly minLength?: number } = {}): Schema<string> {
+/**
+ * A value's name and explanation in its JSON Schema, such as a tool input or an account field. In
+ * an account field, `title` replaces the field's name as its connect form label, and `description`
+ * says where to find the value: Markdown of at most 1,000 characters whose links are absolute
+ * https URLs, with no HTML or images. Indentation common to its lines is removed, so a template
+ * literal can be indented. Neither changes the provider.
+ */
+export interface FieldHelp {
+  readonly title?: string;
+  readonly description?: string;
+}
+
+const annotated = <S extends EffectSchema.Top>(schema: S, { title, description }: FieldHelp) =>
+  title === undefined && description === undefined
+    ? schema
+    : schema.annotate({
+        ...(title === undefined ? {} : { title }),
+        ...(description === undefined ? {} : { description }),
+      });
+
+/** A string, optionally with a minimum length, title and description. No coercion. */
+export function string(options: FieldHelp & { readonly minLength?: number } = {}): Schema<string> {
   return wrap(
-    options.minLength === undefined
-      ? EffectSchema.String
-      : EffectSchema.String.check(EffectSchema.isMinLength(options.minLength)),
+    annotated(
+      options.minLength === undefined
+        ? EffectSchema.String
+        : EffectSchema.String.check(EffectSchema.isMinLength(options.minLength)),
+      options,
+    ),
     false,
   );
 }
-/** A finite JSON number. No coercion. */
-export const number = (): Schema<number> => wrap(EffectSchema.Finite, false);
-/** A boolean. No coercion. */
-export const boolean = (): Schema<boolean> => wrap(EffectSchema.Boolean, false);
+/** A finite JSON number, optionally with a title and description. No coercion. */
+export const number = (options: FieldHelp = {}): Schema<number> =>
+  wrap(annotated(EffectSchema.Finite, options), false);
+/** A boolean, optionally with a title and description. No coercion. */
+export const boolean = (options: FieldHelp = {}): Schema<boolean> =>
+  wrap(annotated(EffectSchema.Boolean, options), false);
 /** Any JSON value. Values still cross the native JSON decoder. */
 export const json = (): Schema<EffectSchema.Json> => wrap(EffectSchema.Json, false);
 /** Named values with a common schema. */

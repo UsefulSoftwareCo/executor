@@ -30,13 +30,13 @@ import {
   requiresToolMetadata,
   type AuthorizationPolicy,
 } from "@executor-js/authorization";
+import type { Grant } from "../contracts/grant.ts";
 import {
   GrantForbidden,
   grantAuthorization,
   targetedLinks,
-  type Grant,
   type GrantRefusal,
-} from "../contracts/grant.ts";
+} from "../contracts/grant-enforcement.ts";
 
 /** The exact tool an operation would run, before its live read-only flag is known. */
 interface Invocation {
@@ -84,15 +84,12 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
   ): GrantRefusal | undefined =>
     appRefusal(policy, app) ??
     (permitsAccounts(policy, app, ids) ? undefined : targetRefusal(app, ids));
+  const appCheck = (policy: AuthorizationPolicy, app: AppId, accounts: AppAccounts | undefined) => {
+    const ids = named(accounts);
+    return refuse(ids.length === 0 ? appRefusal(policy, app) : accountsRefusal(policy, app, ids));
+  };
   const checkApp = (app: AppId, accounts: AppAccounts | undefined) =>
-    authority.pipe(
-      Effect.flatMap((policy) => {
-        const ids = named(accounts);
-        return refuse(
-          ids.length === 0 ? appRefusal(policy, app) : accountsRefusal(policy, app, ids),
-        );
-      }),
-    );
+    authority.pipe(Effect.flatMap((policy) => appCheck(policy, app, accounts)));
   /** The page's tools and routers this policy lets the caller discover. */
   const permittedPage = (policy: AuthorizationPolicy, app: AppId, page: ToolPage): ToolPage => ({
     ...page,
@@ -252,26 +249,33 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
         ),
       ),
     );
-  return {
-    eventDefinitions: (input) =>
-      Effect.gen(function* () {
-        const policy = yield* authority;
-        yield* refuse(
-          permitsApp(policy, input.app) ? undefined : { reason: "app", app: input.app },
-        );
-        const definitions = yield* backend.eventDefinitions(input);
-        return definitions.filter((definition) => permitsEvent(policy, input.app, definition.name));
-      }),
-    findEventSubscription: (key) => backend.findEventSubscription(key),
-    subscribeEvent: (input) =>
-      checkEvent(input.target.app, input.target.event).pipe(
-        Effect.andThen(() => backend.subscribeEvent(input)),
+  /** All of an app's events need the app in the grant. */
+  const checkSelectedApp = (app: AppId) =>
+    authority.pipe(
+      Effect.flatMap((policy) =>
+        refuse(permitsApp(policy, app) ? undefined : { reason: "app", app }),
       ),
+    );
+  return {
+    findEventSubscription: (key) => backend.findEventSubscription(key),
+    // A selection of several events needs only what it names; each delivery then checks the
+    // occurrence's app and event, and drops one the grant does not include.
+    subscribeEvent: (input) =>
+      (input.target.app === null
+        ? authority
+        : input.target.event === null
+          ? checkSelectedApp(input.target.app)
+          : checkEvent(input.target.app, input.target.event)
+      ).pipe(Effect.andThen(() => backend.subscribeEvent(input))),
     // Stopping a subscription needs only the app; a grant narrowed since may still clean up.
     unsubscribeEvent: (input) =>
       authority.pipe(
         Effect.flatMap((policy) =>
-          refuse(permitsApp(policy, input.app) ? undefined : { reason: "app", app: input.app }),
+          refuse(
+            input.app === null || permitsApp(policy, input.app)
+              ? undefined
+              : { reason: "app", app: input.app },
+          ),
         ),
         Effect.andThen(() => backend.unsubscribeEvent(input)),
       ),
@@ -323,9 +327,9 @@ export const restrictMcpBackend = <E extends Error, G extends Error>(
       }),
     searchableTools: (input, options) =>
       Effect.gen(function* () {
-        yield* checkApp(input.app, input.accounts);
-        const searchable = yield* backend.searchableTools(input, options);
         const policy = yield* authority;
+        yield* appCheck(policy, input.app, input.accounts);
+        const searchable = yield* backend.searchableTools(input, options);
         // The listing names the accounts the host resolved; one entry must permit all of them.
         yield* refuse(accountsRefusal(policy, input.app, named(searchable.accounts)));
         // Failed routers list no tools, so the grant decides them without the catalog.

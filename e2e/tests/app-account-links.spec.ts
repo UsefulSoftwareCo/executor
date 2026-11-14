@@ -101,9 +101,7 @@ const sharedApp = (
       Effect.gen(function* () {
         const connection = yield* body(
           Resource,
-          yield* api.request(actor, "POST", connectionsPath(path, "user", requirement), {
-            destination: { kind: "personal" },
-          }),
+          yield* api.request(actor, "POST", connectionsPath(path, "user", requirement), {}),
         );
         const account = yield* api.request(
           actor,

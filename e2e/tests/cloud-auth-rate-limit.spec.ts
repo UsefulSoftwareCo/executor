@@ -223,9 +223,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
         // No error report treats the insert that lost the race as a database fault.
         yield* Effect.sleep("2 seconds");
         const traces = new Set(responses.map(({ traceId }) => traceId));
-        const reported = (yield* sentryExceptions).filter(
-          ({ trace }) => trace !== undefined && traces.has(trace),
-        );
+        const reported = yield* sentryExceptions([...traces]);
         expect(reported).toEqual([]);
         yield* Effect.flatMap(Evidence, (evidence) =>
           evidence.json("rate-limit-race.json", {
@@ -252,7 +250,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud auth rate limit", (it) => 
         expect(response.status).toBeGreaterThanOrEqual(500);
 
         // The report names the failure by its code, the only detail it may record.
-        const reported = yield* sentryExceptions.pipe(
+        const reported = yield* sentryExceptions([response.traceId]).pipe(
           Effect.map((exceptions) =>
             exceptions.filter(
               ({ trace, type }) => trace === response.traceId && type === "AuthDatabaseFailed",

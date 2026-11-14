@@ -15,6 +15,7 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
 import { startDevelopmentServer } from "../support/managed-server.ts";
 import { scenarios } from "../test-plan.ts";
+import { noPageErrors } from "../support/page-errors.ts";
 
 /** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
@@ -155,7 +156,7 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered access", (it) 
         const allowed = yield* open("Open the apps page");
         expect(allowed).toContain(marker);
         expect(allowed).toMatch(pageReadEntries);
-        expect(failures).toEqual([]);
+        yield* noPageErrors(failures);
 
         for (const mode of ["refuse", "unavailable", "fail", "stall"] as const) {
           browserReads.length = 0;
@@ -197,7 +198,7 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered access", (it) 
           // control from them and the browser does not. That shell mismatch predates the page-read
           // guard and is separate work.
           if (mode === "refuse" || mode === "stall")
-            expect(failures, `${mode}: hydration must match the server render`).toEqual([]);
+            yield* noPageErrors(failures, `${mode}: hydration must match the server render`);
           failures.length = 0;
           yield* browser.checkpoint(`Apps page after access ${mode}s`);
         }

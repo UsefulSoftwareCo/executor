@@ -8,7 +8,7 @@ import {
 import {
   requireAppAccess,
   requireCurrentAppAccess,
-  accountAccesses,
+  ownedAccountIds,
   currentResourceAuthority,
   policyDatabase,
   resourceAuthorityForApp,
@@ -30,6 +30,7 @@ import type { ToolAuthorization } from "./authorization.ts";
 import { Context, Effect, type Exit, Result } from "effect";
 import { HttpServerRequest } from "effect/http";
 import { CurrentUserId, Forbidden } from "../contracts/auth.ts";
+import { refuse } from "./auth-telemetry.ts";
 import {
   appAccountReads,
   appLinkedAccounts,
@@ -46,18 +47,21 @@ import {
 /** A person's own decisions come from their signed-in browser, never from an API credential. */
 export const browserOnly = Effect.gen(function* () {
   const request = yield* HttpServerRequest.HttpServerRequest;
-  if (request.headers.authorization !== undefined) return yield* new Forbidden();
+  if (request.headers.authorization !== undefined)
+    return yield* refuse("bearer_not_allowed", new Forbidden());
 });
 /** Membership was checked by middleware; administrative actions require the current role. */
 export const requireOrganizationAdmin = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;
-  if (organization.role === "member") return yield* new OrganizationForbidden();
+  if (organization.role === "member")
+    return yield* refuse("insufficient_role", new OrganizationForbidden());
   return organization;
 });
 /** Only an owner may remove the organization itself. */
 export const requireOrganizationOwner = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;
-  if (organization.role !== "owner") return yield* new OrganizationForbidden();
+  if (organization.role !== "owner")
+    return yield* refuse("insufficient_role", new OrganizationForbidden());
   return organization;
 });
 /** Server-derived owners are the only owners used by hosted HTTP handlers. */
@@ -68,7 +72,7 @@ export const adminOwner = Effect.map(
   (organization) => organization.owner,
 );
 
-/** Account use requires its independent sharing policy as well as the SDK tenant check. */
+/** Account use requires owning the account as well as the SDK tenant check. */
 export const checkAccounts = (owner: OwnerId, accounts: SelectedAccounts) =>
   Effect.flatMap(currentResourceAuthority, (actor) => checkAccountsAs(actor, owner, accounts));
 /**
@@ -86,15 +90,9 @@ export const checkAccountsAs = (
       typeof selection === "string" ? [selection] : selection,
     );
     if (selected.length === 0) return;
-    const policies = new Map(
-      (yield* accountAccesses([...new Set(selected)], actor)).map((access) => [
-        access.account,
-        access,
-      ]),
-    );
+    const owned = yield* ownedAccountIds([...new Set(selected)], actor);
     for (const account of selected) {
-      const access = policies.get(account);
-      if (access === undefined || !access.canUse) return yield* new OrganizationForbidden();
+      if (!owned.has(account)) return yield* new OrganizationForbidden();
       if (owner !== organizationOwner(actor.organization))
         return yield* new AccountNotFound({ account });
     }
@@ -345,8 +343,18 @@ const checkAppLinked = (app: AppId, linked: AppAccounts["app"]) =>
  * links now is still checked by the caller's use.
  */
 export const checkScopedAccounts = (owner: OwnerId, app: AppId, accounts: AppAccounts) =>
+  Effect.flatMap(currentResourceAuthority, (actor) =>
+    checkScopedAccountsAs(actor, owner, app, accounts),
+  );
+/** {@link checkScopedAccounts} for an actor already resolved in this operation. */
+export const checkScopedAccountsAs = (
+  actor: ResourceAuthority,
+  owner: OwnerId,
+  app: AppId,
+  accounts: AppAccounts,
+) =>
   Effect.gen(function* () {
-    yield* checkAccounts(owner, accounts.user ?? {});
+    yield* checkAccountsAs(actor, owner, accounts.user ?? {});
     yield* checkAppLinked(app, accounts.app);
   });
 /** Pending approvals retain their original accounts even if the caller's links later change. */

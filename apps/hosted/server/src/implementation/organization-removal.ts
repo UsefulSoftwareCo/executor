@@ -1,10 +1,10 @@
 import { deleteOrganizationRecords } from "./organization-records.ts";
 /** Removal is one durable workflow. The request only refuses, hides and starts it. */
 import { organizationIconKey } from "./organization-icons.ts";
-import { requireOrganizationOwner } from "./access.ts";
+import { browserOnly, requireOrganizationOwner } from "./access.ts";
 import { Effect, Schedule } from "effect";
 import { defaultWebhookLifecycleLimits } from "@executor-js/sdk/core";
-import { Authentication } from "../contracts/auth.ts";
+import { SessionAuthentication } from "../contracts/auth.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import {
   OrganizationIcons,
@@ -48,16 +48,18 @@ export const previewOrganizationRemoval = Effect.gen(function* () {
 });
 
 /**
- * Accept a removal: check authority, refuse for work the caller can still
- * finish, then write the tombstone. From the moment the tombstone commits no
- * request resolves this organization, so the erasure that follows races with
- * nothing. The counts describe what the organization held when it was accepted.
+ * Accept a removal from the owner's browser session, never an API credential:
+ * check authority, refuse for work the caller can still finish, then write the
+ * tombstone. From the moment the tombstone commits no request resolves this
+ * organization, so the erasure that follows races with nothing. The counts
+ * describe what the organization held when it was accepted.
  *
  * The caller starts the workflow afterwards. It must use the returned instance
  * id, which is the organization id, so accepting the same removal twice adopts
  * the first run instead of starting a second over the same records.
  */
 export const beginOrganizationRemoval = Effect.gen(function* () {
+  yield* browserOnly;
   const started = yield* previewOrganizationRemoval;
   const executor = yield* Effect.flatten(HostedExecutor);
   const removals = yield* OrganizationRemovals;
@@ -86,7 +88,7 @@ export const removeOrganizationDurably = <R = never>(
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const authentication = yield* Authentication;
+    const authentication = yield* SessionAuthentication;
     const icons = yield* OrganizationIcons;
     const removals = yield* OrganizationRemovals;
     const billing = yield* OrganizationBilling;

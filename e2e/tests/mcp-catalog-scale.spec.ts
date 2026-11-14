@@ -1,15 +1,21 @@
 /** Execute stays fast against a large organization catalog with several stalled apps. */
 import { expect, layer } from "@effect/vitest";
-import { Clock, Console, Effect, Schedule, Schema } from "effect";
+import { Clock, Console, Effect, Fiber, Schedule, Schema } from "effect";
 import { createServer, type Socket } from "node:net";
 import { createServer as createHttpServer } from "node:http";
 import { randomUUID } from "node:crypto";
-import { agedRowsMaxAgeSeconds, scenarios } from "../test-plan.ts";
+import { agedRowsRenewSeconds, scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { saveAndDeploy } from "../support/app-authoring.ts";
-import { Evidence } from "../support/evidence.ts";
+import {
+  Evidence,
+  Telemetry,
+  type DeliveredSpan,
+  type TelemetryUnavailable,
+  type TraceUnsettled,
+} from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { expireEvaluated, writeRows } from "../support/cloud-rows.ts";
@@ -115,14 +121,16 @@ const SearchValue = Schema.Struct({
 });
 
 /**
- * `return 1` touches no app, so its cost must not depend on the catalog: one MCP round trip and
- * the app inventory read, tens of milliseconds on a developer machine. One second leaves CI more
- * than ten times that, and stays below what listing 7,000 tools costs even warm on a fast
- * machine (about 1.9 s; 4.9 s cold).
+ * SQL statements `return 1` runs, which touches no app: authentication, the app list and the
+ * member's access to it. A program that reads the catalog runs at least one more per app.
  */
-const trivialBoundMs = 1_000;
-/** One call loads one app's catalog, 175 tools and about 1.2 MB of schemas, not all 29 apps. */
-const oneAppBoundMs = 1_500;
+const noAppStatements = 3;
+/**
+ * SQL statements a call into one app runs the first time, when it evaluates that app: those of
+ * `return 1`, the app's row, access checks, account bindings and invocation snapshot, the call and
+ * its log, and the app's search rows. A later call runs fewer. Listing every app runs 29 more.
+ */
+const oneAppStatements = 24;
 /**
  * The first catalog-wide search evaluates all 29 apps and ranks 7,000 tools, 3.7–10.4 s on an
  * M-series laptop depending on its load when search still rendered every signature. It must leave
@@ -131,13 +139,63 @@ const oneAppBoundMs = 1_500;
  */
 const catalogSearchBoundMs = 15_000;
 /**
- * A repeated catalog-wide search reuses every kept listing and its search projections. What
- * remains is one MCP round trip, one access-checked store read per listing and ranking 7,000
- * tools, tens of milliseconds on an M-series laptop. 500 ms leaves a slower runner several times
- * that, and is under a sixth of the fastest cold search (3.7 s), so any search that evaluates the
- * catalog again fails it.
+ * SQL statements a catalog-wide search that evaluates nothing runs for each app it searches: two
+ * access checks of the member's role and groups (one to bind the app's accounts, one to search
+ * it), the app's row, its invocation snapshot, its access count for search rows and its search
+ * listing row. Each app it lists, rather than reading its kept rows, adds one more. A search runs
+ * nine more of its own: authentication, the app list twice, the account bindings, the ranking
+ * twice and the snapshot's account read. These are ceilings: a change that adds a statement per app
+ * fails them, one that removes some passes.
  */
-const warmSearchBoundMs = 500;
+const statementsPerApp = 6;
+const statementsPerSearch = 9;
+/**
+ * Statements a search may run beyond those for known one-off cases, such as reading an API key
+ * again when another request held its row (`bearer-access.ts`). It is not for timing, and it is
+ * smaller than one statement more per app, which adds at least 29.
+ */
+const statementMargin = 10;
+/**
+ * A loose bound on a repeated search's time, for a search that does the same work more slowly,
+ * such as a lost index or a slower ranking query. Reuse is asserted by the trace checks, not by
+ * this. 77 CI runs on main took 125-445 ms and the slowest CI reading since was 626 ms, so 3 s
+ * stays far from runner noise.
+ */
+const repeatedSearchBoundMs = 3_000;
+/**
+ * What a catalog-wide search did, as its request's trace records it: how many apps it searched,
+ * how it found each app's search rows (`kept`, or `missing` when it had to list the app), the
+ * cache outcome of each app it listed, whether it evaluated an app or gave up on one, and how many
+ * SQL statements it ran.
+ */
+const searchWork = (spans: ReadonlyArray<DeliveredSpan>) => {
+  const named = (operation: string) => spans.filter((span) => span.operationName === operation);
+  const rows = named("sdk.tools.searchable").filter(
+    (span) => span.tags["executor.search.rows"] !== undefined,
+  );
+  const catalog = named("mcp.catalog")[0]?.tags;
+  return {
+    apps: Number(catalog?.["executor.discovery.apps"]),
+    /** Apps the program reaches by name, and the tools discovery loaded for them. */
+    reachable: Number(catalog?.["executor.discovery.reachable"]),
+    tools: Number(catalog?.["executor.discovery.tools"]),
+    rows: new Map(
+      rows.map((span) => [span.tags["executor.app.id"], span.tags["executor.search.rows"]]),
+    ),
+    listed: new Map(
+      named("sdk.tools.listing").map((span) => [
+        span.tags["executor.app.id"],
+        span.tags["executor.declarations.cache"],
+      ]),
+    ),
+    evaluated:
+      named("sdk.tools.listing.evaluate").length + named("sdk.tools.searchable.cold-fill").length,
+    /** Tool listings evaluated, one per app the first time it is listed. */
+    evaluations: named("sdk.tools.listing.evaluate").length,
+    stopped: spans.some((span) => span.tags["executor.discovery.stopped"] !== undefined),
+    statements: named("sql.execute").length,
+  };
+};
 /**
  * How long discovery waits for the apps a search needs before it may give up on any. Stalled
  * apps delay a catalog-wide search by about this much, never by their connection timeout or the
@@ -338,12 +396,11 @@ export default defineApp({}, async () => {
 });`;
 /**
  * How long the aged search rows scenario's app takes to evaluate: longer than discovery waits, so
- * evaluating it again before answering times it out, and inside `agedRowsMaxAgeSeconds`, which
- * also caps the load bound.
+ * evaluating it again before answering times it out, and inside `agedRowsRenewSeconds`.
  */
 const agedListingMs = 12_000;
-/** How long Cloud reuses a tool listing: the default `maxStaleMillis`, a day. */
-const listingMaxAgeMs = 86_400_000;
+/** After how long Cloud renews the search rows it serves: the default `renewMillis`, a day. */
+const listingRenewMs = 86_400_000;
 /** Cloud keeps background work this long after the event that started it closes. */
 const cloudBackgroundMs = 20_000;
 /**
@@ -410,99 +467,211 @@ const connectActor = (actor: Session, label: string, organization: string) =>
       });
   });
 
+/**
+ * A catalog of the scale apps at `indexes` (175 tools each, the large app 2,100) and an MCP
+ * connection to it: programs run through `execute`, and their traces are checked while the
+ * scenario carries on. `call` uses app 17 and `needle` finds one of its tools and one on the large
+ * app's second tool page, so both must be among `indexes`.
+ */
+const catalogCase = (indexes: ReadonlyArray<number>) =>
+  Effect.gen(function* () {
+    const api = yield* Api,
+      actors = yield* Actors,
+      mcp = yield* McpClient,
+      evidence = yield* Evidence;
+    const prefix = `/api/organizations/${actors.organization.id}`;
+    const key = yield* body(
+      Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+      yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+        name: "Catalog scale",
+      }),
+    );
+    yield* Effect.addFinalizer(() =>
+      api
+        .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
+        .pipe(Effect.orDie),
+    );
+    const deploy = (name: string, files: ReadonlyArray<{ path: string; content: string }>) =>
+      Effect.gen(function* () {
+        const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name,
+          files: files.some((file) => file.path === "package.json")
+            ? files
+            : [...files, appsManifest],
+        });
+        expect(response.status).toBe(200);
+        return yield* body(App, response);
+      });
+    const run = randomUUID().slice(0, 8);
+    const deployStarted = yield* Clock.currentTimeMillis;
+    const apps = yield* Effect.forEach(
+      indexes,
+      (index) =>
+        deploy(`Scale ${String(index).padStart(2, "0")} ${run}`, [
+          {
+            path: "index.ts",
+            content: scaleAppSource(index, index === largeApp ? largeAppTools : toolsPerApp),
+          },
+        ]),
+      { concurrency: 4 },
+    );
+    const deployMs = (yield* Clock.currentTimeMillis) - deployStarted;
+    const client = yield* mcp.connect(key.key, "catalog-scale", {
+      organization: actors.organization.id,
+    });
+    const telemetry = yield* Telemetry;
+    const samples: Array<{ label: string; elapsed: number }> = [];
+    /** Each checked program's app and SQL statement counts, as its trace records them. */
+    const searches: Array<{ label: string; apps: number; statements: number }> = [];
+    const execute = (label: string, code: string) =>
+      Effect.gen(function* () {
+        const started = yield* Clock.currentTimeMillis;
+        const result = yield* client.use(label, (client, signal) =>
+          client.callTool({ name: "execute", arguments: { code } }, undefined, {
+            signal,
+            timeout: 55_000,
+          }),
+        );
+        const elapsed = (yield* Clock.currentTimeMillis) - started;
+        samples.push({ label, elapsed });
+        yield* evidence.json("catalog-scale.json", { deployMs, samples, searches });
+        yield* Console.log(JSON.stringify({ label, elapsed }));
+        const request = (yield* evidence.requests).filter((entry) => entry.path === "/mcp").at(-1);
+        if (request === undefined) return yield* Effect.die(new Error("Missing MCP request"));
+        return {
+          elapsed,
+          traceId: request.traceId,
+          completed: yield* Schema.decodeUnknownEffect(Completed)(result.structuredContent),
+        };
+      });
+    /**
+     * The work a search did, once its trace holds a search-rows span for every app, recorded
+     * with its label in the scenario's output.
+     */
+    const workOf = (label: string, traceId: string) =>
+      telemetry
+        .settled(traceId, (spans) => {
+          // Spans are exported as they end, so once `mcp.execute` is in, its statements are too.
+          const work = searchWork(spans);
+          return (
+            work.apps > 0 &&
+            work.rows.size === work.apps &&
+            spans.some((span) => span.operationName === "mcp.execute")
+          );
+        })
+        .pipe(
+          Effect.map(searchWork),
+          Effect.tap((work) =>
+            Effect.gen(function* () {
+              const counted = { label, apps: work.apps, statements: work.statements };
+              searches.push(counted);
+              yield* evidence.json("catalog-scale.json", { deployMs, samples, searches });
+              yield* Console.log(JSON.stringify(counted));
+            }),
+          ),
+        );
+    /**
+     * Which apps a program that names `reached` loaded, as its trace records them: discovery
+     * reached only those, loaded only their tools, listed no other app and ran no statement
+     * for any other. The counts are recorded with its label in the scenario's output.
+     */
+    const loadsOnly = (
+      label: string,
+      traceId: string,
+      reached: ReadonlyArray<{ readonly id: string }>,
+      statements: number,
+    ) =>
+      Effect.gen(function* () {
+        const work = searchWork(
+          yield* telemetry.settled(traceId, (spans) =>
+            spans.some((span) => span.operationName === "mcp.execute"),
+          ),
+        );
+        const counted = {
+          label,
+          apps: work.apps,
+          reachable: work.reachable,
+          tools: work.tools,
+          listed: work.listed.size,
+          evaluated: work.evaluated,
+          statements: work.statements,
+        };
+        searches.push(counted);
+        yield* evidence.json("catalog-scale.json", { deployMs, samples, searches });
+        yield* Console.log(JSON.stringify(counted));
+        expect(work.apps, `${label}: apps in the catalog`).toBeGreaterThan(apps.length);
+        expect(work.reachable, `${label}: apps discovery reached`).toBe(reached.length);
+        expect(work.tools, `${label}: tools discovery loaded`).toBe(reached.length * toolsPerApp);
+        expect([...work.listed.keys()], `${label}: apps listed`).toEqual(
+          reached.map((app) => app.id),
+        );
+        expect(work.evaluated, `${label}: listings evaluated`).toBeLessThanOrEqual(reached.length);
+        expect(work.statements, `${label}: SQL statements`).toBeLessThanOrEqual(
+          statements + statementMargin,
+        );
+      });
+    /**
+     * Trace checks wait for their trace while the scenario carries on, and are joined after the
+     * next step that takes a while, so waiting for spans adds little to the scenario's time.
+     */
+    const checks: Array<Fiber.Fiber<void, TraceUnsettled | TelemetryUnavailable>> = [];
+    const check = (effect: Effect.Effect<void, TraceUnsettled | TelemetryUnavailable>) =>
+      Effect.forkChild(effect).pipe(Effect.map((fiber) => void checks.push(fiber)));
+    const joinChecks = Effect.gen(function* () {
+      for (const fiber of checks.splice(0)) yield* Fiber.join(fiber);
+    });
+    const at = (index: number) => apps[indexes.indexOf(index)]!;
+    const target = at(17);
+    const call = `return await tools[${JSON.stringify(target.slug)}].op123({ path: { id: "rec_1" } });`;
+    const large = at(largeApp);
+    // One tool of a small app, and one on the large app's second tool page.
+    const needle = `const small = await tools.search({ query: "zq17x123q" });
+const large = await tools.search({ query: "zq${largeApp}x999q" });
+return { items: [...small.items, ...large.items] };`;
+    const found = [
+      `tools[${JSON.stringify(target.slug)}].op123`,
+      `tools[${JSON.stringify(large.slug)}].op999`,
+    ];
+    return {
+      apps,
+      target,
+      call,
+      needle,
+      found,
+      run,
+      deploy,
+      execute,
+      workOf,
+      loadsOnly,
+      check,
+      joinChecks,
+    };
+  });
+
 layer(HostedLive, { excludeTestServices: true })("MCP catalog scale", (it) => {
   it.effect(scenarios.mcpCatalogScale.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const api = yield* Api,
-          actors = yield* Actors,
-          mcp = yield* McpClient,
-          evidence = yield* Evidence;
-        const prefix = `/api/organizations/${actors.organization.id}`;
-        const key = yield* body(
-          Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
-          yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
-            name: "Catalog scale",
-          }),
-        );
-        yield* Effect.addFinalizer(() =>
-          api
-            .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
-            .pipe(Effect.orDie),
-        );
-        const deploy = (name: string, files: ReadonlyArray<{ path: string; content: string }>) =>
-          Effect.gen(function* () {
-            const response = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-              name,
-              files: files.some((file) => file.path === "package.json")
-                ? files
-                : [...files, appsManifest],
-            });
-            expect(response.status).toBe(200);
-            return yield* body(App, response);
-          });
-        const run = randomUUID().slice(0, 8);
-        const deployStarted = yield* Clock.currentTimeMillis;
-        const apps = yield* Effect.forEach(
+        const catalog = yield* catalogCase(
           Array.from({ length: appCount + 1 }, (_, index) => index),
-          (index) =>
-            deploy(`Scale ${String(index).padStart(2, "0")} ${run}`, [
-              {
-                path: "index.ts",
-                content: scaleAppSource(index, index === largeApp ? largeAppTools : toolsPerApp),
-              },
-            ]),
-          { concurrency: 4 },
         );
-        const deployMs = (yield* Clock.currentTimeMillis) - deployStarted;
-        const client = yield* mcp.connect(key.key, "catalog-scale", {
-          organization: actors.organization.id,
-        });
-        const samples: Array<{ label: string; elapsed: number }> = [];
-        const execute = (label: string, code: string) =>
-          Effect.gen(function* () {
-            const started = yield* Clock.currentTimeMillis;
-            const result = yield* client.use(label, (client, signal) =>
-              client.callTool({ name: "execute", arguments: { code } }, undefined, {
-                signal,
-                timeout: 55_000,
-              }),
-            );
-            const elapsed = (yield* Clock.currentTimeMillis) - started;
-            samples.push({ label, elapsed });
-            yield* evidence.json("catalog-scale.json", { deployMs, samples });
-            yield* Console.log(JSON.stringify({ label, elapsed }));
-            return {
-              elapsed,
-              completed: yield* Schema.decodeUnknownEffect(Completed)(result.structuredContent),
-            };
-          });
-        const target = apps[17]!;
-        const call = `return await tools[${JSON.stringify(target.slug)}].op123({ path: { id: "rec_1" } });`;
-        const large = apps[largeApp]!;
-        // One tool of a small app, and one on the large app's second tool page.
-        const needle = `const small = await tools.search({ query: "zq17x123q" });
-const large = await tools.search({ query: "zq${largeApp}x999q" });
-return { items: [...small.items, ...large.items] };`;
-        const found = [
-          `tools[${JSON.stringify(target.slug)}].op123`,
-          `tools[${JSON.stringify(large.slug)}].op999`,
-        ];
+        const { apps, target, call, needle, found, execute, workOf, loadsOnly, check } = catalog;
 
         // A program that uses no app does not pay for the catalog, cold or warm.
         for (const attempt of [1, 2, 3]) {
           const trivial = yield* execute(`return 1 (${attempt})`, "return 1;");
           expect(trivial.completed.execution).toMatchObject({ ok: true, value: 1 });
-          expect(trivial.elapsed).toBeLessThan(trivialBoundMs);
+          yield* check(loadsOnly(`return 1 (${attempt})`, trivial.traceId, [], noAppStatements));
         }
-        // A call into one app loads that app, not the other 39.
+        // A call into one app loads that app, not the other 28.
         const called = yield* execute("Call one tool", call);
         expect(called.completed.execution).toMatchObject({
           ok: true,
           value: { app: 17, tool: 123, id: "rec_1" },
         });
-        expect(called.elapsed).toBeLessThan(oneAppBoundMs);
+        yield* check(loadsOnly("Call one tool", called.traceId, [target], oneAppStatements));
+        yield* catalog.joinChecks;
         // A catalog-wide search lists every app and finds the one matching tool.
         const searchedAll = yield* execute("Search the whole catalog", needle);
         expect(searchedAll.completed.execution.ok).toBe(true);
@@ -511,17 +680,64 @@ return { items: [...small.items, ...large.items] };`;
             .items,
         ).toMatchObject(found.map((path) => ({ path })));
         expect(searchedAll.completed.unavailableApps).toEqual([]);
+        // It lists every app but the one called, whose search rows the call kept, and evaluates
+        // each listing once.
+        yield* check(
+          Effect.gen(function* () {
+            const cold = yield* workOf("Search the whole catalog", searchedAll.traceId);
+            for (const app of apps)
+              expect(cold.listed.has(app.id), app.slug).toBe(app.id !== target.id);
+            expect(cold.evaluations, "listings evaluated").toBe(cold.listed.size);
+          }),
+        );
         expect(searchedAll.elapsed).toBeLessThan(catalogSearchBoundMs);
-        // Later searches reuse the evaluated listings instead of evaluating all 29 apps again.
-        for (const attempt of [1, 2, 3]) {
-          const warm = yield* execute(`Search the whole catalog again (${attempt})`, needle);
-          expect(warm.completed.execution.ok).toBe(true);
-          expect(
-            (yield* Schema.decodeUnknownEffect(SearchValue)(warm.completed.execution.value)).items,
-          ).toMatchObject(found.map((path) => ({ path })));
-          expect(warm.completed.unavailableApps).toEqual([]);
-          expect(warm.elapsed).toBeLessThan(warmSearchBoundMs);
-        }
+        // Later searches reuse the evaluated listings instead of evaluating all 29 apps again:
+        // every app's search rows are kept, and no app is listed or evaluated. The three run one
+        // after another; their traces are then read together.
+        const warm = yield* Effect.forEach([1, 2, 3], (attempt) =>
+          Effect.gen(function* () {
+            const label = `Search the whole catalog again (${attempt})`;
+            const searched = yield* execute(label, needle);
+            expect(searched.completed.execution.ok).toBe(true);
+            expect(
+              (yield* Schema.decodeUnknownEffect(SearchValue)(searched.completed.execution.value))
+                .items,
+            ).toMatchObject(found.map((path) => ({ path })));
+            expect(searched.completed.unavailableApps).toEqual([]);
+            expect(searched.elapsed).toBeLessThan(repeatedSearchBoundMs);
+            return { label, traceId: searched.traceId };
+          }),
+        );
+        yield* Effect.forEach(
+          warm,
+          ({ label, traceId }) =>
+            Effect.gen(function* () {
+              const work = yield* workOf(label, traceId);
+              for (const app of apps) expect(work.rows.get(app.id), app.slug).toBe("kept");
+              expect([...work.rows.values()].filter((rows) => rows !== "kept")).toEqual([]);
+              expect(work.listed.size).toBe(0);
+              expect(work.evaluated).toBe(0);
+              expect(work.statements).toBeLessThanOrEqual(
+                statementsPerApp * work.apps + statementsPerSearch + statementMargin,
+              );
+            }),
+          { concurrency: "unbounded", discard: true },
+        );
+        yield* catalog.joinChecks;
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
+  it.effect(scenarios.mcpCatalogStalledApps.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        // The app the call uses and the large app, whose second tool page the search reads.
+        const catalog = yield* catalogCase([17, largeApp]);
+        const { apps, target, call, needle, found, execute, workOf, loadsOnly, check } = catalog;
+        // A first search lists both apps and keeps their search rows.
+        const first = yield* execute("Search the catalog", needle);
+        expect(first.completed.execution.ok).toBe(true);
+        expect(first.completed.unavailableApps).toEqual([]);
 
         // MCP apps on a machine that accepts connections and never answers join the catalog. Each
         // is listed once, and every listing stalls.
@@ -530,7 +746,7 @@ return { items: [...small.items, ...large.items] };`;
           Array.from({ length: stalledApps }, (_, index) => index),
           (index) =>
             Effect.gen(function* () {
-              const app = yield* deploy(`Offline MCP ${index} ${run}`, [
+              const app = yield* catalog.deploy(`Offline MCP ${index} ${catalog.run}`, [
                 {
                   path: "package.json",
                   content: JSON.stringify({
@@ -547,10 +763,20 @@ return { items: [...small.items, ...large.items] };`;
         // Programs that do not touch the stalled apps are not delayed by them.
         const unaffected = yield* execute("return 1 beside stalled apps", "return 1;");
         expect(unaffected.completed.execution).toMatchObject({ ok: true, value: 1 });
-        expect(unaffected.elapsed).toBeLessThan(trivialBoundMs);
+        yield* check(
+          loadsOnly("return 1 beside stalled apps", unaffected.traceId, [], noAppStatements),
+        );
         const calledAgain = yield* execute("Call one tool beside stalled apps", call);
         expect(calledAgain.completed.execution).toMatchObject({ ok: true });
-        expect(calledAgain.elapsed).toBeLessThan(oneAppBoundMs);
+        yield* check(
+          loadsOnly(
+            "Call one tool beside stalled apps",
+            calledAgain.traceId,
+            [target],
+            oneAppStatements,
+          ),
+        );
+        yield* catalog.joinChecks;
 
         // A catalog-wide search finds both tools and reports only the stalled apps, all of them
         // within one discovery wait rather than one per stalled listing.
@@ -569,22 +795,48 @@ return { items: [...small.items, ...large.items] };`;
 
         // The stalled listings keep running in the background. Searching again reports the same
         // apps at once instead of waiting for them again, and still finds the other apps' tools.
-        for (const attempt of [1, 2]) {
-          const again = yield* execute(
-            `Search the whole catalog beside stalled apps again (${attempt})`,
-            needle,
-          );
-          expect(again.completed.execution.ok).toBe(true);
-          expect(
-            (yield* Schema.decodeUnknownEffect(SearchValue)(
-              again.completed.execution.value,
-            )).items.map((item) => item.path),
-          ).toEqual(found);
-          const reported = again.completed.unavailableApps;
-          expect(new Set(reported.map((entry) => entry.app))).toEqual(new Set(stalled));
-          for (const entry of reported) expect(entry.reason).toContain("timed out");
-          expect(again.elapsed).toBeLessThan(warmSearchBoundMs);
-        }
+        // The two run one after another; their traces are then read together.
+        const again = yield* Effect.forEach([1, 2], (attempt) =>
+          Effect.gen(function* () {
+            const label = `Search the whole catalog beside stalled apps again (${attempt})`;
+            const result = yield* execute(label, needle);
+            expect(result.completed.execution.ok).toBe(true);
+            expect(
+              (yield* Schema.decodeUnknownEffect(SearchValue)(
+                result.completed.execution.value,
+              )).items.map((item) => item.path),
+            ).toEqual(found);
+            const reported = result.completed.unavailableApps;
+            expect(new Set(reported.map((entry) => entry.app))).toEqual(new Set(stalled));
+            for (const entry of reported) expect(entry.reason).toContain("timed out");
+            expect(result.elapsed).toBeLessThan(repeatedSearchBoundMs);
+            return { label, traceId: result.traceId };
+          }),
+        );
+        // The other apps' rows are kept. Only the stalled apps are listed, and each listing is
+        // reported as running without waiting for it, so the search gives up on no app and
+        // evaluates none.
+        yield* Effect.forEach(
+          again,
+          ({ label, traceId }) =>
+            Effect.gen(function* () {
+              const work = yield* workOf(label, traceId);
+              for (const app of apps) expect(work.rows.get(app.id), app.slug).toBe("kept");
+              expect(Object.fromEntries(work.listed)).toEqual(
+                Object.fromEntries(stalled.map((app) => [app, "running"])),
+              );
+              expect(work.stopped).toBe(false);
+              expect(work.evaluated).toBe(0);
+              expect(work.statements).toBeLessThanOrEqual(
+                statementsPerApp * work.apps +
+                  work.listed.size +
+                  statementsPerSearch +
+                  statementMargin,
+              );
+            }),
+          { concurrency: "unbounded", discard: true },
+        );
+        yield* catalog.joinChecks;
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );
@@ -725,9 +977,9 @@ return { items: [...small.items, ...large.items] };`;
             }),
           );
 
-          // Searches never renew the rows they read, so they age past the server's maximum age
+          // Searches never renew the rows they read, so they age past the server's renewal age
           // while the organization is idle, as every app's rows do after a day in production.
-          const aged = began + agedRowsMaxAgeSeconds * 1_000 + 2_000;
+          const aged = began + agedRowsRenewSeconds * 1_000 + 2_000;
           yield* Effect.sleep(Math.max(0, aged - (yield* Clock.currentTimeMillis)));
 
           // The first search after that still answers at once from the aged rows, instead of
@@ -793,20 +1045,23 @@ return { items: [...small.items, ...large.items] };`;
               expect(result.completed.unavailableApps, step).toEqual([]);
               expect(yield* paths(result.completed.execution.value), step).toEqual(tools);
             });
-          /** A search that finds none of the app's tools and reports why. */
-          const reported = (step: string) =>
+          /**
+           * A search that still finds the app's tools, from its earlier rows, and reports why they
+           * may be out of date.
+           */
+          const stale = (step: string) =>
             Effect.gen(function* () {
               const result = yield* execute(step, search);
               expect(result.completed.execution.ok, step).toBe(true);
               expect(result.elapsed, step).toBeLessThan(reportedBoundMs);
-              expect(yield* paths(result.completed.execution.value), step).toEqual([]);
+              expect(yield* paths(result.completed.execution.value), step).toEqual(tools);
               expect(
                 result.completed.unavailableApps.map((entry) => entry.app),
                 step,
               ).toEqual([app.id]);
-              expect(result.completed.unavailableApps[0]!.reason, step).toContain(
-                "Catalog upstream answered 503",
-              );
+              const reason = result.completed.unavailableApps[0]!.reason;
+              expect(reason, step).toContain("ToolSearchStale");
+              expect(reason, step).toContain("Catalog upstream answered 503");
             });
 
           // The app's rows are written while its upstream is healthy.
@@ -824,37 +1079,50 @@ return { items: [...small.items, ...large.items] };`;
           );
 
           // The upstream now fails at once, faster than any failure a read remembers. Rows kept
-          // before this moment age past the server's maximum age while nothing renews them.
+          // before this moment age past the server's renewal age while nothing renews them.
           catalog.fail();
-          yield* Effect.sleep(agedRowsMaxAgeSeconds * 1_000 + 2_000);
+          yield* Effect.sleep(agedRowsRenewSeconds * 1_000 + 2_000);
 
           // The first search after that cannot know: it serves the aged rows and renews them in
-          // the background. That renewal fails, so later searches no longer serve the old tools
-          // as if the app were healthy. They report the app's failure, every time, while it lasts.
+          // the background. That renewal fails, so later searches still find the app's tools, from
+          // the rows they have, and report the failure beside them while it lasts, without
+          // listing the app again for each search.
           const before = catalog.requests.count;
           yield* found("Search aged rows");
           yield* Effect.gen(function* () {
             const result = yield* execute("Search after the renewal of aged rows", search);
             if (result.completed.unavailableApps.length === 0)
-              return yield* Effect.fail("still served" as const);
+              return yield* Effect.fail("not yet reported" as const);
           }).pipe(
             Effect.retry({
               schedule: Schedule.spaced("1 second"),
-              while: (error) => error === "still served",
+              while: (error) => error === "not yet reported",
               times: 10,
             }),
           );
-          expect(catalog.requests.count).toBeGreaterThan(before);
+          expect(catalog.requests.count).toBe(before + 1);
           for (const attempt of [1, 2])
-            yield* reported(`Search while the upstream fails (${attempt})`);
+            yield* stale(`Search while the upstream fails (${attempt})`);
+          expect(catalog.requests.count).toBe(before + 1);
 
-          // Once the upstream recovers, the next search lists the app again and renews its rows.
+          // Once the upstream recovers, a later renewal lists the app again and replaces the rows.
           catalog.recover();
-          for (const attempt of [1, 2])
-            yield* found(`Search after the upstream recovers (${attempt})`);
+          yield* Effect.gen(function* () {
+            const result = yield* execute("Search after the upstream recovers", search);
+            expect(yield* paths(result.completed.execution.value)).toEqual(tools);
+            if (result.completed.unavailableApps.length > 0)
+              return yield* Effect.fail("still stale" as const);
+          }).pipe(
+            Effect.retry({
+              schedule: Schedule.spaced("2 seconds"),
+              while: (error) => error === "still stale",
+              times: 30,
+            }),
+          );
+          for (const attempt of [1, 2]) yield* found(`Search the renewed rows (${attempt})`);
         }).pipe(Effect.provide(McpClient.layer)),
       ),
-    { timeout: 150_000 },
+    { timeout: 180_000 },
   );
 
   it.effect(
@@ -1076,16 +1344,6 @@ return { items: [...small.items, ...large.items] };`;
               expect(read.unavailable, step).toEqual([]);
               expect(read.paths, step).toEqual(tools);
             });
-          const reported = (step: string) =>
-            Effect.gen(function* () {
-              const read = yield* searched(step);
-              expect(read.paths, step).toEqual([]);
-              expect(
-                read.unavailable.map((entry) => entry.app),
-                step,
-              ).toEqual([app.id]);
-              expect(read.unavailable[0]!.reason, step).toContain(rememberedTimeout);
-            });
           /** Wait until the upstream has been asked `count` times. */
           const asked = (count: number) =>
             Effect.gen(function* () {
@@ -1113,11 +1371,11 @@ return { items: [...small.items, ...large.items] };`;
           );
 
           // A day passes with nothing renewing them: the rows, and the supervisor's copy of the
-          // listing they were written from, age past Cloud's maximum age. Only this app's are
+          // listing they were written from, age past Cloud's renewal age. Only this app's are
           // changed, as the clock would change them.
           const rows = yield* writeRows("sso-database.json", [
             {
-              sql: `update executor_tool_search_listings set at = at - ${listingMaxAgeMs + 60_000}
+              sql: `update executor_tool_search_listings set at = at - ${listingRenewMs + 60_000}
                 where app = $1 returning listing`,
               params: [app.id],
             },
@@ -1141,50 +1399,16 @@ return { items: [...small.items, ...large.items] };`;
           yield* found("Search aged rows");
           yield* asked(before + 1);
 
-          // Searches serve the aged rows while the renewal runs. Cloud stops it when the first
-          // search's background work ends; that stop is remembered as a timeout, so later searches
-          // report the app instead of serving its old tools as healthy and renewing them again.
-          yield* Effect.gen(function* () {
-            const read = yield* searched("Search while the aged rows are renewed");
-            if (read.unavailable.length > 0) return;
-            expect(read.paths).toEqual(tools);
-            expect(
-              (yield* Clock.currentTimeMillis) - renewing,
-              "Cloud should have stopped the renewal and remembered its timeout",
-            ).toBeLessThan(cloudBackgroundMs + 10_000);
-            return yield* Effect.fail("still served" as const);
-          }).pipe(
-            Effect.retry({
-              schedule: Schedule.spaced("1 second"),
-              while: (error) => error === "still served",
-              times: 40,
-            }),
-          );
-          expect((yield* Clock.currentTimeMillis) - renewing).toBeGreaterThanOrEqual(
-            cloudBackgroundMs - 1_000,
-          );
-
-          // Reading the remembered timeout started one background retry, which the upstream holds
-          // too. Further searches report the timeout at once and start no more.
-          yield* asked(before + 2);
+          // Cloud stops the renewal when the first search's background work ends. Running out of
+          // time says nothing about the app's tools, so searches keep serving its rows, as healthy,
+          // before and after the stop, and do not start the renewal again at once.
+          while ((yield* Clock.currentTimeMillis) - renewing < cloudBackgroundMs + 5_000) {
+            yield* found("Search while the aged rows are renewed or after Cloud stops it");
+            yield* Effect.sleep("2 seconds");
+          }
           for (const attempt of [1, 2, 3])
-            yield* reported(`Search beside the remembered timeout (${attempt})`);
-          expect(upstream.requests.count).toBe(before + 2);
-
-          // The upstream recovers and answers the retry, whose rows later searches read.
-          upstream.recover();
-          yield* Effect.gen(function* () {
-            const read = yield* searched("Search after the upstream recovers");
-            if (read.unavailable.length > 0) return yield* Effect.fail("not recovered" as const);
-          }).pipe(
-            Effect.retry({
-              schedule: Schedule.spaced("200 millis"),
-              while: (error) => error === "not recovered",
-              times: 25,
-            }),
-          );
-          for (const attempt of [1, 2]) yield* found(`Search the renewed rows (${attempt})`);
-          expect(upstream.requests.count).toBe(before + 2);
+            yield* found(`Search after the stopped renewal (${attempt})`);
+          expect(upstream.requests.count).toBe(before + 1);
         }).pipe(Effect.provide(McpClient.layer)),
       ),
     { timeout: 150_000 },
@@ -1349,9 +1573,7 @@ return { items: [...small.items, ...large.items] };`;
               actor,
               "POST",
               connectionsPath(path, "user", "service"),
-              {
-                destination: { kind: "personal" },
-              },
+              {},
             );
             expect(response.status).toBe(200);
             const account = yield* submit(actor, (yield* body(Resource, response)).id, token);

@@ -24,7 +24,6 @@ import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { BrowserAccountConnection } from "./accounts.ts";
-import { ConnectionDestination } from "./resource-access.ts";
 import {
   OrganizationReference,
   OrganizationForbidden,
@@ -142,7 +141,6 @@ const connectErrors = [
   AccountConnectionTargetChanged,
 ] as const;
 const connectPayload = Schema.Struct({
-  destination: Schema.optional(ConnectionDestination),
   /** Replace this account's credentials instead of adding an account. */
   account: Schema.optional(AccountId),
 });

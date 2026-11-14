@@ -1,4 +1,4 @@
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { grantAuthorization } from "@executor-js/mcp-auth";
 import { checkInvocationAccounts } from "./access.ts";
 import { invocationAccounts } from "@executor-js/sdk/core";
@@ -89,7 +89,7 @@ export const hostedMcpApproval = (
     if (view.status === "pending") {
       const backend = yield* hostedMcpBackend.pipe(
         Effect.provideService(CurrentOrganization, access.access),
-        Effect.provideService(CurrentAuthorization, grantAuthorization(access.grant.policy)),
+        Effect.provideService(CurrentPolicy, grantAuthorization(access.grant.policy)),
         Effect.provideService(CurrentUserId, access.userId),
       );
       const restricted = restrictMcpBackend<Error, never>(backend, Effect.succeed(access.grant));

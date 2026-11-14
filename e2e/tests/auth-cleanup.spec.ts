@@ -155,7 +155,7 @@ layer(HostedLive, { excludeTestServices: true })("Auth cleanup", (it) => {
         // The cut-off query is an interruption, never a database failure, and the request
         // reports the work it had to cancel. Each report is sent on its own, so wait until both
         // have arrived.
-        const events = yield* awaitSentryEvents((events) => {
+        const events = yield* awaitSentryEvents([held.traceId], (events) => {
           const types = traceExceptionTypes(events, held.traceId);
           return types.includes("AuthWorkUnsettled") && types.includes("AuthQueryInterrupted");
         });
@@ -199,7 +199,7 @@ layer(HostedLive, { excludeTestServices: true })("Auth cleanup", (it) => {
         yield* Effect.sleep("1 second");
         expect(yield* held.keyExists, "the abandoned delete did not run").toBe(true);
 
-        const events = yield* awaitSentryEvents((events) => {
+        const events = yield* awaitSentryEvents([held.traceId], (events) => {
           const types = traceExceptionTypes(events, held.traceId);
           return types.includes("AuthWorkUnsettled") && types.includes("AuthQueryInterrupted");
         });

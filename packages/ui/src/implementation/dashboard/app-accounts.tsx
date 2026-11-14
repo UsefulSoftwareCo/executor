@@ -35,9 +35,10 @@ import {
 } from "../../contracts/dashboard.ts";
 import { AppProviderIcon, ProviderIcon } from "./common.tsx";
 import { AccountAvatar, AccountCheckResult } from "./account-health.tsx";
-import { EmptyState } from "./empty-state.tsx";
+import { CopyButton } from "./code.tsx";
 import { Button } from "../components/button.tsx";
 import { Checkbox } from "../components/checkbox.tsx";
+import { Skeleton } from "../components/skeleton.tsx";
 import { Spinner } from "../components/spinner.tsx";
 import {
   DropdownMenu,
@@ -392,6 +393,7 @@ export function AppAccounts<E>({
   appAccounts,
   yourAccounts,
   accounts,
+  canEdit,
   Failure,
 }: {
   readonly app: App;
@@ -399,42 +401,140 @@ export function AppAccounts<E>({
   readonly yourAccounts: ScopeAccounts<E>;
   /** The caller's usable accounts, whose sign-in and check details the choices reuse. */
   readonly accounts: readonly AccountSummary[];
+  /** Whether the caller can edit the app, and so have their agent add account requirements. */
+  readonly canEdit: boolean;
   readonly Failure: ComponentType<FailureProps<E>>;
 }) {
-  const appRequirements = scoped(app, "app");
-  const userRequirements = scoped(app, "user");
-  if (appRequirements.length === 0 && userRequirements.length === 0)
-    return (
-      <EmptyState size="compact" title="No accounts required">
-        This app can run without a saved account.
-      </EmptyState>
-    );
   return (
     <div className="accounts-section space-y-8">
-      {appRequirements.length > 0 && (
-        <LinkScope
-          app={app}
-          scope="app"
-          title="App accounts"
-          description="Linked for everyone"
-          requirements={appRequirements}
-          data={appAccounts}
-          accounts={accounts}
-          Failure={Failure}
-        />
-      )}
-      {userRequirements.length > 0 && (
-        <LinkScope
-          app={app}
-          scope="user"
-          title="Your accounts"
-          description="Linked for you"
-          requirements={userRequirements}
-          data={yourAccounts}
-          accounts={accounts}
-          Failure={Failure}
-        />
-      )}
+      {accountScopes.map(({ scope, title, description }) => {
+        const requirements = scoped(app, scope);
+        return requirements.length === 0 ? (
+          <AccountScopeSection key={scope} title={title} description={description}>
+            <NoScopeAccounts app={app} scope={scope} canEdit={canEdit} />
+          </AccountScopeSection>
+        ) : (
+          <LinkScope
+            key={scope}
+            app={app}
+            scope={scope}
+            title={title}
+            description={description}
+            requirements={requirements}
+            data={scope === "app" ? appAccounts : yourAccounts}
+            accounts={accounts}
+            Failure={Failure}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+/** The Accounts tab's two sections, in order. */
+export const accountScopes = [
+  { scope: "app", title: "App accounts", description: "Linked for everyone" },
+  { scope: "user", title: "Your accounts", description: "Linked for you" },
+] as const satisfies readonly {
+  readonly scope: AccountScope;
+  readonly title: string;
+  readonly description: string;
+}[];
+
+/** One scope's section: its heading, then its requirements or empty state. */
+export function AccountScopeSection({
+  title,
+  description,
+  readOnly,
+  children,
+}: {
+  readonly title: string;
+  readonly description: string;
+  readonly readOnly?: boolean | undefined;
+  readonly children: ReactNode;
+}) {
+  return (
+    <section aria-label={title} data-read-only={readOnly} className="space-y-3">
+      <div>
+        <h2 className="text-sm font-medium">{title}</h2>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+const scopeGuide = {
+  app: {
+    title: "No app accounts",
+    kind: "an app account",
+    detail: (
+      <>
+        One account linked for everyone, such as a team API key. Callers, schedules and webhooks all
+        use it, and the app reads it as <code>ctx.app.accounts</code>.
+      </>
+    ),
+  },
+  user: {
+    title: "No user accounts",
+    kind: "a user account",
+    detail: (
+      <>
+        Each person links their own account, and the app reads the caller’s as{" "}
+        <code>ctx.user.accounts</code>.
+      </>
+    ),
+  },
+} as const satisfies Record<
+  AccountScope,
+  { readonly title: string; readonly kind: string; readonly detail: ReactNode }
+>;
+
+/** A self-contained request for an agent with this app's source tools. */
+const addAccountPrompt = (app: App, scope: AccountScope) => {
+  const target = `my Executor app ${JSON.stringify(app.name)} (app ID: ${app.id})`;
+  const read = `First read accounts.md in the Executor app's app-authoring skill and the app's current source. Declare the provider with defineProvider`;
+  return scope === "app"
+    ? `Add an app account to ${target}: one shared [service, for example Datadog] account that people who can edit the app link once for everyone. Every caller, schedule and webhook uses it. ${read}, add it under the app scope of the requirements, { app: { accounts } }, and read it in tools as ctx.app.accounts.<name>. Never put credentials in source. Deploy the updated app, then tell me to link the account under App accounts on its Accounts tab.`
+    : `Add a user account to ${target} so each person who uses it connects their own [service, for example GitHub] account. ${read}, add it under the user scope of the requirements, { user: { accounts } }, and read the caller's account in tools as ctx.user.accounts.<name>. Never put credentials in source. Deploy the updated app, then tell me to link my account under Your accounts on its Accounts tab.`;
+};
+
+/**
+ * A scope without requirements. Requirements are declared in the app's source, so editors get a
+ * prompt for their agent. `canEdit` is unknown while the app's access loads.
+ */
+export function NoScopeAccounts({
+  app,
+  scope,
+  canEdit,
+}: {
+  readonly app: App;
+  readonly scope: AccountScope;
+  readonly canEdit: boolean | undefined;
+}) {
+  const guide = scopeGuide[scope];
+  return (
+    <div className="rounded-lg border border-dashed px-4 py-3.5">
+      <h3 className="text-[13px] font-medium">{guide.title}</h3>
+      <p className="mt-1 max-w-xl text-pretty text-xs leading-5 text-muted-foreground">
+        {guide.detail}
+      </p>
+      <div className="mt-3 flex min-h-9 items-center">
+        {canEdit === undefined ? (
+          <Skeleton className="h-9 w-32" />
+        ) : canEdit ? (
+          <CopyButton
+            code={addAccountPrompt(app, scope)}
+            label={`Copy prompt to add ${guide.kind}`}
+            text="Copy prompt"
+            variant="outline"
+            size="default"
+            inline
+          />
+        ) : (
+          <p className="text-xs text-muted-foreground">People who can edit this app can add one.</p>
+        )}
+      </div>
     </div>
   );
 }
@@ -468,11 +568,7 @@ function LinkScope<E>({
   const readOnly = data.edit === undefined;
   return (
     <Checking.Provider value={checking}>
-      <section aria-label={title} data-read-only={readOnly} className="space-y-3">
-        <div>
-          <h2 className="text-sm font-medium">{title}</h2>
-          <p className="text-xs text-muted-foreground">{description}</p>
-        </div>
+      <AccountScopeSection title={title} description={description} readOnly={readOnly}>
         {readOnly && data.readOnly !== undefined && (
           <p className="text-xs text-muted-foreground">{data.readOnly}</p>
         )}
@@ -498,7 +594,7 @@ function LinkScope<E>({
             />
           ))}
         </div>
-      </section>
+      </AccountScopeSection>
     </Checking.Provider>
   );
 }

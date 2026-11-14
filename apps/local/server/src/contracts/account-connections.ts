@@ -1,3 +1,4 @@
+import { RequestRejection } from "@executor-js/sdk/core";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 /** Local browser handoff. These grants authorize one SDK connection, never a dashboard session. */
 import { Schema } from "effect";
@@ -123,7 +124,7 @@ const scopeConnect = <const S extends AccountScope>(scope: S) =>
   );
 
 /** Browser submissions never accept an owner, provider, callback destination, or target account. */
-export const AccountConnectApi = HttpApi.make("account-connect").add(
+const accountConnectApi = HttpApi.make("account-connect").add(
   HttpApiGroup.make("accountConnect")
     .add(
       HttpApiEndpoint.post("issue", "/account-connect/api/requests", {
@@ -195,3 +196,5 @@ export const AccountConnectApi = HttpApi.make("account-connect").add(
       }),
     ),
 );
+/** Every endpoint answers a request its schema rejects with `RequestInvalid`. */
+export const AccountConnectApi = accountConnectApi.middleware(RequestRejection);

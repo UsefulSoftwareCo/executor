@@ -43,6 +43,21 @@ import { evaluatedDeclarations } from "./evaluated-declarations.ts";
 
 const engineFailure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 const protocolFailure = () => new RuntimeProtocolFailed();
+/**
+ * The reason a transport aborts a session's signal with when the session broke because its socket
+ * closed, as when workerd exits. A session that broke for any other reason, such as a message that
+ * failed to send or decode, or an abort from the apps Worker, keeps its own error.
+ */
+export const TransportClosed = Symbol("executor/workerd-transport-closed");
+/**
+ * A rejected call's cause. Once the socket under the session to the apps Worker has closed, every
+ * call on it rejects with Cap'n Web's own text, which names no cause the runtime can match: the
+ * connection was lost. Any other rejection is classified by its own error.
+ */
+const sessionFailure = (signal: AbortSignal) => (cause: unknown) =>
+  signal.aborted && signal.reason === TransportClosed
+    ? new RuntimeProtocolFailed({ reason: "disconnected" })
+    : cause;
 const json = Schema.decodeUnknownSync(Schema.Json);
 type Callback = (input: unknown) => Promise<unknown>;
 
@@ -101,6 +116,7 @@ export const workerdHostHandler = (options: {
             const worker = yield* appWorker({
               app: seed.app,
               build: seed.build,
+              ...(seed.hostApi === undefined ? {} : { hostApi: seed.hostApi }),
               database: false,
               command: { operation: "workflow-run", name: seed.name, input: seed.input },
               accounts: Redacted.value(context.accounts),
@@ -179,6 +195,10 @@ export const workerdHostHandler = (options: {
 
 /** Transport lifetime belongs to the host; each RPC scope owns its cancellation. */
 export interface WorkerdTransport {
+  /**
+   * `signal` aborts when the session breaks, with `TransportClosed` as its reason when its socket
+   * had closed, and when its scope closes after `work`.
+   */
   readonly rpc: <A, E>(
     work: (api: RpcStub<WorkerdAppApi>, signal: AbortSignal) => Effect.Effect<A, E>,
   ) => Effect.Effect<A, E | RuntimeProtocolFailed>;
@@ -223,11 +243,11 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
             capabilities.controls,
             async () => encodeLoadedBuild(await capabilities.load()),
           );
-          return yield* rpc((api) =>
+          return yield* rpc((api, signal) =>
             runnerResult(
               Effect.tryPromise({
                 try: () => api.invoke(encoded, callbacks),
-                catch: (cause) => cause,
+                catch: sessionFailure(signal),
               }),
             ),
           );
@@ -243,10 +263,11 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
                 new RuntimeBuildFailed({ stage: "source", message: describeBuildCause(cause) }),
             ),
           );
-          const result = yield* rpc((api) =>
+          // The compiler is the apps Worker's own code; the deployer sees why its call failed.
+          const result = yield* rpc((api, signal) =>
             Effect.tryPromise({
               try: async () => await api.compile(encoded),
-              catch: protocolFailure,
+              catch: sessionFailure(signal),
             }),
           ).pipe(
             Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(CompileWorkerResult))),

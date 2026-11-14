@@ -1,0 +1,26 @@
+{
+  "query": "/api/traces/stats?groupBy=operation&agg=count&lookback=1h&limit=12",
+  "status": 200,
+  "shape": {
+    "types": ["object"],
+    "fields": {
+      "data": {
+        "types": ["array"],
+        "items": {
+          "types": ["object"],
+          "fields": {
+            "group": {
+              "types": ["string"]
+            },
+            "value": {
+              "types": ["number"]
+            },
+            "count": {
+              "types": ["number"]
+            }
+          }
+        }
+      }
+    }
+  }
+}

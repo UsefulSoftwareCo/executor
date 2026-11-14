@@ -6,6 +6,7 @@ import {
   type ClientMetadataDocument,
   ClientMetadataUrlInvalid,
   clientMetadataDocumentPath,
+  clientMetadataLogoPath,
   hostedOAuthClientName,
 } from "../contracts/oauth-client-metadata.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
@@ -108,7 +109,7 @@ export const clientMetadataDocument = (setting: Option.Option<ClientMetadataSett
       client_id: url.href,
       client_name: hostedOAuthClientName,
       client_uri: url.origin,
-      logo_uri: new URL("/favicon.png", url.origin).href,
+      logo_uri: new URL(clientMetadataLogoPath, url.origin).href,
       redirect_uris: [callback],
       grant_types: ["authorization_code", "refresh_token"],
       response_types: ["code"],

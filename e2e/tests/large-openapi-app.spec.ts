@@ -110,150 +110,164 @@ const ownDefinitions = (schema: typeof JsonSchemaDocument.Type | undefined) => {
 };
 
 layer(HostedLive, { excludeTestServices: true })("Large OpenAPI app", (it) => {
-  it.effect(scenarios.largeOpenapiExpandableApp.title, (context) =>
-    withHostedCase(
-      context,
-      Effect.gen(function* () {
-        const api = yield* Api,
-          actors = yield* Actors,
-          evidence = yield* Evidence,
-          mcp = yield* McpClient;
-        const origin = (yield* Target).metadata.origin;
-        const configuration = JSON.stringify({
-          source: {
-            document: expandableOpenapiDocument(origin, expandableResources, expandableOperations),
-          },
-          allowedOrigin: origin,
-          securitySchemes: {},
-          methods: {},
-          oauth: [],
-        });
-        yield* evidence.json("expandable-openapi-source.json", { bytes: configuration.length });
+  it.effect(
+    scenarios.largeOpenapiExpandableApp.title,
+    (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const api = yield* Api,
+            actors = yield* Actors,
+            evidence = yield* Evidence,
+            mcp = yield* McpClient;
+          const origin = (yield* Target).metadata.origin;
+          const configuration = JSON.stringify({
+            source: {
+              document: expandableOpenapiDocument(
+                origin,
+                expandableResources,
+                expandableOperations,
+              ),
+            },
+            allowedOrigin: origin,
+            securitySchemes: {},
+            methods: {},
+            oauth: [],
+          });
+          yield* evidence.json("expandable-openapi-source.json", { bytes: configuration.length });
 
-        const prefix = `/api/organizations/${actors.organization.id}/apps`;
-        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
-          name: `Expandable OpenAPI ${randomUUID().slice(0, 8)}`,
-          files: [
-            { path: "index.ts", content: index },
-            { path: "openapi.json", content: configuration },
-            appsManifest,
-          ],
-        });
-        expect(deployed.status, JSON.stringify(deployed.body).slice(0, 2000)).toBe(200);
-        const app = yield* body(App, deployed);
-        const path = `${prefix}/${app.id}`;
-        yield* Effect.addFinalizer(() =>
-          api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
-        );
+          const prefix = `/api/organizations/${actors.organization.id}/apps`;
+          const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
+            name: `Expandable OpenAPI ${randomUUID().slice(0, 8)}`,
+            files: [
+              { path: "index.ts", content: index },
+              { path: "openapi.json", content: configuration },
+              appsManifest,
+            ],
+          });
+          expect(deployed.status, JSON.stringify(deployed.body).slice(0, 2000)).toBe(200);
+          const app = yield* body(App, deployed);
+          const path = `${prefix}/${app.id}`;
+          yield* Effect.addFinalizer(() =>
+            api.request(actors.owner, "DELETE", path).pipe(Effect.orDie),
+          );
 
-        // The listing evaluates the whole catalog. Each page stays within the page bound, and
-        // each tool's schemas are complete on their own, as an agent reads them.
-        const first = yield* api.request(actors.owner, "GET", `${path}/tools`);
-        yield* evidence.json("expandable-openapi-first-page.json", {
-          status: first.status,
-          characters: JSON.stringify(first.body).length,
-          body: first.status === 200 ? undefined : first.body,
-        });
-        expect(first.status, JSON.stringify(first.body).slice(0, 2000)).toBe(200);
-        // The body as sent: the server writes it as `JSON.stringify` does, so encoding the parsed
-        // body again gives back its text.
-        expect(JSON.stringify(first.body).length).toBeLessThanOrEqual(pageChars);
-        const page = yield* body(ToolPage, first);
-        expect(page.items.length).toBeGreaterThan(1);
-        expect(page.items.length).toBeLessThan(expandableOperations);
-        expect(page.next).toBeDefined();
-        const resources = page.items.filter((tool) => tool.name.startsWith("resources."));
-        expect(resources.length).toBeGreaterThan(0);
-        for (const tool of resources)
-          expect(ownDefinitions(tool.outputSchema)).toHaveLength(expandableResources);
+          // The listing evaluates the whole catalog. Each page stays within the page bound, and
+          // each tool's schemas are complete on their own, as an agent reads them.
+          const first = yield* api.request(actors.owner, "GET", `${path}/tools`);
+          // The body as sent: the server writes it as `JSON.stringify` does, so encoding the parsed
+          // body again gives back its text. Each page is encoded once: at 16 MB, another encoding
+          // adds about a tenth to the walk.
+          const firstText = JSON.stringify(first.body);
+          yield* evidence.json("expandable-openapi-first-page.json", {
+            status: first.status,
+            characters: firstText.length,
+            body: first.status === 200 ? undefined : first.body,
+          });
+          expect(first.status, firstText.slice(0, 2000)).toBe(200);
+          expect(firstText.length).toBeLessThanOrEqual(pageChars);
+          const page = yield* body(ToolPage, first);
+          expect(page.items.length).toBeGreaterThan(1);
+          expect(page.items.length).toBeLessThan(expandableOperations);
+          expect(page.next).toBeDefined();
+          const resources = page.items.filter((tool) => tool.name.startsWith("resources."));
+          expect(resources.length).toBeGreaterThan(0);
+          for (const tool of resources)
+            expect(ownDefinitions(tool.outputSchema)).toHaveLength(expandableResources);
 
-        // The index names every tool.
-        const listed = yield* body(
-          ToolIndex,
-          yield* api.request(actors.owner, "GET", `${path}/tools/index`),
-        );
-        expect(listed.items).toHaveLength(expandableOperations + 1);
+          // The index names every tool.
+          const listed = yield* body(
+            ToolIndex,
+            yield* api.request(actors.owner, "GET", `${path}/tools/index`),
+          );
+          expect(listed.items).toHaveLength(expandableOperations + 1);
 
-        // Following `next` to the end lists every tool once, each page within the bound and
-        // continuing after the page before it.
-        const last = page.items.at(-1)?.name ?? "";
-        const paged = page.items.map((tool) => tool.name);
-        let next = page.next;
-        while (next !== undefined) {
-          expect(paged.length).toBeLessThanOrEqual(expandableOperations + 1);
-          const response = yield* api.request(
+          // Following `next` to the end lists every tool once, each page within the bound and
+          // continuing after the page before it.
+          const last = page.items.at(-1)?.name ?? "";
+          const paged = page.items.map((tool) => tool.name);
+          let next = page.next;
+          while (next !== undefined) {
+            expect(paged.length).toBeLessThanOrEqual(expandableOperations + 1);
+            const response = yield* api.request(
+              actors.owner,
+              "GET",
+              `${path}/tools?cursor=${encodeURIComponent(next)}`,
+            );
+            const text = JSON.stringify(response.body);
+            expect(response.status, text.slice(0, 2000)).toBe(200);
+            expect(text.length).toBeLessThanOrEqual(pageChars);
+            const following = yield* body(ToolPage, response);
+            expect(following.items.length).toBeGreaterThan(0);
+            const previous = paged.at(-1) ?? "";
+            for (const tool of following.items) expect(tool.name > previous).toBe(true);
+            paged.push(...following.items.map((tool) => tool.name));
+            next = following.next;
+          }
+          yield* evidence.json("expandable-openapi-pages.json", { tools: paged.length });
+          expect(new Set(paged).size).toBe(paged.length);
+          expect([...paged].sort()).toEqual(listed.items.map((tool) => tool.name).sort());
+
+          // The last tool reads with its whole schema.
+          const lastTool =
+            listed.items
+              .map((tool) => tool.name)
+              .filter((name) => name.startsWith("resources."))
+              .sort()
+              .at(-1) ?? "";
+          expect(lastTool > last).toBe(true);
+          const described = yield* api.request(
             actors.owner,
             "GET",
-            `${path}/tools?cursor=${encodeURIComponent(next)}`,
+            `${path}/tools/${encodeURIComponent(lastTool)}`,
           );
-          expect(response.status, JSON.stringify(response.body).slice(0, 2000)).toBe(200);
-          expect(JSON.stringify(response.body).length).toBeLessThanOrEqual(pageChars);
-          const following = yield* body(ToolPage, response);
-          expect(following.items.length).toBeGreaterThan(0);
-          const previous = paged.at(-1) ?? "";
-          for (const tool of following.items) expect(tool.name > previous).toBe(true);
-          paged.push(...following.items.map((tool) => tool.name));
-          next = following.next;
-        }
-        yield* evidence.json("expandable-openapi-pages.json", { tools: paged.length });
-        expect(new Set(paged).size).toBe(paged.length);
-        expect([...paged].sort()).toEqual(listed.items.map((tool) => tool.name).sort());
+          expect(described.status, JSON.stringify(described.body).slice(0, 2000)).toBe(200);
+          expect(ownDefinitions((yield* body(ListedTool, described)).outputSchema)).toHaveLength(
+            expandableResources,
+          );
 
-        // The last tool reads with its whole schema.
-        const lastTool =
-          listed.items
-            .map((tool) => tool.name)
-            .filter((name) => name.startsWith("resources."))
-            .sort()
-            .at(-1) ?? "";
-        expect(lastTool > last).toBe(true);
-        const described = yield* api.request(
-          actors.owner,
-          "GET",
-          `${path}/tools/${encodeURIComponent(lastTool)}`,
-        );
-        expect(described.status, JSON.stringify(described.body).slice(0, 2000)).toBe(200);
-        expect(ownDefinitions((yield* body(ListedTool, described)).outputSchema)).toHaveLength(
-          expandableResources,
-        );
-
-        // MCP search ranks the app's tools rather than reporting the app unavailable.
-        const key = yield* body(
-          Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
-          yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
-            name: "Expandable OpenAPI",
-          }),
-        );
-        yield* Effect.addFinalizer(() =>
-          api
-            .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
-            .pipe(Effect.orDie),
-        );
-        const client = yield* mcp.connect(key.key, "expandable-openapi", {
-          organization: actors.organization.id,
-        });
-        const searched = yield* client.use("Search the expandable app", (client, signal) =>
-          client.callTool(
-            {
-              name: "search",
-              arguments: { namespace: app.slug, query: "getResource137View1" },
-            },
-            undefined,
-            { signal },
-          ),
-        );
-        yield* evidence.json("expandable-openapi-search.json", searched.structuredContent);
-        const found = yield* Schema.decodeUnknownEffect(SearchResult)(searched.structuredContent);
-        expect(
-          found.items.some(
-            (item) =>
-              item.path.includes(JSON.stringify(app.slug)) &&
-              item.path.endsWith(".getResource137View1"),
-          ),
-          JSON.stringify(found.items.map((item) => item.path)),
-        ).toBe(true);
-      }).pipe(Effect.provide(McpClient.layer)),
-    ),
+          // MCP search ranks the app's tools rather than reporting the app unavailable.
+          const key = yield* body(
+            Schema.Struct({ id: Schema.String, key: Schema.RedactedFromValue(Schema.String) }),
+            yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+              name: "Expandable OpenAPI",
+            }),
+          );
+          yield* Effect.addFinalizer(() =>
+            api
+              .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
+              .pipe(Effect.orDie),
+          );
+          const client = yield* mcp.connect(key.key, "expandable-openapi", {
+            organization: actors.organization.id,
+          });
+          const searched = yield* client.use("Search the expandable app", (client, signal) =>
+            client.callTool(
+              {
+                name: "search",
+                arguments: { namespace: app.slug, query: "getResource137View1" },
+              },
+              undefined,
+              { signal },
+            ),
+          );
+          yield* evidence.json("expandable-openapi-search.json", searched.structuredContent);
+          const found = yield* Schema.decodeUnknownEffect(SearchResult)(searched.structuredContent);
+          expect(
+            found.items.some(
+              (item) =>
+                item.path.includes(JSON.stringify(app.slug)) &&
+                item.path.endsWith(".getResource137View1"),
+            ),
+            JSON.stringify(found.items.map((item) => item.path)),
+          ).toBe(true);
+        }).pipe(Effect.provide(McpClient.layer)),
+      ),
+    // Following `next` reads about 140 pages of 16 MB, one after another. Self-host CI runs the
+    // scenario in 25 to 58 seconds, but a busy runner took 0.68 seconds a page, about 110 seconds
+    // in all. A deployed stage answers a page in 1.1 to 2.1 seconds, 1.55 at the median of 55 runs,
+    // so the walk alone takes 2.5 to 5 minutes there.
+    { timeout: 360_000 },
   );
 
   it.effect(scenarios.largeOpenapiApp.title, (context) =>

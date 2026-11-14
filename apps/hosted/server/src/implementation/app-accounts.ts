@@ -21,12 +21,13 @@ import {
   type VersionId,
   type Executor,
   type WebhookSourceConfig,
+  WebhookSourceFields,
 } from "@executor-js/sdk/core";
 import { permitsAccounts, permittedTargets } from "@executor-js/authorization";
 import { Effect, Schema } from "effect";
 import type { SqlClient } from "effect/sql";
 import { CurrentUserId } from "../contracts/auth.ts";
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { RequirementMismatch } from "../contracts/app-accounts.ts";
 import { OrganizationForbidden } from "../contracts/organization.ts";
 import {
@@ -35,7 +36,7 @@ import {
   linkedAccountJson,
   lockCurrentActor,
   policyDatabase,
-  requireAccountAccessAs,
+  requireAccountOwnerAs,
   requireAppAccessAs,
   usableAppLinks,
   usableLinks,
@@ -97,7 +98,7 @@ export const appAccountReads = (
 
 /** The caller's links, narrowed to the targets their grant permits. */
 const permittedLinks = (linked: ReadonlyArray<LinkedAccount>) =>
-  Effect.map(CurrentAuthorization, (policy) =>
+  Effect.map(CurrentPolicy, (policy) =>
     linked.filter((account) => {
       const targets = permittedTargets(policy.tools, account.app);
       return targets === undefined || targets.accounts.has(account.id);
@@ -177,7 +178,7 @@ export const versionAccounts = (version: AppVersion, links?: CallerLinks) =>
       version: version.version,
       ...(yield* callerRequirements(version, links)),
     });
-    const policy = yield* CurrentAuthorization;
+    const policy = yield* CurrentPolicy;
     if (!permitsAccounts(policy, version.app, userAccountIds(resolved)))
       return yield* new OrganizationForbidden();
     return resolved;
@@ -197,7 +198,26 @@ export const callerAccounts = (app: App, links?: CallerLinks) =>
   versionAccounts(activeVersion(app), links);
 
 /** Webhook source management, from the SDK the product links accounts through. */
-export type WebhookSources = Pick<Executor["webhooks"], "link" | "unlink" | "sources">;
+export type WebhookSources = Pick<Executor["webhooks"], "link" | "unlink">;
+
+const SourceRow = Schema.Struct({
+  actor: WebhookSourceFields.fields.actor,
+  status: WebhookSourceFields.fields.status,
+});
+/**
+ * The actor and status of an account's webhook source on an app, if it has one, read by the
+ * source table's `(app, account)` key in the caller's transaction. Listing the app's sources
+ * instead reads every account linked to it, so each link would cost more as the app's accounts grow.
+ */
+export const accountSource = (
+  sql: SqlClient.SqlClient,
+  input: { readonly app: AppId; readonly account: AccountId },
+) =>
+  Effect.gen(function* () {
+    const rows = yield* sql`select actor, status from executor_webhook_sources
+      where app = ${input.app} and account = ${input.account}`;
+    return (yield* Schema.decodeUnknownEffect(Schema.Array(SourceRow))(rows))[0];
+  }).pipe(Effect.catchTags(sqlFailures));
 const storage = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.mapError(() => new StorageError()));
 
@@ -243,7 +263,7 @@ export const lockedChange = <A, E, R>(
         yield* lockAppLinks(sql, input.app);
         const actor = yield* lockCurrentActor;
         yield* requireAppAccessAs(actor, input.app, input.access);
-        if (input.account !== undefined) yield* requireAccountAccessAs(actor, input.account, "use");
+        if (input.account !== undefined) yield* requireAccountOwnerAs(actor, input.account);
         return yield* change(sql, actor);
       }),
     );
@@ -295,9 +315,7 @@ const syncSource = (
         where app = ${input.app} and account = ${input.account}
         group by subject order by min(created_at), subject`,
     )).map((row) => row.subject);
-    const source = (yield* storage(webhooks.sources({ app: input.app }))).find(
-      (item) => item.account === input.account,
-    );
+    const source = yield* accountSource(sql, input);
     const config = input.config === undefined ? {} : { config: input.config };
     if (subjects.includes(null)) {
       if (
@@ -434,44 +452,6 @@ export const addLink = (
   }).pipe(Effect.catchTags(sqlFailures));
 
 /**
- * Link a member's account to a user requirement in its own transaction, as `appAccounts.userLink`
- * does once it has checked access. For product code that has already decided the member may use
- * both, such as the v1 import linking the accounts it saved for the importing user. Linking again
- * changes nothing. Returns whether any link changed.
- */
-export const linkUserAccount = (
-  executor: Executor,
-  sql: SqlClient.SqlClient,
-  input: {
-    readonly app: AppId;
-    readonly requirement: string;
-    readonly account: AccountId;
-    readonly subject: string;
-  },
-) =>
-  executor[StorageHost].transaction(
-    addLink(sql, executor.webhooks, { ...input, linkedBy: input.subject }),
-  );
-
-/**
- * Link an account to an app requirement for everyone, in its own transaction, as
- * `appAccounts.appLink` does once it has checked edit access. For product code that has already
- * decided the editor may link it, such as the v1 import linking a workspace's shared accounts for
- * the organization's owner. Linking again changes nothing. Returns whether any link changed.
- */
-export const linkAppAccount = (
-  executor: Executor,
-  sql: SqlClient.SqlClient,
-  input: {
-    readonly app: AppId;
-    readonly requirement: string;
-    readonly account: AccountId;
-    readonly linkedBy: string;
-  },
-) =>
-  executor[StorageHost].transaction(addLink(sql, executor.webhooks, { ...input, subject: null }));
-
-/**
  * A webhook source's actor can no longer use its account, such as after leaving the organization
  * or a group, without unlinking it. Hand the source over, unless it already moved on or its actor
  * may use it again. Run it in a transaction: it takes the links' lock first. Wake reconciliation
@@ -489,9 +469,7 @@ export const sourceActorLost = (
 ) =>
   Effect.gen(function* () {
     yield* lockLinks(sql, input.app);
-    const source = (yield* storage(webhooks.sources({ app: input.app }))).find(
-      (item) => item.account === input.account,
-    );
+    const source = yield* accountSource(sql, input);
     if (source === undefined || source.actor !== input.actor || source.status === "removing")
       return;
     const own = yield* linkedAccounts(sql, { subject: input.actor, apps: [input.app] });
@@ -514,6 +492,33 @@ export const sourceActorLost = (
       storage,
     );
   }).pipe(Effect.catchTags(sqlFailures));
+
+const AppLinkRow = Schema.Struct({ app: AppId, requirement: Schema.String });
+/**
+ * Unlink an account from every app it serves for everyone, in one transaction under each app's
+ * lock, bringing each webhook source in line as unlinking it by hand does. Only for an account
+ * whose owner is deleting their user: leaving the organization already stops their personal
+ * account serving its apps, so its owner may remove those links without managing the apps.
+ * Returns whether any link was removed.
+ */
+export const removeAppLinksOf = (
+  executor: Executor,
+  sql: SqlClient.SqlClient,
+  account: AccountId,
+) =>
+  executor[StorageHost].transaction(
+    Effect.gen(function* () {
+      const rows = yield* Schema.decodeUnknownEffect(Schema.Array(AppLinkRow))(
+        yield* sql`select distinct app, requirement from hosted_app_account_links
+          where account = ${account} and subject is null order by app, requirement`,
+      );
+      let removed = false;
+      for (const row of rows)
+        if (yield* removeLink(sql, executor.webhooks, { ...row, account, subject: null }))
+          removed = true;
+      return removed;
+    }).pipe(Effect.catchTags(sqlFailures)),
+  );
 
 /** The apps an account is linked to for everyone, which must unlink it before it can be deleted. */
 export const appLinkApps = (sql: SqlClient.SqlClient, account: AccountId) =>

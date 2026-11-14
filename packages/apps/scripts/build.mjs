@@ -21,9 +21,29 @@ const entries = Object.fromEntries(
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
 
+/**
+ * The output files `names` load, directly or through a chunk. esbuild emits a chunk for every
+ * dynamic import it finds, even when tree shaking removed the only code that loads it: Effect's
+ * HTTP API modules load their Scalar and Swagger pages that way, 5 MB no entry here reaches.
+ */
+const loaded = (metafile, names, directory) => {
+  const outputs = new Map(
+    Object.entries(metafile.outputs).map(([file, output]) => [resolve(file), output]),
+  );
+  const kept = new Set();
+  const visit = (file) => {
+    const output = outputs.get(file);
+    if (output === undefined || kept.has(file)) return;
+    kept.add(file);
+    for (const imported of output.imports) if (!imported.external) visit(resolve(imported.path));
+  };
+  for (const name of names) visit(join(directory, `${name}.js`));
+  return { kept, emitted: [...outputs.keys()] };
+};
+
 // Keep a single shared Effect instance across entry points. Optional protocols
 // remain external so importing the root never requires their peer packages.
-await build({
+const packaged = await build({
   entryPoints: entries,
   outdir: join(out, "js"),
   bundle: true,
@@ -34,7 +54,12 @@ await build({
   mainFields: ["module", "main"],
   conditions: ["module"],
   external: ["node:*", ...Object.keys(manifest.peerDependencies)],
+  metafile: true,
 });
+{
+  const { kept, emitted } = loaded(packaged.metafile, Object.keys(entries), join(out, "js"));
+  for (const file of emitted) if (!kept.has(file)) await rm(file);
+}
 
 const compilerOptions = {
   target: ts.ScriptTarget.ES2022,
@@ -130,9 +155,11 @@ const snapshot = async (names, external, sourcemap = false) => {
     minify: true,
     write: false,
     external,
+    metafile: true,
     ...(sourcemap ? { sourcemap: "external", sourcesContent: false } : {}),
   });
-  return result.outputFiles;
+  const { kept } = loaded(result.metafile, names, snapshotDirectory);
+  return result.outputFiles.filter((file) => kept.has(file.path.replace(/\.map$/, "")));
 };
 const serverEntries = [
   "index",

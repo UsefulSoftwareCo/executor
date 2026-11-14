@@ -1,5 +1,5 @@
 import { openThroughBrowser } from "../support/in-app-navigation.ts";
-import { connectionsPath, linkAccount } from "../support/app-accounts.ts";
+import { connectionsPath, linkAccountResponse } from "../support/app-accounts.ts";
 /** Members keep a stable app overview and discover restricted actions without gaining authority. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -73,7 +73,7 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
               actors.owner,
               "POST",
               connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-              { destination: { kind: "shared", audience: { kind: "everyone" } } },
+              {},
             ),
           );
           const account = yield* body(
@@ -100,7 +100,15 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
               audience: { kind: "everyone" },
             })).status,
           ).toBe(200);
-          yield* linkAccount(actors.member, `${prefix}/apps/${app.id}`, "service", account.id);
+          // The owner's account is the owner's alone: the member cannot link it.
+          const foreignLink = yield* linkAccountResponse(
+            actors.member,
+            `${prefix}/apps/${app.id}`,
+            "service",
+            account.id,
+          );
+          expect(foreignLink.status, JSON.stringify(foreignLink.body)).toBe(403);
+          expect(foreignLink.body).toMatchObject({ _tag: "OrganizationForbidden" });
           const viewer = yield* body(
             Schema.Struct({ userId: Schema.String }),
             yield* api.request(actors.member, "GET", "/api/viewer"),
@@ -338,88 +346,23 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
                 ),
               ).toBe(true);
             }
-            yield* browser.use("Open shared account", (page) =>
+            // Another member's account never reaches the member's account list, even by link.
+            yield* browser.use("Open the owner's account by link", (page) =>
               page.goto(`/org/${actors.organization.slug}/accounts?account=${account.id}`),
             );
-            const openAccountAction = (item: string) =>
-              browser.use(`Open ${item} for the shared account`, (page) =>
-                page
-                  .getByRole("button", { name: `Manage ${name}`, exact: true })
-                  .click()
-                  .then(() => page.getByRole("menuitem", { name: item, exact: true }).click())
-                  .then(() => page.getByRole("dialog").waitFor()),
-              );
-            const closeAccountAction = browser.use("Close the account dialog", (page) =>
+            yield* browser.use("The member's account list loads", (page) =>
               page
-                .getByRole("dialog")
-                .getByRole("button", { name: "Close", exact: true })
-                .click()
-                .then(() => page.getByRole("dialog").waitFor({ state: "hidden" })),
+                .locator(".inventory")
+                .or(page.getByText("Open an app to connect your own account.", { exact: true }))
+                .first()
+                .waitFor(),
             );
-            // Credentials are replaced only from an app, so Accounts never offers it.
             expect(
-              yield* browser.use("Accounts offers no credential update", (page) =>
-                page
-                  .getByRole("button", { name: `Manage ${name}`, exact: true })
-                  .click()
-                  .then(() =>
-                    page.getByRole("menuitem", { name: "Edit details", exact: true }).waitFor(),
-                  )
-                  .then(() =>
-                    page.getByRole("menuitem", { name: "Update credentials", exact: true }).count(),
-                  ),
+              yield* browser.use("The owner's account is absent", (page) =>
+                page.getByRole("button", { name: `Manage ${name}`, exact: true }).count(),
               ),
             ).toBe(0);
-            yield* browser.use("Close the account menu", (page) => page.keyboard.press("Escape"));
-            yield* openAccountAction("Edit details");
-            expect(
-              yield* browser.use("Save is disabled", (page) =>
-                page
-                  .getByRole("dialog")
-                  .getByRole("button", { name: "Save", exact: true })
-                  .isDisabled(),
-              ),
-            ).toBe(true);
-            expect(
-              yield* browser.use("Account description remains visible and disabled", (page) =>
-                page
-                  .getByRole("dialog")
-                  .getByRole("textbox", { name: "Description for agents", exact: true })
-                  .isDisabled(),
-              ),
-            ).toBe(true);
-            expect(
-              yield* browser.use("Account name remains visible and disabled", (page) =>
-                page
-                  .getByRole("dialog")
-                  .getByRole("textbox", { name: "Account name", exact: true })
-                  .isDisabled(),
-              ),
-            ).toBe(true);
-            yield* closeAccountAction;
-            yield* openAccountAction("Manage access");
-            for (const label of ["Save access", "Reset changes"])
-              expect(
-                yield* browser.use(`Account ${label} is disabled`, (page) =>
-                  page
-                    .getByRole("dialog")
-                    .getByRole("button", { name: label, exact: true })
-                    .isDisabled(),
-                ),
-              ).toBe(true);
-            yield* browser.checkpoint(`${width} member account access`);
-            yield* closeAccountAction;
-            yield* openAccountAction("Delete account");
-            expect(
-              yield* browser.use("Delete account is disabled", (page) =>
-                page
-                  .getByRole("dialog")
-                  .getByRole("button", { name: "Delete account", exact: true })
-                  .isDisabled(),
-              ),
-            ).toBe(true);
-            yield* browser.checkpoint(`${width} member shared account`);
-            yield* closeAccountAction;
+            yield* browser.checkpoint(`${width} member accounts`);
             yield* browser.use("Open member group", (page) =>
               page.goto(`/org/${actors.organization.slug}/groups/${group.id}`),
             );
@@ -450,6 +393,10 @@ layer(HostedLive, { excludeTestServices: true })("Member controls", (it) => {
           ).toBe(403);
           expect(
             (yield* api.request(actors.member, "DELETE", `${prefix}/apps/${app.id}`)).status,
+          ).toBe(403);
+          expect(
+            (yield* api.request(actors.member, "DELETE", `${prefix}/accounts/${account.id}`))
+              .status,
           ).toBe(403);
           // Enabled manager controls still navigate and preserve their existing interactions.
           yield* browser.login(actors.owner);

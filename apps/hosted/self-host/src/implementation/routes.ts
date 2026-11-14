@@ -29,6 +29,8 @@ import {
   catalogLive,
   hostedMiddlewareLive,
   mcpProtectedResource,
+  mcpWhoami,
+  mcpWhoamiPath,
   mcpAuthorizationServer,
   apiChallenge,
   apiProtectedResource,
@@ -40,7 +42,8 @@ import { appAddresses, hostedAppUi } from "@executor-js/hosted-server/app-ui";
 import { appSignInCallbackPath } from "apps/ui/auth";
 import { AppUiApi } from "apps/ui/contracts";
 import { HttpApiBuilder } from "effect/http-api";
-import { appUiBaseUrl, catalogFeedUrl } from "../contracts/config.ts";
+import { appUiBaseUrl } from "../contracts/config.ts";
+import { catalogFeedSetting } from "@executor-js/catalog/contracts";
 import { type HostEgress } from "@executor-js/utils/url-policy";
 import { Config, Effect, Layer, Option } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
@@ -118,7 +121,8 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
           egress,
           clientMetadata,
           auth.origin,
-          Option.getOrUndefined(yield* catalogFeedUrl),
+          // The official feed unless the operator names another or turns it off.
+          yield* catalogFeedSetting,
         ),
       ),
       Layer.provide(hostedMiddlewareLive),
@@ -132,6 +136,7 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
     const mcpRoutes = Layer.mergeAll(
       HttpRouter.add("*", "/mcp", mcp.http),
       HttpRouter.add("*", "/org/:organization/mcp", mcp.http),
+      HttpRouter.add("GET", mcpWhoamiPath, mcpWhoami),
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource", mcpProtectedResource),
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", mcpProtectedResource),
       HttpRouter.add("GET", "/.well-known/oauth-authorization-server", mcpAuthorizationServer),
@@ -196,7 +201,6 @@ export const selfHostRouteMap = <DashboardE, DashboardR>(options: {
       ),
       HttpRouter.add("GET", appSignInCallbackPath, appUi.callback),
       HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
-      HttpRouter.add("GET", "/_executor/watch.js", appUi.watch),
       HttpRouter.add("GET", "/_executor/version", appUi.versions),
       HttpRouter.add("POST", "/_executor/api/telemetry/traces", appUi.telemetry("traces")),
       HttpRouter.add("POST", "/_executor/api/telemetry/logs", appUi.telemetry("logs")),

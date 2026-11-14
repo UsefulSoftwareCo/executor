@@ -1,0 +1,74 @@
+diff --git a/dist/index.mjs b/dist/index.mjs
+index 0ff2715..4c66119 100644
+--- a/dist/index.mjs
++++ b/dist/index.mjs
+@@ -3,15 +3,15 @@ import { mergeSchema } from "better-auth/db";
+ import { createAuthEndpoint } from "@better-auth/core/api";
+ import { getCurrentAdapter, runWithTransaction } from "@better-auth/core/context";
+ import { APIError, BetterAuthError } from "@better-auth/core/error";
+-import { base64 } from "@better-auth/utils/base64";
++import { base64, base64Url } from "@better-auth/utils/base64";
+ import { createHash } from "@better-auth/utils/hash";
+-import { generateAuthenticationOptions, generateRegistrationOptions, verifyAuthenticationResponse, verifyRegistrationResponse } from "@simplewebauthn/server";
+ import { freshSessionMiddleware, getAuthoritativeSessionFromCtx, getSessionFromCtx, isStateful, requireResourceOwnership, sensitiveSessionMiddleware, sessionMiddleware } from "better-auth/api";
+ import { setSessionCookie } from "better-auth/cookies";
+ import { generateRandomString } from "better-auth/crypto";
+ import * as z from "zod";
+ import { safeJSONParse } from "@better-auth/core/utils/json";
+-import { isoBase64URL } from "@simplewebauthn/server/helpers";
++// Attestation and certificate verification are large; load them only for passkey ceremonies.
++const loadWebAuthn = () => import("@simplewebauthn/server");
+ //#region src/utils.ts
+ function getRpID(options, baseURL) {
+ 	return options.rpID || (baseURL ? new URL(baseURL).hostname : "localhost");
+@@ -40,7 +40,13 @@ function getServerOrigins(options, ctx) {
+ }
+ function getReportedOrigin(clientDataJSON) {
+ 	if (typeof clientDataJSON !== "string") return null;
+-	const clientData = safeJSONParse(isoBase64URL.toUTF8String(clientDataJSON));
++	let decoded;
++	try {
++		decoded = new TextDecoder().decode(base64Url.decode(clientDataJSON));
++	} catch {
++		return null;
++	}
++	const clientData = safeJSONParse(decoded);
+ 	return typeof clientData?.origin === "string" ? clientData.origin : null;
+ }
+ /**
+@@ -239,7 +245,7 @@ const generatePasskeyRegistrationOptions = (opts, { maxAgeInSeconds }) => {
+ 		const registrationExtensions = await resolveExtensions(opts.registration?.extensions, ctx);
+ 		const userID = new TextEncoder().encode(generateRandomString(32, "a-z", "0-9"));
+ 		const baseURLString = typeof ctx.context.options.baseURL === "string" ? ctx.context.options.baseURL : void 0;
+-		const options = await generateRegistrationOptions({
++		const options = await (await loadWebAuthn()).generateRegistrationOptions({
+ 			rpName: opts.rpName || ctx.context.appName,
+ 			rpID: getRpID(opts, baseURLString),
+ 			userID,
+@@ -350,7 +356,7 @@ const generatePasskeyAuthenticationOptions = (opts, { maxAgeInSeconds }) => crea
+ 	});
+ 	const baseURLString = typeof ctx.context.options.baseURL === "string" ? ctx.context.options.baseURL : void 0;
+ 	const authenticationExtensions = await resolveExtensions(opts.authentication?.extensions, ctx);
+-	const options = await generateAuthenticationOptions({
++	const options = await (await loadWebAuthn()).generateAuthenticationOptions({
+ 		rpID: getRpID(opts, baseURLString),
+ 		userVerification: opts.authenticatorSelection?.userVerification ?? "preferred",
+ 		extensions: authenticationExtensions,
+@@ -426,7 +432,7 @@ const verifyPasskeyRegistration = (options) => {
+ 		if (session?.user?.id && userData.id !== session.user.id) throw APIError.from("UNAUTHORIZED", PASSKEY_ERROR_CODES.YOU_ARE_NOT_ALLOWED_TO_REGISTER_THIS_PASSKEY);
+ 		try {
+ 			const verifyBaseURL = typeof ctx.context.options.baseURL === "string" ? ctx.context.options.baseURL : void 0;
+-			const verification = await verifyRegistrationResponse({
++			const verification = await (await loadWebAuthn()).verifyRegistrationResponse({
+ 				response: resp,
+ 				expectedChallenge,
+ 				expectedOrigin,
+@@ -552,7 +558,7 @@ const verifyPasskeyAuthentication = (options) => createAuthEndpoint("/passkey/ve
+ 	if (!passkey) throw APIError.from("UNAUTHORIZED", PASSKEY_ERROR_CODES.PASSKEY_NOT_FOUND);
+ 	try {
+ 		const authBaseURL = typeof ctx.context.options.baseURL === "string" ? ctx.context.options.baseURL : void 0;
+-		const verification = await verifyAuthenticationResponse({
++		const verification = await (await loadWebAuthn()).verifyAuthenticationResponse({
+ 			response: resp,
+ 			expectedChallenge,
+ 			expectedOrigin,

@@ -1,7 +1,8 @@
 import { browserPageId, BrowserOperationFailure } from "@executor-js/telemetry/browser";
+import { budgetedFetch } from "@executor-js/telemetry/keepalive";
 import { documentBuild } from "@executor-js/dashboard-start/document-build";
 /** Cloud-only product analytics, sharing the marketing site's PostHog project. */
-import posthog from "posthog-js";
+import posthog, { type PostHogConfig } from "posthog-js";
 import { BrowserUsage } from "@executor-js/hosted-web/contracts/product-analytics";
 import { useAtomValue } from "@effect/atom-react";
 import { sessionAtom } from "@executor-js/hosted-web/contracts/auth";
@@ -65,6 +66,10 @@ const deploymentProperties = () => ({
   executor_test: String(import.meta.env.VITE_EXECUTOR_ENVIRONMENT).startsWith("test-"),
 });
 
+const ordinaryRequests: NonNullable<PostHogConfig["fetch_options"]> & { keepalive: false } = {
+  keepalive: false,
+};
+
 /** Initialize explicit event capture at the browser entry point. */
 export const startAnalytics = () => {
   if (started) return;
@@ -89,10 +94,17 @@ export const startAnalytics = () => {
           delete event.$set_once?.[key];
           delete event.$set?.[key];
         }
+        // A beacon uses the page's keepalive quota, but its sender cannot tell when it ends, and one
+        // the browser refuses is lost. This request is counted, and goes as an ordinary one when
+        // the page's error reports and exports leave no room. It goes through the page's own fetch,
+        // which the Sentry SDK does not record, so analytics never becomes a report's breadcrumb.
         try {
           const body = new Blob([JSON.stringify(event)], { type: "application/json" });
-          if (!navigator.sendBeacon(`${path}/push`, body))
-            console.warn("Could not queue analytics event");
+          void budgetedFetch("analytics")(`${path}/push`, {
+            method: "POST",
+            body,
+            keepalive: true,
+          }).catch(() => console.warn("Could not send analytics event"));
         } catch {
           console.warn("Could not encode analytics event");
         }
@@ -101,6 +113,12 @@ export const startAnalytics = () => {
       return null;
     },
     api_host: `${location.origin}${path}`,
+    // PostHog sends with keepalive while its own requests in flight stay under about 52 KB, and
+    // the browser counts those against the 64 KiB the page's error reports and exports share. Its
+    // requests go as ordinary ones instead; as the page unloads it still sends its last queued
+    // requests and replay chunk as beacons. Its runtime reads `keepalive` from these options,
+    // which its config type does not list.
+    fetch_options: ordinaryRequests,
     ui_host: import.meta.env.VITE_POSTHOG_HOST,
     autocapture: false,
     // The managed loopback receiver exercises capture from an automated browser. Production keeps bot filtering.

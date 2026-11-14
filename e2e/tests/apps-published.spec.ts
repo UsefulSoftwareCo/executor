@@ -66,17 +66,49 @@ const archives = Effect.gen(function* () {
 });
 
 /**
- * A registry that lists `version` with `integrity` and answers the archive URL with `archive` in
- * order, repeating the last answer. It counts all requests and the archive requests.
+ * A registry that lists `version` with `integrity` and answers the archive like npm.
+ *
+ * `archive` is either the origin's answers in order, repeating the last, or `stored`: 404 until
+ * `afterMs` after the first archive request, then the archive. A request for the archive's own
+ * URL that gets a 404 is cached for `cachedMs` when given, as npm's CDN does for five minutes: the
+ * own URL then answers 404 without asking the origin. A request with a query string is a separate
+ * cache entry, so it always reaches the origin. It counts all requests, probes (with a query
+ * string) and requests for the archive's own URL, and those of them that got a 404.
  */
-const registry = (version: string, integrity: string, archive: ReadonlyArray<Archive>) => {
+const registry = (
+  version: string,
+  integrity: string,
+  archive:
+    | ReadonlyArray<Archive>
+    | { readonly stored: { readonly afterMs: number; readonly bytes: Uint8Array } },
+  options: {
+    readonly cachedMs?: number;
+    /** The archive's own URL answers 404 for this many requests while fresh URLs reach the origin. */
+    readonly ownMissing?: number;
+    /** The archive's own URL serves these bytes instead of the origin's. */
+    readonly ownBytes?: Uint8Array;
+  } = {},
+) => {
   let requests = 0;
-  let archiveRequests = 0;
+  let originRequests = 0;
+  let probes = 0;
+  let ownRequests = 0;
+  let own404 = 0;
+  let firstArchiveRequest: number | undefined;
+  let cachedUntil = 0;
   const tarball = `/apps/-/apps-${version}.tgz`;
+  const origin = (): Archive => {
+    if (Array.isArray(archive)) return archive[Math.min(originRequests, archive.length - 1)]!;
+    const { stored } = archive as { readonly stored: { afterMs: number; bytes: Uint8Array } };
+    return Date.now() - (firstArchiveRequest ?? Date.now()) >= stored.afterMs
+      ? { status: 200, bytes: stored.bytes }
+      : { status: 404 };
+  };
   const server = createServer((request, response) => {
     requests += 1;
     const { port } = server.address() as AddressInfo;
-    if (request.url === `/apps/${version}`) {
+    const url = new URL(request.url ?? "/", "http://registry.invalid");
+    if (url.pathname === `/apps/${version}` && url.search === "") {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify({
@@ -86,9 +118,23 @@ const registry = (version: string, integrity: string, archive: ReadonlyArray<Arc
       );
       return;
     }
-    if (request.url === tarball) {
-      const answer = archive[Math.min(archiveRequests, archive.length - 1)]!;
-      archiveRequests += 1;
+    if (url.pathname === tarball) {
+      firstArchiveRequest ??= Date.now();
+      const own = url.search === "";
+      if (own) ownRequests += 1;
+      else probes += 1;
+      const cached = own && (Date.now() < cachedUntil || ownRequests <= (options.ownMissing ?? 0));
+      const fromOrigin = cached ? { status: 404 } : origin();
+      if (!cached) originRequests += 1;
+      const answer: Archive =
+        own && !cached && fromOrigin.status === 200 && options.ownBytes !== undefined
+          ? { status: 200, bytes: options.ownBytes }
+          : fromOrigin;
+      if (own && answer.status === 404) {
+        own404 += 1;
+        if (options.cachedMs !== undefined && Date.now() >= cachedUntil)
+          cachedUntil = Date.now() + options.cachedMs;
+      }
       response.writeHead(answer.status, { "content-type": "application/octet-stream" });
       response.end(answer.bytes ?? "");
       return;
@@ -108,7 +154,9 @@ const registry = (version: string, integrity: string, archive: ReadonlyArray<Arc
     Effect.as({
       url: () => `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
       requests: () => requests,
-      archiveRequests: () => archiveRequests,
+      probes: () => probes,
+      ownRequests: () => ownRequests,
+      own404: () => own404,
     }),
   );
 };
@@ -117,12 +165,12 @@ const registry = (version: string, integrity: string, archive: ReadonlyArray<Arc
  * Run the check with `flag` against `url` and return its exit code and combined output. The
  * release check passes no flag; the production deploy's flags refuse another registry.
  */
-const check = (url: string, flag: Flag) =>
+const check = (url: string, flag: Flag, env: Readonly<Record<string, string>> = {}) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* processes.spawn(
       ChildProcess.make("node", ["scripts/releases/apps-published.ts", ...(flag ? [flag] : [])], {
-        env: { APPS_REGISTRY: url },
+        env: { APPS_REGISTRY: url, ...env },
         extendEnv: true,
       }),
     );
@@ -147,19 +195,99 @@ layer(NodeServices.layer)("apps release check", (it) => {
           (flag) =>
             Effect.gen(function* () {
               const npm = yield* registry(version, integrityOf(local), answers);
-              return { flag, run: yield* check(npm.url(), flag), requests: npm.archiveRequests() };
+              return {
+                flag,
+                run: yield* check(npm.url(), flag),
+                probes: npm.probes(),
+                own: npm.ownRequests(),
+              };
             }),
           { concurrency: "unbounded" },
         );
-        for (const { flag, run, requests } of runs) {
+        for (const { flag, run, probes, own } of runs) {
           expect(run.log, flag).toContain(
             `Waiting for npm to serve the archive of apps@${version}`,
           );
           expect(run.log, flag).toContain(`apps@${version} is published on npm and matches`);
           expect(run.exitCode, flag).toBe(0);
-          expect(requests, flag).toBe(3);
+          // The archive's own URL is asked once, after a fresh URL showed npm serves it.
+          expect(probes, flag).toBe(3);
+          expect(own, flag).toBe(1);
         }
       }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a 404 npm's CDN caches for the archive's own URL never holds the check or app builds",
+    () =>
+      Effect.gen(function* () {
+        const { version, local } = yield* archives;
+        // npm listed apps@0.0.1-beta.135 before it stored the archive, and the deploy's request
+        // for the archive at that moment was cached as a 404 for five minutes (300 s). Here npm
+        // stores it 2 s after the first archive request, and caches a 404 for 60 s.
+        const npm = yield* registry(
+          version,
+          integrityOf(local),
+          { stored: { afterMs: 2_000, bytes: local } },
+          { cachedMs: 60_000 },
+        );
+        const started = Date.now();
+        const run = yield* check(npm.url(), "");
+        const seconds = (Date.now() - started) / 1000;
+        expect(run.exitCode, run.log).toBe(0);
+        expect(run.log).toContain(`apps@${version} is published on npm and matches`);
+        // No request for the archive's own URL, which app builds read, got a 404 to cache.
+        expect(npm.own404()).toBe(0);
+        expect(npm.ownRequests()).toBe(1);
+        // One wait between attempts (10 s), not the cached 404's 60 s.
+        expect(seconds).toBeLessThan(30);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "an archive npm serves under a fresh URL but not its own is retried, and fails if it stays so",
+    () =>
+      Effect.gen(function* () {
+        const { version, local } = yield* archives;
+        const missing = yield* registry(
+          version,
+          integrityOf(local),
+          [{ status: 200, bytes: local }],
+          { ownMissing: Number.POSITIVE_INFINITY },
+        );
+        // Two retries instead of 42, so the test reaches the end of the wait.
+        const run = yield* check(missing.url(), "", { APPS_ARCHIVE_ATTEMPTS: "2" });
+        expect(run.exitCode, run.log).toBe(1);
+        expect(run.log).toContain(
+          `npm lists apps@${version} but still answers 404 for its archive`,
+        );
+        expect(missing.probes()).toBe(3);
+        expect(missing.ownRequests()).toBe(3);
+        expect(missing.own404()).toBe(3);
+
+        const late = yield* registry(version, integrityOf(local), [{ status: 200, bytes: local }], {
+          ownMissing: 1,
+        });
+        const passed = yield* check(late.url(), "");
+        expect(passed.exitCode, passed.log).toBe(0);
+        expect(passed.log).toContain(`Waiting for npm to serve the archive of apps@${version}`);
+        expect(late.ownRequests()).toBe(2);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("the check compares the archive's own URL, never what a fresh URL served", () =>
+    Effect.gen(function* () {
+      const { version, local, different } = yield* archives;
+      // The fresh URL serves this build's archive; the URL app builds read serves other content.
+      const npm = yield* registry(version, integrityOf(local), [{ status: 200, bytes: local }], {
+        ownBytes: different,
+      });
+      const run = yield* check(npm.url(), "");
+      expect(run.exitCode).toBe(1);
+      expect(run.log).toContain(
+        `The npm archive of apps@${version} has integrity ${integrityOf(different)}, not its registry integrity ${integrityOf(local)}.`,
+      );
+    }).pipe(Effect.scoped),
   );
 
   it.effect("an archive whose integrity differs from the registry's fails without waiting", () =>
@@ -172,7 +300,8 @@ layer(NodeServices.layer)("apps release check", (it) => {
         `The npm archive of apps@${version} has integrity ${integrityOf(different)}, not its registry integrity ${integrityOf(local)}.`,
       );
       expect(run.log).not.toContain("Waiting for npm to serve the archive");
-      expect(npm.archiveRequests()).toBe(1);
+      expect(npm.probes()).toBe(1);
+      expect(npm.ownRequests()).toBe(1);
     }).pipe(Effect.scoped),
   );
 
@@ -208,7 +337,8 @@ layer(NodeServices.layer)("apps release check", (it) => {
       const run = yield* check(npm.url(), "");
       expect(run.exitCode).toBe(1);
       expect(run.log).toContain(`for apps@${version} with status 500.`);
-      expect(npm.archiveRequests()).toBe(1);
+      expect(npm.probes()).toBe(1);
+      expect(npm.ownRequests()).toBe(0);
     }).pipe(Effect.scoped),
   );
 

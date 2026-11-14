@@ -18,7 +18,8 @@ import {
   type RepositoryBackend,
   type SourceFile,
 } from "@executor-js/sdk/core";
-import { Effect, Schema, Semaphore, type Scope } from "effect";
+import { Effect, Schema, Semaphore, Stream, type Scope } from "effect";
+import { objectId, packStream } from "./git-pack.ts";
 import { protectGit } from "./protected-git.ts";
 
 /** Trusted native capabilities. Application code never receives this port. */
@@ -301,6 +302,11 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
           }
           const write = (content: Uint8Array) =>
             text(["--git-dir", repo, "hash-object", "-w", "--stdin"], content);
+          // Inline files, already in memory, reach Git together in one pack, so a save starts one
+          // Git process for them however many there are. One `hash-object` per file took a
+          // 600-file save 40 seconds on Windows, where each Git process takes tens of
+          // milliseconds to start.
+          const inline = new Map<string, Uint8Array>();
           // The temporary index does not exist yet, so Git starts it empty.
           const entries: string[] = [];
           for (const file of files) {
@@ -315,8 +321,34 @@ export const gitRepositories = (host: GitHost): RepositoryBackend => {
                 ? known.has(file.object)
                   ? file.object
                   : yield* new SourceError({ reason: "invalid-source" })
-                : yield* write(inlineBytes(file));
+                : yield* Effect.sync(() => {
+                    const content = inlineBytes(file);
+                    const object = objectId("blob", content);
+                    inline.set(object, content);
+                    return object;
+                  });
             entries.push(`100644 ${oid}\t${file.path}\0`);
+          }
+          // `unpack-objects` writes each object loose, as `hash-object -w` does, and skips one the
+          // repository already holds.
+          if (inline.size > 0) {
+            const chunks = yield* Stream.runCollect(
+              packStream(
+                Array.from(inline, ([object, content]) => ({
+                  type: "blob" as const,
+                  object,
+                  size: content.length,
+                  read: Effect.succeed(content),
+                })),
+              ),
+            );
+            const pack = new Uint8Array(chunks.reduce((size, chunk) => size + chunk.length, 0));
+            let offset = 0;
+            for (const chunk of chunks) {
+              pack.set(chunk, offset);
+              offset += chunk.length;
+            }
+            yield* run(["--git-dir", repo, "unpack-objects", "-q"], pack);
           }
           // These repositories are bare and never checked out here, so the checkout guards for
           // NTFS and HFS names do not apply. Git for Windows would otherwise skip names such as

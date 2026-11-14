@@ -1,8 +1,8 @@
 import {
   connectionsPath,
-  linkAccount,
+  linkAccountResponse,
   linkedAccountIds,
-  unlinkAccount,
+  type LinkScope,
 } from "../support/app-accounts.ts";
 import { scenarios } from "../test-plan.ts";
 /** The same Effect program runs against both hosted products. Only injected actor setup differs. */
@@ -18,18 +18,24 @@ import { App, Resource, Inventory } from "../support/contracts.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import { docsMcpFixture, docsOrigin, docsSearchTool } from "../support/docs-mcp-fixture.ts";
 
-const files = [
+/**
+ * An app whose `echo` reports whether its `service` account is the synthetic parity account. In
+ * app scope, someone who can edit the app links one account for everyone; in user scope, each
+ * caller links their own.
+ */
+const parityFiles = (scope: LinkScope) => [
   {
     path: "index.ts",
     content: `
-import { mutation, defineApp, defineProvider, secrets, object, string, router } from "apps";
+import { mutation, defineApp, defineProvider, secrets, object, string, router, type MutationContext } from "apps";
 const service = defineProvider({ name: "Parity service", auth: {
   key: secrets({ label: "API key", fields: object({ token: string() }) })
 } });
-export default defineApp({ user: { accounts: { service } } }, async ({ user: { accounts } }) => ({
+const requirements = { ${scope}: { accounts: { service } } };
+export default defineApp(requirements, async () => ({
    tools: router({
      echo: mutation({ description: "Echo with the connected account", input: object({ message: string() })},
-      async (_, input) => ({ message: input.message, connected: accounts.service.fields.token === "synthetic-parity-token" })),
+      async (ctx: MutationContext<typeof requirements>, input) => ({ message: input.message, connected: ctx.${scope}.accounts.service.fields.token === "synthetic-parity-token" })),
    })
 }));
 `,
@@ -152,7 +158,8 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
                   ),
                   Effect.result,
                 ),
-              { concurrency: 2 },
+              // The app goes first: its app link keeps the account from being deleted.
+              { concurrency: 1 },
             );
             yield* evidence.json("cleanup.json", cleanup);
             if (Exit.isSuccess(exit))
@@ -177,7 +184,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
           Effect.gen(function* () {
             const deployed = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
               name,
-              files,
+              files: parityFiles("app"),
             });
             expect(deployed.status).toBe(200);
             created.app = (yield* body(App, deployed)).id;
@@ -200,13 +207,13 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
           }),
         );
         yield* evidence.step(
-          "Owner connects an account",
+          "Owner connects an account for everyone",
           Effect.gen(function* () {
             const connection = yield* api.request(
               actors.owner,
               "POST",
-              connectionsPath(`${prefix}/apps/${created.app}`, "user", "service"),
-              { destination: { kind: "shared", audience: { kind: "everyone" } } },
+              connectionsPath(`${prefix}/apps/${created.app}`, "app", "service"),
+              {},
             );
             expect(connection.status).toBe(200);
             const { id } = yield* body(Resource, connection);
@@ -218,27 +225,19 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
             );
             expect(saved.status).toBe(200);
             created.account = (yield* body(Resource, saved)).id;
-            // Connecting from the app links the new account to it for the owner.
-            expect(yield* linkedAccountIds(actors.owner, `${prefix}/apps/${created.app}`)).toEqual([
-              created.account,
-            ]);
+            // Connecting for the app's own requirement links the new account for everyone.
+            expect(
+              yield* linkedAccountIds(actors.owner, `${prefix}/apps/${created.app}`, "app"),
+            ).toEqual([created.account]);
           }),
         );
         yield* evidence.step(
-          "Members and admins can use explicitly shared apps and accounts",
+          "Members and admins use the shared app with the account linked for everyone",
           Effect.gen(function* () {
-            if (created.account === undefined) return yield* Effect.die("Shared account missing");
-            for (const actor of [actors.member, actors.admin]) {
-              yield* linkAccount(
-                actor,
-                `${prefix}/apps/${created.app}`,
-                "service",
-                created.account,
-              );
-              expect(yield* linkedAccountIds(actor, `${prefix}/apps/${created.app}`)).toEqual([
-                created.account,
-              ]);
-            }
+            if (created.account === undefined) return yield* Effect.die("Linked account missing");
+            // Neither links anything: the app link serves their calls.
+            for (const actor of [actors.member, actors.admin])
+              expect(yield* linkedAccountIds(actor, `${prefix}/apps/${created.app}`)).toEqual([]);
             const tools = yield* api.request(
               actors.member,
               "GET",
@@ -256,14 +255,14 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
               kind: "mutation",
               input: { message: "shared hosted scenario" },
             };
-            expect(
-              (yield* api.request(
-                actors.member,
-                "POST",
-                `${prefix}/apps/${created.app}/tools/call`,
-                call,
-              )).status,
-            ).toBe(200);
+            const memberCall = yield* api.request(
+              actors.member,
+              "POST",
+              `${prefix}/apps/${created.app}/tools/call`,
+              call,
+            );
+            expect(memberCall.status, JSON.stringify(memberCall.body)).toBe(200);
+            expect(memberCall.body).toEqual({ message: "shared hosted scenario", connected: true });
             const invoked = yield* api.request(
               actors.admin,
               "POST",
@@ -276,8 +275,13 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
             expect(response.status).toBe(200);
             const visible = yield* body(Inventory, response);
             expect(visible.apps.some((app) => app.id === created.app)).toBe(true);
-            expect(visible.accounts.some((account) => account.id === created.account)).toBe(true);
-            expect(visible.links).toContainEqual({ app: created.app, account: created.account });
+            // The account stays the owner's: only the owner's inventory lists it.
+            expect(visible.accounts.some((account) => account.id === created.account)).toBe(false);
+            const owned = yield* body(
+              Inventory,
+              yield* api.request(actors.owner, "GET", `${prefix}/inventory`),
+            );
+            expect(owned.accounts.some((account) => account.id === created.account)).toBe(true);
             expect(visible.apps.some((app) => app.name === `${name} denied`)).toBe(false);
           }),
         );
@@ -301,7 +305,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
       }),
     ),
   );
-  it.effect(scenarios.sharedAccountLinks.title, (context) =>
+  it.effect(scenarios.personalAccountLinks.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
@@ -311,17 +315,23 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
         const app = yield* body(
           App,
           yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
-            name: `Shared links ${randomUUID().slice(0, 8)}`,
-            files,
+            name: `Personal links ${randomUUID().slice(0, 8)}`,
+            files: parityFiles("user"),
           }),
         );
         const path = `${prefix}/apps/${app.id}`;
-        const created: { account?: string } = {};
+        const created: { account?: string; memberAccount?: string } = {};
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             yield* api.request(actors.owner, "DELETE", path);
             if (created.account !== undefined)
-              yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${created.account}`);
+              yield* api.request(actors.admin, "DELETE", `${prefix}/accounts/${created.account}`);
+            if (created.memberAccount !== undefined)
+              yield* api.request(
+                actors.member,
+                "DELETE",
+                `${prefix}/accounts/${created.memberAccount}`,
+              );
           }).pipe(Effect.orDie),
         );
         const access = yield* body(
@@ -334,54 +344,103 @@ layer(HostedLive, { excludeTestServices: true })("Hosted parity", (it) => {
             audience: { kind: "everyone" },
           })).status,
         ).toBe(200);
-        // The admin creates a shared account from the app, which links it for the admin only.
+        // The admin saves an account from the app, which links it for the admin only.
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.admin, "POST", connectionsPath(path, "user", "service"), {
-            destination: { kind: "shared", audience: { kind: "everyone" } },
-          }),
+          yield* api.request(actors.admin, "POST", connectionsPath(path, "user", "service"), {}),
         );
         const saved = yield* api.request(
           actors.admin,
           "POST",
           `${prefix}/connections/${connection.id}/submit`,
-          { method: "key", label: "Shared by admin", fields: { token: "synthetic-parity-token" } },
+          { method: "key", label: "Admin's own", fields: { token: "synthetic-parity-token" } },
         );
         expect(saved.status, JSON.stringify(saved.body)).toBe(200);
         const account = (yield* body(Resource, saved)).id;
         created.account = account;
         expect(yield* linkedAccountIds(actors.admin, path)).toEqual([account]);
-        expect(yield* linkedAccountIds(actors.member, path)).toEqual([]);
-        const call = { tool: "echo", kind: "mutation", input: { message: "linked by member" } };
-        const unlinked = yield* api.request(actors.member, "POST", `${path}/tools/call`, call);
-        expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(409);
-        expect(unlinked.body).toMatchObject({ _tag: "AccountRequired" });
-        // Another member links the shared account and their calls run with it.
-        yield* linkAccount(actors.member, path, "service", account);
-        expect(yield* linkedAccountIds(actors.member, path)).toEqual([account]);
-        const tools = yield* api.request(actors.member, "GET", `${path}/tools`);
-        expect(tools.status, JSON.stringify(tools.body)).toBe(200);
-        expect(
-          (yield* body(
-            Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) }),
-            tools,
-          )).items.map((tool) => tool.name),
-        ).toContain("echo");
-        const invoked = yield* api.request(actors.member, "POST", `${path}/tools/call`, call);
-        expect(invoked.status, JSON.stringify(invoked.body)).toBe(200);
-        expect(invoked.body).toEqual({ message: "linked by member", connected: true });
-        const inventory = yield* body(
-          Inventory,
-          yield* api.request(actors.member, "GET", `${prefix}/inventory`),
+        const call = { tool: "echo", kind: "mutation", input: { message: "personal account" } };
+        const own = yield* api.request(actors.admin, "POST", `${path}/tools/call`, call);
+        expect(own.status, JSON.stringify(own.body)).toBe(200);
+        expect(own.body).toEqual({ message: "personal account", connected: true });
+        // The account is the admin's alone: the admin reads and manages it, and no route shares it
+        // or reads a policy for it.
+        const accountPath = `${prefix}/accounts/${account}`;
+        const detail = yield* body(
+          Schema.Struct({ account: Resource, canManage: Schema.Boolean }),
+          yield* api.request(actors.admin, "GET", accountPath),
         );
-        expect(inventory.links).toContainEqual({ app: app.id, account });
-        // The creator's own unlink leaves the member's link and calls untouched.
-        yield* unlinkAccount(actors.admin, path, "service", account);
-        expect(yield* linkedAccountIds(actors.admin, path)).toEqual([]);
-        expect(yield* linkedAccountIds(actors.member, path)).toEqual([account]);
-        const after = yield* api.request(actors.member, "POST", `${path}/tools/call`, call);
-        expect(after.status, JSON.stringify(after.body)).toBe(200);
-        expect(after.body).toEqual({ message: "linked by member", connected: true });
+        expect(detail).toEqual({ account: { id: account }, canManage: true });
+        const adminInventory = yield* body(
+          Inventory,
+          yield* api.request(actors.admin, "GET", `${prefix}/inventory`),
+        );
+        expect(adminInventory.accounts.map((item) => item.id)).toContain(account);
+        for (const method of ["GET", "PATCH"] as const) {
+          const removed = yield* api.request(
+            actors.admin,
+            method,
+            `${accountPath}/access`,
+            method === "PATCH" ? { audience: { kind: "everyone" } } : undefined,
+          );
+          // The route is gone: self-host answers 404, Cloud's router may answer 404 or 405.
+          expect([404, 405], `${method} ${JSON.stringify(removed.body)}`).toContain(removed.status);
+        }
+        // Other members, the organization's owner included, can neither read it nor link it, so
+        // their calls never run with it.
+        for (const actor of [actors.member, actors.owner]) {
+          const read = yield* api.request(actor, "GET", accountPath);
+          expect(read.status, JSON.stringify(read.body)).toBe(403);
+          const linked = yield* linkAccountResponse(actor, path, "service", account);
+          expect(linked.status, JSON.stringify(linked.body)).toBe(403);
+          expect(yield* linkedAccountIds(actor, path)).toEqual([]);
+          const refused = yield* api.request(actor, "POST", `${path}/tools/call`, call);
+          expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+          expect(refused.body).toMatchObject({ _tag: "AccountRequired" });
+          const inventory = yield* body(
+            Inventory,
+            yield* api.request(actor, "GET", `${prefix}/inventory`),
+          );
+          expect(inventory.accounts.some((item) => item.id === account)).toBe(false);
+          expect(inventory.links).not.toContainEqual({ app: app.id, account });
+          // Nor can they replace its credentials by reconnecting it.
+          const reconnect = yield* api.request(
+            actor,
+            "POST",
+            connectionsPath(path, "user", "service"),
+            { account },
+          );
+          expect(reconnect.status, JSON.stringify(reconnect.body)).toBe(403);
+        }
+
+        // A client that still asks for a shared account gets the connecting member's own: the
+        // destination is no longer part of a connection.
+        const asked = yield* body(
+          Resource,
+          yield* api.request(actors.member, "POST", connectionsPath(path, "user", "service"), {
+            destination: { kind: "shared" },
+          }),
+        );
+        const memberSaved = yield* api.request(
+          actors.member,
+          "POST",
+          `${prefix}/connections/${asked.id}/submit`,
+          { method: "key", label: "Asked to share", fields: { token: "synthetic-asked" } },
+        );
+        expect(memberSaved.status, JSON.stringify(memberSaved.body)).toBe(200);
+        const memberAccount = (yield* body(Resource, memberSaved)).id;
+        created.memberAccount = memberAccount;
+        expect(
+          (yield* api.request(actors.member, "GET", `${prefix}/accounts/${memberAccount}`)).status,
+        ).toBe(200);
+        for (const actor of [actors.owner, actors.admin]) {
+          expect(
+            (yield* api.request(actor, "GET", `${prefix}/accounts/${memberAccount}`)).status,
+          ).toBe(403);
+          expect((yield* linkAccountResponse(actor, path, "service", memberAccount)).status).toBe(
+            403,
+          );
+        }
       }),
     ),
   );

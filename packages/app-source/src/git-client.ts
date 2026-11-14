@@ -19,6 +19,7 @@ import {
   pushObjects,
   type PackObject,
   type PushReport,
+  type RefUpdate,
 } from "./implementation/git-pack.ts";
 
 export { objectId, packBlobBytes } from "./implementation/git-pack.ts";
@@ -38,7 +39,8 @@ export class GitPushRefused extends Schema.TaggedError<GitPushRefused>()("GitPus
 }) {}
 
 const send =
-  (url: string, authorization: string) => (body: Stream.Stream<Uint8Array, SourceError>) =>
+  (url: string, authorization: string) =>
+  (_updates: ReadonlyArray<RefUpdate>, body: Stream.Stream<Uint8Array, SourceError>) =>
     Effect.gen(function* () {
       const client = yield* HttpClient.HttpClient;
       const response = yield* client
@@ -56,9 +58,13 @@ const send =
         .pipe(Effect.mapError(() => new SourceError({ reason: "git" })));
       if (response.status !== 200)
         return yield* new SourceError({ reason: response.status === 413 ? "limit" : "git" });
-      return new Uint8Array(
-        yield* response.arrayBuffer.pipe(Effect.mapError(() => new SourceError({ reason: "git" }))),
-      );
+      return yield* parseReport(
+        new Uint8Array(
+          yield* response.arrayBuffer.pipe(
+            Effect.mapError(() => new SourceError({ reason: "git" })),
+          ),
+        ),
+      ).pipe(Effect.catchTag("ReceivePackRefused", () => new SourceError({ reason: "git" })));
     }).pipe(
       Effect.scoped,
       Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }),

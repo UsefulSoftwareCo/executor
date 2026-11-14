@@ -14,26 +14,31 @@ export {
 } from "@executor-js/utils/release-version";
 
 /**
- * The compressed archive budget, checked before npm receives any upload. npm documents no size
- * limit. It refused a 298.9 MB archive with HTTP 413, and others report refusals from about
- * 185 MB; the largest Executor archive it has accepted is 187,186,037 bytes. The budget stays
- * below that.
- */
-export const npmArchiveBudgetMiB = 178;
-export const npmArchiveBudgetBytes = npmArchiveBudgetMiB * 1024 * 1024;
-
-/**
  * Native platforms supported by the packaged runtime. The full CLI suite runs against the packaged
  * archive on linux x64 and on Windows, which no other workflow tests; CI runs it from source on
  * every push to main. The other targets run only the checks specific to them: the OS credential
  * store and the desktop app. Intel macOS builds under Rosetta on an Apple Silicon runner and gets
  * a start-up smoke test, since GitHub's Intel runners take most of an hour for the suite.
+ *
+ * `runner` runs the `local` job, which packages the platform and runs the desktop, install and
+ * credential store checks; on Linux it also runs the `docker` job. Those jobs mostly wait on the
+ * product: on 16 vCPUs their CPU p95 was 19-33%, so they run on 8. `cli.runner` runs the installed
+ * CLI suite, whose parallel workers kept 16 vCPUs at a 58-66% p95.
+ *
+ * `cli.workers` is how many spec files each part of the suite runs at once, and `cli.parts` how
+ * many runners share the suite (`e2e/run.ts --part`). In beta.44 its files added up to about 50
+ * minutes on Linux and 78 on Windows, and the longest, `local-service-recovery.spec.ts`, took about
+ * 4 and 6: two parts of eight workers each finish in about that, and a third finishes no sooner.
+ *
+ * Each target with `packagedTests` also runs the desktop crash recovery scenarios in
+ * `recoveryParts` jobs of their own (`e2e/desktop-recovery.config.ts`), on its `runner`.
  */
+export const recoveryParts = 3;
 export const platforms = [
   {
     platform: "darwin",
     arch: "arm64",
-    cliWorkers: 0,
+    cli: undefined,
     packagedTests: true,
     runner: "blacksmith-6vcpu-macos-15",
     desktopOs: "mac",
@@ -42,7 +47,7 @@ export const platforms = [
   {
     platform: "darwin",
     arch: "x64",
-    cliWorkers: 0,
+    cli: undefined,
     packagedTests: false,
     runner: "blacksmith-6vcpu-macos-15",
     desktopOs: "mac",
@@ -51,27 +56,27 @@ export const platforms = [
   {
     platform: "linux",
     arch: "x64",
-    cliWorkers: 4,
+    cli: { workers: 8, parts: 2, runner: "blacksmith-16vcpu-ubuntu-2404" },
     packagedTests: true,
-    runner: "blacksmith-16vcpu-ubuntu-2404",
+    runner: "blacksmith-8vcpu-ubuntu-2404",
     desktopOs: "linux",
     extension: "AppImage",
   },
   {
     platform: "linux",
     arch: "arm64",
-    cliWorkers: 0,
+    cli: undefined,
     packagedTests: true,
-    runner: "blacksmith-16vcpu-ubuntu-2404-arm",
+    runner: "blacksmith-8vcpu-ubuntu-2404-arm",
     desktopOs: "linux",
     extension: "AppImage",
   },
   {
     platform: "win32",
     arch: "x64",
-    cliWorkers: 4,
+    cli: { workers: 8, parts: 2, runner: "blacksmith-16vcpu-windows-2025" },
     packagedTests: true,
-    runner: "blacksmith-16vcpu-windows-2025",
+    runner: "blacksmith-8vcpu-windows-2025",
     desktopOs: "win",
     extension: "exe",
   },
@@ -128,15 +133,14 @@ export const desktopUpdateFile = (target: Platform, channel: ReleaseChannel): st
   return target.arch === "x64" ? `${name}-linux.yml` : `${name}-linux-${target.arch}.yml`;
 };
 
-/** Immutable npm version for one native runtime, aliased by the launcher package. */
+/**
+ * The version one native runtime's package.json carries. The runtime is not published to npm:
+ * its archive is a release asset, which the `executor` launcher downloads.
+ */
 export const platformVersion = (target: Platform): string =>
   `${release.version}-${target.platform}-${target.arch}`;
 
-/** npm alias name installed under the wrapper's node_modules. */
-export const platformPackage = (target: Platform): string =>
-  `executor-${target.platform}-${target.arch}`;
-
-/** The actual platform archive filename produced by npm pack. */
+/** The platform's release archive, as npm pack names it. */
 export const platformArchive = (target: Platform): string =>
   `executor-${platformVersion(target)}.tgz`;
 

@@ -5,7 +5,7 @@
  * JSON Schema definition its tools repeat once, in the isolate and in the supervisor.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Console, Effect, Schedule, Schema } from "effect";
 import { randomUUID } from "node:crypto";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
@@ -19,9 +19,13 @@ import { Evidence, Telemetry } from "../support/evidence.ts";
  * A listing over the isolate store's 2 MB entry bound: 1,500 tools with 800-character
  * descriptions. The isolate never keeps it, so every read after the first tests the supervisor.
  * The revision tool is named after a value kept in the app cache, so an invalidation renames it.
+ * Evaluating it first waits `delayMs`.
  */
-const source = `import { defineApp, query, object, router, string } from "apps";
+const listingSource = (
+  delayMs: number,
+) => `import { defineApp, query, object, router, string } from "apps";
 export default defineApp({}, async (ctx) => {
+  await new Promise((resolve) => setTimeout(resolve, ${delayMs}));
   const revision = await ctx.cache.get({
     key: "revision",
     schema: string(),
@@ -137,7 +141,7 @@ export default defineApp({}, {
 const Listing = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
 
 /** Deploy a listing app and read its tool listing with the spans of each request. */
-const listingApp = (files: string = source) =>
+const listingApp = (files: string = listingSource(0)) =>
   Effect.gen(function* () {
     const api = yield* Api,
       actors = yield* Actors,
@@ -175,17 +179,12 @@ const listingApp = (files: string = source) =>
         yield* evidence.json(`${label}.json`, spans);
         const listing = spans.find((span) => span.operationName === "sdk.tools.listing");
         const evaluate = spans.find((span) => span.operationName === "sdk.tools.listing.evaluate");
+        const share = spans.find((span) => span.operationName === "sdk.tools.listing.share");
         return {
           names,
           evaluated: evaluate?.tags,
-          // The evaluation's time outside its child spans: what the host spends on the app's
-          // answer, without the app's invocation or the supervisor write.
-          evaluatedOwnMs:
-            evaluate === undefined
-              ? undefined
-              : spans
-                  .filter((span) => span.parentSpanId === evaluate.spanId)
-                  .reduce((own, child) => own - child.durationMs, evaluate.durationMs),
+          /** How long interning the listing's definitions took, apart from decoding the answer. */
+          sharedMs: share?.durationMs,
           page: response.body,
           spans: spans.map((span) => span.operationName),
           revision: names.find((name) => name.startsWith("revision_")),
@@ -200,15 +199,18 @@ const listingApp = (files: string = source) =>
   });
 
 const listed = (names: ReadonlyArray<string>) => names.includes("sdk.tools.listing");
-/** A read that evaluated, and kept its result in the supervisor after responding. */
-const written = (names: ReadonlyArray<string>) =>
-  listed(names) && names.includes("storage.evaluated.write");
 /**
- * A read that evaluated. The evaluation ends after the response, so its spans can reach Motel
+ * A read that evaluated. The evaluation ends after the response, so its spans can reach the collector
  * before the request's own: the read waits for the listing span, which holds the cache outcome.
  */
 const evaluates = (names: ReadonlyArray<string>) =>
   listed(names) && names.includes("sdk.tools.listing.evaluate");
+/**
+ * A read that evaluated, and kept its result in the supervisor after responding. The supervisor
+ * write ends before the evaluation, which then writes search rows, so both are waited for.
+ */
+const written = (names: ReadonlyArray<string>) =>
+  evaluates(names) && names.includes("storage.evaluated.write");
 
 layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (it) => {
   it.effect(scenarios.durableEvaluatedResults.title, (context) =>
@@ -259,7 +261,11 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
       withHostedCase(
         context,
         Effect.gen(function* () {
-          const { read } = yield* listingApp();
+          // A read that misses the isolate waits 100 ms for the supervisor's copy, then evaluates
+          // beside it and serves whichever arrives first; the supervisor read gives up after 2 s.
+          // The supervisor wakes after the wait below, sometimes slower than a fast app evaluates.
+          // An app slower than both is served the copy whenever the supervisor answers.
+          const { read } = yield* listingApp(listingSource(3_000));
           const first = yield* read("first-listing", written);
           expect(first.cache).toBe("miss");
 
@@ -268,10 +274,7 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
           // must still keep its result in the supervisor.
           yield* Effect.sleep("31 seconds");
           // The refresh's spans can arrive before the request's own, which say where it was served.
-          const stale = yield* read(
-            "stale-listing",
-            (names) => evaluates(names) && names.includes("storage.evaluated.write"),
-          );
+          const stale = yield* read("stale-listing", written);
           expect(stale.source).toBe("durable");
           expect(stale.cache).toBe("stale");
           expect(stale.age).toBeGreaterThanOrEqual(30_000);
@@ -353,11 +356,12 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
           expect(same.evaluated?.["executor.listing.json_chars"]).toBe(
             own.evaluated?.["executor.listing.json_chars"],
           );
-          if (own.evaluatedOwnMs === undefined || same.evaluatedOwnMs === undefined)
-            return yield* Effect.die(new Error("Missing evaluation span"));
-          // Comparing each definition with every earlier one of its name and length took over
-          // ten times as long: 336 ms against 25 on self-host, 2,364 against 68 on Cloud.
-          expect(same.evaluatedOwnMs).toBeLessThan(own.evaluatedOwnMs * 2 + 100);
+          // Interning compares a definition only with those already interned under its name, its
+          // length and its hash: the control's names compare with none, and each shared name with
+          // its bucket once. Comparing each with every earlier one of its name and length made
+          // 72,006,000 comparisons, and took 959 ms against 64 on self-host.
+          expect(Number(own.evaluated?.["executor.listing.definition_comparisons"])).toBe(0);
+          expect(Number(same.evaluated?.["executor.listing.definition_comparisons"])).toBe(12_000);
         }),
       ),
     { timeout: 120_000 },
@@ -382,9 +386,27 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
           expect(same.evaluated?.["executor.listing.json_chars"]).toBe(
             own.evaluated?.["executor.listing.json_chars"],
           );
-          if (own.evaluatedOwnMs === undefined || same.evaluatedOwnMs === undefined)
-            return yield* Effect.die(new Error("Missing evaluation span"));
-          expect(same.evaluatedOwnMs).toBeLessThan(own.evaluatedOwnMs * 2 + 100);
+          // Each name has its own bucket either way, so interning compares nothing.
+          for (const read of [own, same])
+            expect(Number(read.evaluated?.["executor.listing.definition_comparisons"])).toBe(0);
+          // A `Map` keyed by these names compares them inside V8, where no count reaches, so this
+          // compares the time interning took, in its own span. Keying buckets by a "length:name"
+          // string took 687 ms against the control's 21 on local Cloud. The span leaves out
+          // decoding the app's answer, which V8 makes six to eight times slower for these names
+          // whichever listing goes first. Interning took 26-96 ms for either listing in nine
+          // local Cloud runs. Before the span, three CI runs measured 192-353 ms for the
+          // evaluation's own time against 41-72 for the control, a difference local runs do not
+          // show; five times the control plus 100 ms holds even if all of it is interning.
+          yield* Console.log(
+            JSON.stringify({
+              step: "long definition names",
+              own: own.sharedMs,
+              same: same.sharedMs,
+            }),
+          );
+          if (own.sharedMs === undefined || same.sharedMs === undefined)
+            return yield* Effect.die(new Error("Missing interning span"));
+          expect(same.sharedMs).toBeLessThan(own.sharedMs * 5 + 100);
         }),
       ),
     { timeout: 120_000 },

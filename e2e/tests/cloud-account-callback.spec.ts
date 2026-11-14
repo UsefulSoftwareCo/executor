@@ -54,10 +54,14 @@ layer(HostedLive, { excludeTestServices: true })("Cloud account callback", (it) 
         expect(bounced.status).toBe(302);
         expect(bounced.location).toBe(`${hosts.browser}/oauth/callback${query}`);
         expect(bounced.cacheControl).toBe("no-store");
-        // A callback without v2's prefix belongs to v1, which never forwards it.
-        expect(
-          (yield* rawRequest(`${hosts.edge}/api/oauth/callback?state=v1-state&code=c`)).status,
-        ).toBe(404);
+        // A callback without v2's prefix belongs to a sign-in v1 started. Before the switch v1's
+        // edge answers it and never forwards it; once the edge serves executor.sh, it says that
+        // sign-in cannot finish (`notes/v1-shutdown.md`).
+        const v1Started = yield* rawRequest(
+          `${hosts.edge}/api/oauth/callback?state=v1-state&code=c`,
+        );
+        expect(v1Started.status).toBe(410);
+        expect(v1Started.text).toContain("This sign-in started in Executor v1");
       }),
     ),
   );

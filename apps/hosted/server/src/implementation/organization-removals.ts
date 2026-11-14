@@ -15,6 +15,7 @@ const Row = Schema.Struct({
   status: OrganizationRemovalRecord.fields.status,
   logo: OrganizationRemovalRecord.fields.logo,
 });
+const Removed = Schema.Array(Schema.Struct({ organization_id: Row.fields.organization_id }));
 const decode = (rows: unknown) =>
   Schema.decodeUnknownEffect(Schema.Array(Row))(rows).pipe(
     Effect.mapError(unavailable),
@@ -45,6 +46,23 @@ export const makeOrganizationRemovals = (
   return {
     tombstones: (organization: OrganizationId) =>
       Effect.map(read(organization), (record) => record !== null),
+    /** The removed organizations among `organizations`, in one read for a whole list. */
+    removed: (
+      organizations: ReadonlyArray<OrganizationId>,
+    ): Effect.Effect<ReadonlySet<OrganizationId>, OrganizationRemovalUnavailable> =>
+      organizations.length === 0
+        ? Effect.succeed(new Set<OrganizationId>())
+        : database.pipe(
+            Effect.flatMap(
+              (sql) =>
+                sql`select organization_id from hosted_organization_removal where ${sql.in("organization_id", organizations)}`,
+            ),
+            Effect.mapError(unavailable),
+            Effect.flatMap((rows) =>
+              Schema.decodeUnknownEffect(Removed)(rows).pipe(Effect.mapError(unavailable)),
+            ),
+            Effect.map((rows) => new Set(rows.map((row) => row.organization_id))),
+          ),
     removals: OrganizationRemovals.of({
       read,
       // Accepting the same removal twice must reuse the first instance, or a

@@ -46,7 +46,7 @@ import {
   OrganizationForbidden,
   RequireOrganization,
 } from "./organization.ts";
-import { AuthenticationUnavailable, RequireUser } from "./auth.ts";
+import { AuthenticationUnavailable, RequireBrowserSession } from "./auth.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 
 /** The account is linked to apps for everyone; it cannot be deleted until it is unlinked. */
@@ -119,7 +119,7 @@ export const HostedOAuthStartResult = Schema.Union([
   OAuthStartResult.members[1],
 ]);
 export type HostedOAuthStartResult = typeof HostedOAuthStartResult.Type;
-/** Safe metadata for the shared account detail view. */
+/** Safe metadata for the account detail view. Only the account's owner reads it. */
 export const HostedAccountDetail = Schema.Struct({
   account: Account,
   provider: Provider,
@@ -128,6 +128,7 @@ export const HostedAccountDetail = Schema.Struct({
   health: AccountHealth,
   /** Whether deleting the account also asks its service to revoke access. */
   revocation: AccountRevocation.fields.revocation,
+  /** The dashboards' shared detail shape. Only the owner reads an account, and owners manage it. */
   canManage: Schema.Boolean,
 });
 /** Credentials travel directly to the authorized host and never appear in successful responses. */
@@ -289,4 +290,4 @@ export const HostedOAuthCallbacks = HttpApiGroup.make("oauthCallback")
       ],
     }),
   )
-  .middleware(RequireUser);
+  .middleware(RequireBrowserSession);

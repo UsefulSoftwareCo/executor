@@ -1,7 +1,8 @@
 /** Browser mode collects decisions through the authenticated browser, never through MCP arguments. */
 import { Schema } from "effect";
 import { HttpServerRequest } from "effect/http";
-import { Tool as McpTool } from "effect/ai";
+import { McpServer, Tool as McpTool } from "effect/ai";
+import { executionResultContent } from "./media.ts";
 import { ToolPending } from "@executor-js/sdk/core";
 import {
   callDescription,
@@ -31,7 +32,9 @@ export const BrowserExecuteTool = McpTool.make("execute", {
   parameters: ExecuteInput,
   success: BrowserExecutionResult,
   failure: ExecutionRejected,
-}).annotate(McpTool.Meta, ExecutionResultMeta);
+})
+  .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpServer.ResultContent, executionResultContent);
 /** Direct calls with browser-based delivery of every pending interaction. */
 export const BrowserCallTool = McpTool.make("call", {
   description: `${callDescription} If approval-required or input-required is returned, show the user approvalUrl and call resume with requestId only; the user answers in their browser. Never submit the decision yourself or repeat the call to continue it.`,
@@ -39,7 +42,9 @@ export const BrowserCallTool = McpTool.make("call", {
   parameters: CallInput,
   success: BrowserExecutionResult,
   failure: ExecutionRejected,
-}).annotate(McpTool.Meta, ExecutionResultMeta);
+})
+  .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpServer.ResultContent, executionResultContent);
 /** Wait for a browser-submitted decision, then continue through the common execution manager. */
 export const BrowserResumeTool = McpTool.make("resume", {
   description:
@@ -48,4 +53,6 @@ export const BrowserResumeTool = McpTool.make("resume", {
   parameters: BrowserResumeInput,
   success: BrowserExecutionResult,
   failure: ElicitationResponseInvalid,
-}).annotate(McpTool.Meta, ExecutionResultMeta);
+})
+  .annotate(McpTool.Meta, ExecutionResultMeta)
+  .annotate(McpServer.ResultContent, executionResultContent);

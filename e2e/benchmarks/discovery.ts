@@ -138,9 +138,7 @@ export const discoveryBenchmark = Effect.gen(function* () {
       for (let account = 0; account < 16; account++) {
         const connection = yield* body(
           Resource,
-          yield* api.request(actors.owner, "POST", connectionsPath(appPath, "user", "service"), {
-            destination: { kind: "shared", audience: { kind: "everyone" } },
-          }),
+          yield* api.request(actors.owner, "POST", connectionsPath(appPath, "user", "service"), {}),
         );
         const saved = yield* body(
           Resource,

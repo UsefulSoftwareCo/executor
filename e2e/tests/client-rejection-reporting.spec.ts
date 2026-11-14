@@ -86,7 +86,7 @@ export default defineApp({}, async () => ({
             "connection payload that names the account to replace by number instead of ID",
             "POST",
             connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-            { destination: { kind: "personal" }, account: 42 },
+            { account: 42 },
             400,
             // `account` is optional, so a number matches neither an account ID nor its absence.
             { kind: "Payload", issue: "$.account: AnyOf" },
@@ -214,7 +214,8 @@ export default defineApp({}, async () => ({
         );
         expect(crashed.status).toBeGreaterThanOrEqual(500);
         const crashTrace = yield* latestTrace;
-        // Find the server span of each Executor request that answered 400.
+        // Find the server span of each Executor request that answered 400. An app's request to
+        // Executor passes Cloud's app outbound first, whose own span relays that answer.
         const spans = yield* Effect.forEach(rejections, (rejection) =>
           rejection.expected === undefined
             ? Effect.succeed(undefined)
@@ -223,6 +224,7 @@ export default defineApp({}, async () => ({
                   const span = result.data.find(
                     ({ span }) =>
                       span.operationName.startsWith("http.server") &&
+                      span.tags["http.route"] !== "/:upstream" &&
                       span.tags["http.response.status_code"] === "400",
                   );
                   return span === undefined
@@ -251,9 +253,12 @@ export default defineApp({}, async () => ({
           };
         });
         // The server failure is the barrier for incident exports; every rejected request's span has arrived.
+        // Only this scenario's reports are read: the values it keeps private are common enough,
+        // such as a 40-character commit, that another scenario's report may rightly hold one.
         const events = cloud
-          ? yield* awaitSentryEvents((events) =>
-              events.some((event) => event.contexts?.trace?.trace_id === crashTrace),
+          ? yield* awaitSentryEvents(
+              [crashTrace, ...rejections.map(({ trace }) => trace)],
+              (events) => events.some((event) => event.contexts?.trace?.trace_id === crashTrace),
             )
           : [];
         const reported = rejections.map((rejection) =>

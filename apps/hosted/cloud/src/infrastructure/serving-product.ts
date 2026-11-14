@@ -1,5 +1,6 @@
 /** App pages and MCP sessions serve deployed apps over the shared executor, and nothing else. */
 import type * as Cloudflare from "alchemy/Cloudflare";
+import type { MarkdownReader } from "@executor-js/sdk/core";
 import { Effect } from "effect";
 import { cloudProductServices } from "./product-services.ts";
 import type { AppSources } from "./source.ts";
@@ -24,9 +25,20 @@ const servingSources: AppSources = () => ({
 });
 
 /**
+ * Deploys, which read authored Markdown, are served by the API Worker too. So these Workers neither
+ * parse Markdown nor bind the Formatter Worker that does, and reading it in one of them is a
+ * defect. It is not `MarkdownUnavailable`, which would ask the caller to retry a request that
+ * cannot succeed here and report a routing bug as an outage.
+ */
+const servingMarkdown: MarkdownReader = () =>
+  Effect.die(new Error("No Markdown parser in this Worker"));
+
+/**
  * What app pages and MCP sessions serve: apps, accounts and their links, skills, tools, app data and
  * build assets. This module never imports `product.ts`, so these Workers upload none of the
  * source, management, provisioning and removal code the API Worker composes.
  */
 export const cloudServingProduct = (databases: Cloudflare.DurableObject<AppDataSupervisor>) =>
-  cloudProductServices(databases, servingSources).pipe(Effect.map(({ services }) => services));
+  cloudProductServices(databases, servingSources, servingMarkdown).pipe(
+    Effect.map(({ services }) => services),
+  );

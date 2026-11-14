@@ -1,11 +1,23 @@
 /** Browser-owned Effect telemetry, shared by Promise calls and Atom runtimes. */
-import { Cause, Context, Deferred, Effect, FiberSet, Layer, Logger, ManagedRuntime } from "effect";
+import {
+  Cause,
+  Context,
+  Deferred,
+  Effect,
+  FiberSet,
+  Layer,
+  Logger,
+  ManagedRuntime,
+  Tracer,
+} from "effect";
 import { FetchHttpClient } from "effect/http";
 import { OtlpExporter } from "effect/observability";
 import { Atom } from "effect/reactivity";
 import type { TelemetryConfig } from "./config.ts";
 import { telemetryLayer } from "./layer.ts";
 import { observeBrowserPerformance } from "./browser-performance.ts";
+import { browserPageId } from "./browser-operations.ts";
+import { countedFetch, keepaliveRoom, onKeepaliveResend } from "./keepalive.ts";
 
 /** Page events use the same tracer and export scope as browser API operations. */
 export class BrowserTelemetry extends Context.Service<
@@ -23,12 +35,121 @@ export class BrowserTelemetry extends Context.Service<
   }
 >()("executor/BrowserTelemetry") {}
 
+const encoder = new TextEncoder();
+type Json = Readonly<Record<string, unknown>>;
+const objects = (value: unknown): ReadonlyArray<Json> =>
+  Array.isArray(value)
+    ? value.filter((item): item is Json => typeof item === "object" && item !== null)
+    : [];
+
+// A text or typed-array body's bytes. Other bodies, which this exporter never sends, go without keepalive.
+const requestBytes = (body: BodyInit | null | undefined) =>
+  typeof body === "string"
+    ? encoder.encode(body)
+    : ArrayBuffer.isView(body)
+      ? new Uint8Array(new Uint8Array(body.buffer, body.byteOffset, body.byteLength))
+      : undefined;
+
+// Split a trace export, which this exporter's serializer wrote as OTLP/JSON, in two: as many first
+// spans as fit in `limit` bytes, then the rest. Each span keeps its resource and scope.
+const splitTraces = (
+  body: Uint8Array,
+  limit: number,
+): readonly [Uint8Array<ArrayBuffer>, Uint8Array<ArrayBuffer>] | undefined => {
+  const payload: Json = JSON.parse(new TextDecoder().decode(body));
+  let seen = 0;
+  // The spans before (or from) the `count`th.
+  const part = (count: number, before: boolean) => {
+    seen = 0;
+    const resourceSpans = objects(payload.resourceSpans).map((resource) => ({
+      ...resource,
+      scopeSpans: objects(resource.scopeSpans).map((scope) => {
+        const spans = objects(scope.spans);
+        const at = Math.max(count - seen, 0);
+        seen += spans.length;
+        return { ...scope, spans: before ? spans.slice(0, at) : spans.slice(at) };
+      }),
+    }));
+    return encoder.encode(JSON.stringify({ ...payload, resourceSpans }));
+  };
+  part(0, true);
+  // The most first spans that fit, leaving at least one for the rest.
+  let [low, high] = [0, seen - 1];
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (part(middle, true).byteLength <= limit) low = middle;
+    else high = middle - 1;
+  }
+  return low === 0 ? undefined : [part(low, true), part(low, false)];
+};
+
+// Export with keepalive whenever the body fits what is left of the page's keepalive budget, which
+// error reports and analytics share, so an export in
+// flight when the page unloads still arrives. One that does not fit is an ordinary request,
+// except as the page leaves or hides: then a trace export's spans that fit go with keepalive and the
+// rest in one ordinary request. More pieces would queue behind each other and be cancelled. A
+// request the browser refuses goes once more as an ordinary one; only that one failing fails the
+// batch, and four failed batches stop the exporter for a minute.
+const exportFetch = (page: { leaving: boolean }): typeof fetch => {
+  const send = (
+    input: RequestInfo | URL,
+    init: RequestInit | undefined,
+    body: BodyInit,
+    keepalive: number | false,
+  ) => countedFetch("exports", fetch, input, { ...init, body }, keepalive);
+  return (input, init) => {
+    const body = requestBytes(init?.body);
+    if (body === undefined) return fetch(input, init);
+    if (body.byteLength <= keepaliveRoom()) return send(input, init, body, body.byteLength);
+    if (!page.leaving && document.visibilityState !== "hidden")
+      return send(input, init, body, false);
+    const parts = splitTraces(body, keepaliveRoom());
+    if (parts === undefined) return send(input, init, body, false);
+    const [head, rest] = parts;
+    // Start the ordinary request first: issued after the keepalive one, Chrome usually cancels it
+    // before its body leaves. A refused keepalive part goes once more as an ordinary request; either
+    // part failing fails the export. Otherwise the transport reads the rest's acknowledgement, so a
+    // partial success the keepalive part reports is not counted.
+    return Promise.all([
+      send(input, init, rest, false),
+      send(input, init, head, head.byteLength),
+    ]).then(([rest, head]) => (head.ok ? rest : head));
+  };
+};
+
+/**
+ * Put the exports the browser refused and the page sent once more, counted since the last report,
+ * on the next span the page starts, and reset the count. Every span comes from something the page
+ * did, never from this count, so reporting it rides on an export that was happening anyway.
+ */
+const carryExportResends = (pending: { resent: number; failed: number }) =>
+  Layer.effect(Tracer.Tracer)(
+    Tracer.Tracer.pipe(
+      Effect.map((tracer) => ({
+        ...tracer,
+        span: (options: Parameters<typeof tracer.span>[0]) => {
+          const span = tracer.span(options);
+          if (pending.resent > 0)
+            span.attribute("executor.keepalive.export_resends", pending.resent);
+          if (pending.failed > 0)
+            span.attribute("executor.keepalive.export_resend_failures", pending.failed);
+          pending.resent = 0;
+          pending.failed = 0;
+          return span;
+        },
+      })),
+    ),
+  );
+
 /** Install listeners for this page lifetime. Closing the Layer removes them and drains exporters. */
 export const browserTelemetryLayer = (settings: Effect.Effect<TelemetryConfig>) =>
   Layer.unwrap(
     settings.pipe(
-      Effect.map((config) =>
-        Layer.effect(
+      Effect.map((config) => {
+        const page = { leaving: false };
+        // Exports the browser refused and the page sent once more, not yet reported.
+        const exportResends = { resent: 0, failed: 0 };
+        return Layer.effect(
           BrowserTelemetry,
           Effect.gen(function* () {
             const flusher = yield* OtlpExporter.Flusher;
@@ -63,11 +184,36 @@ export const browserTelemetryLayer = (settings: Effect.Effect<TelemetryConfig>) 
               );
             };
             const onHide = () => {
+              page.leaving = true;
               run(performance.hide.pipe(Effect.andThen(flush)));
             };
             const onShow = (event: PageTransitionEvent) => {
+              page.leaving = false;
               if (event.persisted) run(performance.restore);
             };
+            // Each refused keepalive request the page sent once more, by sender and outcome only.
+            // A refused export is only counted: a record of it would be new telemetry, which would
+            // make another export, refused in turn while the quota stays full, so an idle page
+            // would export records of its own exports indefinitely. The count goes on the next
+            // span the page starts for any other reason (`carryExportResends`).
+            const stopResends = onKeepaliveResend((sender, outcome) => {
+              if (sender === "exports") {
+                if (outcome === "resent") exportResends.resent++;
+                else exportResends.failed++;
+                return;
+              }
+              const attributes = {
+                "executor.keepalive.sender": sender,
+                "executor.keepalive.outcome": outcome,
+                "executor.page.id": browserPageId() ?? "",
+              };
+              run(
+                Effect.logInfo("ui.keepalive.resend").pipe(
+                  Effect.annotateLogs(attributes),
+                  Effect.withSpan("ui.keepalive.resend", { root: true, attributes }),
+                ),
+              );
+            });
             window.addEventListener("error", onError);
             window.addEventListener("unhandledrejection", onRejection);
             window.addEventListener("pagehide", onHide);
@@ -80,6 +226,7 @@ export const browserTelemetryLayer = (settings: Effect.Effect<TelemetryConfig>) 
                 window.removeEventListener("pagehide", onHide);
                 window.removeEventListener("pageshow", onShow);
                 document.removeEventListener("visibilitychange", onHidden);
+                stopResends();
               }),
             );
             return {
@@ -122,15 +269,19 @@ export const browserTelemetryLayer = (settings: Effect.Effect<TelemetryConfig>) 
             };
           }),
         ).pipe(
-          Layer.provideMerge(telemetryLayer(config, "process", Logger.consoleJson)),
-          Layer.provide(
-            Layer.succeed(FetchHttpClient.RequestInit, {
-              keepalive: true,
-              credentials: "same-origin",
-            }),
+          Layer.provideMerge(
+            carryExportResends(exportResends).pipe(
+              Layer.provideMerge(telemetryLayer(config, "process", Logger.consoleJson)),
+            ),
           ),
-        ),
-      ),
+          Layer.provide(
+            Layer.mergeAll(
+              Layer.succeed(FetchHttpClient.RequestInit, { credentials: "same-origin" }),
+              Layer.succeed(FetchHttpClient.Fetch, exportFetch(page)),
+            ),
+          ),
+        );
+      }),
     ),
   );
 

@@ -1,5 +1,4 @@
-import { connectionsPath, linkedAccountIds } from "../support/app-accounts.ts";
-/** Group boundaries apply to discovery, sharing, and pending account connections. */
+/** Group boundaries apply to discovery and app sharing. */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -7,7 +6,7 @@ import { Api, body } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
-import { App, Resource } from "../support/contracts.ts";
+import { App } from "../support/contracts.ts";
 import { scenarios } from "../test-plan.ts";
 import { appsManifest } from "../support/apps-release.ts";
 
@@ -17,9 +16,8 @@ const Directory = Schema.Struct({
   members: Schema.Array(Schema.Struct({ id: Schema.String, userId: Schema.String })),
 });
 const Access = Schema.Struct({ revision: Schema.String });
-const source = `import {defineApp, defineProvider, secrets, query, object, string, router} from "apps";
-const service=defineProvider({name:"Group visibility fixture",auth:{key:secrets({label:"Key",fields:object({token:string()})})}});
-export default defineApp({user: { accounts:{service:service.many()} }},{tools: router({ status:query({input:object({})},async()=>"ready") })});`;
+const source = `import {defineApp, query, object, router} from "apps";
+export default defineApp({},{tools: router({ status:query({input:object({})},async()=>"ready") })});`;
 
 layer(HostedLive, { excludeTestServices: true })("Group visibility", (it) => {
   it.effect(scenarios.memberGroupVisibility.title, (context) =>
@@ -67,17 +65,11 @@ layer(HostedLive, { excludeTestServices: true })("Group visibility", (it) => {
             files: [{ path: "index.ts", content: source }, appsManifest],
           }),
         );
-        const accounts: string[] = [];
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
             expect(
               (yield* api.request(actors.owner, "DELETE", `${prefix}/apps/${app.id}`)).status,
             ).toBe(200);
-            for (const account of accounts)
-              expect(
-                (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`))
-                  .status,
-              ).toBe(200);
             for (const group of [engineering, sales]) {
               const current = yield* body(
                 Group,
@@ -177,38 +169,20 @@ layer(HostedLive, { excludeTestServices: true })("Group visibility", (it) => {
 
         const ownAudience = { kind: "groups", groups: [engineering.id] };
         const salesAudience = { kind: "groups", groups: [sales.id] };
-        const connect = (audience: typeof ownAudience) =>
-          api.request(
-            actors.member,
-            "POST",
-            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-            { destination: { kind: "shared", audience } },
-          );
-        expect((yield* connect(salesAudience)).status).toBe(403);
-        const connection = yield* body(Resource, yield* connect(ownAudience));
-        const submit = (id: string) =>
-          api.request(actors.member, "POST", `${prefix}/connections/${id}/submit`, {
-            method: "key",
-            label: "Team visibility",
-            fields: { token: "synthetic" },
+        const share = (audience: typeof ownAudience) =>
+          Effect.gen(function* () {
+            const access = yield* body(
+              Access,
+              yield* api.request(actors.member, "GET", `${prefix}/apps/${app.id}/access`),
+            );
+            return yield* api.request(actors.member, "PATCH", `${prefix}/apps/${app.id}/access`, {
+              revision: access.revision,
+              audience,
+            });
           });
-        expect((yield* submit(connection.id)).status).toBe(200);
-        // Connecting from the app links the new shared account for the member.
-        accounts.push(...(yield* linkedAccountIds(actors.member, `${prefix}/apps/${app.id}`)));
-        expect(accounts).toHaveLength(1);
-        const account = accounts[0];
-        if (!account) throw new Error("Shared account missing");
-        const accountAccess = yield* body(
-          Access,
-          yield* api.request(actors.member, "GET", `${prefix}/accounts/${account}/access`),
-        );
-        expect(
-          (yield* api.request(actors.member, "PATCH", `${prefix}/accounts/${account}/access`, {
-            revision: accountAccess.revision,
-            audience: salesAudience,
-          })).status,
-        ).toBe(403);
-        const pending = yield* body(Resource, yield* connect(ownAudience));
+        // The server refuses a group the member is not in, even for the app they created.
+        expect((yield* share(salesAudience)).status).toBe(403);
+        expect((yield* share(ownAudience)).status).toBe(200);
 
         expect(
           (yield* api.request(actors.owner, "PATCH", `${prefix}/groups/${engineering.id}`, {
@@ -236,7 +210,6 @@ layer(HostedLive, { excludeTestServices: true })("Group visibility", (it) => {
             audience: ownAudience,
           })).status,
         ).toBe(403);
-        expect((yield* submit(pending.id)).status).toBe(403);
         const removed = yield* body(
           Group,
           yield* api.request(actors.owner, "GET", `${prefix}/groups/${engineering.id}`),
@@ -249,10 +222,6 @@ layer(HostedLive, { excludeTestServices: true })("Group visibility", (it) => {
             memberIds: [member.id],
           })).status,
         ).toBe(200);
-        // Losing group access never removes the member's link; regaining it restores the account.
-        expect(yield* linkedAccountIds(actors.member, `${prefix}/apps/${app.id}`)).toEqual(
-          accounts,
-        );
         expect(
           (yield* api.request(actors.admin, "PATCH", `${prefix}/apps/${app.id}/access`, {
             revision: current.revision,

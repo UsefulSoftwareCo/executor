@@ -1,14 +1,23 @@
 /** Cloud composition: Postgres is authoritative; no organization data is stored in a DO. */
 import { urlPolicyConfig, type HostEgress } from "@executor-js/utils/url-policy";
-import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+import { Digest, SecureRandom } from "effect/crypto";
 import { makeRegistryStorage } from "@executor-js/app-registry";
-import { firstPartyOAuthClients, hostedOAuthClientName } from "@executor-js/hosted-server";
+import {
+  firstPartyOAuthClients,
+  hostedApi,
+  hostedApiRevision,
+  hostedOAuthClientName,
+} from "@executor-js/hosted-server";
+import { servesBuiltApiDocument } from "../contracts/browser.ts";
+import api from "../../.generated/executor-api-revision.json" with { type: "json" };
 import { hostedResourceLifecycle } from "@executor-js/hosted-server/resource-lifecycle";
 import {
   createExecutor,
+  declarationConfig,
   httpEventSender,
   StorageError,
   makeExecutorStorage,
+  type MarkdownReader,
 } from "@executor-js/sdk/core";
 import { hostedEventAuthority } from "@executor-js/hosted-server/events";
 import { SqlClient } from "effect/sql";
@@ -25,6 +34,8 @@ import { cloudWorkflows } from "./workflow-runtime.ts";
 import { cloudRuntime } from "./runtime.ts";
 import { durableDeclarations } from "./durable-declarations.ts";
 import { InvocationDatabase } from "./invocation-database.ts";
+import { backgroundWait, CurrentRequest, ownTelemetryScope } from "./served-request.ts";
+import { TelemetryDrainScope, TelemetryWaitReport } from "@executor-js/telemetry";
 import { cloudSecrets } from "./secrets.ts";
 import { cloudOrigin, cloudResourceOrigins, productionStage, stageName } from "./stage.ts";
 import { cloudEmulators } from "./emulators.ts";
@@ -69,23 +80,87 @@ const cloudFirstPartyOAuthClients = Effect.gen(function* () {
 export const cloudExecutor = Effect.fn(function* (
   databases: Cloudflare.DurableObject<AppDataSupervisor>,
   appSources: AppSources,
+  markdown: MarkdownReader,
 ) {
   // Resolve during initialization so Alchemy binds every value into the Worker environment.
   const secrets = yield* cloudSecrets.pipe(Effect.orDie);
   const origin = yield* cloudOrigin.pipe(Effect.orDie);
   // New app webhooks register on the canonical API origin (`api.` once it is canonical); every
   // origin keeps delivering, so existing subscriptions keep the URL they stored.
-  const webhookOrigin = (yield* cloudResourceOrigins.pipe(Effect.orDie)).api[0];
+  const resourceOrigins = yield* cloudResourceOrigins.pipe(Effect.orDie);
+  const webhookOrigin = resourceOrigins.api[0];
+  // Deployed stages serve the document the build hashed. A development or loopback origin names
+  // its own session cookie in the document, so that document is generated and hashed here.
+  const apiOrigin = resourceOrigins.api[0];
+  const apiRevision =
+    apiOrigin === undefined || servesBuiltApiDocument(apiOrigin)
+      ? api.revision
+      : yield* Effect.promise(() => import("../implementation/default-app.ts")).pipe(
+          Effect.flatMap(({ executorCloudApiDocument }) =>
+            hostedApiRevision(JSON.stringify(executorCloudApiDocument(apiOrigin))),
+          ),
+          Effect.provide(Digest.layerWebCrypto),
+        );
   const accountSignIns = yield* cloudAccountSignIns.pipe(Effect.orDie);
   const egress = yield* cloudEgress;
   // Deployed stages bind this to their own document; see `clientMetadataBinding`.
   const clientMetadata = yield* cloudClientMetadata.pipe(Effect.orDie);
   const firstPartyClients = yield* cloudFirstPartyOAuthClients.pipe(Effect.orDie);
+  // The same tool listing settings as the other hosts; a stage deployed without them keeps the
+  // defaults. Memory limits are not read: every executor shares the isolate's store.
+  const { toolListings } = yield* declarationConfig.pipe(Effect.orDie);
   const makeRuntime = yield* cloudRuntime(origin, databases);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
   // App storage, hosted permission checks and Better Auth share the event's client.
   const database = (yield* InvocationDatabase).pipe(Effect.mapError(() => new StorageError()));
+  // Work nobody waits for (stale metadata refreshes, tool listings, tool call log writes) runs
+  // beside the request, in the scope it is offered in, which holds the resources it uses: the
+  // scope's close waits for it, at most `backgroundWait`, before releasing them. Work offered once
+  // the scope is closing is refused, so its caller releases what it holds or does it itself. The
+  // event's database is resolved first, so its connection closes after this work ends. When that
+  // scope is nested in the request's, such as an MCP tool call's operation, the request's close
+  // waits for the work too, so the event exports its spans (`served-request.ts`). That wait runs
+  // before the request scope's other finalizers, so while nested work still runs they release
+  // what they hold, such as the API Worker's event pool and executor, up to `nestedWait` later.
+  const backgroundWork = yield* makeExecutionMemo(
+    Effect.gen(function* () {
+      yield* database;
+      const scope = yield* Effect.scope;
+      const fibers = yield* FiberSet.make();
+      const drained = FiberSet.awaitEmpty(fibers);
+      const served = yield* CurrentRequest;
+      let closing = false;
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          closing = true;
+        }).pipe(
+          Effect.andThen(
+            // The request's own work shares the bound of every wait its close makes.
+            served?.scope === scope
+              ? served.bounded(drained, "background")
+              : Effect.asVoid(Effect.timeoutOption(drained, backgroundWait)),
+          ),
+        ),
+      );
+      /** The request the work is offered in, when that is not this scope's own. */
+      const join = Effect.flatMap(CurrentRequest, (request) =>
+        request === undefined || request.scope === scope ? Effect.void : request.join(drained),
+      );
+      return (work: Effect.Effect<void>) =>
+        Effect.suspend(() =>
+          closing
+            ? Effect.succeed(false)
+            : FiberSet.run(fibers, work).pipe(Effect.andThen(join), Effect.as(true)),
+        );
+    }),
+  );
+  /** Without the event's database there is no event lifetime to join; the caller runs the work. */
+  const background = (work: Effect.Effect<void>) =>
+    backgroundWork.pipe(
+      Effect.flatMap((run) => run(work)),
+      Effect.catchTag("StorageError", () => Effect.succeed(false)),
+    );
   const executor = yield* makeExecutionMemo(
     Effect.gen(function* () {
       const key = yield* secrets.encryptionKey;
@@ -93,25 +168,6 @@ export const cloudExecutor = Effect.fn(function* (
       const storage = yield* makeExecutorStorage({ provider: "postgresql" }).pipe(
         Effect.provideContext(services),
       );
-      // Stale metadata refreshes and tool listings nobody waits for run beside the request, inside
-      // this event's lifetime: until 20 s after it closes, when the remaining work is interrupted.
-      // Work offered once the event is closing is refused, so its caller releases what it holds,
-      // and work it accepted always has those 20 s.
-      const refreshes = yield* FiberSet.make();
-      let closing = false;
-      yield* Effect.addFinalizer(() =>
-        Effect.sync(() => {
-          closing = true;
-        }).pipe(
-          Effect.andThen(FiberSet.awaitEmpty(refreshes)),
-          Effect.timeoutOption("20 seconds"),
-          Effect.asVoid,
-        ),
-      );
-      const background = (work: Effect.Effect<void>) =>
-        Effect.suspend(() =>
-          closing ? Effect.succeed(false) : FiberSet.run(refreshes, work).pipe(Effect.as(true)),
-        );
       const lifecycle = yield* hostedResourceLifecycle.pipe(Effect.provideContext(services));
       const executor = yield* createExecutor({
         database: storage,
@@ -119,8 +175,19 @@ export const cloudExecutor = Effect.fn(function* (
         origin,
         webhookOrigin,
         git: appSources(background),
+        markdown,
         blobs: yield* cachedVersionSources(origin, blobs),
-        runtime: yield* makeRuntime,
+        // The runtime's telemetry forwarder joins the request's telemetry scope only when this
+        // executor is the request's own (`ownTelemetryScope`). A nested executor's drain is not a
+        // wait of the request's close, so it does not report to the request.
+        runtime: yield* Effect.flatMap(ownTelemetryScope, (own) =>
+          makeRuntime.pipe(
+            Effect.provideService(TelemetryDrainScope, own),
+            own === undefined
+              ? Effect.provideService(TelemetryWaitReport, () => Effect.void)
+              : (runtime) => runtime,
+          ),
+        ),
         workflows,
         registry: {
           storage: yield* Effect.flatMap(organizationPublishers, makeRegistryStorage).pipe(
@@ -128,6 +195,9 @@ export const cloudExecutor = Effect.fn(function* (
           ),
         },
         hooks: lifecycle.hooks,
+        // Executor apps read this deployment's API at any of its resource origins; their caches and
+        // listings follow the API's revision.
+        hostApi: hostedApi(resourceOrigins.api, apiRevision),
         oauth: {
           httpClient: egress.client,
           clientName: hostedOAuthClientName,
@@ -156,6 +226,7 @@ export const cloudExecutor = Effect.fn(function* (
           memory: isolateDeclarations,
           // Every isolate reads the results each app's supervisor keeps when its own store misses.
           durable: durableDeclarations(databases),
+          toolListings,
         },
         // A tool listing nobody waits for runs until the event's background work ends, and is
         // remembered as timed out if it has not finished by then.
@@ -169,7 +240,7 @@ export const cloudExecutor = Effect.fn(function* (
           // Deployed Workers cannot reach loopback; the local development Worker can.
           allowInsecureCallbacks: egress.policy.allowLoopbackHttp,
         },
-      }).pipe(Effect.provide(BrowserCrypto.layer));
+      }).pipe(Effect.provide([SecureRandom.layerWebCrypto, Digest.layerWebCrypto]));
       yield* lifecycle.attach(executor);
       return executor;
     }).pipe(
@@ -177,5 +248,5 @@ export const cloudExecutor = Effect.fn(function* (
       Effect.withSpan("runtime.cloud.executor.initialize"),
     ),
   );
-  return { executor, database };
+  return { executor, database, background };
 });

@@ -106,6 +106,8 @@ export interface AccountSubmission {
 export interface AccountOAuthProps {
   readonly method: string;
   readonly disabled: boolean;
+  /** The app's Markdown on creating an OAuth client for this method, shown with client entry. */
+  readonly clientGuide: string | undefined;
   readonly onPendingChange: (pending: boolean) => void;
   /** Where the sign-in goes once it is saved; the OAuth form shows it just above its action. */
   readonly access: ReactNode;

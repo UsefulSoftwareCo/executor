@@ -1,21 +1,18 @@
 /** Own one real Cloudflare environment for a suite, including cleanup on failure or interruption. */
-import {
-  Clock,
-  Config,
-  Console,
-  Effect,
-  FileSystem,
-  Path,
-  Redacted,
-  Schedule,
-  Schema,
-} from "effect";
+import { Clock, Config, Console, Effect, FileSystem, Path, Schedule, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
-import { createEmulatorFixture, emulatorRequest } from "../support/emulators.ts";
+import {
+  createEmulatorFixture,
+  emulatorRequest,
+  EmulatorRetryRecords,
+} from "../support/emulators.ts";
 
 import { startFixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
+import { captureRemovalStalls } from "./removal-evidence.ts";
+import { confirmBranchDeleted } from "./branch-deleted.ts";
+import { heldValue, reveal, secretConfig } from "../support/failure-text.ts";
 
 class DeployedTestFailed extends Schema.TaggedError<DeployedTestFailed>()("DeployedTestFailed", {
   message: Schema.String,
@@ -89,23 +86,45 @@ export const startDeployment = ({
       ).pipe(
         Effect.andThen(fs.writeFileString(path.join(directory, "destroyed.json"), "{}")),
         Effect.timeout("12 minutes"),
+        // Whether or not the destroy succeeded, a branch it left must fail the run by name.
+        Effect.ensuring(
+          database === "planetscale"
+            ? confirmBranchDeleted(slug).pipe(Effect.timeout("3 minutes"), Effect.orDie)
+            : Effect.void,
+        ),
         Effect.orDie,
       ),
     );
-    const fixture = yield* createEmulatorFixture(origin);
+    // Runs before the destroy above (finalizers run last-registered first), after the fixture
+    // process has stopped and so after the suite's end-of-run removal check
+    // (`removal-settlement.ts`), which runs inside the suite before this scope closes: a stalled
+    // organization removal's Workflow instance is deleted with the stage, so its record is read
+    // now. It never fails or holds up the teardown.
+    yield* Effect.addFinalizer(() =>
+      captureRemovalStalls(slug, directory).pipe(
+        Effect.timeout("3 minutes"),
+        Effect.catchCause(() =>
+          Console.error("Could not save the stalled organization removals' records."),
+        ),
+      ),
+    );
+    const fixture = yield* createEmulatorFixture(origin).pipe(
+      Effect.provideService(EmulatorRetryRecords, { directory }),
+    );
     yield* Effect.addFinalizer(() =>
       Effect.forEach(
-        Object.values(Redacted.value(fixture).services),
+        Object.values(reveal(fixture).services),
         (service) =>
           emulatorRequest(service.baseUrl, "/_emulate/reset", {}).pipe(
             Effect.catch(() => Console.error("Could not reset one external test emulator.")),
+            Effect.provideService(EmulatorRetryRecords, { directory }),
           ),
         { concurrency: 5, discard: true },
       ),
     );
     const fixtures = yield* startFixtureControl(origin, directory);
     const emulators = path.join(directory, "emulators.json");
-    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(fixture)), {
+    yield* fs.writeFileString(emulators, JSON.stringify(reveal(fixture)), {
       mode: 0o600,
     });
     yield* Effect.addFinalizer(() =>
@@ -136,7 +155,7 @@ export const startDeployment = ({
       ],
       {
         CI: "true",
-        EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
+        EXECUTOR_EMULATORS: JSON.stringify(reveal(fixture).services),
         TEST_STAGE_FIXTURE_CONTROL: fixtureControlEnvironment(fixtures),
         EXECUTOR_APP_UI_BASE_URL: appUiBaseUrl,
       },
@@ -149,7 +168,7 @@ export const startDeployment = ({
       Effect.retry(Schedule.spaced("2 seconds")),
       Effect.timeout("2 minutes"),
     );
-    const axiomToken = yield* Config.Redacted("AXIOM_TOKEN");
+    const axiomToken = yield* secretConfig("AXIOM_TOKEN");
     const axiomOrganization = yield* Config.NonEmptyString("AXIOM_ORG_ID");
     const axiom = http.pipe(
       HttpClient.mapRequest((request) =>
@@ -174,7 +193,7 @@ export const startDeployment = ({
             Schema.decodeUnknownEffect(
               Schema.Struct({
                 id: Schema.NonEmptyString,
-                token: Schema.RedactedFromValue(Schema.NonEmptyString),
+                token: heldValue(Schema.RedactedFromValue(Schema.NonEmptyString)),
               }),
             ),
           ),
@@ -199,6 +218,7 @@ export const startDeployment = ({
       origin,
       directory,
       slug,
+      startedAt: new Date(started),
       appUiBaseUrl,
       fixtures,
       emulators,

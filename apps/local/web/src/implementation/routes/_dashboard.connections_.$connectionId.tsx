@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ConnectionPage } from "../pages/connection.tsx";
+import { ConnectionPage } from "../pages/connections.tsx";
 
 /** Generated-tree route for /_dashboard/connections_/$connectionId. */
 export const Route = createFileRoute("/_dashboard/connections_/$connectionId")({

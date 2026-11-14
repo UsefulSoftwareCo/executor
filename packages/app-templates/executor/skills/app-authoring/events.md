@@ -81,6 +81,15 @@ half hours. Events are kept for three days. Each delivery checks that the
 subscriber may still use the app, this event and every account the emitting
 invocation used.
 
+### How clients subscribe
+
+MCP clients see one event, `executor.app_event`, the same for every user;
+ChatGPT saves it once for everyone. Its arguments select events: `app` (the
+slug) and `event` for one event, plus that event's filters; `app` alone for
+all of the app's events; nothing for every app's events. Those deliveries
+carry `{ app, event, data }`. A client may also subscribe by the event's own
+name, `<app slug>.<event>`, with its filters, and receive `data` alone.
+
 ### Who receives them
 
 A connection or OAuth grant selects an app's events beside its tools: all

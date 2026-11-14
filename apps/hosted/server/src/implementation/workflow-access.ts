@@ -10,8 +10,8 @@ import {
 import { Effect } from "effect";
 import { CurrentUserId } from "../contracts/auth.ts";
 import { OrganizationForbidden } from "../contracts/organization.ts";
-import { requireAppAccess } from "./resource-policy.ts";
-import { checkScopedAccounts } from "./access.ts";
+import { requireCurrentAppAccess, type ResourceAuthority } from "./resource-policy.ts";
+import { checkScopedAccountsAs } from "./access.ts";
 /**
  * Check current app use, that the run is the caller's own or was started without an actor, and
  * every account that contributed to the retained run, by the scope its requirement had on the
@@ -25,7 +25,21 @@ export const requireWorkflowAccess = (
   run: string,
 ) =>
   Effect.gen(function* () {
-    yield* requireAppAccess(app, "use");
+    const { actor } = yield* requireCurrentAppAccess(app, "use");
+    return yield* workflowRunAccessAs(executor, owner, app, actor, run);
+  });
+/**
+ * {@link requireWorkflowAccess} after the caller's use of the app was checked in this operation,
+ * as `actor`, so a list checks it once rather than per run.
+ */
+export const workflowRunAccessAs = (
+  executor: Executor,
+  owner: OwnerId,
+  app: AppId,
+  actor: ResourceAuthority,
+  run: string,
+) =>
+  Effect.gen(function* () {
     const saved = yield* executor.apps.workflowRuns
       .pinned({ owner, app, run: WorkflowRunId.make(run) })
       .pipe(
@@ -33,9 +47,9 @@ export const requireWorkflowAccess = (
           Effect.fail(new WorkflowFailure({ reason: "not_found", retryable: false })),
         ),
       );
-    if (saved.actor !== null && saved.actor !== (yield* CurrentUserId))
+    if (saved.actor !== null && saved.actor !== actor.user)
       return yield* new OrganizationForbidden();
-    yield* checkScopedAccounts(owner, app, saved.accounts);
+    yield* checkScopedAccountsAs(actor, owner, app, saved.accounts);
     return saved;
   });
 

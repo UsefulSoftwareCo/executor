@@ -1,5 +1,5 @@
 import {
-  RequireUser,
+  RequireBrowserSession,
   OrganizationId,
   OrganizationLogo,
   type SetupProgress,
@@ -90,14 +90,11 @@ export const OnboardingDraft = Schema.Struct({
   status: Schema.Literal("draft"),
   suggestion: TeamDetails,
 });
-/** A new account whose email belongs to an Executor v1 organization stays on v1; no team is created. */
-export const OnboardingV1Workspace = Schema.Struct({ status: Schema.Literal("v1") });
 /** Entry either has a destination or needs explicit team confirmation. */
 export const OnboardingEntry = Schema.Union([
   OnboardingReady,
   OnboardingInvitation,
   OnboardingDraft,
-  OnboardingV1Workspace,
 ]);
 
 /**
@@ -162,12 +159,8 @@ export const OnboardingTeamCreated = Schema.Struct({
   ...OnboardingReady.fields,
   setup: Schema.optionalKey(SetupSequence),
 });
-/** A confirmation can also discover membership, an invitation or a v1 organization. */
-export const OnboardingCreated = Schema.Union([
-  OnboardingTeamCreated,
-  OnboardingInvitation,
-  OnboardingV1Workspace,
-]);
+/** A confirmation can also discover membership or an invitation. */
+export const OnboardingCreated = Schema.Union([OnboardingTeamCreated, OnboardingInvitation]);
 
 /** Setup failed before a confirmed result; retrying cannot create another organization. */
 export const OnboardingUnavailable = ApiError.define({
@@ -189,25 +182,6 @@ export class CompanyLookup extends Context.Service<
   }
 >()("cloud/CompanyLookup") {}
 
-/** The v1 lookup could not answer; entry fails closed and the person can retry. */
-export class V1MembershipUnavailable extends Schema.TaggedError<V1MembershipUnavailable>()(
-  "V1MembershipUnavailable",
-  {},
-) {}
-/**
- * Decides whether a v2 account with no v2 organization belongs on Executor v1. Callers pass
- * only verified emails. The check is off where v1's WorkOS key is not configured.
- */
-export class V1Membership extends Context.Service<
-  V1Membership,
-  {
-    readonly check: (account: {
-      readonly email: string;
-      readonly createdAt: Date;
-    }) => Effect.Effect<"v1" | "continue", V1MembershipUnavailable>;
-  }
->()("cloud/V1Membership") {}
-
 /** Cloud entry prepares a suggestion, then provisions only after explicit confirmation. */
 export class Onboarding extends Context.Service<
   Onboarding,
@@ -219,12 +193,6 @@ export class Onboarding extends Context.Service<
       userId: string,
       details: CreateTeam,
     ) => Effect.Effect<typeof OnboardingCreated.Type, OnboardingUnavailable>;
-    /**
-     * Whether this account may create an organization outside team setup, such as through
-     * Better Auth's organization endpoint. Applies the same decision as `prepare` and
-     * `create`: false only when the account belongs on Executor v1. Fails closed.
-     */
-    readonly allowsOrganization: (userId: string) => Effect.Effect<boolean, OnboardingUnavailable>;
     /**
      * The setup order for a team this member created through team setup. The first read for an
      * enrolled team records the experiment exposure; later reads return the same order.
@@ -276,7 +244,7 @@ export const onboardingGroup = HttpApiGroup.make("onboarding")
       error: [OnboardingUnavailable, TeamIconNotFound],
     }),
   )
-  .middleware(RequireUser);
+  .middleware(RequireBrowserSession);
 
 /**
  * A new team's setup steps read their order with the page, and dashboard pages whether setup still
@@ -298,4 +266,4 @@ export const setupGroup = HttpApiGroup.make("setup")
     }),
   )
   .middleware(RequireOrganization)
-  .middleware(RequireUser);
+  .middleware(RequireBrowserSession);

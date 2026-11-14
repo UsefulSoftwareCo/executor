@@ -5,7 +5,8 @@ import { HostedSchedules } from "./schedules.ts";
 import { HostedAppAccess, HostedAppManagementApi, HostedFrameworkApi } from "./app-management.ts";
 export { HostedAppManagementApi } from "./app-management.ts";
 /** Common hosted contracts. Product reads require a hosted session. */
-import { CatalogEntry, CatalogQuery, CatalogUnavailable } from "@executor-js/catalog/contracts";
+import { CatalogListing, CatalogQuery } from "@executor-js/catalog/contracts";
+import { RequestRejection } from "@executor-js/sdk/core";
 import { Context, Schema } from "effect";
 import { HostedGroups } from "./groups.ts";
 import { HostedMcpConnections } from "./mcp-connections.ts";
@@ -13,9 +14,9 @@ import { HttpApi, HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api
 import {
   AuthenticationUnavailable,
   BrowserSessionOnly,
-  Principal,
-  RequireUser,
+  RequireBrowserSession,
   Unauthorized,
+  Viewer,
 } from "./auth.ts";
 import {
   HostedOrganization,
@@ -33,6 +34,7 @@ import { HostedWebhooks } from "./webhooks.ts";
 import { HostedTools } from "./tools.ts";
 import { HostedSkills } from "./skills.ts";
 import { HostedFeedback } from "./feedback.ts";
+import { HostedToolCalls } from "./tool-call-log.ts";
 
 /** Process liveness only; this does not probe the app catalog or future storage. */
 export const Health = Schema.Struct({ status: Schema.Literal("ok") });
@@ -73,13 +75,18 @@ export const hostedApiDocument = <Id extends string, Groups extends HttpApiGroup
     onEndpoint: ({ endpoint, group, middleware, mergedAnnotations }) => {
       if (Context.get(mergedAnnotations, OpenApi.Exclude))
         throw new Error("Product API endpoints must appear in OpenAPI.");
+      // Agents read each operation's declared errors; an undeclared 400 reaches them without its cause.
+      if (![...middleware].some((service) => service.key === RequestRejection.key))
+        throw new Error(
+          `Product API endpoint ${group.identifier}.${endpoint.identifier} must declare request rejections.`,
+        );
       const id = Context.getOrElse(endpoint.annotations, OpenApi.Identifier, () =>
         group.topLevel ? endpoint.identifier : `${group.identifier}.${endpoint.identifier}`,
       );
       if (security.has(id)) throw new Error(`Duplicate product API operation: ${id}`);
       security.set(
         id,
-        [...middleware].some((service) => service.key === RequireUser.key) ||
+        [...middleware].some((service) => service.key === RequireBrowserSession.key) ||
           Context.get(mergedAnnotations, BrowserSessionOnly)
           ? [{ browserSession: [] }]
           : [...middleware].some(
@@ -180,6 +187,7 @@ export const HostedApi = HttpApi.make("executor-hosted")
     HostedAppData,
     HostedMcpConnections,
     HostedFeedback,
+    HostedToolCalls,
   )
   .add(
     HttpApiGroup.make("context").add(
@@ -201,19 +209,19 @@ export const HostedApi = HttpApi.make("executor-hosted")
   .add(HttpApiGroup.make("health").add(HttpApiEndpoint.get("get", "/health", { success: Health })))
   .add(
     HttpApiGroup.make("viewer")
-      .add(HttpApiEndpoint.get("get", "/api/viewer", { success: Principal }))
-      .middleware(RequireUser),
+      .add(HttpApiEndpoint.get("get", "/api/viewer", { success: Viewer }))
+      .middleware(RequireBrowserSession),
   )
   .add(
     HttpApiGroup.make("catalog")
       .add(
         HttpApiEndpoint.get("list", "/api/catalog", {
           query: CatalogQuery,
-          success: Schema.Array(CatalogEntry),
-          error: CatalogUnavailable,
+          success: CatalogListing,
         }),
       )
-      .middleware(RequireUser),
+      .middleware(RequireBrowserSession),
   )
   .addHttpApi(HostedAppManagementApi)
-  .addHttpApi(HostedFrameworkApi);
+  .addHttpApi(HostedFrameworkApi)
+  .middleware(RequestRejection);

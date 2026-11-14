@@ -2,7 +2,9 @@
  * Hosted event authority. Before each delivery the subscriber must still hold the grant or
  * personal access token that subscribed, that grant must still include the app's events, and its
  * user must still be a member who may use the app. An occurrence whose invocation used an account
- * the user may not use is dropped; the subscription continues for the others.
+ * the user may not use is dropped; the subscription continues for the others. A subscription to a
+ * selection of several events or apps loses none of them when one fails the app or event checks:
+ * that occurrence is dropped instead.
  */
 import { GrantPolicy, grantEventAccess } from "@executor-js/mcp-auth";
 import { ConnectionPolicy, connectionGrantPolicy } from "@executor-js/mcp-auth/connections";
@@ -17,11 +19,7 @@ import type { SqlClient } from "effect/sql";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { OrganizationId, organizationOwner } from "../contracts/organization.ts";
 import { patGrantOf } from "./mcp-oauth.ts";
-import {
-  requireAccountAccessAs,
-  requireAppAccessAs,
-  resourceAuthority,
-} from "./resource-policy.ts";
+import { ownedAccountIds, resourceAuthorityForApp } from "./resource-policy.ts";
 
 const GrantRow = Schema.Struct({
   userId: Schema.String,
@@ -90,7 +88,7 @@ const grantStanding = (sql: SqlClient.SqlClient, id: string) =>
 /** Check one delivery. The database is the event's own; nothing is retained across calls. */
 export const hostedEventAuthority =
   (database: Effect.Effect<SqlClient.SqlClient, StorageError>) =>
-  ({ subscription, accounts }: EventDeliveryAuthority) =>
+  ({ subscription, app: source, event, accounts }: EventDeliveryAuthority) =>
     Effect.gen(function* () {
       const sql = yield* database;
       const standing = yield* grantStanding(sql, subscription.principal);
@@ -100,21 +98,21 @@ export const hostedEventAuthority =
         organizationOwner(standing.value.organization) !== subscription.owner
       )
         return yield* new EventAccessRevoked();
-      const access = grantEventAccess(standing.value.policy, subscription.app, subscription.event);
-      if (access === undefined) return yield* new EventAccessRevoked();
-      const revoked = () => Effect.fail(new EventAccessRevoked());
-      const actor = yield* resourceAuthority(
+      // A selection outlives any one app or event it covers; a single event does not.
+      const selected = subscription.app === null || subscription.event === null;
+      const refused = () =>
+        selected ? Effect.fail(new EventNotVisible()) : Effect.fail(new EventAccessRevoked());
+      const access = grantEventAccess(standing.value.policy, source, event);
+      if (access === undefined) return yield* refused();
+      const { actor, access: app } = yield* resourceAuthorityForApp(
         standing.value.organization,
         standing.value.userId,
-      ).pipe(Effect.catchTag("OrganizationForbidden", revoked));
-      yield* requireAppAccessAs(actor, subscription.app, "use").pipe(
-        Effect.catchTag("OrganizationForbidden", revoked),
-      );
+        source,
+      ).pipe(Effect.catchTag("OrganizationForbidden", () => Effect.fail(new EventAccessRevoked())));
+      if (!app.canUse) return yield* refused();
       // The event may carry data from any account its invocation used, not only its source.
-      for (const account of accounts)
-        yield* requireAccountAccessAs(actor, account, "use").pipe(
-          Effect.catchTag("OrganizationForbidden", () => Effect.fail(new EventNotVisible())),
-        );
+      const owned = yield* ownedAccountIds([...new Set(accounts)], actor);
+      for (const account of accounts) if (!owned.has(account)) return yield* new EventNotVisible();
       // A grant limited to some accounts receives only occurrences that use no others.
       return access;
     }).pipe(

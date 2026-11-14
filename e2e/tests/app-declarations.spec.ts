@@ -91,9 +91,7 @@ layer(HostedLive, { excludeTestServices: true })("App declarations", (it) => {
                 actor,
                 "POST",
                 connectionsPath(path, "user", "service"),
-                {
-                  destination: { kind: "personal" },
-                },
+                {},
               );
               expect(response.status, JSON.stringify(response.body)).toBe(200);
               const account = yield* submit(actor, (yield* body(Resource, response)).id, token);

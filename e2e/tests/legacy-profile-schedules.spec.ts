@@ -9,8 +9,8 @@
  *
  * One scenario covers account sets that become copies, the other schedules that merge or pause.
  * The fixture rebuilds the database as an upgrade from 4.0.12 finds it: it undoes 4.0.14 and 4.0.13
- * (see `beforeAppAccounts` and `beforeProfileRemoval`), labels the database 4.0.12, removes step
- * 9's ledger row and table and makes data step 10 pending again. It then writes the profiles and
+ * (see `beforeAppAccounts` and `beforeProfileRemoval`), labels the database 4.0.12, removes the
+ * ledger rows of steps 9 and 10 and step 9's table, and makes data step 10 pending again. It then writes the profiles and
  * their schedules as the last profile version left them. The next start runs 4.0.13, 4.0.14 and
  * step 9 in one transaction, as a deploy does, then the data steps. Apps, accounts, members and the app's data are created through the
  * product first.
@@ -257,7 +257,7 @@ const upgradeFixture = (
               actor,
               "POST",
               connectionsPath(appPath, "user", "primary"),
-              { destination: { kind: "personal" } },
+              {},
             );
             expect(connection.status, JSON.stringify(connection.body)).toBe(200);
             const saved = yield* api.request(
@@ -301,7 +301,8 @@ const upgradeFixture = (
       });
     /**
      * The database as an upgrade from 4.0.12 finds it: profiles, each with its own schedule, and
-     * some schedules' history as `[run, schedule]`. The first statement reads the hosted ledger.
+     * some schedules' history as `[run, schedule]`. The first two statements read the hosted ledger and
+     * the schema version this build records.
      */
     const upgradeStatements = (input: {
       readonly profiles: ReadonlyArray<ProfileSpec>;
@@ -311,8 +312,9 @@ const upgradeFixture = (
       const profileOf = new Map(input.schedules.map((row) => [row.id, row.profile]));
       return [
         { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
+        { sql: "SELECT value FROM private_executor_settings WHERE key = 'version'" },
         ...beforeAppAccounts(),
-        { sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 9" },
+        { sql: "DELETE FROM private_hosted_migrations WHERE migration_id >= 9" },
         { sql: "DROP TABLE hosted_app_account_links" },
         ...beforeProfileRemoval(),
         ...profileAppCopiesPending("private_hosted"),
@@ -476,7 +478,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
         // The app's data before the upgrade: one row in its `ticks` table.
         const before = yield* setup.writeTick(actors.member);
         expect(before).toHaveLength(1);
-        const [recorded] = yield* legacyStorage(
+        const [recorded, current] = yield* legacyStorage(
           setup.upgradeStatements({
             profiles: [
               // Alice's oldest enabled profile keeps the app; her Work profile used another account.
@@ -628,7 +630,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile schedules", (it
           { sql: "SELECT id, status FROM executor_profile_app_copies ORDER BY id" },
         ]);
         expect(ledger).toEqual([{ name: "app_account_links" }]);
-        expect(version).toEqual([{ value: "4.0.15" }]);
+        expect(version, "every step from 4.0.12 ran to the current version").toEqual(current);
         expect(plans).toEqual(
           [copies.work, copies.bobOld].toSorted().map((copy) => ({ id: copy, status: "copied" })),
         );

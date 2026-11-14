@@ -8,6 +8,7 @@ import { FetchHttpClient, HttpClientRequest } from "effect/http";
 import * as oauth from "oauth4webapi";
 import {
   AuthorizationServerSignal,
+  type FirstPartyOAuthClientId,
   maxOAuthServiceErrorLength,
   maxOAuthServiceTextLength,
   type OAuthClientRegistration,
@@ -193,15 +194,19 @@ const serviceErrorResponse = (error: unknown, description: unknown, secrets: Sen
 
 /**
  * RFC 6749 §5.2: a JSON object with an `error` code and no access token is an error response,
- * whatever its HTTP status.
+ * whatever its HTTP status. Supabase Auth's OAuth server answers a refused refresh in its own
+ * shape, `{"code": 400, "error_code": "refresh_token_already_used", "msg": "..."}`, with no
+ * `error`; its code and message stand in for RFC 6749's.
  */
 const oauthErrorBody = (body: unknown) => {
-  if (!isObject(body)) return undefined;
+  if (!isObject(body) || Reflect.get(body, "access_token") !== undefined) return undefined;
   const error = Reflect.get(body, "error");
-  return typeof error === "string" &&
-    error !== "" &&
-    Reflect.get(body, "access_token") === undefined
-    ? { error, description: Reflect.get(body, "error_description") }
+  if (typeof error === "string" && error !== "")
+    return { error, description: Reflect.get(body, "error_description") };
+  const supabase = Reflect.get(body, "error_code");
+  const message = Reflect.get(body, "msg");
+  return typeof supabase === "string" && supabase !== "" && typeof message === "string"
+    ? { error: supabase, description: message }
     : undefined;
 };
 
@@ -387,9 +392,39 @@ const isClientRejection = (error: string) =>
   error === "invalid_client_id" ||
   error.startsWith("invalid_client:");
 
+/**
+ * Services' own codes for a refresh token that can never be used again, their RFC 6749
+ * `invalid_grant`:
+ *
+ * - Supabase Auth: the token was already used outside the reuse interval, which also revokes every
+ *   token of its session, or it or its session no longer exists or has expired.
+ * - GitHub (`bad_refresh_token`, with HTTP 200): the token is invalid or expired.
+ * - Slack (with HTTP 200): `invalid_refresh_token`, or `token_revoked` for a deleted user or
+ *   workspace or a removed app.
+ * - AWS Sign-In: `TOKEN_EXPIRED` (HTTP 401) once the refresh token's session has ended, at most
+ *   12 hours after sign-in, and `USER_CREDENTIALS_CHANGED` (HTTP 403) after the user's password
+ *   changed, which revokes its refresh tokens.
+ * - OpenID Connect's `login_required` from a token endpoint: the user must sign in again. Tesla
+ *   answers it with HTTP 401 for a refresh token already used, after a password reset, or once the
+ *   user revoked the app.
+ *
+ * Several of these come with HTTP 401, which alone would read as a refusal of the client.
+ */
+const isEndedGrant = (error: string) =>
+  error === "refresh_token_already_used" ||
+  error === "refresh_token_not_found" ||
+  error === "session_expired" ||
+  error === "session_not_found" ||
+  error === "bad_refresh_token" ||
+  error === "invalid_refresh_token" ||
+  error === "token_revoked" ||
+  error === "TOKEN_EXPIRED" ||
+  error === "USER_CREDENTIALS_CHANGED" ||
+  error === "login_required";
+
 /** The reason an RFC 6749 §5.2 error code gives for a failed token request. */
 const errorReason = (error: string) =>
-  error === "invalid_grant"
+  error === "invalid_grant" || isEndedGrant(error)
     ? ("invalid_grant" as const)
     : isClientRejection(error)
       ? ("invalid_client" as const)
@@ -453,17 +488,66 @@ const failure = (error: unknown): OAuthProtocolFailed => {
 };
 
 /**
- * `failure`, keeping the service's own error from an authorization response. It comes through the
- * browser, not in answer to a request Executor sent, so it repeats nothing secret of Executor's.
+ * Whose OAuth client a request authenticates as, in the terms a sign-in chooses one:
+ *
+ * - `first_party`: the operator's own client (`FirstPartyOAuthClient`), named by its ID. One
+ *   client and secret serve every organization on the host.
+ * - `stored`: a stored client the attempt or grant names, registered by Executor or saved by a
+ *   person.
+ * - `entered`: a client only the attempt or grant holds: entered for one sign-in, the host's client
+ *   metadata document, an imported grant's own, or a client credentials account's.
  */
-const callbackFailure = (error: unknown): OAuthProtocolFailed => {
-  const failed = failure(error);
-  const serviceError =
-    error instanceof oauth.AuthorizationResponseError
-      ? serviceErrorResponse(error.error, error.error_description, [])
-      : undefined;
-  return serviceError === undefined ? failed : new OAuthProtocolFailed({ ...failed, serviceError });
-};
+export type OAuthClientKind =
+  | { readonly kind: "first_party"; readonly id: FirstPartyOAuthClientId }
+  | { readonly kind: "stored" }
+  | { readonly kind: "entered" };
+
+/**
+ * What a span records about the client a request authenticates as and where it is sent: the
+ * client's kind, the operator's client ID (never the OAuth `client_id` it is configured with),
+ * the client authentication method, which says whether a secret is sent at all, and the host of
+ * the endpoint. Only the host: never the endpoint's path or query, or any credential.
+ */
+export const clientSpanAttributes = (
+  client: OAuthClientKind,
+  method: OAuthRegistration["token_endpoint_auth_method"],
+  endpoint: { readonly name: "token_endpoint" | "revocation_endpoint"; readonly url: string },
+) => ({
+  "oauth.client.kind": client.kind,
+  ...(client.kind === "first_party" ? { "oauth.first_party.id": client.id } : {}),
+  "oauth.client.auth_method": method,
+  [`oauth.${endpoint.name}.host`]: new URL(endpoint.url).hostname,
+});
+
+/**
+ * The secrets to redact from what the service says in a failed answer, or undefined to keep none
+ * of its words. A service answering the operator's client is answering a secret shared by every
+ * organization, and can echo part of it, a new encoding of it, or a token it minted, none of which
+ * redaction can recognize. Its failures therefore keep only their reason, HTTP status, RFC 6749
+ * error code and Retry-After, never `serviceError`.
+ */
+const serviceWords = (client: OAuthClientKind, sent: SentSecrets) =>
+  client.kind === "first_party" ? undefined : sent;
+
+/**
+ * `failure`, keeping the service's own error from an authorization response. It comes through the
+ * browser, not in answer to a request Executor sent, so it repeats no secret Executor sent. A
+ * service can still put one there that it knows, so the operator's client keeps none of it; see
+ * `serviceWords`.
+ */
+const callbackFailure =
+  (client: OAuthClientKind) =>
+  (error: unknown): OAuthProtocolFailed => {
+    const failed = failure(error);
+    const sent = serviceWords(client, []);
+    const serviceError =
+      sent !== undefined && error instanceof oauth.AuthorizationResponseError
+        ? serviceErrorResponse(error.error, error.error_description, sent)
+        : undefined;
+    return serviceError === undefined
+      ? failed
+      : new OAuthProtocolFailed({ ...failed, serviceError });
+  };
 
 /**
  * The endpoint answered with an OAuth error: an error body (RFC 6749 §5.2) or a client
@@ -493,12 +577,29 @@ const protocolStage =
       | "clientCredentials"
       | "refresh"
       | "revoke",
+    attributes: Readonly<Record<string, string>> = {},
   ) =>
   <A, R>(program: Effect.Effect<A, OAuthProtocolFailed, R>) =>
     program.pipe(
       Effect.tapError(observeFailure),
-      Effect.withSpan(`oauth.${stage}`, { attributes: { "oauth.stage": stage } }),
+      Effect.withSpan(`oauth.${stage}`, { attributes: { ...attributes, "oauth.stage": stage } }),
     );
+/** The span of a token request authenticated as `client`; see `clientSpanAttributes`. */
+const tokenStage = (
+  stage: "exchange" | "clientCredentials" | "refresh",
+  input: {
+    readonly clientKind: OAuthClientKind;
+    readonly client: OAuthRegistration;
+    readonly server: OAuthTokenServer;
+  },
+) =>
+  protocolStage(
+    stage,
+    clientSpanAttributes(input.clientKind, input.client.token_endpoint_auth_method, {
+      name: "token_endpoint",
+      url: input.server.token_endpoint,
+    }),
+  );
 
 /**
  * Microsoft identity platform's multi-tenant endpoints (`common`, `organizations`) publish
@@ -870,6 +971,18 @@ const applicationType = (redirect: URL) =>
     : "web";
 
 /**
+ * Authorization parameters a server needs before it issues a renewable grant, where its metadata
+ * cannot say so. Google issues a refresh token only for `access_type=offline` and, once a person
+ * has consented, again only with `prompt=consent`; it neither advertises nor accepts
+ * `offline_access`. Without them every Google sign-in, including each reconnect, lasts an hour.
+ * A value the endpoint's own query or the method's `authorizationParams` sets replaces these.
+ */
+const renewableGrantParams = (endpoint: URL): Readonly<Record<string, string>> =>
+  endpoint.protocol === "https:" && endpoint.host === "accounts.google.com"
+    ? { access_type: "offline", prompt: "consent" }
+    : {};
+
+/**
  * A token request as the JSON object some services require instead of RFC 6749's form. The
  * library's parameters and client authentication are kept; only their encoding changes.
  */
@@ -994,7 +1107,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
     run: (settings: ReturnType<typeof requestOptions>) => Promise<A>,
     options: {
       readonly format?: OAuthTokenRequestFormat | undefined;
-      readonly sent?: SentSecrets;
+      readonly sent?: SentSecrets | undefined;
     } = {},
   ) =>
     Effect.gen(function* () {
@@ -1630,6 +1743,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         const verifier = yield* Effect.sync(oauth.generateRandomCodeVerifier);
         const challenge = yield* request(() => oauth.calculatePKCECodeChallenge(verifier));
         const url = new URL(input.server.authorization_endpoint);
+        for (const [key, value] of Object.entries(renewableGrantParams(url)))
+          if (!url.searchParams.has(key)) url.searchParams.set(key, value);
         // Declared extras go first so the protocol parameters below always win.
         for (const [key, value] of Object.entries(input.authorizationParams ?? {}))
           url.searchParams.set(key, value);
@@ -1653,7 +1768,12 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
      * issuer, and then any RFC 6749 §4.1.2.1 `error`. Failures here never reached the token endpoint.
      */
     callback: (
-      input: { server: OAuthServer; client: OAuthRegistration; state: string },
+      input: {
+        server: OAuthServer;
+        client: OAuthRegistration;
+        clientKind: OAuthClientKind;
+        state: string;
+      },
       callback: URL,
     ) =>
       Effect.try({
@@ -1675,12 +1795,13 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             });
           return parameters;
         },
-        catch: callbackFailure,
+        catch: callbackFailure(input.clientKind),
       }).pipe(protocolStage("authorize")),
     exchange: (
       input: {
         server: OAuthServer;
         client: OAuthRegistration;
+        clientKind: OAuthClientKind;
         redirectUri: string;
         verifier: string;
         resource?: string | undefined;
@@ -1715,12 +1836,17 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         },
         {
           format: input.tokenRequestFormat,
-          sent: [parameters.get("code"), input.verifier, ...clientSecrets(input.client)],
+          sent: serviceWords(input.clientKind, [
+            parameters.get("code"),
+            input.verifier,
+            ...clientSecrets(input.client),
+          ]),
         },
-      ).pipe(protocolStage("exchange")),
+      ).pipe(tokenStage("exchange", input)),
     clientCredentials: (input: {
       server: OAuthTokenServer;
       client: OAuthConfidentialRegistration;
+      clientKind: OAuthClientKind;
       scopes: readonly string[];
       resource?: string | undefined;
       scopeSeparator?: string | undefined;
@@ -1746,12 +1872,17 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             recognizedTokenTypes: await tokenTypes(response),
           });
         },
-        { format: input.tokenRequestFormat, sent: clientSecrets(input.client) },
-      ).pipe(protocolStage("clientCredentials")),
+        {
+          format: input.tokenRequestFormat,
+          sent: serviceWords(input.clientKind, clientSecrets(input.client)),
+        },
+      ).pipe(tokenStage("clientCredentials", input)),
     refresh: (input: {
       server: OAuthServer;
       client: OAuthRegistration;
+      clientKind: OAuthClientKind;
       refreshToken: string;
+      redirectUri?: string | undefined;
       resource?: string | undefined;
       /** Asked for again only when the grant names them; see `OAuthGrant`. */
       scopes?: readonly string[] | undefined;
@@ -1762,6 +1893,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         async (settings) => {
           const server = metadata(input.server);
           const additionalParameters = {
+            ...(input.redirectUri === undefined ? {} : { redirect_uri: input.redirectUri }),
             ...(input.scopes === undefined || input.scopes.length === 0
               ? {}
               : { scope: input.scopes.join(" ") }),
@@ -1785,13 +1917,17 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         },
         {
           format: input.tokenRequestFormat,
-          sent: [input.refreshToken, ...clientSecrets(input.client)],
+          sent: serviceWords(input.clientKind, [
+            input.refreshToken,
+            ...clientSecrets(input.client),
+          ]),
         },
-      ).pipe(protocolStage("refresh")),
+      ).pipe(tokenStage("refresh", input)),
     /** RFC 7009 revocation with the grant's own client authentication. */
     revoke: (input: {
-      server: OAuthTokenServer;
+      server: OAuthTokenServer & { readonly revocation_endpoint: string };
       client: OAuthRegistration;
+      clientKind: OAuthClientKind;
       token: string;
       tokenTypeHint: "refresh_token" | "access_token";
     }) =>
@@ -1805,7 +1941,15 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             { ...settings, additionalParameters: { token_type_hint: input.tokenTypeHint } },
           ),
         ),
-      ).pipe(protocolStage("revoke")),
+      ).pipe(
+        protocolStage(
+          "revoke",
+          clientSpanAttributes(input.clientKind, input.client.token_endpoint_auth_method, {
+            name: "revocation_endpoint",
+            url: input.server.revocation_endpoint,
+          }),
+        ),
+      ),
   };
 };
 

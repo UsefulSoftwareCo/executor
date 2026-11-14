@@ -1,6 +1,10 @@
 /**
- * Publish one complete version once. An accepted upload is polled, never uploaded again;
- * a retried job skips archives whose registry integrity matches byte for byte.
+ * Publish the `executor` launcher for one version once. The native runtimes are not on npm: the
+ * launcher downloads them from the public GitHub release and checks each against the SHA-256 its
+ * package.json records. So this refuses a launcher that does not record every platform's archive
+ * in the artifact directory, or whose archives the public release does not list in its
+ * SHA256SUMS. An accepted upload is polled, never uploaded again; a retried job skips a launcher
+ * whose registry integrity matches byte for byte.
  */
 import { createHash } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -16,22 +20,21 @@ import {
   Schema,
   Stream,
 } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/http";
+import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import {
-  npmArchiveBudgetBytes,
-  npmArchiveBudgetMiB,
-  platformArchive,
-  platformVersion,
-  platforms,
-  release,
-} from "./config.ts";
+import { platformArchive, platforms, release } from "./config.ts";
 
 const RegistryVersion = Schema.Struct({
   version: Schema.String,
   dist: Schema.Struct({ integrity: Schema.String }),
 });
 const Tags = Schema.Record(Schema.String, Schema.String);
+const Launcher = Schema.fromJsonString(
+  Schema.Struct({
+    version: Schema.String,
+    runtimes: Schema.Record(Schema.String, Schema.String),
+  }),
+);
 
 NodeRuntime.runMain(
   Effect.scoped(
@@ -54,31 +57,9 @@ NodeRuntime.runMain(
           }
         });
       yield* collect(directory);
-      const packages = platforms.map((target) => {
-        const matches = files.filter((file) => path.basename(file) === platformArchive(target));
-        const [file, ...extra] = matches;
-        if (file === undefined || extra.length !== 0)
-          throw new Error(`Expected exactly one ${platformArchive(target)}.`);
-        return {
-          file,
-          version: platformVersion(target),
-          tag: `${release.channel}-${target.platform}-${target.arch}`,
-        };
-      });
-      packages.push({
-        file: `.local/releases/${release.version}/wrapper/executor-${release.version}.tgz`,
-        version: release.version,
-        tag: release.channel,
-      });
-      const registry = "https://registry.npmjs.org";
-      const tags = http.get(`${registry}/-/package/executor/dist-tags`).pipe(
-        Effect.flatMap((response) => response.json),
-        Effect.flatMap(Schema.decodeUnknownEffect(Tags)),
-      );
-      const before = yield* tags;
-      const integrityOf = (file: string) =>
+      const digest = (file: string, algorithm: "sha256" | "sha512") =>
         Effect.gen(function* () {
-          const hash = createHash("sha512");
+          const hash = createHash(algorithm);
           yield* fs.stream(file).pipe(
             Stream.runForEach((bytes) =>
               Effect.sync(() => {
@@ -86,89 +67,111 @@ NodeRuntime.runMain(
               }),
             ),
           );
-          return `sha512-${hash.digest("base64")}`;
+          return hash;
         });
-      // A retried job resumes only over archives npm already holds byte for byte.
-      const pending: Array<(typeof packages)[number] & { integrity: string }> = [];
-      for (const pkg of packages) {
-        if (!(yield* fs.exists(pkg.file)))
-          return yield* Effect.die(new Error(`Missing ${pkg.file}`));
-        if (Number((yield* fs.stat(pkg.file)).size) > npmArchiveBudgetBytes)
+
+      const launcherDirectory = path.join(".local/releases", release.version, "wrapper");
+      const file = path.join(launcherDirectory, `executor-${release.version}.tgz`);
+      if (!(yield* fs.exists(file))) return yield* Effect.die(new Error(`Missing ${file}`));
+      const launcher = yield* fs
+        .readFileString(path.join(launcherDirectory, "package.json"))
+        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Launcher)));
+      if (launcher.version !== release.version)
+        return yield* Effect.die(
+          new Error(`The launcher is ${launcher.version}, not ${release.version}.`),
+        );
+      const names = platforms.map((target) => `${target.platform}-${target.arch}`);
+      const unknown = Object.keys(launcher.runtimes).filter((name) => !names.includes(name));
+      if (unknown.length !== 0)
+        return yield* Effect.die(new Error(`The launcher records unknown runtimes: ${unknown}.`));
+
+      // The archives the public release serves, as its SHA256SUMS lists them.
+      const sums = yield* http
+        .get(`https://github.com/${release.repository}/releases/download/${release.tag}/SHA256SUMS`)
+        .pipe(
+          Effect.flatMap(HttpClientResponse.filterStatusOk),
+          Effect.flatMap((response) => response.text),
+        );
+      const listed = new Map<string, string>();
+      for (const line of sums.split("\n")) {
+        const match = /^([0-9a-f]{64}) [ *](?:\.\/)?(.+)$/u.exec(line.trim());
+        if (match !== null) listed.set(match[2] ?? "", match[1] ?? "");
+      }
+      for (const target of platforms) {
+        const name = platformArchive(target);
+        const [archive, ...extra] = files.filter((candidate) => path.basename(candidate) === name);
+        if (archive === undefined || extra.length !== 0)
+          return yield* Effect.die(new Error(`Expected exactly one ${name}.`));
+        const sha256 = (yield* digest(archive, "sha256")).digest("hex");
+        if (launcher.runtimes[`${target.platform}-${target.arch}`] !== sha256)
+          return yield* Effect.die(new Error(`The launcher does not record ${name} as built.`));
+        if (listed.get(name) !== sha256)
+          return yield* Effect.die(
+            new Error(`The public release ${release.tag} does not serve ${name} as built.`),
+          );
+      }
+
+      const registry = "https://registry.npmjs.org";
+      const tags = http.get(`${registry}/-/package/executor/dist-tags`).pipe(
+        Effect.flatMap((response) => response.json),
+        Effect.flatMap(Schema.decodeUnknownEffect(Tags)),
+      );
+      const before = yield* tags;
+      const integrity = `sha512-${(yield* digest(file, "sha512")).digest("base64")}`;
+      // A retried job resumes only over a launcher npm already holds byte for byte.
+      const existing = yield* http.get(`${registry}/executor/${release.version}`);
+      if (existing.status === 404) {
+        yield* existing.text;
+        const temporary = yield* fs.makeTempDirectoryScoped({ prefix: "executor-npm-" });
+        const npmrc = path.join(temporary, "npmrc");
+        // npm substitutes the explicitly supplied environment variable. The file contains no secret.
+        yield* fs.writeFileString(npmrc, "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n", {
+          mode: 0o600,
+        });
+        const code = yield* processes.exitCode(
+          ChildProcess.make(
+            "npm",
+            ["publish", file, "--tag", release.channel, "--access", "public", "--ignore-scripts"],
+            {
+              env: { NPM_CONFIG_USERCONFIG: npmrc, NPM_TOKEN: Redacted.value(token) },
+              extendEnv: true,
+              stdout: "inherit",
+              stderr: "inherit",
+            },
+          ),
+        );
+        if (code !== 0)
           return yield* Effect.die(
             new Error(
-              `npm archive exceeds the ${npmArchiveBudgetMiB} MiB release budget: ${pkg.file}`,
+              `npm publish ${release.version} failed. Inspect the registry and do not blindly retry accepted uploads.`,
             ),
           );
-        const integrity = yield* integrityOf(pkg.file);
-        const response = yield* http.get(`${registry}/executor/${pkg.version}`);
-        if (response.status === 404) {
-          yield* response.text;
-          pending.push({ ...pkg, integrity });
-          continue;
-        }
+      } else {
         const published =
-          response.status === 200
-            ? yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(RegistryVersion)))
+          existing.status === 200
+            ? yield* existing.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(RegistryVersion)))
             : undefined;
         if (published?.dist.integrity !== integrity)
           return yield* Effect.die(
             new Error(
-              `Cannot publish ${pkg.version}: the registry holds a different archive (status ${response.status}). Inspect existing publication before retrying.`,
+              `Cannot publish ${release.version}: the registry holds a different archive (status ${existing.status}). Inspect existing publication before retrying.`,
             ),
           );
-        yield* Console.log(`Already published ${pkg.version} with matching integrity`);
+        yield* Console.log(`Already published ${release.version} with matching integrity`);
       }
-      const temporary = yield* fs.makeTempDirectoryScoped({ prefix: "executor-npm-" });
-      const npmrc = path.join(temporary, "npmrc");
-      // npm substitutes the explicitly supplied environment variable. The file contains no secret.
-      yield* fs.writeFileString(npmrc, "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n", {
-        mode: 0o600,
-      });
-      const upload = (pkg: (typeof pending)[number]) =>
-        Effect.gen(function* () {
-          const code = yield* processes.exitCode(
-            ChildProcess.make(
-              "npm",
-              ["publish", pkg.file, "--tag", pkg.tag, "--access", "public", "--ignore-scripts"],
-              {
-                env: { NPM_CONFIG_USERCONFIG: npmrc, NPM_TOKEN: Redacted.value(token) },
-                extendEnv: true,
-                stdout: "inherit",
-                stderr: "inherit",
-              },
-            ),
-          );
-          if (code !== 0)
-            return yield* Effect.die(
-              new Error(
-                `npm publish ${pkg.version} failed. Inspect the registry and do not blindly retry accepted uploads.`,
-              ),
-            );
-        });
-      const verify = (pkg: (typeof pending)[number]) =>
-        http.get(`${registry}/executor/${pkg.version}`).pipe(
-          Effect.flatMap((response) => response.json),
-          Effect.flatMap(Schema.decodeUnknownEffect(RegistryVersion)),
-          Effect.flatMap((published) =>
-            published.version === pkg.version && published.dist.integrity === pkg.integrity
-              ? Effect.void
-              : Effect.fail(new Error(`Registry integrity does not match ${pkg.version}`)),
-          ),
-          Effect.timeout(15_000),
-          // npm can take over 15 minutes to expose a large accepted archive.
-          Effect.retry({ schedule: Schedule.spaced(15_000), times: 160 }),
-          Effect.andThen(Console.log(`Verified public npm archive ${pkg.version}`)),
-        );
-      // npm exposes each accepted runtime after minutes, so all runtimes upload before any is
-      // awaited. The launcher names them as optional dependencies, so it uploads only once
-      // every runtime is public.
-      const runtimes = pending.filter((pkg) => pkg.version !== release.version);
-      const launcher = pending.filter((pkg) => pkg.version === release.version);
-      yield* Effect.forEach(runtimes, upload, { discard: true });
-      yield* Effect.forEach(runtimes, verify, { concurrency: "unbounded", discard: true });
-      yield* Effect.forEach(launcher, (pkg) => Effect.andThen(upload(pkg), verify(pkg)), {
-        discard: true,
-      });
+      yield* http.get(`${registry}/executor/${release.version}`).pipe(
+        Effect.flatMap((response) => response.json),
+        Effect.flatMap(Schema.decodeUnknownEffect(RegistryVersion)),
+        Effect.flatMap((published) =>
+          published.version === release.version && published.dist.integrity === integrity
+            ? Effect.void
+            : Effect.fail(new Error(`Registry integrity does not match ${release.version}`)),
+        ),
+        Effect.timeout(15_000),
+        // npm can take minutes to expose an accepted version.
+        Effect.retry({ schedule: Schedule.spaced(15_000), times: 160 }),
+      );
+      yield* Console.log(`Verified public npm archive ${release.version}`);
       const after = yield* tags;
       if (
         after[release.channel] !== release.version ||

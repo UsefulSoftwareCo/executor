@@ -21,13 +21,13 @@
     "./build-change": "./src/implementation/build-change.ts"
   },
   "dependencies": {
-    "@effect/atom-react": "4.0.1",
-    "@effect/platform-node": "4.0.1",
+    "@effect/atom-react": "4.1.4",
+    "@effect/platform-node": "4.1.4",
     "@executor-js/ui": "workspace:*",
     "@executor-js/utils": "workspace:*",
     "@tanstack/react-router": "1.170.41",
     "@tanstack/react-start": "1.168.60",
-    "effect": "4.0.1",
+    "effect": "4.1.4",
     "react": "19.3.0",
     "react-dom": "19.3.0"
   },

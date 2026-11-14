@@ -1,0 +1,360 @@
+# Developing Executor
+
+The canonical development checkout is `~/agent-workspace/executor-next`.
+Run `bun run workspace:check` before using the shared preview; use
+`bun run workspace:check --task` on an isolated task branch. See
+[the workspace lifecycle](AGENTS.md#workspace-lifecycle) for commits and merge handoff.
+
+Executor SDK, app framework and the first local server package. Account/app
+persistence, encrypted credentials, deploying and tool execution now work.
+The local MCP endpoint runs codemode over app tools and Executor management tools.
+The local dashboard shows apps, accounts, live tools and retained source.
+Provider OAuth supports supplied clients, DCR, CIMD, and token refresh.
+Outbound MCP works over HTTP/SSE on local, self-host and cloud: custom remote
+MCP imports and catalog MCP entries deploy, discover live upstream tools, and
+call them, verified end to end including a real public server. Apps cannot
+start local processes, so stdio MCP servers are not supported. The remote SDK facade
+(`createRemoteExecutor`) is not implemented.
+
+Effect is pinned to an upstream snapshot with MCP `2026-07-28` support.
+See [the dependency notes](notes/effect-mcp.md) for the revision and checks.
+
+Start with [project orientation](notes/project-orientation.md) and
+[account connection and app configuration](notes/account-connections.md).
+Repository launch commands load secrets directly from 1Password through `op run`.
+
+For the local/hosted split, start with the [code-sharing map](notes/code-sharing.md).
+The first extracted capability is [catalog/import preparation](packages/catalog/README.md).
+Local owns installation; cloud and Docker share a separate hosted product.
+The hosted product serves a TanStack Router dashboard and
+a shared Effect HTTP API on Cloudflare and Docker. Both have organization access
+and persistent SDK inventory; cloud alone adds Autumn emulator billing. Alchemy
+ships the frontend and Worker in one deployment; Docker bundles the frontend and Node server.
+
+To run your own instance, follow the public [self-host guide](apps/hosted/self-host/README.md).
+It uses one Docker container with persistent storage and browser sign-in for MCP clients.
+
+Other references: [domain terms](CONTEXT.md),
+[provider authoring](notes/provider-authoring.md),
+[OAuth implementation and package choice](notes/oauth.md),
+[shared context](notes/shared-app-context.md),
+[app schemas](notes/app-schemas.md),
+[Axiom with two accounts](notes/axiom-mcp-accounts.md), and
+[runtime notes](notes/app-runtime.md).
+
+## Cloud onboarding E2E
+
+`bun run e2e:cloud --test-name 'Cloud onboarding'` starts the real local Cloud
+Worker and disposable Postgres with hosted emulators. It needs Docker, Playwright
+Chromium and ffmpeg, but no account secrets, saved Alchemy profile or 1Password.
+See [recorded E2E tests](e2e/README.md) for the evidence viewer and attached stages.
+
+## Local development
+
+`bun run dev` needs no environment variables or 1Password. It serves the local
+product with UI hot reload at `https://local.executor.localhost:5394`, or
+`https://local.<checkout>.executor.localhost:5394` in another checkout, and prints
+a one-use connect link. Any number of checkouts can run at once. Data and a
+development key pair live in the checkout's ignored `.local/dev/`; delete it to
+start fresh. `bun run server`, `bun run executor` and the desktop scripts use the
+same defaults. Set `EXECUTOR_*` variables to override them; behind the proxy, the
+port and browser origin always come from Portless. To use the 1Password values,
+run `bun run with:local bun run dev`.
+
+## Development configuration
+
+Authenticate the 1Password CLI, then use the normal repository launch commands.
+The `with:local`, `with:cloud`, `with:cloud:dev`, and `with:self-host` scripts in `package.json`
+load 1Password references from ignored files through `op run`:
+
+- `.env.development.op` for optional local development overrides.
+- `.env.production.op` for cloud.
+- `.env.cloud-development.op` for the cloud Worker running locally.
+- `.env.self-host.op` for Docker and standalone hosted Node.
+
+Use these scripts for other commands too: `bun run with:local node script.ts`.
+
+All `.env*` files are excluded from Git and Docker builds. Keep only references
+in these files, never resolved credentials. Vault and item references also stay
+out of tracked scripts. Edit values in 1Password, then restart the affected
+process. Keep encryption/signing keys stable.
+
+Cloud uses Alchemy's PlanetScale database and role resources. Worker events reach
+PlanetScale's PgBouncer through Hyperdrive; Durable Objects connect to PgBouncer directly.
+`bun run hosted:cloud:dev` starts the cloud Worker, local Postgres, migrations,
+and frontend through Alchemy with service emulators and no credentials.
+`bun run hosted:cloud:dev:1password` uses `.env.cloud-development.op` instead;
+configure `CLOUD_DEV_DATABASE_PASSWORD` in 1Password and use
+`BETTER_AUTH_URL=https://127.0.0.1:5395`. See
+[local cloud development](apps/hosted/README.md#local-cloud-development).
+Self-host uses embedded PGlite with a persistent data volume. Add the required
+references to the matching ignored file. Never put literal credentials there.
+See [hosted configuration](apps/hosted/README.md#cloudflare) for PlanetScale settings.
+Servers only read their process environment; deployed hosts use platform
+secret bindings without requiring 1Password at runtime.
+
+## Layout
+
+Every package uses `src/contracts/`, `src/implementation/`, and `src/index.ts`.
+Keep contracts flat, one cohesive area per file.
+
+- `packages/sdk/src/contracts/`
+  - `provider.ts`: normalized definitions, named auth methods and derived references
+  - `account.ts`: reusable accounts, API-key fields, OAuth start/completion and lookups
+  - `apps.ts`: apps, requirements, source, version and account errors
+  - `version.ts`: immutable source versions and retained builds
+  - `tools.ts`: existing tool seam, using accounts the product resolves from links
+  - `shared.ts`: branded IDs, owners, JSON and secret boundary types
+  - `http.ts`: one HTTP contract, composed from accounts/apps/tools
+  - `executor.ts`: the Promise SDK projected from that contract
+  - `storage.ts`: parsers for persisted accounts, versions and configured apps
+  - `runtime.ts`: pluggable build, inspect and call operations
+- `packages/sdk/src/implementation/`: native account/app/tool operations, database
+  transactions, runtime adapters, provider identity and HTTP handlers
+- `apps/local/server/`: local PGlite, credential encryption, configuration, API and MCP composition
+- `apps/local/web/`: React dashboard with shadcn components and Effect Atom HTTP calls, catalog imports and account setup
+- `apps/hosted/server/`: shared hosted HTTP contracts and handlers
+- `apps/hosted/web/`: shared React pages, components, and Effect Atom API reads
+- `apps/hosted/cloud/web/`: cloud dashboard routes, navigation, and browser entry
+- `apps/hosted/self-host/web/`: self-host dashboard routes, navigation, and browser entry
+- `apps/hosted/cloud/`: Cloudflare entry point and Alchemy v2 deployment
+- `apps/hosted/self-host/`: Effect Node HTTP entry point and Docker image
+- `packages/fumadb-effect/`: Effect SQL schema, typed query and migration implementation
+- `packages/mcp/`: shared execute/skills contracts, codemode and search over product-authorized operations
+- `packages/app-templates/`: source generators using the `apps` protocol subpaths for MCP, OpenAPI and GraphQL
+- `packages/apps/`: provider/app authoring, shared context, schema constructors,
+  native Effect contracts, an author facade, a portable host handler and fetch decoding
+- `playground/demo-apps/`: Vercel, Axiom, Mail, and Issue Mail authoring examples
+- `playground/sdk/`: Promise SDK examples using package exports; no I/O at import time
+
+## Try reading these examples
+
+- [Vercel](playground/sdk/vercel.ts): deploy, connect an API-key account, save its
+  selection, and call a tool; same program for local and remote Executor
+- [Axiom](playground/sdk/axiom.ts): two configured copies of one app and two OAuth sign-ins
+- [Account reuse](playground/sdk/accounts.ts): list matching accounts, use one account
+  in several apps, and select multiple Gmail accounts
+- [Two users](playground/sdk/two-users.ts): separate configured apps and accounts;
+  the product applies its own owner checks
+- [Versions](playground/sdk/versions.ts): retained code and the existing rollback seam
+
+The in-process SDK takes `{ storage, sources, blobs, runtime, credentials }`. The Vercel example
+can use those adapters; OAuth and remote examples remain sketches. Source-file
+reads use Effect's filesystem service and assume the repository root. See the
+[local server](apps/local/server/README.md) for resource ownership and API setup.
+
+## Storage schema
+
+`executorDatabase` declares providers, accounts, versions, apps, OAuth records
+and configured-app documents with fumadb-effect. The caller supplies an Effect SQL
+driver Layer, creates `makeExecutorStorage`, runs its `migrate` Effect, and owns
+the connection lifetime. The [PGlite example](playground/sdk/storage.ts) initializes the schema
+and round-trips a configured app without starting an SDK engine.
+
+Accounts store metadata and opaque encrypted credential bytes. The credential
+adapter owns encryption, envelope format and key custody. The local server
+uses AES-GCM with an explicitly configured key. Parsed storage
+records redact the bytes; public account records contain only metadata.
+Versions retain a Git commit reference, file count, build reference and declared
+account requirements. Source reads load files from Git; SQL stores no source bytes. Public app requirements come from the active version. No
+live tool catalog is stored.
+
+The schema enforces unique app names per owner, account provider references,
+and active versions from the app's code lineage. Owners may differ across
+related records. Saved account maps preserve missing slots, scalar IDs and
+explicit empty arrays. SDK operations check account existence, provider matching,
+cardinality and duplicate selections inside those maps. Versions are inserted
+as immutable rows; selection and activation changes are transactional.
+
+Live queries track storage reads and update after committed writes. The dashboard
+uses typed subscriptions; apps can declare async queries and mutations. See
+[reactive storage](notes/reactive-storage.md) for the author model and runtime boundaries.
+
+## App runtime
+
+Every product runs authored apps and workflows in workerd, never in the host
+Node process. Local and self-host use `workerdApps` from `@executor-js/sdk/node`;
+cloud uses Dynamic Workers. Binary storage is supplied separately as `blobs`.
+Standalone runtime callers use `createAppRuntime({ runtime, blobs })` for Promise
+`build`, `inspect`, `query`, `mutate`, and `call` operations. See
+[app runtime](notes/app-runtime.md) and [blob storage](notes/blob-storage.md).
+
+`apps/host` exposes `createAppHandler` and `hostContext` for other hosts. Its
+framework-owned Request/Response protocol supports requirements, inspection and
+calls. Trusted resolved accounts arrive separately from the request, are parsed
+and redacted, and are decoded through each provider's native method schema.
+The handler evaluates the app factory for every inspect/call, validates native
+tool input, and returns parsed JSON. Error envelopes contain fixed error tags,
+never author exceptions or credentials. It does not add app-authored HTTP routes.
+
+Builds use the `apps` release the app declares and remain tied to their location
+and compatibility. Dependencies that install the Executor SDK are rejected. Native dependencies or packages needing install
+scripts are not supported. JSON Schema metadata preserves
+defaults, but Effect v4 can represent optional undefined branches as nullable;
+native decoding remains authoritative. Outbound MCP works through this same
+handler (apps calling out to remote MCP servers), and Cloudflare hosting is
+implemented for cloud; see [hosted apps](notes/hosted-apps.md).
+
+## Model
+
+Providers are declared in app code. Matching normalized definitions yield the
+same `ProviderId`; there is no manual provider registry, slug or provider owner.
+The host exposes the reference and serialized definition through
+`app.requirements.accounts.<slot>`. IDs use SHA-256 of the canonical JSON
+definition, with object keys sorted and array order preserved.
+
+An account has its own required owner, provider, method and label. Credentials
+stay out of returned metadata. Public SDK calls take plain credential fields;
+host contracts redact them at entry. OAuth client configuration, state, PKCE,
+refresh tokens and grant storage belong to the trusted host.
+
+An app owns source, versions, requirements and shared data. It holds no account selections. `apps.deploy`
+creates, builds and activates a new app, keyed by `(owner,name)`.
+`apps.copy({ from, owner, name })` copies running source into an independent app
+with fresh Git history and deploys it. Unfinished apps copy their working source
+and remain undeployed. Copies retain their origin but no accounts or app data.
+
+Operations that run app code take an explicit `accounts` map, nested by scope:
+`{ app, user }`, each from requirement name to account IDs. App requirements are
+filled by the app links, set for everyone by people who can edit the app, and
+user requirements by the caller's user links; app-scope work, such as an app schedule, has no `user`. Every requirement
+is named; a plain one names exactly one account and `.many()` any number,
+including none. Products resolve the map, never the caller: a plain user
+requirement uses its one linked account and `.many()` every linked account; see
+[app accounts](notes/app-accounts.md).
+Requirements apply to the whole app, including tools that use only part of its
+context.
+
+`AppCodeId` groups the versions belonging to one independent app; it has no
+separate CRUD API. A version retains immutable source, its deploying owner,
+and a compiled-build reference. Code activation changes the app's pointer and
+re-registers managed webhooks. New calls validate their accounts against the active
+requirements. It does not copy accounts, rewrite links, or migrate app data.
+
+Tool calls identify the app and the accounts they use. The host snapshots the
+version and account IDs for that invocation, checks product authorization, resolves current credentials, and
+evaluates the dynamic app. An explicit version pins code only. The local MCP adapter evaluates catalogs for each execute and names tools by
+configured app ID. Durable indexing and cross-call revision handling remain deferred.
+
+Each tool can declare its own `approval` callback or use `always()` / `never()`
+from `apps/tools/approval`. The framework checks its decision after input validation
+and before that tool runs.
+See [tool policies](notes/app-policies.md) and [SDK call/resume](notes/sdk-tool-approvals.md).
+MCP supports model-mediated resume and native client prompts; browser approval
+pages remain separate work. See [MCP approvals](notes/mcp-resume.md).
+
+App authors import schema helpers such as `object`, `string`, and `array`
+from `apps`. Effect validation stays internal. Every app's `package.json`
+declares the exact `apps` version it uses, alongside any other dependencies.
+
+## Boundaries and deferred work
+
+The root `@executor-js/sdk` exports Promise-based `createExecutor` and
+`createRemoteExecutor`. `@executor-js/sdk/core` exports the same constructors
+and operations as Effects, with typed failures and native Stream subscriptions.
+The local server uses `/core`; callers retain their Effect context, cancellation,
+transactions, and live-query tracking. Both entry points use the same operations.
+See [the Effect example](playground/sdk/effect.ts) and
+[the Promise example](playground/sdk/vercel.ts).
+
+Framework and SDK operations use Effect v4 internally. App authors use ordinary async
+functions; pure declarations and the schema parsing facade stay synchronous.
+App factories, tools, webhooks and response readers have Effect-native internal
+contracts. Public callbacks and schema helpers are adapted at the author boundary.
+Owners are opaque product references and filters, not core permission rules.
+Products enforce access to apps and reusable accounts, including cross-owner use.
+
+Webhooks support durable subscriptions, callback delivery and explicit lifecycle
+reconciliation; see [webhooks](notes/webhooks.md). The remote SDK facade is not
+implemented. General app
+HTTP endpoint authoring, durable discovery indexes, app-to-app calls, rollout
+policies, and app data migrations remain deferred. Scheduled work will use the
+same saved account context; no scheduler API is introduced. Private local app
+UIs and basic persistent app state with live queries are implemented.
+See [deferred work](notes/deferred.md) for the current list, including workspaces.
+
+## MCP
+
+Run the [local server](apps/local/server/README.md), then connect a Streamable
+HTTP MCP client to `http://127.0.0.1:4312/mcp` using the configured bearer key.
+Append `?elicitation_mode=native` to use native client approval prompts. The default
+`model` mode returns pending approvals for the agent to answer through `resume`.
+It exposes `skills` for app documents and `execute({ code })` for programs. The
+server's MCP instructions introduce Executor; they are the Executor app's
+`executor` skill. Call `skills({})` to list documents and
+`skills({ app: "executor", name: "executor" })` to read that entry point, which
+links to the `code-mode` and `app-authoring` skills. Discover callable paths
+inside execute:
+
+```js
+return await tools.search({ query: "Executor" });
+```
+
+The bundled Executor app can deploy source, connect API-key accounts, select
+accounts and create more configured copies. It runs through the same app runtime
+as those copies. Search again in a new execute after changing configuration.
+
+```js
+// Substitute the exact paths returned by search.
+return await Promise.all([
+  tools["app_first"].listProjects({}),
+  tools["app_second"].listProjects({}),
+]);
+```
+
+Each copy uses its own saved account selection. All targets use
+`@opencode-ai/codemode` for `execute(code)`. The interpreter has no direct
+filesystem, network, Node globals or imports. Its tool calls enter the product's
+authorized app runtime. Authored apps run in workerd on Local, self-host and Cloud;
+CodeMode's interpreter limits and cancellation remain cooperative.
+See [MCP implementation and checks](notes/effect-mcp.md).
+
+## Local dashboard
+
+With the local keys configured as described in the [server setup](apps/local/server/README.md):
+
+```sh
+bun run web:build
+bun run server
+```
+
+Run `bun run executor` to start or join the background server and open an
+authenticated dashboard; the server keeps running until
+`bun run executor service stop`. Use `bun run executor serve` to run it in the
+foreground without a browser, or `bun run executor service pair` to get a fresh one-use
+connection link for the running server. See the
+[background service](apps/local/server/README.md#background-service). Browser
+sessions use HttpOnly cookies; no API key is pasted or stored in the browser.
+Apps and Accounts show persisted state. Open an app to inspect its live tools, selected
+accounts, and retained source. Reads use Effect Atom with the server's typed
+HTTP contract. Configuration remains available through MCP and the SDK.
+
+## Check
+
+```sh
+bun install
+bun run apps:build
+bun run typecheck
+```
+
+## Desktop development
+
+Run `bun run desktop:dev` for the Electron app with hot reload, or
+`bun run desktop:start` for the built dashboard. Both use the 1Password
+configuration described in the desktop setup and a separate `.local/desktop`
+data directory. On macOS, the launcher also creates `.local/desktop-runtime/Executor Dev.app`. See the
+[desktop setup](apps/local/desktop/README.md) for lifecycle and verification.
+
+## Public export
+
+Development happens in this private repository. The public
+`UsefulSoftwareCo/executor` repository receives snapshots on its `v2` branch
+through `scripts/export-public.sh`. Paths listed in
+`scripts/export-public.exclude`, such as `notes/`, stay private. The export
+workflow runs the script on every push to `main`. See `RELEASING.md`.
+
+Pull requests against `v2` are ported into the private repository with the
+contributor's `Co-Authored-By` trailer and a line naming the public pull request
+and its full head sha, `Public-PR: UsefulSoftwareCo/executor#<number> <sha>`. The next
+export takes that head as another parent of its commit, so the pull request shows
+as merged and its commits stay in `v2`'s history.

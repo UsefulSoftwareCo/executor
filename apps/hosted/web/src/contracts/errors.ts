@@ -1,3 +1,4 @@
+import { CatalogFeedUnavailable } from "@executor-js/catalog/contracts";
 import { registryErrorMessage } from "@executor-js/ui/contracts/registry-error";
 import { mayHaveWrittenFailure } from "@executor-js/sdk";
 import type { HostedApi } from "@executor-js/hosted-server/contracts";
@@ -22,8 +23,6 @@ const errorMessage = Match.type<HostedError>().pipe(
           "One of the selected groups is no longer available. Choose the current groups.",
         creator_unavailable:
           "Only me is available for apps with a current creator. Choose groups or everyone instead.",
-        personal_account:
-          "Personal accounts stay private. Connect a shared account to give your team access.",
       })[reason],
     ScheduleNotFound: () => "This schedule or run is no longer available.",
     ConnectionNotFound: () => "This connection was revoked or no longer exists.",
@@ -51,6 +50,7 @@ const errorMessage = Match.type<HostedError>().pipe(
       })[reason],
     RegistryError: registryErrorMessage,
     AppAccessDenied: () => "You do not have permission to change this app.",
+    FullListingNameRequired: (error) => `${error.description} ${error.recovery.action}`,
     AppSlugTaken: () => "Another app name produces this address. Choose a different name.",
     AppNameTaken: () => "An app already uses this name. Choose another name.",
     AppVersionChanged: () =>
@@ -75,6 +75,7 @@ const errorMessage = Match.type<HostedError>().pipe(
     VersionBuildFailed: () =>
       "The app could not be built. Check its source or try a different catalog entry.",
     BuildMemoryExceeded: (error) => `${error.description} ${error.recovery.action}`,
+    MarkdownUnavailable: (error) => `${error.description} ${error.recovery.action}`,
     CatalogImportFailed: ({ reason }) => `The app could not be imported. ${reason}`,
     AccountRequired: ({ scope }) =>
       scope === "app"
@@ -98,7 +99,7 @@ const errorMessage = Match.type<HostedError>().pipe(
     AccountConnectionTargetChanged: () =>
       "The app’s account setup changed. Close this form and try again.",
     AccountConnectionRefused: () =>
-      "Your access doesn’t allow connecting this account for the app. Check your access to the app and the account’s destination, then start account setup again.",
+      "Your access doesn’t allow connecting this account for the app. Check your access to the app, then start account setup again.",
     ProviderNotFound: () => "This provider is no longer available. Reload the app and try again.",
     // An app's own account is reconnected by people who can edit the app; a caller cannot replace it.
     OAuthReconnectRequired: ({ appRequirement }) =>
@@ -183,8 +184,14 @@ const errorMessage = Match.type<HostedError>().pipe(
     WebhookFailed: () =>
       "The webhook could not run. Check its definition, settings, and connected accounts.",
     StorageError: () => "Your data could not load. Try again.",
+    ToolCallLogBusy: () =>
+      "Tool calls took too long to read. Try again, or narrow the time range, filters or search.",
     AccountNotFound: () => "This account is no longer available in this organization.",
-    CatalogUnavailable: () => "The app catalog could not be reached. Try again.",
+    // The wire form carries an agent's next step; people get the dashboards' wording of it.
+    CatalogUnavailable: () => {
+      const { description, recovery } = new CatalogFeedUnavailable();
+      return `${description} ${recovery.action}`;
+    },
     FeedbackUnavailable: () => "Feedback could not be sent. Try again.",
     FeedbackDisabled: ({ message }) => message,
     HttpClientError: () =>

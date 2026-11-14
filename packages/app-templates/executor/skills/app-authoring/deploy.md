@@ -22,11 +22,22 @@ from the app. `--files` also accepts a JSON file holding an array of
 `{ "path", "content" }` objects.
 
 Code, every file outside `ui/public/`, is UTF-8 text: at most 4,096 files and
-16 MiB of file contents, on every host. Files under `ui/public/` are served as
+16 MiB of file contents, on every host. Each of the app's own JavaScript or
+TypeScript files is at most 2,000,000 bytes (2 MB). JSON files are outside this
+limit, so keep a large document such as an OpenAPI description in a `.json`
+file. The host checks this limit while it builds, not the CLI before uploading:
+a build that reaches a larger file of the app's own fails with
+`VersionBuildFailed` at the `source` stage, naming the file, its size and the
+limit; no app or version is created. Files inside npm packages the app imports
+are not limited and are still compiled. On self-host and the local server a
+build compiles on the thread that runs apps, so a large package file delays
+every app call, and any other request served from that thread, while it
+compiles: a 3,000,000-byte module of dense code took about 1.2 seconds in our
+tests. Files under `ui/public/` are served as
 they are and may be binary, such as images, fonts, audio, WebAssembly or a
 prebuilt bundle: at most 10,000 files, each at most 32 MB and 1 GB in total.
 Builds never load them; each deploy copies them to the host's own storage.
-The CLI checks these limits before it uploads anything. A source over them
+The CLI checks the other limits before it uploads anything. A source over them
 fails with `SourceRejected`, which states the count or size and names the
 largest files; a binary file outside `ui/public/` fails the same way and is
 named. The host rejects a larger source with `SourceError` and HTTP 413.
@@ -46,18 +57,19 @@ its bytes. Send that entry back unchanged in a commit to keep the file. Through
 Git clone has them all.
 
 Read these docs with
-`executor apps skills --app executor --name app-authoring --file deploy.md`.
+`executor skills --app executor --name app-authoring --file deploy.md`.
 
-Without `--host` or `EXECUTOR_HOST`, commands use the local background
-Executor, starting it if it is not running, and need no API key. A set
+Commands use `--host`, then `EXECUTOR_HOST`, then the host the CLI signed in to
+last. Without any of them, they use the local background Executor, starting it
+if it is not running, and need no API key. A set
 `EXECUTOR_API_KEY` is sent in place of the background Executor's own
 credential, so it must be that server's current key. A `--host` that names
 another local server, such as `http://127.0.0.1:4400`, needs that server's API
 key in `EXECUTOR_API_KEY`; if the variable is unset, ask the user to set it, and
 do not search files for it. For hosted Executor, run
-`executor apps login --host https://api.executor.sh` once. It prints a link and
-a code and waits; ask the user to open the link and approve the code. Then pass
-the same `--host` to every command, or set `EXECUTOR_HOST` to it once.
+`executor apps login` once; add `--host <origin>` for a self-hosted Executor.
+It prints a link and a code and waits; ask the user to open the link and
+approve the code. Later commands use that host without `--host`.
 `--organization` defaults to the organization you signed in to.
 
 A command that fails exits with status 1. Its standard error states the
@@ -369,16 +381,16 @@ Access depends on the app as well as the caller's role. Any member can deploy
 a new app; it starts private, with the deployer as its creator. The creator and
 organization owners and administrators manage it: they rename it, activate a
 version, change its audience, remove it, and connect or link its app
-requirements, which also needs use of the account linked. Using an app (calling
+requirements with their own accounts. Using an app (calling
 its tools, opening its UI, `userConnect` and `userLink`) follows its audience: a
 private app only by its creator, even for administrators; a `groups` app by
 members of those groups; an `everyone` app by every member. Managing an app does
-not grant its use. Personal accounts are usable only by their owner; shared
-accounts follow their own audience. An MCP connection limited to selected apps
+not grant its use. Every saved account is personal: only its owner uses or
+manages it, and an app link is how one account serves every caller. An MCP connection limited to selected apps
 can only find and run those apps' tools; deploying and other management calls
 need a connection to all apps. The server rechecks the caller's grant, current
 membership and these rules on every API call.
-The management app's caller credential is never saved as a shared account.
+The management app's caller credential is never saved as an account.
 
 **The remaining management examples use the local product's API**, not
 self-host's.
@@ -495,7 +507,9 @@ Every call follows the active version, so nothing needs updating to pick up
 new code. The next `execute` lists and calls the new tools. Activating a
 version re-registers each webhook source's subscriptions on it in the
 background, usually within seconds, without blocking tool calls; the app's
-Webhooks tab shows their status. It also deletes the saved settings of schedules
+Webhooks tab shows their status. A manual (`setup`) subscription keeps its
+callback URL, secret and setup fields while the activated version keeps the same
+`signingSecret` and accepts the same `state` fields; changing either needs a new setup. It also deletes the saved settings of schedules
 the new version no longer declares.
 
 `apps.versions` lists retained versions. `apps.source` accepts an optional
@@ -558,8 +572,9 @@ types and a local type check do not catch:
 - `integrity` must be empty or omitted.
 
 `ctx.fetch` rejects an unsupported value with `FetchOptionUnsupported`, which
-names the option and the values it accepts. Workers also send no `User-Agent`;
-some APIs, such as GitHub's, answer 403 without one, so set it yourself.
+names the option and the values it accepts. A request without a `User-Agent`
+is sent with `User-Agent: Executor`, because some APIs, such as GitHub's, answer
+403 without one. A `User-Agent` app code sets is sent unchanged.
 
 App code can reach public hosts with no allowlist, so a 403 or 404 from one is
 that service's answer. Executor refuses only requests it must not send:

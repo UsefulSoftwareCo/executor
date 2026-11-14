@@ -1,4 +1,4 @@
-/** Synthetic personal and shared accounts that members link to one hosted app. */
+/** Synthetic accounts that members save and link to one hosted app; each is its saver's own. */
 import { expect } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { randomUUID } from "node:crypto";
@@ -93,25 +93,21 @@ export const appAccountsFixture = Effect.gen(function* () {
     { concurrency: 2 },
   );
   /**
-   * Connect an account from the app for one of its user requirements, `service` unless named. The
-   * connection links the new account to that requirement only, for the connecting member: it
-   * replaces their link of a plain requirement and joins a many() one.
+   * Save an account of `actor` from the app for one of its user requirements, `service` unless
+   * named. The connection links the new account to that requirement only, for `actor`: it replaces
+   * their link of a plain requirement and joins a many() one.
    */
   const connect = (
     actor: Session,
     label: string,
-    options: { readonly shared?: boolean; readonly requirement?: string } = {},
+    options: { readonly requirement?: string } = {},
   ) =>
     Effect.gen(function* () {
       const connection = yield* api.request(
         actor,
         "POST",
         connectionsPath(path, "user", options.requirement ?? "service"),
-        {
-          destination: options.shared
-            ? { kind: "shared", audience: { kind: "everyone" } }
-            : { kind: "personal" },
-        },
+        {},
       );
       expect(connection.status, JSON.stringify(connection.body)).toBe(200);
       const request = yield* body(Resource, connection);
@@ -162,18 +158,22 @@ export const appAccountsFixture = Effect.gen(function* () {
 });
 
 /**
- * Bob shares an account with everyone, connecting it from the app for `service`, which replaces
- * his personal account there. Each member then uses the shared account for `service` and links
- * their personal account and the shared one, in that order, to `extra`.
+ * Alice and Bob each save a second account from the app for `service`, which replaces their first
+ * there. Each then links their first account and their second, in that order, to `extra`.
  */
-export const sharedAccountFixture = Effect.gen(function* () {
+export const secondAccountFixture = Effect.gen(function* () {
   const fixture = yield* appAccountsFixture;
   const { actors, path, connect, mailA, mailB } = fixture;
-  const shared = yield* connect(actors.admin, "Shared mail", { shared: true });
-  yield* linkAccount(actors.admin, path, "extra", mailB);
-  yield* linkAccount(actors.admin, path, "extra", shared);
-  yield* linkAccount(actors.member, path, "service", shared);
-  yield* linkAccount(actors.member, path, "extra", mailA);
-  yield* linkAccount(actors.member, path, "extra", shared);
-  return { ...fixture, shared };
+  const [secondA, secondB] = yield* Effect.all(
+    [connect(actors.member, "Alice second mail"), connect(actors.admin, "Bob second mail")],
+    { concurrency: 2 },
+  );
+  for (const [actor, first, second] of [
+    [actors.member, mailA, secondA],
+    [actors.admin, mailB, secondB],
+  ] as const) {
+    yield* linkAccount(actor, path, "extra", first);
+    yield* linkAccount(actor, path, "extra", second);
+  }
+  return { ...fixture, secondA, secondB };
 });

@@ -123,6 +123,13 @@ export const shareListing = (listing: ToolListing) => {
   const definitionLengths: Array<number> = [];
   let definitionChars = 0;
   let copies = 0;
+  /**
+   * Names, texts and `$defs` compared with one already interned. A definition's name is compared
+   * with the buckets under its hash, normally only its own name's, and its text with the earlier
+   * definitions of its name and length that share its hash, normally none, so this stays near the
+   * definition count however names and texts repeat. The evaluation's span records it.
+   */
+  let comparisons = 0;
   // Drawn in the call: Workers refuse random values at global scope.
   const seed = crypto.getRandomValues(new Uint32Array(1))[0]!;
   const add = (text: string, definition: Json): Interned => {
@@ -146,7 +153,10 @@ export const shareListing = (listing: ToolListing) => {
     // Each length seeds its own hash of the name.
     const key = hashText(name, seed ^ text.length);
     const buckets = known.get(key);
-    const bucket = buckets?.find((candidate) => candidate.name === name);
+    const bucket = buckets?.find((candidate) => {
+      comparisons += 1;
+      return candidate.name === name;
+    });
     if (bucket === undefined) {
       const added = add(text, definition);
       const created = { name, first: added };
@@ -154,14 +164,20 @@ export const shareListing = (listing: ToolListing) => {
       else buckets.push(created);
       return added;
     }
-    if (bucket.byHash === undefined && bucket.first.text === text) {
-      copies += 1;
-      return bucket.first;
+    if (bucket.byHash === undefined) {
+      comparisons += 1;
+      if (bucket.first.text === text) {
+        copies += 1;
+        return bucket.first;
+      }
     }
     bucket.byHash ??= new Map([[hashText(bucket.first.text, seed), [bucket.first]]]);
     const hash = hashText(text, seed);
     const candidates = bucket.byHash.get(hash);
-    const found = candidates?.find((candidate) => candidate.text === text);
+    const found = candidates?.find((candidate) => {
+      comparisons += 1;
+      return candidate.text === text;
+    });
     if (found !== undefined) {
       copies += 1;
       return found;
@@ -209,9 +225,10 @@ export const shareListing = (listing: ToolListing) => {
     // name it appears under, so a match also compares the names.
     const key = hashText(positions.join(","), seed);
     const candidates = defsByPositions.get(key);
-    let interned = candidates?.find(
-      (candidate) => same(candidate.positions, positions) && same(candidate.names, names),
-    );
+    let interned = candidates?.find((candidate) => {
+      comparisons += 1;
+      return same(candidate.positions, positions) && same(candidate.names, names);
+    });
     if (interned === undefined) {
       const kept: Record<string, Json> = {};
       const stored: Record<string, number> = {};
@@ -340,6 +357,7 @@ export const shareListing = (listing: ToolListing) => {
         "executor.listing.json_chars": counted().chars,
         "executor.listing.definitions": definitions.length,
         "executor.listing.definition_copies": copies,
+        "executor.listing.definition_comparisons": comparisons,
         "executor.listing.defs": defs.length,
       };
     },

@@ -102,6 +102,7 @@ const message = Match.type<AppUiError>().pipe(
     AppNotDeployed: () => "Deploy this app before opening its page.",
     VersionNotFound: () => "This app’s version is no longer available. Reload the app.",
     StorageError: () => "Executor could not read this app. Try again.",
+    RequestInvalid: () => "This page sent a request Executor could not accept. Reload the page.",
     AppUiUnavailable: () =>
       "The app page is unavailable. Check its version and the server’s app URL settings.",
     Unauthorized: () => "Your session ended. Sign in again.",

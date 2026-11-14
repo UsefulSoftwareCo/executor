@@ -1,4 +1,5 @@
 /** Native development entry point. Runtime-specific imports stay at this edge. */
+import * as BunCrypto from "@effect/platform-bun/BunCrypto";
 import * as BunHttpServer from "@effect/platform-bun/BunHttpServer";
 import * as BunRuntime from "@effect/platform-bun/BunRuntime";
 import { readExecutorSkills } from "@executor-js/app-templates/executor";
@@ -110,6 +111,6 @@ export const main = Effect.scoped(
       Effect.provideService(ConfigProvider.ConfigProvider, configuration),
     );
   }),
-).pipe(Effect.provide(BunHttpServer.layerHttpServices));
+).pipe(Effect.provide([BunHttpServer.layerHttpServices, BunCrypto.layerDigest]));
 
 if (import.meta.main) BunRuntime.runMain(main);

@@ -132,9 +132,7 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           actors.owner,
           "POST",
           connectionsPath(`${prefix}/apps/${appId}`, "user", "service"),
-          {
-            destination: { kind: "personal" },
-          },
+          {},
         ),
       );
       return yield* api.request(

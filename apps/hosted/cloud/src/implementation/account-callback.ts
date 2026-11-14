@@ -1,5 +1,5 @@
 /** Cloud's connected-account callback, which also returns a test stage's sign-ins to the stage. */
-import { Authentication, hostedOAuthCallback } from "@executor-js/hosted-server";
+import { SessionAuthentication, hostedOAuthCallback } from "@executor-js/hosted-server";
 import { Effect, Option } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { stageAccountStateOrigin } from "../contracts/stage-account-state.ts";
@@ -15,7 +15,7 @@ export const cloudAccountCallback = (returnsTo: (origin: string) => Effect.Effec
     const request = yield* HttpServerRequest.HttpServerRequest;
     const url = new URL(request.url, "https://callback.internal");
     const stage = stageAccountStateOrigin(url.searchParams.get("state") ?? "");
-    const { origin } = yield* Authentication;
+    const { origin } = yield* SessionAuthentication;
     if (Option.isNone(stage) || stage.value === origin) return yield* hostedOAuthCallback;
     if (!(yield* returnsTo(stage.value)))
       return HttpServerResponse.text(

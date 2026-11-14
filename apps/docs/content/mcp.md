@@ -12,7 +12,9 @@ paste a credential into the agent.
 - Local: `http://127.0.0.1:4312/mcp`
 
 The transport is streamable HTTP. See
-[Add an MCP client](/mcp-clients) for the exact setup commands.
+[Add an MCP client](/mcp-clients) for the exact setup commands. For a client
+that starts a command instead, `executor mcp` serves the same endpoint over
+stdio; see [From a shell](#from-a-shell).
 
 ## The tools
 
@@ -88,12 +90,25 @@ needs. That is the point: the whole result set never has to pass through the
 model's context.
 
 A remote MCP tool returns its whole MCP result: `content`, `structuredContent`
-and `isError`. `isError: true` is the tool saying it failed. The call returns
+and `isError`. A server that returns `structuredContent` usually repeats it as
+JSON text in `content`; Executor drops that copy, so read `structuredContent`.
+Other content stays as the server sent it. `isError: true` is the tool saying it failed. The call returns
 that result instead of throwing, so programs that read `isError` keep working,
 and the result's `toolCalls` lists the call with outcome `failure`. The server
 may still have made changes. `call` lists it the same way. An outcome of
 `success` only means no tool error was reported; check the result before
 treating its action as done.
+
+Images and audio reach the agent as media. Wherever the value `execute`, `call`
+or `resume` returns holds `{ type: "image", mimeType, data }` or
+`{ type: "audio", mimeType, data }`, with `data` in standard or URL-safe base64,
+the response carries that block as its own MCP content after the JSON text, once
+even if the value repeats it. The JSON keeps `{ type, mimeType, contentIndex }`
+in its place, the block's index in the response's `content`. MCP image and audio
+results, such as screenshots, already have that shape. A program can show bytes
+a tool returns another way, such as an email attachment's base64, by returning
+them in it. Inside a program the block is whole, so its data can be passed on to
+another tool.
 
 The interpreter has no `fetch`, no `process`, no filesystem, no timers and no
 imports. Its only way out is a tool call, which enters the trusted runtime where your
@@ -129,8 +144,12 @@ separately.
 Every request revalidates the token, the approval and your current membership. A
 revoked grant returns 401. Losing membership returns 403.
 
-The consent screen approves every app available to you. To give an agent less,
-connect it through a scoped connection instead.
+On the same screen you choose what the agent reaches, every app available to you
+or one of your [scoped connections](#scoped-connections), and its
+[mode](#elicitation-modes). The URL the client was given only preselects these
+choices. The grant keeps what you chose: every request reads it from the grant,
+whatever URL the client later uses, so changing the URL never widens access or
+weakens approvals. To check what a token reaches, send it to `GET /mcp/whoami`.
 
 ## Scoped connections
 
@@ -142,13 +161,13 @@ you pick. All and read-only include tools the app adds later. Approval rules
 still come from each app's code. A connection never lists the accounts linked to
 an app for everyone: access to the app authorizes them.
 
-Each connection has its own URL, `/mcp?connection=<id>`. Add
-`&elicitation_mode=browser` or `native` to it for another
-[mode](#elicitation-modes). The client signs in at that URL as above, and its
+Each connection has its own URL, `/mcp?connection=<id>`, which still works: a
+client that signs in there finds the connection already chosen. You can also
+choose the connection when signing in at the plain `/mcp` URL. Either way the
 grant follows the connection: edits apply to connected agents at once, and
 revoking the connection revokes every grant issued through it. Personal access
 tokens and the local server key are not limited by a connection; they keep full
-access at the plain URL.
+access at the plain URL and are refused at a connection's URL.
 
 On hosted and self-host, **Connected agents** on the same page lists each
 client you approved, with the apps it can reach, and revokes its grant.
@@ -156,20 +175,45 @@ client you approved, with the apps it can reach, and revokes its grant.
 ## Elicitation modes
 
 When a tool needs an approval, or needs input, Executor has to ask you. Where
-that question appears depends on the mode, which you pick in the endpoint URL
-and which is then fixed in the grant.
+that question appears depends on the mode, which you choose when signing in and
+which the grant then keeps. The sign-in page preselects `automatic` for the plain
+`/mcp` URL, and the named mode for a URL with `elicitation_mode`.
 
-| Mode      | URL                             | Where you answer                                                                                                                       |
-| --------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `model`   | `/mcp`                          | The agent shows you the request and calls `resume` with your answer. This is the default.                                              |
-| `native`  | `/mcp?elicitation_mode=native`  | Your MCP client's own prompt. The `call` or `execute` request stays open and continues. There is no `resume`. `call` approvals are the client's confirmation of the call itself. |
-| `browser` | `/mcp?elicitation_mode=browser` | A signed-in page in your browser. The result carries an `approvalUrl`; the agent calls `resume({ requestId })` to collect your answer. |
+| Mode        | URL                               | Where you answer                                                                                                                                                                 |
+| ----------- | --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `automatic` | `/mcp?elicitation_mode=automatic` | Nowhere. Executor approves tool calls at once; your agent's own permission prompt for `call` or `execute` is the check. A question a running tool asks still reaches the agent, as in `model` mode. |
+| `model`     | `/mcp`                            | The agent shows you the request and calls `resume` with your answer.                                                                                                             |
+| `native`    | `/mcp?elicitation_mode=native`    | Your MCP client's own prompt. The `call` or `execute` request stays open and continues. There is no `resume`. `call` approvals are the client's confirmation of the call itself. |
+| `browser`   | `/mcp?elicitation_mode=browser`   | A signed-in page in your browser. The result carries an `approvalUrl`; the agent calls `resume({ requestId })` to collect your answer.                                            |
 
 Native mode needs a client that implements form elicitation. Browser mode is the
 one to use when you do not want the agent to be the one holding the question.
 
-The mode is part of the grant, not just the URL. Changing the query string on an
-issued connection does not change the mode.
+The mode is part of the grant, not the URL. Changing the query string after
+signing in does not change the mode. A personal access token has no grant, so it
+takes its mode from the URL on each request: `model` at the plain `/mcp` URL.
+
+## From a shell
+
+The [`executor` command](/run/cli#use-your-tools-from-a-shell) calls the same
+tools from a shell: `executor search`, `describe`, `call`, `execute`, `resume`
+and `skills` each call the tool of the same name and print its result as JSON.
+`executor login` signs it in through the browser, where you choose which apps
+the sign-in reaches and its approval mode, as on the consent screen. Without a
+sign-in, it uses the local server.
+
+`executor mcp` is a stdio MCP server that passes every message to the endpoint
+of the host you signed in to, approvals and questions included, and renews the
+sign-in as it runs:
+
+```sh
+claude mcp add executor -- executor mcp
+```
+
+Its instructions add that the `executor` command is available in the agent's
+shell. A large result can then go to a file, with
+`executor execute --file program.js > result.json`, instead of into the
+agent's context.
 
 ## What is coming later
 

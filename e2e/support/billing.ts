@@ -3,8 +3,9 @@ import { Autumn } from "autumn-js";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { createHash, randomBytes } from "node:crypto";
-import { Config, Context, Effect, Layer, Redacted, Schema, Ref } from "effect";
+import { Config, Context, Effect, Layer, Schema, Ref } from "effect";
 import { Cookies, FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
+import { reveal, secret, secretConfig } from "./failure-text.ts";
 
 class BillingTestFailed extends Schema.TaggedError<BillingTestFailed>()("BillingTestFailed", {
   operation: Schema.String,
@@ -17,23 +18,23 @@ const json = <A>(schema: Schema.ConstraintDecoder<A, never>, text: string) =>
 const make = Effect.gen(function* () {
   const origin = yield* Config.String("BILLING_TEST_ORIGIN");
   const namespace = yield* Config.String("BILLING_TEST_NAMESPACE");
-  const key = yield* Config.Redacted("AUTUMN_SECRET_KEY");
+  const key = yield* secretConfig("AUTUMN_SECRET_KEY");
   if (
     !/^https:\/\/127\.0\.0\.1:\d+$/.test(origin) ||
     !namespace.startsWith("executor-next-billing-") ||
-    !Redacted.value(key).startsWith("am_sk_test_")
+    !reveal(key).startsWith("am_sk_test_")
   )
     return yield* Effect.die(
       "Billing verification requires an isolated loopback host and sandbox catalog",
     );
   const autumn = new Autumn({
-    secretKey: Redacted.value(key),
+    secretKey: reveal(key),
     failOpen: false,
     retryConfig: { strategy: "none" },
   });
   const base = yield* HttpClient.HttpClient;
   const session = Effect.gen(function* () {
-    const jar = yield* Ref.make(Cookies.empty);
+    const jar = yield* Ref.make<ReadonlyArray<Cookies.Cookie>>([]);
     const client = base.pipe(HttpClient.withCookiesRef(jar));
     return (
       method: "GET" | "POST" | "DELETE",
@@ -152,7 +153,7 @@ const make = Effect.gen(function* () {
       base.execute(request).pipe(
         Effect.flatMap((response) => response.text),
         Effect.flatMap((text) => json(Schema.Struct({ access_token: Schema.String }), text)),
-        Effect.map(Redacted.make),
+        Effect.map(secret),
       ),
     );
     const client = yield* Effect.acquireRelease(
@@ -160,7 +161,7 @@ const make = Effect.gen(function* () {
       (client) => use("close MCP", () => client.close()).pipe(Effect.orDie),
     );
     const transport = new StreamableHTTPClientTransport(new URL(`${origin}/mcp`), {
-      requestInit: { headers: { authorization: `Bearer ${Redacted.value(tokens).access_token}` } },
+      requestInit: { headers: { authorization: `Bearer ${reveal(tokens).access_token}` } },
     });
     const compatible: Omit<StreamableHTTPClientTransport, "sessionId"> = transport;
     yield* use("connect MCP", () => client.connect(compatible));

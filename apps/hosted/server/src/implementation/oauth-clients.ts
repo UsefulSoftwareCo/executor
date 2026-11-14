@@ -19,7 +19,7 @@ import {
 import { Effect, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
-import { Authentication } from "../contracts/auth.ts";
+import { SessionAuthentication } from "../contracts/auth.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { OrganizationForbidden, organizationOwner } from "../contracts/organization.ts";
@@ -30,6 +30,7 @@ import {
 } from "../contracts/resource-access.ts";
 import { requireGroupSharing } from "./group-sharing.ts";
 import { oauthClientAudience } from "./resource-lifecycle.ts";
+import { audited } from "./security-audit.ts";
 import {
   currentResourceAuthority,
   oauthClientAccesses,
@@ -138,6 +139,10 @@ export const registerOAuthClient = ({
     return { client, access };
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+    audited("provider_oauth_client.create", {
+      kind: "provider_oauth_client",
+      id: ({ client }) => client.id,
+    }),
   );
 
 /** Remove a client; accounts connected with it keep the copy their grants hold. */
@@ -145,12 +150,20 @@ export const removeOAuthClient = (client: OAuthClientId) =>
   Effect.gen(function* () {
     const actor = yield* administrator;
     const executor = yield* Effect.flatten(HostedExecutor);
-    yield* requireOAuthClientAccessAs(actor, client, "manage");
-    return yield* executor.oauthClients.remove({
+    const access = yield* requireOAuthClientAccessAs(actor, client, "manage");
+    const removed = yield* executor.oauthClients.remove({
       owner: organizationOwner(actor.organization),
-      client,
+      client: access.client,
     });
-  });
+    return { removed, client: access.client };
+  }).pipe(
+    // The stored client the caller was allowed to manage.
+    audited("provider_oauth_client.delete", {
+      kind: "provider_oauth_client",
+      id: ({ client }) => client,
+    }),
+    Effect.map(({ removed }) => removed),
+  );
 
 /** Group order carries no meaning; the policy reads them sorted. */
 const sameAudience = (a: typeof AppAudience.Type, b: typeof AppAudience.Type) =>
@@ -272,7 +285,7 @@ export const hostedOAuthClientHandlers = HttpApiBuilder.group(
   "oauthClients",
   (handlers) =>
     Effect.gen(function* () {
-      const redirectUri = accountOAuthRedirectUri(yield* Authentication);
+      const redirectUri = accountOAuthRedirectUri(yield* SessionAuthentication);
       return handlers
         .handle("list", () => oauthClientDirectory(redirectUri))
         .handle("register", ({ payload }) => registerOAuthClient(payload))

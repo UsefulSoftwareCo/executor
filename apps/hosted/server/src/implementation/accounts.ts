@@ -1,15 +1,14 @@
 import { accountOAuthRedirectUri } from "./auth.ts";
+import { audited } from "./security-audit.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
 import { OrganizationForbidden } from "../contracts/organization.ts";
 import {
   recordConnection,
   checkConnection,
-  checkDestination,
   createdConnectionOrganization,
 } from "./connection-policy.ts";
-import { accountDestination } from "./resource-lifecycle.ts";
 import { AccountGrants } from "./proofs/account-access.ts";
 import { AccountTargets } from "../contracts/account-grants.ts";
 import {
@@ -19,7 +18,6 @@ import {
   visibleApps,
   visibleAccounts,
 } from "./resource-policy.ts";
-import type { ConnectionDestination } from "../contracts/resource-access.ts";
 /** Account use cases, connection grants and OAuth routes share the same ownership checks. */
 import {
   type AccountConnectionId,
@@ -38,7 +36,11 @@ import { Effect, Schema } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
-import { ApiAuthentication, Authentication, CurrentPrincipal } from "../contracts/auth.ts";
+import {
+  BearerAuthentication,
+  SessionAuthentication,
+  CurrentPrincipal,
+} from "../contracts/auth.ts";
 import {
   CurrentOrganization,
   OrganizationSlug,
@@ -55,7 +57,7 @@ import { RequirementMismatch } from "../contracts/app-accounts.ts";
 const linkedApps = (owner: OwnerId, account: AccountId) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const policy = yield* CurrentAuthorization;
+    const policy = yield* CurrentPolicy;
     const apps = yield* executor.apps
       .list({ owner, ids: permittedAppIds(policy) })
       .pipe(Effect.flatMap(visibleApps));
@@ -75,7 +77,7 @@ const linkedApps = (owner: OwnerId, account: AccountId) =>
  * App-scoped tokens reach this only through an app they can use; see RequireAccountGrant.
  */
 export const getAccount = Effect.gen(function* () {
-  const { owner, account, access } = yield* AccountGrants.inspect;
+  const { owner, account } = yield* AccountGrants.inspect;
   const executor = yield* Effect.flatten(HostedExecutor);
   const metadata = yield* executor.accounts.get({ owner, account });
   const provider = yield* executor.accounts.provider({ owner, account });
@@ -95,7 +97,8 @@ export const getAccount = Effect.gen(function* () {
     apps,
     health: visibleHealth(health, apps),
     revocation,
-    canManage: access.canManage,
+    // The inspect grant proves the caller owns the account, and owners manage their accounts.
+    canManage: true,
   };
 });
 /** Keep only the checks of apps the caller can see. */
@@ -118,11 +121,10 @@ export const checkAccount = Effect.gen(function* () {
   const { owner, account } = yield* AccountGrants.use;
   const executor = yield* Effect.flatten(HostedExecutor);
   const apps = yield* linkedApps(owner, account);
-  const health = yield* executor.accounts.check({
-    owner,
-    account,
-    apps: apps.map((app) => app.id),
-  });
+  // A check decrypts the account's credentials and may renew them, on the caller's request.
+  const health = yield* executor.accounts
+    .check({ owner, account, apps: apps.map((app) => app.id) })
+    .pipe(audited("credential.read", { kind: "account", id: () => account }, { purpose: "check" }));
   return visibleHealth(health, apps);
 });
 /**
@@ -135,7 +137,7 @@ export const oauthSetup = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const policy = yield* CurrentAuthorization;
+    const policy = yield* CurrentPolicy;
     const apps = yield* executor.apps
       .list({ owner, ids: permittedAppIds(policy) })
       .pipe(Effect.flatMap(visibleApps));
@@ -165,23 +167,32 @@ export const oauthSetup = (
  * Delete saved credentials and remove their user links through the transactional lifecycle hook.
  * An account linked to an app for everyone is refused until it is unlinked: the app uses it for
  * every caller. One a webhook subscription holds is refused naming only the holders the caller
- * may see.
+ * may see. The caller must already hold the authority to delete it; the lifecycle hook rechecks
+ * that authority in the deleting transaction.
  */
-export const disconnectAccount = Effect.gen(function* () {
-  const { owner, account } = yield* AccountGrants.delete;
-  const executor = yield* Effect.flatten(HostedExecutor);
-  yield* executor.accounts.get({ owner, account });
-  const [first, ...rest] = yield* appLinkApps(yield* policyDatabase, account);
-  if (first !== undefined)
-    return yield* new AccountLinkedToApp({ account, apps: [first, ...rest] });
-  return yield* executor.accounts
-    .remove({ owner, account })
-    .pipe(
-      Effect.catchTag("AccountWebhooksActive", (refusal) =>
-        Effect.flatMap(visibleAccountRefusal(executor, refusal), Effect.fail),
-      ),
-    );
-});
+export const removeAccount = ({
+  owner,
+  account,
+}: {
+  readonly owner: OwnerId;
+  readonly account: AccountId;
+}) =>
+  Effect.gen(function* () {
+    const executor = yield* Effect.flatten(HostedExecutor);
+    yield* executor.accounts.get({ owner, account });
+    const [first, ...rest] = yield* appLinkApps(yield* policyDatabase, account);
+    if (first !== undefined)
+      return yield* new AccountLinkedToApp({ account, apps: [first, ...rest] });
+    return yield* executor.accounts
+      .remove({ owner, account })
+      .pipe(
+        Effect.catchTag("AccountWebhooksActive", (refusal) =>
+          Effect.flatMap(visibleAccountRefusal(executor, refusal), Effect.fail),
+        ),
+      );
+  });
+/** Delete an account the route's grant proves the caller may delete. */
+export const disconnectAccount = Effect.flatMap(AccountGrants.delete, removeAccount);
 /** Update the label or description using the owner-filtered SDK primitive. */
 export const updateAccount = (metadata: {
   readonly label?: string | undefined;
@@ -204,7 +215,6 @@ export const connectAccount = (
     readonly app: AppId;
     readonly requirement: string;
     readonly scope: AccountScope;
-    readonly destination?: typeof ConnectionDestination.Type | undefined;
     readonly account?: AccountId | undefined;
   },
 ) =>
@@ -222,32 +232,23 @@ export const connectAccount = (
         scope: input.scope,
         reason: "requirement",
       });
-    // A reconnect keeps the account where it is shared; a new account goes where the caller asks.
-    const reconnect =
-      input.account === undefined
-        ? undefined
-        : yield* AccountGrants.reconnect.pipe(
-            Effect.provideService(AccountTargets.reconnect, { account: input.account }),
-          );
-    const destination =
-      reconnect === undefined
-        ? (input.destination ?? ({ kind: "personal" } as const))
-        : reconnect.access.ownership.kind === "personal"
-          ? ({ kind: "personal" } as const)
-          : reconnect.access.ownership;
-    yield* checkDestination(destination);
+    // Only the owner may replace an account's credentials; a new account is the caller's own.
+    if (input.account !== undefined)
+      yield* AccountGrants.reconnect.pipe(
+        Effect.provideService(AccountTargets.reconnect, { account: input.account }),
+      );
     return yield* executor.accountConnections
       .create({
         owner,
         target: { app: input.app, requirement: input.requirement, scope: input.scope },
         ...(input.account === undefined ? {} : { account: input.account }),
       })
-      .pipe(Effect.flatMap((connection) => recordConnection(connection, destination, input.scope)));
+      .pipe(Effect.flatMap((connection) => recordConnection(connection, input.scope)));
   });
 /** The dashboard page where a connection's creator finishes it, under the caller's slug. */
 export const connectionUrl = (
-  auth: Authentication["Service"],
-  api: ApiAuthentication["Service"],
+  auth: SessionAuthentication["Service"],
+  api: BearerAuthentication["Service"],
   connection: AccountConnectionId,
 ) =>
   Effect.gen(function* () {
@@ -277,13 +278,10 @@ export const submitConnection = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const intent = yield* checkConnection(
-      yield* ownedConnection(executor, owner, input.connection),
-    );
-    return yield* executor.accountConnections.submit({ ...input, owner }).pipe(
-      accountDestination(intent.destination),
-      Effect.tap(() => Effect.flatten(ScheduleWakeup)),
-    );
+    yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
+    return yield* executor.accountConnections
+      .submit({ ...input, owner })
+      .pipe(Effect.tap(() => Effect.flatten(ScheduleWakeup)));
   });
 /**
  * The member's client choice is checked against its audience here, then named to the SDK, which
@@ -297,14 +295,14 @@ export const startOAuth = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const intent = yield* checkConnection(
-      yield* ownedConnection(executor, owner, input.connection),
-    );
+    yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
     const client = yield* connectionClient(executor, owner, input);
     const { client: _selected, ...rest } = input;
-    return yield* executor.accountConnections
-      .startOAuth({ ...rest, owner, ...(client === undefined ? {} : { client }) })
-      .pipe(accountDestination(intent.destination));
+    return yield* executor.accountConnections.startOAuth({
+      ...rest,
+      owner,
+      ...(client === undefined ? {} : { client }),
+    });
   });
 /** Completion rechecks connection and target ownership before saving provider credentials. */
 export const completeOAuth = (
@@ -313,20 +311,17 @@ export const completeOAuth = (
 ) =>
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
-    const intent = yield* checkConnection(
-      yield* ownedConnection(executor, owner, input.connection),
-    );
-    return yield* executor.accountConnections.completeOAuth({ ...input, owner }).pipe(
-      accountDestination(intent.destination),
-      Effect.tap(() => Effect.flatten(ScheduleWakeup)),
-    );
+    yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
+    return yield* executor.accountConnections
+      .completeOAuth({ ...input, owner })
+      .pipe(Effect.tap(() => Effect.flatten(ScheduleWakeup)));
   });
 
 /** Account policy and persisted connection ownership protect management and OAuth return requests. */
 export const hostedAccountHandlers = HttpApiBuilder.group(HostedApi, "accounts", (handlers) =>
   Effect.gen(function* () {
-    const auth = yield* Authentication;
-    const api = yield* ApiAuthentication;
+    const auth = yield* SessionAuthentication;
+    const api = yield* BearerAuthentication;
     const redirectUri = accountOAuthRedirectUri(auth);
     return handlers
       .handle("get", () => getAccount)
@@ -388,7 +383,7 @@ export const hostedOAuthCallbackHandlers = HttpApiBuilder.group(
   "oauthCallback",
   (handlers) =>
     Effect.gen(function* () {
-      const auth = yield* Authentication;
+      const auth = yield* SessionAuthentication;
       return handlers.handle("resolve", ({ payload }) =>
         Effect.gen(function* () {
           const principal = yield* CurrentPrincipal;
@@ -423,7 +418,7 @@ export const hostedOAuthCallbackHandlers = HttpApiBuilder.group(
 
 /** Keep the existing provider redirect URL. Completion still requires the browser session and membership. */
 export const hostedOAuthCallback = Effect.gen(function* () {
-  const { origin } = yield* Authentication;
+  const { origin } = yield* SessionAuthentication;
   const request = yield* HttpServerRequest.HttpServerRequest;
   const url = new URL(request.url, "https://callback.internal");
   return HttpServerResponse.redirect(`${origin}/oauth/callback${url.search}`).pipe(

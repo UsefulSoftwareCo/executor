@@ -8,7 +8,7 @@
  */
 import { RegistryContext, scheduleTask, useAtomValue } from "@effect/atom-react";
 import type { AnyRouter } from "@tanstack/react-router";
-import { Cause } from "effect";
+import { Cause, Schema } from "effect";
 import { AsyncResult, Atom, AtomRegistry, Hydration } from "effect/reactivity";
 import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
 
@@ -192,6 +192,7 @@ const suspendingRegistry = (registry: AtomRegistry.AtomRegistry): AtomRegistry.A
       return registry.schedulerAsync;
     },
     getNodes: () => registry.getNodes(),
+    ensureNode: (atom) => registry.ensureNode(atom),
     get: (atom) => {
       if (!mounted.has(atom)) {
         mounted.add(atom);
@@ -209,6 +210,9 @@ const suspendingRegistry = (registry: AtomRegistry.AtomRegistry): AtomRegistry.A
     refresh: (atom) => registry.refresh(atom),
     set: (atom, value) => registry.set(atom, value),
     setSerializable: (key, encoded) => registry.setSerializable(key, encoded),
+    get preloadedSerializable() {
+      return registry.preloadedSerializable;
+    },
     modify: (atom, f) => registry.modify(atom, f),
     update: (atom, f) => registry.update(atom, f),
     subscribe: (atom, f, options) => registry.subscribe(atom, f, options),
@@ -217,6 +221,7 @@ const suspendingRegistry = (registry: AtomRegistry.AtomRegistry): AtomRegistry.A
       clearTimeout(deadline);
       registry.dispose();
     },
+    scheduleNodeRemoval: (node) => registry.scheduleNodeRemoval(node),
   };
 };
 
@@ -327,7 +332,10 @@ const applyAtoms = (
     if (node === undefined || !Atom.isSerializable(node.atom)) return true;
     const atom = node.atom;
     if (Atom.isWritable(atom)) {
-      registry.set(atom, atom[Atom.SerializableTypeId].decode(entry.value));
+      registry.set(
+        atom,
+        atom[Atom.SerializableTypeId].decode(Schema.decodeUnknownSync(Schema.Json)(entry.value)),
+      );
       return false;
     }
     // A node that has not been read yet takes the preloaded value when it is.

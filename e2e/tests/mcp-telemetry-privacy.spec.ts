@@ -7,10 +7,14 @@
  * text.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Redacted, Schedule, Schema } from "effect";
+import { Effect, Redacted, Schedule, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes, randomUUID } from "node:crypto";
-import { awaitSentryEvents, traceEvents } from "../support/sentry-events.ts";
+import {
+  awaitSentryEvents,
+  sentryEventTextWholeEnvironment,
+  traceEvents,
+} from "../support/sentry-events.ts";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -134,8 +138,8 @@ const located = (trace: Delivered, marker: string) => {
   return found.length === 0 && JSON.stringify(trace).includes(marker) ? ["elsewhere"] : found;
 };
 
-const toolCall = (operation: string) =>
-  operation.startsWith("McpServer.") && operation.endsWith("/tools/call");
+/** Effect names an MCP request's server span after its JSON-RPC method. */
+const toolCall = (operation: string) => operation === "tools/call";
 
 layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) => {
   it.effect(scenarios.mcpTelemetryPrivacy.title, (context) =>
@@ -147,8 +151,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
           evidence = yield* Evidence,
           telemetry = yield* Telemetry,
           target = yield* Target,
-          http = yield* HttpClient.HttpClient,
-          fs = yield* FileSystem.FileSystem;
+          http = yield* HttpClient.HttpClient;
         const key = yield* body(
           Schema.Struct({ key: Schema.RedactedFromValue(Schema.String), id: Schema.String }),
           yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
@@ -206,12 +209,15 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             traces[path] = trace;
             // The trace's own log records, and any record whose body holds a marker's prefix. An
             // unreadable collector fails the scenario: absence is only evidence when it was read.
-            const logs = yield* telemetry
-              .logs(trace, "PRIVATE_")
-              .pipe(Effect.map((records) => records.join("\n")));
+            const logs = [
+              yield* telemetry.logs(trace),
+              yield* telemetry.logsWholeEnvironment("PRIVATE_"),
+            ].join("\n");
             const rpc = found.data.find(({ span }) => toolCall(span.operationName))?.span;
             leaks[path] = [
-              ...(rpc?.tags.parameters === undefined ? [] : ["tools/call parameters"]),
+              ...(rpc?.tags["gen_ai.tool.call.arguments"] === undefined
+                ? []
+                : ["tools/call arguments"]),
               ...markers.flatMap((marker) => [
                 ...located(found, marker),
                 ...(logs.includes(marker) ? ["logs"] : []),
@@ -296,7 +302,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             const execute = rpcSpan(
               yield* delivered("execute", yield* latestTrace, ["tools/call", "mcp.execute"]),
             );
-            expect(execute?.tags.tool, "execute: tools/call names its tool").toBe("execute");
+            expect(execute?.tags["gen_ai.tool.name"], "execute: tools/call names its tool").toBe(
+              "execute",
+            );
             expect(execute?.status).toBe("ok");
 
             const resumed = yield* client.use(
@@ -318,7 +326,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             const resume = rpcSpan(
               yield* delivered("resume", yield* latestTrace, ["tools/call", "mcp.resume"]),
             );
-            expect(resume?.tags.tool).toBe("resume");
+            expect(resume?.tags["gen_ai.tool.name"]).toBe("resume");
 
             const rejected = yield* client.use(
               "read a skill with an invalid private slug",
@@ -336,7 +344,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
             const skills = rpcSpan(
               yield* delivered("skills-invalid", yield* latestTrace, ["tools/call"]),
             );
-            expect(skills?.tags.tool).toBe("skills");
+            expect(skills?.tags["gen_ai.tool.name"]).toBe("skills");
           }),
         );
 
@@ -540,7 +548,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
               const refused = rpcSpan(
                 yield* delivered(`unknown-tool-${protocolVersion}`, unknown.trace, ["tools/call"]),
               );
-              expect(refused?.status).toBe("error");
+              // A refusal the request caused does not fail the server span; the span records its
+              // JSON-RPC code (invalid params) as the outcome.
+              expect(refused?.tags["rpc.status_code"]).toBe("-32602");
 
               const malformed = yield* call({
                 method: "tools/call",
@@ -570,9 +580,13 @@ layer(HostedLive, { excludeTestServices: true })("MCP telemetry privacy", (it) =
         expect(reported).toHaveLength(3);
         const incidents =
           target.metadata.target === "cloud" && target.metadata.mode === "managed"
-            ? yield* awaitSentryEvents((events) =>
+            ? yield* awaitSentryEvents(reported, (events) =>
                 reported.every((trace) => traceEvents(events, trace).length > 0),
-              ).pipe(Effect.flatMap(() => fs.readFileString(`${target.directory}/sentry.ndjson`)))
+              ).pipe(
+                // Every report anywhere: the markers are this scenario's own, so none may hold one.
+                Effect.flatMap(() => sentryEventTextWholeEnvironment),
+                Effect.map((events) => events.join("\n")),
+              )
             : "";
         yield* evidence.json("leaks.json", { leaks, traces });
         // Every path in one comparison, so a failure names each path and where it leaked.

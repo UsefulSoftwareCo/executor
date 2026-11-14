@@ -6,6 +6,7 @@ import { Copy01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { highlightedAtom } from "../../contracts/highlight.ts";
 import { Button, type ButtonProps } from "../components/button.tsx";
+import { copyText } from "../lib/clipboard.ts";
 
 /** Render and copy the supplied display text unchanged, with local syntax highlighting. */
 export function Code({
@@ -102,7 +103,7 @@ export function CopyButton({
   const copy = async () => {
     if (code === undefined) return;
     try {
-      await navigator.clipboard.writeText(code);
+      await copyText(code);
       setState("copied");
       if (timeout.current !== undefined) window.clearTimeout(timeout.current);
       timeout.current = window.setTimeout(() => setState("idle"), 1600);

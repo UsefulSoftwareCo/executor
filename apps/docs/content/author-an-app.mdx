@@ -582,7 +582,21 @@ Deploying reads the chosen commit and leaves the Git branch unchanged. Ordinary
 Git pushes save source without deploying it.
 
 Code, every file outside `ui/public/`, is UTF-8 text: at most 4,096 files and
-16 MiB of file contents. Files under `ui/public/` are served as they are and may
+16 MiB of file contents. Each of the app's own JavaScript or TypeScript files is
+at most 2,000,000 bytes (2 MB). JSON files are outside this limit, so keep a
+large document such as an OpenAPI description in JSON. The host checks this
+limit while it builds, not the CLI before uploading: a build that reaches a
+larger file of the app's own fails with `VersionBuildFailed`, naming the file,
+its size and the limit, and no app or version is created.
+
+Files inside the npm packages an app imports are not limited: a large file
+there is still compiled. On self-host and the local server, a build compiles on
+the thread that runs apps, so while it compiles a large file, of the app's own
+or a package's, every call to an app waits, and so does any other request
+served from that thread. A package module of 3,000,000 bytes of dense code held
+app calls for about 1.2 seconds in our tests; a larger one holds them for
+longer.
+Files under `ui/public/` are served as they are and may
 be binary, such as images, fonts, audio and WebAssembly: at most 10,000 files,
 each at most 32 MB and 1 GB in total. Builds never load them; each deploy copies
 them to the host's storage and serves them from there. The CLI checks a directory

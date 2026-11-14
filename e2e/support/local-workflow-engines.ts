@@ -5,11 +5,12 @@
  * workerd process. A loaded engine keeps its SQLite database open; the namespace's own
  * metadata database stays open while the process runs.
  */
-import { Effect, FileSystem, Option, Path, Redacted, Schema, Stream } from "effect";
+import { Effect, FileSystem, Option, Path, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { startManagedServer } from "./managed-server.ts";
+import { serverProcessFile, startManagedServer } from "./managed-server.ts";
 import { driver, Target } from "./platform.ts";
 import { freePort } from "./ports.ts";
+import { reveal } from "./failure-text.ts";
 
 /** The engine namespace's storage directory below the product's data directory. */
 const engineDirectory = ["data", "workerd", "workflows", "executor-app-workflows"];
@@ -39,7 +40,7 @@ export const startLocalProduct = (environment: Readonly<Record<string, string>> 
           method,
           signal,
           headers: {
-            authorization: `Bearer ${Redacted.value(target.apiKey)}`,
+            authorization: `Bearer ${reveal(target.apiKey)}`,
             "content-type": "application/json",
           },
           ...(data === undefined ? {} : { body: JSON.stringify(data) }),
@@ -64,7 +65,7 @@ export const startLocalProduct = (environment: Readonly<Record<string, string>> 
             : Effect.fail(new Error(`${route}: HTTP ${response.status} ${response.text}`)),
         ),
       );
-    return { directory: yield* fs.realPath(directory), json };
+    return { directory: yield* fs.realPath(directory), json, request };
   });
 
 /** Files each process holds open, and its executable when the platform reports it. */
@@ -205,6 +206,91 @@ const openFilesFromWindows = (files: ReadonlyArray<string>) =>
         { names: new Set(entry.names), executable: entry.executable ?? undefined },
       ]),
     ) satisfies OpenFiles;
+  });
+
+/** One row of the machine's process table, with its whole command line. */
+const ProcessRow = Schema.Struct({
+  pid: Schema.Number,
+  parent: Schema.Number,
+  command: Schema.String,
+});
+const windowsProcesses = `$ErrorActionPreference = "Stop"
+$rows = @(Get-CimInstance Win32_Process -Property ProcessId, ParentProcessId, CommandLine | ForEach-Object {
+  @{ pid = [int] $_.ProcessId; parent = [int] $_.ParentProcessId; command = [string] $_.CommandLine }
+})
+ConvertTo-Json -Compress -Depth 2 -InputObject $rows
+`;
+/** Every process on the machine with its parent and command line. */
+const processTable = Effect.gen(function* () {
+  const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+  if (process.platform === "win32")
+    return yield* processes
+      .string(
+        ChildProcess.make("powershell.exe", [
+          "-NoProfile",
+          "-NonInteractive",
+          "-EncodedCommand",
+          Buffer.from(windowsProcesses, "utf16le").toString("base64"),
+        ]),
+      )
+      .pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(ProcessRow)))),
+      );
+  const Row = /^\s*(\d+)\s+(\d+)\s+(.*)$/u;
+  return (yield* processes.lines(
+    ChildProcess.make("ps", ["-A", "-o", "pid=,ppid=,command="]),
+  )).flatMap((line) => {
+    const match = Row.exec(line);
+    return match === null
+      ? []
+      : [{ pid: Number(match[1]), parent: Number(match[2]), command: match[3] ?? "" }];
+  });
+});
+
+/**
+ * The ID of the workerd process that runs the apps of the product started in `directory`: among
+ * the product process's descendants, the workerd the app runtime serves with a debug port (the
+ * product's telemetry collector is a workerd too, started without one). Fails when there is none,
+ * or more than one, so a scenario never signals some other process.
+ */
+export const workerdProcess = (directory: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const { processGroup: product } = yield* fs
+      .readFileString(path.join(directory, serverProcessFile))
+      .pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(
+            Schema.fromJsonString(Schema.Struct({ processGroup: Schema.Number })),
+          ),
+        ),
+      );
+    const rows = yield* processTable;
+    const ours = new Set([product]);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const row of rows)
+        if (ours.has(row.parent) && !ours.has(row.pid)) {
+          ours.add(row.pid);
+          grew = true;
+        }
+    }
+    const runtimes = rows.filter(
+      ({ pid, command }) =>
+        ours.has(pid) &&
+        pid !== product &&
+        /workerd(\.exe)?"?\s+serve\s/iu.test(command) &&
+        command.includes("--debug-port="),
+    );
+    const [runtime, ...others] = runtimes;
+    if (runtime === undefined || others.length > 0)
+      return yield* Effect.fail(
+        new Error(
+          `Expected one workerd process under product ${product}, found ${JSON.stringify(runtimes)}`,
+        ),
+      );
+    return runtime.pid;
   });
 
 /**

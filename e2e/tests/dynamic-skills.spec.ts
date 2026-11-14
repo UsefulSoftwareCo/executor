@@ -268,9 +268,7 @@ export default defineApp({}, async (ctx) => ({
               actors.owner,
               "POST",
               connectionsPath(path, "user", "github"),
-              {
-                destination: { kind: "personal" },
-              },
+              {},
             );
             expect(pending.status, JSON.stringify(pending.body)).toBe(200);
             const saved = yield* api.request(

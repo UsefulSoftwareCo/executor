@@ -7,6 +7,7 @@ import {
   HttpApiMiddleware,
   OpenApi,
 } from "effect/http-api";
+import { RequestRejection } from "@executor-js/sdk/core";
 import {
   CompleteWebhookSetup,
   HttpUrl,
@@ -70,4 +71,5 @@ export const LocalWebhookSetupApi = HttpApi.make("local-webhook-setup")
         ),
       )
       .middleware(WebhookSetupAccess),
-  );
+  )
+  .middleware(RequestRejection);

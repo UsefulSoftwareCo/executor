@@ -4,13 +4,13 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import * as GitHub from "alchemy/GitHub";
 import { Stage } from "alchemy/Stage";
 import { Config, Effect, Layer, Schema } from "effect";
+import { PreviewCommit, PreviewNumber, previewRepository } from "./src/contracts/pr-preview.ts";
 import {
-  PreviewCommit,
-  PreviewNumber,
+  previewCommentMarker,
   previewOrigin,
-  previewRepository,
   previewSlug,
-} from "./src/contracts/pr-preview.ts";
+  previewStatusLine,
+} from "./src/contracts/pr-preview-selection.ts";
 
 export default Alchemy.Stack(
   "executor-pr-preview-comments",
@@ -32,7 +32,7 @@ export default Alchemy.Stack(
       Effect.flatMap(Schema.decodeUnknownEffect(PreviewCommit)),
     );
     const status = yield* Config.Literals(
-      ["deploying", "ready", "failed", "closed", "stacked", "cleanup-failed"],
+      ["deploying", "ready", "failed", "closed", "stacked", "unneeded", "cleanup-failed"],
       "PREVIEW_STATUS",
     );
     const descriptions = {
@@ -43,6 +43,8 @@ export default Alchemy.Stack(
       closed: "Removed because this PR is closed. Reopening the PR creates a fresh environment.",
       stacked:
         "Removed because another open PR builds on this branch. The top of the stack has the preview.",
+      unneeded:
+        "Removed because this PR changes nothing a Cloud preview runs, such as tests, CI, notes, tooling or the self-host and local products. A push that changes Cloud deploys it again.",
       "cleanup-failed":
         "Cleanup failed. Scheduled reconciliation will retry; resources may still exist.",
     };
@@ -56,10 +58,11 @@ export default Alchemy.Stack(
       repository: name,
       issueNumber: number,
       body: [
-        "<!-- executor-pr-preview -->",
+        // The workflow reads the status back to tell whether a stage may remain to remove.
+        `${previewCommentMarker}\n${previewStatusLine(status)}`,
         "### Executor preview",
         descriptions[status],
-        ...(status === "closed" || status === "stacked"
+        ...(status === "closed" || status === "stacked" || status === "unneeded"
           ? []
           : [`[Open preview](${previewOrigin(number)})`]),
         `Commit: [${sha.slice(0, 7)}](https://github.com/${repository}/commit/${sha}) · [Workflow run](https://github.com/${repository}/actions/runs/${run})`,

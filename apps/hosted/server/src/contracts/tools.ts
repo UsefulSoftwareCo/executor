@@ -46,6 +46,7 @@ import {
   ToolRunApprovalRefused,
 } from "@executor-js/mcp/browser";
 import { BrowserSessionOnly, Forbidden } from "./auth.ts";
+import { referencedErrors } from "./tool-call-log.ts";
 import {
   OrganizationReference,
   OrganizationForbidden,
@@ -95,6 +96,18 @@ const callErrors = [
   RequestInvalid,
   OrganizationForbidden,
 ] as const;
+/**
+ * A failed call's errors carry its reference in the tool call log as `reference`. The dashboard
+ * run adds the refusal of a bearer credential; `call` shares the run's schemas, so the API document
+ * names each once.
+ */
+export const RunFailures = referencedErrors([Forbidden, ...callErrors]);
+const [, ...callFailures] = RunFailures.errors;
+export const CallFailures = {
+  errors: callFailures,
+  withReference: RunFailures.withReference,
+  referenced: RunFailures.referenced,
+};
 const approval = { ...params, requestId: ApprovalRequestId };
 const reviewErrors = [
   ...discoveryErrors,
@@ -138,15 +151,20 @@ export const HostedTools = HttpApiGroup.make("tools")
       params,
       payload: callPayload,
       success: Json,
-      error: callErrors,
-    }).annotate(RequiredAction, "run"),
+      error: CallFailures.errors,
+    })
+      .annotate(RequiredAction, "run")
+      .annotate(
+        OpenApi.Description,
+        "Call a tool with the caller's linked accounts. A call that fails returns its error with `reference`, the call's ID in the organization's tool call log, when the call was logged.",
+      ),
   )
   .add(
     HttpApiEndpoint.post("run", `${prefix}/run`, {
       params,
       payload: callPayload,
       success: BrowserToolRun,
-      error: [...callErrors, Forbidden],
+      error: RunFailures.errors,
     })
       .annotate(RequiredAction, "run")
       .annotate(BrowserSessionOnly, true)

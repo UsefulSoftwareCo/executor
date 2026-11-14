@@ -3,7 +3,8 @@ import { AppWorkflowsActive } from "../contracts/apps.ts";
 import { AppWebhooksActive } from "../contracts/apps.ts";
 import { appSlug } from "../contracts/app-slug.ts";
 /** Durable configured apps and immutable versions, sharing one execution path. */
-import { Clock, type Crypto, Effect, Schema, Struct } from "effect";
+import { Clock, Effect, Schema, Struct } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
 import { SqlError } from "effect/sql";
 import {
   App,
@@ -47,6 +48,8 @@ import { StoredApp, StoredVersion } from "../contracts/storage.ts";
 import { query, transaction, type Query } from "./database.ts";
 import { removeToolSearch } from "./tool-search-store.ts";
 import { identifyProvider } from "./provider.ts";
+import { setupHelp, setupHelpProblems } from "./help-text.ts";
+import type { MarkdownReader } from "../contracts/markdown.ts";
 import {
   CodeFiles,
   SourceError,
@@ -231,12 +234,15 @@ const appWriteFailure = (app: Pick<StoredApp, "owner" | "name" | "slug">) => (er
   return new StorageError();
 };
 /** Insert app identity while preserving name and derived-slug uniqueness errors. */
-/** A new active version re-registers the app's managed webhooks; removed sources keep removing. */
+/**
+ * A new active version re-registers the app's managed webhooks; removed sources keep removing. It is
+ * new intent, so each source runs again with no failures counted.
+ */
 const webhookSourcesPending = (db: Query, app: AppId) =>
   query(() =>
     db.updateMany("webhookSources", {
       where: (b) => b.and(b("app", "=", app), b("status", "!=", "removing")),
-      set: { status: "pending", failure: null },
+      set: { status: "pending", failure: null, retries: 0 },
     }),
   );
 
@@ -252,11 +258,12 @@ export const createApp = (db: Query, app: StoredApp) => {
 export const makeApps = (
   db: Query,
   runtime: Runtime,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   sources: AppSourceStorage,
   repositories: RepositoryBackend,
   registry: Registry,
   blobs: BlobStorage,
+  markdown: MarkdownReader,
   lifecycle?: ResourceLifecycle,
 ) => {
   const authoring = makeAppAuthoring(db, sources, repositories, blobs, crypto, lifecycle);
@@ -361,6 +368,25 @@ export const makeApps = (
           })),
         ),
       );
+      // The connect form renders setup help as Markdown; refuse what it would not show safely.
+      // All of it is read at once, and a version without help reads nothing.
+      const helpProblems = yield* setupHelpProblems(
+        markdown,
+        entries.flatMap(({ slot, provider }) =>
+          setupHelp(provider.definition).map((help) => ({
+            ...help,
+            where: `Requirement "${slot}" (provider "${provider.definition.name}") ${help.where}`,
+          })),
+        ),
+      );
+      if (helpProblems.length > 0)
+        return yield* new VersionBuildFailed({
+          owner,
+          name,
+          reason: "Invalid setup help",
+          stage: "declaration",
+          message: `App build failed: setup help must be Markdown with absolute https links and no HTML or images. ${helpProblems.map((problem) => `${problem}.`).join(" ")}`,
+        });
       const requirements: AppRequirements = {
         ...(built.requirements.capabilities === undefined
           ? {}
@@ -426,11 +452,7 @@ export const makeApps = (
           return yield* new AppNameTaken({ owner: input.owner, name: deployName });
       }
       const code =
-        before === null
-          ? AppCodeId.make(
-              `code_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-            )
-          : before.code;
+        before === null ? AppCodeId.make(`code_${yield* crypto.random.uuidV4()}`) : before.code;
       const sequence = before === null ? 1 : before.deploySequence;
       const suppliedFiles =
         input.commit === undefined
@@ -440,12 +462,7 @@ export const makeApps = (
         yield* buildSource(input.owner, deployName, suppliedFiles);
       // The app's database lives in its data facet, keyed by app ID, so a new app's ID is chosen
       // before its migrations run. A failed migration fails the deploy before anything activates.
-      const appId =
-        before?.id ??
-        reserved ??
-        AppId.make(
-          `app_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-        );
+      const appId = before?.id ?? reserved ?? AppId.make(`app_${yield* crypto.random.uuidV4()}`);
       // Migrations are the database. A build without any would drop the ones an earlier version
       // applied, whichever version is active now, so the app's whole version history decides.
       // The build is not asked: bundles of earlier protocols cannot answer. Checked again under the
@@ -516,9 +533,7 @@ export const makeApps = (
         );
 
       const version = {
-        id: VersionId.make(
-          `dpl_${yield* crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()))}`,
-        ),
+        id: VersionId.make(`dpl_${yield* crypto.random.uuidV4()}`),
         code,
         owner: input.owner,
         sourceCommit: input.commit ?? null,

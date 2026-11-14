@@ -2,7 +2,7 @@ import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { ApiError } from "@executor-js/utils/api-error";
 import { AppProviderFailed } from "./tools.ts";
 /** Durable, account-bound webhook subscriptions. Products authorize management; callbacks authenticate in app code. */
-import { Schema, type Effect } from "effect";
+import { Schema, SchemaGetter, type Effect } from "effect";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { HostedWebhook, WebhookRequestData, WebhookResponseData } from "apps/contracts";
 import {
@@ -102,15 +102,46 @@ const webhookFailures = {
   delivery: "The webhook delivery could not be accepted.",
   inactive: "The webhook subscription is stopped or disabled.",
 } as const;
+/** Which part of an `input` failure did not match the declaration. */
+const webhookMismatches = {
+  "app-account":
+    "This webhook's source is an app account, so a caller cannot create its subscription: Executor creates it when an account is linked to the app for that requirement. List the app's webhooks to find it; one that is setup-required has a setup link.",
+  source:
+    "The source account is not linked to this app for the webhook's account requirement. Link it to the app, or name an account that is linked.",
+  config:
+    "The webhook configuration does not match the definition's configuration schema. Read the app's webhook definitions for the schema.",
+} as const;
+const WebhookMismatch = Schema.optionalKey(Schema.Literals(["app-account", "source", "config"]));
+/**
+ * Declared but not yet sent. Clients and Executor apps that hold an earlier document decode
+ * `WebhookFailed` against a closed object with the five original reasons, so a new reason value or
+ * field would turn this response into a generic failure for them. The specific cause reaches them
+ * through `message` under the existing `input` reason; a later release can send this field once
+ * cached documents have refreshed.
+ */
+const WebhookMismatchField = WebhookMismatch.pipe(
+  Schema.decodeTo(WebhookMismatch, {
+    decode: SchemaGetter.passthrough(),
+    encode: SchemaGetter.omit(),
+  }),
+);
+const webhookFailure = (failure: {
+  readonly reason: keyof typeof webhookFailures;
+  readonly mismatch?: keyof typeof webhookMismatches;
+}) =>
+  failure.reason === "input" && failure.mismatch !== undefined
+    ? webhookMismatches[failure.mismatch]
+    : webhookFailures[failure.reason];
 /** The host cannot run this webhook. Internal provider failures and payloads remain private. */
 export const WebhookFailed = ApiError.define({
   tag: "WebhookFailed",
   status: 422,
   fields: {
     reason: Schema.Literals(["unavailable", "definition", "input", "delivery", "inactive"]),
+    mismatch: WebhookMismatchField,
   },
-  message: ({ reason }) => webhookFailures[reason],
-  recorded: ({ reason }) => webhookFailures[reason],
+  message: webhookFailure,
+  recorded: webhookFailure,
 });
 export type WebhookFailed = typeof WebhookFailed.Type;
 /** Shared operation failures, retained as concrete schema variants at HTTP boundaries. */
@@ -162,7 +193,9 @@ export const WebhookSourceConfig = Schema.Record(Schema.NonEmptyString, Schema.J
 /**
  * One account linked to an app as a webhook source. Executor keeps one managed subscription per
  * definition of the source's scope that the account's provider can serve, on the app's active
- * version, and replaces them when the app activates another version. Several users linking
+ * version. When the app activates another version it registers them again, except that a manual
+ * subscription whose setup the new version still serves moves to it with its callback URL and
+ * secret. Several users linking
  * the same account share it. A source without an actor is an app link: it serves app-account
  * webhooks, whose deliveries run without a caller. An account linked in both scopes is one source,
  * serving as its app link.
@@ -239,6 +272,52 @@ export interface WebhookSourceDispatcher {
    * another pass now instead of at its next wake.
    */
   readonly tick: (limit: number) => Effect.Effect<boolean, StorageError>;
+}
+
+/**
+ * Host-only, for data step `11_unremovable_webhook_registrations`: subscriptions whose saved
+ * registration lacks their own source account. Every apps framework refuses a webhook command whose
+ * source is not among its accounts, before any of the app's code runs, so such a registration was
+ * never made at the provider by the attempt that saved it, and removing it with those accounts is
+ * refused on every attempt. Before #3915 a registration could save them when the source lost its
+ * link while it registered.
+ */
+export const UnremovableWebhooksHost = Symbol.for("executor/UnremovableWebhooksHost");
+/**
+ * What the step did with one subscription, or would do in a report:
+ * - `disabled` / `would_disable`: a stopping subscription with such a registration now waits, or
+ *   would wait, as `disabled` for a person to remove it at the provider and confirm.
+ * - `registering`: a pending subscription with such a registration. It is left as it is: the next
+ *   registration replaces it once the source is linked again.
+ * - `unchanged`: the subscription no longer has such a registration or is no longer stopping.
+ * - `busy`: an attempt holds its lease; a later pass looks again.
+ * - `conflict`: it changed while the step wrote; a later pass looks again.
+ * - `absent`: it was removed with its app or owner.
+ */
+export const UnremovableWebhookOutcome = Schema.Literals([
+  "disabled",
+  "would_disable",
+  "registering",
+  "unchanged",
+  "busy",
+  "conflict",
+  "absent",
+]);
+export type UnremovableWebhookOutcome = typeof UnremovableWebhookOutcome.Type;
+export interface UnremovableWebhooks {
+  /** Every pending or stopping subscription whose saved registration lacks its source, in ID order. */
+  readonly list: Effect.Effect<
+    ReadonlyArray<{ readonly id: WebhookId; readonly owner: OwnerId }>,
+    StorageError
+  >;
+  /**
+   * Read the subscription again and, when it is still stopping with such a registration and no
+   * attempt holds it, disable it if `apply` is set. Writes nothing otherwise.
+   */
+  readonly disable: (
+    subscription: WebhookId,
+    apply: boolean,
+  ) => Effect.Effect<UnremovableWebhookOutcome, StorageError>;
 }
 /** Host-created delivery envelope; public callback senders supply only the enclosed request. */
 export const DeliverWebhook = Schema.Struct({ ...subscription, request: WebhookRequestData });

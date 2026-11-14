@@ -48,7 +48,9 @@ layer(HostedLive, { excludeTestServices: true })("Bearer authentication", (it) =
                 (entry) => entry.span.tags["http.response.status_code"] === "200",
               );
               if (roots.length === 0 || !complete)
-                return Effect.fail(new Error("The completed server trace must reach Motel"));
+                return Effect.fail(
+                  new Error("The completed server trace must reach the collector"),
+                );
               const byId = new Map(result.data.map(({ span }) => [span.spanId, span]));
               const under = (root: string, spanId: string | null) => {
                 const visited = new Set<string>();

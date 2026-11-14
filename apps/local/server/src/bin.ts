@@ -8,6 +8,7 @@ import {
   LocalServerUnavailable,
   renderAppFailure,
 } from "@executor-js/app-management/cli";
+import { toolCommands } from "@executor-js/app-management/tools-cli";
 /** CLI composition root. Platform dependencies and raw process arguments stop here. */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -18,7 +19,9 @@ import {
   ServiceSettingInvalid,
   serviceCommand,
   serviceGetCommand,
+  servicePairCommand,
   serviceRestartCommand,
+  serviceRotateKeyCommand,
   serviceSetCommand,
   serviceStartCommand,
   serviceStatusCommand,
@@ -26,35 +29,33 @@ import {
   serviceUnsetCommand,
 } from "./contracts/service.ts";
 import {
-  LegacyCommand,
   PairFailed,
   executorCommand,
-  legacyCommands,
-  legacyServiceCommands,
-  pairCommand,
-  rotateKeyCommand,
   serveCommand,
   UpgradeFailed,
   upgradeCommand,
 } from "./contracts/startup.ts";
-import { LocalConfigurationError, rotateApiKey } from "./implementation/bootstrap.ts";
-import { launch } from "./implementation/launcher.ts";
-import { outdatedCli } from "./implementation/update-notice.ts";
-import { pair } from "./implementation/pair.ts";
+import { LocalConfigurationError } from "./contracts/auth.ts";
+import { exitLine } from "./implementation/exit-line.ts";
 import { processOutput } from "./implementation/process-output.ts";
-import { serveProcess } from "./implementation/server-process.ts";
+import { outdatedCli } from "./implementation/update-notice.ts";
 import { ensure, standalone } from "./implementation/service-client.ts";
 import { readSettings, serviceDirectory } from "./implementation/service-files.ts";
-import {
-  serviceGet,
-  serviceRestart,
-  serviceSet,
-  serviceStart,
-  serviceStatus,
-  serviceStop,
-  serviceUnset,
-} from "./implementation/service-settings.ts";
-import { upgrade } from "./implementation/upgrade.ts";
+
+/**
+ * A command's implementation, loaded when that command runs. Help, argument errors and other
+ * commands then start without the server, the launcher or the upgrader.
+ */
+const loaded = <M, A, E, R>(
+  load: () => Promise<M>,
+  run: (module: M) => Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R> => Effect.flatMap(Effect.promise(load), run);
+const launcher = () => import("./implementation/launcher.ts");
+const serverProcess = () => import("./implementation/server-process.ts");
+const settings = () => import("./implementation/service-settings.ts");
+const bootstrap = () => import("./implementation/bootstrap.ts");
+const pairing = () => import("./implementation/pair.ts");
+const upgrader = () => import("./implementation/upgrade.ts");
 
 // The file that started the CLI shows how it was installed: the npm launcher, or the release
 // executable itself, names itself in EXECUTOR_LAUNCHER; otherwise it is the script Node started.
@@ -69,7 +70,6 @@ const explained = Schema.is(
   Schema.Union([
     LocalConfigurationError,
     PairFailed,
-    LegacyCommand,
     UpgradeFailed,
     ServiceFailed,
     ServiceSettingInvalid,
@@ -77,7 +77,7 @@ const explained = Schema.is(
 );
 
 /**
- * App commands without --host or EXECUTOR_HOST use the background server, started if needed, or
+ * Client commands without a named or remembered host use the background server, started if needed, or
  * a private server for the command when the service is disabled. They send its password, or
  * EXECUTOR_API_KEY when that is set. A local server that cannot start fails the command the way
  * its other failures do, with the reason as JSON on stdout for programs.
@@ -97,70 +97,84 @@ const localServer = Effect.gen(function* () {
 );
 
 const cli = executorCommand.pipe(
-  Command.withHandler((options) => processOutput.serve(launch(options, process.platform, entry))),
+  Command.withHandler((options) =>
+    loaded(launcher, ({ launch }) => processOutput.serve(launch(options, process.platform, entry))),
+  ),
   Command.withSubcommands([
     appsCommand(process.platform, localServer),
+    ...toolCommands(process.platform, localServer),
     serveCommand.pipe(
       Command.withHandler(({ service, stdio }) =>
         Effect.gen(function* () {
           if (service && stdio)
             return yield* new CliError.UserError({ cause: "Use --service or --stdio, not both." });
-          return yield* processOutput.serve(
-            serveProcess({
-              mode: service ? "service" : stdio ? "stdio" : "foreground",
-              platform: process.platform,
-              ...(entry === undefined ? {} : { entry }),
-            }),
+          // A foreground server says how long its stop took, as its last line on stderr. It is the
+          // only mode that logs there (`server-process.ts`): a private `--stdio` server's stderr is
+          // copied to the command that started it, which asked for no server, and a background
+          // server's goes to the command that started it until it is ready.
+          if (!service && !stdio) processOutput.last(exitLine);
+          return yield* loaded(serverProcess, ({ serveProcess }) =>
+            processOutput.serve(
+              serveProcess({
+                mode: service ? "service" : stdio ? "stdio" : "foreground",
+                platform: process.platform,
+                ...(entry === undefined ? {} : { entry }),
+              }),
+            ),
           );
         }),
       ),
     ),
     serviceCommand.pipe(
       Command.withSubcommands([
-        serviceStartCommand.pipe(Command.withHandler(() => serviceStart)),
-        serviceStopCommand.pipe(Command.withHandler(() => serviceStop)),
-        serviceRestartCommand.pipe(Command.withHandler(() => serviceRestart)),
-        serviceStatusCommand.pipe(Command.withHandler(() => serviceStatus)),
-        serviceGetCommand.pipe(Command.withHandler(serviceGet)),
-        serviceSetCommand.pipe(Command.withHandler((input) => serviceSet(process.platform, input))),
-        serviceUnsetCommand.pipe(
-          Command.withHandler((input) => serviceUnset(process.platform, input)),
+        serviceStartCommand.pipe(
+          Command.withHandler(() => loaded(settings, (m) => m.serviceStart)),
         ),
-        ...legacyServiceCommands.map((legacy) =>
-          legacy.pipe(
-            Command.withHandler(() =>
-              Effect.fail(new LegacyCommand({ command: `service ${legacy.name}` })),
+        serviceStopCommand.pipe(Command.withHandler(() => loaded(settings, (m) => m.serviceStop))),
+        serviceRestartCommand.pipe(
+          Command.withHandler(() => loaded(settings, (m) => m.serviceRestart)),
+        ),
+        serviceStatusCommand.pipe(
+          Command.withHandler(() => loaded(settings, (m) => m.serviceStatus)),
+        ),
+        serviceGetCommand.pipe(
+          Command.withHandler((input) => loaded(settings, (m) => m.serviceGet(input))),
+        ),
+        serviceSetCommand.pipe(
+          Command.withHandler((input) =>
+            loaded(settings, (m) => m.serviceSet(process.platform, input)),
+          ),
+        ),
+        serviceUnsetCommand.pipe(
+          Command.withHandler((input) =>
+            loaded(settings, (m) => m.serviceUnset(process.platform, input)),
+          ),
+        ),
+        servicePairCommand.pipe(Command.withHandler(() => loaded(pairing, (m) => m.pair))),
+        serviceRotateKeyCommand.pipe(
+          Command.withHandler(() =>
+            loaded(bootstrap, (m) => m.rotateApiKey(process.platform)).pipe(
+              Effect.andThen(
+                Console.log(
+                  "Rotated the local API key. Run `executor service restart` to use it, then update clients that used the previous key.",
+                ),
+              ),
             ),
           ),
         ),
       ]),
     ),
-    pairCommand.pipe(Command.withHandler(() => pair)),
     upgradeCommand.pipe(
       Command.withHandler((options) =>
-        upgrade(options, {
-          entry,
-          node: launcherNode,
-          executable: process.execPath,
-          platform: process.platform,
-          arch: process.arch,
-        }),
-      ),
-    ),
-    rotateKeyCommand.pipe(
-      Command.withHandler(() =>
-        rotateApiKey(process.platform).pipe(
-          Effect.andThen(
-            Console.log(
-              "Rotated the local API key. Run `executor service restart` to use it, then update clients that used the previous key.",
-            ),
-          ),
+        loaded(upgrader, ({ upgrade }) =>
+          upgrade(options, {
+            entry,
+            node: launcherNode,
+            executable: process.execPath,
+            platform: process.platform,
+            arch: process.arch,
+          }),
         ),
-      ),
-    ),
-    ...legacyCommands.map((legacy) =>
-      legacy.pipe(
-        Command.withHandler(() => Effect.fail(new LegacyCommand({ command: legacy.name }))),
       ),
     ),
   ]),
@@ -173,7 +187,7 @@ NodeRuntime.runMain(
     // serving.
     Effect.raceFirst(processOutput.closed),
     // Effect CLI renders argument errors and supplies the exit status for help.
-    // Operational failures retain the launcher's sanitized message. An apps command failure
+    // Operational failures retain the launcher's sanitized message. A failed apps or tool command
     // states the host's code, status, message and recovery, and also prints them as JSON on
     // stdout when a program, not a terminal, reads it.
     Effect.catch((error) => {

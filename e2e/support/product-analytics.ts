@@ -28,6 +28,32 @@ const unpack = (value: Schema.Json): Effect.Effect<Schema.Json, DriverFailed> =>
     }
     return value;
   });
+/** The SDK's remote configuration with session recording on for every session. */
+const remoteConfig =
+  'window._POSTHOG_REMOTE_CONFIG = {"synthetic-ingestion-key": {config: {hasFeatureFlags: false, sessionRecording: {endpoint: "/s/", sampleRate: 1, minimumDurationMilliseconds: 0}}}};';
+/** The same configuration with gzip supported, as PostHog's own servers configure the SDK. */
+const compressedRemoteConfig =
+  'window._POSTHOG_REMOTE_CONFIG = {"synthetic-ingestion-key": {config: {hasFeatureFlags: false, supportedCompression: ["gzip-js"], sessionRecording: {endpoint: "/s/", sampleRate: 1, minimumDurationMilliseconds: 0}}}};';
+const flagsResponse = {
+  featureFlags: {},
+  sessionRecording: { endpoint: "/s/", sampleRate: 1, minimumDurationMilliseconds: 0 },
+};
+
+/**
+ * Turn session recording on for the page, as PostHog's project settings do: answer the SDK's
+ * configuration and flags reads with recording on and gzip supported, as PostHog's own servers
+ * answer. Everything else the SDK sends still reaches the environment's receiver.
+ */
+export const enableSessionRecording = (page: Page) =>
+  page.route("**/api/0123456789abcdef/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/config.js"))
+      return route.fulfill({ contentType: "application/javascript", body: compressedRemoteConfig });
+    if (path.includes("/flags") || path.includes("/decide"))
+      return route.fulfill({ json: { ...flagsResponse, supportedCompression: ["gzip-js"] } });
+    return route.fallback();
+  });
+
 /** Intercept only the synthetic ingestion path; the bundled SDK recorder runs in the product page. */
 export const captureBrowserAnalytics = (page: Page) => {
   const events: Schema.Json[] = [];
@@ -45,7 +71,7 @@ export const captureBrowserAnalytics = (page: Page) => {
             yield* driver("respond with public SDK configuration", () =>
               route.fulfill({
                 contentType: "application/javascript",
-                body: 'window._POSTHOG_REMOTE_CONFIG = {"synthetic-ingestion-key": {config: {hasFeatureFlags: false, sessionRecording: {endpoint: "/s/", sampleRate: 1, minimumDurationMilliseconds: 0}}}};',
+                body: remoteConfig,
               }),
             );
             return;
@@ -59,17 +85,7 @@ export const captureBrowserAnalytics = (page: Page) => {
           }
           if (path.includes("/flags") || path.includes("/decide") || path.includes("/array/")) {
             yield* driver("respond to ingestion", () =>
-              route.fulfill({
-                json: {
-                  featureFlags: {},
-                  sessionRecording: {
-                    endpoint: "/s/",
-                    sampleRate: 1,
-                    minimumDurationMilliseconds: 0,
-                  },
-                  supportedCompression: [],
-                },
-              }),
+              route.fulfill({ json: { ...flagsResponse, supportedCompression: [] } }),
             );
             return;
           }

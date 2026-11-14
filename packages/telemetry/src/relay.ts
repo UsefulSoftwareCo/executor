@@ -1,5 +1,15 @@
 /** Bounded OTLP return channel for credential-free app isolates. The parent owns export. */
-import { Effect, FiberSet, Option, Redacted, Schema, Semaphore, Tracer } from "effect";
+import {
+  Context,
+  Effect,
+  FiberSet,
+  Option,
+  Redacted,
+  Schema,
+  Scope,
+  Semaphore,
+  Tracer,
+} from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { CurrentTelemetryConfig } from "./config.ts";
 import { telemetryLayer } from "./layer.ts";
@@ -7,15 +17,8 @@ import { retryTelemetryExport, telemetryHttpClient } from "./transport.ts";
 import { recordExportFailure } from "./measurements.ts";
 import { appLog, appSpan } from "./app-records.ts";
 
-/**
- * Forward app telemetry in the host scope without delaying an app result.
- * Batches wait in one queue and a single sender exports everything waiting as one request per
- * signal, so a burst of finished runs costs a few exports instead of one each. The queue holds at
- * most eight MiB of payload and one export carries at most four. Overload and shutdown loss are
- * reported through the normal safe export-failure signal. Scope release drains for the same
- * three-second budget as the other exporters.
- */
-export const makeTelemetryForwarder = Effect.gen(function* () {
+/** The forwarder, built in the scope it is given; see {@link makeTelemetryForwarder}. */
+const forwarder = Effect.gen(function* () {
   const fibers = yield* FiberSet.make();
   const sender = yield* Semaphore.make(1);
   // Sizes are payload string lengths: UTF-16 code units, at most the payload's UTF-8 bytes.
@@ -31,12 +34,19 @@ export const makeTelemetryForwarder = Effect.gen(function* () {
     queued -= size;
     return pending.splice(0, count);
   };
+  /** Whether the scope is closing, and whether an export reached its deadline meanwhile. */
+  let closing = false;
+  let deadlineWhileClosing = false;
   const sendAll: Effect.Effect<void> = Effect.suspend(() => {
     const forwards = take();
     return forwards.length === 0
       ? Effect.void
       : exportForwards(forwards, "executor-app").pipe(
-          Effect.catchTag("TimeoutError", () => failed("timeout")),
+          Effect.catchTag("TimeoutError", () =>
+            Effect.sync(() => {
+              if (closing) deadlineWhileClosing = true;
+            }).pipe(Effect.andThen(failed("timeout"))),
+          ),
           Effect.catch(() => failed("relay")),
           Effect.andThen(sendAll),
         );
@@ -49,9 +59,18 @@ export const makeTelemetryForwarder = Effect.gen(function* () {
         Effect.flatMap((sent) => (Option.isSome(sent) && pending.length > 0 ? drain : Effect.void)),
       ),
   );
+  const reportWait = yield* TelemetryWaitReport;
+  // The close's wait reached a bound when the drain ran out its time or an export it waited for
+  // reached its own deadline.
   yield* Effect.addFinalizer(() =>
-    FiberSet.awaitEmpty(fibers).pipe(
+    Effect.sync(() => {
+      closing = true;
+    }).pipe(
+      Effect.andThen(FiberSet.awaitEmpty(fibers)),
       Effect.timeoutOption("3 seconds"),
+      Effect.tap((drained) =>
+        Option.isNone(drained) || deadlineWhileClosing ? reportWait("forwarder") : Effect.void,
+      ),
       Effect.flatMap((drained) =>
         Option.isNone(drained) || pending.length > 0 ? failed("shutdown") : Effect.void,
       ),
@@ -66,6 +85,45 @@ export const makeTelemetryForwarder = Effect.gen(function* () {
       return FiberSet.run(fibers, drain).pipe(Effect.asVoid);
     });
 });
+
+/**
+ * A telemetry wait a request's close makes that reached its bound: the forwarder's drain, or the
+ * product analytics flush. A host that reports how its requests closed records it; the default
+ * records nothing.
+ */
+export type TelemetryWait = "forwarder" | "analytics";
+export const TelemetryWaitReport = Context.Reference<(wait: TelemetryWait) => Effect.Effect<void>>(
+  "@executor-js/telemetry/TelemetryWaitReport",
+  { defaultValue: () => () => Effect.void },
+);
+
+/**
+ * The scope a host gives telemetry it waits for when a request ends: the forwarder's queue and
+ * its drain. A host that closes this scope after the request's other resources, such as its
+ * database connections, never holds them while it waits on a telemetry endpoint. Unset, the
+ * forwarder lives in the scope it is built in. The host may close this scope's finalizers in
+ * parallel; each user keeps its own order in a scope of its own.
+ */
+export const TelemetryDrainScope = Context.Reference<Scope.Scope | undefined>(
+  "@executor-js/telemetry/TelemetryDrainScope",
+  { defaultValue: () => undefined },
+);
+
+/**
+ * Forward app telemetry in the host scope without delaying an app result.
+ * Batches wait in one queue and a single sender exports everything waiting as one request per
+ * signal, so a burst of finished runs costs a few exports instead of one each. The queue holds at
+ * most eight MiB of payload and one export carries at most four. Overload and shutdown loss are
+ * reported through the normal safe export-failure signal. Scope release drains for the same
+ * three-second budget as the other exporters, in {@link TelemetryDrainScope} when the host sets it.
+ */
+export const makeTelemetryForwarder = Effect.flatMap(TelemetryDrainScope, (scope) =>
+  scope === undefined
+    ? forwarder
+    : // A scope of its own: its drain runs before its queue is interrupted, even when the host's
+      // scope closes its finalizers in parallel.
+      Effect.flatMap(Scope.fork(scope, "sequential"), (own) => Scope.provide(forwarder, own)),
+);
 
 const queueBudget = 8 * 1_048_576;
 const exportBudget = 4 * 1_048_576;
@@ -256,71 +314,79 @@ const exportForwards = (
     const client = retryTelemetryExport(yield* HttpClient.HttpClient);
     const dropped = forwards.reduce((total, { batch }) => total + batch.dropped, 0);
     if (dropped > 0) yield* recordExportFailure("app", "capacity", dropped);
-    for (const signal of ["traces", "logs"] as const) {
-      const target = config[signal];
-      const sending = forwards.filter(({ batch }) => batch[signal].length > 0);
-      if (target === undefined || sending.length === 0) continue;
-      // The isolate return channel is already bounded to four 256 KiB envelopes.
-      // Send each signal once instead of serializing four network acknowledgements
-      // inside the same three-second drain budget.
-      const data =
-        signal === "traces"
-          ? {
-              resourceSpans: yield* Effect.forEach(sending, ({ batch, traceId, source }) =>
-                Effect.forEach(batch.traces, (body) =>
-                  Schema.decodeUnknownEffect(TracePayload)(body),
-                ).pipe(
-                  Effect.map((payloads) => ({
-                    resource: resource(source),
-                    scopeSpans: [
-                      {
-                        scope: { name: service },
-                        spans: payloads
-                          .flatMap((payload) => payload.resourceSpans)
-                          .flatMap((r) => r.scopeSpans.flatMap((s) => s.spans))
-                          .filter((span) => traceId === undefined || span.traceId === traceId)
-                          // An app isolate's records are rebuilt from the host's vocabulary.
-                          .flatMap((span) => {
-                            if (service !== "executor-app") return [span];
-                            const kept = appSpan(span);
-                            return kept === undefined ? [] : [kept];
-                          }),
-                      },
-                    ],
-                  })),
+    const send = (signal: "traces" | "logs") =>
+      Effect.gen(function* () {
+        const target = config[signal];
+        const sending = forwards.filter(({ batch }) => batch[signal].length > 0);
+        if (target === undefined || sending.length === 0) return;
+        // The isolate return channel is already bounded to four 256 KiB envelopes.
+        // Send each signal once instead of serializing four network acknowledgements
+        // inside the same three-second drain budget; the two signals go out at once.
+        const data =
+          signal === "traces"
+            ? {
+                resourceSpans: yield* Effect.forEach(sending, ({ batch, traceId, source }) =>
+                  Effect.forEach(batch.traces, (body) =>
+                    Schema.decodeUnknownEffect(TracePayload)(body),
+                  ).pipe(
+                    Effect.map((payloads) => ({
+                      resource: resource(source),
+                      scopeSpans: [
+                        {
+                          scope: { name: service },
+                          spans: payloads
+                            .flatMap((payload) => payload.resourceSpans)
+                            .flatMap((r) => r.scopeSpans.flatMap((s) => s.spans))
+                            .filter((span) => traceId === undefined || span.traceId === traceId)
+                            // An app isolate's records are rebuilt from the host's vocabulary.
+                            .flatMap((span) => {
+                              if (service !== "executor-app") return [span];
+                              const kept = appSpan(span);
+                              return kept === undefined ? [] : [kept];
+                            }),
+                        },
+                      ],
+                    })),
+                  ),
                 ),
-              ),
-            }
-          : {
-              resourceLogs: yield* Effect.forEach(sending, ({ batch, traceId, source }) =>
-                Effect.forEach(batch.logs, (body) =>
-                  Schema.decodeUnknownEffect(LogPayload)(body),
-                ).pipe(
-                  Effect.map((payloads) => ({
-                    resource: resource(source),
-                    scopeLogs: [
-                      {
-                        scope: { name: service },
-                        logRecords: payloads
-                          .flatMap((payload) => payload.resourceLogs)
-                          .flatMap((r) => r.scopeLogs.flatMap((s) => s.logRecords))
-                          .filter((log) => traceId === undefined || log.traceId === traceId)
-                          .map((log) => (service === "executor-app" ? appLog(log) : log)),
-                      },
-                    ],
-                  })),
+              }
+            : {
+                resourceLogs: yield* Effect.forEach(sending, ({ batch, traceId, source }) =>
+                  Effect.forEach(batch.logs, (body) =>
+                    Schema.decodeUnknownEffect(LogPayload)(body),
+                  ).pipe(
+                    Effect.map((payloads) => ({
+                      resource: resource(source),
+                      scopeLogs: [
+                        {
+                          scope: { name: service },
+                          logRecords: payloads
+                            .flatMap((payload) => payload.resourceLogs)
+                            .flatMap((r) => r.scopeLogs.flatMap((s) => s.logRecords))
+                            .filter((log) => traceId === undefined || log.traceId === traceId)
+                            .map((log) => (service === "executor-app" ? appLog(log) : log)),
+                        },
+                      ],
+                    })),
+                  ),
                 ),
-              ),
-            };
-      yield* client.execute(
-        HttpClientRequest.post(target.url).pipe(
-          HttpClientRequest.setHeaders(
-            target.headers === undefined ? {} : Redacted.value(target.headers),
+              };
+        yield* client.execute(
+          HttpClientRequest.post(target.url).pipe(
+            HttpClientRequest.setHeaders(
+              target.headers === undefined ? {} : Redacted.value(target.headers),
+            ),
+            HttpClientRequest.bodyJsonUnsafe(data),
           ),
-          HttpClientRequest.bodyJsonUnsafe(data),
-        ),
-      );
-    }
+        );
+      });
+    // Each signal is sent even when the other fails; the first failure in order is reported.
+    const sent = yield* Effect.forEach(
+      ["traces", "logs"] as const,
+      (signal) => Effect.result(send(signal)),
+      { concurrency: "unbounded" },
+    );
+    yield* Effect.forEach(sent, (result) => Effect.fromResult(result), { discard: true });
   }).pipe(
     Effect.provide(telemetryHttpClient),
     Effect.provideService(Tracer.DisablePropagation, true),

@@ -60,7 +60,7 @@ const CompletionFailure = Schema.Struct({ _tag: Schema.String, reason: Schema.St
 const Members = Schema.Struct({
   members: Schema.Array(Schema.Struct({ id: Schema.String, userId: Schema.String })),
 });
-const Ownership = Schema.Struct({ ownership: Schema.Struct({ kind: Schema.String }) });
+const AccountDetail = Schema.Struct({ canManage: Schema.Boolean });
 
 /** Synthetic client details the loopback service accepts once allowed. */
 const teamClient = { clientId: "synthetic-team-client", clientSecret: "synthetic-team-secret" };
@@ -352,12 +352,13 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
             .request(actors.member, "DELETE", `${prefix}/accounts/${account.id}`)
             .pipe(Effect.orDie),
         );
+        // The connected account is the member's own.
         expect(
           (yield* body(
-            Ownership,
-            yield* api.request(actors.member, "GET", `${prefix}/accounts/${account.id}/access`),
-          )).ownership.kind,
-        ).toBe("personal");
+            AccountDetail,
+            yield* api.request(actors.member, "GET", `${prefix}/accounts/${account.id}`),
+          )).canManage,
+        ).toBe(true);
         // Removing the client stops new connections and keeps the connected account, but its
         // details are withdrawn: a reconnect does not sign in with the grant's copy of them.
         expect(
@@ -371,8 +372,7 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
         const after = yield* connection(actors.member, app.id);
         expect((yield* start(actors.member, after, { id: registered.client.id })).status).toBe(403);
         expect(
-          (yield* api.request(actors.member, "GET", `${prefix}/accounts/${account.id}/access`))
-            .status,
+          (yield* api.request(actors.member, "GET", `${prefix}/accounts/${account.id}`)).status,
         ).toBe(200);
         const reconnect = yield* start(
           actors.member,
@@ -562,32 +562,22 @@ layer(HostedLive, { excludeTestServices: true })("OAuth clients", (it) => {
           chooseService,
         } = yield* organizationOAuth;
         const app = yield* deploy;
-        // An administrator connects a shared account with client details entered for it alone.
-        const shared = yield* body(
-          Resource,
-          yield* api.request(
-            actors.owner,
-            "POST",
-            connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-            {
-              destination: { kind: "shared", audience: { kind: "everyone" } },
-            },
-          ),
-        );
+        // An administrator connects an account with client details entered for it alone.
+        const owners = yield* connection(actors.owner, app.id);
         const entered = { clientId: "synthetic-entered-client", clientSecret: "synthetic-entered" };
-        const sharedStart = yield* body(Redirect, yield* start(actors.owner, shared.id, entered));
-        yield* issuer.allowClient({ ...entered, redirect: sharedStart.redirectUri });
-        const sharedAccount = yield* complete(
+        const ownersStart = yield* body(Redirect, yield* start(actors.owner, owners, entered));
+        yield* issuer.allowClient({ ...entered, redirect: ownersStart.redirectUri });
+        const ownersAccount = yield* complete(
           actors.owner,
-          shared.id,
-          yield* consent(sharedStart.authorizationUrl),
+          owners,
+          yield* consent(ownersStart.authorizationUrl),
         );
-        expect(sharedAccount.status, JSON.stringify(sharedAccount.body)).toBe(200);
-        const sharedId = (yield* body(Resource, sharedAccount)).id;
+        expect(ownersAccount.status, JSON.stringify(ownersAccount.body)).toBe(200);
+        const ownersId = (yield* body(Resource, ownersAccount)).id;
         yield* Effect.addFinalizer(() =>
-          api.request(actors.owner, "DELETE", `${prefix}/accounts/${sharedId}`).pipe(Effect.orDie),
+          api.request(actors.owner, "DELETE", `${prefix}/accounts/${ownersId}`).pipe(Effect.orDie),
         );
-        // The organization's earlier connection gives a member nothing to sign in with: setup
+        // The administrator's earlier connection gives a member nothing to sign in with: setup
         // says a client is required, and a personal connection without one is refused the same.
         expect(yield* options(actors.member, app.provider)).toEqual({
           mode: "client-required",

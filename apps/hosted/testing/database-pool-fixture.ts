@@ -18,10 +18,16 @@
  *   cancellation bound, and the pool replaces it; with the cancel delivered, the connection is kept.
  * - `sibling`: a statement of a group that finishes while another statement of the group drains
  *   returns at once.
+ * - `connect-abandoned`: a connect attempt that times out, and one interrupted while it waits, close
+ *   their sockets: a server that accepts and never answers sees each closed.
  * - `batch`: a `PgConnection.pipelined` batch with `BEGIN` runs on one held connection in one
  *   snapshot inside `PgPool.held`, and refuses to write `BEGIN` outside a hold. A batch whose
  *   pool cannot connect (both attempts closed at once, as by a restarting pooler) returns each
  *   leaf's failure rather than failing itself.
+ * - `commit-unanswered`: a batch leaf's statement after the one its batch sent is not written while
+ *   the batch's `COMMIT` is unanswered (through Hyperdrive such a statement is never answered); it
+ *   is written, and answered, once the `COMMIT` is. A proxy holds the server's answer to the
+ *   `COMMIT` for a moment and counts what the client writes meanwhile.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -37,11 +43,14 @@ import {
   Effect,
   Cause,
   Context,
+  Deferred,
+  Duration,
   Exit,
   Fiber,
   FileSystem,
   Layer,
   Redacted,
+  Schedule,
   Schema,
   type Scope,
 } from "effect";
@@ -58,6 +67,8 @@ const cases = [
   "drain",
   "sibling",
   "batch",
+  "connect-abandoned",
+  "commit-unanswered",
 ] as const;
 
 /** The protocol code of a `CancelRequest`, the first message on its own connection. */
@@ -111,6 +122,76 @@ const proxy = (target: URL, dropCancels: boolean) =>
       }),
   );
 
+/**
+ * A TCP proxy to the database that holds the server's answer to each `COMMIT` (its
+ * `CommandComplete`, and every message after it) for `holdMillis`, and counts the client's writes
+ * that arrive while it holds one: writes made while a `COMMIT` is unanswered, as the client sees it.
+ */
+const commitHoldingProxy = (target: URL, holdMillis: number) =>
+  Effect.acquireRelease(
+    Effect.callback<{ readonly server: Net.Server; readonly behindCommit: { count: number } }>(
+      (resume) => {
+        const behindCommit = { count: 0 };
+        const sockets = new Set<Net.Socket>();
+        const server = Net.createServer((client) => {
+          sockets.add(client);
+          const upstream = Net.connect(Number(target.port || 5432), target.hostname);
+          sockets.add(upstream);
+          let holding = false;
+          let held: Array<Buffer> = [];
+          // The server's messages, cut at their boundaries: a type byte and a length that counts
+          // itself. The startup reply begins with messages too.
+          let rest = Buffer.alloc(0);
+          upstream.on("data", (chunk: Buffer) => {
+            rest = Buffer.concat([rest, chunk]);
+            while (rest.length >= 5) {
+              const length = rest.readInt32BE(1) + 1;
+              if (rest.length < length) break;
+              const message = rest.subarray(0, length);
+              rest = rest.subarray(length);
+              const commit =
+                message[0] === 0x43 && message.subarray(5, 11).toString("latin1") === "COMMIT";
+              if (commit && !holding) {
+                holding = true;
+                setTimeout(() => {
+                  holding = false;
+                  const out = Buffer.concat(held);
+                  held = [];
+                  if (!client.destroyed) client.write(out);
+                }, holdMillis);
+              }
+              if (holding) held.push(Buffer.from(message));
+              else client.write(message);
+            }
+          });
+          client.on("data", (chunk) => {
+            if (holding) behindCommit.count++;
+            upstream.write(chunk);
+          });
+          upstream.once("close", () => {
+            sockets.delete(upstream);
+            client.destroy();
+          });
+          client.once("close", () => {
+            sockets.delete(client);
+            upstream.destroy();
+          });
+          upstream.on("error", () => client.destroy());
+          client.on("error", () => upstream.destroy());
+        });
+        server.on("close", () => {
+          for (const socket of sockets) socket.destroy();
+        });
+        server.listen(0, "127.0.0.1", () => resume(Effect.succeed({ server, behindCommit })));
+      },
+    ),
+    ({ server }) =>
+      Effect.callback<void>((resume) => {
+        server.close(() => resume(Effect.void));
+        server.emit("close");
+      }),
+  );
+
 const command = Command.make("database-pool-fixture", {
   configuration: Flag.String("configuration"),
   case: Flag.Literals("case", cases),
@@ -141,9 +222,11 @@ const command = Command.make("database-pool-fixture", {
         const applicationName = `e2e pool ${run}`;
         const table = `e2e_pool_${run}`;
         const lockKey = Number.parseInt(run.slice(0, 7), 16);
+        // A second lock of the run's, above every run's first.
+        const gateKey = lockKey + 2 ** 28;
 
         const admin = yield* Effect.acquireRelease(
-          Effect.sync(() => new Pool({ connectionString: target.toString(), max: 2 })),
+          Effect.sync(() => new Pool({ connectionString: target.toString(), max: 3 })),
           (pool) => Effect.promise(() => pool.end()),
         );
         const adminQuery = (text: string, values: ReadonlyArray<unknown> = []) =>
@@ -197,19 +280,20 @@ const command = Command.make("database-pool-fixture", {
               Effect.orDie,
             );
 
-        /** Holds the run's advisory lock on its own connection until the scope closes. */
-        const holdLock = Effect.acquireRelease(
-          Effect.promise(async () => {
-            const client = await admin.connect();
-            await client.query("SELECT pg_advisory_lock($1)", [lockKey]);
-            return client;
-          }),
-          (client) =>
+        /** Holds the advisory lock `key` on its own connection until the scope closes. */
+        const holdLock = (key: number) =>
+          Effect.acquireRelease(
             Effect.promise(async () => {
-              await client.query("SELECT pg_advisory_unlock($1)", [lockKey]);
-              client.release();
+              const client = await admin.connect();
+              await client.query("SELECT pg_advisory_lock($1)", [key]);
+              return client;
             }),
-        );
+            (client) =>
+              Effect.promise(async () => {
+                await client.query("SELECT pg_advisory_unlock($1)", [key]);
+                client.release();
+              }),
+          );
         /** A statement that waits on the run's lock, given up on after `millis`. */
         const lockWait = (pool: PgPool.PgPool, millis: number) =>
           pool
@@ -217,6 +301,18 @@ const command = Command.make("database-pool-fixture", {
               connection.query("SELECT pg_advisory_xact_lock($1)", [lockKey], false),
             )
             .pipe(Effect.timeoutOption(`${millis} millis`), Effect.exit);
+        /** Waits until a statement of the run's pools waits on an advisory lock. */
+        const waitingOnLock = adminQuery(
+          "SELECT count(*)::int AS waiting FROM pg_stat_activity WHERE application_name = $1 AND wait_event = 'advisory'",
+          [applicationName],
+        ).pipe(
+          Effect.filterOrFail(
+            (result) => result.rows[0].waiting > 0,
+            () => new Error("No statement of the run waits on a lock"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 1_000 }),
+          Effect.orDie,
+        );
 
         const since = (start: number) => Date.now() - start;
         const outcome = <A, E>(exit: Exit.Exit<A, E>) =>
@@ -231,11 +327,15 @@ const command = Command.make("database-pool-fixture", {
             case "use-once": {
               yield* adminQuery(`CREATE TABLE ${table} (id serial PRIMARY KEY)`);
               yield* Effect.addFinalizer(() => adminQuery(`DROP TABLE IF EXISTS ${table}`));
-              yield* holdLock;
+              yield* holdLock(lockKey);
               // Cancels never land, so the abandoned lock wait keeps its connection refusing.
               const { pool: shared } = yield* pool({ maxConnections: 4, cancels: "dropped" });
               // One group: a callback inserts, then reads after its sibling on the same connection
-              // has given up on a lock wait. The read is refused unsent; the insert was sent.
+              // has given up on a lock wait. The read is refused unsent; the insert was sent. Each
+              // sibling starts once its callback has the group's connection, so its lock wait goes
+              // out on that connection, behind what the callback sent.
+              const inserted = yield* Deferred.make<void>();
+              const gaveUp = yield* Deferred.make<void>();
               const [twoStatements, sibling] = yield* PgPool.grouped(
                 Effect.all(
                   [
@@ -244,30 +344,40 @@ const command = Command.make("database-pool-fixture", {
                         connection
                           .query(`INSERT INTO ${table} DEFAULT VALUES`, [], false)
                           .pipe(
-                            Effect.andThen(Effect.sleep("150 millis")),
+                            Effect.ensuring(Deferred.succeed(inserted, undefined)),
+                            Effect.andThen(Deferred.await(gaveUp)),
                             Effect.andThen(connection.query("SELECT 1", [], false)),
                           ),
                       )
                       .pipe(Effect.exit),
-                    Effect.sleep("20 millis").pipe(Effect.andThen(lockWait(shared, 40))),
+                    Deferred.await(inserted).pipe(
+                      Effect.andThen(lockWait(shared, 40)),
+                      Effect.tap(() => Deferred.succeed(gaveUp, undefined)),
+                    ),
                   ],
                   { concurrency: "unbounded" },
                 ),
               );
               // Another group: the same, but the callback sends nothing before its read is refused.
+              const leased = yield* Deferred.make<void>();
+              const otherGaveUp = yield* Deferred.make<void>();
               const [firstRead, otherSibling] = yield* PgPool.grouped(
                 Effect.all(
                   [
                     shared
                       .use((connection) =>
-                        Effect.sleep("150 millis").pipe(
+                        Deferred.succeed(leased, undefined).pipe(
+                          Effect.andThen(Deferred.await(otherGaveUp)),
                           Effect.andThen(
                             connection.query("SELECT pg_backend_pid() AS pid", [], false),
                           ),
                         ),
                       )
                       .pipe(Effect.exit),
-                    Effect.sleep("20 millis").pipe(Effect.andThen(lockWait(shared, 40))),
+                    Deferred.await(leased).pipe(
+                      Effect.andThen(lockWait(shared, 40)),
+                      Effect.tap(() => Deferred.succeed(otherGaveUp, undefined)),
+                    ),
                   ],
                   { concurrency: "unbounded" },
                 ),
@@ -377,7 +487,7 @@ const command = Command.make("database-pool-fixture", {
               const arm = (cancels: "dropped" | "delivered") =>
                 Effect.scoped(
                   Effect.gen(function* () {
-                    yield* holdLock;
+                    yield* holdLock(lockKey);
                     const { pool: single, cancels: seen } = yield* pool({
                       maxConnections: 1,
                       cancels,
@@ -397,6 +507,124 @@ const command = Command.make("database-pool-fixture", {
                   }),
                 );
               return { dropped: yield* arm("dropped"), delivered: yield* arm("delivered") };
+            }
+            case "connect-abandoned": {
+              // A server that accepts and never answers, as a path that drops everything after
+              // the TCP handshake does. It reads and discards, so it sees each client's close.
+              const silent = yield* Effect.acquireRelease(
+                Effect.callback<{
+                  readonly server: Net.Server;
+                  readonly sockets: { accepted: number; open: number };
+                  readonly held: Set<Net.Socket>;
+                }>((resume) => {
+                  const sockets = { accepted: 0, open: 0 };
+                  const held = new Set<Net.Socket>();
+                  const server = Net.createServer((socket) => {
+                    sockets.accepted++;
+                    sockets.open++;
+                    held.add(socket);
+                    socket.on("close", () => {
+                      sockets.open--;
+                      held.delete(socket);
+                    });
+                    socket.on("error", () => undefined);
+                    socket.resume();
+                  });
+                  server.listen(0, "127.0.0.1", () =>
+                    resume(Effect.succeed({ server, sockets, held })),
+                  );
+                }),
+                // Sockets a client left open would keep the server from closing.
+                ({ server, held }) =>
+                  Effect.callback<void>((resume) => {
+                    for (const socket of held) socket.destroy();
+                    server.close(() => resume(Effect.void));
+                  }),
+              );
+              const address = silent.server.address();
+              if (address === null || typeof address === "string")
+                return yield* Effect.die("The silent server has no port");
+              const url = new URL(target.toString());
+              url.hostname = "127.0.0.1";
+              url.port = String(address.port);
+              /** Sockets the server still has open once closes have had time to arrive. */
+              const leftOpen = Effect.sleep("500 millis").pipe(
+                Effect.map(() => silent.sockets.open),
+              );
+              // Each attempt reaches its connect timeout; the second is the retry.
+              const timedOut = yield* Effect.exit(
+                Effect.scoped(
+                  PgConnection.make({
+                    url: Redacted.make(url.toString()),
+                    connectTimeout: Duration.millis(300),
+                    connectRetries: 1,
+                  }),
+                ),
+              );
+              const afterTimeout = { attempts: silent.sockets.accepted, open: yield* leftOpen };
+              // The caller gives up while the attempt waits, well before its own timeout.
+              const interrupted = yield* Effect.exit(
+                Effect.scoped(
+                  PgConnection.make({
+                    url: Redacted.make(url.toString()),
+                    connectTimeout: Duration.seconds(10),
+                  }),
+                ).pipe(Effect.timeout(Duration.millis(200))),
+              );
+              return {
+                timedOut:
+                  Exit.isFailure(timedOut) &&
+                  String(timedOut.cause).includes("Connection timed out")
+                    ? "timed out"
+                    : outcome(timedOut),
+                afterTimeout,
+                interrupted: outcome(interrupted),
+                afterInterrupt: {
+                  attempts: silent.sockets.accepted - afterTimeout.attempts,
+                  open: yield* leftOpen,
+                },
+              };
+            }
+            case "commit-unanswered": {
+              const holding = yield* commitHoldingProxy(target, 300);
+              const address = holding.server.address();
+              if (address === null || typeof address === "string")
+                return yield* Effect.die("The proxy has no port");
+              const url = new URL(target.toString());
+              url.hostname = "127.0.0.1";
+              url.port = String(address.port);
+              // A client of the session objects' shape, whose statements `pipelined` claims.
+              const client = yield* Layer.build(
+                PgClient.layer({
+                  url: Redacted.make(url.toString()),
+                  applicationName,
+                  maxConnections: 2,
+                  multiplex: true,
+                  multiplexConcurrency: 1,
+                  prepare: false,
+                }),
+              ).pipe(Effect.orDie);
+              const sql = Context.get(client, SqlClient.SqlClient);
+              // The first leaf reads again once its first statement answers, as a bearer recheck
+              // whose key was contended does: its batch's `COMMIT` has not answered yet.
+              let laterMs = -1;
+              const started = Date.now();
+              const recheck = Effect.gen(function* () {
+                yield* sql`SELECT 1 AS first`;
+                yield* sql`SELECT 2 AS later`;
+                laterMs = Date.now() - started;
+              });
+              const exits = yield* PgPool.held(
+                PgConnection.pipelined([recheck, sql`SELECT 3`, sql`SELECT 4`], {
+                  outside: 1,
+                  begin: "ISOLATION LEVEL REPEATABLE READ READ ONLY",
+                }),
+              ).pipe(Effect.timeout("10 seconds"), Effect.orDie);
+              return {
+                leaves: exits.map((exit) => (Exit.isSuccess(exit) ? "ok" : "failed")),
+                behindCommit: holding.behindCommit.count,
+                laterAfterCommit: laterMs >= 300,
+              };
             }
             case "batch": {
               // A client of the session objects' shape: its statements go through the borrower
@@ -508,34 +736,34 @@ const command = Command.make("database-pool-fixture", {
               };
             }
             case "sibling": {
-              yield* holdLock;
+              yield* holdLock(lockKey);
               const { pool: shared } = yield* pool({ maxConnections: 4, cancels: "dropped" });
-              const start = Date.now();
-              // A sibling queued behind the awaited statement gives up on its lock wait; its
-              // cancel never lands, so draining it takes the 5 s bound.
-              const [awaited, abandoned] = yield* PgPool.grouped(
-                Effect.all(
-                  [
-                    shared
-                      .use((connection) => connection.query("SELECT pg_sleep(0.2)", [], false))
-                      .pipe(
-                        Effect.exit,
-                        Effect.map((exit) => ({ exit, at: since(start) })),
-                      ),
-                    Effect.sleep("10 millis").pipe(
-                      Effect.andThen(lockWait(shared, 50)),
-                      Effect.map((exit) => ({ exit, at: since(start) })),
-                    ),
-                  ],
-                  { concurrency: "unbounded" },
-                ),
+              // The awaited statement waits on a second lock, the gate, so a sibling queued behind
+              // it gives up on its lock wait while it still runs. The sibling's cancel never lands,
+              // so draining it takes the 5 s bound. The gate opens once the sibling has given up.
+              return yield* PgPool.grouped(
+                Effect.gen(function* () {
+                  const { awaited, abandoned } = yield* Effect.scoped(
+                    Effect.gen(function* () {
+                      yield* holdLock(gateKey);
+                      const awaited = yield* shared
+                        .use((connection) =>
+                          connection.query("SELECT pg_advisory_xact_lock($1)", [gateKey], false),
+                        )
+                        .pipe(Effect.exit, Effect.forkChild);
+                      yield* waitingOnLock;
+                      return { awaited, abandoned: yield* lockWait(shared, 50) };
+                    }),
+                  );
+                  const opened = Date.now();
+                  const exit = yield* Fiber.join(awaited);
+                  return {
+                    awaited: outcome(exit),
+                    awaitedReturned: since(opened),
+                    gaveUp: Exit.isSuccess(abandoned) && abandoned.value._tag === "None",
+                  };
+                }),
               );
-              return {
-                awaited: outcome(awaited.exit),
-                awaitedReturned: awaited.at,
-                gaveUp: Exit.isSuccess(abandoned.exit) && abandoned.exit.value._tag === "None",
-                abandonedReturned: abandoned.at,
-              };
             }
           }
         });

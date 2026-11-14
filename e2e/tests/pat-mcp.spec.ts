@@ -162,7 +162,8 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
                 "This account is not a member of the organization this MCP request uses, or that organization does not exist. Recovery: Check the organization name, and that this account still belongs to it. Copy the fix prompt into your agent to investigate the missing access.",
               ),
             );
-            // A PAT grant has no connection, so a connection's URL refuses it and names the URL it serves.
+            // A PAT has no grant record to hold a connection, so a connection's URL refuses it
+            // rather than serving its full access there.
             const scoped = yield* api.request(
               anonymous,
               "GET",
@@ -174,7 +175,7 @@ layer(HostedLive, { excludeTestServices: true })("PAT MCP", (it) => {
             expect(scoped.body).toMatchObject(
               refusal(
                 "GrantForbidden",
-                "This credential works only at the MCP URL ending in /mcp, not at the URL of this request. Recovery: Connect at the MCP URL ending in /mcp, or connect again at this URL to get a credential for it, then retry.",
+                "This credential has full access and no sign-in record, so it cannot be limited to the connection another-connection that this MCP URL names. Recovery: Use the MCP URL without the connection parameter, or sign the client in through OAuth and choose the connection, then retry.",
               ),
             );
             expect(

@@ -4,14 +4,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { bundleLocalRuntime } from "./runtime-bundle.ts";
-import {
-  nativePlatform,
-  npmArchiveBudgetBytes,
-  npmArchiveBudgetMiB,
-  platformArchive,
-  platformVersion,
-  release,
-} from "./config.ts";
+import { nativePlatform, platformArchive, platformVersion, release } from "./config.ts";
 import { installWindowsGitHttpBackend } from "./windows-git.ts";
 import { launcherAnalytics } from "./analytics.ts";
 import { buildStandalone } from "./standalone.ts";
@@ -50,7 +43,37 @@ const build = Effect.gen(function* () {
         ),
       );
   yield* run("bun", ["run", "apps:build"], root);
-  yield* run("bun", ["run", "telemetry:build"], root);
+  // The collector is not built here. A release run's collector job builds it once per target and
+  // every packaging job downloads those bytes into dist/collector, so every archive of a target
+  // holds the same executable; a build here could differ with the runner's tools. Locally,
+  // `bun run collector:build` makes it.
+  const collector = path.join(
+    root,
+    "packages/telemetry/dist/collector",
+    process.platform === "win32" ? "executor-collector.exe" : "executor-collector",
+  );
+  if (!(yield* fs.exists(collector)))
+    return yield* Effect.die(
+      new Error(`${collector} is missing. Run bun run collector:build first.`),
+    );
+  // It must be this target's build, whole: the platform checks and its recorded SHA-256 and size,
+  // without the Rust toolchain a packaging runner may not have.
+  const checked = yield* processes.exitCode(
+    ChildProcess.make(
+      process.execPath,
+      [
+        path.join(root, "packages/telemetry/scripts/build-collector.ts"),
+        "--target",
+        `${target.platform}-${target.arch}`,
+        "--packaged",
+        "check",
+      ],
+      { cwd: root, stdout: "inherit", stderr: "inherit" },
+    ),
+  );
+  if (checked !== 0)
+    return yield* Effect.die(new Error(`${collector} is not this target's whole build.`));
+  yield* run("bun", ["run", "viewer:build"], root);
   yield* run("bun", ["run", "web:build"], root);
   yield* fs.makeDirectory(output, { recursive: true });
   if (yield* fs.exists(stage)) yield* fs.remove(stage, { recursive: true });
@@ -168,20 +191,14 @@ const build = Effect.gen(function* () {
     (yield* Config.String("EXECUTOR_RELEASE_PUBLISH").pipe(Config.withDefault(""))) === "true"
   )
     return yield* Effect.die(new Error("A published macOS build must be signed and notarized."));
-  yield* buildStandalone(root, output, stage, target, signing);
-  // Guard each native target before its offline tests or any publication can run.
+  // `--submission=<file>`: notarize without waiting; `macos-notarization.ts <file>` waits.
+  const submission = process.argv
+    .find((argument) => argument.startsWith("--submission="))
+    ?.slice("--submission=".length);
+  if (submission !== undefined && (submission === "" || signing !== "notarize"))
+    return yield* Effect.die(new Error("--submission=<file> needs a file and --notarize."));
+  yield* buildStandalone(root, output, stage, target, signing, submission);
   const bytes = Number((yield* fs.stat(path.join(output, platformArchive(target)))).size);
-  const budgetBytes = npmArchiveBudgetBytes;
-  yield* fs.writeFileString(
-    path.join(output, "npm-size.json"),
-    JSON.stringify({ bytes, budgetBytes }, null, 2),
-  );
-  if (bytes > budgetBytes)
-    return yield* Effect.die(
-      new Error(
-        `npm archive exceeds the ${npmArchiveBudgetMiB} MiB release budget: ${bytes} bytes`,
-      ),
-    );
   yield* Console.log(`Native artifact: ${output} (${(bytes / 1024 / 1024).toFixed(1)} MiB)`);
 });
 NodeRuntime.runMain(Effect.scoped(build).pipe(Effect.provide(NodeServices.layer)));

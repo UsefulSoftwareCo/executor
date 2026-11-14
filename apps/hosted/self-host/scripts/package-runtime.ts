@@ -208,20 +208,6 @@ const packageRuntime = Effect.gen(function* () {
   yield* fs.writeFile(path.join(output, "workerd"), workerd.binary);
   yield* fs.chmod(path.join(output, "workerd"), 0o755);
   yield* fs.copy(web, path.join(output, "web"), { overwrite: true });
-  yield* fs.copy(path.join(root, "packages/telemetry/dist/motel"), path.join(output, "motel"), {
-    overwrite: true,
-  });
-  // The collector shares the container's memory limit. Bound what it holds for exports in
-  // flight (4 x 16 MiB) and what it stores; beyond either it refuses and counts.
-  const motelBounds = Object.entries({
-    MOTEL_OTEL_MAX_PENDING_INGEST: 4,
-    MOTEL_OTEL_MAX_INGEST_BYTES: 16 * 1024 * 1024,
-    MOTEL_OTEL_MAX_SPANS: 1_000_000,
-    MOTEL_OTEL_MAX_DB_SIZE_MB: 1024,
-    MOTEL_OTEL_RETENTION_HOURS: 168,
-  })
-    .map(([name, value]) => `(name=${JSON.stringify(name)},text=${JSON.stringify(String(value))})`)
-    .join(",");
   // Every workflow run is its own Engine durable object, and pinning engines kept every finished
   // run resident. workerd unloads an engine about 70 s after its last call once no caller holds
   // it, even with a step in flight; only a run started by create() has a caller holding it. The
@@ -264,6 +250,9 @@ const packageRuntime = Effect.gen(function* () {
   // code's pages stay resident. Every deploy and every cold app load creates an isolate, so the
   // process grew by about 9 MB for each app installed and never shrank. Keeping the code is bounded
   // by the modules' size.
+  // `enable_request_signal` aborts a request's signal when its client disconnects. The product's
+  // streamed responses end on it; workerd never cancels a Durable Object's response body itself
+  // (see request-lifetime.ts).
   const config = `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
  memory=(${memory}),
@@ -271,9 +260,9 @@ const config :Workerd.Config = (
  extensions=[(modules=[(name="cloudflare-runtime:workflows-wrapped-binding",internal=true,esModule=embed "@@RUNTIME@@/workflow-binding.mjs")])],
  services=[
   (name="product",worker=(
-   compatibilityDate="2026-09-01",compatibilityFlags=["nodejs_compat","no_brotli_content_encoding"],
+   compatibilityDate="2026-09-01",compatibilityFlags=["nodejs_compat","no_brotli_content_encoding","enable_request_signal"],
    modules=[(name="product.mjs",esModule=embed "@@RUNTIME@@/product.mjs"),(name="executor:pglite.wasm",wasm=embed "@@RUNTIME@@/pglite.wasm"),(name="executor:initdb.wasm",wasm=embed "@@RUNTIME@@/initdb.wasm"),(name="executor:pglite.data",data=embed "@@RUNTIME@@/pglite.data")],
-   bindings=[(name="PRODUCT",durableObjectNamespace="ExecutorProduct"),(name="NATIVE",service="native"),(name="LEGACY_DATABASE",service="legacy-data"),(name="BLOBS",service="builds"),(name="DASHBOARD",service="dashboard"),(name="PUBLIC_FETCH",service="public"),(name="PRIVATE_FETCH",service="internet"),(name="MOTEL",service="motel"),(name="SELF",service=(name="product",entrypoint="SelfOrigin")),(name="APPS",service="apps"),(name="UNSAFE_EVAL",unsafeEval=void)],
+   bindings=[(name="PRODUCT",durableObjectNamespace="ExecutorProduct"),(name="NATIVE",service="native"),(name="LEGACY_DATABASE",service="legacy-data"),(name="BLOBS",service="builds"),(name="DASHBOARD",service="dashboard"),(name="PUBLIC_FETCH",service="public"),(name="PRIVATE_FETCH",service="internet"),(name="COLLECTOR",service="collector"),(name="SELF",service=(name="product",entrypoint="SelfOrigin")),(name="APPS",service="apps"),(name="UNSAFE_EVAL",unsafeEval=void)],
    durableObjectNamespaces=[(className="ExecutorProduct",uniqueKey="executor-product",enableSql=true,preventEviction=true)],durableObjectStorage=(localDisk="product-data")
   )),
   (name="apps",worker=(
@@ -287,7 +276,7 @@ const config :Workerd.Config = (
    durableObjectNamespaces=[${workflowEngines}],durableObjectStorage=(localDisk="workflow-data")
   )),
   (name="native",external=(address="unix:/tmp/executor-native.sock",http=())),
-  (name="motel",external=(address="unix:/tmp/executor-motel.sock",http=())),
+  (name="collector",external=(address="unix:/tmp/executor-collector.sock",http=())),
   (name="public",network=(allow=["public"],tlsOptions=(trustBrowserCas=true,trustedCertificates=[@@EXTRA_CA_CERTIFICATES@@]))),
   (name="internet",network=(allow=["public","private","local"],tlsOptions=(trustBrowserCas=true,trustedCertificates=[@@EXTRA_CA_CERTIFICATES@@]))),
   (name="dashboard",disk=(path="@@RUNTIME@@/web")),
@@ -300,25 +289,11 @@ const config :Workerd.Config = (
  sockets=[(name="http",address="0.0.0.0:4400",http=(),service=@@PRODUCT_SERVICE@@)]
 );
 `;
-  // workerd runs a process's JavaScript on one thread. The collector indexes every span it stores,
-  // about a thousand per catalog-wide search, so in the product's process that work delayed MCP
-  // requests by seconds. It runs in its own workerd process and listens only on a private Unix
-  // socket, which the host passes to it and to the product's MOTEL binding. With no TCP listener,
-  // an app's fetch cannot reach its ingest or query routes even when private fetch is allowed.
-  const motelConfig = `using Workerd = import "/workerd/workerd.capnp";
-const config :Workerd.Config = (
- services=[
-  (name="motel",worker=(
-   compatibilityDate="2026-09-01",compatibilityFlags=["nodejs_compat"],modules=[(name="motel.mjs",esModule=embed "@@RUNTIME@@/motel/motel.mjs")],
-   bindings=[(name="STORE",durableObjectNamespace="MotelCollector"),(name="ASSETS",service="motel-assets"),${motelBounds}],
-   durableObjectNamespaces=[(className="MotelCollector",uniqueKey="motel",enableSql=true)],durableObjectStorage=(localDisk="motel-data")
-  )),
-  (name="motel-assets",disk=(path="@@RUNTIME@@/motel/web/dist")),
-  (name="motel-data",disk=(path="/app/motel-data",writable=true,allowDotfiles=true))
- ],
- sockets=[(name="motel",address="unix:/tmp/executor-motel.sock",http=(),service="motel")]
-);
-`;
+  // The telemetry collector is not part of this runtime: the image's own stage builds
+  // executor-collector from the crate and the native host supervises it on a private Unix socket,
+  // which the host passes to the product's COLLECTOR binding (see the Dockerfile and native/main.go).
+  // With no TCP listener, an app's fetch cannot reach its ingest or query routes even when private
+  // fetch is allowed.
   // Retain dependency notices with the executable image, including the embedded engines.
   const packageDirectories = new Set<string>([pg + "/..", alchemyRoot]);
   for (const input of Object.keys(product.metafile.inputs)) {
@@ -371,7 +346,6 @@ const config :Workerd.Config = (
     inventory.sort().join("\n") + "\n",
   );
   yield* fs.writeFileString(path.join(output, "workerd.capnp"), config);
-  yield* fs.writeFileString(path.join(output, "motel.capnp"), motelConfig);
   // Count real files once, including native assets, and reject any link back to
   // the build tree. This budget covers both supported Linux architectures.
   const runtimeRoot = yield* fs.realPath(output);

@@ -1,4 +1,4 @@
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import {
   CurrentUsage,
   observeProductOperation,
@@ -17,7 +17,7 @@ import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
 import { policyDatabase, visibleApps, requireAppAccess } from "./resource-policy.ts";
 /** Hosted catalog and execution policy for the shared MCP engine; no HTTP transport or credentials. */
-import type { McpBackend } from "@executor-js/mcp";
+import { CurrentMcpExecution, ToolCallRecorded, type McpBackend } from "@executor-js/mcp";
 import {
   AccountRequired,
   AppNotFound,
@@ -36,9 +36,12 @@ import {
   checkInvocationAccounts,
   SelectionReadAhead,
 } from "./access.ts";
-import { ConcurrentStatements, HostedExecutor } from "../contracts/executor.ts";
+import { ConcurrentStatements, HostedBackground, HostedExecutor } from "../contracts/executor.ts";
 import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
-import { CurrentMcpGrant } from "../contracts/mcp.ts";
+import { CurrentMcpGrant, CurrentMcpSession, IssuedMcpSessionId } from "../contracts/mcp.ts";
+import type { ToolCallCaller } from "../contracts/tool-call-log.ts";
+import { loggedToolCall, loggedToolResume, recordCallDetails } from "./tool-call-log.ts";
+import { patGrantOf } from "./mcp-oauth.ts";
 import { listTools, searchableTools, searchTools } from "./tools.ts";
 import { listAppSkills, readAppSkill } from "./skills.ts";
 
@@ -49,16 +52,38 @@ import { listAppSkills, readAppSkill } from "./skills.ts";
  */
 export const hostedMcpBackend = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;
-  const policy = yield* CurrentAuthorization;
+  const policy = yield* CurrentPolicy;
   const sdk = yield* HostedExecutor;
   const database = yield* GroupDatabase;
   const user = yield* CurrentUserId;
   const grant = yield* CurrentMcpGrant;
+  const session = yield* CurrentMcpSession;
+  const background = yield* HostedBackground;
+  /**
+   * The log's caller for a call in `execution`: an API key's synthetic grant names its key, any
+   * other grant is the agent's. The session is recorded only when the call runs in an initialized
+   * session, which the protocol server found by the ID it issued, and the ID has this server's form.
+   */
+  const caller = Effect.fn(function* (execution: string | undefined) {
+    if (grant === undefined) return undefined;
+    const pat = patGrantOf(grant);
+    const initialized = Option.isSome(yield* Effect.serviceOption(McpSchema.McpServerClient));
+    const issued = initialized && Schema.is(IssuedMcpSessionId)(session) ? session : undefined;
+    const logged: ToolCallCaller = {
+      ...(Option.isSome(pat)
+        ? { source: "api-key", sourceId: pat.value.token }
+        : { source: "agent", sourceId: grant }),
+      session: issued,
+      execution,
+    };
+    return logged;
+  });
   const context = Context.make(CurrentOrganization, organization).pipe(
     Context.add(HostedExecutor, sdk),
-    Context.add(CurrentAuthorization, policy),
+    Context.add(CurrentPolicy, policy),
     Context.add(GroupDatabase, database),
     Context.add(CurrentUserId, user),
+    Context.add(HostedBackground, background),
   );
   // Discovery reads are traced only; clients repeat them on every session and poll.
   const observe = <A, E, R>(
@@ -154,12 +179,34 @@ export const hostedMcpBackend = Effect.gen(function* () {
         return yield* new AppNotFound({ app });
       yield* requireAppAccess(app, "use");
     });
+  /** Check the call as discovery would, then make it with the caller's resolved accounts. */
+  const startCall = (
+    input: Parameters<McpBackend<Error>["callTool"]>[0],
+    options?: ToolInvocationOptions,
+  ) =>
+    Effect.gen(function* () {
+      const owner = yield* currentOwner;
+      const executor = yield* sdk;
+      // Under a read-only rule the grant check evaluates the app before the call reaches here,
+      // so an app read made beside authentication would be older than that evaluation.
+      const ahead = yield* SelectionReadAhead;
+      const read =
+        ahead !== undefined && !requiresToolMetadata(policy.tools, input.app) ? ahead : undefined;
+      const { version, accounts, kind } = yield* checkedToolCall(
+        executor,
+        owner,
+        input,
+        (selected, described) => authorizeTool({ ...input, ...selected }, described),
+        read,
+      );
+      yield* recordCallDetails({ version, accounts, ...(kind === undefined ? {} : { kind }) });
+      const call = executor.tools.call({ ...input, version, accounts, kind }, options);
+      // The check has finished: the call may read its state and recheck its accounts at once.
+      return yield* (yield* ConcurrentStatements) !== undefined
+        ? call.pipe(Effect.provideService(InvocationSelection, { app: input.app, owner, accounts }))
+        : call;
+    });
   const backend = {
-    eventDefinitions: (input) =>
-      Effect.gen(function* () {
-        yield* eventApp(input.app);
-        return yield* (yield* sdk).events.definitions(input);
-      }).pipe((work) => observe("eventDefinitions", work, "read")),
     findEventSubscription: (key) =>
       Effect.gen(function* () {
         const { principal } = yield* subscriber;
@@ -169,12 +216,19 @@ export const hostedMcpBackend = Effect.gen(function* () {
     subscribeEvent: ({ key, ...input }) =>
       Effect.gen(function* () {
         const { principal, subject } = yield* subscriber;
+        const { target } = input;
         // A saved subscription can name an app the caller no longer sees; to them it has no event.
-        yield* eventApp(input.target.app).pipe(
-          Effect.catchTag("AppNotFound", () => Effect.fail(new EventNotFound({ kind: "event" }))),
-        );
+        // A selection of every app is the organization's; each delivery checks its app.
+        if (target.app !== null)
+          yield* eventApp(target.app).pipe(
+            Effect.catchTag("AppNotFound", () => Effect.fail(new EventNotFound({ kind: "event" }))),
+          );
         return yield* (yield* sdk).events.subscribe({
           ...input,
+          target:
+            target.app === null
+              ? { owner: organization.owner, app: null, event: null }
+              : { app: target.app, event: target.event },
           key: { ...key, principal },
           subject,
         });
@@ -246,46 +300,42 @@ export const hostedMcpBackend = Effect.gen(function* () {
     searchTools: (input) => observe("searchTools", searchTools(input), "read"),
     callTool: (input, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
-        const owner = yield* currentOwner;
-        const executor = yield* sdk;
-        // Under a read-only rule the grant check evaluates the app before the call reaches here,
-        // so an app read made beside authentication would be older than that evaluation.
-        const ahead = yield* SelectionReadAhead;
-        const read =
-          ahead !== undefined && !requiresToolMetadata(policy.tools, input.app) ? ahead : undefined;
-        const { version, accounts, kind } = yield* checkedToolCall(
-          executor,
-          owner,
+        const execution = yield* CurrentMcpExecution;
+        const logged = yield* loggedToolCall(
+          yield* caller(execution),
           input,
-          (selected, described) => authorizeTool({ ...input, ...selected }, described),
-          read,
+          true,
+          grantRefusal(startCall(input, options)),
         );
-        const call = executor.tools.call({ ...input, version, accounts, kind }, options);
-        // The check has finished: the call may read its state and recheck its accounts at once.
-        return yield* (yield* ConcurrentStatements) !== undefined
-          ? call.pipe(
-              Effect.provideService(InvocationSelection, { app: input.app, owner, accounts }),
-            )
-          : call;
-      }).pipe(grantRefusal, (work) => observe("callTool", work)),
+        // The agent is told the call's reference beside its outcome.
+        if (logged.reference !== undefined) (yield* ToolCallRecorded)?.(logged.reference);
+        return yield* logged.exit;
+      }).pipe((work) => observe("callTool", work)),
+    // The call's reference was given when the call paused; the resume reports its outcome only.
     resumeInvocation: (request, response, options?: ToolInvocationOptions) =>
-      Effect.gen(function* () {
-        yield* authorizeSavedTool(request.invocation);
-        const owner = yield* currentOwner;
-        yield* requireAppAccess(request.invocation.app, "use");
-        const executor = yield* sdk;
-        yield* checkInvocationAccounts(executor, owner, request.invocation);
-        const usage = yield* CurrentUsage;
-        return yield* executor.tools
-          .resume({ requestId: request.requestId, owner, response }, options)
-          .pipe(
-            Effect.provideService(CurrentUsage, {
-              ...usage,
-              app_id: request.invocation.app,
-              tool_name: request.invocation.tool,
-            }),
-          );
-      }).pipe((work) => observe("resumeInvocation", work)),
+      loggedToolResume(
+        request.requestId,
+        Effect.gen(function* () {
+          yield* authorizeSavedTool(request.invocation);
+          const owner = yield* currentOwner;
+          yield* requireAppAccess(request.invocation.app, "use");
+          const executor = yield* sdk;
+          yield* checkInvocationAccounts(executor, owner, request.invocation);
+          const usage = yield* CurrentUsage;
+          return yield* executor.tools
+            .resume({ requestId: request.requestId, owner, response }, options)
+            .pipe(
+              Effect.provideService(CurrentUsage, {
+                ...usage,
+                app_id: request.invocation.app,
+                tool_name: request.invocation.tool,
+              }),
+            );
+        }),
+      ).pipe(
+        Effect.flatMap(({ exit }) => exit),
+        (work) => observe("resumeInvocation", work),
+      ),
   } satisfies McpBackend<Error>;
   return backend;
 });

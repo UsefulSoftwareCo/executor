@@ -30,7 +30,7 @@ import {
   Scope,
   Scheduler,
 } from "effect";
-import type { McpBackend } from "../contracts/backend.ts";
+import { CurrentMcpExecution, ToolCallRecorded, type McpBackend } from "../contracts/backend.ts";
 import {
   ApprovalUnavailable,
   defaultMcpRuntimeLimits,
@@ -52,7 +52,7 @@ import {
 } from "../contracts/execute.ts";
 import type { BrowserApprovalView, BrowserApprovalAcknowledgement } from "../contracts/browser.ts";
 import { programScheduler } from "./program-scheduler.ts";
-import { reportFailure } from "./diagnostics.ts";
+import { failureReference, reportFailure } from "./diagnostics.ts";
 import {
   executionProgress,
   reportedCalls,
@@ -413,6 +413,7 @@ export const makeExecutions = (
         const operation: Operation = { waiting: new Set() };
         run.operations.add(operation);
         yield* Effect.scoped(work(backend, operation)).pipe(
+          Effect.provideService(CurrentMcpExecution, run.id),
           Effect.ensuring(
             Effect.sync(() => run.operations.delete(operation)).pipe(Effect.andThen(wake(run))),
           ),
@@ -533,20 +534,22 @@ export const makeExecutions = (
         searchableTools: (input, options) =>
           exchange((backend) => backend.searchableTools(input, options)),
         searchTools: (input) => exchange((backend) => backend.searchTools(input)),
-        eventDefinitions: (input) => exchange((backend) => backend.eventDefinitions(input)),
         findEventSubscription: (key) => exchange((backend) => backend.findEventSubscription(key)),
         subscribeEvent: (input) => exchange((backend) => backend.subscribeEvent(input)),
         unsubscribeEvent: (input) => exchange((backend) => backend.unsubscribeEvent(input)),
         callTool: (input) =>
-          Effect.flatMap(Effect.fiberId, (fiber) => {
-            const call = run.progress.callFibers.get(fiber);
-            return exchange(
+          Effect.gen(function* () {
+            const call = run.progress.callFibers.get(yield* Effect.fiberId);
+            // The driving request makes the call; the program's call hears its reference.
+            const recorded = yield* ToolCallRecorded;
+            return yield* exchange(
               (backend, operation) =>
                 backend
                   .callTool(input, {
                     elicitation: elicitation(run, operation, interactionTool(input)),
                   })
                   .pipe(
+                    Effect.provideService(ToolCallRecorded, recorded),
                     toolCallSpan("mcp.tool.call", {
                       attributes: {
                         "executor.app.id": input.app,
@@ -604,6 +607,8 @@ export const makeExecutions = (
     ): Effect.Effect<McpExecutionResult> =>
       Effect.gen(function* () {
         run.busy = true;
+        // Failures the program meets from here are this request's to report, so they name its trace.
+        run.progress.reference = yield* failureReference;
         run.scheduling.resume();
         const started = yield* Clock.currentTimeMillis;
         const loop = Effect.gen(function* () {
@@ -689,6 +694,11 @@ export const makeExecutions = (
     return {
       /** Programs this store holds, running or waiting for an answer. */
       live: () => runs.size,
+      /** Whether a program this store holds, running or waiting for an answer, has a matching caller. */
+      holds: (caller: (id: string) => boolean) => {
+        for (const run of runs) if (caller(run.caller)) return true;
+        return false;
+      },
       /** Why the caller has no such request to answer. */
       unavailable: (caller: string, id: InteractionId) =>
         Effect.sync(() => unavailable(caller, id)),
@@ -769,7 +779,7 @@ export const makeExecutions = (
             events: yield* Queue.unbounded<Event>(),
             pending: new Map(),
             operations: new Set(),
-            progress: executionProgress(),
+            progress: executionProgress(yield* failureReference),
             expired: yield* Deferred.make<void>(),
             remainingMs: limits.timeoutMs,
             busy: false,

@@ -59,6 +59,78 @@ and the Bun TypeScript entry points (`src/`). It carries:
   time it peaks at 4-4.7 GB and starts as fast. Rebuilds after an edit and
   deploy builds (`Bundle.build`) do not wait. Drop this part when alchemy
   bounds concurrent first builds itself.
+- **Startup time on upload.** Every Worker script upload (`putWorkerScript`, which covers the
+  pre-create placeholder too, and both `createScriptVersion` calls) logs the startup time
+  Cloudflare measured, `startup_time_ms` from the upload response, with the bundle size, how many
+  uploads this process had in flight and how long the upload took:
+  `Cloudflare Worker startup: <script> startup_time_ms=223 (3.33 MB, 13 uploads in flight, ...)`.
+  beta.80 decoded `startup_time_ms` and dropped it.
+- **Re-sending an upload refused for startup CPU (stopgap).** When Cloudflare refuses a script
+  upload for startup CPU, the same upload is sent again after 2 s, at most three attempts in all.
+  Only a `ScriptStartupError` whose message reads `Script startup exceeded CPU time limit` counts:
+  Cloudflare uses error 10021 for other script validation failures too, such as a Worker that
+  throws while it starts, and the client maps each of them to that class; any other error, 10021
+  or not, fails at once as before. Only the script upload path (`putWorkerScript`) can re-send:
+  `createScriptVersion` declares no `ScriptStartupError`, so a refusal there arrives as a plain
+  `CloudflareError` and fails as before. Each refusal logs
+  `Cloudflare Worker startup refused: ... Cloudflare refused <script> (<size>) with <n> uploads in
+  flight after <t> ms, attempt <k> of 3; ...`, and the third fails the deploy with a message
+  ending `Refused on all 3 attempts.` A process that uploaded anything prints
+  `Cloudflare Worker startup summary: <n> upload attempts, <r> refused ..., <s> re-sent, <f>
+  Workers refused on all 3 attempts.` when it exits; in GitHub Actions, a deploy with any refusal
+  also writes it as a warning annotation on the run page. `e2e/tests/alchemy-first-builds.spec.ts`
+  checks these under Node (`lib/`) and Bun (`src/`). This keeps a refusal from leaving a deploy
+  half-applied: on November 12 production's MCP server Worker stayed on its previous version for
+  six minutes beside the other Workers' new ones. It does not fix the cause, which is startup too
+  close to Cloudflare's 1 s limit (`notes/cloud-latency.md`). Remove it when the API and MCP
+  server Workers read under 350 ms for a week.
+- **State store probe.** A `/version` probe of the Cloudflare state store
+  that still fails after its retries, or a failed workers.dev subdomain
+  lookup, fails the run. beta.80 read either as "no store", and with `--yes`
+  (every deploy and preview job) bootstrapped a new store over the live one.
+  That replaced `AlchemyStateStoreEncryptionKey` and made every stored entry
+  unreadable. The store now counts as missing only when the probe gets a 404
+  and Cloudflare reports no `alchemy-state-store` Worker. Upstream beta.85
+  behaves the same way; drop this part when upgrading to it.
+- **State recovery.** `ALCHEMY_RECOVER_INSTANCE_IDS` is a JSON object from
+  `<stack>/<stage>/<fqn>` to an instance ID. Where Alchemy would mint an ID
+  for a resource that has no state (the cold-start adoption read and the
+  create), it uses that one instead. A generated physical name ends with the
+  first 16 base32 characters of its resource's instance ID, so a deploy whose
+  records were lost can name every resource exactly as before and adopt it.
+  Without the IDs it creates new Workers beside the live ones, and their new
+  Durable Object namespaces are empty. Derive each ID from the live name by
+  decoding those 16 characters (80 bits) and padding with zero bytes; accept
+  it only when recomputing the name from the stack, logical ID, stage and
+  suffix gives the live name exactly. Pass it through the Deploy workflow's
+  `recover_instance_ids` input after deleting the unreadable records, which
+  also adds `--adopt`. Resources Alchemy cannot read back are created again:
+  `Random` values, PlanetScale roles, Axiom API tokens and monitors. Remove
+  this part once no stage needs recovering.
+
+- **Effect 4.1 crypto services.** beta.80 is built for Effect 4.0 and reads the
+  `effect/Crypto` module, which Effect 4.1 removed. The patch carries upstream
+  beta.85's version of the three modules that used it: `Auth/OAuthFlow` takes its
+  random bytes and PKCE digest from `SecureRandom` and `Digest`,
+  `Util/PlatformServices` adds the Web Crypto layers that the platform services no
+  longer include, and `Stack` and the declarations that named `Crypto` name those
+  two services. Alchemy stays on beta.80 because beta.84 moved every provider into
+  its own package and beta.85 moves the shared Cloudflare state store to version
+  8, after which a deploy from beta.80 is refused; see
+  [the upgrade note](../notes/effect-mcp.md#alchemy-on-effect-41). Drop this part
+  with the move to beta.85 or later.
+
+- **Worker platform services.** `WorkerBridge` gave every Worker
+  `NodeServices.layer`: Node's file system, child process, terminal, stdio and
+  path services, about 40 KB of each upload. No Executor Worker calls the first
+  four, and Effect 4.1 made them larger. A Worker now gets Node's path service
+  and `FileSystem.layerNoop({})`, a file system in which every call fails, which
+  Effect's `HttpPlatform` needs in order to build. A Worker that asks for a
+  child process, terminal or stdio service fails with a missing service. Code
+  that also runs while planning a deploy still gets the real services there.
+  This is what kept the Workers inside their upload budgets on Effect 4.1
+  (`src/infrastructure/worker-build.ts` in `apps/hosted/cloud`); upstream beta.85
+  still provides all five.
 
 Upstream beta.80 now provides what the beta.79 patch also carried: storing a
 no-op resource before signalling dependents

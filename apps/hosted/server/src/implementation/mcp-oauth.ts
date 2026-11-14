@@ -1,6 +1,6 @@
 import { ApiKeyId } from "../contracts/api-keys.ts";
 import { browserPersonalTokenAccess, apiKeyAccess, requirePinnedOrganization } from "./api-keys.ts";
-import { ApprovalMode, type ConnectionId, GrantId, mcpOAuthResources } from "@executor-js/mcp-auth";
+import { ApprovalMode, ConnectionId, GrantId, mcpOAuthResources } from "@executor-js/mcp-auth";
 
 /** Hosted membership composes with the shared OAuth grant lifecycle. */
 import type { BetterAuthPlugin, GenericEndpointContext } from "@better-auth/core";
@@ -65,8 +65,14 @@ export type HostedOAuthOrigins = Pick<GrantOAuthOptions, "origin" | "resourceOri
 
 export type { RefreshRejection };
 
-/** What a host observes about grants: why a refresh was refused and which grants were approved. */
-export type GrantObservers = Pick<GrantOAuthOptions, "onRefreshRejected" | "onGrantCreated">;
+/**
+ * What a host observes about grants (why a refresh was refused and which grants were approved), and
+ * how it binds grants for legacy MCP URLs it serves.
+ */
+export type GrantObservers = Pick<
+  GrantOAuthOptions,
+  "onRefreshRejected" | "onGrantCreated" | "resolveResource"
+>;
 
 /** The hosted grant's origins plus the host's grant observers. */
 export type HostedOAuthOptions = HostedOAuthOrigins & GrantObservers;
@@ -77,6 +83,7 @@ const hostedGrantOAuth = ({
   issuer,
   onRefreshRejected,
   onGrantCreated,
+  resolveResource,
 }: HostedOAuthOptions) =>
   grantOAuthPlugins({
     origin,
@@ -84,6 +91,7 @@ const hostedGrantOAuth = ({
     issuer,
     onRefreshRejected,
     onGrantCreated,
+    resolveResource,
     scopes: ["mcp", "executor", "offline_access"],
     // The CLI signs in on machines without a browser, approving on the dashboard's device page.
     deviceAuthorization: true,
@@ -123,6 +131,8 @@ export const PatGrant = Schema.Struct({
   token: ApiKeyId,
   organization: OrganizationId,
   mode: ApprovalMode,
+  /** The connection a host narrowed the token to for one URL (Cloud's v1 toolkit URLs). */
+  connection: Schema.optionalKey(ConnectionId),
 });
 const patGrantPrefix = "pat:";
 /** The PAT a synthetic grant ID names, or none for an OAuth grant ID. */
@@ -306,12 +316,15 @@ export const mcpConnectionStore = (
             : new AuthenticationUnavailable(),
         ),
       ),
+    // A revocation's steps run in Better Auth, which a cancelled request does not stop, so the
+    // call is awaited for its stored outcome.
     revoke: (owner, id) =>
       request(
         (api) => api.revokeMcpConnection({ body: { ...owner, id } }),
-        Schema.Struct({ revoked: Schema.Literal(true) }),
+        Schema.Struct({ revoked: Schema.Literal(true), id: ConnectionId }),
       ).pipe(
-        Effect.asVoid,
+        Effect.map((revoked) => revoked.id),
+        Effect.uninterruptible,
         Effect.mapError((status) =>
           status === 404
             ? new ConnectionNotFound({ connection: id })
@@ -325,9 +338,10 @@ export const mcpConnectionStore = (
     revokeAgent: (owner, id) =>
       request(
         (api) => api.revokeMcpAgent({ body: { ...owner, id } }),
-        Schema.Struct({ revoked: Schema.Literal(true) }),
+        Schema.Struct({ revoked: Schema.Literal(true), id: GrantId }),
       ).pipe(
-        Effect.asVoid,
+        Effect.map((revoked) => revoked.id),
+        Effect.uninterruptible,
         Effect.mapError((status) =>
           status === 404
             ? new ConnectedAgentNotFound({ agent: id })

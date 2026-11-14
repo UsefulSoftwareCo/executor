@@ -12,7 +12,7 @@ import {
   EvaluatedReplyJson,
   type EvaluatedCommand,
 } from "@executor-js/app-data/evaluated";
-import { connectedWorkerdApps } from "./workerd-client.ts";
+import { connectedWorkerdApps, TransportClosed } from "./workerd-client.ts";
 
 const failed = () => new RuntimeProtocolFailed();
 
@@ -51,6 +51,14 @@ export const bindingWorkerdApps = (options: {
         const socket = yield* connect("/rpc");
         const peer = yield* Effect.acquireRelease(
           Effect.sync(() => {
+            // Registered before Cap'n Web's own listeners, so the session knows its socket closed
+            // by the time it breaks; see `TransportClosed`.
+            let closed = false;
+            const close = () => {
+              closed = true;
+            };
+            socket.addEventListener("close", close);
+            socket.addEventListener("error", close);
             // SAFETY: workerd sockets implement Cap'n Web's EventTarget, send and close
             // transport. Native DOM WebSocket constructor fields are not used here.
             const peer = newWebSocketRpcSession<WorkerdAppApi>(
@@ -58,7 +66,7 @@ export const bindingWorkerdApps = (options: {
               undefined,
               { onSendError: () => new Error("App host callback failed") },
             );
-            peer.onRpcBroken(() => lifetime.abort());
+            peer.onRpcBroken(() => lifetime.abort(closed ? TransportClosed : undefined));
             return peer;
           }),
           (peer) =>

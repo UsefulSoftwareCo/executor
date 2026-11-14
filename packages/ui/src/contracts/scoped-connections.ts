@@ -43,14 +43,6 @@ export interface ConnectionApp {
   readonly events?: ConnectionEvents;
 }
 
-/** Short summary used in rows, details, and the connection list. */
-export const connectionToolsLabel = (tools: ConnectionTools): string =>
-  tools.kind === "all"
-    ? "All tools"
-    : tools.kind === "readOnly"
-      ? "Read-only tools"
-      : `${tools.names.length.toLocaleString("en-US")} ${tools.names.length === 1 ? "tool" : "tools"}`;
-
 /** Short summary of an event scope, for an app that declares events. */
 export const connectionEventsLabel = (events: ConnectionEvents | undefined): string =>
   events === undefined || events.kind === "all"
@@ -103,6 +95,13 @@ export const connectionInput = (draft: ConnectionDraft): ConnectionInput | undef
   }
   return { id: draft.id, name: draft.name.trim() || defaultConnectionName(draft.apps), apps };
 };
+
+/** A saved connection as the sign-in page lists it: its name and the names of the apps it reaches. */
+export interface ConsentConnection {
+  readonly id: ConnectionId;
+  readonly name: string;
+  readonly apps: readonly string[];
+}
 
 /** Create a new connection or replace an existing one's name and access. */
 export interface ConnectionSave {

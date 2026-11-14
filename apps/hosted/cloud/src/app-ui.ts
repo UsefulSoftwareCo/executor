@@ -1,4 +1,4 @@
-import { requestServices } from "@executor-js/hosted-server";
+import { recordUnclassifiedRefusals, requestServices } from "@executor-js/hosted-server";
 import { previewLifetime } from "./infrastructure/test-stage-expiry.ts";
 /** Private app-origin entry point. Dashboard assets and management APIs are never mounted here. */
 import { hostedAppUi, appAddresses } from "@executor-js/hosted-server/app-ui";
@@ -10,7 +10,12 @@ import { Config, Effect, Layer, Option } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HttpRouter, HttpServer, HttpServerError, HttpServerResponse } from "effect/http";
 import { cloudAppUiBase, cloudAppUiPort, cloudAppUiRoute } from "./contracts/app-ui.ts";
-import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
+import {
+  toRequestHttpEffect,
+  recordRequestRejections,
+  requestTiming,
+} from "@executor-js/telemetry/http";
+import { recordClientNetwork } from "./implementation/client-network.ts";
 import { cloudSentry } from "./implementation/error-reporting.ts";
 import { cloudAnalytics } from "./implementation/product-analytics.ts";
 import { postHogBindings } from "./infrastructure/posthog.ts";
@@ -28,6 +33,7 @@ import {
 } from "./infrastructure/telemetry.ts";
 
 import { workerBuild } from "./infrastructure/worker-build.ts";
+import { servedRequest } from "./infrastructure/served-request.ts";
 
 /** A dedicated native Worker guarantees that every private HTML/JS/CSS request passes app authentication. */
 export default class AppPages extends Cloudflare.Worker<AppPages>()(
@@ -81,7 +87,6 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     const protectedRoutes = Layer.mergeAll(
       HttpRouter.add("GET", appSignInCallbackPath, appUi.callback),
       HttpRouter.add("GET", "/_executor/assets/:version/*", appUi.asset),
-      HttpRouter.add("GET", "/_executor/watch.js", appUi.watch),
       HttpRouter.add("GET", "/_executor/version", appUi.versions),
       HttpRouter.add("POST", "/_executor/api/telemetry/traces", appUi.telemetry("traces")),
       HttpRouter.add("POST", "/_executor/api/telemetry/logs", appUi.telemetry("logs")),
@@ -100,7 +105,7 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
     ).pipe(Layer.provide(appUi.originAccess.layer));
     const handle = yield* routes.pipe(
       Layer.provide(HttpServer.layerServices),
-      HttpRouter.toHttpEffect,
+      toRequestHttpEffect,
       Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),
     );
     const lifetime = yield* previewLifetime;
@@ -125,7 +130,12 @@ export default class AppPages extends Cloudflare.Worker<AppPages>()(
             : Effect.succeed(HttpServerResponse.empty({ status: 500, headers: appPrivateHeaders })),
         ),
         requestTiming,
+        recordClientNetwork,
+        recordUnclassifiedRefusals,
         lifetime.http,
+        // The request whose close releases its database connections before it waits on
+        // telemetry, as on the API Worker (`served-request.ts`).
+        servedRequest,
       ),
     };
   }).pipe(Effect.provide(Layer.mergeAll(cloudAuthDatabase, cloudTelemetry))),

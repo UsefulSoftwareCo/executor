@@ -112,10 +112,35 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({ too
           status: "check_failed",
           message: "403: token [redacted] lacks the accounts scope",
         });
+        // The check is the app's own code, so the form says it may be wrong and saving stays open.
         expect(yield* verdict("The form shows the app's explanation")).toBe(
-          "Couldn't verify this API key: 403: token [redacted] lacks the accounts scope",
+          "Couldn't verify this API key: 403: token [redacted] lacks the accounts scope\n" +
+            "The app's check may be wrong. You can still add this API key and ask your agent to fix the check.\n" +
+            "Copy fix prompt",
         );
         yield* browser.checkpoint("App explains why the check failed");
+        // The fix prompt names the app and quotes what its check reported, without the credential.
+        const prompt = yield* browser.use(
+          "Copy the prompt that asks an agent to fix the check",
+          (page) =>
+            page
+              .context()
+              .grantPermissions(["clipboard-read", "clipboard-write"])
+              .then(() =>
+                connect.getByRole("button", { name: "Copy fix prompt", exact: true }).click(),
+              )
+              .then(() => page.evaluate(() => navigator.clipboard.readText())),
+        );
+        expect(prompt).toBe(
+          [
+            `The account check in my Executor app (app ID: ${app.id}) failed for my Check fixture API key, and the check itself may be wrong.`,
+            "",
+            "The check reported: Couldn't verify this API key: 403: token [redacted] lacks the accounts scope",
+            "",
+            "Start with the Executor app's executor skill. Read the app's source, find the health check for the Check fixture provider, and fix it so it accepts a working API key and still rejects a bad one. Deploy the updated app. Don't ask me to paste the API key into chat.",
+          ].join("\n"),
+        );
+        expect(prompt).not.toContain(missingScope);
         yield* browser.use("Narrow screen", (page) =>
           page.setViewportSize({ width: 390, height: 844 }),
         );

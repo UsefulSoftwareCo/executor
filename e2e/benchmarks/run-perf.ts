@@ -23,6 +23,7 @@ import { Observation, observe, summarizeObservations } from "./perf/observer.ts"
 import { sqlStats } from "./perf/sql-stats.ts";
 import { runIdle } from "./perf/idle.ts";
 import { runSessionHop } from "./perf/session-hop.ts";
+import { runSessionFanout } from "./perf/session-fanout.ts";
 
 const stage = Command.make(
   "stage",
@@ -243,6 +244,47 @@ const sessionHop = Command.make(
         startedAt,
         finishedAt: new Date().toISOString(),
         samples,
+      });
+    }),
+);
+
+const sessionFanout = Command.make(
+  "session-fanout",
+  {
+    control: Flag.String("control"),
+    keys: Flag.String("keys"),
+    output: Flag.String("output"),
+    objects: Flag.Int("objects").pipe(Flag.withDefault(200)),
+    seconds: Flag.Int("seconds").pipe(Flag.withDefault(180)),
+    interval: Flag.Int("interval").pipe(Flag.withDefault(20)),
+    parallel: Flag.Int("parallel").pipe(Flag.withDefault(2)),
+  },
+  (input) =>
+    Effect.gen(function* () {
+      const control = yield* readStageControl(input.control);
+      const run = yield* runSessionFanout({
+        control,
+        keysFile: input.keys,
+        objects: input.objects,
+        seconds: input.seconds,
+        interval: input.interval,
+        parallel: input.parallel,
+      }).pipe(
+        Effect.tapError((error) =>
+          Console.error(
+            `${error._tag}: ${"operation" in error ? `${error.operation} ` : ""}${"status" in error && error.status !== undefined ? `HTTP ${error.status} ` : ""}${"detail" in error ? error.detail : ""}`,
+          ),
+        ),
+      );
+      yield* writeJson(input.output, {
+        kind: "perf-session-fanout",
+        origin: control.origin,
+        slug: control.slug,
+        commit: control.commit,
+        objects: input.objects,
+        interval: input.interval,
+        parallel: input.parallel,
+        ...run,
       });
     }),
 );
@@ -480,6 +522,7 @@ const root = Command.make("perf").pipe(
     run,
     idle,
     sessionHop,
+    sessionFanout,
     compare,
     flamechart,
     table,

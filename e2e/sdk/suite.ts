@@ -1,5 +1,16 @@
 /** CLI composition root: Effect owns server processes, Vitest, raw evidence and target isolation. */
-import { Config, Console, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
+import {
+  Cause,
+  Config,
+  Console,
+  Effect,
+  Exit,
+  FileSystem,
+  Option,
+  Path,
+  Redacted,
+  Schema,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomBytes } from "node:crypto";
 import {
@@ -8,7 +19,7 @@ import {
   type CloudMode,
   type TestPlan,
 } from "../test-plan.ts";
-import { readEvidence, combineEvidenceReports } from "../evidence-results.ts";
+import { readEvidence, combineEvidenceReports, reportRuntimeCrashes } from "../evidence-results.ts";
 import { type EvidenceReport, type RunMetadata } from "../report-model.ts";
 import { startCloudEnvironment } from "../support/cloud-environment.ts";
 import { lockedNpmRegistry } from "../support/npm-registry.ts";
@@ -17,9 +28,13 @@ import { type FixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
 import { RecordingPaceMs, Target } from "../support/platform.ts";
 import { roleHost } from "../support/role-hosts.ts";
 import { prepareCloudScenarios } from "./prepare-scenarios.ts";
+import { removalSettlementFile, settleRemovals } from "./removal-settlement.ts";
+import { removalStallsFile } from "./removal-evidence.ts";
+import { holdRun, pruneRuns } from "./run-retention.ts";
 
 class RunFailed extends Schema.TaggedError<RunFailed>()("RunFailed", { message: Schema.String }) {}
 import { freePort } from "../support/ports.ts";
+import { reveal, secret } from "../support/failure-text.ts";
 
 /**
  * Managed Cloud workers share one local Cloud Worker and one telemetry collector, so more cores add
@@ -73,6 +88,7 @@ export const runSuite = ({
   readonly oauthProxyPreview?: boolean;
   readonly attachment?: {
     readonly origin: string;
+    readonly directory?: string;
     readonly fixtures: typeof FixtureControl.Type;
     readonly emulators: string;
     readonly appUiBaseUrl?: string;
@@ -159,6 +175,10 @@ export const runSuite = ({
         `${new Date().toISOString().replaceAll(":", "-")}-${selected}-${randomBytes(3).toString("hex")}`,
       );
       yield* fs.makeDirectory(root, { recursive: true, mode: 0o700 });
+      yield* holdRun(root);
+      // CI jobs run several suites in one checkout and upload every run folder afterwards.
+      if (!process.env.CI)
+        yield* pruneRuns({ workspace: process.cwd(), current: path.basename(root) });
       const commit = (yield* processes.string(
         ChildProcess.make("git", ["rev-parse", "HEAD"]),
       )).trim();
@@ -237,7 +257,7 @@ export const runSuite = ({
                   onSome: (production) => ({ oauthProxyProduction: production }),
                 }),
               };
-              const apiKey = Redacted.make(randomBytes(32).toString("hex"));
+              const apiKey = secret(randomBytes(32).toString("hex"));
               yield* fs.writeFileString(`${directory}/run.json`, JSON.stringify(metadata, null, 2));
               yield* Console.log(
                 `Testing ${target}: ${target === "cloud" ? origin : target === "local" && Option.isSome(packagedEntry) ? `installed CLI at ${packagedEntry.value}` : "isolated server per scenario"} · ${interactive || observeUI ? 1 : targetWorkers} workers`,
@@ -306,6 +326,7 @@ export const runSuite = ({
                             fixtures: attachment.fixtures,
                           }),
                           appUiBaseUrl: attachment.appUiBaseUrl,
+                          fixtures: attachment.fixtures,
                           workers: targetWorkers,
                           scenarios: plan
                             .filter(
@@ -323,7 +344,7 @@ export const runSuite = ({
                     `${directory}/prepared-scenarios.json`,
                     JSON.stringify(preparedScenarios, null, 2),
                   );
-                  return yield* processes.exitCode(
+                  const exit = yield* processes.exitCode(
                     ChildProcess.make(
                       "node",
                       [
@@ -385,7 +406,7 @@ export const runSuite = ({
                             ? {}
                             : { E2E_PUBLIC_CATALOGS: catalogs.origin }),
                           EXECUTOR_E2E_RUN: directory,
-                          EXECUTOR_E2E_API_KEY: Redacted.value(apiKey),
+                          EXECUTOR_E2E_API_KEY: reveal(apiKey),
                           E2E_FIXTURES:
                             environment === undefined
                               ? attachment === undefined
@@ -394,7 +415,7 @@ export const runSuite = ({
                               : fixtureControlEnvironment(environment.fixtures),
                           ...(attachment?.axiom !== undefined
                             ? {
-                                E2E_AXIOM_TOKEN: Redacted.value(attachment.axiom.token),
+                                E2E_AXIOM_TOKEN: reveal(attachment.axiom.token),
                                 E2E_AXIOM_DATASET: attachment.axiom.dataset,
                                 E2E_AXIOM_ORG_ID: attachment.axiom.organization,
                               }
@@ -419,6 +440,21 @@ export const runSuite = ({
                       },
                     ),
                   );
+                  // Scenarios return once their organization's removal is accepted; the erasure is
+                  // checked once here, before this scope or the deployment's tears the Cloud down.
+                  const fixtures = environment?.fixtures ?? attachment?.fixtures;
+                  if (target !== "cloud" || fixtures === undefined) return Number(exit);
+                  const settled = yield* settleRemovals(fixtures, {
+                    report: path.join(directory, "report", removalSettlementFile),
+                    // Where the fixture process was started: the stage's directory when deployed.
+                    stalls: path.join(attachment?.directory ?? directory, removalStallsFile),
+                  }).pipe(Effect.exit);
+                  if (Exit.isSuccess(settled)) return Number(exit);
+                  const failure = Cause.squash(settled.cause);
+                  yield* Console.error(
+                    `End-of-run removal check failed: ${failure instanceof Error ? failure.message : String(failure)}`,
+                  );
+                  return Number(exit) === 0 ? 1 : Number(exit);
                 }),
               );
               return { target, code, metadata, directory };
@@ -429,6 +465,7 @@ export const runSuite = ({
       const results = yield* Effect.forEach(captures, ({ target, code, metadata, directory }) =>
         Effect.gen(function* () {
           const entries = yield* readEvidence(directory);
+          yield* reportRuntimeCrashes(directory, entries);
           const report: EvidenceReport = { runs: [metadata], entries, plan };
           return { target, code, report };
         }),
@@ -437,16 +474,19 @@ export const runSuite = ({
         results.map(({ target, report }) => ({ report, prefix: `${target}/report` })),
         plan,
       );
-      yield* fs.writeFileString(path.join(root, "evidence.json"), JSON.stringify(report, null, 2));
+      const failure = results.some((result) => result.report.entries.length === 0)
+        ? "No scenarios produced evidence for a selected target. Check the test filter."
+        : results.some((result) => result.code !== 0)
+          ? "One or more targets failed. Their evidence is retained."
+          : undefined;
+      // The outcome this run reports; pruning removes early only runs that passed.
+      const outcome = failure === undefined ? "passed" : "failed";
+      yield* fs.writeFileString(
+        path.join(root, "evidence.json"),
+        JSON.stringify({ ...report, outcome }, null, 2),
+      );
       yield* Console.log(`Raw test evidence: ${root}`);
       yield* Console.log(`Render on request: bun run e2e:render --directory ${root}`);
-      if (results.some((result) => result.report.entries.length === 0))
-        return yield* new RunFailed({
-          message: "No scenarios produced evidence for a selected target. Check the test filter.",
-        });
-      if (results.some((result) => result.code !== 0))
-        return yield* new RunFailed({
-          message: "One or more targets failed. Their evidence is retained.",
-        });
+      if (failure !== undefined) return yield* new RunFailed({ message: failure });
     }),
   );

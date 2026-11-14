@@ -1,8 +1,9 @@
 import { createHash, createHmac } from "node:crypto";
 import { Schema } from "effect";
+import { heldValue } from "./failure-text.ts";
 
 /** The secret a managed Cloud run shares with its synthetic v1, kept in the run directory. */
-export const V1McpForwardSecret = Schema.Struct({ secret: Schema.String });
+export const V1McpForwardSecret = Schema.Struct({ secret: heldValue(Schema.String) });
 /** Where a managed Cloud run records the secret it verifies forwarded v1 bearers with. */
 export const v1McpForwardFile = "v1-mcp-forward.json";
 

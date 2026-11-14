@@ -7,14 +7,13 @@ import {
   Exit,
   Layer,
   Match,
-  Schema,
   Stream,
   Tracer,
   type Scope,
 } from "effect";
 import { McpProtocol, McpServer } from "effect/ai";
 import { HttpBody, HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
-import { ElicitationMode } from "../contracts/elicitation.ts";
+import type { ElicitationMode } from "../contracts/elicitation.ts";
 import {
   McpToolkit,
   NativeMcpToolkit,
@@ -29,6 +28,7 @@ import { executeNative } from "./native-elicitation.ts";
 import { callTools, describeCatalog, executeProgram, searchCatalog } from "./execute.ts";
 import { decodeSkillsInput, skills } from "./skills.ts";
 import { eventsHandler } from "./events.ts";
+import { withOperationSpan } from "./telemetry.ts";
 
 // Observe the final protocol value after timeout, admission and resume handling.
 const observeExecution =
@@ -90,7 +90,7 @@ const observeExecution =
           }),
         ),
       );
-    }).pipe(Effect.withSpan(name));
+    }).pipe(withOperationSpan(name));
 
 /**
  * MCP revisions every product serves, newest first. An initialize offering an unlisted revision
@@ -106,11 +106,12 @@ const protocols = [
 /** Native approval needs form elicitation, which 2025-06-18 introduced. */
 const nativeProtocols = [McpProtocol.v2025_11_25, McpProtocol.v2025_06_18] as const;
 
-const query = Schema.Struct({ elicitation_mode: Schema.optionalKey(ElicitationMode) });
-// Model and native programs belong to the authenticated caller, so a client may resume from
-// any of its MCP sessions. Browser approval links address one protocol session.
-const callerIdentity = (product: string, mode: "model" | "native") =>
+// Model, native and automatic programs belong to the authenticated caller, so a client may resume
+// from any of its MCP sessions. Browser approval links address one protocol session.
+const callerIdentity = (product: string, mode: Exclude<ElicitationMode, "browser">) =>
   JSON.stringify([product, mode]);
+/** The end of every browser identity of one protocol session, whichever product it belongs to. */
+const browserSessionSuffix = (session: string) => `,"browser",${JSON.stringify(session)}]`;
 const browserIdentity = (product: string, session: string) =>
   JSON.stringify([product, "browser", session]);
 
@@ -186,7 +187,7 @@ export const makeMcp = (options: McpOptions) =>
                 Effect.tap((result) =>
                   "content" in result ? options.annotateSkillRead(result) : Effect.void,
                 ),
-                Effect.withSpan("mcp.skills", {
+                withOperationSpan("mcp.skills", {
                   attributes: {
                     "executor.skill.operation": input.name === undefined ? "list" : "read",
                   },
@@ -194,11 +195,14 @@ export const makeMcp = (options: McpOptions) =>
               ),
             ),
           );
+        // Automatic mode accepts policy approvals at once: the agent's own permission prompt already
+        // confirmed the call or execute that started the run. Tool input still pauses for the model.
+        const approval = mode === "automatic" ? "client" : "ask";
         // Search and describe read the catalog directly; call runs as an execution so it can pause.
         const search = (input: Parameters<typeof searchCatalog>[1]) =>
-          searchCatalog(options.backend, input).pipe(Effect.withSpan("mcp.search"));
+          searchCatalog(options.backend, input).pipe(withOperationSpan("mcp.search"));
         const describe = (input: Parameters<typeof describeCatalog>[1]) =>
-          describeCatalog(options.backend, input).pipe(Effect.withSpan("mcp.describe"));
+          describeCatalog(options.backend, input).pipe(withOperationSpan("mcp.describe"));
         const toolkit =
           mode === "native"
             ? McpServer.toolkit(NativeMcpToolkit).pipe(
@@ -293,14 +297,26 @@ export const makeMcp = (options: McpOptions) =>
                       execute: ({ code }) =>
                         caller.pipe(
                           Effect.flatMap(({ id }) =>
-                            executions.execute(id, options.backend, executeProgram(code), "result"),
+                            executions.execute(
+                              id,
+                              options.backend,
+                              executeProgram(code),
+                              "result",
+                              approval,
+                            ),
                           ),
                           observeExecution("mcp.execute"),
                         ),
                       call: (input) =>
                         caller.pipe(
                           Effect.flatMap(({ id }) =>
-                            executions.execute(id, options.backend, callTools(input), "result"),
+                            executions.execute(
+                              id,
+                              options.backend,
+                              callTools(input),
+                              "result",
+                              approval,
+                            ),
                           ),
                           observeExecution("mcp.call"),
                         ),
@@ -327,6 +343,17 @@ export const makeMcp = (options: McpOptions) =>
               path: "/mcp",
               protocols: served,
               sessions: options.sessions?.(mode),
+              maxSessions: options.maxSessions,
+              // A browser program is resumed only through the protocol session it started in, so
+              // that session is kept while the program runs or waits for its approval.
+              ...(mode === "browser" && options.maxSessions !== undefined
+                ? {
+                    heldSession: (session: string) => {
+                      const named = browserSessionSuffix(session);
+                      return executions.holds((caller) => caller.endsWith(named));
+                    },
+                  }
+                : {}),
             }),
           ),
           HttpRouter.toHttpEffect,
@@ -339,7 +366,7 @@ export const makeMcp = (options: McpOptions) =>
         ),
       );
     // Each mode's protocol server is built on its first request. A client keeps one
-    // mode, so a host does not build all three. The build replaces the request's
+    // mode, so a host does not build all four. The build replaces the request's
     // context with this construction's: the server outlives the request, so it must
     // never capture a caller's backend, identity or scope.
     const context = yield* Effect.context<Effect.Services<ReturnType<typeof handler>>>();
@@ -352,35 +379,26 @@ export const makeMcp = (options: McpOptions) =>
       ).pipe(Effect.map(Effect.flatten));
     const model = yield* onFirstUse("model"),
       native = yield* onFirstUse("native"),
-      browser = yield* onFirstUse("browser");
+      browser = yield* onFirstUse("browser"),
+      automatic = yield* onFirstUse("automatic");
     const http = Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => {
       const url = new URL(request.url, "http://mcp.internal");
-      return Schema.decodeUnknownEffect(query)(HttpServerRequest.searchParamsFromURL(url)).pipe(
-        Effect.matchEffect({
-          onFailure: () =>
-            Effect.succeed(
-              HttpServerResponse.jsonUnsafe(
-                { error: "Unsupported elicitation_mode. Use model, native or browser." },
-                { status: 400 },
-              ),
-            ),
-          onSuccess: ({ elicitation_mode }) =>
-            Match.value(elicitation_mode ?? "model")
-              .pipe(
-                Match.when("model", () => model),
-                Match.when("native", () => native),
-                Match.when("browser", () => browser),
-                Match.exhaustive,
-              )
-              .pipe(
-                // Hosts may mount the transport under another path, such as an organization
-                // URL; the protocol router itself is fixed at /mcp.
-                Effect.provideService(
-                  HttpServerRequest.HttpServerRequest,
-                  request.modify({ url: `/mcp${url.search}` }),
-                ),
-              ),
-        }),
+      return options.mode.pipe(
+        Effect.flatMap((mode) =>
+          Match.value(mode).pipe(
+            Match.when("model", () => model),
+            Match.when("native", () => native),
+            Match.when("browser", () => browser),
+            Match.when("automatic", () => automatic),
+            Match.exhaustive,
+          ),
+        ),
+        // Hosts may mount the transport under another path, such as an organization URL; the
+        // protocol router itself is fixed at /mcp.
+        Effect.provideService(
+          HttpServerRequest.HttpServerRequest,
+          request.modify({ url: `/mcp${url.search}` }),
+        ),
       );
     }).pipe(Effect.map(withSseHeartbeat));
     const approvals: BrowserApprovals = {

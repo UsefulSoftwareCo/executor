@@ -172,6 +172,8 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({  })
         expect(
           (yield* session.send("DELETE", `/v1/apps/${app.id}`, undefined, headers)).status,
         ).toBe(200);
+        // The app's page and its accounts section each report the removal from their own live
+        // read, in either order, so the page can show two such alerts by the time this looks.
         yield* browser.use("The live app query reports removal", (page) =>
           page
             .getByRole("alert", {
@@ -179,6 +181,7 @@ export default defineApp({ user: { accounts: { service } } }, async () => ({  })
               exact: true,
               includeHidden: true,
             })
+            .first()
             .waitFor({ state: "visible" }),
         );
         expect(

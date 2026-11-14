@@ -8,6 +8,12 @@ import { Schema } from "effect";
 /** Where a hosted install serves its document. The URL is the client's identity, so keep it. */
 export const clientMetadataDocumentPath = "/oauth/client-metadata.json";
 
+/**
+ * The document's `logo_uri`, on the document's own origin. Authorization servers show it on their
+ * consent page, so every host that serves the document must also serve this image at this path.
+ */
+export const clientMetadataLogoPath = "/favicon.png";
+
 /** The name hosted installs give their OAuth client, in registrations and in the document. */
 export const hostedOAuthClientName = "Executor";
 

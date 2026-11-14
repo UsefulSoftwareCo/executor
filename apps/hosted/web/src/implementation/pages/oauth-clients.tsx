@@ -509,7 +509,6 @@ function OAuthClientForm({
       >
         {(data) => (
           <AudienceInput
-            mode="app"
             subject="this client"
             allowPrivate={allowPrivate}
             privateLabel={privateLabel}

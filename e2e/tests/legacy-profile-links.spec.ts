@@ -1,12 +1,15 @@
 /**
- * Upgrading a hosted instance whose members used profiles. Hosted product step
+ * Upgrading a hosted instance whose members used profiles and shared accounts. Hosted product step
  * `9_app_account_links` converts each profile's account selections into the member's user links,
- * each to the requirement the selection named, after the SDK schema steps.
+ * each to the requirement the selection named, after the SDK schema steps. Step
+ * `12_personal_accounts` then makes each shared account its creator's own, so a member's link to
+ * the shared account they created keeps working.
  *
  * The fixture rebuilds the database as step 9 finds it inside the upgrade transaction. The
  * product's migration ledger is per step: SDK schema versions in FumaDB's settings and hosted
  * steps in `private_hosted_migrations`, which runs every step above its latest recorded one. The
- * fixture removes step 9's ledger row and the table step 9 creates, and writes the profiles an
+ * fixture removes the ledger rows of step 9 and every later step and the table step 9 creates, turns one
+ * account back into the shared account an older version created, and writes the profiles an
  * older version left in `executor_installations`. SDK 4.0.13 and 4.0.14 stay applied because, in
  * a real upgrade, they have already run when step 9 starts, and 4.0.13 keeps
  * `executor_installations` unchanged for step 9. Step 9 reads only that table, apps, deployments,
@@ -47,8 +50,8 @@ export default defineApp({ user: { accounts: { primary: service, extras: service
   }),
 }));`;
 
-/** The hosted steps a current database has recorded, in order. */
-const ledger = [
+/** The hosted steps before step 9, which stay recorded through the fixture, in order. */
+const before = [
   "baseline",
   "api_key_memberships",
   "upgrade_executor_apps",
@@ -57,8 +60,12 @@ const ledger = [
   "upgrade_pinned_executor_apps",
   "require_connection_targets",
   "oauth_client_access",
-  "app_account_links",
 ].map((name, index) => ({ migration_id: index + 1, name }));
+/** The two steps this scenario proves. Steps added later run after them and are not named here. */
+const proved = [
+  { migration_id: 9, name: "app_account_links" },
+  { migration_id: 12, name: "personal_accounts" },
+];
 
 const AuthSession = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
 const Tokens = Schema.Struct({ primary: Schema.String, extras: Schema.Array(Schema.String) });
@@ -106,16 +113,26 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
         const prefix = `/api/organizations/${actors.organization.id}`,
           owner = `organization:${actors.organization.id}`,
           suffix = randomUUID().slice(0, 8);
-        const created = { apps: [] as string[], accounts: [] as string[] };
+        const created = {
+          apps: [] as string[],
+          accounts: [] as { readonly actor: Session; readonly id: string }[],
+        };
         yield* Effect.addFinalizer(() =>
           serverControl("start").pipe(
             Effect.andThen(
+              // Only an account's owner may delete it.
               Effect.forEach(
                 [
-                  ...created.apps.map((app) => `${prefix}/apps/${app}`),
-                  ...created.accounts.map((account) => `${prefix}/accounts/${account}`),
+                  ...created.apps.map((app) => ({
+                    actor: actors.owner,
+                    path: `${prefix}/apps/${app}`,
+                  })),
+                  ...created.accounts.map((account) => ({
+                    actor: account.actor,
+                    path: `${prefix}/accounts/${account.id}`,
+                  })),
                 ],
-                (path) => api.request(actors.owner, "DELETE", path),
+                ({ actor, path }) => api.request(actor, "DELETE", path),
                 { discard: true },
               ),
             ),
@@ -138,20 +155,13 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
             created.apps.push(app.id);
             return app.id;
           });
-        const connect = (
-          actor: Session,
-          app: string,
-          token: string,
-          destination:
-            | { readonly kind: "personal" }
-            | { readonly kind: "shared"; audience: { kind: "everyone" } },
-        ) =>
+        const connect = (actor: Session, app: string, token: string) =>
           Effect.gen(function* () {
             const connection = yield* api.request(
               actor,
               "POST",
               connectionsPath(`${prefix}/apps/${app}`, "user", "primary"),
-              { destination },
+              {},
             );
             expect(connection.status, JSON.stringify(connection.body)).toBe(200);
             const { id } = yield* body(Resource, connection);
@@ -162,7 +172,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
             });
             expect(saved.status, JSON.stringify(saved.body)).toBe(200);
             const account = (yield* body(Resource, saved)).id;
-            created.accounts.push(account);
+            created.accounts.push({ actor, id: account });
             return account;
           });
         const call = (actor: Session, app: string) =>
@@ -188,15 +198,12 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
                 audience: { kind: "everyone" },
               })).status,
             ).toBe(200);
-            const personal = { kind: "personal" } as const;
-            const first = yield* connect(actors.owner, app, "first-token", personal),
-              second = yield* connect(actors.owner, app, "second-token", personal),
-              disabled = yield* connect(actors.owner, app, "disabled-token", personal),
-              removed = yield* connect(actors.owner, app, "removed-token", personal),
-              shared = yield* connect(actors.admin, app, "shared-token", {
-                kind: "shared",
-                audience: { kind: "everyone" },
-              });
+            const first = yield* connect(actors.owner, app, "first-token"),
+              second = yield* connect(actors.owner, app, "second-token"),
+              disabled = yield* connect(actors.owner, app, "disabled-token"),
+              removed = yield* connect(actors.owner, app, "removed-token"),
+              // The member's account, which the fixture turns back into a shared account.
+              shared = yield* connect(actors.member, app, "shared-token");
             expect(
               (yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${removed}`)).status,
             ).toBe(200);
@@ -225,13 +232,21 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
         );
         yield* evidence.json("fixture.json", fixture);
 
-        // The database as step 9 finds it: profiles, no links, ledger through step 8.
-        const [recorded, rolledBack] = yield* legacyStorage([
+        // The database as step 9 finds it: profiles, a shared account, no links, ledger through
+        // step 8.
+        const [recorded, rolledBack, , sharedBack] = yield* legacyStorage([
           { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
           {
-            sql: "DELETE FROM private_hosted_migrations WHERE migration_id = 9 RETURNING migration_id",
+            sql: "DELETE FROM private_hosted_migrations WHERE migration_id >= 9 RETURNING migration_id",
           },
           { sql: "DROP TABLE hosted_app_account_links" },
+          // The member created a shared account that everyone may use.
+          {
+            sql: `UPDATE hosted_account_access
+              SET kind = 'shared', personal_user_id = NULL, audience = 'everyone'
+              WHERE account_id = $1 AND creator_id = $2 RETURNING account_id`,
+            params: [fixture.shared, fixture.member],
+          },
           profile({
             id: `ins_first_${suffix}`,
             app: fixture.app,
@@ -289,7 +304,7 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
             status: "ready",
             createdAt: "2026-01-05 00:00:00",
           }),
-          // The member selected the admin's shared account.
+          // The member selected the shared account the member created.
           profile({
             id: `ins_shared_${suffix}`,
             app: fixture.app,
@@ -325,9 +340,18 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
             createdAt: "2026-01-08 00:00:00",
           }),
         ]);
-        // The fixture is an upgrade while step 9 is the latest hosted step.
-        expect(recorded, "current hosted ledger").toEqual(ledger);
-        expect(rolledBack, "step 9 is pending again").toEqual([{ migration_id: 9 }]);
+        // The current ledger, rolled back to before step 9: steps 9 and later run again on start.
+        expect(recorded?.slice(0, before.length), "steps 1 to 8 stay recorded").toEqual(before);
+        expect(recorded, "this build records steps 9 and 12").toEqual(
+          expect.arrayContaining(proved),
+        );
+        expect(
+          rolledBack?.map((row) => Number(row.migration_id)).toSorted((a, b) => a - b),
+          "step 9 and every later step are pending again",
+        ).toEqual(recorded?.slice(before.length).map((row) => row.migration_id));
+        expect(sharedBack, "the member's account is shared again").toEqual([
+          { account_id: fixture.shared },
+        ]);
         yield* serverControl("start");
 
         const converted = Effect.gen(function* () {
@@ -340,8 +364,23 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
           ]);
           expect(
             yield* accountLinks(actors.member, `${prefix}/apps/${fixture.app}`),
-            "the member's shared account selection",
+            "the member's selection of the shared account the member created",
           ).toEqual([["primary", fixture.shared]]);
+          const sharedDetail = yield* api.request(
+            actors.member,
+            "GET",
+            `${prefix}/accounts/${fixture.shared}`,
+          );
+          expect(sharedDetail.status, JSON.stringify(sharedDetail.body)).toBe(200);
+          expect(
+            sharedDetail.body,
+            "step 12 made the shared account its creator's own",
+          ).toMatchObject({ account: { id: fixture.shared }, canManage: true });
+          expect(
+            (yield* api.request(actors.admin, "GET", `${prefix}/accounts/${fixture.shared}`))
+              .status,
+            "another member no longer reaches the former shared account",
+          ).toBe(403);
           expect(
             yield* linkedAccountIds(actors.admin, `${prefix}/apps/${fixture.app}`),
             "the admin had no profile for the app",
@@ -438,14 +477,21 @@ layer(HostedLive, { excludeTestServices: true })("Legacy profile links", (it) =>
             }),
           );
         }
-        const [after, stored] = yield* legacyStorage([
+        const [after, stored, ownership] = yield* legacyStorage([
           { sql: "SELECT migration_id, name FROM private_hosted_migrations ORDER BY migration_id" },
           // Every stored link, including any a read would filter out.
           {
             sql: "SELECT app, requirement, subject, account, linked_by FROM hosted_app_account_links",
           },
+          {
+            sql: "SELECT kind, personal_user_id, audience FROM hosted_account_access WHERE account_id = $1",
+            params: [fixture.shared],
+          },
         ]);
-        expect(after, "step 9 is recorded once").toEqual(ledger);
+        expect(after, "steps 9 and later are recorded again, each once").toEqual(recorded);
+        expect(ownership, "the former shared account is stored as its creator's").toEqual([
+          { kind: "personal", personal_user_id: fixture.member, audience: null },
+        ]);
         const order = (rows: ReadonlyArray<Record<string, unknown>>) =>
           rows.map((row) => JSON.stringify(row)).toSorted();
         expect(order(stored ?? []), "no other link was stored").toEqual(

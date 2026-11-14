@@ -16,6 +16,8 @@ import { makeWorkflowContext, workflowSafe } from "./workflow-context.ts";
 import { Cause, Clock, Effect, Match, Option, Redacted, Schema } from "effect";
 import { captureTelemetry, owned, type InvocationTelemetry } from "@executor-js/telemetry";
 import { appInvocationFetch } from "./network.ts";
+import { dedent, dedentFieldHelp } from "./help-text.ts";
+import { withoutHelp } from "../contracts/help-text.ts";
 import type { AccountSlots, BoundAccounts, ScopedSlots } from "../contracts/app.ts";
 import type { AppIcons } from "../contracts/icons.ts";
 import {
@@ -175,7 +177,8 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
               auth.set(name, {
                 type: "secrets",
                 label: method.label,
-                fields: yield* jsonSchemaDocument(method.fields),
+                ...(method.guide === undefined ? {} : { guide: dedent(method.guide) }),
+                fields: dedentFieldHelp(yield* jsonSchemaDocument(method.fields)),
                 ...declaredExposure(method.exposure),
                 ...declaredPlacements(method.request),
               });
@@ -184,7 +187,10 @@ function providerDeclaration(provider: Provider<AuthMethods>) {
               auth.set(name, {
                 type: "oauth2",
                 ...method.config,
-                response: yield* jsonSchemaDocument(method.response),
+                ...(method.clientGuide === undefined
+                  ? {}
+                  : { clientGuide: dedent(method.clientGuide) }),
+                response: dedentFieldHelp(yield* jsonSchemaDocument(method.response)),
                 ...declaredExposure(method.exposure),
                 ...declaredPlacements(method.request),
               });
@@ -264,15 +270,17 @@ function canonical(value: JsonValue): string {
 }
 
 /**
- * A provider without its hosts and placements. The host sends each account's granted hosts and
- * placements, which can differ from the app's declaration, so they are not part of matching an
- * account to its slot.
+ * What matching an account to its slot compares: the provider without its hosts, placements and
+ * setup help. The host sends each account's granted hosts and placements, which can differ from
+ * the app's declaration. Help is not part of the provider, and a host whose protocol predates a
+ * help key drops it.
  */
-function withoutGrants({ hosts: _hosts, ...provider }: DeclaredProvider): JsonValue {
+function comparable(provider: DeclaredProvider): JsonValue {
+  const { hosts: _hosts, ...defined } = withoutHelp(provider);
   return {
-    ...provider,
+    ...defined,
     auth: Object.fromEntries(
-      Object.entries(provider.auth).map(([name, { request: _request, ...method }]) => [
+      Object.entries(defined.auth).map(([name, { request: _request, ...method }]) => [
         name,
         method,
       ]),
@@ -308,8 +316,8 @@ function bindScope(
         if (ids.has(account.id)) return yield* Effect.fail(new HostAccountsInvalid());
         ids.add(account.id);
         if (
-          canonical(withoutGrants(account.provider)) !==
-            canonical(withoutGrants(requirement.definition)) ||
+          canonical(comparable(account.provider)) !==
+            canonical(comparable(requirement.definition)) ||
           !Object.hasOwn(provider.auth, account.method)
         )
           return yield* Effect.fail(new HostAccountsInvalid());

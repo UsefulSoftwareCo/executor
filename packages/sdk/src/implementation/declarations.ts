@@ -1,7 +1,10 @@
 /** Stale-while-revalidate reads of evaluated app declarations (skills, workflows, webhooks). */
-import { Clock, Deferred, Effect, Exit, Fiber, Option, Schema, type Crypto } from "effect";
+import { Clock, Deferred, Effect, Exit, Fiber, Option, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
+import { Digest } from "effect/crypto";
 import { Hex } from "effect/encoding";
 import {
+  changeCheckMillis,
   declarationFreshness,
   declarationLimits,
   durableHeadStartMillis,
@@ -13,7 +16,9 @@ import {
   type KeptEntry,
   type PendingLoad,
 } from "../contracts/declarations.ts";
-import type { ResourceLifecycle } from "../contracts/executor.ts";
+import type { HostApi, ResourceLifecycle } from "../contracts/executor.ts";
+import type { AppRequirements } from "../contracts/apps.ts";
+import { appCacheNamespace, type HostApiCheck } from "../contracts/host-api.ts";
 import { type AccountId, StorageError } from "../contracts/shared.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { makeHandoff } from "./handoff.ts";
@@ -28,7 +33,10 @@ export const makeDeclarationCache = (
   const loads = new Map<string, PendingLoad>();
   /** When each app's cached upstream data last changed. */
   const changes = new Map<string, number>();
+  /** When each app's latest read of its durable change marker started. */
+  const checks = new Map<string, number>();
   let bytes = 0;
+  let renewals = 0;
   const size = (entry: KeptEntry) => (entry.kind === "json" ? entry.json.length * 2 : entry.bytes);
   const remove = (key: string) => {
     const entry = entries.get(key);
@@ -66,18 +74,45 @@ export const makeDeclarationCache = (
       if (loads.get(key) === load) loads.delete(key);
     },
     changed: (app, at) => {
-      changes.set(app, Math.max(at, changes.get(app) ?? at));
+      if (at <= (changes.get(app) ?? -Infinity)) return;
+      changes.set(app, at);
       for (const [key, entry] of entries) if (entry.app === app && entry.at <= at) remove(key);
     },
     outdated: (app, at) => at <= (changes.get(app) ?? -Infinity),
+    checked: (app) => checks.get(app),
+    check: (app, started) => {
+      checks.set(app, started);
+    },
     usage: () => ({ entries: entries.size, bytes }),
+    renewing: () => {
+      if (renewals >= limits.renewals) return false;
+      renewals += 1;
+      return true;
+    },
+    renewed: () => {
+      renewals = Math.max(0, renewals - 1);
+    },
   };
 };
+
+/**
+ * The host API revision a version's invocations are bound to, when its code reads this host's API.
+ * Their app cache and its kept tool listings are keyed by it, so an API change starts both afresh
+ * rather than serving tools of the previous API. A version that owns a database is bound too: its
+ * data calls run in a facet Worker loaded for the revision, whose network checks the document.
+ */
+export const versionHostApi = (
+  hostApi: HostApi | undefined,
+  version: { readonly requirements: AppRequirements },
+): HostApiCheck | undefined =>
+  hostApi !== undefined && hostApi.reads(version.requirements)
+    ? { revision: hostApi.revision, documents: hostApi.documents }
+    : undefined;
 
 const JsonText = Schema.fromJsonString(Schema.Unknown);
 
 /**
- * Evaluated declarations depend on the build, the invocation scope, the account set and its credential generations. Token renewal keeps a result; reconnecting replaces it. Every read reruns the invocation snapshot; a kept result is served
+ * Evaluated declarations depend on the build (and the host API revision for apps that read it), the invocation scope, the account set and its credential generations. Token renewal keeps a result; reconnecting replaces it. Every read reruns the invocation snapshot; a kept result is served
  * only after the same lifecycle checks that precede credential release in an evaluation.
  */
 export const makeDeclarations = (options: {
@@ -86,14 +121,12 @@ export const makeDeclarations = (options: {
   readonly background: BackgroundWork | undefined;
   readonly resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"];
   readonly accountsUsable: ReturnType<typeof makeOAuth>["usableAll"];
-  readonly crypto: Crypto.Crypto;
+  readonly crypto: HostCrypto;
   readonly lifecycle: ResourceLifecycle | undefined;
+  readonly hostApi: HostApi | undefined;
 }) => {
   const digest = (bytes: Uint8Array) =>
-    options.crypto.digest("SHA-256", bytes).pipe(
-      Effect.map(Hex.encode),
-      Effect.mapError(() => new StorageError()),
-    );
+    options.crypto.digest.digest(Digest.sha256, bytes).pipe(Effect.map(Hex.encode));
   const key = (command: string, state: InvocationSnapshot) =>
     Effect.gen(function* () {
       const selections = state.selections.map(({ slot, accounts }) => [
@@ -112,7 +145,7 @@ export const makeDeclarations = (options: {
             state.app.owner,
             state.app.id,
             state.version.id,
-            state.version.build,
+            appCacheNamespace(state.version.build, versionHostApi(options.hostApi, state.version)),
             // A caller's evaluation and actorless work see different contexts: only one has `user`.
             state.scope,
             selections,
@@ -185,8 +218,38 @@ export const makeDeclarations = (options: {
       ? write
       : options.background(write).pipe(Effect.asVoid);
   };
+  /**
+   * Forget what this process keeps of the app from before its cached data last changed, as the
+   * app's durable store recorded it, unless this process started reading that within
+   * `changeCheckMillis`. The read runs as background work, so the caller and the readers beside it
+   * serve what is kept now, and later readers serve what it leaves. Without background work, or
+   * once the host refuses it, the caller waits for the read.
+   */
+  const followChanges = (app: string): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      const durable = options.durable;
+      if (durable === undefined) return;
+      const now = yield* Clock.currentTimeMillis;
+      const last = options.cache.checked(app);
+      if (last !== undefined && now - last < changeCheckMillis) return;
+      options.cache.check(app, now);
+      const read = durable.changed(app).pipe(
+        Effect.tap((at) =>
+          Effect.sync(() => {
+            if (at !== undefined) options.cache.changed(app, at);
+          }),
+        ),
+        Effect.asVoid,
+      );
+      const accepted = options.background === undefined ? false : yield* options.background(read);
+      if (!accepted) yield* read;
+    });
   return {
     key,
+    followChanges,
+    /** The host API revision an invocation of this version is bound to; see `versionHostApi`. */
+    hostApi: (version: Parameters<typeof versionHostApi>[1]) =>
+      versionHostApi(options.hostApi, version),
     authorize,
     recall,
     persist,
@@ -250,7 +313,7 @@ export const makeDeclarations = (options: {
             kept === undefined ? Effect.void : persist(state.app.id, id, Effect.succeed(kept)),
           ),
         );
-        const current = (entry: KeptEntry | undefined, now: number) =>
+        const fresh = (entry: KeptEntry | undefined, now: number) =>
           entry?.kind === "json" && now - entry.at < declarationFreshness.maxStaleMillis
             ? entry
             : undefined;
@@ -396,7 +459,8 @@ export const makeDeclarations = (options: {
             );
           }),
         );
-        const kept = current(yield* options.cache.get(id), yield* Clock.currentTimeMillis);
+        yield* followChanges(state.app.id);
+        const kept = fresh(yield* options.cache.get(id), yield* Clock.currentTimeMillis);
         if (kept?.kind === "json") return yield* serve(kept);
         if (options.durable === undefined) return yield* miss;
         // Another isolate's result, unless an invalidation seen here replaced it. It is kept here
@@ -409,7 +473,7 @@ export const makeDeclarations = (options: {
                   return undefined;
                 const entry = { kind: "json" as const, app: state.app.id, ...found };
                 yield* options.cache.set(id, entry);
-                return current(entry, yield* Clock.currentTimeMillis);
+                return fresh(entry, yield* Clock.currentTimeMillis);
               }),
             ),
           ),

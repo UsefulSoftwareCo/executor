@@ -12,7 +12,7 @@ export function AppsPage() {
       Failure={Failure}
       connect={
         <Button asChild variant="outline">
-          <Link to="/connect">Connect your agent</Link>
+          <Link to="/connections">Connect your agent</Link>
         </Button>
       }
       action={<AddAppMenu />}

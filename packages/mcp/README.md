@@ -67,7 +67,9 @@ belong to the live invocation. Each invocation owns a scope that can outlive
 the HTTP response returning its prompt. Native delivery sends the prompt and
 answers through the same manager as the model-mode `resume` tool. Native `call` is
 the exception for policy approvals: the client confirms the destructive tool call
-itself, so its run accepts approvals at once (`ApprovalMode` `client`). See [tool input](../../notes/tool-elicitation.md).
+itself, so its run accepts approvals at once (`ApprovalMode` `client`). Automatic mode
+serves the model toolkit with `client` for both `execute` and `call`: the agent's own
+permission prompt is the check, and tool input still returns to the model. See [tool input](../../notes/tool-elicitation.md).
 
 HTTP/SSE MCP helpers forward upstream forms through that same tool-input
 capability. Delivery mode does not change the upstream call, and policy consent

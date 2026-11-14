@@ -62,6 +62,29 @@ function callBudget(timeoutMs: number) {
   });
 }
 
+const decodeJsonText = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Json));
+
+/**
+ * The MCP spec asks a server that returns `structuredContent` to repeat it as a JSON text block
+ * for clients that cannot read structured results. Executor reads `structuredContent`, so that
+ * copy only doubles the result each time an MCP hop is nested, such as Executor behind Executor.
+ * Drop text blocks whose JSON equals `structuredContent`; any other content is kept as sent.
+ */
+const withoutStructuredCopy = (result: McpToolResult): McpToolResult => {
+  const { structuredContent } = result;
+  if (structuredContent === undefined) return result;
+  const structured = JSON.stringify(structuredContent);
+  const content = result.content.filter(
+    (block) =>
+      !(
+        block.type === "text" &&
+        typeof block.text === "string" &&
+        Option.exists(decodeJsonText(block.text), (value) => JSON.stringify(value) === structured)
+      ),
+  );
+  return content.length === result.content.length ? result : { ...result, content };
+};
+
 /** Register prompts only around tools/call, preserve metadata, and close every callback with the call. Never retries. */
 export const mcpCall = (
   client: Client,
@@ -149,6 +172,7 @@ export const mcpCall = (
         Effect.flatMap((result) =>
           Schema.decodeUnknownEffect(McpToolResult)(result).pipe(
             Effect.mapError(() => new McpError({ phase: "call", reason: "invalid_response" })),
+            Effect.map(withoutStructuredCopy),
           ),
         ),
         Effect.tap((result) =>

@@ -166,3 +166,42 @@ export const redirectDestination = (
   const resolved = URL.parse(location, from);
   return resolved === null ? undefined : parseDestination(resolved.href, policy);
 };
+
+/** A run of text from a URL scheme to the next whitespace. */
+const urlsInText = /\b[a-z][a-z0-9+.-]*:\/\/\S+/giu;
+/** Sentence punctuation and quotes that end a run but are not part of its URL. */
+const trailingPunctuation = /[.,;:!?)\]}"'`>]+$/u;
+
+/**
+ * One URL kept to its scheme, host and path. A URL the parser reads as written loses its userinfo,
+ * query string and fragment. One it cannot read as written, or reads with an `@` inside a path
+ * segment (as a password with a `/` in it is read: as a port and a path), loses everything between
+ * `://` and its last `@`, then its query and fragment: whatever looked like userinfo goes, even when
+ * that also takes the host.
+ */
+const urlWithoutSecrets = (candidate: string) => {
+  const url = URL.parse(candidate);
+  if (url !== null && !/[^/]@/u.test(url.pathname)) {
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.href;
+  }
+  const authority = candidate.indexOf("://") + 3;
+  const at = candidate.lastIndexOf("@");
+  const rest = at >= authority ? candidate.slice(at + 1) : candidate.slice(authority);
+  return candidate.slice(0, authority) + rest.replace(/[?#].*$/su, "");
+};
+
+/**
+ * Text with every URL in it kept to its scheme, host and path: userinfo, the query string and the
+ * fragment are removed, since an operator's configured URL can carry credentials or a token there.
+ * A secret in a URL's path, such as a registry that takes its token as a path segment, is kept: it
+ * cannot be told from an ordinary path.
+ */
+export const withoutUrlSecrets = (text: string) =>
+  text.replace(urlsInText, (found) => {
+    const trailing = trailingPunctuation.exec(found)?.[0] ?? "";
+    return urlWithoutSecrets(found.slice(0, found.length - trailing.length)) + trailing;
+  });

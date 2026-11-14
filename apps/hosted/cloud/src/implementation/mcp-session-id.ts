@@ -13,8 +13,10 @@ import { Effect, Option } from "effect";
 import { HttpServerResponse } from "effect/http";
 
 /**
- * Carries the organization the object authenticated to the gateway, which records it on its forward
- * and removes it: a request routed by its session id is not authenticated in the gateway.
+ * Carry the organization the object authenticated to the gateway, which records it on its forward
+ * and removes it: a request routed by its session id is not authenticated in the gateway. The
+ * object sets it only once the bearer's own key names it. The user is not carried: an older
+ * gateway during a deploy would pass a new header through to the client.
  */
 export const sessionOrganizationHeader = "x-executor-session-organization";
 

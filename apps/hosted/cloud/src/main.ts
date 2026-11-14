@@ -29,7 +29,11 @@ import {
   localRemovalStalls,
   removalStallBindings,
 } from "./infrastructure/organization-removal-stalls.ts";
-import { HostedExecutor, lazyHostedApiDocument } from "@executor-js/hosted-server";
+import {
+  HostedExecutor,
+  lazyHostedApiDocument,
+  pruneToolCallLog,
+} from "@executor-js/hosted-server";
 import { BillingMeter } from "./contracts/billing-meter.ts";
 import { billingBindings } from "./infrastructure/billing.ts";
 import { frameworkDocumentation, registryRoutes, gitRoutes } from "@executor-js/app-management";
@@ -45,6 +49,8 @@ import {
   catalogLive,
   hostedMiddlewareLive,
   mcpProtectedResource,
+  mcpWhoami,
+  mcpWhoamiPath,
   mcpAuthorizationServer,
   apiChallenge,
   apiProtectedResource,
@@ -56,18 +62,14 @@ import { retainedAssetFolders, retainedAssetPath } from "./contracts/retained-as
 import * as Output from "alchemy/Output";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import { Config, Effect, Layer, Option, Path, Ref } from "effect";
+import { Digest } from "effect/crypto";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/http";
 import { cloudAuth } from "./infrastructure/auth.ts";
 import { cloudAccountCallback } from "./implementation/account-callback.ts";
 import { v1HandoffPath } from "./implementation/v1-session-handoff.ts";
-import { cloudOnboarding, cloudV1ImportSettings } from "./infrastructure/onboarding.ts";
-import {
-  V1ImportConfiguration,
-  V1ImportWorkflow,
-  cloudV1ImportReports,
-  v1ImportRoutes,
-} from "./infrastructure/v1-import-workflow.ts";
-import { Onboarding } from "./contracts/onboarding.ts";
+import { legacyMcp, legacyProtectedResource } from "./implementation/v1-legacy-mcp.ts";
+import { invocationSql } from "./infrastructure/invocation-database.ts";
+import { cloudOnboarding } from "./infrastructure/onboarding.ts";
 import { cloudMcp } from "./infrastructure/mcp.ts";
 import { cloudApi } from "./implementation/api.ts";
 import { cachedFeedClient } from "./implementation/catalog-feed-cache.ts";
@@ -82,7 +84,9 @@ import {
   selfBinding,
   type BackgroundJob,
 } from "./infrastructure/background-jobs.ts";
+import { handledJob, jobCompleted, jobFailed } from "./contracts/job-outcome.ts";
 import { cloudEgress } from "./infrastructure/executor.ts";
+import { servedRequest } from "./infrastructure/served-request.ts";
 import { cloudProduct } from "./infrastructure/product.ts";
 import { cloudAuthDatabase } from "./infrastructure/auth-database.ts";
 import { EventCleanup, sqlCancellation } from "./infrastructure/event-cleanup.ts";
@@ -98,6 +102,15 @@ import { browserReturnTo } from "@executor-js/hosted-server/browser/contracts";
 import { HttpServerRequest } from "effect/http";
 import { homepage, staticDocument } from "./implementation/homepage.ts";
 import { sitePageRoutes } from "./contracts/site-paths.ts";
+import {
+  accountCallback,
+  apiGoneOnEdge,
+  edgeFallback,
+  v1ClientIdMetadata,
+  v1SignIn,
+  v1SignUp,
+} from "./implementation/v1-edge.ts";
+import { v1AuthKitHost } from "./implementation/v1-authkit.ts";
 import { withNotFoundDocument, notFoundDocument } from "./implementation/not-found.ts";
 import { openAiAppsChallenge } from "./implementation/openai-apps-challenge.ts";
 import {
@@ -126,11 +139,20 @@ import {
 import { roleHostRoutes } from "./infrastructure/role-hosts.ts";
 import { redirectTo, withRoleHosts } from "./implementation/host-roles.ts";
 import { hasSessionCookie } from "./contracts/browser.ts";
-import { clientMetadataBinding, cloudClientMetadata } from "./infrastructure/client-metadata.ts";
+import {
+  clientMetadataBinding,
+  cloudClientMetadata,
+  deploymentClientMetadata,
+} from "./infrastructure/client-metadata.ts";
 import { appDataSupervisors } from "./infrastructure/app-data.ts";
 import { cloudDevelopment } from "./contracts/development.ts";
-import { requestServices } from "@executor-js/hosted-server";
-import { recordRequestRejections, requestTiming } from "@executor-js/telemetry/http";
+import { recordUnclassifiedRefusals, requestServices } from "@executor-js/hosted-server";
+import {
+  toRequestHttpEffect,
+  recordRequestRejections,
+  requestTiming,
+} from "@executor-js/telemetry/http";
+import { recordClientNetwork } from "./implementation/client-network.ts";
 
 import { appCatalogBinding } from "./infrastructure/app-catalog.ts";
 import { Api } from "./infrastructure/api-worker.ts";
@@ -177,7 +199,7 @@ export default Api.make(
         // Only local e2e Clouds may turn the auth rate limit off; deployed Workers get `false`.
         ...(yield* authRateLimitSwitchBindings),
         // A deployed stage identifies Executor to authorization servers by its own document.
-        ...(origin === undefined ? {} : yield* clientMetadataBinding(origin)),
+        ...(origin === undefined ? {} : yield* clientMetadataBinding.pipe(Effect.orDie)),
         // Every deployed stage lists production's official app feed.
         ...(origin === undefined ? {} : yield* appCatalogBinding),
       },
@@ -228,8 +250,7 @@ export default Api.make(
     const errorTunnel = yield* cloudErrorTunnel;
     const email = yield* cloudEmail.pipe(Effect.orDie);
     const onboarding = yield* cloudOnboarding.pipe(Effect.orDie);
-    const v1ImportSettings = yield* cloudV1ImportSettings.pipe(Effect.orDie);
-    const auth = yield* cloudAuth(email.send, yield* Onboarding.pipe(Effect.provide(onboarding)));
+    const auth = yield* cloudAuth(email.send);
     const welcomeEmails = yield* cloudWelcomeEmails(email.welcome);
     yield* AppWorkflows;
     yield* Provisioning;
@@ -242,17 +263,6 @@ export default Api.make(
     const removal = yield* OrganizationRemoval.pipe(
       Effect.provide(Layer.mergeAll(executor, auth.identity, billing)),
     );
-    // The v1 move runs in this isolate too; only an operator starts it (`v1-import-workflow.ts`).
-    const v1ImportReports = yield* cloudV1ImportReports;
-    const v1ImportConfiguration = Layer.succeed(
-      V1ImportConfiguration,
-      Option.map(v1ImportSettings, (settings) => ({ settings, reports: v1ImportReports })),
-    );
-    const v1Import = yield* v1ImportRoutes(
-      yield* V1ImportWorkflow.pipe(
-        Effect.provide(Layer.mergeAll(executor, auth.mcpIdentity, v1ImportConfiguration)),
-      ),
-    ).pipe(Effect.provide(v1ImportConfiguration));
     const removals = Layer.merge(
       Layer.succeed(
         OrganizationRemovalStart,
@@ -281,7 +291,9 @@ export default Api.make(
         // fresh scope so execution memos cannot reuse that closed pool.
         Effect.scoped,
         Effect.withSpan("job.provisioning.dispatch"),
-        Effect.catch(() => Effect.logWarning("Provisioning outbox unavailable")),
+        Effect.catch((error) =>
+          Effect.logWarning("Provisioning outbox unavailable").pipe(Effect.as(jobFailed(error))),
+        ),
       );
     // Cron only recovers lost dispatches; their workflows install any team.
     const dispatch = dispatchWith(() => Effect.void);
@@ -289,6 +301,7 @@ export default Api.make(
     const organizationRemovals = dispatchOrganizationRemovals.pipe(
       Effect.provide(Layer.merge(executor, removals)),
       Effect.scoped,
+      Effect.as(jobCompleted),
     );
     // Jobs are queued by triggers on users, teams and members. Only auth and dashboard API
     // writes change those rows, so only their requests start the jobs at once. MCP, telemetry
@@ -325,14 +338,15 @@ export default Api.make(
       Effect.provide(executor),
       reportErrors,
       Effect.scoped,
-      Effect.catch(() => Effect.logWarning("Data steps unavailable")),
+      handledJob(Effect.logWarning("Data steps unavailable")),
     );
     const repositoryRecovery = Effect.flatten(AppRepositoryRecovery).pipe(
       Effect.provide(executor),
       reportErrors,
       Effect.scoped,
       Effect.withSpan("job.repository.recover"),
-      Effect.catch(() => Effect.logWarning("App repository recovery failed")),
+      Effect.as(jobCompleted),
+      handledJob(Effect.logWarning("App repository recovery failed")),
     );
     const appDomains = yield* cloudAppDomains;
     const siteAssets = yield* cloudSiteAssets;
@@ -340,7 +354,8 @@ export default Api.make(
     const siteAssetRetention = siteAssets.retainCurrent.pipe(
       reportErrors,
       Effect.scoped,
-      Effect.catch(() => Effect.logWarning("Site asset retention failed")),
+      Effect.as(jobCompleted),
+      handledJob(Effect.logWarning("Site asset retention failed")),
     );
     const dashboard = cloudDashboard(yield* Cloudflare.Workers.bindWorker(Dashboard), {
       resourceOrigins: auth.resourceOrigins,
@@ -366,7 +381,8 @@ export default Api.make(
       reportErrors,
       Effect.scoped,
       Effect.withSpan("job.workflow.reconcile"),
-      Effect.catch(() => Effect.logWarning("Workflow queue reconciliation failed")),
+      Effect.as(jobCompleted),
+      handledJob(Effect.logWarning("Workflow queue reconciliation failed")),
     );
     // Membership changes sync seats through durable provisioning jobs. This daily
     // pass only repairs what those jobs cannot see, such as edits made in Autumn.
@@ -374,7 +390,8 @@ export default Api.make(
       reportErrors,
       Effect.scoped,
       Effect.withSpan("job.billing.reconcile"),
-      Effect.catch(() => Effect.logError("Billing seat reconciliation failed")),
+      Effect.as(jobCompleted),
+      handledJob(Effect.logError("Billing seat reconciliation failed")),
     );
     // Repeats the reviewed idle grant data step for grants that became idle since; it does
     // nothing until that step has applied here.
@@ -387,7 +404,19 @@ export default Api.make(
       Effect.provide(executor),
       reportErrors,
       Effect.scoped,
-      Effect.catch(() => Effect.logWarning("Idle agent grant expiry failed")),
+      Effect.as(jobCompleted),
+      handledJob(Effect.logWarning("Idle agent grant expiry failed")),
+    );
+    // Marks approvals that lapsed unanswered and deletes calls past the retention.
+    const toolCallLog = Effect.gen(function* () {
+      const sql = yield* Effect.flatten(GroupDatabase);
+      yield* pruneToolCallLog.pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    }).pipe(
+      Effect.provide(executor),
+      reportErrors,
+      Effect.scoped,
+      Effect.as(jobCompleted),
+      handledJob(Effect.logWarning("Tool call log pruning failed")),
     );
     const jobs = yield* cloudBackgroundJobs;
     yield* jobs.schedule(
@@ -404,6 +433,7 @@ export default Api.make(
       "welcome-emails",
       "workflow-reconcile",
       "app-domain-heartbeat",
+      "tool-call-log",
     );
     yield* jobs.schedule("17 4 * * *", "billing-reconcile", "agent-grant-expiry");
     const backgroundJobs = {
@@ -411,17 +441,19 @@ export default Api.make(
       provisioning: dispatch,
       "data-steps": dataSteps,
       "repository-recovery": repositoryRecovery,
-      "schedule-wake": schedules.wake,
+      "schedule-wake": schedules.wake.pipe(Effect.as(jobCompleted)),
       "site-assets": siteAssetRetention,
       "app-domain-heartbeat": appDomains.heartbeat,
       "welcome-emails": welcomeEmails.deliver,
       "workflow-reconcile": workflowReconcile,
       "billing-reconcile": billingReconcile,
       "agent-grant-expiry": agentGrantExpiry,
+      "tool-call-log": toolCallLog,
     } satisfies Record<BackgroundJob, unknown>;
 
     const egress = yield* cloudEgress;
     const clientMetadata = yield* cloudClientMetadata.pipe(Effect.orDie);
+    const deploymentDocument = yield* deploymentClientMetadata(clientMetadata).pipe(Effect.orDie);
     // The official app feed Add app lists; without it, only the built-in Executor app is listed.
     const catalogFeedUrl = Option.getOrUndefined(
       yield* Config.String("EXECUTOR_CATALOG_URL").pipe(Config.option),
@@ -442,7 +474,10 @@ export default Api.make(
           document.document,
           catalogFeedUrl === undefined
             ? egress
-            : { ...egress, client: cachedFeedClient(apiOrigin, catalogFeedUrl, egress.client) },
+            : {
+                ...egress,
+                client: yield* cachedFeedClient(apiOrigin, catalogFeedUrl, egress.client),
+              },
           clientMetadata,
           apiOrigin,
           catalogFeedUrl,
@@ -466,7 +501,7 @@ export default Api.make(
     // for the isolate. Building is synchronous: no other request can see a partial build.
     const buildApi = api.pipe(
       Layer.provide(HttpServer.layerServices),
-      HttpRouter.toHttpEffect,
+      toRequestHttpEffect,
       Effect.provideService(Layer.CurrentMemoMap, memoMap),
     );
     const apiServices = yield* Effect.context<Effect.Services<typeof buildApi>>();
@@ -498,8 +533,34 @@ export default Api.make(
     const mcpRoutes = Layer.mergeAll(
       HttpRouter.add("*", "/mcp", mcp.http),
       HttpRouter.add("*", "/org/:organization/mcp", mcp.http),
+      HttpRouter.add("GET", mcpWhoamiPath, mcpWhoami),
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource", mcpProtectedResource),
       HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", mcpProtectedResource),
+    ).pipe(HttpRouter.provideRequest(auth.mcpIdentity));
+    // v1's MCP URLs and their discovery, which the edge serves once v1 shuts down
+    // (`notes/v1-shutdown.md`): each resolves its v1 organization and toolkit, if it names them,
+    // and is served as v2's MCP.
+    const withSql = yield* invocationSql;
+    const legacy = legacyMcp(withSql, mcp.http);
+    const legacyDiscovery = legacyProtectedResource(withSql);
+    const legacyMcpRoutes = Layer.mergeAll(
+      HttpRouter.add("*", "/mcp", legacy),
+      HttpRouter.add("GET", mcpWhoamiPath, mcpWhoami),
+      HttpRouter.add("*", "/mcp/toolkits/:toolkit", legacy),
+      HttpRouter.add("*", "/:selector/mcp", legacy),
+      HttpRouter.add("*", "/:selector/mcp/toolkits/:toolkit", legacy),
+      HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", legacyDiscovery),
+      HttpRouter.add(
+        "GET",
+        "/.well-known/oauth-protected-resource/mcp/toolkits/:toolkit",
+        legacyDiscovery,
+      ),
+      HttpRouter.add("GET", "/.well-known/oauth-protected-resource/:selector/mcp", legacyDiscovery),
+      HttpRouter.add(
+        "GET",
+        "/.well-known/oauth-protected-resource/:selector/mcp/toolkits/:toolkit",
+        legacyDiscovery,
+      ),
     ).pipe(HttpRouter.provideRequest(auth.mcpIdentity));
     const apiDiscoveryRoutes = Layer.mergeAll(
       HttpRouter.add("GET", "/api", apiChallenge),
@@ -544,27 +605,6 @@ export default Api.make(
     const routes = Layer.mergeAll(
       HttpRouter.add("POST", "/api/internal/app-domains/resume", appDomains.control("resume")),
       HttpRouter.add("POST", "/api/internal/app-domains/drain", appDomains.control("drain")),
-      // Starting an import reads the allow table (`writes.ts`) from the product database.
-      HttpRouter.add("POST", "/api/internal/v1-import/start", v1Import.start).pipe(
-        HttpRouter.provideRequest(executor),
-      ),
-      HttpRouter.add(
-        "GET",
-        "/api/internal/v1-import/runs/:run/orgs/:organization",
-        v1Import.report,
-      ),
-      HttpRouter.add("POST", "/api/internal/v1-import/runs/:run/aggregate", v1Import.aggregate),
-      HttpRouter.add(
-        "POST",
-        "/api/internal/v1-import/orgs/:organization/rollback",
-        v1Import.rollback,
-      ).pipe(HttpRouter.provideRequest(executor)),
-      // The repair deploys apps with the importer's context, which holds the MCP connection store.
-      HttpRouter.add(
-        "POST",
-        "/api/internal/v1-import/orgs/:organization/repair",
-        v1Import.repair,
-      ).pipe(HttpRouter.provideRequest(Layer.merge(executor, auth.mcpIdentity))),
       jobs.route((job) => backgroundJobs[job]),
       authoringRoutes,
       ...(["login", "login/sso", "create"] as const).map((page) =>
@@ -623,10 +663,11 @@ export default Api.make(
         "/api/oauth/callback",
         cloudAccountCallback(auth.returnsStageAccountCallback),
       ).pipe(HttpRouter.provideRequest(auth.identity)),
+      // The document grants issued before it moved to the edge renew with.
       HttpRouter.add(
         "GET",
         clientMetadataDocumentPath,
-        clientMetadataDocument(clientMetadata),
+        clientMetadataDocument(deploymentDocument),
       ).pipe(HttpRouter.provideRequest(auth.identity)),
       mcpRoutes,
       authorizationServerRoutes,
@@ -640,7 +681,7 @@ export default Api.make(
     // Routes are immutable per isolate; requestServices keeps live auth resources in each event.
     const handle = yield* routes.pipe(
       Layer.provide(HttpServer.layerServices),
-      HttpRouter.toHttpEffect,
+      toRequestHttpEffect,
       Effect.provideService(Layer.CurrentMemoMap, memoMap),
     );
     // Each role host has its own router, built from the same route layers, so it can serve no
@@ -652,12 +693,17 @@ export default Api.make(
       HttpRouter.add("GET", "/.well-known/openai-apps-challenge", openAiAppsChallenge),
     ).pipe(
       Layer.provide(HttpServer.layerServices),
-      HttpRouter.toHttpEffect,
+      toRequestHttpEffect,
       Effect.provideService(Layer.CurrentMemoMap, memoMap),
     );
     const apiHost = yield* Layer.mergeAll(
       apiRoutes,
       apiDiscoveryRoutes,
+      // The host people sign in to says where its MCP endpoint is: this names the canonical MCP
+      // resource, on `mcp.`, since `api.` is not an MCP origin. `executor login` reads it.
+      HttpRouter.add("GET", "/.well-known/oauth-protected-resource/mcp", mcpProtectedResource).pipe(
+        HttpRouter.provideRequest(auth.mcpIdentity),
+      ),
       authorizationServerRoutes,
       appWebhookRoutes,
       // The Executor app reads its skills beside the API it calls.
@@ -666,7 +712,7 @@ export default Api.make(
       withGitAccess(registryRoutes),
     ).pipe(
       Layer.provide(HttpServer.layerServices),
-      HttpRouter.toHttpEffect,
+      toRequestHttpEffect,
       Effect.provideService(Layer.CurrentMemoMap, memoMap),
     );
     // The paths v1's edge forwards from `executor.sh`. Issuer metadata is served here, never
@@ -675,29 +721,62 @@ export default Api.make(
     // sign-in's state cookie is.
     const edgeHost = yield* Layer.mergeAll(
       authorizationServerRoutes,
+      legacyMcpRoutes,
       HttpRouter.add("GET", "/api/auth/callback/:provider", redirectTo(auth.origin, 302)),
       // A connected-account sign-in's return opens the browser origin's callback page, or a
-      // stage's when the sign-in is the stage's.
+      // stage's when the sign-in is the stage's. One v1 started finds a page saying v1 is gone.
       HttpRouter.add(
         "GET",
         "/api/oauth/callback",
-        cloudAccountCallback(auth.returnsStageAccountCallback),
+        accountCallback(auth.origin, cloudAccountCallback(auth.returnsStageAccountCallback)),
       ).pipe(HttpRouter.provideRequest(auth.identity)),
+      // The OAuth client metadata document sign-ins start with; its callback is the edge's.
+      HttpRouter.add("GET", clientMetadataDocumentPath, clientMetadataDocument(clientMetadata)),
       withGitAccess(gitRoutes),
       // The public site. Nobody is signed in to v2 on the edge, so `/` is always the site's.
       HttpRouter.add("GET", "/", staticDocument("/index.html")),
       siteRoutes,
       siteTelemetryRoutes,
       publishedSkillRoutes(authoring),
+      // What v1 served on `executor.sh`, which the edge serves once v1 shuts down
+      // (`notes/v1-shutdown.md`): its client ID metadata documents, its sign-in
+      // and dashboard paths, the redirects v1's edge made, and 410 for the rest of its API.
+      HttpRouter.addAll([
+        HttpRouter.route("GET", "/api/oauth/client-id-metadata.json", v1ClientIdMetadata),
+        HttpRouter.route("GET", "/api/oauth/client-id-metadata/*", v1ClientIdMetadata),
+        HttpRouter.route("GET", "/login", v1SignIn(auth.origin)),
+        ...(["login", "callback", "logout", "me"] as const).map((path) =>
+          HttpRouter.route("*", `/api/auth/${path}`, v1SignIn(auth.origin)),
+        ),
+        HttpRouter.route("GET", "/sign-up", v1SignUp(auth.origin)),
+        HttpRouter.route("GET", "/signup", v1SignUp(auth.origin)),
+        HttpRouter.route("GET", "/org/*", redirectTo(auth.origin, 308)),
+        HttpRouter.route(
+          "*",
+          "/*",
+          edgeFallback({
+            withSql,
+            browser: auth.origin,
+            api: `${auth.resourceOrigins.api[0]}/api`,
+            notFound: notFoundDocument,
+          }),
+        ),
+      ]),
     ).pipe(
       Layer.provide(HttpServer.layerServices),
-      HttpRouter.toHttpEffect,
+      toRequestHttpEffect,
       Effect.provideService(Layer.CurrentMemoMap, memoMap),
     );
     const roleHosts = withRoleHosts(
       auth.hosts,
       (headers) => hasSessionCookie(new Headers(headers), auth.cookiePrefix),
-      { mcp: mcpHost, api: apiHost, edge: edgeHost },
+      {
+        mcp: mcpHost,
+        api: apiHost,
+        edge: edgeHost.pipe(apiGoneOnEdge(`${auth.resourceOrigins.api[0]}/api`)),
+        // What v1's AuthKit host answers once v2 takes it over from WorkOS.
+        authKit: v1AuthKitHost(auth.origin),
+      },
     );
     return {
       fetch: handle.pipe(
@@ -717,9 +796,13 @@ export default Api.make(
         recordRequestRejections,
         reportErrors,
         requestTiming,
+        recordClientNetwork,
+        recordUnclassifiedRefusals,
         // Server-rendered pages read the API through this complete pipeline, in-process.
         withHostPipeline,
         lifetime.http,
+        // The request whose close waits for the background work nested scopes offer while it runs.
+        servedRequest,
       ),
     };
   }).pipe(
@@ -731,6 +814,8 @@ export default Api.make(
         cloudAuthDatabase,
         cloudTelemetry,
         Cloudflare.Workers.CronEventSourceLive,
+        // The published skills' versions are digests; Workers compute them with Web Crypto.
+        Digest.layerWebCrypto,
       ),
     ),
   ),

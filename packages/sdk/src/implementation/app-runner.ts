@@ -49,6 +49,7 @@ import {
 } from "../contracts/runtime.ts";
 import type { LoadedWorkerBuild, WorkerBundle } from "../contracts/worker-build.ts";
 import type { StartedPart } from "../contracts/runtime.ts";
+import { appCacheNamespace, type HostApiCheck } from "../contracts/host-api.ts";
 import { appProtocol, type AppProtocol } from "./app-protocols.ts";
 import { appFacetBridge, appNetworkModuleName, appRpcBridge } from "./worker-bridge.ts";
 import { appNetworkModule } from "./app-network.ts";
@@ -90,9 +91,10 @@ export interface AppRunnerHost {
   readonly loader: Pick<WorkerLoader, "get">;
   /**
    * The network an app's isolates use for global `fetch`, bound to that app. It opens the
-   * credential handles the runner seals with `credentialKey`; see credential-handles.ts.
+   * credential handles the runner seals with `credentialKey`; see credential-handles.ts. Bound to
+   * a host API revision, it refuses that API's document unless it has the revision.
    */
-  readonly outbound: (app: string) => Fetcher;
+  readonly outbound: (app: string, hostApi: HostApiCheck | undefined) => Fetcher;
   /** Seals the secret fields of providers that declare hosts. App code never holds it. */
   readonly credentialKey: Effect.Effect<CryptoKey>;
   /**
@@ -126,6 +128,11 @@ export interface AppRunnerHost {
 export interface AppInvocation {
   readonly app: string;
   readonly build: string;
+  /**
+   * The host API revision the app's cache belongs to, for an app that reads this host's API. Its
+   * Worker's network refuses that API's document unless it has this revision; see `HostApiCheck`.
+   */
+  readonly hostApi?: HostApiCheck;
   readonly database: boolean;
   readonly command: HostRequest;
   readonly accounts: HostAccounts;
@@ -216,6 +223,8 @@ const platformFailures: ReadonlyArray<readonly [RegExp, RuntimeFailure]> = [
  * failure names paths in the app's output, so a cause's text is matched here and goes no further.
  */
 export const classify = (cause: unknown): RuntimeFailure => {
+  // The host's transport names a failure it saw itself, such as a broken session.
+  if (Schema.is(RuntimeProtocolFailed)(cause) && cause.reason !== undefined) return cause.reason;
   if (Schema.isSchemaError(cause)) return "invalid-reply";
   if (failedColdStart(cause)) return "cold-start";
   const text = describeBuildCause(cause);
@@ -224,13 +233,66 @@ export const classify = (cause: unknown): RuntimeFailure => {
   return platformFailures.find(([pattern]) => pattern.test(text))?.[1] ?? "unrecognized";
 };
 /**
- * Fail a call with its kind, the only part telemetry records. `explain` keeps the cause in the
- * app's own terms for a deploy's declaration step, whose caller is the app's deployer.
+ * Where a rejected call was going: the trusted runner, which runs no app code, so its rejection is
+ * the host's or the platform's; or the app's own Worker or data facet, whose rejection can be the
+ * platform's or anything the app's code threw. A broken session is classified before it gets here.
  */
-const failed = (reason: RuntimeFailure, cause?: unknown, explain = false) =>
+export type RejectedCall = "runner" | "app";
+/** Error names the platform and the language define. Any other name can be the app's own text. */
+const standardErrorNames: ReadonlySet<string> = new Set([
+  "Error",
+  "TypeError",
+  "RangeError",
+  "ReferenceError",
+  "SyntaxError",
+  "EvalError",
+  "URIError",
+  "AggregateError",
+  "AbortError",
+  "TimeoutError",
+  "DataCloneError",
+  "InvalidStateError",
+  "NetworkError",
+]);
+/**
+ * The shape of a cause no pattern matched, so an unrecognized failure can still be told apart:
+ * what kind of value it is, its name when that is a standard one, and its message's length. None
+ * of its characters are kept, whoever produced them.
+ */
+const causeShape = (cause: unknown, rejected: RejectedCall) => {
+  const message =
+    cause instanceof Error ? cause.message : typeof cause === "string" ? cause : undefined;
+  return {
+    "executor.runtime.cause.call": rejected,
+    "executor.runtime.cause.kind":
+      cause instanceof Error
+        ? "error"
+        : cause === null || cause === undefined
+          ? "empty"
+          : typeof cause === "string" || typeof cause === "object"
+            ? typeof cause
+            : "other",
+    ...(cause instanceof Error
+      ? { "executor.runtime.cause.name": standardErrorNames.has(cause.name) ? cause.name : "other" }
+      : {}),
+    ...(message === undefined ? {} : { "executor.runtime.cause.message_length": message.length }),
+  };
+};
+/**
+ * Fail a call with its kind, the only part telemetry records, and for an unrecognized cause its
+ * shape. `explain` keeps the cause in the app's own terms for a deploy's declaration step, whose
+ * caller is the app's deployer.
+ */
+const failed = (
+  reason: RuntimeFailure,
+  cause?: unknown,
+  explain = false,
+  rejected?: RejectedCall,
+) =>
   Effect.annotateCurrentSpan({
     "executor.runtime.failure": reason,
     "executor.runtime.cause": runtimeFailures[reason],
+    ...(reason === "unrecognized" && rejected !== undefined ? causeShape(cause, rejected) : {}),
   }).pipe(
     Effect.andThen(
       Effect.fail(
@@ -241,8 +303,10 @@ const failed = (reason: RuntimeFailure, cause?: unknown, explain = false) =>
       ),
     ),
   );
-export const failedFrom = (explain: boolean) => (cause: unknown) =>
-  failed(classify(cause), cause, explain);
+export const failedFrom =
+  (explain: boolean, rejected: RejectedCall = "app") =>
+  (cause: unknown) =>
+    failed(classify(cause), cause, explain, rejected);
 /** Reading a build is the host's own work; its failure is Executor's text and recorded as it is. */
 const failedBuild = (cause: unknown) =>
   Effect.annotateCurrentSpan({
@@ -369,15 +433,26 @@ class ColdStartFailed extends Schema.TaggedError<ColdStartFailed>()("ColdStartFa
  * account IDs, never by credential values or workflow runs.
  */
 export const appWorker = (
-  invocation: Pick<AppInvocation, "app" | "build" | "database" | "command" | "accounts">,
+  invocation: Pick<
+    AppInvocation,
+    "app" | "build" | "database" | "command" | "accounts" | "hostApi"
+  >,
 ) =>
   // Requirement names are unique across scopes, so one record names the account set.
   facetIdentity(invocation.build, Object.fromEntries(scopedSlots(invocation.accounts))).pipe(
-    Effect.map((identity) => ({
-      identity,
-      mode: runsInFacet(invocation) ? ("facet" as const) : ("worker" as const),
-      name: `${invocation.app}:${identity}`,
-    })),
+    Effect.map((selection) => {
+      // A Worker's network is bound when it loads, so each host API revision has its own app
+      // Worker and its own facet Worker. The facet's database is the supervisor's, whichever loads.
+      const identity =
+        invocation.hostApi === undefined
+          ? selection
+          : `${selection}:${invocation.hostApi.revision}`;
+      return {
+        identity,
+        mode: runsInFacet(invocation) ? ("facet" as const) : ("worker" as const),
+        name: `${invocation.app}:${identity}`,
+      };
+    }),
   );
 
 /** Whether a call runs in the app's data facet, under its data supervisor, rather than its Worker. */
@@ -396,9 +471,10 @@ const bundleAccounts = (
   key: Effect.Effect<CryptoKey>,
   accounts: HostAccounts,
 ): Effect.Effect<ResolvedAccounts, RuntimeProtocolFailed> => {
-  if (protocol.sealedCredentials) return sealAccounts(accounts, { app, key });
+  if (protocol.sealedCredentials)
+    return sealAccounts(accounts, { app, key }).pipe(Effect.map(protocol.accounts));
   const unsealed = unsealedAccounts(accounts);
-  return unsealed === undefined ? failed("managed") : Effect.succeed(unsealed);
+  return unsealed === undefined ? failed("managed") : Effect.succeed(protocol.accounts(unsealed));
 };
 
 /**
@@ -722,7 +798,8 @@ export const makeAppRunner = (host: AppRunnerHost) => {
             id,
             app: invocation.app,
             identity,
-            cacheNamespace: invocation.build,
+            cacheNamespace: appCacheNamespace(invocation.build, invocation.hostApi),
+            ...(invocation.hostApi === undefined ? {} : { hostApi: invocation.hostApi }),
             body,
             headers: invocation.headers,
             write:
@@ -881,7 +958,9 @@ export const makeAppRunner = (host: AppRunnerHost) => {
           (lanes: Semaphore.Semaphore): CacheTransport =>
           (command) =>
             lanes
-              .withPermits(1)(data.cache(invocation.build, command))
+              .withPermits(1)(
+                data.cache(appCacheNamespace(invocation.build, invocation.hostApi), command),
+              )
               .pipe(
                 Effect.flatMap(Schema.decodeUnknownEffect(CacheReply)),
                 Effect.mapError(() => new CacheError({ reason: "storage" })),
@@ -920,7 +999,7 @@ export const makeAppRunner = (host: AppRunnerHost) => {
         const reply = yield* start(name, load, {
           body,
           headers: invocation.headers,
-          globalOutbound: host.outbound(invocation.app),
+          globalOutbound: host.outbound(invocation.app, invocation.hostApi),
           elicit: capabilities.elicit,
           controls: capabilities.controls,
           ...(capabilities.workflow === undefined

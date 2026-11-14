@@ -81,11 +81,12 @@ export default Alchemy.Stack(
       definition: onboardingExperimentDefinition,
       status: "running",
     }).pipe(retain());
-    // Independent of the order experiment; also running, so the same deploy launches it.
+    // Independent of the order experiment. Ended in PostHog on 2026-10-30; an ended experiment
+    // cannot run again.
     const onboardingSkip = yield* PostHogExperiment("OnboardingSkipExperiment", {
       projectId: project.id,
       definition: onboardingSkipExperimentDefinition,
-      status: "running",
+      status: "stopped",
     }).pipe(retain());
     return {
       onboardingExperimentId: onboarding.id,

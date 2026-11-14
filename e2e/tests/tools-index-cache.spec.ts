@@ -35,7 +35,7 @@ const indexTools = (actor: Session, app: string, label: string) =>
   });
 
 /** The app's cache round trips, read from the index request's delivered trace. */
-const cacheTrips = (index: Effect.Success<ReturnType<typeof indexTools>>) =>
+const cacheTrips = (index: Effect.Success<ReturnType<typeof indexTools>>, app: string) =>
   Effect.gen(function* () {
     const evidence = yield* Evidence,
       telemetry = yield* Telemetry;
@@ -51,6 +51,9 @@ const cacheTrips = (index: Effect.Success<ReturnType<typeof indexTools>>) =>
       Effect.retry({ schedule: Schedule.spaced("1 second"), times: 40 }),
     );
     const commands = spans.filter((span) => span.operationName === "app.cache.command");
+    const host = spans.filter((span) => span.operationName === "runtime.cloud.cache");
+    // Each host-side command names the app whose supervisor it reached.
+    for (const span of host) expect(span.tags["executor.app.id"], index.label).toBe(app);
     const result = spans.find((span) => span.operationName === "app.cache.get")?.tags[
       "cache.result"
     ];
@@ -62,9 +65,7 @@ const cacheTrips = (index: Effect.Success<ReturnType<typeof indexTools>>) =>
         ms: span.durationMs,
       })),
       // Cloud also reports each command from the host side of the RPC when it has arrived.
-      host: spans
-        .filter((span) => span.operationName === "runtime.cloud.cache")
-        .map((span) => ({ operation: span.tags["cache.operation"], ms: span.durationMs })),
+      host: host.map((span) => ({ operation: span.tags["cache.operation"], ms: span.durationMs })),
     });
     return {
       result,
@@ -175,7 +176,7 @@ layer(HostedLive, { excludeTestServices: true })("Tools index cache", (it) => {
         expect(revisedListing.dispatched).toBe(true);
 
         const [first, second, third] = yield* Effect.all(
-          [cacheTrips(cold), cacheTrips(revised), cacheTrips(other)],
+          [cacheTrips(cold, app.id), cacheTrips(revised, app.id), cacheTrips(other, app.id)],
           { concurrency: "unbounded" },
         );
 

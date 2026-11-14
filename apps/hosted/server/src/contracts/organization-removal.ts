@@ -3,7 +3,7 @@ import { Context, Effect, Schema } from "effect";
 import { ApiError } from "@executor-js/utils/api-error";
 import { HttpApiEndpoint, HttpApiGroup, OpenApi } from "effect/http-api";
 import { StorageError, AppWorkflowsActive, AccountWorkflowsActive } from "@executor-js/sdk/core";
-import { AuthenticationUnavailable } from "./auth.ts";
+import { AuthenticationUnavailable, BrowserSessionOnly, Forbidden } from "./auth.ts";
 import {
   OrganizationForbidden,
   OrganizationId,
@@ -145,15 +145,20 @@ export const HostedOrganizationRemoval = HttpApiGroup.make("organizationRemoval"
       success: OrganizationRemoved,
       error: [
         OrganizationForbidden,
+        Forbidden,
         AuthenticationUnavailable,
         OrganizationRemovalUnavailable,
         StorageError,
         AppWorkflowsActive,
         AccountWorkflowsActive,
       ],
-    }).annotate(
-      OpenApi.Description,
-      "Delete an organization with every app, account, credential, version and MCP grant it owns. Requires the owner role. The request refuses while a workflow or a pinned account is still in flight; otherwise the organization becomes unreachable immediately and a durable workflow completes the erasure.",
-    ),
+    })
+      // An irreversible decision is the owner's own, so API keys, OAuth grants and the Executor
+      // app's managed keys are refused; only the signed-in dashboard can delete.
+      .annotate(BrowserSessionOnly, true)
+      .annotate(
+        OpenApi.Description,
+        "Delete an organization with every app, account, credential, version and MCP grant it owns. Requires the owner role and a browser session; API keys and OAuth tokens are refused. The request refuses while a workflow or a pinned account is still in flight; otherwise the organization becomes unreachable immediately and a durable workflow completes the erasure.",
+      ),
   )
   .middleware(RequireOrganization);

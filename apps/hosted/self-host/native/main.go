@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -493,40 +494,42 @@ func serve(mode string) error {
 		return err
 	}
 	defer os.RemoveAll(temporary)
-	motel, err := filepath.Abs(setting("EXECUTOR_MOTEL_DATA_DIR", "/app/motel-data"))
+	// The telemetry collector's data directory. The variable's name is historical: it named the
+	// directory of Motel, the collector earlier images ran, and operators may have set it.
+	telemetry, err := filepath.Abs(setting("EXECUTOR_MOTEL_DATA_DIR", "/app/motel-data"))
 	if err != nil {
 		return err
 	}
-	if motel == directory || strings.HasPrefix(motel, directory+string(os.PathSeparator)) || strings.HasPrefix(directory, motel+string(os.PathSeparator)) {
+	if telemetry == directory || strings.HasPrefix(telemetry, directory+string(os.PathSeparator)) || strings.HasPrefix(directory, telemetry+string(os.PathSeparator)) {
 		return errors.New("EXECUTOR_MOTEL_DATA_DIR must be separate from the product data directory")
 	}
 	if mode == "export" {
-		motel = filepath.Join(temporary, "motel")
+		telemetry = filepath.Join(temporary, "telemetry")
 	}
-	if err = os.MkdirAll(motel, 0700); err != nil {
+	if err = os.MkdirAll(telemetry, 0700); err != nil {
 		return err
 	}
 	productRoot, err := filepath.EvalSymlinks(directory)
 	if err != nil {
 		return err
 	}
-	motelRoot, err := filepath.EvalSymlinks(motel)
+	telemetryRoot, err := filepath.EvalSymlinks(telemetry)
 	if err != nil {
 		return err
 	}
-	if motelRoot == productRoot || strings.HasPrefix(motelRoot, productRoot+string(os.PathSeparator)) || strings.HasPrefix(productRoot, motelRoot+string(os.PathSeparator)) {
-		return errors.New("Motel and product data cannot share a datastore")
+	if telemetryRoot == productRoot || strings.HasPrefix(telemetryRoot, productRoot+string(os.PathSeparator)) || strings.HasPrefix(productRoot, telemetryRoot+string(os.PathSeparator)) {
+		return errors.New("Telemetry and product data cannot share a datastore")
 	}
 	productInfo, err := os.Stat(productRoot)
 	if err != nil {
 		return err
 	}
-	motelInfo, err := os.Stat(motelRoot)
+	telemetryInfo, err := os.Stat(telemetryRoot)
 	if err != nil {
 		return err
 	}
-	if os.SameFile(productInfo, motelInfo) {
-		return errors.New("Motel and product data cannot share a datastore")
+	if os.SameFile(productInfo, telemetryInfo) {
+		return errors.New("Telemetry and product data cannot share a datastore")
 	}
 	paths := map[string]string{"product-data": filepath.Join(directory, "product"), "legacy-data": filepath.Join(directory, "hosted.pglite"), "app-data": filepath.Join(directory, "workerd"), "workflow-data": filepath.Join(directory, "workerd", "workflows"), "builds": filepath.Join(directory, "builds")}
 	if mode == "export" {
@@ -640,12 +643,17 @@ func serve(mode string) error {
 	if err != nil || number < 1 || number > 65535 {
 		return errors.New("PORT must be between 1 and 65535")
 	}
-	// The collector listens only on a private Unix socket. The product reaches it through its MOTEL
-	// binding and operators through `executor-host telemetry`; no address an app can fetch reaches it.
-	// The socket lives in this host's own temporary directory, so containers that share TMPDIR and
-	// mount their product volumes at the same path never share or remove each other's collector.
-	collector := filepath.Join(temporary, "motel.sock")
-	args := []string{"serve", configPath, "-I/", "--experimental", "--external-addr=native=unix:" + socket, "--external-addr=motel=unix:" + collector, "--socket-addr=http=unix:" + filepath.Join(temporary, "product.sock")}
+	proxies, err := trustedProxies(os.Getenv("EXECUTOR_TRUSTED_PROXIES"))
+	if err != nil {
+		return err
+	}
+	// The collector listens only on a private Unix socket. The product reaches it through its
+	// COLLECTOR binding and operators through `executor-host telemetry`; no address an app or a
+	// browser can fetch reaches it. The socket lives in this host's own temporary directory, so
+	// containers that share TMPDIR and mount their product volumes at the same path never share or
+	// remove each other's collector.
+	collector := filepath.Join(temporary, "collector.sock")
+	args := []string{"serve", configPath, "-I/", "--experimental", "--external-addr=native=unix:" + socket, "--external-addr=collector=unix:" + collector, "--socket-addr=http=unix:" + filepath.Join(temporary, "product.sock")}
 	for name, path := range paths {
 		args = append(args, "--directory-path="+name+"="+path)
 	}
@@ -687,18 +695,6 @@ func serve(mode string) error {
 		}
 		return exportDatabase(filepath.Join(temporary, "export.sock"), os.Args[2])
 	}
-	motelConfig, err := os.ReadFile(filepath.Join(runtime, "motel.capnp"))
-	if err != nil {
-		command.Process.Kill()
-		<-stopped
-		return err
-	}
-	motelConfigPath := filepath.Join(temporary, "motel.capnp")
-	if err = os.WriteFile(motelConfigPath, bytes.ReplaceAll(motelConfig, []byte("@@RUNTIME@@"), []byte(strings.Trim(strconv.Quote(runtime), "\""))), 0600); err != nil {
-		command.Process.Kill()
-		<-stopped
-		return err
-	}
 	forget, err := recordTelemetrySocket(directory, collector)
 	if err != nil {
 		command.Process.Kill()
@@ -706,29 +702,36 @@ func serve(mode string) error {
 		return err
 	}
 	defer forget()
-	stopMotel := supervise(func() *exec.Cmd {
-		// A collector that exited leaves its socket file behind; the next one binds the same path.
+	stopCollector := supervise(func() *exec.Cmd {
+		// A collector that was killed leaves its socket file behind, and the collector never
+		// removes a path it did not create; this directory is the host's own, so the next one
+		// binds the same path.
 		os.Remove(collector)
-		command := exec.Command(filepath.Join(runtime, "workerd"), "serve", motelConfigPath, "-I/", "--experimental", "--directory-path=motel-data="+motel, "--socket-addr=motel=unix:"+collector)
+		command := exec.Command(filepath.Join(runtime, "executor-collector"), append([]string{"serve", "--data=" + telemetry, "--listen=unix:" + collector}, collectorBounds...)...)
 		configureChild(command)
+		// Its one stdout line says it is listening; its log is JSON lines on stderr.
 		command.Stdout = os.Stderr
 		command.Stderr = os.Stderr
 		command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + temporary}
 		command.Dir = runtime
 		return command
 	}, time.Second, 30*time.Second, time.After)
-	defer stopMotel()
+	defer stopCollector()
 
-	proxy := productProxy(filepath.Join(temporary, "product.sock"), workerdIdleTimeout)
+	proxy := productProxy(filepath.Join(temporary, "product.sock"), workerdIdleTimeout, proxies...)
 	publicListener, err := net.Listen("tcp", net.JoinHostPort(setting("HOST", "0.0.0.0"), port))
 	if err != nil {
 		command.Process.Kill()
 		<-stopped
 		return err
 	}
-	public := &http.Server{Handler: publicHandler(proxy), ReadHeaderTimeout: 10 * time.Second}
+	opened := make(chan struct{})
+	public := &http.Server{Handler: startingGate(opened, publicHandler(proxy)), ReadHeaderTimeout: 10 * time.Second}
 	defer public.Close()
 	go func() { serverError <- public.Serve(publicListener) }()
+	stopAnnouncing := make(chan struct{})
+	defer close(stopAnnouncing)
+	go announceReady(filepath.Join(temporary, "product.sock"), values["BETTER_AUTH_URL"], startupProgressInterval, time.Second, os.Stderr, opened, stopAnnouncing)
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(signals)
@@ -751,6 +754,96 @@ func serve(mode string) error {
 	}
 }
 
+// collectorBounds are the bounds the image gives its telemetry collector, the ones it gave Motel:
+// four exports at once of at most 16 MiB each, a week of telemetry in at most 1 GiB.
+var collectorBounds = []string{"--max-pending=4", "--max-export-bytes=16777216", "--max-store-mb=1024", "--retention-hours=168"}
+
+// startupProgressInterval is how often the log says the product is still opening.
+const startupProgressInterval = 15 * time.Second
+
+// announceReady opens the product as soon as workerd starts and reports when it can serve.
+// workerd creates the product only when something calls it, so on a fresh volume the database
+// would otherwise initialize only once the first visitor or health probe arrived. It asks the
+// product's /health until one answers 200, waiting retry after the first failure and doubling up
+// to 30 seconds, and logs every progress interval while it waits. It closes opened when the
+// product first answers, ready or not, and returns once the product is ready or done closes.
+func announceReady(socket, origin string, progress, retry time.Duration, log io.Writer, opened chan<- struct{}, done <-chan struct{}) {
+	started := time.Now()
+	fmt.Fprintln(log, "Executor is starting. The first start initializes the database, which can take a minute or more on slower hardware.")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-done:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	// A fresh connection each time: a pooled one could reach workerd as it closes it.
+	client := &http.Client{Transport: &http.Transport{
+		DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+		},
+	}}
+	ticker := time.NewTicker(progress)
+	defer ticker.Stop()
+	var answered sync.Once
+	ready := func() <-chan bool {
+		result := make(chan bool, 1)
+		go func() {
+			request, _ := http.NewRequestWithContext(ctx, http.MethodGet, "http://product.internal/health", nil)
+			request.Header.Set("x-executor-client-ip", "127.0.0.1")
+			response, err := client.Do(request)
+			if err != nil {
+				result <- false
+				return
+			}
+			response.Body.Close()
+			answered.Do(func() { close(opened) })
+			result <- response.StatusCode == http.StatusOK
+		}()
+		return result
+	}
+	answer := ready()
+	var again <-chan time.Time
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			fmt.Fprintf(log, "Executor is still starting (%s)\n", time.Since(started).Round(time.Second))
+		case ok := <-answer:
+			answer = nil
+			if ok {
+				fmt.Fprintf(log, "Executor is ready at %s (started in %s)\n", origin, time.Since(started).Round(time.Second))
+				return
+			}
+			again = time.After(retry)
+			retry = min(retry*2, 30*time.Second)
+		case <-again:
+			again = nil
+			answer = ready()
+		}
+	}
+}
+
+// startingGate answers 503 at once until opened closes, instead of holding every request while
+// the product opens its database, which can take a minute on slow hardware. opened closes when
+// the product first answers; a product that failed to open then answers for itself, so its error
+// reaches the operator instead of a permanent "starting".
+func startingGate(opened <-chan struct{}, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-opened:
+			next.ServeHTTP(w, r)
+		default:
+			w.Header().Set("Retry-After", "5")
+			http.Error(w, "Executor is starting", http.StatusServiceUnavailable)
+		}
+	})
+}
+
 // publicHandler serves the public listener. fullDuplex sits outside the compressor so it reaches
 // the connection's own writer; Git's streamed requests and responses pass through unencoded.
 func publicHandler(proxy http.Handler) http.Handler {
@@ -760,6 +853,11 @@ func publicHandler(proxy http.Handler) http.Handler {
 // fullDuplex lets a response start before its request body is read. A Git push streams its
 // pack through to git http-backend, which answers with headers first; without this, Go stops
 // reading an HTTP/1 request body once the response starts and the push is cut short.
+//
+// It needs Go 1.27. In Go 1.26 the proxy could return while its transport still read the body,
+// for example when workerd answered before the body arrived. The server then panicked reading
+// the client's next request on the connection, and when the transport's own read panicked
+// instead, the whole host process exited.
 func fullDuplex(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NewResponseController(w).EnableFullDuplex()
@@ -781,22 +879,74 @@ const workerdIdleTimeout = 5 * time.Second
 
 // The proxy closes pooled connections at half workerd's idle timeout, so it never
 // sends a request on a connection workerd is closing. Go replays only requests
-// that are safe to repeat, so losing that race failed POSTs such as workflow runs.
+// that are safe to repeat, so losing that race failed a POST.
+//
+// For the same reason the proxy never reuses a connection that carried a request
+// body. workerd closes a connection after an answer that left the body unread,
+// without Connection: close. Every request crosses into the product's Durable
+// Object, and past that hop workerd does not first read the rest of the body as
+// it otherwise would. The next request the pool sent on that connection, from any
+// client, failed with 502. See notes/self-host-workerd.md.
 
-func productProxy(socket string, upstreamIdleTimeout time.Duration) *httputil.ReverseProxy {
+// workerdConn is the proxy's connection to workerd. workerd can answer a request before it
+// reads the body, and it closes the connection within about 50 µs with the body unread. A body
+// write after that fails. Go's transport returns that failure, which the proxy answers 502,
+// unless it has already read the answer; it does not wait for one. So a write that failed
+// because workerd stopped reading returns only once the connection's reads have ended or the
+// transport has closed it. By then the transport has read workerd's answer, or found there is
+// none.
+//
+// It embeds the *net.UnixConn rather than a net.Conn to keep its CloseWrite. After a protocol
+// upgrade such as a WebSocket's, the proxy passes the client's half-close to workerd through it;
+// without it, the proxy closes both connections and drops what workerd sends afterwards.
+type workerdConn struct {
+	*net.UnixConn
+	readsEnded chan struct{}
+	endReads   sync.Once
+}
+
+func (c *workerdConn) Write(data []byte) (int, error) {
+	n, err := c.UnixConn.Write(data)
+	// Linux reports workerd's close as EPIPE or ECONNRESET, macOS also as ENOTCONN.
+	if errors.Is(err, syscall.EPIPE) || errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.ENOTCONN) {
+		<-c.readsEnded
+	}
+	return n, err
+}
+
+// Read's first error ends the reads. After a protocol upgrade the transport hands the connection
+// to the proxy, which reads it and closes it later; its reader then sees workerd close.
+func (c *workerdConn) Read(data []byte) (int, error) {
+	n, err := c.UnixConn.Read(data)
+	if err != nil {
+		c.endReads.Do(func() { close(c.readsEnded) })
+	}
+	return n, err
+}
+
+func (c *workerdConn) Close() error {
+	c.endReads.Do(func() { close(c.readsEnded) })
+	return c.UnixConn.Close()
+}
+
+func productProxy(socket string, upstreamIdleTimeout time.Duration, trusted ...netip.Prefix) *httputil.ReverseProxy {
 	return &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			request.SetURL(&url.URL{Scheme: "http", Host: "product.internal"})
 			request.Out.Host = request.In.Host
-			address, _, err := net.SplitHostPort(request.In.RemoteAddr)
-			if err != nil {
-				address = request.In.RemoteAddr
-			}
+			// A body may be left unread, so its connection closes after the answer. Only the
+			// connection to workerd closes; the client keeps its own.
+			request.Out.Close = request.In.ContentLength != 0
+			address := clientAddress(request.In.RemoteAddr, request.In.Header.Values("X-Forwarded-For"), trusted)
 			request.Out.Header.Set("x-executor-client-ip", address)
 		},
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return (&net.Dialer{}).DialContext(ctx, "unix", socket)
+				conn, err := (&net.Dialer{}).DialUnix(ctx, "unix", nil, &net.UnixAddr{Name: socket, Net: "unix"})
+				if err != nil {
+					return nil, err
+				}
+				return &workerdConn{UnixConn: conn, readsEnded: make(chan struct{})}, nil
 			},
 			IdleConnTimeout: upstreamIdleTimeout / 2,
 		},
@@ -865,6 +1015,27 @@ func supervise(newCommand func() *exec.Cmd, minDelay, maxDelay time.Duration, af
 	}
 }
 
+// healthTimeout is how long `executor-host health` waits for /health. Every response, /health
+// included, waits while the product commits its storage: SQLite syncs each commit to disk on the
+// thread that runs all of the product's JavaScript. On a slow disk under 30 apps' schedules one
+// commit held /health for up to 16.5 seconds, and a 4-second wait failed 3.6% of checks. 29 seconds
+// covers those stalls and gives up just before the image's HEALTHCHECK, which allows 30, ends it.
+const healthTimeout = 29 * time.Second
+
+// checkHealth reports whether the product on port answers /health with 200 within timeout.
+func checkHealth(port string, timeout time.Duration) error {
+	client := http.Client{Timeout: timeout}
+	response, err := client.Get("http://127.0.0.1:" + port + "/health")
+	if err != nil {
+		return err
+	}
+	response.Body.Close()
+	if response.StatusCode != 200 {
+		return errors.New("Executor is not ready")
+	}
+	return nil
+}
+
 func main() {
 	mode := "serve"
 	if len(os.Args) > 1 {
@@ -877,15 +1048,7 @@ func main() {
 	case "telemetry":
 		err = queryTelemetry(os.Args[2:], os.Stdout)
 	case "health":
-		client := http.Client{Timeout: 4 * time.Second}
-		var response *http.Response
-		response, err = client.Get("http://127.0.0.1:" + setting("PORT", "4400") + "/health")
-		if err == nil {
-			response.Body.Close()
-			if response.StatusCode != 200 {
-				err = errors.New("Executor is not ready")
-			}
-		}
+		err = checkHealth(setting("PORT", "4400"), healthTimeout)
 	default:
 		err = errors.New("expected serve, export, health, or telemetry")
 	}
@@ -943,7 +1106,7 @@ func queryTelemetry(args []string, output io.Writer) error {
 	}}
 	defer transport.CloseIdleConnections()
 	client := http.Client{Transport: transport, Timeout: 30 * time.Second}
-	response, err := client.Get("http://motel.internal" + args[0])
+	response, err := client.Get("http://collector.internal" + args[0])
 	if err != nil {
 		return errors.New("the telemetry collector is not running")
 	}

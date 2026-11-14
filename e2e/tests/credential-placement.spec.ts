@@ -16,7 +16,7 @@ import { appsManifest, unscopedAccounts } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
 import { credentialUpstream, type ReceivedRequest } from "../support/credential-upstream.ts";
-import { Telemetry } from "../support/evidence.ts";
+import { Evidence, Telemetry } from "../support/evidence.ts";
 import type { OperatorSettings } from "../support/managed-server.ts";
 import { OperatorOAuthFixture, operatorOAuthFile } from "../support/operator-oauth.ts";
 import {
@@ -82,6 +82,29 @@ const messageOf = (response: { readonly body: unknown }) =>
     Effect.map((failure) => failure.message),
     Effect.orElseSucceed(() => JSON.stringify(response.body)),
   );
+
+/** A sign-in's failure as the completion answers it and its connection keeps it. */
+const SignInFailure = Schema.Struct({
+  _tag: Schema.String,
+  reason: Schema.String,
+  message: Schema.String,
+  cause: Schema.optional(
+    Schema.Struct({
+      stage: Schema.String,
+      status: Schema.optional(Schema.Number),
+      providerError: Schema.optional(Schema.String),
+    }),
+  ),
+  serviceError: Schema.optional(Schema.Unknown),
+  retryAfter: Schema.optional(Schema.String),
+});
+/** The connection as an agent reads it through the hosted management API. */
+const FailedConnection = Schema.Struct({
+  state: Schema.Struct({
+    status: Schema.String,
+    failure: Schema.optional(Schema.Struct({ at: Schema.String, error: SignInFailure })),
+  }),
+});
 
 /** Send a request and report its status and, for a refusal, why. Shared by every fixture app. */
 const sendSource = `const send = async (url, init) => {
@@ -1091,6 +1114,24 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           firstParty: { label: "Executor for Google" },
           scopes: ["openid", "email", "profile"],
         });
+        // Each approved product must offer the shared client and forward its exact scopes.
+        for (const [key, scopes] of [
+          ["youtube", ["youtube", "youtube.force-ssl"]],
+          ["ads", ["adwords"]],
+          ["bigquery", ["bigquery"]],
+          [
+            "apps-script",
+            ["script.projects", "script.deployments", "script.processes", "script.metrics"],
+          ],
+        ] as const) {
+          const requested = scopes.map((scope) => `https://www.googleapis.com/auth/${scope}`);
+          const product = yield* signIn(key, requested);
+          expect(product.setup.firstParty, key).toEqual({ label: "Executor for Google" });
+          expect(product.started.status, key).toBe(200);
+          const url = new URL((yield* body(Redirect, product.started)).authorizationUrl);
+          expect(url.searchParams.get("client_id"), key).toBe(clientId);
+          expect(url.searchParams.get("scope")?.split(" "), key).toEqual(requested);
+        }
         expect(wider.setup.firstParty).toBeUndefined();
         expect(wider.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
       }),
@@ -1610,20 +1651,18 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const lost = yield* Fiber.join(running);
         expect(lost.status, JSON.stringify(lost.body)).toBe(200);
         const telemetry = yield* Telemetry;
-        const lostClaims = yield* telemetry
-          .search("oauth.renewal", { "executor.account.id": raced })
-          .pipe(
-            Effect.map((found) =>
-              found.data.filter(
-                ({ span }) => span.tags["oauth.renewal.lost_claim_result"] !== undefined,
-              ),
+        const lostClaims = yield* telemetry.search("oauth.renewal", { account: raced }).pipe(
+          Effect.map((found) =>
+            found.data.filter(
+              ({ span }) => span.tags["oauth.renewal.lost_claim_result"] !== undefined,
             ),
-            Effect.filterOrFail(
-              (found) => found.length > 0,
-              () => new Error("The lost renewal's span has not arrived"),
-            ),
-            Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
-          );
+          ),
+          Effect.filterOrFail(
+            (found) => found.length > 0,
+            () => new Error("The lost renewal's span has not arrived"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+        );
         expect(lostClaims.map(({ span }) => span.tags)).toEqual([
           expect.objectContaining({
             "executor.account.credential_generation": "0",
@@ -1929,6 +1968,266 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         expect(seen.tokenExchanges).toBe(0);
         expect(seen.refreshes).toBe(0);
         expect(seen.revocations).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.credentialManagedTelemetry.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, deploy, connection, consent, call } = yield* harness;
+        const evidence = yield* Evidence,
+          telemetry = yield* Telemetry;
+        const { issuer, issuerHost, storeHost } = yield* operatorWith({ revocation: true });
+        // Tokens last 20 seconds, inside the renewal margin, so the first call renews the grant.
+        yield* issuer.configure({ revocation: "recorded", expiresIn: 20 });
+        const { path } = yield* deploy(
+          `Mail telemetry ${randomUUID().slice(0, 8)}`,
+          endpointsApp("Synthetic Mail", [issuerHost, storeHost], {
+            issuer: issuer.origin,
+            authorizationUrl: `${issuer.origin}/authorize`,
+            tokenUrl: `${issuer.origin}/token`,
+          }),
+        );
+        const id = yield* connection(path, "mail");
+        const started = yield* body(
+          Redirect,
+          yield* api.request(actors.owner, "POST", `${prefix}/connections/${id}/oauth/start`, {
+            method: "oauth",
+            label: "Mail",
+          }),
+        );
+        yield* issuer.allowClient({
+          clientId: "first-party-client",
+          clientSecret: "first-party-secret",
+          redirect: started.redirectUri,
+        });
+        const callback = new URL(yield* consent(started.authorizationUrl));
+        const completed = yield* api.request(
+          actors.owner,
+          "POST",
+          `${prefix}/connections/${id}/oauth/complete`,
+          { callbackUrl: callback.href },
+        );
+        expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+        const account = (yield* body(Resource, completed)).id;
+        yield* call(path, Schema.Struct({ access_token: Schema.String }), "fields");
+        expect((yield* issuer.metrics).refreshes).toBeGreaterThan(0);
+        const removed = yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${account}`);
+        expect(removed.status, JSON.stringify(removed.body)).toBe(200);
+
+        // The exchange, the renewal and its refresh, and the revocation each name the operator's
+        // client by its ID and the host its secret went to. The sign-in and the revocation are in
+        // the scenario's requests' traces. The renewal may run in the account check that follows
+        // the sign-in, so it is found by the account it renewed, and its refresh in its trace.
+        const requested = yield* telemetry.settled(
+          evidence.requests.pipe(Effect.map((requests) => requests.map((sent) => sent.traceId))),
+          (delivered) =>
+            ["oauth.exchange", "oauth.revoke"].every((operation) =>
+              delivered.some((span) => span.operationName === operation),
+            ),
+        );
+        const renewals = yield* telemetry.search("oauth.renewal", { account }).pipe(
+          Effect.filterOrFail(
+            (found) => found.data.length > 0,
+            () => new Error("The renewal's span has not arrived"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 40 }),
+        );
+        const renewed = yield* telemetry.settled(
+          [...new Set(renewals.data.map(({ traceId }) => traceId))],
+          (delivered) => delivered.some((span) => span.operationName === "oauth.refresh"),
+        );
+        const spans = [...requested, ...renewed];
+        const tagsOf = (operation: string) =>
+          spans.filter((span) => span.operationName === operation).map((span) => span.tags);
+        const client = {
+          "oauth.client.kind": "first_party",
+          "oauth.first_party.id": "synthetic-mail",
+          "oauth.client.auth_method": "client_secret_basic",
+        };
+        const host = new URL(issuer.origin).hostname;
+        for (const operation of [
+          "oauth.exchange",
+          "oauth.refresh",
+          "oauth.renewal",
+          "oauth.revoke",
+        ])
+          expect(tagsOf(operation).length, operation).toBeGreaterThan(0);
+        for (const operation of ["oauth.exchange", "oauth.refresh", "oauth.renewal"])
+          for (const tags of tagsOf(operation))
+            expect(tags, operation).toMatchObject({
+              ...client,
+              "oauth.token_endpoint.host": host,
+            });
+        for (const tags of tagsOf("oauth.revoke"))
+          expect(tags, "oauth.revoke").toMatchObject({
+            ...client,
+            "oauth.revocation_endpoint.host": host,
+          });
+
+        // No credential or URL is recorded: not the client's secret or its OAuth client ID, the
+        // Basic credential that carries them, a token, the code, the state or the PKCE challenge.
+        const sent = [
+          callback.searchParams.get("code"),
+          callback.searchParams.get("state"),
+          new URL(started.authorizationUrl).searchParams.get("code_challenge"),
+        ];
+        expect(sent).not.toContain(null);
+        const delivered = JSON.stringify(spans);
+        for (const secret of [
+          "first-party-secret",
+          "first-party-client",
+          Buffer.from("first-party-client:first-party-secret").toString("base64"),
+          token,
+          "synthetic-refreshed-token",
+          "synthetic-refresh-",
+          ...sent,
+        ])
+          expect(delivered, `telemetry contains ${secret}`).not.toContain(secret);
+        for (const span of spans)
+          for (const [key, value] of Object.entries(span.tags))
+            if (key.startsWith("oauth."))
+              expect(value, `${span.operationName} ${key}`).not.toMatch(/:\/\/|[?@]/u);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.credentialManagedServiceWords.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, deploy } = yield* harness;
+        const { issuer, issuerHost, storeHost } = yield* operatorWith();
+        const secret = "first-party-secret";
+        const encoded = Buffer.from(secret).toString("base64");
+        const hex = Buffer.from(secret).toString("hex");
+        // A token the service minted and Executor never sent, with no label that names it.
+        const minted = "ya29.synthetic-minted-token-7c41e09b";
+        const { path } = yield* deploy(
+          `Mail service words ${randomUUID().slice(0, 8)}`,
+          endpointsApp("Synthetic Mail", [issuerHost, storeHost], {
+            issuer: issuer.origin,
+            authorizationUrl: `${issuer.origin}/authorize`,
+            tokenUrl: `${issuer.origin}/token`,
+          }),
+        );
+        const cases: ReadonlyArray<{
+          readonly name: string;
+          readonly configure: Parameters<typeof issuer.configure>[0];
+          readonly markers: readonly string[];
+          readonly failure: object;
+        }> = [
+          {
+            // The exact secret, unlabelled, in the callback's description.
+            name: "callback description",
+            configure: {
+              authorizeError: {
+                error: "access_denied",
+                description: `Refused for the client whose secret is ${secret}`,
+              },
+            },
+            markers: [secret],
+            failure: { reason: "denied", cause: { stage: "authorize" } },
+          },
+          {
+            // A prefix of the secret in an RFC 6749 error's description.
+            name: "secret prefix",
+            configure: {
+              tokenError: {
+                status: 401,
+                body: {
+                  error: "invalid_client",
+                  error_description: `The secret beginning ${secret.slice(0, 16)} is not this client's`,
+                },
+              },
+            },
+            markers: [secret.slice(0, 16)],
+            failure: {
+              reason: "invalid_client",
+              cause: { stage: "exchange", status: 401, providerError: "invalid_client" },
+            },
+          },
+          {
+            // The secret base64- and hex-encoded, in a code outside RFC 6749 and in a body that is
+            // not an OAuth error.
+            name: "alternate encodings",
+            configure: {
+              tokenError: {
+                status: 400,
+                body: { error: `bad_client_${hex}`, error_description: `Expected ${encoded}` },
+              },
+            },
+            markers: [encoded, hex],
+            failure: { reason: "exchange_failed", cause: { stage: "exchange", status: 400 } },
+          },
+          {
+            name: "minted token",
+            configure: {
+              tokenError: { status: 502, body: { detail: `Upstream answered with ${minted}` } },
+            },
+            markers: [minted],
+            failure: { reason: "service_unavailable", cause: { stage: "exchange", status: 502 } },
+          },
+          {
+            // A rate limit keeps its Retry-After time, and nothing the service wrote.
+            name: "rate limit",
+            configure: {
+              tokenError: {
+                status: 429,
+                body: {
+                  error: "temporarily_unavailable",
+                  error_description: `Slow down ${encoded}`,
+                },
+                retryAfter: "120",
+              },
+            },
+            markers: [encoded],
+            failure: {
+              reason: "rate_limited",
+              cause: { stage: "exchange", status: 429, providerError: "temporarily_unavailable" },
+            },
+          },
+        ];
+        for (const check of cases) {
+          yield* issuer.configure({ tokenError: null, authorizeError: null, ...check.configure });
+          const attempt = yield* startSignIn(path);
+          expect(attempt.started.status, JSON.stringify(attempt.started.body)).toBe(200);
+          const completed = yield* finishSignIn(
+            issuer,
+            attempt.connection,
+            yield* body(Redirect, attempt.started),
+          );
+          expect(completed.status, `${check.name}: ${JSON.stringify(completed.body)}`).toBe(400);
+          const answered = yield* body(SignInFailure, completed);
+          const read = yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/connections/${attempt.connection}`,
+          );
+          expect(read.status, JSON.stringify(read.body)).toBe(200);
+          const kept = (yield* body(FailedConnection, read)).state.failure?.error;
+          // The failure keeps only its reason, status, an RFC 6749 code and Retry-After.
+          for (const [where, failure] of [
+            ["answer", answered],
+            ["connection", kept],
+          ] as const) {
+            expect(failure, `${check.name} ${where}`).toMatchObject({
+              _tag: "OAuthCompletionFailed",
+              ...check.failure,
+            });
+            expect(failure?.serviceError, `${check.name} ${where}`).toBeUndefined();
+            if (check.name === "rate limit")
+              expect(failure?.retryAfter, `${check.name} ${where}`).toBeDefined();
+          }
+          for (const marker of check.markers)
+            for (const [where, response] of [
+              ["answer", completed.body],
+              ["connection", read.body],
+            ] as const)
+              expect(JSON.stringify(response), `${check.name} ${where}`).not.toContain(marker);
+        }
       }),
     ),
   );
@@ -2254,7 +2553,9 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
         const signIn = yield* startSignIn(first.path);
         const firstSent = yield* sent(signIn.started);
         expectOperatorRequest(firstSent.url);
+        const originalRedirectUri = firstSent.redirect.redirectUri;
         const account = yield* completeSignIn(issuer, signIn.connection, firstSent.redirect);
+        yield* issuer.configure({ requireRefreshRedirectUri: originalRedirectUri });
         // The exchange sent the operator's resource, and the account holds the nested user token:
         // the service accepts only tokens it issued.
         expect((yield* issuer.metrics).exchangeResource).toBe(resource);
@@ -2271,11 +2572,25 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           operatorClients(issuer.origin, hosts, { ...slack, unlisted: true }),
           twoHours,
         );
-        const renewed = yield* call(first.path, Called, "resource");
-        expect(renewed.status).toBe(200);
+        const renewalResponse = yield* api.request(
+          actors.owner,
+          "POST",
+          `${first.path}/tools/call`,
+          { tool: "resource", kind: "query", input: {} },
+        );
         const metrics = yield* issuer.metrics;
+        expect(metrics.refreshRedirectUri, "refresh request redirect_uri").toBe(
+          originalRedirectUri,
+        );
+        expect(renewalResponse.status, "managed account renewal failed").toBe(200);
+        const renewed = yield* body(Called, renewalResponse);
+        expect(renewed.status).toBe(200);
         expect(metrics.refreshesIssued).toBeGreaterThan(refreshed);
-        expect(metrics.refreshChecks).toMatchObject({ issued: true, authSecret: true });
+        expect(metrics.refreshChecks).toMatchObject({
+          issued: true,
+          authSecret: true,
+          redirect: true,
+        });
         expect(metrics.refreshResource).toBe(resource);
         expect(metrics.resourceAuthorizations.at(-1)).toMatch(/^Bearer synthetic-refreshed-token-/);
 

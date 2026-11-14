@@ -14,7 +14,7 @@ import { Effect, Option } from "effect";
 import { cloudRoleHosts, customDomain, hostRoles, testStage, type RoleHosts } from "./stage.ts";
 
 /** The role hosts of a deployed stage, with the zone that serves them. */
-const deployedRoleHosts = Effect.gen(function* () {
+export const deployedRoleHosts = Effect.gen(function* () {
   const roles = yield* cloudRoleHosts.pipe(Effect.orDie);
   if (Option.isNone(roles)) return Option.none<RoleHosts & { readonly zone: string }>();
   const zone = roles.value.zone;
@@ -27,16 +27,26 @@ const deployedRoleHosts = Effect.gen(function* () {
   return Option.some({ ...roles.value, zone: zone.value });
 });
 
-/** The API Worker's `routes` prop: one zone route per role host, or nothing without them. */
+/**
+ * The API Worker's `routes` prop: one zone route per role host and one for v1's AuthKit host, or
+ * nothing without them.
+ *
+ * Production's AuthKit host, `signin.executor.sh`, is a DNS-only record naming WorkOS, so its
+ * route sees no request until that record is proxied: the switch is turning proxying on in
+ * Cloudflare, and turning it off gives the host back to WorkOS (`notes/v1-shutdown.md`,
+ * "AuthKit"). A test stage's is proxied from the start (`testStageRoleHostRecords`).
+ */
 export const roleHostRoutes = Effect.gen(function* () {
   const roles = yield* deployedRoleHosts;
   if (Option.isNone(roles)) return {};
-  const { origins, zone } = roles.value;
-  const routes = yield* Effect.forEach(hostRoles, (role) =>
-    Effect.map(customDomain(new URL(origins[role])), (hostname) => ({
-      pattern: `${hostname}/*`,
-      zoneName: zone,
-    })),
+  const { origins, authKit, zone } = roles.value;
+  const routes = yield* Effect.forEach(
+    [...hostRoles.map((role) => origins[role]), authKit],
+    (origin) =>
+      Effect.map(customDomain(new URL(origin)), (hostname) => ({
+        pattern: `${hostname}/*`,
+        zoneName: zone,
+      })),
   );
   return { routes };
 });
@@ -51,23 +61,14 @@ export const testStageEdge = Effect.gen(function* () {
 });
 
 /**
- * The forwarding Worker's `routes` prop: its edge host, in the stage's zone. Only test stages
- * deploy the Worker; anywhere else it has no route.
+ * A test stage's proxied records for its role hosts, edge and AuthKit host; production's are in
+ * `alchemy.dns.ts`.
  */
-export const testStageEdgeRoutes = Effect.gen(function* () {
-  const edge = yield* testStageEdge;
-  if (Option.isNone(edge)) return {};
-  const roles = yield* deployedRoleHosts;
-  if (Option.isNone(roles)) return {};
-  return { routes: [{ pattern: `${new URL(edge.value).hostname}/*`, zoneName: roles.value.zone }] };
-});
-
-/** A test stage's proxied records for its role hosts and edge; production's are in `alchemy.dns.ts`. */
 export const testStageRoleHostRecords = Effect.gen(function* () {
   if (Option.isNone(yield* testStage.pipe(Effect.orDie))) return;
   const roles = yield* deployedRoleHosts;
   if (Option.isNone(roles)) return;
-  const { origins, zone, edge } = roles.value;
+  const { origins, zone, edge, authKit } = roles.value;
   const { accountId } = yield* yield* Cloudflare.CloudflareEnvironment;
   const found = yield* Cloudflare.Zone.findZoneByName({ accountId, name: zone }).pipe(Effect.orDie);
   if (!found) return yield* Effect.die(new Error(`Cloudflare zone ${zone} is missing`));
@@ -89,4 +90,9 @@ export const testStageRoleHostRecords = Effect.gen(function* () {
       "Routes this test stage's role host to its API Worker",
     );
   yield* record("EdgeHost", edge, "Routes this test stage's edge to its forwarding Worker");
+  yield* record(
+    "AuthKitHost",
+    authKit,
+    "Routes this test stage's stand-in for v1's AuthKit host to its API Worker",
+  );
 });

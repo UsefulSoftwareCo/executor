@@ -10,7 +10,7 @@
  * copy missing any hunk, created or deleted file, or rename does not reverse; a patch that changes
  * nothing also applies forward. Patches may change, create, delete and rename text files; anything
  * else (mode changes, copies, binary files) is rejected, as is a copy whose file mode differs from
- * the patch's. So is a patch Git cannot read exactly, such as a missing `\ No newline at end of
+ * the patch's (compared here: Git before 2.45 does not warn about it under --reverse). So is a patch Git cannot read exactly, such as a missing `\ No newline at end of
  * file`, even where Bun is lenient, and a file section Git skips.
  *
  * Before checking this repository it runs the same check on the fixtures in
@@ -20,15 +20,17 @@
 import { execFile } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, relative as relative_ } from "node:path";
 import { fileURLToPath } from "node:url";
 import { fixtures, type Fixture } from "./check-patches-fixtures.ts";
 
@@ -98,15 +100,16 @@ const headerPath = (line: string) => {
 };
 
 /**
- * Every file section of a patch, with its line and the path Git names its change by (the new path;
- * the old one for a deletion). A section starts at `diff --git` or at a `---` line followed by
+ * Every file section of a patch, with its line, the path Git names its change by (the new path;
+ * the old one for a deletion) and the mode the patched file has (from its `index` or
+ * `new file mode` line), if the section names one. A section starts at `diff --git` or at a `---` line followed by
  * `+++` outside a hunk, whether or not Git would read it: Git skips a `---`/`+++` pair with no
  * hunk as garbage, which is what this has to catch. Hunks are skipped by their line counts, as Git
  * does, so a hunk line that looks like a header is not one.
  */
 const sections = (patch: string) => {
   const lines = patch.split("\n").map((line) => line.replace(/\r$/, ""));
-  const found: Array<{ line: number; path: string | undefined }> = [];
+  const found: Array<{ line: number; path: string | undefined; mode?: string }> = [];
   let index = 0;
   const hunks = () => {
     for (;;) {
@@ -133,6 +136,7 @@ const sections = (patch: string) => {
       const same = /^diff --git a\/(.+) b\/\1$/.exec(lines[index]!)?.[1];
       let renamed: string | undefined;
       let named: string | undefined;
+      let mode: string | undefined;
       index += 1;
       while (
         index < lines.length &&
@@ -145,9 +149,12 @@ const sections = (patch: string) => {
           break;
         }
         renamed = /^(?:rename|copy) to (.*)$/.exec(lines[index]!)?.[1] ?? renamed;
+        mode =
+          /^(?:index [0-9a-f]+\.\.[0-9a-f]+|new file mode) (\d{6})$/.exec(lines[index]!)?.[1] ??
+          mode;
         index += 1;
       }
-      found.push({ line, path: renamed ?? named ?? same });
+      found.push({ line, path: renamed ?? named ?? same, mode });
       hunks();
     } else if (pair()) {
       found.push({ line, path: headerPath(lines[index + 1]!) ?? headerPath(lines[index]!) });
@@ -191,13 +198,112 @@ const refused = async (cwd: string, patch: string) => {
   return undefined;
 };
 
+/** A file's mode as Git records it: a symlink, or a regular file with or without the owner's x bit. */
+const gitMode = (file: string) => {
+  const stat = lstatSync(file, { throwIfNoEntry: false });
+  if (stat === undefined) return undefined;
+  if (stat.isSymbolicLink()) return "120000";
+  return (stat.mode & 0o100) === 0 ? "100644" : "100755";
+};
+
 /** Why one installed copy does not hold the patch, if it doesn't. */
 const notApplied = async (copy: string, patch: string) => {
   const reverse = await appliesExactly(copy, patch, true);
   if (!reverse.ok) return `not applied: ${reverse.reason}`;
+  // Git 2.45 and later warn about this under --reverse and fail above; older versions say nothing.
+  for (const section of sections(readFileSync(patch, "utf8"))) {
+    if (section.path === undefined || section.mode === undefined) continue;
+    const mode = gitMode(join(copy, section.path));
+    if (mode !== undefined && mode !== section.mode)
+      return `not applied: ${section.path} has type ${mode}, expected ${section.mode}`;
+  }
   if ((await appliesExactly(copy, patch, false)).ok)
     return "applies forward too: it changes nothing";
   return undefined;
+};
+
+/**
+ * The store folders the project uses: those reached by following links from the node_modules
+ * folders of the root and of each workspace package (the directories of the package.json files Git
+ * tracks), then from each reached folder's own node_modules. A folder nothing reaches is left over
+ * from an earlier install, even when another left-over folder links it.
+ */
+const reachableStoreFolders = async (root: string, store: string) => {
+  const real = realpathSync(store);
+  const listed = await git(root, ["ls-files", "-z", "--", "package.json", "**/package.json"]);
+  const packages = listed.ok ? listed.stdout.split("\0").filter(Boolean).map(dirname) : ["."];
+  const pending = packages.map((directory) => join(root, directory, "node_modules"));
+  const reached = new Set<string>();
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    if (!existsSync(directory)) continue;
+    const links = readdirSync(directory).flatMap((child) =>
+      child.startsWith("@")
+        ? readdirSync(join(directory, child)).map((scoped) => join(directory, child, scoped))
+        : [join(directory, child)],
+    );
+    for (const link of links) {
+      if (!lstatSync(link).isSymbolicLink()) continue;
+      let resolved: string;
+      try {
+        resolved = realpathSync(link);
+      } catch {
+        continue;
+      }
+      if (!resolved.startsWith(real + "/")) continue;
+      const folder = resolved.slice(real.length + 1).split("/")[0]!;
+      if (reached.has(folder)) continue;
+      reached.add(folder);
+      pending.push(join(store, folder, "node_modules"));
+    }
+  }
+  return reached;
+};
+
+/** Store folders each project reaches, worked out once per project. */
+const reachable = new Map<string, Promise<Set<string>>>();
+
+/**
+ * What the check can establish about a copy that does not hold its patch, and what to do. Bun's
+ * isolated store keeps a folder per package, version and peer set, and leaves old ones behind; on
+ * Linux each copy's files are hard links into Bun's shared install cache, which every workspace on
+ * the host uses, so an edit through those links changes every workspace's copy.
+ */
+const notAppliedHint = async (
+  root: string,
+  store: string,
+  copy: string,
+  others: ReadonlyArray<string>,
+  name: string,
+  version: string,
+  patch: string,
+) => {
+  const folder = dirname(dirname(name.includes("/") ? dirname(copy) : copy));
+  const relative = relative_(root, folder);
+  const relink = `rm -rf '${relative}' && bun install`;
+  if (others.length > 0) {
+    let reached = reachable.get(root);
+    if (reached === undefined) reachable.set(root, (reached = reachableStoreFolders(root, store)));
+    if (!(await reached).has(relative_(store, folder)))
+      return `. This workspace has ${others.length + 1} store folders for ${name}@${version}, and following links from its node_modules never reaches this one: it is left over from an earlier install, and nothing uses it. Repair: rm -rf '${relative}'`;
+  }
+  const manifest = lstatSync(join(copy, "package.json"));
+  if (manifest.nlink < 2) return "";
+  const cache = process.env.BUN_INSTALL_CACHE_DIR ?? join(homedir(), ".bun", "install", "cache");
+  const parent = join(cache, dirname(name));
+  const prefix = `${name.slice(name.lastIndexOf("/") + 1)}@${version}@@@`;
+  const entry = (existsSync(parent) ? readdirSync(parent) : [])
+    .filter((candidate) => candidate.startsWith(prefix))
+    .map((candidate) => join(parent, candidate))
+    .find(
+      (candidate) =>
+        lstatSync(join(candidate, "package.json"), { throwIfNoEntry: false })?.ino === manifest.ino,
+    );
+  if (entry === undefined)
+    return `. Its files are hard links (${manifest.nlink} to package.json), but no entry in ${cache} holds them: the entry was removed or rebuilt after this copy was linked. Repair: ${relink}`;
+  if ((await notApplied(entry, patch)) === undefined)
+    return `. It is hard-linked to Bun's cache entry ${entry}, which holds the patch, so some of this copy's files were replaced after Bun linked it. Repair: ${relink}`;
+  return `. It is hard-linked to Bun's cache entry ${entry}, which does not hold the patch either, and \`bun install --force\` links that entry again. Either the entry was changed through its hard links after Bun built it (an edit in some workspace's node_modules made without \`bun patch\` first; every workspace linking it fails the same way), or Bun applies ${relative_(root, patch)} in a way Git does not reverse exactly (the patch file is at fault; a rebuilt entry fails the same way). To tell them apart, move the entry aside and run \`bun install\` and this check in a new workspace: if that passes, the entry had been changed, so delete it and run ${relink} here and in each workspace linking it; if it fails the same way, fix the patch, for example with \`bun patch ${name}@${version}\` and \`bun patch --commit\``;
 };
 
 /** Every installed copy of a package in Bun's isolated store, with its version. */
@@ -245,7 +351,21 @@ const checkPatch = async (
       const problem = await notApplied(copy.directory, file);
       return problem === undefined
         ? []
-        : [`${selector}: ${problem} in ${copy.directory.slice(root.length)}`];
+        : [
+            `${selector}: ${problem} in ${copy.directory.slice(root.length)}${
+              problem.startsWith("not applied")
+                ? await notAppliedHint(
+                    root,
+                    store,
+                    copy.directory,
+                    matching.filter((other) => other !== copy).map((other) => other.directory),
+                    name,
+                    version,
+                    file,
+                  )
+                : ""
+            }`,
+          ];
     }),
   );
   return problems.flat();

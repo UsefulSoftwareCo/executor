@@ -9,7 +9,7 @@
  * at the depth limit leaves the program's objects usable, and deep generator chains return.
  */
 import { expect, layer } from "@effect/vitest";
-import { Duration, Effect, Option, Schema } from "effect";
+import { Duration, Effect, Fiber, Option, Schema } from "effect";
 import { scenarios } from "../test-plan.ts";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
@@ -276,6 +276,8 @@ const callDepthPrograms = [
     name: "yield-star-1000",
     // Review's program: the loop runs long enough at each level for Effect to preempt it.
     code: `async function* g(n) { for (let i = 0; i < 300; i++) {} if (n === 0) return 42; return yield* g(n - 1); } return (await g(1000).next()).value;`,
+    // The same 1,001 loops without generators. They are nearly all of the chain's time.
+    reference: `for (let n = 0; n <= 1000; n++) { for (let i = 0; i < 300; i++) {} } return 42;`,
     expected: 42,
   },
   {
@@ -334,26 +336,47 @@ const runPrograms = (client: Connected) =>
   });
 
 /**
- * Runs every program, then compares them all. A program that hangs is recorded after 10 seconds,
- * well past the few seconds these take, so the others still report and the case ends within its
- * minute.
+ * Runs every program, then compares them all, so a failure shows each program's result. A program
+ * that hangs is recorded instead of holding the case, so the others still report and the case ends
+ * within its minute. Most programs take under a second and get 10 seconds. A program with a
+ * `reference` spends its time in loops: the interpreter takes several microseconds per iteration,
+ * and a busy runner or coverage slows it by several times, so a fixed bound measured the runner.
+ * Its reference runs the same loops without the behavior under test, beside it on the same server.
+ * A busy runner slows both alike, and the program must answer within as long again as the
+ * reference took.
  */
 const runBoundedPrograms = (
   client: Connected,
-  programs: ReadonlyArray<{ name: string; code: string; expected: unknown }>,
+  programs: ReadonlyArray<{ name: string; code: string; reference?: string; expected: unknown }>,
 ) =>
   Effect.gen(function* () {
     const actual: Record<string, unknown> = {};
     const expected: Record<string, unknown> = {};
     for (const program of programs) {
-      const result = yield* execute(client, program.name, program.code).pipe(
-        Effect.timeoutOption(Duration.seconds(10)),
+      expected[program.name] = program.expected;
+      if (program.reference === undefined) {
+        const result = yield* execute(client, program.name, program.code).pipe(
+          Effect.timeoutOption(Duration.seconds(10)),
+        );
+        actual[program.name] = Option.match(result, {
+          onNone: () => "no answer within 10 seconds",
+          onSome: (executed) => executed.value,
+        });
+        continue;
+      }
+      const running = yield* Effect.forkChild(execute(client, program.name, program.code));
+      const [took, reference] = yield* Effect.timed(
+        execute(client, `${program.name}-reference`, program.reference),
       );
+      actual[`${program.name}-reference`] = reference.value;
+      expected[`${program.name}-reference`] = program.expected;
+      const result = yield* Fiber.join(running).pipe(Effect.timeoutOption(took));
+      if (Option.isNone(result)) yield* Fiber.interrupt(running);
       actual[program.name] = Option.match(result, {
-        onNone: () => "no answer within 10 seconds",
+        onNone: () =>
+          `no answer within twice the reference's ${Math.round(Duration.toMillis(took))} ms`,
         onSome: (executed) => executed.value,
       });
-      expected[program.name] = program.expected;
     }
     expect(actual).toEqual(expected);
     return actual;

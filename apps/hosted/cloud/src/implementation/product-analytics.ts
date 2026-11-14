@@ -1,6 +1,6 @@
 /** Request-owned analytics and explicitly submitted feedback sent to PostHog. */
 import { readSiteVisitor, siteVisitorCookie } from "@executor-js/marketing/site-visitor";
-import { recordRoute } from "@executor-js/telemetry";
+import { recordRoute, TelemetryDrainScope, TelemetryWaitReport } from "@executor-js/telemetry";
 import { FeedbackUnavailable } from "@executor-js/telemetry/product-analytics";
 import {
   ProductAnalytics,
@@ -8,13 +8,14 @@ import {
   type UsageProperties,
 } from "@executor-js/hosted-server";
 import { CurrentRuntimeContext } from "alchemy/RuntimeContext";
-import { Context, Effect, Option, Redacted, Schema } from "effect";
+import { Context, Effect, Option, Predicate, Redacted, Schema, Scope } from "effect";
 import {
   Cookies,
   FetchHttpClient,
   HttpBody,
   HttpClient,
   HttpClientRequest,
+  HttpMethod,
   HttpServerRequest,
   HttpServerResponse,
 } from "effect/http";
@@ -193,22 +194,36 @@ export const withProductAnalytics = <A, E, R>(
           Effect.timeout("3 seconds"),
           Effect.asVoid,
         );
-    yield* Effect.addFinalizer(() =>
-      events.length === 0
-        ? Effect.void
-        : send(
-            dropped === 0
-              ? events
-              : [
-                  ...events,
-                  {
-                    event: "analytics_events_dropped",
-                    distinct_id: "analytics-exporter",
-                    timestamp: new Date().toISOString(),
-                    properties: { dropped_events: dropped },
-                  },
-                ],
-          ).pipe(Effect.catch(() => Effect.logWarning("PostHog batch export failed"))),
+    // The batch is sent after the request has released its database connections when the host
+    // gives it a telemetry scope (`served-request.ts`), and as the handler's scope closes otherwise.
+    const flushScope = (yield* TelemetryDrainScope) ?? (yield* Effect.scope);
+    const reportWait = yield* TelemetryWaitReport;
+    yield* Scope.addFinalizer(
+      flushScope,
+      Effect.suspend(() =>
+        events.length === 0
+          ? Effect.void
+          : send(
+              dropped === 0
+                ? events
+                : [
+                    ...events,
+                    {
+                      event: "analytics_events_dropped",
+                      distinct_id: "analytics-exporter",
+                      timestamp: new Date().toISOString(),
+                      properties: { dropped_events: dropped },
+                    },
+                  ],
+            ).pipe(
+              // A flush that ran out its time is a telemetry wait of the request that reached its
+              // bound.
+              Effect.tapError((error) =>
+                Predicate.isTagged(error, "TimeoutError") ? reportWait("analytics") : Effect.void,
+              ),
+              Effect.catch(() => Effect.logWarning("PostHog batch export failed")),
+            ),
+      ),
     );
     return yield* handler.pipe(
       Effect.provideService(Analytics, {
@@ -304,6 +319,9 @@ export const postHogUpstream = (
   const path = url.pathname.slice(config.path.length);
   const endpoint = postHogEndpoints.find(([pattern]) => pattern.test(path));
   if (endpoint === undefined) return undefined;
+  // Effect 4.1 types received methods as `string`.
+  const method = request.method;
+  if (!HttpMethod.isHttpMethod(method)) return undefined;
   const upstream = new URL(config.host);
   if (path.startsWith("/static/"))
     upstream.hostname = upstream.hostname.replace(".i.posthog.com", "-assets.i.posthog.com");
@@ -315,7 +333,7 @@ export const postHogUpstream = (
     if (value !== undefined) headers[name] = value;
   }
   return {
-    request: HttpClientRequest.make(request.method)(upstream, {
+    request: HttpClientRequest.make(method)(upstream, {
       headers,
       ...(request.method === "POST"
         ? { body: HttpBody.stream(request.stream, headers["content-type"]) }

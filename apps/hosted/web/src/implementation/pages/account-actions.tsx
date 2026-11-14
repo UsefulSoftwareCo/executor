@@ -1,4 +1,3 @@
-import { AccountAccessSettings } from "./resource-settings.tsx";
 import { DetailSkeleton } from "@executor-js/ui/dashboard/loading";
 import type { AccountDetail, AccountSummary } from "@executor-js/ui/contracts/dashboard";
 import { useAtomSet } from "@effect/atom-react";
@@ -7,7 +6,6 @@ import { useState, type ReactNode } from "react";
 import {
   AccountActionsMenu,
   AccountDialog,
-  AccountDialogIdentity,
   DisconnectAccountForm,
   EditAccountForm,
 } from "@executor-js/ui/dashboard/account-actions";
@@ -15,7 +13,6 @@ import { QueryView } from "@executor-js/ui/dashboard/context";
 import { AccountHealthPanel } from "@executor-js/ui/dashboard/account-health";
 import { Button } from "@executor-js/ui/components/button";
 import { DropdownMenuItem, DropdownMenuSeparator } from "@executor-js/ui/components/dropdown-menu";
-import type { AccountAccess } from "@executor-js/hosted-server/resource-access";
 import {
   accountAtom,
   checkAccountAtom,
@@ -27,28 +24,23 @@ import { HostedFailure } from "../components/dashboard-bindings.tsx";
 import { useOrganizationRoute } from "../components/organization.tsx";
 
 /** The list page owns an open dialog, so it outlives the row if the account changes underneath it. */
-export type AccountDialogKind = "edit" | "health" | "access" | "delete";
+export type AccountDialogKind = "edit" | "health" | "delete";
 
 /**
- * Row actions replace the account page: name, health, access and deletion, in place. Credentials
+ * Row actions replace the account page: name, health and deletion, in place. Credentials
  * are replaced from an app that uses the account, which knows the hosts they are sent to.
  */
 export function HostedAccountActions({
   account,
-  access,
   open,
 }: {
   readonly account: AccountSummary;
-  readonly access: typeof AccountAccess.Type | undefined;
   readonly open: (dialog: AccountDialogKind) => void;
 }) {
   return (
     <AccountActionsMenu account={account}>
       <DropdownMenuItem onSelect={() => open("edit")}>Edit details</DropdownMenuItem>
       <DropdownMenuItem onSelect={() => open("health")}>Check health</DropdownMenuItem>
-      {access?.ownership.kind === "shared" && (
-        <DropdownMenuItem onSelect={() => open("access")}>Manage access</DropdownMenuItem>
-      )}
       <DropdownMenuSeparator />
       <DropdownMenuItem variant="destructive" onSelect={() => open("delete")}>
         Delete account
@@ -60,11 +52,10 @@ export function HostedAccountActions({
 const titles = {
   edit: "Edit account",
   health: "Account health",
-  access: "Manage access",
   delete: "Delete account?",
 } satisfies Record<AccountDialogKind, string>;
 
-/** Editing, access and deletion load the account themselves and report it if it disappears. */
+/** Editing, health and deletion load the account themselves and report it if it disappears. */
 export function HostedAccountDialog({
   id,
   dialog,
@@ -93,11 +84,6 @@ export function HostedAccountDialog({
             <EditDialogBody data={data} onPendingChange={setBusy} onClose={onClose} />
           ) : dialog === "health" ? (
             <HealthDialogBody data={data} onClose={onClose} />
-          ) : dialog === "access" ? (
-            <>
-              <AccountDialogIdentity data={data} />
-              <AccountAccessSettings account={id} />
-            </>
           ) : (
             <DeleteDialogBody data={data} onPendingChange={setBusy} onClose={onClose} />
           )
@@ -156,11 +142,6 @@ function EditDialogBody({
       account={data.account}
       update={update}
       Failure={HostedFailure}
-      disabledReason={
-        data.canManage
-          ? undefined
-          : "Only the account creator and organization admins can manage this shared account."
-      }
       onPendingChange={onPendingChange}
       onDone={onClose}
       cancel={cancelButton(onClose)}
@@ -191,11 +172,6 @@ function DeleteDialogBody({
       }
       data={data}
       Failure={HostedFailure}
-      disabledReason={
-        data.canManage
-          ? undefined
-          : "Only the account creator and organization admins can delete this shared account."
-      }
       disconnect={() => disconnect()}
       onPendingChange={onPendingChange}
       onDisconnected={onClose}

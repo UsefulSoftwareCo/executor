@@ -1,14 +1,15 @@
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { billingMembers } from "../infrastructure/billing-members.ts";
 import {
-  Authentication,
+  SessionAuthentication,
   organizationOwner,
   requireOrganizationAdmin,
   type OrganizationId,
 } from "@executor-js/hosted-server";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
-import { Cause, Effect, Layer, Schema } from "effect";
+import { Cause, Effect, Fiber, Layer, Schema } from "effect";
 import { FetchHttpClient, HttpServerRequest } from "effect/http";
+import { SqlClient } from "effect/sql";
 import { AutumnClient, type AutumnRequestFailed } from "../contracts/autumn.ts";
 import { autumnLive, autumnReads } from "./autumn-client.ts";
 import {
@@ -25,7 +26,7 @@ import {
   BillingPlanUnavailable,
   BillingUnavailable,
 } from "../contracts/billing.ts";
-import { freeMembers } from "../contracts/billing-catalog.ts";
+import { billingCustomerId, freeMembers } from "../contracts/billing-catalog.ts";
 import { ExecutorCloudApi } from "../contracts/api.ts";
 import { billingSettings } from "../infrastructure/billing.ts";
 
@@ -42,6 +43,24 @@ class OrganizationBillingOrphaned extends Schema.TaggedError<OrganizationBilling
     return `Organization ${this.organization} was removed with billing customer ${this.customerId} left live`;
   }
 }
+
+const HoldStates = Schema.Array(Schema.Struct({ state: Schema.String }));
+
+/**
+ * Whether v2's billing must leave an organization the v1 import moved alone: `held` while the
+ * import was carrying v1's subscription over, `returned` once it gave it back to v1. Null for
+ * every other organization. The import is gone; its `private_v1_import_billing` rows are kept
+ * for their retention period, so an organization left in either state stays held until they go.
+ */
+const v1BillingHold = (organization: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql`
+      select state from private_v1_import_billing where organization_id = ${organization}
+    `.pipe(Effect.flatMap(Schema.decodeUnknownEffect(HoldStates)));
+    const state = rows[0]?.state;
+    return state === "held" || state === "returned" ? state : null;
+  });
 
 type Subscriptions = {
   readonly subscriptions: ReadonlyArray<{ readonly planId: string; readonly status: string }>;
@@ -72,18 +91,32 @@ export const billingLive = Effect.gen(function* () {
   );
   const use = <A>(call: Effect.Effect<A, AutumnRequestFailed>) =>
     call.pipe(Effect.mapError(() => new BillingUnavailable()));
+  /**
+   * A paid v1 organization's billing the v1 import left carrying over (`held`) or gave back to v1
+   * (`returned`); null otherwise (`notes/v1-import.md`). Its customer is v1's own, so v2 must not
+   * create one, offer a checkout, sync seats or cancel anything for it.
+   */
+  const hold = (organization: OrganizationId) => members.use(v1BillingHold(organization));
+  /** Fail any billing operation on a held organization. */
+  const unlessHeld = (organization: OrganizationId) =>
+    Effect.flatMap(hold(organization), (state) =>
+      state === null ? Effect.void : Effect.fail(new BillingUnavailable()),
+    );
   const overview: typeof Billing.Service.overview = (organization) =>
     Effect.gen(function* () {
+      yield* unlessHeld(organization);
       const { autumn, catalog } = yield* client;
-      const customerId = `${catalog.namespace}:${organizationOwner(organization)}`;
+      const customerId = billingCustomerId(catalog, organization);
       const customer = yield* use(
         autumn.getOrCreateCustomer({ customerId, autoEnablePlanId: catalog.free }),
       );
+      // The plan list is read while the seat plan is written; the write still finishes first.
+      const listing = yield* Effect.forkChild(use(autumn.listPlans({ customerId })));
       // Checkout returns here after Stripe settles, so a new seat plan joins the daily reconcile.
       yield* members.use(
         recordSeatPlan(organization, active(customer, [catalog.team, catalog.enterprise])),
       );
-      const plans = yield* use(autumn.listPlans({ customerId }));
+      const plans = yield* Fiber.join(listing);
       // The billing provider lists plans in its own order; the page shows the smallest first.
       const offered = [catalog.free, catalog.team, catalog.enterprise];
       return yield* Schema.decodeUnknownEffect(BillingOverview)({
@@ -135,8 +168,9 @@ export const billingLive = Effect.gen(function* () {
     });
   const customer = (organization: OrganizationId) =>
     Effect.gen(function* () {
+      yield* unlessHeld(organization);
       const { autumn, catalog } = yield* client;
-      const customerId = `${catalog.namespace}:${organizationOwner(organization)}`;
+      const customerId = billingCustomerId(catalog, organization);
       const value = yield* use(
         autumn.getOrCreateCustomer({ customerId, autoEnablePlanId: catalog.free }),
       );
@@ -151,6 +185,8 @@ export const billingLive = Effect.gen(function* () {
    */
   const syncSeats = (organization: OrganizationId, mode: "changed" | "verify") =>
     Effect.gen(function* () {
+      // The import syncs a held organization's seats once its subscription is carried over.
+      if ((yield* hold(organization)) !== null) return;
       let current: { readonly count: number; readonly synced: number | null } | undefined =
         yield* members.use(seatCounts(organization));
       if (current === undefined) return yield* new BillingUnavailable();
@@ -176,8 +212,11 @@ export const billingLive = Effect.gen(function* () {
     Effect.gen(function* () {
       const { autumn, catalog } = yield* client;
       const customerId = catalog
-        ? `${catalog.namespace}:${organizationOwner(organization)}`
+        ? billingCustomerId(catalog, organization)
         : organizationOwner(organization);
+      // v1 bills a returned organization again: v2 holds nothing of it to cancel.
+      if ((yield* hold(organization)) === "returned")
+        return { customerId, cancelled: [] as string[] };
       return yield* Effect.gen(function* () {
         const { value } = yield* customer(organization);
         // The free plan carries no charge, and an expired subscription is already done.
@@ -190,7 +229,7 @@ export const billingLive = Effect.gen(function* () {
           live,
           (subscription) =>
             use(
-              autumn.cancelSubscription({
+              autumn.updateSubscription({
                 customerId,
                 planId: subscription.planId,
                 cancelAction: "cancel_immediately",
@@ -270,7 +309,7 @@ export const billingLive = Effect.gen(function* () {
             const { autumn, catalog } = yield* client;
             const result = yield* use(
               autumn.attach({
-                customerId: `${catalog.namespace}:${organizationOwner(organization)}`,
+                customerId: billingCustomerId(catalog, organization),
                 planId: plan,
                 successUrl: success.href,
               }),
@@ -283,7 +322,7 @@ export const billingLive = Effect.gen(function* () {
             const { autumn, catalog } = yield* client;
             const result = yield* use(
               autumn.openCustomerPortal({
-                customerId: `${catalog.namespace}:${organizationOwner(organization)}`,
+                customerId: billingCustomerId(catalog, organization),
                 returnUrl: returnUrl.href,
               }),
             );
@@ -300,7 +339,7 @@ export const billingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "billing",
   Effect.gen(function* () {
     const billing = yield* Billing;
     const meter = yield* BillingMeter;
-    const auth = yield* Authentication;
+    const auth = yield* SessionAuthentication;
     const destination = (organization: OrganizationId) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;

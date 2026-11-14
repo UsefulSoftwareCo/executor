@@ -50,6 +50,11 @@ export interface BlobStorage {
   readonly put: (key: BlobKey, body: Uint8Array) => Effect.Effect<void, BlobStoreError>;
   readonly remove: (key: BlobKey) => Effect.Effect<void, BlobStoreError>;
   /**
+   * Remove every key, as `remove` does each one. Stores that delete many objects in one request
+   * use it; at most {@link removeAllKeys} keys per call.
+   */
+  readonly removeAll: (keys: ReadonlyArray<BlobKey>) => Effect.Effect<void, BlobStoreError>;
+  /**
    * Names of the objects directly inside `folder` (`<folder>/<name>`) that sort after
    * `startAfter`, in ascending order, at most `limit` of them. `truncated` says more follow.
    */
@@ -63,6 +68,9 @@ export interface BlobStorage {
     range?: BlobRange,
   ) => Effect.Effect<Option.Option<BlobBody>, BlobStoreError>;
 }
+
+/** The most keys one `removeAll` call takes: R2 deletes up to 1,000 objects per request. */
+export const removeAllKeys = 1000;
 
 /** Provided by createExecutor; runtimes resolve this service when an operation runs. */
 export class BlobStore extends Context.Service<BlobStore, BlobStorage>()("executor/BlobStore") {}

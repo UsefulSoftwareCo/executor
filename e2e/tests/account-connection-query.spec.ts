@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
+import { replaceResponses } from "../support/browser-responses.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { App, Resource } from "../support/contracts.ts";
 import { Evidence } from "../support/evidence.ts";
@@ -102,19 +103,15 @@ export default defineApp({ user: { accounts: { service } } }, async ({ user: { a
         );
         let dropped = false;
         let committed: unknown;
-        yield* browser.use("Lose the first save response after the server commits", (page) =>
-          page.route(/\/connections\/[^/]+\/submit$/, (route) => {
-            if (dropped) return route.fallback();
-            dropped = true;
-            return route
-              .fetch()
-              .then((response) => response.json())
-              .then((value: unknown) => {
-                committed = value;
-                return route.abort("failed");
-              });
-          }),
-        );
+        yield* replaceResponses("*/connections/*/submit", (response) => {
+          if (dropped || !/\/connections\/[^/]+\/submit$/.test(new URL(response.url).pathname))
+            return "unchanged";
+          dropped = true;
+          return response.body().then((text) => {
+            committed = JSON.parse(text);
+            return "failed" as const;
+          });
+        });
         yield* browser.use("Submit the credentials once", (page) =>
           page.getByRole("button", { name: "Connect account", exact: true }).click(),
         );

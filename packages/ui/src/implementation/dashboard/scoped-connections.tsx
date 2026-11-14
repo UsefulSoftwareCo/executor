@@ -1,3 +1,9 @@
+/**
+ * Connections the current user owns. The full-access URL reaches every app; each scoped
+ * connection issues its own MCP URL, and edits apply to connected agents immediately. The list
+ * shows every connection as a card, and each scoped connection has its own page, where its access
+ * is edited in place.
+ */
 import {
   useDeferredValue,
   useId,
@@ -11,6 +17,8 @@ import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
 import type { AccountId, App, AppId, ToolName } from "@executor-js/sdk";
 import { ConnectionId, type ConnectionView } from "@executor-js/mcp-auth/connections";
+import { randomUuid } from "@executor-js/utils/random-uuid";
+import { copyText } from "../lib/clipboard.ts";
 import type { AccountSummary, FailureProps, Inventory, Query } from "../../contracts/dashboard.ts";
 import {
   type ConnectionApp,
@@ -18,19 +26,18 @@ import {
   type ConnectionTarget,
   connectionInput,
   defaultConnectionName,
-  connectionTargetKey,
-  connectionTargetLabel,
-  connectionToolsLabel,
-  connectionEventsLabel,
   type ScopedConnectionBindings,
 } from "../../contracts/scoped-connections.ts";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   Add01Icon,
-  ArrowDown01Icon,
   ArrowLeft02Icon,
-  ArrowRight02Icon,
+  ConnectIcon,
+  Copy01Icon,
+  Delete02Icon,
+  MoreHorizontalIcon,
   Search01Icon,
+  Tick02Icon,
 } from "@hugeicons/core-free-icons";
 import { Button } from "../components/button.tsx";
 import { Input } from "../components/input.tsx";
@@ -43,10 +50,17 @@ import {
   DialogDescription,
   DialogFooter,
 } from "../components/dialog.tsx";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "../components/dropdown-menu.tsx";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/popover.tsx";
-import { Skeleton } from "../components/skeleton.tsx";
-import { PageFrame, PageHeader } from "./page.tsx";
-import { QueryView } from "./context.tsx";
+import { cn } from "../lib/utils.ts";
+import { PageFrame } from "./page.tsx";
+import { allResults, LoadingRows, QueryResult, usePreload, useQuery } from "./context.tsx";
 import { AppIcon } from "./common.tsx";
 import {
   appChoices,
@@ -54,12 +68,9 @@ import {
   accountOption,
   initialSelection,
   selectionIssue,
-  declaresEvents,
   type AppChoices,
 } from "./connection-app-picker.tsx";
 import { useIncrementalList } from "./incremental-list.tsx";
-import { McpInstallInstructions } from "./connect.tsx";
-import { publicDocsBaseUrl } from "../../contracts/documentation.ts";
 
 /** Each host supplies its existing authorized catalog read of the app's tools. */
 export interface ConnectionToolPickerProps {
@@ -68,28 +79,271 @@ export interface ConnectionToolPickerProps {
   readonly onChange: (names: readonly ToolName[]) => void;
 }
 
-type View =
-  | { readonly kind: "list" }
-  | { readonly kind: "detail"; readonly connection: ConnectionId }
-  | { readonly kind: "editor"; readonly draft: ConnectionDraft; readonly existing: boolean };
+/** Host routing remains typed by that host's router. */
+export interface ConnectionLinkProps {
+  /** The connection's page, `new` for the page that creates one, or the list when omitted. */
+  readonly connection?: ConnectionId | "new";
+  readonly className?: string;
+  readonly children: ReactNode;
+}
+
+/** The URL an agent connects to; `apps` is undefined for the full-access URL. */
+export interface ConnectTarget {
+  readonly name: string;
+  readonly url: string;
+  readonly apps: readonly string[] | undefined;
+}
+
+/** What both connection pages read and render through the host. */
+interface ConnectionPageBindings<
+  E,
+  EL extends E,
+  ES extends E,
+  ER extends E,
+> extends ScopedConnectionBindings<EL, ES, ER> {
+  readonly query: Query<Inventory, E>;
+  /** Renders every failure: inventory, connection reads, saves and revocation. */
+  readonly Failure: ComponentType<FailureProps<E>>;
+  readonly ConnectionLink: ComponentType<ConnectionLinkProps>;
+  /** How an agent connects to a target's URL, shown in the Connect dialog. */
+  readonly renderInstallation: (target: ConnectTarget) => ReactNode;
+}
 
 const plural = (count: number, one: string, many = `${one}s`) =>
   `${count.toLocaleString("en-US")} ${count === 1 ? one : many}`;
 
-/** Every account choice per app, computed once per inventory. */
-const inventoryChoices = (inventory: Inventory) =>
-  new Map<AppId, AppChoices>(
+/** The inventory and connections as one read, so both pages wait for and report them once. */
+function ConnectionReads<E, EL extends E>({
+  query,
+  connections,
+  Failure,
+  pending,
+  children,
+}: {
+  readonly query: Query<Inventory, E>;
+  readonly connections: Query<readonly ConnectionView[], EL>;
+  readonly Failure: ComponentType<FailureProps<E>>;
+  readonly pending: ReactNode;
+  readonly children: (inventory: Inventory, connections: readonly ConnectionView[]) => ReactNode;
+}) {
+  usePreload(query, connections);
+  const inventory = useQuery(query);
+  const stored = useQuery(connections);
+  return (
+    <QueryResult<{ inventory: Inventory; stored: readonly ConnectionView[] }, E>
+      result={allResults({ inventory: inventory.result, stored: stored.result })}
+      Failure={Failure}
+      retry={() => {
+        inventory.refresh();
+        stored.refresh();
+      }}
+      pending={pending}
+    >
+      {(value) => children(value.inventory, value.stored)}
+    </QueryResult>
+  );
+}
+
+interface ConnectionCardView {
+  readonly id: ConnectionId | undefined;
+  readonly name: string;
+  readonly url: string;
+  readonly apps: readonly { readonly app: App | undefined; readonly name: string }[];
+}
+
+/** The full-access URL first, then each scoped connection. */
+const connectionCards = (
+  endpoint: string,
+  connections: readonly ConnectionView[],
+  apps: readonly App[],
+): readonly ConnectionCardView[] => {
+  const byId = new Map<AppId, App>(apps.map((app) => [app.id, app]));
+  return [
+    {
+      id: undefined,
+      name: "Full access",
+      url: endpoint,
+      apps: apps.map((app) => ({ app, name: app.name })),
+    },
+    ...connections.map((connection) => ({
+      id: connection.id,
+      name: connection.name,
+      url: connection.url,
+      apps: connection.policy.apps.map((item) => {
+        const app = byId.get(item.app);
+        return { app, name: app?.name ?? "Unavailable app" };
+      }),
+    })),
+  ];
+};
+
+/** Every connection as a card; each opens the Connect dialog, and a scoped one opens its page. */
+export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends E>({
+  endpoint,
+  agents,
+  ...bindings
+}: ConnectionPageBindings<E, EL, ES, ER> & {
+  /** The full-access URL. */
+  readonly endpoint: string;
+  /** The agents connected through these URLs, when the host lists them. */
+  readonly agents?: ReactNode;
+}) {
+  const { query, connections, Failure, ConnectionLink, renderInstallation } = bindings;
+  const [connecting, setConnecting] = useState<ConnectionCardView>();
+  return (
+    <PageFrame>
+      <header className="mb-6 flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-[22px] font-semibold tracking-[-0.035em]">Connections</h1>
+          <p className="mt-1 text-[13px] text-muted-foreground">
+            Each connection gives an agent its own MCP URL that reaches only the apps you pick.
+          </p>
+        </div>
+        <Button asChild>
+          <ConnectionLink connection="new">
+            <HugeiconsIcon icon={Add01Icon} strokeWidth={2} aria-hidden />
+            New connection
+          </ConnectionLink>
+        </Button>
+      </header>
+      <ConnectionReads
+        query={query}
+        connections={connections}
+        Failure={Failure}
+        pending={<LoadingRows count={4} />}
+      >
+        {(inventory, stored) => (
+          <div
+            role="list"
+            aria-label="Connections"
+            className="grid grid-cols-3 gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1"
+          >
+            {connectionCards(endpoint, stored, inventory.apps).map((card) => (
+              <ConnectionCard
+                key={card.id ?? "full"}
+                connection={card}
+                ConnectionLink={ConnectionLink}
+                onConnect={setConnecting}
+              />
+            ))}
+          </div>
+        )}
+      </ConnectionReads>
+      {agents}
+      <ConnectDialog
+        target={
+          connecting === undefined
+            ? undefined
+            : {
+                name: connecting.name,
+                url: connecting.url,
+                apps:
+                  connecting.id === undefined ? undefined : connecting.apps.map((app) => app.name),
+              }
+        }
+        renderInstallation={renderInstallation}
+        onClose={() => setConnecting(undefined)}
+      />
+    </PageFrame>
+  );
+}
+
+function ConnectDialog({
+  target,
+  renderInstallation,
+  onClose,
+}: {
+  readonly target: ConnectTarget | undefined;
+  readonly renderInstallation: (target: ConnectTarget) => ReactNode;
+  readonly onClose: () => void;
+}) {
+  return (
+    <Dialog open={target !== undefined} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="sm:max-w-xl">
+        <DialogHeader>
+          <DialogTitle>Connect {target?.name}</DialogTitle>
+          <DialogDescription>
+            {target?.apps === undefined
+              ? "This URL reaches every app. Make a new connection to limit what an agent sees."
+              : `This URL only reaches ${target.apps.join(", ")}.`}
+          </DialogDescription>
+        </DialogHeader>
+        {target && renderInstallation(target)}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** A scoped card opens its page; the stretched name link keeps Connect a separate button. */
+function ConnectionCard({
+  connection,
+  ConnectionLink,
+  onConnect,
+}: {
+  readonly connection: ConnectionCardView;
+  readonly ConnectionLink: ComponentType<ConnectionLinkProps>;
+  readonly onConnect: (connection: ConnectionCardView) => void;
+}) {
+  const shown = connection.apps.slice(0, 4);
+  return (
+    <div
+      role="listitem"
+      aria-label={connection.name}
+      className="relative flex min-h-56 flex-col rounded-xl border border-border p-4 transition-colors has-[a:hover]:border-muted-foreground/40 has-[a:hover]:bg-muted/60 has-[a:focus-visible]:ring-2 has-[a:focus-visible]:ring-ring max-[600px]:min-h-0"
+    >
+      <span className="flex items-center gap-2">
+        {connection.id === undefined ? (
+          <span className="text-[14px] font-medium">{connection.name}</span>
+        ) : (
+          <ConnectionLink
+            connection={connection.id}
+            className="text-[14px] font-medium after:absolute after:inset-0 after:rounded-xl"
+          >
+            {connection.name}
+          </ConnectionLink>
+        )}
+        {connection.id === undefined && (
+          <span className="rounded-md border border-border px-1.5 py-px text-[11px] text-muted-foreground">
+            Default
+          </span>
+        )}
+      </span>
+      <ul className="mt-4 grid gap-1.5">
+        {shown.map((item) => (
+          <li key={item.name} className="flex items-center gap-2.5 text-[13px]">
+            <AppIcon app={item.app} name={item.name} />
+            <span className="min-w-0 flex-1 truncate">{item.name}</span>
+          </li>
+        ))}
+        {connection.apps.length > shown.length && (
+          <li className="pl-11 text-[12px] text-muted-foreground">
+            and {connection.apps.length - shown.length} more
+          </li>
+        )}
+      </ul>
+      <div className="relative z-10 mt-auto pt-4">
+        <Button size="sm" variant="outline" onClick={() => onConnect(connection)}>
+          <HugeiconsIcon icon={ConnectIcon} strokeWidth={2} aria-hidden />
+          Connect
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+const choicesFor = (inventory: Inventory): ReadonlyMap<AppId, AppChoices> =>
+  new Map(
     inventory.apps.map((app) => [app.id, appChoices(app, inventory.links, inventory.accounts)]),
   );
 
-/** Show a stored connection with current names; removed apps and accounts stay visible as such. */
-const connectionDraft = (
+/** A stored connection as an editable draft, keeping removed apps and accounts visible. */
+const draftFrom = (
   connection: ConnectionView,
   choices: ReadonlyMap<AppId, AppChoices>,
 ): ConnectionDraft => ({
   id: connection.id,
   name: connection.name,
-  apps: connection.policy.apps.map((item) => {
+  apps: connection.policy.apps.map((item): ConnectionApp => {
     const choice = choices.get(item.app);
     return {
       id: item.app,
@@ -107,309 +361,538 @@ const connectionDraft = (
   }),
 });
 
-const newDraft = (): ConnectionDraft => ({
-  id: ConnectionId.make(crypto.randomUUID()),
-  name: "",
-  apps: [],
-});
-
 /**
- * Connections the current user owns. The default connection keeps every app; scoped
- * connections each issue their own MCP URL, and edits apply to connected agents immediately.
+ * One connection's page: its name, how to connect an agent, and which apps it reaches, edited in
+ * place. `new` creates one.
  */
-export function ScopedConnectionsPage<E, EL extends E, ES extends E, ER extends E>({
-  query,
-  connections,
-  save,
-  revoke,
-  Failure,
-  installation,
-  agents,
-  docs = publicDocsBaseUrl,
-  renderTools,
-}: ScopedConnectionBindings<EL, ES, ER> & {
-  readonly query: Query<Inventory, E>;
-  /** Renders every failure: inventory, connection reads, saves and revocation. */
-  readonly Failure: ComponentType<FailureProps<E>>;
-  readonly installation: ReactNode;
-  /** The agents connected through these URLs, when the host lists them. */
-  readonly agents?: ReactNode;
-  /** Documentation the setup prompt points agents to. */
-  readonly docs?: string;
-  readonly renderTools: (props: ConnectionToolPickerProps) => ReactNode;
-}) {
-  const [view, setView] = useState<View>({ kind: "list" });
-  const [revoking, setRevoking] = useState<ConnectionView>();
-  const submitRevoke = useAtomSet(revoke, { mode: "promiseExit" });
-  const revokeState = useAtomValue(revoke);
-  const back = () => setView({ kind: "list" });
-  const create = () => setView({ kind: "editor", draft: newDraft(), existing: false });
+export function ScopedConnectionPage<E, EL extends E, ES extends E, ER extends E>({
+  connectionId,
+  ...props
+}: ConnectionPageBindings<E, EL, ES, ER> &
+  ConnectionFormActions & {
+    readonly connectionId: string;
+  }) {
+  // Chosen once, so a retried create returns the same connection.
+  const [created] = useState(() => ConnectionId.make(randomUuid()));
   return (
     <PageFrame>
-      <div className="max-w-260">
-        {view.kind !== "list" && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="mb-5 -ml-2 text-muted-foreground"
-            onClick={back}
-          >
-            <HugeiconsIcon icon={ArrowLeft02Icon} size={15} />
-            Connections
-          </Button>
-        )}
-        {view.kind === "list" && (
-          <div className="max-w-190">
-            <PageHeader
-              title="Connect your agent"
-              description="Works with Claude Code, Cursor, Codex, or any MCP client."
-            />
-            <section
-              aria-label="Agent setup"
-              className="mt-2 rounded-xl border bg-muted/20 px-6 pt-5 pb-6 shadow-xs"
-            >
-              <div className="mb-4 flex flex-wrap items-center gap-2">
-                <h2 className="text-sm font-medium">Executor MCP server</h2>
-                <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                  Every app you can use
-                </span>
-              </div>
-              {installation}
-            </section>
-            <QueryView<readonly ConnectionView[], E>
-              query={connections}
-              Failure={Failure}
-              pending={<ConnectionListSkeleton />}
-            >
-              {(items) =>
-                items.length === 0 ? (
-                  <p className="mt-8 text-[13px] text-muted-foreground">
-                    Want an agent limited to a few apps or tools?{" "}
-                    <button
-                      type="button"
-                      onClick={create}
-                      className="text-foreground underline decoration-muted-foreground/50 underline-offset-4 hover:decoration-foreground"
-                    >
-                      Create a scoped connection
-                    </button>
-                  </p>
-                ) : (
-                  <section aria-label="Scoped connections" className="mt-10">
-                    <div className="mb-2 flex items-center justify-between gap-3">
-                      <h2 className="text-xs font-medium text-muted-foreground">
-                        Scoped connections
-                      </h2>
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        className="text-muted-foreground"
-                        onClick={create}
-                      >
-                        <HugeiconsIcon icon={Add01Icon} size={13} />
-                        New scoped connection
-                      </Button>
-                    </div>
-                    <ConnectionList
-                      items={items}
-                      query={query}
-                      onOpen={(connection) => setView({ kind: "detail", connection })}
-                    />
-                  </section>
-                )
-              }
-            </QueryView>
-            {agents}
-          </div>
-        )}
-        {view.kind === "editor" && (
-          <>
-            <PageHeader
-              title={view.existing ? "Edit connection" : "New connection"}
-              description="Turn on the apps this agent needs. Everything else stays off. Approval rules come from each app’s code."
-            />
-            <QueryView query={query} Failure={Failure}>
-              {(inventory) => (
-                <ConnectionEditor
-                  key={view.draft.id}
-                  initial={view.draft}
-                  existing={view.existing}
-                  inventory={inventory}
-                  renderTools={renderTools}
-                  save={save}
-                  Failure={Failure}
-                  onCancel={back}
-                  onSaved={(saved) => setView({ kind: "detail", connection: saved.id })}
-                />
-              )}
-            </QueryView>
-          </>
-        )}
-        {view.kind === "detail" && (
-          <QueryView<readonly ConnectionView[], E> query={connections} Failure={Failure}>
-            {(items) => {
-              const connection = items.find((item) => item.id === view.connection);
-              if (connection === undefined)
-                return (
-                  <PageHeader
-                    title="Connection unavailable"
-                    description="This connection was revoked or no longer exists."
-                  />
-                );
-              return (
-                <QueryView query={query} Failure={Failure}>
-                  {(inventory) => {
-                    const draft = connectionDraft(connection, inventoryChoices(inventory));
-                    return (
-                      <>
-                        <PageHeader
-                          title={connection.name}
-                          description={`${plural(connection.policy.apps.length, "app")}. Every other app is excluded. Approval rules come from each app’s code.`}
-                        >
-                          <Button
-                            variant="outline"
-                            onClick={() => setView({ kind: "editor", draft, existing: true })}
-                          >
-                            Edit access
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            className="text-destructive"
-                            onClick={() => setRevoking(connection)}
-                          >
-                            Revoke
-                          </Button>
-                        </PageHeader>
-                        <ConnectionAccessList apps={draft.apps} inventory={inventory} />
-                        <section className="mt-8 max-w-190">
-                          <h2 className="mb-3 text-sm font-medium">Connect your agent</h2>
-                          <McpInstallInstructions
-                            endpoint={connection.url}
-                            docs={docs}
-                            next="show me which apps and tools this connection can use"
-                          />
-                        </section>
-                      </>
-                    );
-                  }}
-                </QueryView>
-              );
-            }}
-          </QueryView>
-        )}
-      </div>
-      <Dialog
-        open={revoking !== undefined}
-        onOpenChange={(open) => {
-          if (!open && !revokeState.waiting) setRevoking(undefined);
-        }}
+      <ConnectionReads
+        query={props.query}
+        connections={props.connections}
+        Failure={props.Failure}
+        pending={<LoadingRows count={5} />}
       >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Revoke {revoking?.name}?</DialogTitle>
-            <DialogDescription>
-              Agents using this connection lose access immediately. Its URL stops working.
-            </DialogDescription>
-          </DialogHeader>
-          {AsyncResult.isFailure(revokeState) && <Failure cause={revokeState.cause} />}
-          <DialogFooter>
-            <Button
-              variant="outline"
-              disabled={revokeState.waiting}
-              onClick={() => setRevoking(undefined)}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="destructive"
-              loading={revokeState.waiting}
-              disabled={revokeState.waiting}
-              onClick={async () => {
-                if (revoking === undefined) return;
-                const result = await submitRevoke(revoking.id);
-                if (Exit.isSuccess(result)) {
-                  setRevoking(undefined);
-                  back();
-                }
-              }}
-            >
-              Revoke connection
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+        {(inventory, connections) => {
+          const choices = choicesFor(inventory);
+          if (connectionId === "new")
+            return (
+              <ConnectionForm
+                {...props}
+                key="new"
+                choices={choices}
+                accounts={inventory.accounts}
+                stored={undefined}
+                initial={{ id: created, name: "", apps: [] }}
+              />
+            );
+          const stored = connections.find((item) => item.id === connectionId);
+          if (stored === undefined)
+            return (
+              <>
+                <BackLink ConnectionLink={props.ConnectionLink} />
+                <h1 className="text-[22px] font-semibold tracking-[-0.035em]">
+                  Connection unavailable
+                </h1>
+                <p className="mt-1 text-[13px] text-muted-foreground">
+                  It was revoked or no longer exists.
+                </p>
+              </>
+            );
+          return (
+            <ConnectionForm
+              {...props}
+              key={`${stored.id}:${stored.name}:${JSON.stringify(stored.policy)}`}
+              choices={choices}
+              accounts={inventory.accounts}
+              stored={stored}
+              initial={draftFrom(stored, choices)}
+            />
+          );
+        }}
+      </ConnectionReads>
     </PageFrame>
   );
 }
 
-/** Shares the scoped list's heading and row rhythm so loading does not reflow the page. */
-function ConnectionListSkeleton() {
+/** Where the host goes after a write, and how an app without an account gets one. */
+interface ConnectionFormActions {
+  readonly onCreated: (connection: ConnectionId) => void;
+  readonly onRevoked: () => void;
+  readonly renderTools: (props: ConnectionToolPickerProps) => ReactNode;
+  readonly renderConnectAccount?: (app: App) => ReactNode;
+}
+
+function BackLink({
+  ConnectionLink,
+}: {
+  readonly ConnectionLink: ComponentType<ConnectionLinkProps>;
+}) {
   return (
-    <section role="status" aria-label="Loading scoped connections" className="mt-10">
-      <div aria-hidden className="mb-2 flex h-6 items-center">
-        <Skeleton className="h-3 w-28" />
-      </div>
-      <div aria-hidden className="divide-y border-y">
-        {["w-36", "w-24"].map((width) => (
-          <div key={width} className="flex items-center gap-4 px-1 py-3">
-            <div className="min-w-0 flex-1 space-y-2 py-px">
-              <Skeleton className={`h-3 ${width}`} />
-              <Skeleton className="h-2.5 w-48 max-w-[60%]" />
-            </div>
-            <Skeleton className="h-2.5 w-10" />
+    <Button variant="ghost" size="sm" className="mb-5 -ml-2 text-muted-foreground" asChild>
+      <ConnectionLink>
+        <HugeiconsIcon icon={ArrowLeft02Icon} size={15} />
+        Connections
+      </ConnectionLink>
+    </Button>
+  );
+}
+
+function ConnectionForm<E, EL extends E, ES extends E, ER extends E>({
+  choices,
+  accounts,
+  stored,
+  initial,
+  save,
+  revoke,
+  Failure,
+  ConnectionLink,
+  renderInstallation,
+  renderTools,
+  renderConnectAccount,
+  onCreated,
+  onRevoked,
+}: ConnectionPageBindings<E, EL, ES, ER> &
+  ConnectionFormActions & {
+    readonly choices: ReadonlyMap<AppId, AppChoices>;
+    readonly accounts: Inventory["accounts"];
+    /** Undefined while creating. */
+    readonly stored: ConnectionView | undefined;
+    readonly initial: ConnectionDraft;
+  }) {
+  const submit = useAtomSet(save, { mode: "promiseExit" });
+  const saving = useAtomValue(save);
+  const [draft, setDraft] = useState(initial);
+  const [expanded, setExpanded] = useState<AppId>();
+  const [connecting, setConnecting] = useState(false);
+  const [revoking, setRevoking] = useState(false);
+  const [copy, setCopy] = useState<"idle" | "copied" | "failed">("idle");
+  const [search, setSearch] = useState("");
+  const [needsSetupOnly, setNeedsSetupOnly] = useState(false);
+  const query = useDeferredValue(search.trim().toLowerCase());
+  const nameId = useId();
+  // Included apps stay on top in a fixed order so rows never jump while you toggle them.
+  const [pinned] = useState(() => new Set(initial.apps.map((app) => app.id)));
+  const ordered = useMemo(
+    () =>
+      [...choices.values()].toSorted(
+        (a, b) =>
+          Number(pinned.has(b.app.id)) - Number(pinned.has(a.app.id)) ||
+          a.app.name.localeCompare(b.app.name),
+      ),
+    [choices, pinned],
+  );
+  const selections = new Map(draft.apps.map((app) => [app.id, app]));
+  const unavailable = draft.apps.filter((app) => !choices.has(app.id));
+  const attention = new Set(
+    draft.apps.flatMap((selection) => {
+      const choice = choices.get(selection.id);
+      return choice !== undefined && selectionIssue(choice, selection) !== undefined
+        ? [selection.id]
+        : [];
+    }),
+  );
+  const blocked = attention.size + unavailable.length;
+  const visible = ordered.filter(
+    (choice) =>
+      (!needsSetupOnly || attention.has(choice.app.id)) &&
+      (query === "" || choice.app.name.toLowerCase().includes(query)),
+  );
+  const included = visible.filter((choice) => pinned.has(choice.app.id));
+  const others = visible.filter((choice) => !pinned.has(choice.app.id));
+  const { count, sentinel } = useIncrementalList(others.length, `${query}:${needsSetupOnly}`);
+  const addable = visible.filter((choice) => !selections.has(choice.app.id));
+  const unassigned = draft.apps.filter(
+    (app) => app.targets.length === 0 && (choices.get(app.id)?.options.length ?? 0) > 0,
+  );
+  const input = connectionInput(draft);
+  const creating = stored === undefined;
+  const dirty = creating || JSON.stringify(input) !== JSON.stringify(connectionInput(initial));
+  const valid = input !== undefined && draft.apps.length > 0 && blocked === 0;
+  const setSelection = (id: AppId, next: ConnectionApp | undefined) =>
+    setDraft((previous) => ({
+      ...previous,
+      apps:
+        next === undefined
+          ? previous.apps.filter((app) => app.id !== id)
+          : previous.apps.some((app) => app.id === id)
+            ? previous.apps.map((app) => (app.id === id ? next : app))
+            : [...previous.apps, next],
+    }));
+  const renderRow = (choice: AppChoices) => (
+    <ConnectionAppRow
+      key={choice.app.id}
+      choices={choice}
+      selection={selections.get(choice.app.id)}
+      expanded={expanded === choice.app.id}
+      onExpandedChange={(open) => setExpanded(open ? choice.app.id : undefined)}
+      onChange={(next) => setSelection(choice.app.id, next)}
+      {...(renderConnectAccount === undefined ? {} : { renderConnectAccount })}
+      renderTools={renderTools}
+    />
+  );
+  return (
+    <>
+      <form
+        className="max-w-220"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          if (!valid || saving.waiting) return;
+          const saved = await submit({ existing: !creating, input });
+          if (Exit.isSuccess(saved) && creating) onCreated(saved.value.id);
+        }}
+      >
+        <BackLink ConnectionLink={ConnectionLink} />
+        <header className="flex items-start justify-between gap-4 max-[600px]:flex-col">
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-[22px] font-semibold tracking-[-0.035em]">
+              {stored?.name ?? "New connection"}
+            </h1>
+            <p className="mt-1 text-[13px] text-muted-foreground">
+              {creating
+                ? "Turn on the apps this agent needs. It can't see anything else."
+                : "Agents using this connection see only the apps turned on below. Changes apply right away."}
+            </p>
           </div>
-        ))}
+          {stored !== undefined && (
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" onClick={() => setConnecting(true)}>
+                <HugeiconsIcon icon={ConnectIcon} strokeWidth={2} aria-hidden />
+                Connect
+              </Button>
+              <DropdownMenu onOpenChange={(open) => !open && setCopy("idle")}>
+                <DropdownMenuTrigger asChild>
+                  <Button type="button" variant="outline" size="icon" aria-label="More actions">
+                    <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="end"
+                  sideOffset={6}
+                  collisionPadding={16}
+                  className="w-52 p-1.5"
+                >
+                  <DropdownMenuItem
+                    className="gap-2.5 py-2"
+                    onSelect={(event) => {
+                      event.preventDefault();
+                      void copyText(stored.url).then(
+                        () => setCopy("copied"),
+                        () => setCopy("failed"),
+                      );
+                    }}
+                  >
+                    <HugeiconsIcon
+                      icon={copy === "copied" ? Tick02Icon : Copy01Icon}
+                      strokeWidth={2}
+                    />
+                    {copy === "copied"
+                      ? "Copied"
+                      : copy === "failed"
+                        ? "Copy failed"
+                        : "Copy MCP URL"}
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant="destructive"
+                    className="gap-2.5 py-2"
+                    onSelect={() => setRevoking(true)}
+                  >
+                    <HugeiconsIcon icon={Delete02Icon} strokeWidth={2} />
+                    Revoke connection
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+          )}
+        </header>
+
+        <div className="mt-6 max-w-md space-y-2">
+          <Label htmlFor={nameId}>Name</Label>
+          <Input
+            id={nameId}
+            maxLength={80}
+            // Unnamed, it is named for its apps; the placeholder shows that name.
+            placeholder={defaultConnectionName(draft.apps)}
+            value={draft.name}
+            onChange={(event) =>
+              setDraft((previous) => ({ ...previous, name: event.target.value }))
+            }
+          />
+        </div>
+
+        {unavailable.length > 0 && (
+          <div className="mt-6 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 px-4 py-3 text-[13px]">
+            <span>
+              {plural(unavailable.length, "app")} in this connection{" "}
+              {unavailable.length === 1 ? "no longer exists" : "no longer exist"}:{" "}
+              {unavailable.map((app) => app.name).join(", ")}
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() =>
+                setDraft((previous) => ({
+                  ...previous,
+                  apps: previous.apps.filter((app) => choices.has(app.id)),
+                }))
+              }
+            >
+              Remove
+            </Button>
+          </div>
+        )}
+
+        <div className="mt-8 flex flex-wrap items-center gap-2">
+          <SearchInput
+            label="Search apps"
+            placeholder={`Search ${plural(choices.size, "app")}…`}
+            value={search}
+            onChange={setSearch}
+          />
+          {query !== "" && addable.length > 1 && (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() =>
+                setDraft((previous) => ({
+                  ...previous,
+                  apps: [...previous.apps, ...addable.map(initialSelection)],
+                }))
+              }
+            >
+              Turn on {plural(addable.length, "match", "matches")}
+            </Button>
+          )}
+          {unassigned.length > 0 && (
+            <AssignAccount
+              apps={unassigned}
+              byId={choices}
+              accounts={accounts}
+              onAssign={(account) =>
+                setDraft((previous) => ({
+                  ...previous,
+                  apps: previous.apps.map((app) => {
+                    const choice = choices.get(app.id);
+                    const option =
+                      choice === undefined ? undefined : accountOption(choice, account);
+                    return app.targets.length === 0 && option !== undefined
+                      ? { ...app, targets: [option.target] }
+                      : app;
+                  }),
+                }))
+              }
+            />
+          )}
+        </div>
+        {needsSetupOnly && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Showing apps that need setup.{" "}
+            <button
+              type="button"
+              className="text-foreground underline underline-offset-2"
+              onClick={() => setNeedsSetupOnly(false)}
+            >
+              Show all
+            </button>
+          </p>
+        )}
+
+        {included.length > 0 && (
+          <AppSection
+            title="Can use"
+            count={draft.apps.filter((app) => pinned.has(app.id)).length}
+            hint={undefined}
+          >
+            {included.map(renderRow)}
+          </AppSection>
+        )}
+        {others.length > 0 && (
+          <AppSection
+            title={pinned.size > 0 ? "Other apps" : "Apps"}
+            count={undefined}
+            hint={
+              pinned.size > 0 && !others.some((choice) => selections.has(choice.app.id))
+                ? "Turn one on to give this agent access."
+                : undefined
+            }
+          >
+            {others.slice(0, count).map(renderRow)}
+          </AppSection>
+        )}
+        {sentinel}
+        {visible.length === 0 && (
+          <p className="mt-8 rounded-lg border px-4 py-10 text-center text-[13px] text-muted-foreground">
+            {query !== "" ? "No apps match your search." : "Every app that's on is ready."}
+          </p>
+        )}
+
+        <div
+          className={cn(
+            "sticky bottom-0 z-10 mt-6 flex flex-wrap items-center justify-between gap-3 border-t bg-background py-4",
+            !dirty && "invisible",
+          )}
+        >
+          <p className="text-xs text-muted-foreground">
+            {draft.apps.length === 0 ? (
+              "No apps turned on"
+            ) : blocked > 0 ? (
+              <button
+                type="button"
+                className="text-amber-600 underline underline-offset-2 dark:text-amber-400"
+                onClick={() => {
+                  setSearch("");
+                  setNeedsSetupOnly(true);
+                }}
+              >
+                {plural(blocked, "app")} {blocked === 1 ? "needs" : "need"} setup before saving
+              </button>
+            ) : creating ? (
+              `${plural(draft.apps.length, "app")} turned on`
+            ) : (
+              "Unsaved changes"
+            )}
+          </p>
+          <div className="flex gap-2">
+            {creating ? (
+              <Button type="button" variant="outline" asChild>
+                <ConnectionLink>Cancel</ConnectionLink>
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                variant="outline"
+                disabled={saving.waiting}
+                onClick={() => setDraft(initial)}
+              >
+                Discard
+              </Button>
+            )}
+            <Button type="submit" disabled={!valid || saving.waiting} loading={saving.waiting}>
+              {creating ? "Create connection" : "Save changes"}
+            </Button>
+          </div>
+          {AsyncResult.isFailure(saving) && (
+            <div className="w-full">
+              <Failure cause={saving.cause} />
+            </div>
+          )}
+        </div>
+      </form>
+      {stored !== undefined && (
+        <>
+          <ConnectDialog
+            target={
+              connecting
+                ? {
+                    name: stored.name,
+                    url: stored.url,
+                    apps: initial.apps.map((app) => app.name),
+                  }
+                : undefined
+            }
+            renderInstallation={renderInstallation}
+            onClose={() => setConnecting(false)}
+          />
+          <RevokeDialog
+            connection={revoking ? stored : undefined}
+            revoke={revoke}
+            Failure={Failure}
+            onClose={() => setRevoking(false)}
+            onRevoked={onRevoked}
+          />
+        </>
+      )}
+    </>
+  );
+}
+
+function AppSection({
+  title,
+  count,
+  hint,
+  children,
+}: {
+  readonly title: string;
+  readonly count: number | undefined;
+  readonly hint: string | undefined;
+  readonly children: ReactNode;
+}) {
+  return (
+    <section aria-label={title} className="mt-8">
+      <div className="mb-2 flex items-baseline gap-2">
+        <h2 className="text-[13px] font-medium">{title}</h2>
+        {count !== undefined && (
+          <span className="text-xs tabular-nums text-muted-foreground">{count}</span>
+        )}
+        {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
       </div>
-      <span className="sr-only">Loading scoped connections…</span>
+      <div className="divide-y overflow-hidden rounded-lg border">{children}</div>
     </section>
   );
 }
 
-/** Saved connections; app names come from the current inventory once it loads. */
-function ConnectionList<E>({
-  items,
-  query,
-  onOpen,
+function RevokeDialog<E, ER extends E>({
+  connection,
+  revoke,
+  Failure,
+  onClose,
+  onRevoked,
 }: {
-  readonly items: readonly ConnectionView[];
-  readonly query: Query<Inventory, E>;
-  readonly onOpen: (connection: ConnectionId) => void;
+  readonly connection: ConnectionView | undefined;
+  readonly revoke: ScopedConnectionBindings<never, never, ER>["revoke"];
+  readonly Failure: ComponentType<FailureProps<E>>;
+  readonly onClose: () => void;
+  readonly onRevoked: () => void;
 }) {
-  const inventory = useAtomValue(query);
-  const names = new Map<AppId, string>(
-    AsyncResult.isSuccess(inventory) ? inventory.value.apps.map((app) => [app.id, app.name]) : [],
-  );
+  const submit = useAtomSet(revoke, { mode: "promiseExit" });
+  const state = useAtomValue(revoke);
   return (
-    <div className="divide-y border-y">
-      {items.map((item) => {
-        const apps = item.policy.apps.map((app) => names.get(app.app) ?? "Unavailable app");
-        return (
-          <button
-            key={item.id}
-            type="button"
-            onClick={() => onOpen(item.id)}
-            className="flex w-full items-center gap-4 px-1 py-3 text-left transition-colors hover:bg-muted/40"
+    <Dialog
+      open={connection !== undefined}
+      onOpenChange={(open) => !open && !state.waiting && onClose()}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Revoke {connection?.name}?</DialogTitle>
+          <DialogDescription>
+            Agents using this connection lose access immediately. Its URL stops working.
+          </DialogDescription>
+        </DialogHeader>
+        {AsyncResult.isFailure(state) && <Failure cause={state.cause} />}
+        <DialogFooter>
+          <Button variant="outline" disabled={state.waiting} onClick={onClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="destructive"
+            loading={state.waiting}
+            disabled={state.waiting}
+            onClick={async () => {
+              if (connection === undefined) return;
+              const result = await submit(connection.id);
+              if (Exit.isSuccess(result)) onRevoked();
+            }}
           >
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-[13px] font-medium">{item.name}</span>
-              <span className="mt-0.5 block truncate text-xs text-muted-foreground">
-                {AsyncResult.isSuccess(inventory) && apps.slice(0, 4).join(", ")}
-                {AsyncResult.isSuccess(inventory) &&
-                  apps.length > 4 &&
-                  ` and ${plural(apps.length - 4, "more", "more")}`}
-              </span>
-            </span>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {plural(item.policy.apps.length, "app")}
-            </span>
-            <HugeiconsIcon icon={ArrowRight02Icon} size={15} className="text-muted-foreground" />
-          </button>
-        );
-      })}
-    </div>
+            Revoke connection
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
-export function SearchInput({
+function SearchInput({
   value,
   onChange,
   placeholder,
@@ -439,48 +922,8 @@ export function SearchInput({
   );
 }
 
-function Tabs<T extends string>({
-  value,
-  options,
-  onChange,
-  label,
-}: {
-  readonly value: T;
-  readonly options: readonly {
-    readonly value: T;
-    readonly label: string;
-    readonly count: number;
-  }[];
-  readonly onChange: (value: T) => void;
-  readonly label: string;
-}) {
-  return (
-    <div role="radiogroup" aria-label={label} className="flex shrink-0 rounded-md border p-0.5">
-      {options.map((option) => (
-        <button
-          key={option.value}
-          type="button"
-          role="radio"
-          aria-checked={value === option.value}
-          onClick={() => onChange(option.value)}
-          className={`rounded px-2.5 py-1 text-xs transition-colors ${
-            value === option.value
-              ? "bg-muted font-medium text-foreground"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-        >
-          {option.label}
-          <span className="ml-1.5 font-mono text-[10px] text-muted-foreground">
-            {option.count.toLocaleString("en-US")}
-          </span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
 /** Bulk-including apps leaves each waiting for an account; assign one account to all that accept it. */
-export function AssignAccount({
+function AssignAccount({
   apps,
   byId,
   accounts,
@@ -548,358 +991,5 @@ export function AssignAccount({
           ))}
       </PopoverContent>
     </Popover>
-  );
-}
-
-type Filter = "all" | "selected" | "attention";
-
-function ConnectionEditor<E, ES extends E>({
-  initial,
-  existing,
-  inventory,
-  renderTools,
-  save,
-  Failure,
-  onCancel,
-  onSaved,
-}: {
-  readonly initial: ConnectionDraft;
-  readonly existing: boolean;
-  readonly inventory: Inventory;
-  readonly renderTools: (props: ConnectionToolPickerProps) => ReactNode;
-  readonly save: ScopedConnectionBindings<never, ES, never>["save"];
-  readonly Failure: ComponentType<FailureProps<E>>;
-  readonly onCancel: () => void;
-  readonly onSaved: (connection: ConnectionView) => void;
-}) {
-  const submit = useAtomSet(save, { mode: "promiseExit" });
-  const saving = useAtomValue(save);
-  const [draft, setDraft] = useState(initial);
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<Filter>(initial.apps.length > 0 ? "selected" : "all");
-  const [expanded, setExpanded] = useState<AppId>();
-  const query = useDeferredValue(search.trim().toLowerCase());
-  const nameId = useId();
-  // Apps already in the connection come first; the order is fixed so rows never jump on toggle.
-  const [pinned] = useState(() => new Set(initial.apps.map((app) => app.id)));
-  const choices = useMemo(() => {
-    return inventory.apps
-      .map((app) => appChoices(app, inventory.links, inventory.accounts))
-      .toSorted(
-        (a, b) =>
-          Number(pinned.has(b.app.id)) - Number(pinned.has(a.app.id)) ||
-          a.app.name.localeCompare(b.app.name),
-      );
-  }, [inventory, pinned]);
-  const byId = useMemo(
-    () => new Map<AppId, AppChoices>(choices.map((choice) => [choice.app.id, choice])),
-    [choices],
-  );
-  const selections = new Map<AppId, ConnectionApp>(draft.apps.map((app) => [app.id, app]));
-  const unavailable = draft.apps.filter((app) => !byId.has(app.id));
-  const attention = new Set<AppId>(
-    draft.apps.flatMap((selection) => {
-      const choice = byId.get(selection.id);
-      return choice !== undefined && selectionIssue(choice, selection) !== undefined
-        ? [selection.id]
-        : [];
-    }),
-  );
-  const visible = choices.filter(
-    (choice) =>
-      (filter === "all" ||
-        (filter === "selected" && selections.has(choice.app.id)) ||
-        (filter === "attention" && attention.has(choice.app.id))) &&
-      (query === "" || choice.app.name.toLowerCase().includes(query)),
-  );
-  const addable = visible.filter((choice) => !selections.has(choice.app.id));
-  const unassigned = draft.apps.filter(
-    (app) => app.targets.length === 0 && (byId.get(app.id)?.options.length ?? 0) > 0,
-  );
-  const { count, sentinel } = useIncrementalList(visible.length, `${query}:${filter}`);
-  const setSelection = (id: AppId, next: ConnectionApp | undefined) =>
-    setDraft((previous) => ({
-      ...previous,
-      apps:
-        next === undefined
-          ? previous.apps.filter((app) => app.id !== id)
-          : previous.apps.some((app) => app.id === id)
-            ? previous.apps.map((app) => (app.id === id ? next : app))
-            : [...previous.apps, next],
-    }));
-  const accountCount = new Set(
-    draft.apps.flatMap((app) =>
-      app.targets.flatMap((target) => (target.kind === "app" ? [] : [connectionTargetKey(target)])),
-    ),
-  ).size;
-  const blocked = attention.size + unavailable.length;
-  const input = connectionInput(draft);
-  const valid = input !== undefined && draft.apps.length > 0 && blocked === 0;
-  return (
-    <form
-      onSubmit={async (event) => {
-        event.preventDefault();
-        if (!valid || saving.waiting) return;
-        const saved = await submit({ existing, input });
-        if (Exit.isSuccess(saved)) onSaved(saved.value);
-      }}
-    >
-      <div className="mt-6 max-w-md space-y-2">
-        <Label htmlFor={nameId}>Name</Label>
-        <Input
-          id={nameId}
-          // Unnamed, it is named for its apps; the placeholder shows that name.
-          placeholder={defaultConnectionName(draft.apps)}
-          maxLength={80}
-          value={draft.name}
-          onChange={(event) => setDraft((previous) => ({ ...previous, name: event.target.value }))}
-        />
-      </div>
-      {unavailable.length > 0 && (
-        <div className="mt-5 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 px-4 py-3 text-sm">
-          <span>
-            {plural(unavailable.length, "app")} in this connection{" "}
-            {unavailable.length === 1 ? "is" : "are"} no longer available:{" "}
-            {unavailable.map((app) => app.name).join(", ")}
-          </span>
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              setDraft((previous) => ({
-                ...previous,
-                apps: previous.apps.filter((app) => byId.has(app.id)),
-              }))
-            }
-          >
-            Remove
-          </Button>
-        </div>
-      )}
-      <section aria-label="Apps" className="mt-6 rounded-lg border">
-        <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 rounded-t-lg border-b bg-background px-4 py-3">
-          <SearchInput
-            label="Search apps"
-            placeholder={`Search ${plural(choices.length, "app")}…`}
-            value={search}
-            onChange={setSearch}
-          />
-          <Tabs
-            label="Filter apps"
-            value={filter}
-            onChange={setFilter}
-            options={[
-              { value: "all", label: "All", count: choices.length },
-              { value: "selected", label: "Included", count: draft.apps.length },
-              ...(attention.size > 0 || filter === "attention"
-                ? [{ value: "attention" as const, label: "Needs setup", count: attention.size }]
-                : []),
-            ]}
-          />
-          {query !== "" && addable.length > 1 && (
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() =>
-                setDraft((previous) => ({
-                  ...previous,
-                  apps: [...previous.apps, ...addable.map(initialSelection)],
-                }))
-              }
-            >
-              Include {plural(addable.length, "match", "matches")}
-            </Button>
-          )}
-          {unassigned.length > 0 && (
-            <AssignAccount
-              apps={unassigned}
-              byId={byId}
-              accounts={inventory.accounts}
-              onAssign={(account) =>
-                setDraft((previous) => ({
-                  ...previous,
-                  apps: previous.apps.map((app) => {
-                    const choices = byId.get(app.id);
-                    const option =
-                      choices === undefined ? undefined : accountOption(choices, account);
-                    return app.targets.length === 0 && option !== undefined
-                      ? { ...app, targets: [option.target] }
-                      : app;
-                  }),
-                }))
-              }
-            />
-          )}
-        </div>
-        <div className="divide-y">
-          {visible.slice(0, count).map((choice) => (
-            <ConnectionAppRow
-              key={choice.app.id}
-              choices={choice}
-              selection={selections.get(choice.app.id)}
-              expanded={expanded === choice.app.id}
-              onExpandedChange={(open) => setExpanded(open ? choice.app.id : undefined)}
-              onChange={(next) => setSelection(choice.app.id, next)}
-              renderTools={renderTools}
-            />
-          ))}
-        </div>
-        {sentinel}
-        {visible.length === 0 && (
-          <div className="px-4 py-10 text-center text-sm text-muted-foreground">
-            {query !== ""
-              ? "No apps match your search."
-              : filter === "selected"
-                ? "No apps included yet. Switch to All to turn some on."
-                : filter === "attention"
-                  ? "Every included app is ready."
-                  : "No apps are available."}
-          </div>
-        )}
-      </section>
-      <div className="sticky bottom-0 z-10 mt-4 flex flex-wrap items-center justify-between gap-3 border-t bg-background py-4">
-        <p className="text-xs text-muted-foreground">
-          {draft.apps.length === 0 ? (
-            "No apps included"
-          ) : (
-            <>
-              {plural(draft.apps.length, "app")}
-              {accountCount > 0 && ` · ${plural(accountCount, "account")}`}
-              {blocked > 0 && (
-                <>
-                  {" · "}
-                  <button
-                    type="button"
-                    className="text-amber-600 underline underline-offset-2 dark:text-amber-400"
-                    onClick={() => setFilter("attention")}
-                  >
-                    {plural(blocked, "app")} {blocked === 1 ? "needs" : "need"} setup
-                  </button>
-                </>
-              )}
-            </>
-          )}
-        </p>
-        <div className="flex gap-2">
-          <Button type="button" variant="outline" disabled={saving.waiting} onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button type="submit" disabled={!valid || saving.waiting} loading={saving.waiting}>
-            {existing ? "Save changes" : "Create connection"}
-          </Button>
-        </div>
-        {AsyncResult.isFailure(saving) && (
-          <div className="w-full">
-            <Failure cause={saving.cause} />
-          </div>
-        )}
-      </div>
-    </form>
-  );
-}
-
-/** Read-only view of a saved connection; long app lists and tool lists render in slices. */
-function ConnectionAccessList({
-  apps,
-  inventory,
-}: {
-  readonly apps: readonly ConnectionApp[];
-  readonly inventory: Inventory;
-}) {
-  const [search, setSearch] = useState("");
-  const [open, setOpen] = useState<AppId>();
-  const query = useDeferredValue(search.trim().toLowerCase());
-  const byId = useMemo(
-    () => new Map<AppId, App>(inventory.apps.map((app) => [app.id, app])),
-    [inventory],
-  );
-  const visible = apps
-    .filter((app) => query === "" || app.name.toLowerCase().includes(query))
-    .toSorted((a, b) => a.name.localeCompare(b.name));
-  const { count, sentinel } = useIncrementalList(visible.length, query);
-  return (
-    <section aria-label="App access" className="mt-6 rounded-lg border">
-      {apps.length > 8 && (
-        <div className="border-b px-4 py-3">
-          <SearchInput
-            label="Search included apps"
-            placeholder={`Search ${plural(apps.length, "included app")}…`}
-            value={search}
-            onChange={setSearch}
-          />
-        </div>
-      )}
-      <div className="divide-y">
-        {visible.slice(0, count).map((selection) => {
-          const app = byId.get(selection.id);
-          const names = selection.tools.kind === "selected" ? selection.tools.names : [];
-          return (
-            <div key={selection.id}>
-              <div className="flex min-h-14 flex-wrap items-center gap-x-3 gap-y-1 px-4 py-2">
-                <AppIcon app={app} name={selection.name} />
-                <span className="min-w-0 flex-1 basis-48">
-                  <span className="block truncate text-[13px] font-medium">{selection.name}</span>
-                  <span className="block truncate text-xs text-muted-foreground">
-                    {app === undefined
-                      ? "No longer available"
-                      : selection.targets.map(connectionTargetLabel).join(", ")}
-                  </span>
-                </span>
-                {selection.tools.kind === "selected" ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    className="text-xs"
-                    aria-expanded={open === selection.id}
-                    onClick={() => setOpen(open === selection.id ? undefined : selection.id)}
-                  >
-                    {connectionToolsLabel(selection.tools)}
-                    <HugeiconsIcon
-                      icon={ArrowDown01Icon}
-                      size={14}
-                      className={open === selection.id ? "rotate-180" : ""}
-                    />
-                  </Button>
-                ) : (
-                  <span className="px-3 text-xs text-muted-foreground">
-                    {connectionToolsLabel(selection.tools)}, including new ones
-                  </span>
-                )}
-                {declaresEvents(app) && (
-                  <span className="px-3 text-xs text-muted-foreground">
-                    {connectionEventsLabel(selection.events)}
-                  </span>
-                )}
-              </div>
-              {open === selection.id && <ToolNames names={names} />}
-            </div>
-          );
-        })}
-      </div>
-      {sentinel}
-      {visible.length === 0 && (
-        <p className="px-4 py-8 text-center text-sm text-muted-foreground">No apps match.</p>
-      )}
-    </section>
-  );
-}
-
-function ToolNames({ names }: { readonly names: readonly string[] }) {
-  const sorted = useMemo(() => names.toSorted(), [names]);
-  const { count, sentinel } = useIncrementalList(sorted.length, "", 200);
-  return (
-    <div className="mx-4 mb-3 max-h-60 overflow-y-auto rounded-md border bg-background p-3 sm:ml-12">
-      <div className="flex flex-wrap gap-1.5">
-        {sorted.slice(0, count).map((name) => (
-          <span key={name} className="rounded border bg-muted/30 px-2 py-0.5 font-mono text-[11px]">
-            {name}
-          </span>
-        ))}
-      </div>
-      {sentinel}
-    </div>
   );
 }

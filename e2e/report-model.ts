@@ -39,6 +39,8 @@ export const EvidenceEntry = Schema.Struct({
   target: Target,
   origin: Schema.optional(Schema.String),
   status: Schema.String,
+  /** When the case started, in milliseconds since the epoch; runs before it was kept have none. */
+  startedAt: Schema.optional(Schema.Number),
   duration: Schema.Number,
   errors: Schema.Array(Schema.String),
   annotations: Schema.Array(Schema.Struct({ type: Schema.String, description: Schema.String })),
@@ -51,6 +53,11 @@ export const EvidenceReport = Schema.Struct({
   runs: Schema.Array(RunMetadata),
   entries: EvidenceEntries,
   plan: Schema.Array(TestPlan),
+  /**
+   * Whether `runSuite` passed the run: every target produced evidence and its Vitest exited 0.
+   * Runs saved before it was recorded, and rendered reports, have none.
+   */
+  outcome: Schema.optional(Schema.Literals(["passed", "failed"])),
 }).check(
   Schema.makeFilter(
     (report) =>

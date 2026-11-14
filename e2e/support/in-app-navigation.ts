@@ -17,16 +17,20 @@ export const openInApp = (label: string, path: string) =>
   });
 
 /**
- * A dashboard page that reads no app, account or resource data. Hosted pages start from their
- * organization's Connect page; account pages name that organization in their `organization`
- * search parameter, because only dashboard routes are served as dashboard documents (Cloud serves
- * other paths as static assets). The local dashboard has no organizations and serves `/connect`.
+ * A dashboard page that reads none of the destination's data. Hosted pages start from their
+ * organization's Settings page, which reads no app, account or resource data, and Settings starts
+ * from Connections, which reads no members. Account pages name that organization in their
+ * `organization` search parameter, because only dashboard routes are served as dashboard documents
+ * (Cloud serves other paths as static assets). The local dashboard has no organizations, and every
+ * local page reads the app inventory for its sidebar, so it starts from Connections.
  */
 const neutralPage = (destination: URL) => {
   const organization =
     /^\/org\/([^/?#]+)/.exec(destination.pathname)?.[1] ??
     destination.searchParams.get("organization");
-  return organization === null ? "/connect" : `/org/${organization}/connect`;
+  if (organization === null) return "/connections";
+  const settings = `/org/${organization}/organization`;
+  return destination.pathname === settings ? `/org/${organization}/connect` : settings;
 };
 
 /**

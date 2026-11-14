@@ -1,10 +1,11 @@
 import {
   Clock,
-  Deferred,
+  Console,
   Effect,
   FileSystem,
   Path,
   Redacted,
+  Ref,
   Schedule,
   Schema,
   Stream,
@@ -14,33 +15,31 @@ import { HttpClient } from "effect/http";
 import { startAnalyticsCollector } from "./analytics-collector.ts";
 import { serveShardedOtlpCollector } from "./otlp-collector.ts";
 import { randomBytes } from "node:crypto";
-import { createEmulatorFixture, EmulatorFixture, emulatorRequest } from "./emulators.ts";
 import {
-  createV1Database,
-  startCloudPostgres,
-  v1DatabaseReader,
-  v1DatabaseWriter,
-} from "./cloud-postgres.ts";
+  createEmulatorFixture,
+  EmulatorFixture,
+  emulatorRequest,
+  EmulatorRetryRecords,
+} from "./emulators.ts";
+import { startCloudPostgres } from "./cloud-postgres.ts";
+import { runtimeCrashesFile, trackRuntimeCrash, type RuntimeCrash } from "./runtime-crashes.ts";
 import { v1McpForwardFile } from "./v1-mcp-forward.ts";
 import { v1SessionHandoffFile } from "./v1-session-handoff.ts";
-import { isAlchemyDevFailure, outputLines } from "./alchemy-dev-output.ts";
+import {
+  alchemyResourceFailure,
+  followAlchemyDev,
+  outputLines,
+  unboundPort,
+} from "./alchemy-dev-output.ts";
 import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
 import { roleHost } from "./role-hosts.ts";
 import { freePort } from "./ports.ts";
-import {
-  OperatorOAuthFixture,
-  operatorOAuthFile,
-  v1FirstPartyClients,
-  v1FirstPartyCredentials,
-} from "./operator-oauth.ts";
-
-/** v1's client ID for the test client, which is not v2's: its v1 grants cannot move. */
-export const v1SyntheticCloudMailClientId = "synthetic-v1-cloud-mail-client";
+import { OperatorOAuthFixture, operatorOAuthFile } from "./operator-oauth.ts";
+import { reveal, secret } from "./failure-text.ts";
 
 /**
- * The operator settings for `fixture`: one test client, whose tokens go only to its own host, the
- * clients v1's first-party connections move to (`v1FirstPartyClients`), and their credentials.
- * Emulated Cloud adds the definitions to its reviewed clients.
+ * The operator settings for `fixture`: one test client, whose tokens go only to its own host, and
+ * its credentials. Emulated Cloud adds the definition to its reviewed clients.
  */
 const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
   const origin = `http://127.0.0.1:${fixture.port}`;
@@ -58,30 +57,9 @@ const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
         defaultScopes: ["mail.read"],
         placement: { hosts: [`127.0.0.1:${fixture.port}`] },
       },
-      ...v1FirstPartyClients(`http://127.0.0.1:${fixture.v1Port}`),
     ]),
     EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_ID: fixture.clientId,
     EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_SECRET: fixture.clientSecret,
-    // v1's client IDs: the same as v2's for the clients v1's connections move to, and another for
-    // the test client, so a v1 grant of it is a client the import must not move it to.
-    V1_FIRST_PARTY_CLIENT_IDS: JSON.stringify({
-      ...Object.fromEntries(
-        Object.entries(v1FirstPartyCredentials).map(([id, credentials]) => [
-          id,
-          credentials.clientId,
-        ]),
-      ),
-      "synthetic-cloud-mail": v1SyntheticCloudMailClientId,
-    }),
-    ...Object.fromEntries(
-      Object.entries(v1FirstPartyCredentials).flatMap(([id, credentials]) => {
-        const prefix = `EXECUTOR_OAUTH_${id.toUpperCase().replaceAll("-", "_")}`;
-        return [
-          [`${prefix}_CLIENT_ID`, credentials.clientId],
-          [`${prefix}_CLIENT_SECRET`, credentials.secret],
-        ];
-      }),
-    ),
   };
 };
 
@@ -100,9 +78,10 @@ class CloudStartFailed extends Schema.TaggedError<CloudStartFailed>()("CloudStar
 const readinessDeadline = "10 minutes";
 
 /**
- * Motels behind this Cloud's collector. Six scenario workers provisioning organizations at once
- * export about 1,500 spans a second, as much as one Motel stores; four keep up with several times
- * that and still leave a 16-vCPU runner most of its cores.
+ * Collectors behind this Cloud's collector router. Six scenario workers provisioning organizations
+ * at once export about 1,500 spans a second, as much as one Motel stored; four Motels kept up with
+ * several times that. The Rust collector stores more than one Motel did; the count is unchanged
+ * until one has been measured in this job (`serveShardedOtlpCollector`).
  */
 const collectorShards = 4;
 
@@ -157,8 +136,10 @@ export const startCloudEnvironment = (input: {
     const container = `executor-${stage}`;
     const fixture =
       input.signInThrough === undefined
-        ? yield* createEmulatorFixture(input.origin)
-        : Redacted.make(
+        ? yield* createEmulatorFixture(input.origin).pipe(
+            Effect.provideService(EmulatorRetryRecords, { directory }),
+          )
+        : secret(
             EmulatorFixture.make({
               version: 4,
               origin: input.origin,
@@ -167,17 +148,21 @@ export const startCloudEnvironment = (input: {
           );
     const oauthProxy = {
       productionUrl: input.signInThrough?.productionUrl ?? roleHost(input.origin, "edge"),
-      secret: input.signInThrough?.secret ?? Redacted.make(randomBytes(32).toString("hex")),
+      secret: input.signInThrough?.secret ?? secret(randomBytes(32).toString("hex")),
     };
     yield* Effect.addFinalizer(() =>
       Effect.forEach(
-        Object.values(Redacted.value(fixture).services),
-        (service) => emulatorRequest(service.baseUrl, "/_emulate/reset", {}),
-        { concurrency: 5 },
-      ).pipe(Effect.asVoid, Effect.orDie),
+        Object.values(reveal(fixture).services),
+        (service) =>
+          emulatorRequest(service.baseUrl, "/_emulate/reset", {}).pipe(
+            Effect.catch(() => Console.error("Could not reset one external test emulator.")),
+            Effect.provideService(EmulatorRetryRecords, { directory }),
+          ),
+        { concurrency: 5, discard: true },
+      ),
     );
     const emulators = `${directory}/emulators.json`;
-    yield* fs.writeFileString(emulators, JSON.stringify(Redacted.value(fixture)), { mode: 0o600 });
+    yield* fs.writeFileString(emulators, JSON.stringify(reveal(fixture)), { mode: 0o600 });
     yield* Effect.addFinalizer(() => fs.remove(emulators).pipe(Effect.orDie));
     const analyticsPort = yield* startAnalyticsCollector(directory);
     // Every scenario of this Cloud exports to these collectors; see `serveShardedOtlpCollector`.
@@ -187,7 +172,6 @@ export const startCloudEnvironment = (input: {
       port: yield* freePort,
       clientId: "first-party-client",
       clientSecret: randomBytes(16).toString("hex"),
-      v1Port: yield* freePort,
     });
     const operatorOAuthPath = `${directory}/${operatorOAuthFile}`;
     yield* fs.writeFileString(operatorOAuthPath, JSON.stringify(operatorOAuth), { mode: 0o600 });
@@ -201,25 +185,6 @@ export const startCloudEnvironment = (input: {
       { mode: 0o600 },
     );
     yield* Effect.addFinalizer(() => fs.remove(ssoDatabase).pipe(Effect.orDie));
-    // The emulated v1 database: the Worker reads it as v1's read-only login, scenarios write it.
-    const v1ReaderPassword = randomBytes(24).toString("hex");
-    const v1WriterPassword = randomBytes(24).toString("hex");
-    const v1Database = `${directory}/v1-database.json`;
-    yield* fs.writeFileString(
-      v1Database,
-      JSON.stringify({
-        database: `postgresql://executor:${databasePassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
-      }),
-      { mode: 0o600 },
-    );
-    yield* Effect.addFinalizer(() => fs.remove(v1Database).pipe(Effect.orDie));
-    // The v1 import's operator routes: scenarios start runs with this token, as an operator does.
-    const v1ImportOperatorToken = randomBytes(24).toString("hex");
-    const v1ImportOperator = `${directory}/v1-import-operator.json`;
-    yield* fs.writeFileString(v1ImportOperator, JSON.stringify({ token: v1ImportOperatorToken }), {
-      mode: 0o600,
-    });
-    yield* Effect.addFinalizer(() => fs.remove(v1ImportOperator).pipe(Effect.orDie));
     // The secret the synthetic v1 signs forwarded MCP bearers with; scenarios read it from here.
     const v1ForwardSecret = randomBytes(32).toString("hex");
     const v1Forward = `${directory}/${v1McpForwardFile}`;
@@ -280,20 +245,14 @@ export const startCloudEnvironment = (input: {
       CLOUD_DEV_DATABASE_PORT: String(input.databasePort),
       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
       CLOUD_DEV_EXTERNAL_DATABASE: "true",
-      EXECUTOR_EMULATORS: JSON.stringify(Redacted.value(fixture).services),
-      // Every account this run creates is new to the v1 check; scenarios backdate one to skip it.
-      V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
-      V1_DATABASE_URL: `postgresql://${v1DatabaseReader}:${v1ReaderPassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
-      V1_IMPORT_OPERATOR_TOKEN: v1ImportOperatorToken,
-      // Imports freeze and cut over each organization in the emulated v1 through this login.
-      V1_IMPORT_WRITER_DATABASE_URL: `postgresql://${v1DatabaseWriter}:${v1WriterPassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
+      EXECUTOR_EMULATORS: JSON.stringify(reveal(fixture).services),
       V1_MCP_FORWARD_SECRET: v1ForwardSecret,
       V1_SESSION_HANDOFF_SECRET: v1HandoffSecret,
       // Serve the role hosts as production does, at `app.`, `mcp.` and `api.` of the origin's host.
       EXECUTOR_ROLE_HOSTS_DOMAIN: new URL(input.origin).hostname,
       CLOUD_BROWSER_ORIGIN: input.browserOrigin,
       EXECUTOR_EMULATED_OAUTH_PROXY_PRODUCTION_URL: oauthProxy.productionUrl,
-      EXECUTOR_EMULATED_OAUTH_PROXY_SECRET: Redacted.value(oauthProxy.secret),
+      EXECUTOR_EMULATED_OAUTH_PROXY_SECRET: reveal(oauthProxy.secret),
       ...operatorOAuthClients(operatorOAuth),
     };
     yield* fs.makeDirectory(env.ALCHEMY_HOME, { recursive: true, mode: 0o700 });
@@ -351,6 +310,30 @@ export const startCloudEnvironment = (input: {
         2,
       ),
     );
+    // Every socket on `port`, with its process when this user owns it, and the range the OS hands
+    // out ephemeral ports from, which `freePort` assumes excludes its own.
+    const portHolders = (port: number) =>
+      Effect.gen(function* () {
+        const sockets = yield* processes
+          .string(
+            process.platform === "linux"
+              ? ChildProcess.make("ss", ["-Htanp", `( sport = :${port} )`])
+              : ChildProcess.make("lsof", ["-nP", `-iTCP:${port}`]),
+          )
+          .pipe(
+            Effect.timeout("5 seconds"),
+            Effect.catch(() => Effect.succeed("(could not list sockets)")),
+          );
+        const ephemeral =
+          process.platform === "linux"
+            ? yield* fs.readFileString("/proc/sys/net/ipv4/ip_local_port_range").pipe(
+                Effect.map((range) => `; ephemeral ports ${range.trim().replace(/\s+/g, "-")}`),
+                Effect.catch(() => Effect.succeed("")),
+              )
+            : "";
+        const listed = sockets.trim().replace(/\s*\n\s*/g, " | ");
+        return `sockets on port ${port}: ${listed === "" ? "none now" : listed}${ephemeral}`;
+      });
     const capture = (
       child: ChildProcessSpawner.ChildProcessHandle,
       file: string,
@@ -402,12 +385,6 @@ export const startCloudEnvironment = (input: {
       dockerEnv,
       log: `${directory}/postgres.log`,
     });
-    yield* createV1Database({
-      container,
-      dockerEnv,
-      readerPassword: v1ReaderPassword,
-      writerPassword: v1WriterPassword,
-    });
     const built =
       input.prebuilt === true
         ? 0
@@ -437,10 +414,52 @@ export const startCloudEnvironment = (input: {
     );
     // A failed apply or run leaves `alchemy dev` running so healthy resources keep serving, but in a
     // run nothing will edit the sources it waits on, so the Worker that failed never starts.
-    const applyFailed = yield* Deferred.make<void>();
-    yield* capture(server, "cloud.log", (line) =>
-      isAlchemyDevFailure(line) ? Deferred.succeed(applyFailed, undefined) : Effect.void,
+    const resourceFailures = yield* Ref.make<ReadonlyArray<{ resource: string; reason: string }>>(
+      [],
     );
+    // Each runtime crash and its replacement, written beside cloud.log as it is seen, so the run's
+    // report can name it on the scenarios that failed while it lasted (`runtime-crashes.ts`).
+    const crashes = yield* Ref.make<ReadonlyArray<RuntimeCrash>>([]);
+    const noteCrash = (line: string) =>
+      Effect.gen(function* () {
+        const at = yield* Clock.currentTimeMillis;
+        const changed = trackRuntimeCrash(yield* Ref.get(crashes), line, at);
+        if (changed === undefined) return;
+        yield* Ref.set(crashes, changed);
+        yield* fs
+          .writeFileString(`${directory}/${runtimeCrashesFile}`, JSON.stringify(changed, null, 2), {
+            mode: 0o600,
+          })
+          .pipe(Effect.orDie);
+      });
+    const dev = yield* followAlchemyDev(server, (line) =>
+      fs.writeFileString(`${directory}/cloud.log`, `${line}\n`, { flag: "a", mode: 0o600 }).pipe(
+        Effect.orDie,
+        Effect.andThen(() => {
+          const failure = alchemyResourceFailure(line);
+          return failure === undefined
+            ? Effect.void
+            : Ref.update(resourceFailures, (all) => [...all, failure]);
+        }),
+        Effect.andThen(noteCrash(line)),
+      ),
+    );
+    // Each failed resource and why, and for a port another socket holds, that socket and its
+    // process while `alchemy dev` still runs: the error is in the job log even when the evidence
+    // artifact is not kept.
+    const describeResourceFailures = Effect.gen(function* () {
+      const failures = yield* Ref.get(resourceFailures);
+      const holders = yield* Effect.forEach(failures, ({ reason }) => {
+        const port = unboundPort(reason);
+        return port === undefined
+          ? Effect.succeed([])
+          : portHolders(port).pipe(Effect.map((text) => [text]));
+      });
+      return [
+        ...failures.map(({ resource, reason }) => `${resource}: ${reason}`),
+        ...holders.flat(),
+      ].join("; ");
+    });
     // A Worker that is still starting holds the request until it can answer, so each probe has its
     // own deadline and the whole wait has one too.
     const ready = Effect.scoped(
@@ -476,12 +495,18 @@ export const startCloudEnvironment = (input: {
             ),
           ),
         ),
-        Deferred.await(applyFailed).pipe(
-          Effect.flatMap(() =>
-            Effect.fail(
-              new CloudStartFailed({
-                operation: "Alchemy could not start every Cloud resource; see cloud.log",
-              }),
+        dev.failed.pipe(
+          // While alchemy still runs, so a port's holder can still be named.
+          Effect.andThen(describeResourceFailures),
+          Effect.flatMap((failures) =>
+            dev.report.pipe(
+              Effect.flatMap((report) =>
+                Effect.fail(
+                  new CloudStartFailed({
+                    operation: `Alchemy could not start every Cloud resource${failures === "" ? "" : ` (${failures})`}; see cloud.log. Alchemy reported:\n${report}`,
+                  }),
+                ),
+              ),
             ),
           ),
         ),
@@ -500,6 +525,6 @@ export const startCloudEnvironment = (input: {
       emulators,
       fixtures,
       origin: input.origin,
-      oauthProxy: { ...oauthProxy, services: Redacted.value(fixture).services },
+      oauthProxy: { ...oauthProxy, services: reveal(fixture).services },
     };
   });

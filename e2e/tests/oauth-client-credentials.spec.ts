@@ -7,10 +7,12 @@ import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource, Inventory } from "../support/contracts.ts";
 import { clientCredentialsIssuer, machineClient } from "../support/client-credentials-issuer.ts";
 import { linkedAccountIds, connectionsPath } from "../support/app-accounts.ts";
+import { Evidence, Telemetry } from "../support/evidence.ts";
 import { linkedChoice } from "../support/account-choices.ts";
 import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { scenarios } from "../test-plan.ts";
 import { Browser } from "../support/browser.ts";
+import { replaceResponses } from "../support/browser-responses.ts";
 import { managementApp } from "../support/management-app.ts";
 import {
   accountNameField,
@@ -104,24 +106,22 @@ export default defineApp({user: { accounts:{service} }},async()=>({tools: router
           page.setViewportSize({ width: 1440, height: 1000 }),
         );
         let dropped = false;
-        yield* browser.use("Lose the first response after committing the account", (page) =>
-          page.route(/\/connections\/[^/]+\/oauth\/start$/, (route) => {
-            if (dropped) return route.fallback();
-            dropped = true;
-            const request: unknown = route.request().postDataJSON();
-            const submitted = Schema.decodeUnknownSync(
-              Schema.Struct({ client: Schema.Record(Schema.String, Schema.Unknown) }),
-            )(request);
-            expect(Object.keys(submitted.client).sort()).toEqual(["clientId", "clientSecret"]);
-            return route
-              .fetch()
-              .then((response) => response.json())
-              .then((value: unknown) => {
-                saved = value;
-                return route.abort("failed");
-              });
-          }),
-        );
+        yield* replaceResponses("*/connections/*/oauth/start", (response) => {
+          if (
+            dropped ||
+            !/\/connections\/[^/]+\/oauth\/start$/.test(new URL(response.url).pathname)
+          )
+            return "unchanged";
+          dropped = true;
+          const submitted = Schema.decodeUnknownSync(
+            Schema.Struct({ client: Schema.Record(Schema.String, Schema.Unknown) }),
+          )(JSON.parse(response.requestBody));
+          expect(Object.keys(submitted.client).sort()).toEqual(["clientId", "clientSecret"]);
+          return response.body().then((text) => {
+            saved = JSON.parse(text);
+            return "failed" as const;
+          });
+        });
         yield* browser.use("Connect using the declared grant", (page) =>
           page
             .getByRole("dialog")
@@ -221,9 +221,7 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
               actors.owner,
               "POST",
               connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-              authMethod === "client_secret_post"
-                ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
-                : {},
+              {},
             ),
           );
           const path = `${prefix}/connections/${connection.id}/oauth/start`;
@@ -241,27 +239,32 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
           ).toBe(422);
           const saved = yield* api.request(actors.owner, "POST", path, payload);
           expect(saved.status).toBe(200);
+          // The exchange authenticates as the account's own client: entered, never the operator's,
+          // and its span names the token endpoint's host alone.
+          const traceId = (yield* (yield* Evidence).requests).at(-1)?.traceId;
+          if (traceId === undefined) return yield* Effect.die("Missing request trace");
+          const exchanged = (yield* (yield* Telemetry).settled(traceId, (spans) =>
+            spans.some((span) => span.operationName === "oauth.clientCredentials"),
+          )).filter((span) => span.operationName === "oauth.clientCredentials");
+          for (const { tags } of exchanged) {
+            expect(tags).toMatchObject({
+              "oauth.client.kind": "entered",
+              "oauth.token_endpoint.host": new URL(issuer.origin).hostname,
+            });
+            expect(Object.keys(tags)).not.toContain("oauth.first_party.id");
+          }
           const completed = yield* body(Completed, saved);
           expect(completed.account.label).toBe("Reporting");
-          const access = yield* body(
-            Schema.Struct({
-              ownership: Schema.Struct({ kind: Schema.String }),
-              canUse: Schema.Boolean,
-            }),
-            yield* api.request(
-              actors.owner,
-              "GET",
-              `${prefix}/accounts/${completed.account.id}/access`,
-            ),
+          const detail = yield* body(
+            Schema.Struct({ canManage: Schema.Boolean }),
+            yield* api.request(actors.owner, "GET", `${prefix}/accounts/${completed.account.id}`),
           );
-          expect(access.ownership.kind).toBe(
-            authMethod === "client_secret_post" ? "shared" : "personal",
-          );
-          expect(access.canUse).toBe(true);
+          // A machine account is its connector's own, like any other.
+          expect(detail.canManage).toBe(true);
           expect(
             (yield* api.request(actors.member, "GET", `${prefix}/accounts/${completed.account.id}`))
               .status,
-          ).toBe(authMethod === "client_secret_post" ? 200 : 403);
+          ).toBe(403);
           yield* Effect.addFinalizer(() =>
             api
               .request(actors.owner, "DELETE", `${prefix}/accounts/${completed.account.id}`)
@@ -429,9 +432,7 @@ export default defineApp({user: { accounts:{service} }},async({user: { accounts 
                 actors.owner,
                 "POST",
                 connectionsPath(`${prefix}/apps/${app.id}`, "user", "service"),
-                authMethod === "client_secret_post"
-                  ? { destination: { kind: "shared", audience: { kind: "everyone" } } }
-                  : {},
+                {},
               ),
             );
             const named = yield* body(

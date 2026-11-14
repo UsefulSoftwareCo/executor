@@ -14,7 +14,6 @@ import type {
   ElicitationFailed,
   AppSkillCatalog,
   AppSkillDocument,
-  AppEventDefinition,
   AppId,
   EventCallbackFailed,
   EventDefinitionChanged,
@@ -26,10 +25,18 @@ import type {
   EventsUnavailable,
   SubscribeEvent,
 } from "@executor-js/sdk/core";
-import type { Effect } from "effect";
+import { Context, type Effect } from "effect";
 
 /** A subscription key without its principal: the product binds that to the caller. */
 export type McpEventKey = Omit<EventSubscriptionKey, "principal">;
+
+/**
+ * The events a subscription targets: one event of an app, all of an app's events (`event` null),
+ * or every event of every app the caller can use (`app` null), whose owner the product supplies.
+ */
+export type McpEventTarget =
+  | { readonly app: AppId; readonly event: string | null }
+  | { readonly app: null; readonly event: null };
 
 /** Why a subscription was refused, beside the host's own errors. */
 export type McpEventError =
@@ -102,22 +109,24 @@ export interface McpBackend<E extends Error> {
     input: Parameters<Executor["tools"]["call"]>[0],
     options?: ToolInvocationOptions,
   ) => Effect.Effect<ToolCallResult, E>;
-  /** Authorize the app, then list the events its active version declares. */
-  readonly eventDefinitions: (input: {
-    readonly app: AppId;
-  }) => Effect.Effect<readonly AppEventDefinition[], E>;
   /** This caller's saved subscription with the key, if any. Reveals nothing of other callers. */
   readonly findEventSubscription: (key: McpEventKey) => Effect.Effect<EventSubscription | null, E>;
-  /** Authorize the target app's events for this caller, then subscribe or refresh as the caller. */
+  /**
+   * Authorize the target's events for this caller, then subscribe or refresh as the caller. A
+   * target of every app is the caller's owner's apps; each delivery checks the occurrence's app.
+   */
   readonly subscribeEvent: (
     input: Omit<SubscribeEvent, "key" | "subject" | "target"> & {
       readonly key: McpEventKey;
-      readonly target: NonNullable<SubscribeEvent["target"]>;
+      readonly target: McpEventTarget;
     },
   ) => Effect.Effect<EventSubscriptionGrant, E | McpEventError>;
-  /** Stop this caller's subscription with the key. Its app is authorized as for subscribing. */
+  /**
+   * Stop this caller's subscription with the key. Its app, when it has one, is authorized as for
+   * subscribing.
+   */
   readonly unsubscribeEvent: (input: {
-    readonly app: AppId;
+    readonly app: AppId | null;
     readonly key: McpEventKey;
   }) => Effect.Effect<void, E>;
   /** Reauthorize the reviewed app/accounts and current caller before consuming this exact SDK request. */
@@ -127,3 +136,25 @@ export interface McpBackend<E extends Error> {
     options?: ToolInvocationOptions,
   ) => Effect.Effect<ToolResumeResult, E>;
 }
+
+/**
+ * The execution a backend operation runs for: one `execute` program or one `call` batch, from its
+ * start until it ends, across the requests that resume it. Its ID is the `executor.execution.id`
+ * its spans carry. Provided around every operation the execution starts; unset elsewhere.
+ */
+export const CurrentMcpExecution = Context.Reference<string | undefined>(
+  "executor/mcp/CurrentExecution",
+  { defaultValue: () => undefined },
+);
+
+/**
+ * Told the host's reference for the call `callTool` is making, once the host has recorded the
+ * call: an opaque ID the caller can quote to whoever reviews the host's records, such as hosted
+ * Executor's tool call log. The execution provides it around each tool call, including across the
+ * driving request that makes the call for a program; a host that keeps no records never calls it.
+ * A call the host did not record has no reference.
+ */
+export const ToolCallRecorded = Context.Reference<((reference: string) => void) | undefined>(
+  "executor/mcp/ToolCallRecorded",
+  { defaultValue: () => undefined },
+);

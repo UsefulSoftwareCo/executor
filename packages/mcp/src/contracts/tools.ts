@@ -59,6 +59,12 @@ export interface McpOptions {
   readonly browser?: BrowserDelivery;
   /** Authenticated principal that owns model and native executions across its MCP sessions. Browser approvals also include the session ID. */
   readonly caller: Effect.Effect<string>;
+  /**
+   * How the authenticated request's approvals reach the user: the mode its grant record holds, or
+   * for a credential without one, the mode its URL names. Read on every request; the request's
+   * query is never consulted.
+   */
+  readonly mode: Effect.Effect<ElicitationMode>;
   /** Sent as the server instructions when a client connects. Hosts send the Executor app's intro. */
   readonly instructions: string;
   readonly limits: McpLimits;
@@ -73,6 +79,12 @@ export interface McpOptions {
    * one, a restart forgets every session and clients initialize again.
    */
   readonly sessions?: (mode: ElicitationMode) => McpServer.SessionStore;
+  /**
+   * The most protocol sessions each mode keeps in memory; past it the least recently used is
+   * forgotten, and its client gets `404` and initializes again. The server has no session DELETE,
+   * so without a bound every session a client opened stays for the protocol server's life.
+   */
+  readonly maxSessions?: number;
   /**
    * Keeps a record of the requests the host issued beyond its memory, so a resume after a restart
    * says whether its request expired, was answered or was lost with its program. Without one, a

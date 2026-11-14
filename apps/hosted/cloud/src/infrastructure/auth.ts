@@ -3,7 +3,7 @@ import { HostedAppSessions } from "@executor-js/hosted-server/app-ui";
 import { authObservability } from "../implementation/auth-observability.ts";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { APIError } from "better-auth/api";
-import { OrganizationId } from "@executor-js/hosted-server";
+import { OrganizationId, recordCredential, recordSecurityAudit } from "@executor-js/hosted-server";
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { billingLive } from "../implementation/billing.ts";
 import {
@@ -13,22 +13,23 @@ import {
 } from "../implementation/product-analytics.ts";
 import { cloudAuthOptions, cloudAuthSettings } from "../implementation/auth-options.ts";
 import { isOAuthProxyProduction } from "../implementation/oauth-proxy-settings.ts";
-import { Onboarding } from "../contracts/onboarding.ts";
 /** Native Alchemy auth binding for the HTTP Worker; MCP session objects use `mcp-auth.ts`. */
 import {
   CurrentUsage,
   CurrentUserId,
   recordUsage,
   usageFailure,
-  Authentication,
+  SessionAuthentication,
   AuthenticationUnavailable,
   sessionPrincipal,
   lookupMembership,
   deleteOrganizationRecords,
+  deleteUserRecords,
   lookupOrganizationSlug,
   resolveOrganizationReference,
-  ApiAuthentication,
+  BearerAuthentication,
   apiBearerAccess,
+  callerSpanAttributes,
   grantExpiry,
   authEndpointTemplates,
 } from "@executor-js/hosted-server";
@@ -43,13 +44,18 @@ import { HttpBody, HttpServerRequest, HttpServerResponse } from "effect/http";
 import type { SendAuthEmail } from "../contracts/email.ts";
 import { cloudSecrets, v1McpForwardSecret, v1SessionHandoffSecret } from "./secrets.ts";
 import { V1HandoffSessionFailed, v1SessionHandoff } from "../implementation/v1-session-handoff.ts";
+import { recordAuthRefusal } from "../implementation/auth-refusals.ts";
 import { cloudAuthRateLimit } from "./stage.ts";
 import { AuthDatabase, appSessionsPerCall, boundAuthAdapter } from "./auth-database.ts";
 import { invocationSql } from "./invocation-database.ts";
 import { mcpAuthentication } from "./mcp-auth.ts";
+import { v1CapturedApiKeys } from "../implementation/v1-captured-api-keys.ts";
+import { cloudV1WorkOSKeys } from "./v1-api-key-settings.ts";
+import { resolveLegacyResource } from "../implementation/v1-legacy-mcp.ts";
+import { authAudit } from "../implementation/auth-audit.ts";
 
 /** Bind during initialization; database calls capture the current invocation only. */
-export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Service) =>
+export const cloudAuth = (send: SendAuthEmail) =>
   Effect.gen(function* () {
     // Only `alchemy dev` binds the switch; see `authRateLimitSwitchBindings`.
     const environment = yield* Cloudflare.WorkerEnvironment;
@@ -63,6 +69,8 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
     const v1Forward = yield* v1McpForwardSecret;
     const v1Handoff = yield* v1SessionHandoffSecret;
     const meter = yield* BillingMeter.pipe(Effect.provide(yield* billingLive));
+    // Statements on the client this invocation shares with Better Auth and the executor.
+    const withSql = yield* invocationSql;
     // Better Auth invokes Promise callbacks. Carry the calling request's scope,
     // bindings and cancellation through that boundary, isolated per invocation.
     const callbacks = new AsyncLocalStorage<{
@@ -123,19 +131,10 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
             Effect.provideService(CurrentUsage, { source: "dashboard" }),
           ),
         ),
-      // Fails closed: an unanswered v1 check refuses the create instead of allowing it.
-      (userId) =>
-        runCallback(
-          onboarding.allowsOrganization(userId).pipe(
-            Effect.mapError(
-              () =>
-                new APIError("SERVICE_UNAVAILABLE", {
-                  message: "We could not check your account. Try again.",
-                }),
-            ),
-          ),
-        ),
       {
+        // A grant for one of v1's MCP URLs is bound to the URL's organization and toolkit.
+        resolveResource: (input) =>
+          runCallback(withSql(resolveLegacyResource(settings.resourceOrigins, input))),
         onRefreshRejected: observation.refreshRejected,
         // A person approved a new agent, by consent or by a device's code: the agent can connect.
         onGrantCreated: (grant) =>
@@ -149,12 +148,30 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
             ),
           ),
       },
+      observation.providerPhoto,
     );
     const database = yield* AuthDatabase;
     const makeInstance = (secret: string) =>
       betterAuth({
         ...options,
-        plugins: [...options.plugins, observation.plugin],
+        // After the analytics plugin: Better Auth's endpoint middleware does not leave its
+        // session on the after-hook context, and the analytics hook's read of it does. The audit
+        // reads no session itself. Telemetry never fails a request, so a record that cannot be
+        // written is dropped.
+        plugins: [
+          ...options.plugins,
+          authAudit((event, session) =>
+            runCallback(
+              Effect.andThen(
+                session === undefined
+                  ? Effect.void
+                  : recordCredential({ kind: "session", ...session }),
+                recordSecurityAudit(event),
+              ),
+            ).catch(() => undefined),
+          ),
+          observation.plugin,
+        ],
         database: database.options,
         secret,
         // Cookies use hostnames, not ports; cloud dev must not replace self-host sessions.
@@ -197,13 +214,12 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       Effect.provide(RuntimeContext.phantom),
     );
     // Bearer authentication reads its rows in one statement on the client this invocation
-    // shares with Better Auth and the executor.
-    const withSql = yield* invocationSql;
+    // shares with Better Auth and the executor (`withSql`, above).
     const identity = Layer.effect(
-      Authentication,
+      SessionAuthentication,
       Effect.gen(function* () {
         // Built inside fetch: database work stays in the current invocation's scope.
-        return Authentication.of({
+        return SessionAuthentication.of({
           origin: settings.url,
           resourceOrigins: settings.resourceOrigins,
           oauthRedirectUri: Option.getOrUndefined(settings.oauthRedirectUri),
@@ -250,6 +266,10 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
             adapter
               .pipe(Effect.flatMap((adapter) => deleteOrganizationRecords(adapter, organizationId)))
               .pipe(Effect.withSpan("auth.removeOrganization")),
+          removeUser: (user) =>
+            adapter
+              .pipe(Effect.flatMap((adapter) => deleteUserRecords(adapter, user)))
+              .pipe(Effect.withSpan("auth.removeUser")),
         });
       }),
     );
@@ -258,16 +278,18 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       resourceOrigins: settings.resourceOrigins,
       issuer: settings.issuer,
     };
-    const mcpIdentity = mcpAuthentication(origins, bound, withSql, v1Forward);
+    // Executor v1's WorkOS API keys, on every MCP and API route (`notes/v1-shutdown.md`).
+    const v1Keys = v1CapturedApiKeys(yield* cloudV1WorkOSKeys.pipe(Effect.orDie));
+    const mcpIdentity = mcpAuthentication(origins, bound, withSql, v1Forward, v1Keys);
     const apiIdentity = Layer.effect(
-      ApiAuthentication,
+      BearerAuthentication,
       Effect.gen(function* () {
-        return ApiAuthentication.of({
+        return BearerAuthentication.of({
           ...origins,
           authenticate: (headers, organization) =>
-            withSql(apiBearerAccess(origins, { headers, organization })).pipe(
-              Effect.tap(({ access }) =>
-                Effect.annotateCurrentSpan("executor.organization.id", access.organization),
+            withSql(apiBearerAccess(origins, { headers, organization }, v1Keys)).pipe(
+              Effect.tap(({ access, userId }) =>
+                Effect.annotateCurrentSpan(callerSpanAttributes(access.organization, userId)),
               ),
               Effect.withSpan("auth.authenticate"),
             ),
@@ -290,7 +312,8 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       const web = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
       const [instance, bind] = yield* bound;
       routes ??= routeTemplates(authEndpointTemplates(instance.api));
-      yield* routes.record(new URL(web.url).pathname);
+      const pathname = new URL(web.url).pathname;
+      yield* routes.record(pathname);
       const context = yield* Effect.context<
         RuntimeContext | HttpServerRequest.HttpServerRequest | Scope.Scope
       >();
@@ -298,10 +321,14 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
       const response = yield* Effect.promise((signal) =>
         callbacks.run({ context, signal }, () => bind(() => instance.handler(web))),
       );
-      if (response.body === null) return HttpServerResponse.fromWeb(response);
+      if (response.body === null) {
+        yield* recordAuthRefusal(response.status, pathname, new Uint8Array(), web.headers);
+        return HttpServerResponse.fromWeb(response);
+      }
       // Better Auth answers with complete JSON. Sent as a stream, its last byte would wait for
       // the request's cleanup, including Better Auth queries the request left running.
       const body = new Uint8Array(yield* Effect.promise(() => response.arrayBuffer()));
+      yield* recordAuthRefusal(response.status, pathname, body, web.headers);
       return HttpServerResponse.setBody(
         HttpServerResponse.fromWeb(response),
         HttpBody.uint8Array(body, response.headers.get("content-type") ?? undefined),

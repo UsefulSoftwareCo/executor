@@ -27,9 +27,17 @@ import {
 import { Effect, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
+import { CallFailures, RunFailures } from "../contracts/tools.ts";
+import { CurrentToolCallCaller } from "../contracts/tool-call-log.ts";
+import {
+  dashboardRunReference,
+  loggedToolCall,
+  loggedToolResume,
+  recordCallDetails,
+} from "./tool-call-log.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { CurrentUserId, Forbidden } from "../contracts/auth.ts";
-import { CurrentAuthorization } from "../contracts/authorization.ts";
+import { CurrentPolicy } from "../contracts/authorization.ts";
 import {
   browserOnly,
   checkedToolCall,
@@ -83,7 +91,7 @@ export const searchableTools = (
  */
 export const searchTools = (input: Parameters<Executor["tools"]["search"]>[0]) =>
   Effect.gen(function* () {
-    const policy = yield* CurrentAuthorization;
+    const policy = yield* CurrentPolicy;
     const executor = yield* Effect.flatten(HostedExecutor);
     const page = yield* executor.tools.search({
       ...input,
@@ -159,16 +167,32 @@ const startTool = (
         input,
         (selected, described) => authorizeTool({ ...input, ...selected }, described),
       );
+      yield* recordCallDetails({ version, accounts, ...(kind === undefined ? {} : { kind }) });
       return yield* executor.tools.call({ ...input, version, accounts, kind }, options);
     }),
   );
-/** API credentials cannot present an approval, so a call that needs one fails without running. */
+/**
+ * API credentials cannot present an approval, so a call that needs one fails without running. The
+ * call is logged under the caller the organization middleware authenticated, and its failure
+ * carries the call's reference.
+ */
 export const callTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
-  Effect.flatMap(startTool(input), (result) =>
-    result.status === "approval-required"
-      ? Effect.fail(approvalRequired(result))
-      : Effect.succeed(result.value),
-  );
+  Effect.gen(function* () {
+    const { exit, reference } = yield* loggedToolCall(
+      yield* CurrentToolCallCaller,
+      input,
+      false,
+      startTool(input),
+    );
+    return yield* exit.pipe(
+      Effect.flatMap((result) =>
+        result.status === "approval-required"
+          ? Effect.fail(approvalRequired(result))
+          : Effect.succeed(result.value),
+      ),
+      Effect.mapError((error) => CallFailures.withReference(error, reference)),
+    );
+  });
 /**
  * The signed-in person's own run from the dashboard. Its approval is saved with this issuer, so only
  * that person's dashboard can read or answer it. MCP, schedules and API calls save no issuer.
@@ -179,15 +203,32 @@ const dashboardRun = Effect.gen(function* () {
   if (user === undefined) return yield* new Forbidden();
   return ToolApprovalIssuer.make(`dashboard:${user}`);
 });
-/** The signed-in person is the runner, so a call that needs approval waits for their review. */
+/**
+ * The signed-in person is the runner, so a call that needs approval waits for their review. A run
+ * that did not succeed carries the call's reference: on its error, or beside a value that says the
+ * tool failed.
+ */
 const runTool = (input: Parameters<Executor["tools"]["call"]>[0]) =>
-  Effect.flatMap(dashboardRun, (issuer) => startTool(input, { issuer })).pipe(
-    Effect.map((result): BrowserToolRun =>
-      result.status === "approval-required"
-        ? { status: result.status, requestId: result.requestId }
-        : { status: result.status, value: result.value },
-    ),
-  );
+  Effect.gen(function* () {
+    const { exit, reference } = yield* loggedToolCall(
+      { source: "dashboard" },
+      input,
+      true,
+      Effect.flatMap(dashboardRun, (issuer) => startTool(input, { issuer })),
+    );
+    return yield* exit.pipe(
+      Effect.map((result): BrowserToolRun =>
+        result.status === "approval-required"
+          ? { status: result.status, requestId: result.requestId }
+          : {
+              status: result.status,
+              value: result.value,
+              ...(result.toolError === true && reference !== undefined ? { reference } : {}),
+            },
+      ),
+      Effect.mapError((error) => RunFailures.withReference(error, reference)),
+    );
+  });
 /**
  * Read the saved call, check this person's dashboard run issued it, and check they may still run
  * it with the same checks as a new call. The arguments shown and resumed are the saved invocation's.
@@ -218,8 +259,13 @@ export const hostedToolHandlers = HttpApiBuilder.group(HostedApi, "tools", (hand
     .handle("list", ({ params, query }) => listTools({ app: params.app, ...query }))
     .handle("index", ({ params, query }) => indexTools({ app: params.app, ...query }))
     .handle("get", ({ params, query }) => getTool({ app: params.app, tool: params.tool, ...query }))
-    .handle("call", ({ params, payload }) => callTool({ app: params.app, ...payload }))
-    .handle("run", ({ params, payload }) => runTool({ app: params.app, ...payload }))
+    // Every failure of these two is one their declared errors encode, as `referencedErrors` says.
+    .handle("call", ({ params, payload }) =>
+      CallFailures.referenced(callTool({ app: params.app, ...payload })),
+    )
+    .handle("run", ({ params, payload }) =>
+      RunFailures.referenced(runTool({ app: params.app, ...payload })),
+    )
     .handle("approval", ({ params }) =>
       reviewedTool(params.app, params.requestId).pipe(
         Effect.map(({ invocation, expiresAt, appName }): BrowserApprovalView => ({
@@ -248,17 +294,36 @@ export const hostedToolHandlers = HttpApiBuilder.group(HostedApi, "tools", (hand
         );
         const executor = yield* Effect.flatten(HostedExecutor);
         // The SDK checks the issuer again before it consumes the request.
-        const result = yield* executor.tools.resume(
-          { requestId: params.requestId, owner: yield* currentOwner, response },
-          { issuer },
+        const logged = yield* loggedToolResume(
+          params.requestId,
+          executor.tools.resume(
+            { requestId: params.requestId, owner: yield* currentOwner, response },
+            { issuer },
+          ),
         );
-        return result.status === "already-consumed" ||
-          (result.status === "failed" && result.reason === "expired")
-          ? { status: "unavailable" as const }
-          : { status: "answered" as const, result };
+        const result = yield* logged.exit;
+        // A call that did not succeed carries its reference; one that succeeded needs none.
+        const succeeded = result.status === "completed" && result.toolError !== true;
+        if (result.status === "already-consumed") return { status: "unavailable" as const };
+        return result.status === "failed" && result.reason === "expired"
+          ? {
+              status: "unavailable" as const,
+              ...(logged.reference === undefined ? {} : { reference: logged.reference }),
+            }
+          : {
+              status: "answered" as const,
+              result,
+              ...(succeeded || logged.reference === undefined
+                ? {}
+                : { reference: logged.reference }),
+            };
       }).pipe(
+        // An expired or already answered request is gone; the person's own run keeps its reference.
         Effect.catchTag("ToolApprovalNotFound", () =>
-          Effect.succeed({ status: "unavailable" as const }),
+          Effect.map(dashboardRunReference(params.requestId), (reference) => ({
+            status: "unavailable" as const,
+            ...(reference === undefined ? {} : { reference }),
+          })),
         ),
       ),
     ),

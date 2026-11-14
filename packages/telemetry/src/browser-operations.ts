@@ -2,6 +2,7 @@
 import { Cause, Context, Effect, Exit, Schema, SchemaAST, Tracer } from "effect";
 import { HttpClient, HttpClientError } from "effect/http";
 import { isConnectionFailure } from "@executor-js/utils/connection-failure";
+import { randomUuid } from "@executor-js/utils/random-uuid";
 import { TraceContext } from "./trace-context.ts";
 
 const pageIds = new WeakMap<Document, string>();
@@ -13,7 +14,7 @@ export const browserPageId = (): string | undefined => {
   if (typeof document === "undefined") return undefined;
   const existing = pageIds.get(document);
   if (existing !== undefined) return existing;
-  const created = crypto.randomUUID();
+  const created = randomUuid();
   pageIds.set(document, created);
   return created;
 };

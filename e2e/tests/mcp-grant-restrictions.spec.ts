@@ -71,7 +71,7 @@ export default defineApp({ user: { accounts: { service: ${requirement} } } }, as
           actors.owner,
           "POST",
           connectionsPath(path, "user", "service"),
-          { destination: { kind: "personal" } },
+          {},
         );
         expect(connection.status, JSON.stringify(connection.body)).toBe(200);
         const request = yield* body(Resource, connection);

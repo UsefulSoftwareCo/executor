@@ -1,8 +1,9 @@
 import type { AccountFormFields } from "../../contracts/credentials.ts";
 import { Input } from "@executor-js/ui/components/input";
 import { Button } from "./button.tsx";
-import { useRef, type ClipboardEvent, type DragEvent } from "react";
+import { useId, useRef, type ClipboardEvent, type DragEvent } from "react";
 import { flushSync } from "react-dom";
+import { SetupHelp } from "../dashboard/markdown.tsx";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { SquareLock02Icon, ViewIcon } from "@hugeicons/core-free-icons";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./tooltip.tsx";
@@ -75,11 +76,14 @@ export function CredentialInput({
   onValueChange,
   required,
   disabled,
+  describedBy,
 }: {
   readonly value: string;
   readonly onValueChange: (value: string) => void;
   readonly required?: boolean | undefined;
   readonly disabled?: boolean | undefined;
+  /** The ID of the field's description, which the input and its summary refer to. */
+  readonly describedBy?: string | undefined;
 }) {
   const input = useRef<HTMLInputElement>(null);
   const summary = useRef<HTMLOutputElement>(null);
@@ -107,6 +111,7 @@ export function CredentialInput({
         <output
           ref={summary}
           tabIndex={-1}
+          aria-describedby={describedBy}
           className="min-w-0 flex-1 truncate text-sm text-muted-foreground outline-none select-none"
         >
           {`Multi-line value · ${lines} ${lines === 1 ? "line" : "lines"}`}
@@ -137,6 +142,7 @@ export function CredentialInput({
       onDrop={(event) => take(event, event.dataTransfer)}
       required={required}
       disabled={disabled}
+      aria-describedby={describedBy}
     />
   );
 }
@@ -156,68 +162,73 @@ export function CredentialFields({
   readonly onChange: (values: Readonly<Record<string, string>>) => void;
   readonly pending: boolean;
 }) {
+  const help = useId();
   return (
     <>
-      {Object.entries(fields.properties).map(([name, field]) => (
-        <label
-          className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full"
-          key={name}
-        >
-          <span className="flex w-full items-center gap-1.5">
-            {fieldLabel(name, field)}
-            {field.type === "string" && !fields.plain?.includes(name) && (
-              <FieldAccess
-                hidden={hosts !== undefined && !fields.raw?.includes(name)}
-                hosts={hosts}
-              />
-            )}
-          </span>
-          <div data-private>
-            {field.type === "boolean" || field.enum ? (
-              <Select
-                value={values[name] ?? ""}
-                onValueChange={(value) => onChange({ ...values, [name]: value })}
-                disabled={pending}
-                required={fields.required?.includes(name) === true}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Choose a value" />
-                </SelectTrigger>
-                <SelectContent data-private>
-                  {(field.enum ?? [true, false]).map((value) => (
-                    <SelectItem value={String(value)} key={String(value)}>
-                      {String(value)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            ) : field.type === "string" && !fields.plain?.includes(name) ? (
-              <CredentialInput
-                value={values[name] ?? ""}
-                onValueChange={(value) => onChange({ ...values, [name]: value })}
-                required={fields.required?.includes(name) === true}
-                disabled={pending}
-              />
-            ) : (
-              // A plain value is shown, and the summary would hide it, so it keeps main's input.
-              <Input
-                type={field.type === "string" ? "text" : "number"}
-                autoComplete="off"
-                value={values[name] ?? ""}
-                onChange={(event) => onChange({ ...values, [name]: event.target.value })}
-                required={fields.required?.includes(name) === true}
-                step={field.type === "number" ? "any" : undefined}
-                disabled={pending}
-              />
+      {Object.entries(fields.properties).map(([name, field], index) => {
+        const described = field.description ? `${help}-${index}` : undefined;
+        return (
+          <div className="flex flex-col gap-1.5" key={name}>
+            <label className="field-label flex flex-col gap-2.25 text-[13px] font-medium [&_[data-slot='select-trigger']]:w-full">
+              <span className="flex w-full items-center gap-1.5">
+                {fieldLabel(name, field)}
+                {field.type === "string" && !fields.plain?.includes(name) && (
+                  <FieldAccess
+                    hidden={hosts !== undefined && !fields.raw?.includes(name)}
+                    hosts={hosts}
+                  />
+                )}
+              </span>
+              <div data-private>
+                {field.type === "boolean" || field.enum ? (
+                  <Select
+                    value={values[name] ?? ""}
+                    onValueChange={(value) => onChange({ ...values, [name]: value })}
+                    disabled={pending}
+                    required={fields.required?.includes(name) === true}
+                  >
+                    <SelectTrigger aria-describedby={described}>
+                      <SelectValue placeholder="Choose a value" />
+                    </SelectTrigger>
+                    <SelectContent data-private>
+                      {(field.enum ?? [true, false]).map((value) => (
+                        <SelectItem value={String(value)} key={String(value)}>
+                          {String(value)}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : field.type === "string" && !fields.plain?.includes(name) ? (
+                  <CredentialInput
+                    value={values[name] ?? ""}
+                    onValueChange={(value) => onChange({ ...values, [name]: value })}
+                    required={fields.required?.includes(name) === true}
+                    disabled={pending}
+                    describedBy={described}
+                  />
+                ) : (
+                  // A plain value is shown, and the summary would hide it, so it keeps main's input.
+                  <Input
+                    type={field.type === "string" ? "text" : "number"}
+                    autoComplete="off"
+                    value={values[name] ?? ""}
+                    onChange={(event) => onChange({ ...values, [name]: event.target.value })}
+                    required={fields.required?.includes(name) === true}
+                    step={field.type === "number" ? "any" : undefined}
+                    disabled={pending}
+                    aria-describedby={described}
+                  />
+                )}
+              </div>
+            </label>
+            {field.description && described && (
+              // The app's Markdown on where to find the value. It stays outside the label, so the
+              // field's accessible name is its title alone.
+              <SetupHelp id={described}>{field.description}</SetupHelp>
             )}
           </div>
-          {field.description && (
-            <span className="field-hint text-muted-foreground text-[12px] font-normal leading-[1.5] [.mcp-install-content_>_&]:mt-5">
-              {field.description}
-            </span>
-          )}
-        </label>
-      ))}
+        );
+      })}
     </>
   );
 }

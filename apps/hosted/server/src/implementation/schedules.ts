@@ -2,7 +2,7 @@ import { requireAppAccess } from "./resource-policy.ts";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentOrganization } from "../contracts/organization.ts";
 /** Scheduled work has a saved actor, not a retained browser session or an invented service account. */
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { HttpApiBuilder } from "effect/http-api";
 import {
@@ -84,6 +84,18 @@ export const makeScheduledAuthority = (executor: Executor) =>
       });
   });
 const wake = Effect.flatten(ScheduleWakeup);
+/** A check's outcome for each app, read once in this operation and reused for its later runs. */
+const perApp = <A, E, R>(check: (app: AppId) => Effect.Effect<A, E, R>) => {
+  const outcomes = new Map<AppId, Result.Result<A, E>>();
+  return (app: AppId) =>
+    Effect.gen(function* () {
+      const known = outcomes.get(app);
+      if (known !== undefined) return yield* Effect.fromResult(known);
+      const outcome = yield* Effect.result(check(app));
+      outcomes.set(app, outcome);
+      return yield* Effect.fromResult(outcome);
+    });
+};
 /** The saved actor of each schedule copy of an app; null for an app schedule. */
 const scheduleActors = (executor: Executor, owner: OwnerId, app: AppId) =>
   executor.schedules
@@ -250,18 +262,27 @@ export const hostedScheduleHandlers = HttpApiBuilder.group(HostedApi, "schedules
         if (query.app !== undefined) yield* requireAppAccess(query.app, "read");
         const runs = yield* executor.schedules.runs({ ...query, owner });
         const actors = new Map(
-          yield* Effect.forEach([...new Set(runs.map((run) => run.app))], (app) =>
-            scheduleActors(executor, owner, app).pipe(
-              Effect.map((byId) => [app, byId] as const),
-              Effect.catchTag("AppNotFound", () => Effect.succeed([app, new Map()] as const)),
-            ),
-          ),
+          query.pending
+            ? yield* Effect.forEach([...new Set(runs.map((run) => run.app))], (app) =>
+                scheduleActors(executor, owner, app).pipe(
+                  Effect.map((byId) => [app, byId] as const),
+                  Effect.catchTag("AppNotFound", () => Effect.succeed([app, new Map()] as const)),
+                ),
+              )
+            : [],
         );
+        const caller = yield* CurrentUserId;
+        // Runs of one app share its checks; each is read once, when its first run needs it.
+        const usable = perApp((app) => usableApp(executor, owner, app));
+        const manages = perApp((app) => requireAppAccess(app, "manage"));
         return yield* Effect.filter(runs, (run) =>
           Effect.gen(function* () {
-            yield* usableApp(executor, owner, run.app);
-            if (query.pending)
-              yield* actorManagerOwner(run.app, actors.get(run.app)?.get(run.scheduleId) ?? null);
+            yield* usable(run.app);
+            if (query.pending) {
+              // As `actorManagerOwner`: another member's or the app's run needs app management.
+              const actor = actors.get(run.app)?.get(run.scheduleId) ?? null;
+              if (actor === null || actor !== caller) yield* manages(run.app);
+            }
             return true;
           }).pipe(
             Effect.catchTags({

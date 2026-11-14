@@ -12,6 +12,7 @@
  */
 export const accountOAuthStatePrefix = "x2.";
 
+import { clientMetadataDocumentPath } from "@executor-js/hosted-server/oauth-client-metadata";
 import { Option } from "effect";
 import {
   agentSkills,
@@ -89,6 +90,9 @@ const routedEdgeForwards: ReadonlyArray<EdgeForward> = [
       url.pathname === "/api/oauth/callback" &&
       (url.searchParams.get("state") ?? "").startsWith(accountOAuthStatePrefix),
   },
+  // The OAuth client metadata document connected-account sign-ins name as their client ID, on the
+  // edge's origin like their callback. v1's own document is `/oauth/client-id-metadata.json`.
+  exact(clientMetadataDocumentPath),
   // Git smart HTTP for app repositories.
   { rule: "/git/*", matches: (url) => url.pathname.startsWith("/git/") },
   // The site: the homepage for visitors without a v1 session, its pages, their files and the
@@ -125,10 +129,3 @@ export const slashRedirectedSitePages: ReadonlyArray<SitePattern> = sitePages.fi
 /** Whether `forwards` include `url`. */
 export const forwardsToV2 = (forwards: ReadonlyArray<EdgeForward>, url: URL) =>
   forwards.some((forward) => forward.matches(url));
-
-/**
- * What v2 answers on the edge whatever the deployment's telemetry: every forward, and any
- * `/api/<16 hex>/...` path, which only the telemetry handlers answer and only at their own path.
- */
-export const servedOnEdge = (url: URL) =>
-  forwardsToV2(routedEdgeForwards, url) || /^\/api\/[0-9a-f]{16}\//.test(url.pathname);

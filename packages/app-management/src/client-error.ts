@@ -49,10 +49,12 @@ export class SourceRejected extends Schema.TaggedError<SourceRejected>()("Source
 }) {}
 
 /**
- * Why `executor apps login` did not finish, so the CLI says what happened instead of reporting
- * a missing session. Carries no credential, code or response body.
+ * Why `executor login` (`signIn: "mcp"`) or `executor apps login` (`"api"`) did not finish, so the
+ * CLI says what happened instead of reporting a missing session. Carries no credential, code or
+ * response body.
  */
 export class LoginFailed extends Schema.TaggedError<LoginFailed>()("LoginFailed", {
+  signIn: Schema.Literals(["api", "mcp"]),
   reason: Schema.Literals([
     /** The host is not a valid origin, or its OAuth discovery could not be read. */
     "host",
@@ -72,3 +74,42 @@ export class LoginFailed extends Schema.TaggedError<LoginFailed>()("LoginFailed"
     "storage",
   ]),
 }) {}
+
+/** The record of the remembered host is not one this CLI wrote; `executor logout` clears it. */
+export class SignInStateInvalid extends Schema.TaggedError<SignInStateInvalid>()(
+  "SignInStateInvalid",
+  { file: Schema.String },
+) {}
+
+/**
+ * A tool command has no credential for the host it resolved: no tools sign-in, pasted
+ * EXECUTOR_ACCESS_TOKEN or local key, or the host refused the one it sent. `host` is the host the
+ * command used, absent when none was named and no local server was available.
+ */
+export class ToolsSignInRequired extends Schema.TaggedError<ToolsSignInRequired>()(
+  "ToolsSignInRequired",
+  { host: Schema.optional(Schema.String) },
+) {}
+
+/**
+ * A tool command reached the host's MCP endpoint and the call did not return a result: the tool
+ * reported its failure (`tool`), or the endpoint refused the request (`protocol`, with its
+ * JSON-RPC code), as for input the tool does not accept. `message` is the host's own.
+ */
+export class ToolCallRefused extends Schema.TaggedError<ToolCallRefused>()("ToolCallRefused", {
+  tool: Schema.String,
+  reason: Schema.Literals(["tool", "protocol"]),
+  code: Schema.optional(Schema.Int),
+  message: Schema.String,
+}) {}
+
+/** A tool command's input could not be read, or is not the JSON or text the command needs. */
+export class ToolInputInvalid extends Schema.TaggedError<ToolInputInvalid>()("ToolInputInvalid", {
+  message: Schema.String,
+}) {}
+
+/** The host has no `/mcp/whoami`, so it cannot say what its tools sign-in reaches. */
+export class WhoamiUnavailable extends Schema.TaggedError<WhoamiUnavailable>()(
+  "WhoamiUnavailable",
+  { host: Schema.String },
+) {}

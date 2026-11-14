@@ -11,6 +11,8 @@ import { Effect } from "effect";
 import { SqlClient } from "effect/sql";
 import { cloudAuthSetup } from "./auth-provisioning.ts";
 import { migrateAppDomainRecords } from "./app-domain-records.ts";
+import { migrateV1CapturedApiKeys } from "./v1-captured-api-keys.ts";
+import { migrateV1LegacyUrls } from "./v1-legacy-urls.ts";
 
 /** Additive cloud tables; existing organizations and memberships are never changed. */
 export const migrateOnboarding = Effect.gen(function* () {
@@ -196,6 +198,60 @@ export const migrateV1ImportAllowed = Effect.gen(function* () {
 }).pipe(Effect.mapError(migrationFailed("product")));
 
 /**
+ * The billing of each paid v1 organization an import moves (`notes/v1-import.md`, "Billing"): its
+ * v2 organization, what v1's subscription was and its Stripe subscription, and how far the
+ * carry-over got. `held` keeps v2 billing from creating the organization's customer while v1's is
+ * carried over, `carried` lets it bill normally, and `returned` means v1 bills the organization
+ * again. The import inserts the row with the organization. Additive: the running server never
+ * reads it.
+ */
+export const migrateV1ImportBilling = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`create table if not exists private_v1_import_billing (
+    organization_id text primary key references organization(id) on delete cascade,
+    v1_org_id text not null unique,
+    state text not null check (state in ('held', 'carried', 'returned')),
+    subscription jsonb not null,
+    stripe_subscription_id text,
+    updated_at timestamptz not null default now()
+  )`;
+}).pipe(Effect.mapError(migrationFailed("product")));
+
+/**
+ * The v2 organization an import of the row's v1 organization may rename to take its slug
+ * (`notes/v1-import.md`, "Slug displacement"), written by direct SQL like the rest of the table.
+ * Additive and nullable, without a default, so adding it rewrites nothing; the running server
+ * reads only `v1_org_id`.
+ */
+export const migrateV1ImportDisplacement = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`alter table private_v1_import_allowed add column if not exists displace_v2_org_id text`;
+}).pipe(Effect.mapError(migrationFailed("product")));
+
+/**
+ * The existing v2 organization the row's v1 organization moves into instead of a new one, and how
+ * (`notes/v1-import.md`, decision 32), written by direct SQL like the rest of the table. Additive
+ * and nullable, without defaults, so adding them rewrites nothing; the running server reads only
+ * `v1_org_id` and `displace_v2_org_id`.
+ */
+export const migrateV1ImportInto = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`alter table private_v1_import_allowed add column if not exists into_v2_org_id text`;
+  yield* sql`alter table private_v1_import_allowed add column if not exists into_mode text`;
+}).pipe(Effect.mapError(migrationFailed("product")));
+
+/**
+ * The v1 integrations a `copy_selected` move copies into the existing v2 organization, by v1 slug
+ * (`notes/v1-import.md`, decision 35), written by direct SQL like the rest of the table. Additive
+ * and nullable, without a default, so adding it rewrites nothing; the running server never reads
+ * it.
+ */
+export const migrateV1ImportIntoIntegrations = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`alter table private_v1_import_allowed add column if not exists into_integrations text[]`;
+}).pipe(Effect.mapError(migrationFailed("product")));
+
+/**
  * The onboarding experiment's assignments (`notes/posthog.md#onboarding-order-experiment`): one
  * row per member who created their first team through team setup and was assigned a variant,
  * and when they first saw it. Additive: the running server never reads it. Drop it in a later
@@ -256,6 +312,12 @@ export const migrateCloudDatabase = Effect.scoped(
         "8_v1_session_handoffs": migrateV1SessionHandoffs,
         "9_v1_import_allowed": migrateV1ImportAllowed,
         "10_setup_skip_assignments": migrateSetupSkipAssignments,
+        "11_v1_import_billing": migrateV1ImportBilling,
+        "12_v1_import_displacement": migrateV1ImportDisplacement,
+        "13_v1_import_into": migrateV1ImportInto,
+        "14_v1_import_into_integrations": migrateV1ImportIntoIntegrations,
+        "15_v1_legacy_urls": migrateV1LegacyUrls,
+        "16_v1_captured_api_keys": migrateV1CapturedApiKeys,
       });
     });
     yield* migrateHostedDatabase(setup.options, cloudMigrations).pipe(

@@ -10,7 +10,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Cause, Context, Effect, Option, Schema } from "effect";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
 import {
-  Authentication,
+  SessionAuthentication,
   HostedExecutor,
   OrganizationBilling,
   OrganizationIcons,
@@ -71,14 +71,14 @@ export class OrganizationRemoval extends Cloudflare.Workflow<OrganizationRemoval
     // these: the Worker's context also holds its own scope, and providing that to a run would
     // replace the run's scope, so per-execution resources would outlive the run.
     const services = yield* Effect.context<
-      HostedExecutor | OrganizationIcons | OrganizationRemovals | Authentication | Billing
+      HostedExecutor | OrganizationIcons | OrganizationRemovals | SessionAuthentication | Billing
     >().pipe(
       Effect.map(
         Context.pick(
           HostedExecutor,
           OrganizationIcons,
           OrganizationRemovals,
-          Authentication,
+          SessionAuthentication,
           Billing,
         ),
       ),

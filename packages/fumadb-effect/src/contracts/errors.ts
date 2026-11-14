@@ -85,3 +85,26 @@ export class MigrationError extends Schema.TaggedError<MigrationError>("fumadb/M
     cause: Schema.optionalKey(Schema.Defect()),
   },
 ) {}
+
+const creationSteps = {
+  clear: "remove the unfinished copy left beside",
+  create: "create a new copy beside",
+  "set aside": "move aside the unrecognised contents of",
+  "move into place": "move the new copy into place as",
+} as const;
+
+/**
+ * Creating a persistent PGlite database failed at `step`. `database` is the name of its directory,
+ * and `code` the system error code, when there was one.
+ */
+export class PgliteCreationFailed extends Schema.TaggedError<PgliteCreationFailed>(
+  "fumadb/PgliteCreationFailed",
+)("PgliteCreationFailed", {
+  database: Schema.String,
+  step: Schema.Literals(["clear", "create", "set aside", "move into place"]),
+  code: Schema.optional(Schema.String),
+}) {
+  override get message(): string {
+    return `Could not ${creationSteps[this.step]} the database ${this.database}${this.code === undefined ? "" : ` (${this.code})`}.`;
+  }
+}

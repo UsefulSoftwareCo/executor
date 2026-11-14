@@ -2,7 +2,6 @@
 import { Effect, Result, Schema } from "effect";
 import { Base64 } from "effect/encoding";
 import {
-  checkApp,
   isPublicSourcePath,
   publicFits,
   publicSourcePrefix,
@@ -389,6 +388,16 @@ export const Branch = Schema.String.check(
   Schema.isPattern(/^[a-zA-Z0-9_][a-zA-Z0-9/_-]{0,127}$/u),
   Schema.makeFilter((value) => !value.endsWith("/") && !value.includes("//")),
 );
+/**
+ * The most bytes one of the app's own files the build compiles as JavaScript or TypeScript may
+ * hold. Files of the npm packages it imports are not limited and compile however large they are.
+ * esbuild compiles each file in a single synchronous stretch on the thread that serves the host's
+ * requests; this bounds the work it does on any one of the app's files, not a whole build, which
+ * with several large files, or a large package file, can still hold that thread for seconds. JSON files are outside this limit on purpose: the app's own server JSON imports
+ * become modules of their own, and JSON in packages or the browser build goes through esbuild's
+ * JSON loader. `ui/public/` files are never compiled. `sourceLimits` still bounds the whole source.
+ */
+export const compiledFileLimit = 2_000_000;
 /** Recent source history is metadata, separate from the files at each immutable revision. */
 export const GitCommit = Schema.Struct({
   commit: SourceCommit,

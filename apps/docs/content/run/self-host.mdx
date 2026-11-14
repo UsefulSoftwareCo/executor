@@ -27,13 +27,15 @@ These settings override the defaults:
 | `EXECUTOR_ENVIRONMENT`               | no       | Label for this deployment. The default is `self-host`.                   |
 | `EXECUTOR_APP_UI_BASE_URL`           | no       | HTTPS origin that serves app web pages. See below.                       |
 | `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH`  | no       | Let app code reach your private network. See below.                      |
+| `EXECUTOR_TRUSTED_PROXIES`           | no       | Comma-separated addresses of your reverse proxies, so rate limits count each client behind them. List only proxies. See below. |
 | `EXECUTOR_APP_WORKERS` | no | Most app and data Workers kept loaded at once. The default is `64`. See below. |
 | `EXECUTOR_APP_WORKER_IDLE_SECONDS` | no | Unload an app or data Worker not called for this long; `0` keeps idle Workers loaded up to the limit. The default is `300`. See below. |
 | `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
-| `EXECUTOR_CATALOG_URL`               | no       | `index.json` of the official app feed that **Add app** lists. Without it, Add app lists only the built-in Executor app. |
+| `EXECUTOR_CATALOG_URL`               | no       | `index.json` of the official app feed that onboarding and **Add app** list. The default is `https://catalog.executor.sh/index.json`; `off` lists only the built-in Executor app, for an instance without outbound internet access. |
 | `EXECUTOR_REGISTRY_URL`              | no       | Origin of the public app registry. The default is `https://api.executor.sh`. |
 | `EXECUTOR_TOOL_LISTING_FRESH_SECONDS` | no     | Reuse an app's evaluated tool list this long before refreshing it in the background. The default is `30`. |
-| `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | no  | Never serve an evaluated tool list older than this; `0` evaluates every list. The default is `86400`. |
+| `EXECUTOR_TOOL_LISTING_RENEW_SECONDS` | no     | Renew the tool lists search serves in the background once they are this old. The default is `86400`. |
+| `EXECUTOR_TOOL_LISTING_MAX_AGE_SECONDS` | no  | Never serve an evaluated tool list older than this; `0` evaluates every list. The default is `604800`. |
 | `EXECUTOR_TOOL_LISTING_LOAD_SECONDS` | no     | Stop evaluating an app's tool list after this long when no request is waiting for it; capped at the maximum age. The default is `45`. |
 | `EXECUTOR_EVALUATION_MEMORY_MB`      | no       | Memory for kept tool lists and app declarations. The default is `256`.  |
 | `EXECUTOR_NPM_REGISTRY`              | no       | npm registry that app builds install packages from. The default is `https://registry.npmjs.org`. |
@@ -72,6 +74,11 @@ too, so a call of such an app can keep two Workers loaded.
 does not, browser sign-in is rejected as an invalid origin. Railway detection uses `RAILWAY_PUBLIC_DOMAIN`. Origins are never inferred
 from a request header. Set `BETTER_AUTH_URL` when you use a custom domain.
 
+On a home or office network without TLS, set `BETTER_AUTH_URL` to the plain HTTP
+address you open, such as `http://192.168.1.20:4400`. Browsers give such a page no
+secure context, and the dashboard does not need one. App web pages still need an
+HTTPS origin; see [Serving app web pages](#serving-app-web-pages).
+
 Keep `<BETTER_AUTH_URL>/api/oauth/callback` reachable; connecting a provider
 account by OAuth uses it. The SSO callback is
 `<BETTER_AUTH_URL>/api/auth/callback/sso`.
@@ -87,7 +94,7 @@ from the internet, so turn this on only when that URL is reachable publicly over
 HTTPS. Startup fails for any other address on your own origin. Clients your users
 already registered or entered stay in use when you turn this on.
 
-The bundled Motel collector records traces by default. You can export to your own collector instead. See
+The bundled telemetry collector records traces by default. You can export to your own collector instead. See
 [Tracing](/run/tracing).
 
 ## Run it
@@ -101,8 +108,44 @@ The volume retains your data and keys across container restarts.
 
 The container publishes port `4400` on loopback only, as
 `127.0.0.1:4400`. Put your own TLS terminator in front of it and forward to that
-port. Startup initializes the embedded database before it opens HTTP, so the
-first boot takes a moment.
+port, and add `-e BETTER_AUTH_URL=<origin>` to the run command with the exact
+origin people will open. [Private access with Tailscale](#private-access-with-tailscale)
+shows one way.
+
+The server opens its embedded database as soon as it starts. Until that
+finishes, every request, including the health check at `/health`, gets an
+immediate `503` with `Executor is starting`. The first boot creates the database, which can take a
+minute or more on slower hardware such as a NAS. Watch its progress with
+`docker logs -f executor-v2`: the log says `Executor is still starting` every
+15 seconds, then `Executor is ready at <BETTER_AUTH_URL>` once it serves
+requests. Docker reports the container healthy after that line.
+
+Sign-in and the other auth routes are rate-limited per client address. Behind a
+reverse proxy every request comes from the proxy, so all clients share its
+limits. Set `EXECUTOR_TRUSTED_PROXIES` to the addresses your proxies connect
+from; the Docker image and the Compose build read it. A request from a listed
+address takes its client from `X-Forwarded-For`, read from the right past every
+listed address. Each proxy must append the address it received the request from,
+as Caddy, Traefik and nginx's `$proxy_add_x_forwarded_for` do. When every listed
+address is such a proxy and no client connects from one, a client can't pick its
+own address by sending that header. Requests from any other address, or with the
+setting empty, use the connection's address.
+
+List each proxy's exact address, or a range that holds only your proxies. Anything
+that connects from a listed address can choose the address it is limited and
+recorded under, so do not list a Docker subnet other containers share, and never
+list `0.0.0.0/0` or `::/0`.
+
+- A proxy on the host connects from the gateway of the container's Docker
+  network, often `172.17.0.1` for `docker run` and different under Compose.
+  `docker inspect` on the container shows it as each network's `Gateway`. The
+  loopback-only port keeps remote clients off, but every process on the host
+  arrives from that same gateway, so listing it trusts all of them.
+- A proxy container connects from its own address. Give it a fixed address and
+  list that.
+- For Cloudflare Tunnel, list the address `cloudflared` connects from, by the same
+  rules: Cloudflare appends each visitor's address to `X-Forwarded-For` and
+  `cloudflared` passes it on.
 
 Stop it with:
 
@@ -113,6 +156,49 @@ docker stop executor-v2
 The first person to finish setup becomes the owner, and one organization is
 created. After that, people join through invitations, or through SSO when you
 have configured it.
+
+## Health checks
+
+`/health` answers `200` once the server is ready. The thread that answers it also runs the rest of
+the product and commits its storage, syncing each commit to disk before it continues, so on a slow
+disk every response, `/health` included, can wait seconds behind one commit. With 30 apps running
+schedules on a desktop disk, `/health` took up to 16.5 seconds (99th percentile 12.9 seconds); on a
+disk limited to 5 writes a second, up to 34 seconds.
+
+The image's own check allows 30 seconds a probe and marks the container unhealthy after three
+failures in a row: a server that stops answering is marked unhealthy within three minutes, and one
+that never answers from its first boot after about five. 30 seconds covers every stall measured on
+the desktop disk but not the slowest answer on the throttled one, so on a disk that slow a check can
+still fail now and then; only three failures in a row count. Give your own probes the same room:
+
+- **Kubernetes.** A probe's `timeoutSeconds` defaults to 1 second, which ordinary commit stalls on a
+  slow disk exceed. When a liveness probe fails `failureThreshold` times in a row, the kubelet
+  restarts the container; one failed probe does not. Give a readiness probe the liveness probe's
+  timeout.
+
+  ```yaml
+  startupProbe:
+    httpGet: { path: /health, port: 4400 }
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 18 # about three minutes, whether probes fail at once or time out
+  livenessProbe:
+    httpGet: { path: /health, port: 4400 }
+    periodSeconds: 30
+    timeoutSeconds: 30
+    failureThreshold: 3
+  ```
+
+  Until the server is ready, `/health` answers `503` at once, and one success ends the startup
+  probe, so it can wait less than the liveness probe: its 18 attempts take about three minutes
+  either way. With these settings a server that stops answering is restarted 90 to 120 seconds
+  later, or 60 to 90 seconds once its connections are refused, plus the pod's termination grace
+  period.
+
+- **Railway** checks `/health` only while a deployment starts, to decide when to send it traffic,
+  and does not probe a running service. Set the path to `/health` and the timeout to 120 seconds.
+- **Docker Compose or another supervisor** with its own check: allow 30 seconds a probe and three
+  failures, for example `timeout: 30s`, `interval: 30s` and `retries: 3`.
 
 ## Deploy on Railway
 
@@ -132,6 +218,49 @@ For a custom domain, set `BETTER_AUTH_URL` to that exact HTTPS origin. App web
 pages need the additional wildcard domain described below; the dashboard, API,
 and MCP endpoint use the service domain.
 
+## Private access with Tailscale
+
+Tailscale Serve gives the server a private HTTPS address on your tailnet, with
+no public DNS, port forwarding or certificate to manage. Install Tailscale on
+the host that runs Docker, keep the container on loopback, and point Serve at
+it. This example uses HTTPS port `4443`, for a host where another service
+already uses `443`:
+
+```bash
+docker run -d --name executor-v2 --init --restart unless-stopped \
+  -p 127.0.0.1:4400:4400 -v executor-v2-data:/app/data \
+  -e BETTER_AUTH_URL=https://<machine>.<tailnet>.ts.net:4443 \
+  ghcr.io/usefulsoftwareco/executor-selfhost:beta
+tailscale serve --bg --https=4443 http://127.0.0.1:4400
+```
+
+`tailscale serve status` shows the address. `BETTER_AUTH_URL` must match it
+exactly, including a port other than `443`; without the port, browser sign-in
+is rejected as an invalid origin. Changing Serve needs administrator rights on
+the host; on Synology, run it over SSH with `sudo`.
+
+The MCP endpoint is then `https://<machine>.<tailnet>.ts.net:4443/mcp`. Every
+device that opens the dashboard or runs an MCP client must be on the tailnet.
+For Codex:
+
+```bash
+codex mcp add executor --url 'https://<machine>.<tailnet>.ts.net:4443/mcp'
+codex mcp login executor
+```
+
+What works with a tailnet-only address:
+
+| Feature | Tailnet only |
+| --- | --- |
+| Dashboard, MCP endpoint, and client sign-in | Yes |
+| Connecting a provider account by OAuth | Yes. The provider redirects your browser, which is on the tailnet, to `/api/oauth/callback`. |
+| `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | No. The service fetches the document from the internet. |
+| App webhooks | No. The service delivers them to your origin, so it must reach it. |
+| App web pages | No. They need a wildcard domain and certificate, and Tailscale certificates cover only the machine's own name. See [Serving app web pages](#serving-app-web-pages). |
+
+Tailscale Funnel can publish the address on the internet for the features
+that need it. Funnel accepts only ports `443`, `8443` and `10000`.
+
 ## Storage
 
 Everything that must survive a restart lives in the named volume `executor-v2-data`,
@@ -139,14 +268,17 @@ mounted at `/app/data`. This includes the database, app source and builds, app
 data and generated keys (`auth-secret.key` and `encryption.key`).
 The key files are readable only by the server user. Back up the whole volume.
 
-Motel stores telemetry separately at `/app/motel-data`. Replacing the container
+The telemetry collector stores telemetry separately at `/app/motel-data` (`EXECUTOR_MOTEL_DATA_DIR`;
+the name is historical, from Motel, the collector earlier images ran). Replacing the container
 discards that telemetry by default. Mount a separate volume there if you need
-to retain it. Motel keeps telemetry until the first of three bounds is reached:
-seven days, one million spans or 1 GiB, evicting the oldest traces first. A busy
-server reaches 1 GiB first, so it may keep only the last hours or minutes of
-traces. When exports arrive faster than Motel can store them, it refuses the
-excess rather than holding it in memory, and it counts every export it does not
-store. The server log reports those losses.
+to retain it. The collector keeps telemetry for seven days and at most 1 GiB, evicting the oldest
+first. A busy server reaches 1 GiB first, so it may keep only the last hours of traces. When
+exports arrive faster than it can store them, it refuses the excess rather than holding it in
+memory, and it counts every export it does not store; `executor-host telemetry /api/ingest`
+reports the counts. Images that ran Motel left its store, up to about 1 GiB, in a `motel` folder
+there; the collector neither reads nor removes it. Without a volume at `/app/motel-data` it went with
+the old container; with one, delete it by hand with
+`docker exec executor-v2 rm -rf /app/motel-data/motel`.
 
 If you supply keys through environment variables, keep those values in your
 secret manager as well; Executor does not save those overrides to disk. Keep
@@ -195,3 +327,29 @@ command.
 
 The MCP endpoint is `<your origin>/mcp`. Sign-in happens in the browser, the
 same way as hosted. See [Add an MCP client](/mcp-clients).
+
+## Move from a local Executor
+
+A self-hosted server starts empty. Nothing is copied from the local Executor
+on your computer or from Executor 1, and the two keep running separately.
+
+1. **Add your apps again.** Install them from **Add app**. To deploy your own,
+   sign in with `executor apps login --host <your origin>`, then pass the same
+   `--host` to the other `executor apps` commands.
+2. **Connect your accounts again.** Credentials are encrypted with each
+   server's own key and do not transfer. Connect each account from its app's
+   page.
+3. **Back up the new server.** Its apps, accounts, credentials and app data all
+   live in the data volume, together with the keys that decrypt them. Back up
+   the whole volume as described in [Storage](#storage).
+4. **Replace each client's old entry.** Remove the local or Executor 1 entry
+   first; one that starts `executor mcp` belongs to Executor 1, which served
+   MCP over stdio. For Codex, run `codex mcp remove executor`, then add your
+   endpoint as in [Connect an agent](#connect-an-agent). For Claude Code, run
+   `claude mcp remove executor --scope user`. The [Executor 1
+   commands](/run/cli#coming-from-executor-1) map to their replacements.
+5. **Start a new client session.** Most clients load MCP servers only when a
+   session starts.
+6. **Check it works.** Ask the agent to [search the tools](/mcp-clients#check-that-it-worked),
+   then to call one read-only tool from an app you added, such as a list or
+   search tool.

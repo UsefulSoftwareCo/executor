@@ -16,11 +16,11 @@ import {
   Exit,
   FileSystem,
   Layer,
-  Redacted,
   Result,
   Schedule,
 } from "effect";
 import { Target, driver, type DriverFailed } from "./platform.ts";
+import { reveal, safeText } from "./failure-text.ts";
 import { targetHosts } from "./role-hosts.ts";
 import { splitRoutedReads } from "./read-batches.ts";
 import { Evidence } from "./evidence.ts";
@@ -49,8 +49,27 @@ const visitorUserAgent = (browser: NativeBrowser) =>
       }
     : {};
 
+/**
+ * CI installs WebKit only on the e2e-cloud runner whose scenario patterns name Safari (`webkit`
+ * in .github/actions/e2e-tools). A WebKit scenario anywhere else stops here with the fix, instead
+ * of a redacted launch failure.
+ */
+const requireWebKit = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  if (yield* fs.exists(webkit.executablePath()).pipe(Effect.orDie)) return;
+  return yield* Effect.die(
+    new Error(
+      "WebKit is not installed on this machine: run `bunx playwright install --with-deps webkit`. " +
+        "In CI, .github/actions/e2e-tools installs it only with `webkit: true`, which the e2e-cloud " +
+        "job passes when its scenario patterns name Safari. Name Safari in the scenario's title, or " +
+        "pass the input on the job that runs it.",
+    ),
+  );
+});
+
 const captureBrowser = (engine: BrowserType) =>
   Effect.gen(function* () {
+    if (engine === webkit) yield* requireWebKit;
     const target = yield* Target;
     return yield* launchBrowser(
       {
@@ -123,6 +142,17 @@ export class Browser extends Context.Service<
       yield* driver("route batched reads through test routes", () =>
         splitRoutedReads(context, targetHosts(target).browser),
       );
+      // Every page's uncaught errors and console errors, masked, for the evidence of any case
+      // that raised one. The first 200 are kept.
+      const pageErrors: { kind: "page" | "console"; page: string; text: string }[] = [];
+      const pageError = (kind: "page" | "console", from: Page | null, text: string) => {
+        if (pageErrors.length < 200)
+          pageErrors.push({ kind, page: safeText(from?.url() ?? "unknown"), text: safeText(text) });
+      };
+      context.on("weberror", (error) => pageError("page", error.page(), String(error.error())));
+      context.on("console", (message) => {
+        if (message.type() === "error") pageError("console", message.page(), message.text());
+      });
       // `E2E_COVERAGE=1` records the JavaScript coverage of every page Chromium opens, from its first
       // script, for `e2e/coverage.ts` to map to the dashboards' sources.
       const fs = yield* FileSystem.FileSystem;
@@ -207,6 +237,7 @@ export class Browser extends Context.Service<
           }
           yield* evidence.json("navigation.json", navigations);
           yield* evidence.json("failed-resources.json", failedResources);
+          if (pageErrors.length > 0) yield* evidence.json("page-errors.json", pageErrors);
           for (const id of traceIds) yield* evidence.browserTrace(id);
         }),
       );
@@ -390,9 +421,7 @@ export class Browser extends Context.Service<
               Effect.gen(function* () {
                 yield* driver("clear browser cookies", () => context.clearCookies());
                 const cookies = yield* session.cookies;
-                yield* driver("set actor session", () =>
-                  context.addCookies([...Redacted.value(cookies)]),
-                );
+                yield* driver("set actor session", () => context.addCookies([...reveal(cookies)]));
               }),
             );
           }),

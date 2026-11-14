@@ -29,6 +29,7 @@ import { previousToolRunCompletion } from "../support/release-cb81bce6b.ts";
 import { startDevelopmentServer } from "../support/managed-server.ts";
 import { Target } from "../support/platform.ts";
 import { connectionsPath } from "../support/app-accounts.ts";
+import { siteless } from "../support/failure-site.ts";
 
 // A refresh that runs until its 30 s background limit unless cancelled.
 const slowRefresh = `const slowRefresh = (signal) => new Promise((resolve) => {
@@ -55,10 +56,10 @@ export default defineApp({}, async (ctx) => ({
 
 // `fails` throws after approval, as an upstream that rejects the approved write; `forged` throws
 // an error dressed as Executor's own expiry; `held` waits on the gate, counts its run, then throws;
-// `approved` succeeds. All need approval on every call.
+// `approved` succeeds. All need approval on every call. `broken` is a read that always fails.
 const approvalAppSource = (
   gate: string,
-) => `import { defineApp, mutation, object, router } from "apps";
+) => `import { defineApp, mutation, object, query, router } from "apps";
 import { always } from "apps/operations/approval";
 export default defineApp({}, async () => ({ tools: router({
   fails: mutation({ input: object({}), approval: always() }, async () => {
@@ -77,6 +78,9 @@ export default defineApp({}, async () => ({ tools: router({
     throw error;
   }),
   approved: mutation({ input: object({}), approval: always() }, async () => ({ ran: true })),
+  broken: query({ input: object({}) }, async () => {
+    throw new Error("The later lookup failed");
+  }),
 }) }));`;
 
 // The second read serves the cached value and starts a refresh that outlasts the result.
@@ -797,6 +801,23 @@ const Pending = Schema.Struct({
   requestId: Schema.String,
 });
 
+/** A failed execution's error with the phase it stopped and the reference of its request. */
+const Located = Schema.Struct({
+  execution: Schema.Struct({
+    error: Schema.Struct({
+      message: Schema.String,
+      response: Schema.Struct({ phase: Schema.String, reference: Schema.String }),
+    }),
+  }),
+});
+
+/** The trace the client sent with its latest request, which the server continues. */
+const latestTrace = Effect.gen(function* () {
+  const trace = (yield* (yield* Evidence).requests).at(-1)?.traceId;
+  if (trace === undefined) throw new Error("The request trace was not recorded");
+  return trace;
+});
+
 type Connected = Effect.Success<ReturnType<Effect.Success<typeof McpClient>["connect"]>>;
 
 /** Run one execute and return its decoded completed result with the client's elapsed time. */
@@ -1034,11 +1055,22 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
           `return await ${app}.fails({});`,
           "resume-fails-pending.json",
         );
+        const started = yield* latestTrace;
         const resumed = yield* resumeOnce(
           client,
           "Approve at once a call that then fails",
           failing,
           "resume-fails-result.json",
+        );
+        // The failure names the resume that met and reports it, not the execute that started the
+        // program, in the summary and the structured response alike.
+        const resuming = yield* latestTrace;
+        expect(resuming).not.toBe(started);
+        const approvedFailure = (yield* Schema.decodeUnknownEffect(Located)(resumed)).execution
+          .error;
+        expect(approvedFailure.response).toEqual({ phase: "call", reference: resuming });
+        expect(approvedFailure.message.endsWith(` Phase: call. Reference: ${resuming}.`)).toBe(
+          true,
         );
         const failed = yield* Schema.decodeUnknownEffect(Failed)(resumed);
         expect(failed.execution.error.kind).toBe("ToolFailure");
@@ -1051,6 +1083,28 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
           .error;
         expect(response).toMatchObject({ code: "ToolCallFailed", retryable: false });
         expectUnknownOutcome(response.recovery);
+
+        // So does a later call that fails once the approval let the program continue.
+        const continuing = yield* pendingApproval(
+          client,
+          "Ask to approve a call before a read that fails",
+          `await ${app}.approved({});\nreturn await ${app}.broken({});`,
+          "resume-later-pending.json",
+        );
+        const continued = yield* latestTrace;
+        const later = (yield* Schema.decodeUnknownEffect(Located)(
+          yield* resumeOnce(
+            client,
+            "Approve the call, then fail the next one",
+            continuing,
+            "resume-later-result.json",
+          ),
+        )).execution.error;
+        const laterResume = yield* latestTrace;
+        expect(laterResume).not.toBe(continued);
+        expect(later.message).toContain("The later lookup failed");
+        expect(later.response).toEqual({ phase: "call", reference: laterResume });
+        expect(later.message.endsWith(` Phase: call. Reference: ${laterResume}.`)).toBe(true);
 
         // A dashboard run's review receives the same failure with its answer.
         const run = yield* body(
@@ -1578,7 +1632,7 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
         const { error } = (yield* Schema.decodeUnknownEffect(Failed)(rejected.structured))
           .execution;
         // The problem names the keys the object takes; the supplied text is not echoed.
-        expect(error.message).toBe(
+        expect(siteless(error.message)).toBe(
           "InputInvalid (HTTP 422): Input failed validation: input.query: Expected object {text, limit?} Recovery: Change the input to the shape each problem expects, then call the tool again. Retryable (unchanged call): no.",
         );
         // `retryable: false` is about the unchanged call: a program that corrects the input makes
@@ -1604,7 +1658,10 @@ try { return await find({query: "fixture text"}); } catch (error) {
         );
         // An optional object is described by its keys, not as a union with undefined.
         expect(
-          (yield* Schema.decodeUnknownEffect(Failed)(optional.structured)).execution.error.message,
+          siteless(
+            (yield* Schema.decodeUnknownEffect(Failed)(optional.structured)).execution.error
+              .message,
+          ),
         ).toBe(
           "InputInvalid (HTTP 422): Input failed validation: input.filter: Expected object {tag} Recovery: Change the input to the shape each problem expects, then call the tool again. Retryable (unchanged call): no.",
         );
@@ -1616,7 +1673,9 @@ try { return await find({query: "fixture text"}); } catch (error) {
         );
         // A union reached through a recursive reference is described like any other.
         expect(
-          (yield* Schema.decodeUnknownEffect(Failed)(nested.structured)).execution.error.message,
+          siteless(
+            (yield* Schema.decodeUnknownEffect(Failed)(nested.structured)).execution.error.message,
+          ),
         ).toBe(
           "InputInvalid (HTTP 422): Input failed validation: input.child: Expected object {child?, name, ...} or object {child?, id, ...}. Closest is alternative 1, whose problems follow; input.child.name: Missing key Recovery: Change the input to the shape each problem expects, then call the tool again. Retryable (unchanged call): no.",
         );
@@ -1731,7 +1790,7 @@ return messages;`,
         // The agent learns that the app's own policy refused the call and not to repeat it, not
         // only the error's name. The policy is the app's code and ran after the app received the
         // mutation, so the refusal does not show that nothing changed.
-        expect(error.message).toBe(
+        expect(siteless(error.message)).toBe(
           `ToolBlocked (HTTP 403): The approval policy in the app’s code denied this call to “remove”. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expect(error.response).toEqual({ code: "ToolBlocked", status: 403 });
@@ -2269,7 +2328,7 @@ export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON
         const { message, response } = (yield* Schema.decodeUnknownEffect(ToolFailed)(
           executed.structured,
         )).execution.error;
-        expect(message).toBe(
+        expect(siteless(message)).toBe(
           `ToolCallFailed (HTTP 502): The app’s MCP server did not answer the tool call in time, so Executor stopped waiting. The server may still finish it. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expect(message).not.toContain("The app threw");
@@ -2302,7 +2361,9 @@ export default defineApp({}, async () => ({ tools: await mcpRouter({ url: ${JSON
               "The server may still complete the first attempt. For a read, you may retry once; if it times out again, check the server’s status before repeating it. Reduce the input only if that still meets the task. Do not expose credentials.",
           },
         });
-        expect(read.message).toMatch(/ Retryable \(unchanged call\): yes\.$/);
+        expect(read.message).toMatch(
+          / Retryable \(unchanged call\): yes\. Phase: [a-z]+\. Reference: [0-9a-f]{32}\.$/,
+        );
         // A program can follow the flag: it repeats the read once, unchanged, and stops there.
         const retried = yield* executeOnce(
           app.client,
@@ -2371,7 +2432,7 @@ try { return await call(); } catch (error) {
           write.response.recovery,
           "For a call that only reads, the advice for this failure is: “Retry at most once.",
         );
-        expect(write.message).toBe(
+        expect(siteless(write.message)).toBe(
           `ToolCallFailed (HTTP 502): The request to the app’s MCP server failed before the server answered the tool call, so Executor cannot tell whether the server ran it. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expect(write.message).not.toContain("Try again");
@@ -2393,7 +2454,9 @@ try { return await call(); } catch (error) {
               "Retry at most once. If it fails again, check the server’s status and connection.",
           },
         });
-        expect(read.message).toMatch(/ Retryable \(unchanged call\): yes\.$/);
+        expect(read.message).toMatch(
+          / Retryable \(unchanged call\): yes\. Phase: [a-z]+\. Reference: [0-9a-f]{32}\.$/,
+        );
         // The server ran every call exactly once: Executor repeated none of them.
         expect(yield* server.droppedCalls).toEqual(["lookup", "lookup", "peek"]);
       }).pipe(Effect.provide(McpClient.layer)),
@@ -2443,7 +2506,7 @@ try { return await call(); } catch (error) {
         const { message, response } = (yield* Schema.decodeUnknownEffect(ToolFailed)(
           executed.structured,
         )).execution.error;
-        expect(message).toBe(
+        expect(siteless(message)).toBe(
           `ToolCallFailed (HTTP 502): The app’s MCP server did not answer the tool call in time, so Executor stopped waiting. The server may still finish it. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expect(response).toMatchObject({ code: "ToolCallFailed", retryable: false });
@@ -2587,6 +2650,11 @@ return { failed: failed.isError, text: failed.content[0].text, read: read.isErro
             path: `${tools}.remote.lookup`,
             ok: true,
             value: { isError: true, content: [{ type: "text", text: reportedError }] },
+            // The result says the tool failed, so the call's log reference is beside it.
+            callLog: {
+              reference: expect.stringMatching(/^call_[0-9a-hjkmnp-tv-z]{14}$/u),
+              note: expect.stringContaining("tool call log"),
+            },
           },
           calls: [[`${tools}.remote.lookup`, "failure"]],
         });
@@ -2661,7 +2729,9 @@ return { failed: failed.isError, text: failed.content[0].text, read: read.isErro
           expectUnknownOutcome(response.recovery);
           expect(message).toContain(`(HTTP ${status}) while calling a tool.`);
           expect(
-            message.endsWith(` Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`),
+            siteless(message).endsWith(
+              ` Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
+            ),
           ).toBe(true);
           // A read right after the failure shows nothing saved, yet the change still lands.
           expect(
@@ -2757,7 +2827,7 @@ return { failed: failed.isError, text: failed.content[0].text, read: read.isErro
             "Try again. If this continues, check the MCP server’s address and status. Use the reported phase and error to identify the failure. Check the server URL, transport or access settings only when relevant. Do not expose credentials.",
           ),
         );
-        expect(write.message).toBe(
+        expect(siteless(write.message)).toBe(
           `AppEvaluationFailed (HTTP 502): ${unreachable} Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         // Both calls saved their record before the MCP connection failed.
@@ -2833,7 +2903,7 @@ return { failed: failed.isError, text: failed.content[0].text, read: read.isErro
         expect(configure.response.recovery.instructions).toContain(
           "For a call that only reads, the advice for this failure is: “Try again. If this continues, investigate this error and fix its cause.",
         );
-        expect(configure.message).toBe(
+        expect(siteless(configure.message)).toBe(
           `AppEvaluationFailed (HTTP 502): ${optionsFailure} Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         // One record for each call: the agent was not told to repeat either.
@@ -3018,7 +3088,7 @@ return { failed: failed.isError, text: failed.content[0].text, read: read.isErro
               `write-failure-${mode}-kind-mismatch.json`,
             )).structured,
           )).execution.error;
-          expect(mismatched.message).toBe(
+          expect(siteless(mismatched.message)).toBe(
             `ToolKindMismatch (HTTP 409): The tool “ToolKindMismatch” is a query, but it was called as a mutation. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
           );
           // A REST caller that cannot present the approval prompt is told the call may have
@@ -3072,10 +3142,7 @@ return { failed: failed.isError, text: failed.content[0].text, read: read.isErro
           expect(skill.body).toMatchObject({ skills: { reason: "request", status: 503 } });
           // The calls ran where the case says: the facet loads its build in facet mode.
           yield* telemetry
-            .spans("runtime.app.build.load", {
-              "executor.app.id": app.id,
-              "executor.runtime.mode": mode,
-            })
+            .spans("runtime.app.build.load", { app: app.id }, { "executor.runtime.mode": mode })
             .pipe(
               Effect.flatMap((spans) =>
                 spans.length > 0
@@ -3178,7 +3245,7 @@ return { failed: failed.isError, text: failed.content[0].text, read: read.isErro
           .execution.error;
         expect(failed.response).toMatchObject({ code: "StorageError", retryable: false });
         expectUnknownOutcome(failed.response.recovery);
-        expect(failed.message).toBe(
+        expect(siteless(failed.message)).toBe(
           `StorageError (HTTP 500): Executor could not read or write its saved data. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
         );
         expectNoRepeatAdvice(failed.response.recovery.instructions, "MCP");

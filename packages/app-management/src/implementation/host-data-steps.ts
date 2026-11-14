@@ -30,6 +30,12 @@ import {
   profileAppCopiesStepName,
   type ProfileAppCopiesHost,
 } from "./profile-app-copies.ts";
+import {
+  unremovableWebhooksStep,
+  unremovableWebhooksStepName,
+  type UnremovableWebhooksHostServices,
+} from "./unremovable-webhooks.ts";
+import { agentGrantModesStep, agentGrantModesStepName } from "./agent-grant-modes.ts";
 import type { SqlClient } from "effect/sql";
 import type { DataStep } from "../contracts/data-steps.ts";
 
@@ -41,7 +47,8 @@ export type DataStepHost = FrameworkPinHost &
   StoredOAuthClientsHost &
   LocalOwnersHost &
   OAuthClientsByIssuerHost &
-  ProfileAppCopiesHost;
+  ProfileAppCopiesHost &
+  UnremovableWebhooksHostServices;
 
 /**
  * A step by its journal name. A `local` step is listed only by a host that passes local owners:
@@ -92,6 +99,12 @@ const listedSteps: ReadonlyArray<ListedStep> = [
   { name: savedOAuthClientsByIssuerStepName, step: savedOAuthClientsByIssuerStep },
   // One-off: make the app copies SDK storage 4.0.13 planned for profiles with other accounts.
   { name: profileAppCopiesStepName, step: profileAppCopiesStep },
+  // One-off: hand webhook registrations saved without their source, which no removal can finish,
+  // to a person to remove at the provider.
+  { name: unremovableWebhooksStepName, step: unremovableWebhooksStep },
+  // One-off: store on each MCP grant the approval mode its consent's resource named, now that the
+  // grant record, not the URL, holds it.
+  { name: agentGrantModesStepName, step: agentGrantModesStep },
 ];
 
 export const hostDataSteps = (host: DataStepHost): ReadonlyArray<DataStep<SqlClient.SqlClient>> =>
@@ -132,7 +145,7 @@ export const runStartupDataSteps = <Journal extends DataStepJournal>(
 ) =>
   Effect.gen(function* () {
     const mode = yield* startupDataStepMode;
-    const status = yield* runDataSteps(hostDataSteps(host), {
+    const { status } = yield* runDataSteps(hostDataSteps(host), {
       journal,
       mode,
       report: `startup-${yield* Clock.currentTimeMillis}`,

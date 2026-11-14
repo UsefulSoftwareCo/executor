@@ -1,6 +1,6 @@
 /**
  * Cloud's role hosts (`notes/cloud-domains.md`): `app.` serves the dashboard and sign-in, `mcp.`
- * MCP and its discovery, `api.` the API, its discovery and app webhooks, and the edge (standing in
+ * MCP and its discovery, `api.` the API, its discovery, MCP discovery naming `mcp.` and app webhooks, and the edge (standing in
  * for `executor.sh`) the issuer's metadata and provider returns. The deployment origin keeps
  * everything but browser pages. Each grant is for one resource and works at every origin of that
  * resource's kind. Every request's server span names the host it arrived at and that host's role.
@@ -89,6 +89,9 @@ layer(HostedLive, { excludeTestServices: true })("Cloud role hosts", (it) => {
           [origin, "/.well-known/oauth-protected-resource/mcp", `${origin}/mcp`],
           [apiHost, "/.well-known/oauth-protected-resource/api", `${apiHost}/api`],
           [origin, "/.well-known/oauth-protected-resource/api", `${origin}/api`],
+          // `api.` is not an MCP origin, so its MCP discovery names the canonical one on `mcp.`:
+          // the host the CLI signs in to says where its MCP endpoint is.
+          [apiHost, "/.well-known/oauth-protected-resource/mcp", `${mcp}/mcp`],
         ] as const) {
           const response = yield* rawRequest(`${at}${path}`);
           expect(response.status, `${at}${path}`).toBe(200);
@@ -146,7 +149,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud role hosts", (it) => {
           [mcp, hook, { method: "POST", body: "{}" }],
           [apiHost, "/mcp", mcpPost(key)],
           [apiHost, `/org/${actors.organization.slug}/mcp`, mcpPost(key)],
-          [apiHost, "/.well-known/oauth-protected-resource/mcp"],
+          [apiHost, "/.well-known/oauth-protected-resource"],
           [apiHost, "/api/auth/get-session"],
           [apiHost, "/api/entry"],
           [apiHost, "/api/oauth/callback"],
@@ -154,18 +157,20 @@ layer(HostedLive, { excludeTestServices: true })("Cloud role hosts", (it) => {
           [app, "/mcp", mcpPost(key)],
           [app, `/org/${actors.organization.slug}/mcp`, mcpPost(key)],
           [app, "/.well-known/oauth-protected-resource/mcp"],
-          [edge, "/mcp", mcpPost(key)],
-          [edge, "/login"],
-          [edge, inventory, bearer(key)],
-          [edge, "/api/auth/get-session"],
-          [edge, "/api/auth/oauth2/token", { method: "POST" }],
-          [edge, "/.well-known/oauth-protected-resource/mcp"],
-          [edge, "/api/auth/callback"],
-          // No OpenID configuration exists, so the edge forwards none.
-          [edge, "/api/auth/.well-known/openid-configuration"],
         ];
         for (const [at, path, init] of refused)
           expect((yield* rawRequest(`${at}${path}`, init)).status, `${at}${path}`).toBe(404);
+        // The edge serves none of v2's API or Better Auth's endpoints: under `/api` it answers as
+        // v1's API, gone. No OpenID configuration exists either. What else it serves in v1's place
+        // once v1 shuts down is `cloud-v1-shutdown.spec.ts`'s.
+        const edgeRefused: ReadonlyArray<readonly [string, RequestInit?]> = [
+          [inventory, bearer(key)],
+          ["/api/auth/get-session"],
+          ["/api/auth/oauth2/token", { method: "POST" }],
+          ["/api/auth/.well-known/openid-configuration"],
+        ];
+        for (const [path, init] of edgeRefused)
+          expect((yield* rawRequest(`${edge}${path}`, init)).status, `${edge}${path}`).toBe(410);
         // The deployment origin keeps MCP, the API and Better Auth's client endpoints.
         expect((yield* rawRequest(`${origin}/mcp`, mcpPost())).status).toBe(401);
         expect((yield* rawRequest(`${origin}/api/auth/get-session`)).status).toBe(200);
@@ -362,6 +367,133 @@ layer(HostedLive, { excludeTestServices: true })("Cloud role hosts", (it) => {
           expect(JSON.stringify(server), request.role).not.toContain(marker);
           expect(server.tags["url.full"]).toBeUndefined();
           expect(server.tags["url.query"]).toBeUndefined();
+        }
+      }),
+    ),
+  );
+
+  it.effect(scenarios.cloudInvocationSurface.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          target = yield* Target,
+          telemetry = yield* Telemetry;
+        const origin = target.metadata.origin;
+        const mcp = roleHost(origin, "mcp"),
+          apiHost = roleHost(origin, "api"),
+          app = roleHost(origin, "app"),
+          edge = roleHost(origin, "edge");
+        const issued = yield* api.request(actors.owner, "POST", "/api/auth/api-key/create", {
+          name: "Cloud invocation surface",
+        });
+        expect(issued.status).toBe(200);
+        const pat = yield* body(Token, issued);
+        yield* Effect.addFinalizer(() =>
+          api
+            .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: pat.id })
+            .pipe(Effect.orDie),
+        );
+        const key = Redacted.value(pat.key);
+        // A private value in each query string and in two user agents; no record may carry it.
+        const marker = `private-${randomUUID()}`;
+        const browserAgent =
+          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36";
+        const requests = [
+          {
+            url: `${mcp}/mcp?marker=${marker}`,
+            init: {
+              ...mcpPost(key),
+              headers: {
+                ...mcpPost(key).headers,
+                "x-executor-organization": actors.organization.id,
+              },
+            },
+            agent: `claude-code/2.1.0 (cli; ${marker})`,
+            status: 200,
+            expected: { role: "mcp", group: "mcp", family: "claude-code" },
+          },
+          {
+            url: `${apiHost}/api/organizations/${actors.organization.id}/inventory?marker=${marker}`,
+            init: bearer(key),
+            agent: "python-httpx/0.28.1",
+            status: 200,
+            expected: { role: "api", group: "api", family: "sdk" },
+          },
+          {
+            url: `${origin}/api/webhooks/${randomUUID()}/${randomUUID()}?marker=${marker}`,
+            init: { method: "POST", headers: {}, body: "{}" },
+            agent: `${marker}/1.0`,
+            status: undefined,
+            expected: { role: "deployment", group: "webhooks", family: "other" },
+          },
+          {
+            url: `${app}/login?marker=${marker}`,
+            init: { headers: { accept: "text/html" } },
+            agent: browserAgent,
+            status: 200,
+            expected: { role: "app", group: "document", family: "browser" },
+          },
+          {
+            url: `${edge}/api/auth/callback/github?code=${marker}&state=${marker}`,
+            init: { headers: {} },
+            agent: "curl/8.7.1",
+            status: 302,
+            expected: { role: "edge", group: "auth", family: "cli" },
+          },
+        ] as const;
+        const sent = [];
+        for (const request of requests) {
+          const traceId = randomBytes(16).toString("hex"),
+            parent = randomBytes(8).toString("hex");
+          const response = yield* rawRequest(request.url, {
+            ...request.init,
+            headers: {
+              ...request.init.headers,
+              "user-agent": request.agent,
+              traceparent: `00-${traceId}-${parent}-01`,
+            },
+          });
+          if (request.status !== undefined)
+            expect(response.status, request.url).toBe(request.status);
+          sent.push({ request, traceId });
+        }
+        // The API Worker's own invocation record. An MCP session object's record of the same
+        // request can arrive minutes later, past this scenario's deadline, so it is not awaited.
+        const apiWorker = ({
+          span,
+        }: {
+          readonly span: { readonly tags: Record<string, string> };
+        }) =>
+          span.tags["cloudflare.script_name"]?.startsWith("executor-next-hosted-api") === true &&
+          span.tags["cloudflare.entrypoint"] === undefined;
+        for (const { request, traceId } of sent) {
+          // The Tail receiver records each invocation shortly after it ends.
+          const span = yield* telemetry
+            .search("cloudflare.invocation", { requestTrace: traceId })
+            .pipe(
+              Effect.flatMap(({ data }) => {
+                const record = data.find(apiWorker);
+                return record === undefined
+                  ? Effect.fail(new Error(`No invocation record yet for ${request.url}`))
+                  : Effect.succeed(record.span);
+              }),
+              Effect.retry({ schedule: Schedule.spaced("1 second"), times: 40 }),
+            );
+          expect(
+            {
+              role: span.tags["executor.host_role"],
+              group: span.tags["executor.route.group"],
+              family: span.tags["executor.client.family"],
+            },
+            request.url,
+          ).toEqual(request.expected);
+          // Neither the URL nor the user agent is recorded, in any form.
+          for (const recorded of ["url.full", "url.path", "url.query", "user_agent.original"])
+            expect(span.tags[recorded], request.url).toBeUndefined();
+          expect(JSON.stringify(span), request.url).not.toContain(marker);
+          expect(JSON.stringify(span), request.url).not.toContain(request.agent);
         }
       }),
     ),

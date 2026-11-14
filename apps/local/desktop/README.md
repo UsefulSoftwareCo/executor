@@ -243,7 +243,7 @@ saves it as `port` in `service.json`, keeping its other settings, and restarts t
 server. A bind can still race another process after the check. An invalid `service.json` locks
 the form and names the file.
 
-**File → Rotate local API key…** confirms, stops the background server, runs `executor
+**File → Rotate local API key…** confirms, stops the background server, runs `executor service
 rotate-key` with the same runtime and starts the server again. That replaces the API key where the
 data directory keeps it (OS credential store or `keys.json`) and retains the encryption key, so
 saved accounts and MCP sign-ins still work. Browser sessions are unaffected; scripts and clients
@@ -255,7 +255,7 @@ so the menu explains that they must be changed where they are set.
 reveals it. It contains a manifest (versions, platform, origin, port source, data directory) and
 the allowlisted files from `diagnostics/`: the rotating `executor-*.jsonl` logs and
 `collector.json`, at most 50 MiB each and 14 days old. Keys, `installation.json`, databases,
-retained builds, the browser profile and Motel's trace store are never read. Logs are already
+retained builds, the browser profile and the telemetry collector's store are never read. Logs are already
 redacted at the source; the export additionally masks bearer values, `pair`/`token`/`code`/`state`
 URL parameters, 64-digit hex runs and credential-named JSON fields.
 
@@ -283,7 +283,7 @@ from this workspace launcher. Windows and Linux have not been verified.
 
 ## Persistent diagnostics
 
-The background server runs the Motel collector and persists traces and logs under the
+The background server runs the telemetry collector and persists traces and logs under the
 data directory's `diagnostics/`. The Electron parent records startup, connections,
 recovery and renderer messages in `executor-desktop.jsonl` beside them. See
 [telemetry](../../../notes/telemetry.md#frontend-lifetime-and-local-diagnostics)

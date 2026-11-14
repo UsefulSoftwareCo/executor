@@ -3,7 +3,13 @@ import { RegistryContext, useAtomRefresh, useAtomValue } from "@effect/atom-reac
 import { useContext, useState, type ReactNode } from "react";
 import { Cause, Effect, Exit, Option, Predicate } from "effect";
 import type { App, DeployedApp } from "@executor-js/sdk";
-import type { CatalogEntry } from "@executor-js/catalog/contracts";
+import type {
+  CatalogEntry,
+  CatalogFeedState,
+  CatalogListing,
+} from "@executor-js/catalog/contracts";
+import { InformationCircleIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import type {
   QueryProps,
   MutationProps,
@@ -22,6 +28,8 @@ import {
   DialogTitle,
 } from "../components/dialog.tsx";
 import { Input } from "../components/input.tsx";
+import { Alert, AlertDescription, AlertTitle } from "../components/alert.tsx";
+import { ErrorNotice } from "./error-notice.tsx";
 import { useIncrementalList } from "./incremental-list.tsx";
 
 /**
@@ -37,6 +45,55 @@ export function installedCatalogApps(apps: readonly App[] | undefined): Readonly
       installed.set(name, app);
   }
   return installed;
+}
+
+/**
+ * Why Executor's official apps are missing from a listing: this instance turned its catalog off, or
+ * the server could not read the feed. Renders nothing when the feed was listed.
+ */
+export function CatalogFeedNotice({
+  feed,
+  retry,
+  retrying,
+  layout,
+}: {
+  readonly feed: CatalogFeedState;
+  readonly retry: () => void;
+  /** The listing is being read again, so Try again shows that it is checking. */
+  readonly retrying: boolean;
+  readonly layout?: "inline" | "compact";
+}) {
+  switch (feed.status) {
+    case "listed":
+      return null;
+    case "unavailable":
+      return (
+        <ErrorNotice
+          error={feed.error}
+          context="Executor could not list the official apps in its app catalog."
+          retry={retry}
+          retrying={retrying}
+          retryStatus="Checking the app catalog"
+          layout={layout}
+        />
+      );
+    case "off":
+      return (
+        <Alert role="note" className="border-border bg-muted/30 [&>svg]:text-muted-foreground">
+          <HugeiconsIcon icon={InformationCircleIcon} size={16} aria-hidden />
+          <AlertTitle role="heading" aria-level={3} className="line-clamp-none leading-5">
+            App catalog turned off
+          </AlertTitle>
+          <AlertDescription className="text-[13px] text-muted-foreground">
+            <p>
+              Executor’s official apps are not listed because this instance’s app catalog is turned
+              off. Whoever runs it can list them by removing{" "}
+              <code className="font-mono text-[12px]">EXECUTOR_CATALOG_URL=off</code>.
+            </p>
+          </AlertDescription>
+        </Alert>
+      );
+  }
 }
 
 /** Runs one catalog entry's install and resolves with that entry's own result. */
@@ -76,7 +133,7 @@ export function CatalogPage<E, IE>({
   create,
   inventory,
   open,
-}: QueryProps<readonly CatalogEntry[], E> & {
+}: QueryProps<CatalogListing, E> & {
   /** The install command for one catalog entry; each row has its own. */
   readonly mutation: (entry: string) => MutationProps<InstallApp, DeployedApp, IE>["mutation"];
   readonly InstallFailure: MutationProps<InstallApp, DeployedApp, IE>["Failure"];
@@ -129,10 +186,11 @@ export function CatalogPage<E, IE>({
   const renaming = conflict !== undefined && adding.has(conflict.entry.id);
   const retry = useAtomRefresh(query);
   const [search, setSearch] = useState("");
-  const templates = AsyncResult.value(result);
+  const listing = AsyncResult.value(result);
+  const feed = Option.isSome(listing) ? listing.value.feed : undefined;
   const term = search.trim().toLowerCase();
   // Name matches come first; the rest keep the feed's order.
-  const entries = (Option.isSome(templates) ? templates.value : [])
+  const entries = (Option.isSome(listing) ? listing.value.apps : [])
     .filter((entry) =>
       `${entry.name} ${entry.package} ${entry.category ?? ""} ${entry.description}`
         .toLowerCase()
@@ -161,10 +219,15 @@ export function CatalogPage<E, IE>({
       }
     >
       {AsyncResult.isFailure(result) && <Failure cause={result.cause} retry={retry} />}
+      {feed && (
+        <CatalogFeedNotice feed={feed} retry={retry} retrying={AsyncResult.isWaiting(result)} />
+      )}
       {failure && conflict === undefined && <InstallFailure cause={failure} />}
       {!entries.length && AsyncResult.isInitial(result) ? (
         <CatalogRowsSkeleton />
-      ) : !entries.length && AsyncResult.isFailure(result) ? null : !entries.length ? (
+      ) : !entries.length &&
+        (AsyncResult.isFailure(result) ||
+          (!search && feed && feed.status !== "listed")) ? null : !entries.length ? (
         <Empty
           title={search ? "No matching apps" : "No apps available"}
           action={
