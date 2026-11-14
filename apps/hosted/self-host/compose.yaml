@@ -20,7 +20,8 @@ services:
       # Optional operator-owned feedback receiver, independent of anonymous analytics.
       EXECUTOR_FEEDBACK_WEBHOOK_URL:
       EXECUTOR_FEEDBACK_WEBHOOK_SECRET:
-      # Optional client-IP assertion, accepted only from the configured proxy peers.
+      # Optional override of X-Forwarded-For for client-IP assertions from trusted peers.
+      # Requires EXECUTOR_TRUSTED_PROXIES; see README "Rate limits behind a proxy".
       EXECUTOR_TRUSTED_PROXY_HEADER:
       # OAuth transport exceptions are explicit and parsed at startup.
       EXECUTOR_URL_ALLOW_LOOPBACK_HTTP:
@@ -44,8 +45,7 @@ services:
       # The official app feed's index.json that onboarding and Add app list. The default is
       # https://catalog.executor.sh/index.json; set it to off without outbound internet access.
       EXECUTOR_CATALOG_URL:
-      # Public app registry origin. The default is https://api.executor.sh.
-      EXECUTOR_REGISTRY_URL:
+      # This fork uses its own organization registry; EXECUTOR_REGISTRY_URL has no effect.
 
       # Optional HTTPS app origin base. Localhost derives it from BETTER_AUTH_URL.
       EXECUTOR_APP_UI_BASE_URL:

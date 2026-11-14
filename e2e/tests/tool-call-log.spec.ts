@@ -1606,11 +1606,12 @@ catch (error) { return { caught: { message: error.message, reference: typeof err
         const statuses: Record<string, ReadonlyArray<string>> = {
           "400": ["AccountChoiceUnsupported", "RequestInvalid"],
           "401": ["Unauthorized"],
-          "403": ["Forbidden", "OrganizationForbidden", "ToolBlocked"],
+          "403": ["ConnectionKeyRefused", "Forbidden", "OrganizationForbidden", "ToolBlocked"],
           "404": ["AccountNotFound", "AppNotFound", "ToolNotFound", "VersionNotFound"],
           "409": [
             "AccountRequired",
             "AppNotDeployed",
+            "ConnectionAccountUnlinked",
             "OAuthReconnectRequired",
             "ToolApprovalRequired",
             "ToolKindMismatch",

@@ -455,6 +455,9 @@ const beforeTheApp = [
   "Unauthorized",
   "Forbidden",
   "OrganizationForbidden",
+  // Fork connection authorization and pinned-link checks refuse before app code runs.
+  "ConnectionKeyRefused",
+  "ConnectionAccountUnlinked",
   "AuthenticationUnavailable",
   "AccountChoiceUnsupported",
   "AppNotFound",

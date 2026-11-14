@@ -9650,8 +9650,14 @@ export const scenarios = plan({
     title:
       "a member's shared key becomes an app's own account when an editor links it, and runs every caller's calls",
     targets: {
-      "self-host": scheduled,
-      cloud: scheduled,
+      "self-host": {
+        status: "not-run",
+        reason: "Pending product decision: notes/personal-account-model-decision.md (PR #92).",
+      },
+      cloud: {
+        status: "not-run",
+        reason: "Pending product decision: notes/personal-account-model-decision.md (PR #92).",
+      },
       local: na("Local has one subject, so there is no other member's account to share."),
     },
   },

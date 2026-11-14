@@ -67,6 +67,8 @@ jobs:
       - name: Security scenarios
         run: |
           bun run e2e:self-host -- --test-name 'application_type|fetch without a User-Agent names Executor|cannot create an all-apps connection|cannot widen a connection or mint|fails to load fails only its own reads'
+      - name: Tool error contract scenarios
+        run: bun run e2e:self-host --test-name 'Every error tools/call and tools/run declare|Every error a write reports after its app code received the call'
       - name: Operator feedback scenarios
         run: bun run e2e:self-host --test-name 'self-host feedback webhook|self-host with DO_NOT_TRACK|self-host analytics pseudonymize|Hosted feedback enforces'
       # Run the large cold catalog alone, not beside the functional scenarios' servers.

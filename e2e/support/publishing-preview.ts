@@ -1,6 +1,7 @@
 /** Exercise the shared dialog with server-result fixtures; registry authorization is tested separately. */
 import { Effect, Schema } from "effect";
 import { Browser } from "./browser.ts";
+import { Target } from "./platform.ts";
 import { type ReceivedResponse, replaceResponses } from "./browser-responses.ts";
 
 type WorkspaceDisplay = { readonly revision: { readonly commit: string } };
@@ -20,6 +21,7 @@ export const publishingPreview = (
 ) =>
   Effect.gen(function* () {
     const browser = yield* Browser;
+    const { metadata } = yield* Target;
     const listings = (url: URL) => url.pathname.endsWith("/app-publications/published");
     /** Add `fields` to the server's real answer for the reads whose path ends with `path`. */
     const extend = (
@@ -41,6 +43,7 @@ export const publishingPreview = (
       });
     yield* extend(`/apps/${app}/authoring`, "Real authoring access must succeed", () => ({
       canPublish: true,
+      publicationAudience: metadata.target === "self-host" ? "organization" : "public",
     }));
     yield* extend(
       `/apps/${app}/workspace/display`,
