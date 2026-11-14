@@ -12,6 +12,7 @@ import type { Response } from "./platform.ts";
 import { appsManifest } from "./apps-release.ts";
 import {
   removeAppWhenStopped,
+  confirmWebhookRemoval,
   settleWebhookSubscriptions,
   webhookSubscriptions,
 } from "./webhook-sources.ts";
@@ -185,11 +186,9 @@ export const appLinksFixture = (files: ReadonlyArray<{ path: string; content: st
             if (row.status !== "disabled" || confirmed.has(row.id)) continue;
             confirmed.add(row.id);
             const as = (row.actor === null ? undefined : sessions.get(row.actor)) ?? actor;
-            const removal = yield* api.request(
-              as,
-              "POST",
-              `${appPath}/webhooks/${row.id}/confirm-removal`,
-            );
+            // A removal pass still running from the unlink above answers with a conflict until it
+            // ends; confirmWebhookRemoval waits it out.
+            const { response: removal } = yield* confirmWebhookRemoval(as, appPath, row.id);
             expect(removal.status, JSON.stringify(removal.body)).toBe(200);
             expect(yield* body(Subscription, removal)).toEqual({ id: row.id, status: "stopped" });
           }

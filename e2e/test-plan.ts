@@ -345,6 +345,19 @@ export const scenarios = plan({
       local: na("Local has no device verification page; its clients open a browser."),
     },
   },
+  deviceAuthorizationPolling: {
+    fixtures: "actors",
+    file: "device-login.spec.ts",
+    title:
+      "Device authorization answers a full ten minutes of polling at the interval with RFC 8628 errors, never the address limit",
+    targets: {
+      cloud: na(
+        "Deployed test stages run with the auth rate limit off; self-host runs the same limiter on.",
+      ),
+      "self-host": scheduled,
+      local: na("Local has no device verification page; its clients open a browser."),
+    },
+  },
   cloudRoleHostGrants: {
     fixtures: "actors",
     file: "cloud-role-hosts.spec.ts",
@@ -642,8 +655,18 @@ export const scenarios = plan({
   mcpCatalogScale: {
     fixtures: "actors",
     file: "mcp-catalog-scale.spec.ts",
+    title: "MCP execute over 7,000 tools loads only the apps a program uses",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback stalled MCP server; the shared execute path is covered on self-host"),
+      local: na("Hosted version API scenario"),
+    },
+  },
+  mcpCatalogStalledApps: {
+    fixtures: "actors",
+    file: "mcp-catalog-scale.spec.ts",
     title:
-      "MCP execute over 7,000 tools loads only the apps a program uses and isolates stalled apps",
+      "MCP execute beside stalled apps answers programs that do not use them and reports the stalled apps at once",
     targets: {
       "self-host": scheduled,
       cloud: na("Loopback stalled MCP server; the shared execute path is covered on self-host"),
@@ -5010,11 +5033,43 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
+  appAccountSetupLinks: {
+    fixtures: "actors",
+    file: "app-account-picker.spec.ts",
+    title: "Old app setup links open the Accounts tab, also through sign-in, and settle there",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted app account controls and organization permissions."),
+    },
+  },
   appAccountPicker: {
     fixtures: "actors",
     file: "app-account-picker.spec.ts",
     title:
-      "App accounts open from old setup links, link, replace and unlink in place, keep failed changes and offer to delete unused accounts",
+      "App accounts list each requirement's choices in place, keep failed links, unlinks and refreshes retryable, and offer to delete an unused account",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted app account controls and organization permissions."),
+    },
+  },
+  appAccountConnect: {
+    fixtures: "actors",
+    file: "app-account-picker.spec.ts",
+    title:
+      "App accounts connect a new account and link it to its requirement in one step, offer it to the others, and delete it once unlinked from its last use",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("Hosted app account controls and organization permissions."),
+    },
+  },
+  appAccountReplace: {
+    fixtures: "actors",
+    file: "app-account-picker.spec.ts",
+    title:
+      "App accounts replace a plain requirement's account in place, fit a phone, show no controls without access to the app, and drop the links of deleted accounts",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -8627,7 +8682,62 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "app-account-webhooks.spec.ts",
     title:
-      "an app-linked account is the app's webhook source without an actor, serving the webhooks of the requirements it is linked to, also while its owner links it for themselves, and hands the source to the owner's user link when its last app link goes",
+      "an app-linked account is the app's webhook source without an actor, serving the webhooks of the requirements it is linked to",
+    targets: {
+      local: na("Hosted managers and members; Local app-account webhooks have their own scenario."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppAccountWebhookUnlinkOne: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "unlinking an app's account from one of its requirements stops only that requirement's webhook and keeps the other's",
+    targets: {
+      local: na("Hosted managers and members; Local app-account webhooks have their own scenario."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppAccountWebhookBothScopes: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "an account linked for the app and by its owner for themselves stays one source serving its app link, and only its owner may link it for themselves",
+    targets: {
+      local: na("Hosted managers and members; Local app-account webhooks have their own scenario."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppAccountWebhookMovesSource: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "linking the owner's own account for the app moves its webhook source to the app link, and unlinking it hands the source back to the owner",
+    targets: {
+      local: na("Hosted managers and members; Local app-account webhooks have their own scenario."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppAccountWebhookCommandSpans: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "each app-account webhook command's runtime span names its app and the part of the webhook's life it ran",
+    targets: {
+      local: na("Hosted managers and members; Local app-account webhooks have their own scenario."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppAccountWebhookHandBack: {
+    fixtures: "actors",
+    file: "app-account-webhooks.spec.ts",
+    title:
+      "an app's account hands its source to the owner's user link when its last app link goes, and unlinking that link removes the source",
     targets: {
       local: na("Hosted managers and members; Local app-account webhooks have their own scenario."),
       "self-host": scheduled,
@@ -8671,9 +8781,42 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "account-webhook-dependencies.spec.ts",
     title:
-      "deleting an account a live webhook registration ran with is refused naming that subscription, over REST and through the Executor app, while a disabled registration holds only its source account",
+      "deleting an account a live webhook registration ran with is refused naming that subscription over REST, until the registration stops",
+    targets: {
+      local: na("This scenario uses the hosted organization fixture and its routes."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAccountWebhookDependenciesAgent: {
+    fixtures: "actors",
+    file: "account-webhook-dependencies.spec.ts",
+    title:
+      "an agent deleting an account a live webhook registration ran with through the Executor app is refused naming that subscription",
+    targets: {
+      local: na("This scenario uses the hosted organization fixture and its routes."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAccountWebhookStrandedRegistration: {
+    fixtures: "actors",
+    file: "account-webhook-dependencies.spec.ts",
+    title:
+      "a webhook registration Executor could not remove after its source's owner left waits disabled and does not hold the account it registered with",
     targets: {
       local: na("Local has no organization members to depart."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAccountWebhookManualSource: {
+    fixtures: "actors",
+    file: "account-webhook-dependencies.spec.ts",
+    title:
+      "a disabled manual webhook holds its source account, naming itself in the refusal, until its removal is confirmed",
+    targets: {
+      local: na("This scenario uses the hosted organization fixture and its routes."),
       "self-host": scheduled,
       cloud: scheduled,
     },
@@ -9106,11 +9249,44 @@ export const scenarios = plan({
       local: na("This scenario uses hosted app management routes."),
     },
   },
-  appDataLimits: {
+  appDataMigrationHistory: {
     fixtures: "actors",
     file: "app-data-limits.spec.ts",
     title:
-      "app SQL migrations keep their history and apply all or nothing, and queries never commit",
+      "applied app SQL migrations cannot be edited, renamed, removed or replaced, and a misnamed migration file is refused",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted app deploy and tool call routes."),
+    },
+  },
+  appDataMigrationApply: {
+    fixtures: "actors",
+    file: "app-data-limits.spec.ts",
+    title:
+      "an app SQL migration that fails applies none of the deploy's migrations, and a migration's trailing comments change nothing",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted app deploy and tool call routes."),
+    },
+  },
+  appDataWithoutDatabase: {
+    fixtures: "actors",
+    file: "app-data-limits.spec.ts",
+    title:
+      "an app without migrations has no database, and reactivating a version from before its migrations does not let a later deploy drop them",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted app deploy and tool call routes."),
+    },
+  },
+  appDataQueries: {
+    fixtures: "actors",
+    file: "app-data-limits.spec.ts",
+    title:
+      "app SQL queries never commit, settings and transactions cannot be loosened, and large reads, writes and lists are not capped",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,

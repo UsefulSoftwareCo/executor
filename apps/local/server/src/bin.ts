@@ -36,6 +36,7 @@ import {
   upgradeCommand,
 } from "./contracts/startup.ts";
 import { LocalConfigurationError } from "./contracts/auth.ts";
+import { exitLine } from "./implementation/exit-line.ts";
 import { processOutput } from "./implementation/process-output.ts";
 import { outdatedCli } from "./implementation/update-notice.ts";
 import { ensure, standalone } from "./implementation/service-client.ts";
@@ -107,6 +108,11 @@ const cli = executorCommand.pipe(
         Effect.gen(function* () {
           if (service && stdio)
             return yield* new CliError.UserError({ cause: "Use --service or --stdio, not both." });
+          // A foreground server says how long its stop took, as its last line on stderr. It is the
+          // only mode that logs there (`server-process.ts`): a private `--stdio` server's stderr is
+          // copied to the command that started it, which asked for no server, and a background
+          // server's goes to the command that started it until it is ready.
+          if (!service && !stdio) processOutput.last(exitLine);
           return yield* loaded(serverProcess, ({ serveProcess }) =>
             processOutput.serve(
               serveProcess({

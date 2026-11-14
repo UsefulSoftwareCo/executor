@@ -735,6 +735,57 @@ it.live(
         expect(yield* fs.readFileString(path.join(evidence, "executor-desktop.jsonl"))).toContain(
           "Synthetic failure while quitting",
         );
+        // The release workflow's evidence step files the folder under this scenario, so a failed
+        // run's scenario evidence holds it, not only the job's diagnostics archive.
+        const { currentTestName, testPath } = expect.getState();
+        const report = path.join(directory, "results.json");
+        yield* fs.writeFileString(
+          report,
+          JSON.stringify({
+            testResults: [
+              {
+                name: testPath ?? "",
+                assertionResults: [
+                  {
+                    title: currentTestName ?? "",
+                    status: "failed",
+                    failureMessages: [error.message],
+                  },
+                ],
+              },
+            ],
+          }),
+        );
+        // Only this close's folder, so an earlier run's folders cannot stand in for it.
+        const failures = path.join(directory, "failures");
+        yield* fs.makeDirectory(failures);
+        yield* fs.copy(evidence, path.join(failures, path.basename(evidence)));
+        const filed = path.join(directory, "filed");
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const gathered = yield* processes.exitCode(
+          ChildProcess.make(
+            process.execPath,
+            ["e2e/release-evidence.ts", "vitest", filed, "local", failures, report],
+            { stdout: "ignore", stderr: "inherit" },
+          ),
+        );
+        expect(gathered, "release-evidence.ts exit code").toBe(0);
+        const scenarios = path.join(filed, "release", "local", "report", "evidence");
+        const [id = ""] = yield* fs.readDirectory(scenarios);
+        const kept = yield* fs
+          .readFileString(path.join(scenarios, id, "desktop-1", "quit.json"))
+          .pipe(
+            Effect.flatMap(
+              Schema.decodeUnknownEffect(
+                Schema.fromJsonString(Schema.Struct({ pid: Schema.Number })),
+              ),
+            ),
+            Effect.option,
+          );
+        expect(
+          Option.getOrUndefined(kept),
+          "the hung close's folder is filed under this scenario's evidence",
+        ).toEqual({ pid });
         // The failed close ended the desktop, so its scenario's clean-up runs.
         expect(
           yield* Effect.try(() => process.kill(pid, 0)).pipe(

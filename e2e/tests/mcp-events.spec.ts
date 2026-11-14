@@ -199,9 +199,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP events", (it) => {
               .map((delivery) => delivery.id);
           expect(to(granted.id)).toEqual([first]);
           expect(to(everything.id).sort()).toEqual([first, other].sort());
-          const firstBody = yield* Schema.decodeUnknownEffect(Occurrence)(
-            tracked(delivered)[0]!.body,
-          );
+          // Deliveries to the two subscriptions arrive in no set order; read Issue 1's by its ID.
+          const firstDelivery = tracked(delivered).find((delivery) => delivery.id === first);
+          expect(firstDelivery, "Issue 1's delivery").toBeDefined();
+          const firstBody = yield* Schema.decodeUnknownEffect(Occurrence)(firstDelivery!.body);
           expect(firstBody.data).toEqual({ title: "Issue 1", number: 1 });
 
           // The same upstream event, emitted again, is not delivered again.

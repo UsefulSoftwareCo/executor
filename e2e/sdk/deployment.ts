@@ -3,10 +3,15 @@ import { Clock, Config, Console, Effect, FileSystem, Path, Schedule, Schema } fr
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { randomBytes } from "node:crypto";
-import { createEmulatorFixture, emulatorRequest } from "../support/emulators.ts";
+import {
+  createEmulatorFixture,
+  emulatorRequest,
+  EmulatorRetryRecords,
+} from "../support/emulators.ts";
 
 import { startFixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
 import { captureRemovalStalls } from "./removal-evidence.ts";
+import { confirmBranchDeleted } from "./branch-deleted.ts";
 import { heldValue, reveal, secretConfig } from "../support/failure-text.ts";
 
 class DeployedTestFailed extends Schema.TaggedError<DeployedTestFailed>()("DeployedTestFailed", {
@@ -81,6 +86,12 @@ export const startDeployment = ({
       ).pipe(
         Effect.andThen(fs.writeFileString(path.join(directory, "destroyed.json"), "{}")),
         Effect.timeout("12 minutes"),
+        // Whether or not the destroy succeeded, a branch it left must fail the run by name.
+        Effect.ensuring(
+          database === "planetscale"
+            ? confirmBranchDeleted(slug).pipe(Effect.timeout("3 minutes"), Effect.orDie)
+            : Effect.void,
+        ),
         Effect.orDie,
       ),
     );
@@ -95,13 +106,16 @@ export const startDeployment = ({
         ),
       ),
     );
-    const fixture = yield* createEmulatorFixture(origin);
+    const fixture = yield* createEmulatorFixture(origin).pipe(
+      Effect.provideService(EmulatorRetryRecords, { directory }),
+    );
     yield* Effect.addFinalizer(() =>
       Effect.forEach(
         Object.values(reveal(fixture).services),
         (service) =>
           emulatorRequest(service.baseUrl, "/_emulate/reset", {}).pipe(
             Effect.catch(() => Console.error("Could not reset one external test emulator.")),
+            Effect.provideService(EmulatorRetryRecords, { directory }),
           ),
         { concurrency: 5, discard: true },
       ),
@@ -202,6 +216,7 @@ export const startDeployment = ({
       origin,
       directory,
       slug,
+      startedAt: new Date(started),
       appUiBaseUrl,
       fixtures,
       emulators,

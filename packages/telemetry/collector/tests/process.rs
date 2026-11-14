@@ -1,5 +1,6 @@
 //! The built `executor-collector` binary as a process: stopping, its socket, acknowledging only
-//! stored exports, creating its store when interrupted, and returning memory after a burst.
+//! stored exports, creating its store when interrupted, deep nesting at the size limit and with
+//! a small stack in the environment, and returning memory after a burst.
 #![cfg(unix)]
 
 use std::io::{BufRead, BufReader, Read, Write};
@@ -652,6 +653,126 @@ fn a_gzip_bomb_is_refused_without_expanding_it() {
         peak_kib < 64 * 1024,
         "the collector's memory peaked at {peak_kib} KiB"
     );
+}
+
+/// 16 MiB, the default size limit, of deep nesting: as an attribute value and as an unknown field,
+/// complete or only opening brackets. Each answers within a few seconds, the collector stays up,
+/// and its memory stays within a few times the body. Complete exports keep every span.
+#[cfg(target_os = "linux")]
+#[test]
+fn sixteen_mib_of_nesting_is_answered_in_bounded_time_and_memory() {
+    const LIMIT: usize = 16 * 1024 * 1024;
+    let trace = "0af7651916cd43dd8448eb211c80319c";
+    // Three spans; the second has `attribute` among its attributes and `field` among its fields.
+    let export = |attribute: &str, field: &str| {
+        format!(
+            r#"{{"resourceSpans":[{{"scopeSpans":[{{"spans":[{{"traceId":"{trace}","spanId":"b7ad6b7169203331"}},{{"traceId":"{trace}","spanId":"b7ad6b7169203332"{field},"attributes":[{attribute}]}},{{"traceId":"{trace}","spanId":"b7ad6b7169203333"}}]}}]}}]}}"#
+        )
+    };
+    // `open` repeated, then `leaf`, then as many `close`, filling the body to the limit at `@`.
+    let fill = |template: String, open: &str, leaf: &str, close: &str| {
+        let room = LIMIT - (template.len() - 1) - leaf.len();
+        let levels = room / (open.len() + close.len());
+        let body = template.replacen(
+            '@',
+            &format!("{}{leaf}{}", open.repeat(levels), close.repeat(levels)),
+            1,
+        );
+        assert!(body.len() <= LIMIT && body.len() > LIMIT - 64);
+        body.into_bytes()
+    };
+    let in_value = export(r#"{"key":"deep","value":@}"#, "");
+    let in_field = export("", r#","other":@"#);
+    let leaf = r#"{"stringValue":"x"}"#;
+    let cases = [
+        (fill(in_value.clone(), "[", "", ""), 400),
+        (fill(in_field.clone(), "[", "", ""), 400),
+        (fill(in_field.clone(), "[", "", "]"), 200),
+        (
+            fill(
+                in_value.clone(),
+                r#"{"arrayValue":{"values":["#,
+                leaf,
+                "]}}",
+            ),
+            200,
+        ),
+        (
+            fill(
+                in_value.clone(),
+                r#"{"kvlistValue":{"values":[{"key":"k","value":"#,
+                leaf,
+                "}]}}",
+            ),
+            200,
+        ),
+    ];
+    for (index, (body, expected)) in cases.iter().enumerate() {
+        let scratch = Scratch::new(&format!("deep-{index}"));
+        let collector = Collector::start(&scratch.data(), &[]);
+        let started = Instant::now();
+        let (status, answer) = collector.post("/v1/traces", body);
+        let took = started.elapsed();
+        assert_eq!(status, *expected, "case {index}: {answer}");
+        // At most 0.5 s in a release build, 2.5 s in a debug build.
+        assert!(took < Duration::from_secs(10), "case {index} took {took:?}");
+        assert_eq!(collector.get("/api/health").0, 200, "case {index}");
+        let peak_kib: u64 = std::fs::read_to_string(format!("/proc/{}/status", collector.pid()))
+            .expect("status")
+            .lines()
+            .find_map(|line| line.strip_prefix("VmHWM:"))
+            .and_then(|value| value.trim().trim_end_matches("kB").trim().parse().ok())
+            .expect("VmHWM");
+        // At most about 90 MiB: the body, the value kept as text, and that text escaped as JSON
+        // twice, once inside its list and once among the span's attributes.
+        assert!(
+            peak_kib < 128 * 1024,
+            "case {index}: the collector's memory peaked at {peak_kib} KiB"
+        );
+        collector.stop();
+        let connection = Connection::open(scratch.database()).expect("open");
+        let spans = if *expected == 200 { 3 } else { 0 };
+        assert_eq!(
+            count(&connection, "SELECT count(*) FROM spans"),
+            spans,
+            "case {index}"
+        );
+    }
+}
+
+/// The stack of the threads that decode is the collector's own, not the environment's. Started
+/// with `RUST_MIN_STACK=65536`, a value as deep as is decoded, inside 64 key-value lists,
+/// overflowed a decoding thread's stack and ended the process.
+#[test]
+fn a_small_stack_in_the_environment_does_not_end_the_collector() {
+    let scratch = Scratch::new("small-stack");
+    let collector = Collector::spawn(
+        Command::new(BINARY)
+            .env("RUST_MIN_STACK", "65536")
+            .arg("serve")
+            .arg("--data")
+            .arg(scratch.data())
+            .args(["--listen", "127.0.0.1:0"]),
+    )
+    .unwrap_or_else(|(status, stderr)| {
+        panic!("the collector did not start ({status:?}): {stderr}")
+    });
+    let trace = "0af7651916cd43dd8448eb211c80319c";
+    let deep = format!(
+        r#"{}{{"stringValue":"x"}}{}"#,
+        r#"{"kvlistValue":{"values":[{"key":"k","value":"#.repeat(64),
+        "}]}}".repeat(64)
+    );
+    let export = format!(
+        r#"{{"resourceSpans":[{{"scopeSpans":[{{"spans":[{{"traceId":"{trace}","spanId":"b7ad6b7169203331"}},{{"traceId":"{trace}","spanId":"b7ad6b7169203332","attributes":[{{"key":"deep","value":{deep}}}]}},{{"traceId":"{trace}","spanId":"b7ad6b7169203333"}}]}}]}}]}}"#
+    );
+    let (status, answer) = collector.post("/v1/traces", export.as_bytes());
+    assert_eq!(status, 200, "{answer}");
+    assert_eq!(collector.get("/api/health").0, 200);
+    let (exit, stderr, _) = collector.stop();
+    assert!(exit.success(), "{exit:?}: {stderr}");
+    let connection = Connection::open(scratch.database()).expect("open");
+    assert_eq!(count(&connection, "SELECT count(*) FROM spans"), 3);
 }
 
 #[test]

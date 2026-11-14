@@ -1,39 +1,49 @@
 import { useMemo, useRef, Suspense } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import { useAtomValue } from "@effect/atom-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { AsyncResult } from "effect/reactivity";
 import { TelemetryClient } from "../../contracts/client.ts";
+import { pagedList } from "../../contracts/paging.ts";
 import {
   PageHeader,
-  RefreshButton,
+  RefreshListButton,
   LiveBadge,
   LoadingState,
   ErrorState,
   EmptyState,
+  ListEnd,
+  listCount,
+  usePagedList,
 } from "../components/shared.tsx";
 import { formatDuration, formatRelativeTime, serviceColor } from "../format.ts";
 
-const tracesQuery = (service: string | undefined) =>
+const tracesQuery = (service: string | undefined, cursor?: string) =>
   TelemetryClient.query("telemetry", "traces", {
-    query: { ...(service ? { service } : {}), limit: 500 },
+    query: { ...(service ? { service } : {}), ...(cursor ? { cursor } : {}), limit: 100 },
   });
+
+const tracesList = (service: string | undefined) =>
+  pagedList(
+    tracesQuery(service),
+    (cursor) => tracesQuery(service, cursor),
+    (trace) => trace.traceId,
+  );
 
 export function TracesPage() {
   const [searchParams] = useSearchParams();
   const service = searchParams.get("service") || undefined;
 
-  const tracesAtom = useMemo(() => tracesQuery(service), [service]);
+  const list = useMemo(() => tracesList(service), [service]);
 
   return (
     <div className="flex flex-col h-full">
       <PageHeader title={service ? `Traces / ${service}` : "Traces"}>
         <Suspense fallback={null}>
-          <RefreshButton atom={tracesAtom} />
+          <RefreshListButton list={list} />
         </Suspense>
       </PageHeader>
       <Suspense fallback={<LoadingState message="Loading traces..." />}>
-        <TraceTable atom={tracesAtom} />
+        <TraceTable list={list} />
       </Suspense>
     </div>
   );
@@ -41,13 +51,13 @@ export function TracesPage() {
 
 const ROW_HEIGHT = 44;
 
-function TraceTable({ atom }: { atom: ReturnType<typeof tracesQuery> }) {
+function TraceTable({ list }: { list: ReturnType<typeof tracesList> }) {
   const navigate = useNavigate();
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  const result = useAtomValue(atom);
-
-  const traces = AsyncResult.isSuccess(result) ? result.value.data : [];
+  const { state, loadMore, retry } = usePagedList(list);
+  const result = state.first;
+  const traces = state.rows;
 
   // oxlint-disable-next-line react/incompatible-library -- this build does not run the React Compiler
   const virtualizer = useVirtualizer({
@@ -76,7 +86,9 @@ function TraceTable({ atom }: { atom: ReturnType<typeof tracesQuery> }) {
         <table className="w-full">
           <thead className="sticky top-0 bg-zinc-950 z-10">
             <tr className="text-left text-sm text-zinc-500">
-              <th className="whitespace-nowrap pb-3 pl-6 pr-4 font-medium">Operation</th>
+              <th className="whitespace-nowrap pb-3 pl-6 pr-4 font-medium">
+                Operation <span className="text-zinc-600 tabular-nums">({listCount(state)})</span>
+              </th>
               <th className="whitespace-nowrap pb-3 px-4 font-medium">Service</th>
               <th className="whitespace-nowrap pb-3 px-4 font-medium text-right">Duration</th>
               <th className="whitespace-nowrap pb-3 px-4 font-medium text-right">Spans</th>
@@ -141,6 +153,7 @@ function TraceTable({ atom }: { atom: ReturnType<typeof tracesQuery> }) {
             )}
           </tbody>
         </table>
+        <ListEnd noun="traces" state={state} onLoadMore={loadMore} onRetry={retry} />
       </div>
     </div>
   );

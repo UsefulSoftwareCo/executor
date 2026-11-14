@@ -825,7 +825,7 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
     }),
   );
 
-  it.effect("a change to e2e: scripts alone is not a deploy input, and anything more is", () =>
+  it.effect("a change to e2e: scripts alone is not a deploy input", () =>
     Effect.gen(function* () {
       const tests = { "e2e/tests/example.spec.ts": "export const changed = 1;\n" };
       // A new spec registers its command; changing or removing one is the same.
@@ -842,6 +842,12 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
           "The root `package.json` changed only in `e2e:*` scripts, which no deploy step runs, so it is not counted.",
         );
       }
+    }),
+  );
+
+  it.effect("a root manifest that changes anything but e2e: scripts counts", () =>
+    Effect.gen(function* () {
+      const tests = { "e2e/tests/example.spec.ts": "export const changed = 1;\n" };
       // The unsafe direction: anything else in the manifest changes with it.
       const unsafe = {
         "a dependency": rootManifest({
@@ -863,6 +869,12 @@ layer(NodeServices.layer)("Deploy decision", (it) => {
         expect(run.deploy, name).toBe("true");
         expect(run.summary, name).toMatch(/- `package\.json`|Could not decide, so deploying/);
       }
+    }),
+  );
+
+  it.effect("a root manifest Bun may read otherwise, at either end, counts", () =>
+    Effect.gen(function* () {
+      const tests = { "e2e/tests/example.spec.ts": "export const changed = 1;\n" };
       // JSON.parse keeps a duplicated key's last copy, Bun its first: a first `scripts` object that
       // Bun runs must not hide behind an unchanged second one with a new e2e: script.
       const duplicated = (first: Record<string, string>) =>

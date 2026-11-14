@@ -1,14 +1,16 @@
 /**
  * A webhook subscription depends on its source account and on every account its registration ran
  * with. Deleting an account those subscriptions still use is refused, naming them; a subscription
- * that no longer uses the account does not hold it.
+ * that no longer uses the account does not hold it. Each case is its own scenario with its own app,
+ * so each waits only on its own registrations.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Deferred, Effect, Fiber, Schema } from "effect";
 import { body, type Session } from "../support/api.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { appLinksFixture, keyProvider, ok, okBody } from "../support/app-links.ts";
 import {
+  confirmWebhookRemoval,
   settleWebhookSubscriptions,
   webhookSubscriptions,
   type WebhookSubscriptionRow,
@@ -60,63 +62,72 @@ const Execution = Schema.Struct({
   }),
 });
 
+/** The fixture's app and the waits and refusals each scenario reads it through. */
+const dependencies = Effect.gen(function* () {
+  const fixture = yield* appLinksFixture([{ path: "index.ts", content: source }]);
+  const { api, actors, prefix, app, path } = fixture;
+  const subscription = (name: string, account: string, status: string) =>
+    settleWebhookSubscriptions(actors.owner, path, (hooks) =>
+      hooks.some(
+        (hook) =>
+          hook.name === name &&
+          hook.sourceAccount === account &&
+          hook.status === status &&
+          hook.failure === null,
+      ),
+    ).pipe(
+      Effect.map((hooks) =>
+        hooks.find(
+          (hook) => hook.name === name && hook.sourceAccount === account && hook.status === status,
+        ),
+      ),
+      Effect.flatMap((hook) =>
+        hook === undefined ? Effect.die(new Error("Webhook missing")) : Effect.succeed(hook),
+      ),
+    );
+  const remove = (actor: Session, account: string) =>
+    api.request(actor, "DELETE", `${prefix}/accounts/${account}`);
+  /** Deleting the account is refused, naming exactly these subscriptions. */
+  const refusedFor = (
+    account: string,
+    blocking: ReadonlyArray<{ hook: WebhookSubscriptionRow; status: string }>,
+  ) =>
+    Effect.gen(function* () {
+      const response = yield* remove(actors.owner, account);
+      expect(response.status, JSON.stringify(response.body)).toBe(409);
+      // Clients and Executor apps holding the earlier document decode a closed object.
+      const refusal = yield* Schema.decodeUnknownEffect(EarlierRefusal)(response.body, {
+        onExcessProperty: "error",
+      });
+      expect(refusal.account).toBe(account);
+      for (const { hook, status } of blocking)
+        expect(refusal.message).toContain(`${app.id}/${hook.id} (${status})`);
+      expect(refusal.message.match(/whk_/g)?.length ?? 0).toBe(blocking.length);
+      return refusal.message;
+    });
+  /**
+   * An API token for the app's own requirement, then a source account: the source's registration
+   * runs with both. Unlinking the token leaves the registration depending on it: removing the
+   * subscription at the provider runs with the accounts it registered with.
+   */
+  const liveRegistration = Effect.gen(function* () {
+    const token = yield* fixture.connect(actors.owner, "app", "token", "api-token");
+    const own = yield* fixture.connect(actors.owner, "app", "source", "owner-source");
+    const registered = yield* subscription("incoming", own, "active");
+    yield* ok(yield* fixture.unlink(actors.owner, "token", token));
+    return { token, own, registered };
+  });
+  return { ...fixture, subscription, remove, refusedFor, liveRegistration };
+});
+
 layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies", (it) => {
   it.effect(scenarios.hostedAccountWebhookDependencies.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const fixture = yield* appLinksFixture([{ path: "index.ts", content: source }]);
-        const { api, actors, prefix, app, path, connect, unlink } = fixture;
-        const mcp = yield* McpClient;
-        const subscription = (name: string, account: string, status: string) =>
-          settleWebhookSubscriptions(actors.owner, path, (hooks) =>
-            hooks.some(
-              (hook) =>
-                hook.name === name &&
-                hook.sourceAccount === account &&
-                hook.status === status &&
-                hook.failure === null,
-            ),
-          ).pipe(
-            Effect.map((hooks) =>
-              hooks.find(
-                (hook) =>
-                  hook.name === name && hook.sourceAccount === account && hook.status === status,
-              ),
-            ),
-            Effect.flatMap((hook) =>
-              hook === undefined ? Effect.die(new Error("Webhook missing")) : Effect.succeed(hook),
-            ),
-          );
-        const remove = (actor: Session, account: string) =>
-          api.request(actor, "DELETE", `${prefix}/accounts/${account}`);
-        /** Deleting the account is refused, naming exactly these subscriptions. */
-        const refusedFor = (
-          account: string,
-          blocking: ReadonlyArray<{ hook: WebhookSubscriptionRow; status: string }>,
-        ) =>
-          Effect.gen(function* () {
-            const response = yield* remove(actors.owner, account);
-            expect(response.status, JSON.stringify(response.body)).toBe(409);
-            // Clients and Executor apps holding the earlier document decode a closed object.
-            const refusal = yield* Schema.decodeUnknownEffect(EarlierRefusal)(response.body, {
-              onExcessProperty: "error",
-            });
-            expect(refusal.account).toBe(account);
-            for (const { hook, status } of blocking)
-              expect(refusal.message).toContain(`${app.id}/${hook.id} (${status})`);
-            expect(refusal.message.match(/whk_/g)?.length ?? 0).toBe(blocking.length);
-            return refusal.message;
-          });
-
-        // An API token for the app's own requirement, then a source account: the source's
-        // registration runs with both.
-        const token = yield* connect(actors.owner, "app", "token", "api-token");
-        const own = yield* connect(actors.owner, "app", "source", "owner-source");
-        const registered = yield* subscription("incoming", own, "active");
-        // Unlinking the token leaves the registration depending on it: removing the subscription
-        // at the provider runs with the accounts it registered with.
-        yield* ok(yield* unlink(actors.owner, "token", token));
+        const { actors, path, unlink, subscription, remove, refusedFor, liveRegistration } =
+          yield* dependencies;
+        const { token, own, registered } = yield* liveRegistration;
         // No subscription names the token as its source, as the reporter saw.
         expect(
           (yield* webhookSubscriptions(actors.owner, path)).filter(
@@ -125,6 +136,22 @@ layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies",
         ).toEqual([]);
         const message = yield* refusedFor(token, [{ hook: registered, status: "active" }]);
         expect(message).toContain("webhooks.remove");
+
+        // Unlinking the source removes its registration with the token; then the token goes.
+        yield* ok(yield* unlink(actors.owner, "source", own));
+        yield* subscription("incoming", own, "stopped");
+        yield* ok(yield* remove(actors.owner, token));
+      }),
+    ),
+  );
+
+  it.effect(scenarios.hostedAccountWebhookDependenciesAgent.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, app, liveRegistration } = yield* dependencies;
+        const mcp = yield* McpClient;
+        const { token, registered } = yield* liveRegistration;
 
         // An agent deleting the account through the Executor app reads the same subscriptions.
         const key = yield* body(
@@ -154,15 +181,18 @@ layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies",
         expect(JSON.stringify(attempted.execution.error)).toContain(
           `${app.id}/${registered.id} (active)`,
         );
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
 
-        // Unlinking the source removes its registration with the token; then the token goes.
-        yield* ok(yield* unlink(actors.owner, "source", own));
-        yield* subscription("incoming", own, "stopped");
-        yield* ok(yield* remove(actors.owner, token));
-
+  it.effect(scenarios.hostedAccountWebhookStrandedRegistration.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, path, connect, unlink, subscription, remove } = yield* dependencies;
         // A registration Executor could not remove waits, disabled, for a person to remove it at
         // the provider. That needs none of its accounts, so it does not hold the token it ran with.
-        const second = yield* connect(actors.owner, "app", "token", "second-token");
+        const token = yield* connect(actors.owner, "app", "token", "api-token");
         const departed = yield* connect(actors.admin, "app", "source", "admin-source");
         const stranded = yield* subscription("incoming", departed, "active");
         const { user } = yield* body(
@@ -177,9 +207,29 @@ layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies",
         );
         yield* ok(yield* unlink(actors.owner, "source", departed));
         expect((yield* subscription("incoming", departed, "disabled")).id).toBe(stranded.id);
-        yield* ok(yield* unlink(actors.owner, "token", second));
-        yield* ok(yield* remove(actors.owner, second));
+        yield* ok(yield* unlink(actors.owner, "token", token));
+        yield* ok(yield* remove(actors.owner, token));
+        // Confirming its removal stops it.
+        expect(
+          yield* okBody(
+            Schema.Struct({ status: Schema.String }),
+            yield* api.request(
+              actors.owner,
+              "POST",
+              `${path}/webhooks/${stranded.id}/confirm-removal`,
+            ),
+          ),
+        ).toEqual({ status: "stopped" });
+      }),
+    ),
+  );
 
+  it.effect(scenarios.hostedAccountWebhookManualSource.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, path, connect, unlink, subscription, remove, refusedFor } =
+          yield* dependencies;
         // A disabled subscription still holds its source: confirming its removal in the
         // dashboard needs access to that account. Once confirmed, the source can go.
         const manualAccount = yield* connect(actors.owner, "app", "manualSource", "manual-source");
@@ -189,19 +239,37 @@ layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies",
         expect(yield* refusedFor(manualAccount, [{ hook: manual, status: "disabled" }])).toContain(
           "webhooks.confirmRemoval",
         );
-        for (const hook of [manual, stranded])
-          expect(
-            yield* okBody(
-              Schema.Struct({ status: Schema.String }),
-              yield* api.request(
-                actors.owner,
-                "POST",
-                `${path}/webhooks/${hook.id}/confirm-removal`,
-              ),
+        expect(
+          yield* okBody(
+            Schema.Struct({ status: Schema.String }),
+            yield* api.request(
+              actors.owner,
+              "POST",
+              `${path}/webhooks/${manual.id}/confirm-removal`,
             ),
-          ).toEqual({ status: "stopped" });
+          ),
+        ).toEqual({ status: "stopped" });
         yield* ok(yield* remove(actors.owner, manualAccount));
-      }).pipe(Effect.provide(McpClient.layer)),
+
+        // Confirming while the subscription is still held answers a conflict, which the fixture's
+        // clean-up waits out: a confirmation started before the unlink has disabled the
+        // subscription is retried until it can stop it.
+        const laterAccount = yield* connect(actors.owner, "app", "manualSource", "later-source");
+        const later = yield* subscription("manual", laterAccount, "setup-required");
+        const conflicted = yield* Deferred.make<void>();
+        const confirming = yield* Effect.forkChild(
+          confirmWebhookRemoval(actors.owner, path, later.id, conflicted),
+        );
+        yield* Deferred.await(conflicted);
+        yield* ok(yield* unlink(actors.owner, "manualSource", laterAccount));
+        const confirmed = yield* Fiber.join(confirming);
+        expect(confirmed.conflicts, "conflicts the confirmation waited out").toBeGreaterThan(0);
+        expect(confirmed.response.status, JSON.stringify(confirmed.response.body)).toBe(200);
+        expect(yield* body(Schema.Struct({ status: Schema.String }), confirmed.response)).toEqual({
+          status: "stopped",
+        });
+        yield* ok(yield* remove(actors.owner, laterAccount));
+      }),
     ),
   );
 
@@ -238,8 +306,14 @@ layer(HostedLive, { excludeTestServices: true })("Account webhook dependencies",
         const token = yield* connect(actors.admin, "app", "token", "admin-token");
         const ownerSource = yield* connect(actors.owner, "user", "source", "owner-source");
         const memberAccount = yield* connect(actors.admin, "user", "source", "admin-source");
-        const hidden = yield* registered(actors.owner, ownerSource, "active");
-        const own = yield* registered(actors.admin, memberAccount, "active");
+        // Both registrations run in the background at once; wait for them together.
+        const [hidden, own] = yield* Effect.all(
+          [
+            registered(actors.owner, ownerSource, "active"),
+            registered(actors.admin, memberAccount, "active"),
+          ],
+          { concurrency: "unbounded" },
+        );
         yield* ok(yield* unlink(actors.admin, "token", token));
 
         const removers =

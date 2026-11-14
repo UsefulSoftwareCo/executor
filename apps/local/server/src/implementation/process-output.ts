@@ -50,6 +50,8 @@ const makeOutput = () => {
   let writeFailure: unknown;
   /** Whether the command serves until it is stopped, so its output never ends it. */
   let serving = false;
+  /** A line written on stderr after every other, as the process ends. */
+  let lastLine: () => string | undefined = () => undefined;
 
   const refused = (output: "stdout" | "stderr", error: unknown) => {
     const readerClosed =
@@ -142,8 +144,18 @@ const makeOutput = () => {
         Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)
           ? setTimeout(done, signalDrainMs)
           : undefined;
-      // stdout first, so stderr is still open to report a failed write.
-      end(stdout, () => end(stderr, done));
+      const last = lastLine();
+      if (last !== undefined) processConsole.error(last);
+      // stdout first, so stderr is still open to report a failed write. Once the last line is
+      // written, stderr holds the exit at most as long as after a signal, however it ends: a
+      // pipe the earlier lines filled exactly, and nobody reads, would take it never.
+      end(stdout, () => {
+        const bound = last === undefined ? undefined : setTimeout(done, signalDrainMs);
+        end(stderr, () => {
+          clearTimeout(bound);
+          done();
+        });
+      });
     });
 
   return {
@@ -157,6 +169,13 @@ const makeOutput = () => {
         return command;
       }),
     teardown,
+    /**
+     * Write `line`'s result, when it has one, on stderr as the process ends, after every other
+     * write: through the same streams, so it holds the exit no longer than they do.
+     */
+    last: (line: () => string | undefined) => {
+      lastLine = line;
+    },
   };
 };
 

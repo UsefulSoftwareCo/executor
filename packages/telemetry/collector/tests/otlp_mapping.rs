@@ -1,6 +1,6 @@
 //! The OTLP/JSON field mapping: what each export field becomes in the store.
 
-use executor_collector::otlp::{LogRow, SpanRow, decode_logs, decode_spans};
+use executor_collector::otlp::{LogRow, SpanRow, VALUE_DEPTH, decode_logs, decode_spans};
 use serde_json::{Value, json};
 
 const TRACE: &str = "0af7651916cd43dd8448eb211c80319c";
@@ -417,7 +417,6 @@ fn a_key_value_list_keeps_first_positions_and_last_values_across_many_repeats() 
 #[test]
 fn deeply_nested_arrays_stringify_like_flat_ones() {
     let mut nested = json!({ "stringValue": "x" });
-    // Each level is three levels of JSON; serde_json stops at 128, so about 40 fit in an export.
     for _ in 0..30 {
         nested = json!({ "arrayValue": { "values": [nested, {}, { "stringValue": "" }, { "intValue": "1" }] } });
     }
@@ -626,4 +625,281 @@ fn exports_that_are_not_otlp_json_are_invalid() {
         0
     );
     assert!(decode_logs(br#"{"resourceLogs": [{"scopeLogs": [{"logRecords": [{"body": {"intValue": "x"}}]}]}]}"#).is_err());
+}
+
+// Deep values are built as text: a `serde_json::Value` recurses to build, write and drop.
+
+const LEAF: &str = r#"{"stringValue":"x"}"#;
+const EMPTY: &str = r#"{"stringValue":""}"#;
+
+/// `levels` arrays, each holding the next and an empty string, around `{"stringValue":"x"}`.
+fn nested_arrays(levels: usize) -> String {
+    format!(
+        "{}{LEAF}{}",
+        r#"{"arrayValue":{"values":["#.repeat(levels),
+        format!(",{EMPTY}]}}}}").repeat(levels)
+    )
+}
+
+/// What is stored for `nested_arrays(levels)` past the limit. The deepest array decoded holds two
+/// values too deep, `rest` more arrays and an empty string, and both are kept as their text.
+fn arrays_past_the_limit(levels: usize) -> String {
+    format!("{} {EMPTY}", nested_arrays(levels - VALUE_DEPTH - 1))
+}
+
+/// `levels` key-value lists, each holding the next under `k`, around `{"stringValue":"x"}`.
+fn nested_lists(levels: usize) -> String {
+    format!(
+        "{}{LEAF}{}",
+        r#"{"kvlistValue":{"values":[{"key":"k","value":"#.repeat(levels),
+        "}]}}".repeat(levels)
+    )
+}
+
+/// What Motel stored for `nested_lists(levels)`: `{"k":` that many times around `inner`.
+fn lists_json(levels: usize, inner: &str) -> String {
+    format!("{}{inner}{}", "{\"k\":".repeat(levels), "}".repeat(levels))
+}
+
+/// An export of one span with `value`, written as text, under each of the span's attributes,
+/// an event's and the resource's.
+fn deep_export(value: &str) -> Vec<u8> {
+    format!(
+        r#"{{"resourceSpans":[{{"resource":{{"attributes":[{{"key":"v","value":{value}}}]}},"scopeSpans":[{{"spans":[{{"traceId":"{TRACE}","spanId":"{SPAN}","events":[{{"attributes":[{{"key":"v","value":{value}}}]}}],"attributes":[{{"key":"v","value":{value}}}]}}]}}]}}]}}"#
+    )
+    .into_bytes()
+}
+
+/// How the span stored `value`, written as text.
+fn stored(value: &str) -> String {
+    let decoded = decode_spans(&deep_export(value)).expect("decodes");
+    let (resource, spans) = &decoded.groups[0];
+    let attributes = &spans[0].attributes_json;
+    assert_eq!(&resource.attributes_json, attributes);
+    let events = spans[0].events_json.as_deref().expect("events");
+    assert!(events.contains(&format!(r#""attributes":{attributes}"#)));
+    let map: serde_json::Map<String, Value> =
+        serde_json::from_str(attributes).expect("stored attributes are JSON");
+    map["v"].as_str().expect("text").to_owned()
+}
+
+/// The pinned Effect exporter writes 40 nested arrays as a 1,315-byte export that serde_json's
+/// 128-level limit refused, losing the whole export. Up to the depth limit, values are stored as
+/// Motel stored them.
+#[test]
+fn values_up_to_the_depth_limit_are_stored_as_motel_stored_them() {
+    for levels in [40, VALUE_DEPTH] {
+        assert_eq!(stored(&nested_arrays(levels)), "x", "{levels} arrays");
+        assert_eq!(
+            stored(&nested_lists(levels)),
+            lists_json(levels, "\"x\""),
+            "{levels} lists"
+        );
+    }
+}
+
+/// Past the limit, the `AnyValue` inside one array or list too many is kept as its JSON text.
+#[test]
+fn values_past_the_depth_limit_keep_their_json_text() {
+    for levels in [VALUE_DEPTH + 1, 200, 5_000] {
+        let rest = levels - VALUE_DEPTH - 1;
+        assert_eq!(
+            stored(&nested_arrays(levels)),
+            arrays_past_the_limit(levels),
+            "{levels} arrays"
+        );
+        assert_eq!(
+            stored(&nested_lists(levels)),
+            lists_json(VALUE_DEPTH + 1, &json!(nested_lists(rest)).to_string()),
+            "{levels} lists"
+        );
+    }
+    // Arrays and lists in turn: the depth counts both.
+    let mut mixed = LEAF.to_owned();
+    let mut cut = String::new();
+    for level in 0..300 {
+        if level == 300 - VALUE_DEPTH - 1 {
+            cut = mixed.clone();
+        }
+        mixed = if level % 2 == 0 {
+            format!(r#"{{"arrayValue":{{"values":[{mixed}]}}}}"#)
+        } else {
+            format!(r#"{{"kvlistValue":{{"values":[{{"key":"k","value":{mixed}}}]}}}}"#)
+        };
+    }
+    // 300 levels end in a list. Inside a list Motel wrote arrays as JSON too, so the 65 levels
+    // above the cut are 33 lists and 32 arrays in turn.
+    let half = VALUE_DEPTH / 2;
+    assert_eq!(
+        stored(&mixed),
+        format!(
+            "{}{{\"k\":{}}}{}",
+            "{\"k\":[".repeat(half),
+            json!(cut),
+            "]}".repeat(half)
+        )
+    );
+}
+
+/// A log body is an `AnyValue` too.
+#[test]
+fn a_deep_log_body_is_stored() {
+    let log = |body: &str| {
+        let export = format!(
+            r#"{{"resourceLogs":[{{"scopeLogs":[{{"logRecords":[{{"body":{body}}}]}}]}}]}}"#
+        );
+        decode_logs(export.as_bytes()).expect("decodes").groups[0].1[0]
+            .body
+            .clone()
+    };
+    assert_eq!(log(&nested_arrays(40)), "x");
+    assert_eq!(log(&nested_arrays(5_000)), arrays_past_the_limit(5_000));
+}
+
+/// Decoding recurses once per level up to the limit and not past it. Values decode on threads
+/// with 2 MiB of stack; these decode on 1 MiB, in a release or a debug build.
+#[test]
+fn deep_values_decode_within_half_a_threads_stack() {
+    let exports: Vec<Vec<u8>> = [VALUE_DEPTH, 5_000, 200_000]
+        .into_iter()
+        .flat_map(|levels| [nested_arrays(levels), nested_lists(levels)])
+        .map(|deep| deep_export(&deep))
+        .collect();
+    let decoded = std::thread::Builder::new()
+        .stack_size(1024 * 1024)
+        .spawn(move || {
+            exports
+                .iter()
+                .map(|export| decode_spans(export).map(|spans| spans.groups[0].1.len()))
+                .collect::<Vec<_>>()
+        })
+        .expect("spawn")
+        .join()
+        .expect("decoding did not overflow its stack");
+    assert!(
+        decoded.iter().all(|spans| matches!(spans, Ok(1))),
+        "{decoded:?}"
+    );
+}
+
+/// The other spans of an export with a deep value are kept, and so is the deep span.
+#[test]
+fn an_export_with_a_deep_value_keeps_every_span() {
+    let span = |id: &str, attributes: &str| {
+        format!(r#"{{"traceId":"{TRACE}","spanId":"{id}","attributes":{attributes}}}"#)
+    };
+    let export = format!(
+        r#"{{"resourceSpans":[{{"scopeSpans":[{{"spans":[{},{},{}]}}]}}]}}"#,
+        span("b7ad6b7169203331", "[]"),
+        span(
+            "b7ad6b7169203332",
+            &format!(r#"[{{"key":"deep","value":{}}}]"#, nested_arrays(5_000))
+        ),
+        span(
+            "b7ad6b7169203333",
+            r#"[{"key":"fine","value":{"stringValue":"y"}}]"#
+        ),
+    );
+    let decoded = decode_spans(export.as_bytes()).expect("decodes");
+    let rows = &decoded.groups[0].1;
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[2].attributes_json, r#"{"fine":"y"}"#);
+}
+
+/// Unknown fields are skipped without recursion at any depth, inside a value or outside one.
+#[test]
+fn deep_unknown_fields_are_skipped() {
+    let brackets = |levels: usize| format!("{}{}", "[".repeat(levels), "]".repeat(levels));
+    let deep = brackets(1_000_000);
+    let template = format!(
+        r#"{{"other":{deep},"resourceSpans":[{{"other":{deep},"scopeSpans":[{{"spans":[{{"traceId":"{TRACE}","spanId":"{SPAN}","other":{deep},"attributes":[{{"key":"v","other":{deep},"value":{{"stringValue":"x","other":{deep}}}}},{{"key":"w","value":{{"arrayValue":{{"other":{deep},"values":[{{"kvlistValue":{{"other":{deep},"values":[{{"key":"k","other":{deep},"value":{{"intValue":"1"}}}}]}}}}]}}}}}}]}}]}}]}}]}}"#
+    );
+    let decoded = decode_spans(template.as_bytes()).expect("decodes");
+    assert_eq!(
+        decoded.groups[0].1[0].attributes_json,
+        r#"{"v":"x","w":"{\"k\":1}"}"#
+    );
+}
+
+/// Deep nesting where the export expects something else is refused at once, without recursion
+/// past serde_json's limit.
+#[test]
+fn deep_nesting_in_place_of_a_field_is_refused() {
+    let open = "[".repeat(1_000_000);
+    for export in [
+        format!(r#"{{"resourceSpans":{open}"#),
+        format!(
+            r#"{{"resourceSpans":[{{"scopeSpans":[{{"spans":[{{"traceId":"{TRACE}","spanId":"{SPAN}","attributes":[{{"key":"v","value":{open}"#
+        ),
+        format!(
+            r#"{{"resourceSpans":[{{"scopeSpans":[{{"spans":[{{"traceId":"{TRACE}","spanId":"{SPAN}","attributes":[{{"key":"v","value":{{"doubleValue":{open}"#
+        ),
+        format!(
+            r#"{{"resourceSpans":[{{"scopeSpans":[{{"spans":[{{"traceId":"{TRACE}","spanId":"{SPAN}","attributes":[{{"key":"v","value":{}"#,
+            r#"{"arrayValue":{"values":["#.repeat(100_000)
+        ),
+        // Complete, but an array where a value must be an object.
+        format!(
+            r#"{{"resourceSpans":[{{"scopeSpans":[{{"spans":[{{"traceId":"{TRACE}","spanId":"{SPAN}","attributes":[{{"key":"v","value":{{"arrayValue":{{"values":[{}{}]}}}}}}]}}]}}]}}]}}"#,
+            "[".repeat(1_000_000),
+            "]".repeat(1_000_000)
+        ),
+        // Complete, with deep nesting where a double must be a number or a string: arrays, then
+        // objects. Read through a buffering enum, each level of these was a level of recursion.
+        format!(
+            r#"{{"resourceSpans":[{{"scopeSpans":[{{"spans":[{{"traceId":"{TRACE}","spanId":"{SPAN}","attributes":[{{"key":"v","value":{{"doubleValue":{}{}}}}}]}}]}}]}}]}}"#,
+            "[".repeat(50_000),
+            "]".repeat(50_000)
+        ),
+        format!(
+            r#"{{"resourceSpans":[{{"scopeSpans":[{{"spans":[{{"traceId":"{TRACE}","spanId":"{SPAN}","attributes":[{{"key":"v","value":{{"doubleValue":{}1{}}}}}]}}]}}]}}]}}"#,
+            r#"{"a":"#.repeat(50_000),
+            "}".repeat(50_000)
+        ),
+    ] {
+        assert!(decode_spans(export.as_bytes()).is_err());
+    }
+}
+
+/// The exponent of a quoted integer is exact however many digits cancel it. It was capped at a
+/// million, so a million and five zeros with a matching exponent was read as 100000.
+#[test]
+fn long_quoted_integers_keep_their_exact_value() {
+    let zeros = "0".repeat(1_000_005);
+    let one = format!("1{zeros}e-1000005");
+    let fraction = format!("0.{}1e1000006", &zeros[..1_000_005]);
+    for form in [&one, &fraction] {
+        assert_eq!(value(json!({ "intValue": form })), json!("1"));
+        let span = one_span(json!({ "traceId": TRACE, "spanId": SPAN, "startTimeUnixNano": form }));
+        assert_eq!(span.start_ns, 1);
+    }
+    let invalid = |form: &str| {
+        decode_spans(&traces(
+            json!([]),
+            json!({ "traceId": TRACE, "spanId": SPAN, "attributes": [{ "key": "v", "value": { "intValue": form } }] }),
+        ))
+        .is_err()
+    };
+    for form in [
+        format!("1{zeros}e-1000006"),
+        format!("1{zeros}e-999999999999999999999999"),
+        "1e999999999999999999999999".to_owned(),
+        "1e-999999999999999999999999".to_owned(),
+    ] {
+        assert!(
+            invalid(&form),
+            "{} should be refused",
+            &form[..40.min(form.len())]
+        );
+    }
+    assert_eq!(
+        value(json!({ "intValue": "0e-999999999999999999999999" })),
+        json!("0")
+    );
+    assert_eq!(
+        value(
+            json!({ "intValue": format!("7{}e-{}", "0".repeat(30), "0".repeat(1_000_000) + "30") })
+        ),
+        json!("7")
+    );
 }

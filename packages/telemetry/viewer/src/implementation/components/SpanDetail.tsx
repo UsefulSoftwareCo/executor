@@ -6,10 +6,12 @@ import type { TraceSpanItem } from "../../contracts/api.ts";
 interface Props {
   span: TraceSpanItem;
   logs: ReadonlyArray<{ id: string; timestamp: Date; severityText: string; body: string }>;
+  /** False while the trace has log pages that are not loaded, so `logs` may be missing some. */
+  logsComplete: boolean;
   onClose: () => void;
 }
 
-export function SpanDetailPanel({ span, logs, onClose }: Props) {
+export function SpanDetailPanel({ span, logs, logsComplete, onClose }: Props) {
   const tags = Object.entries(span.tags);
 
   return (
@@ -118,8 +120,15 @@ export function SpanDetailPanel({ span, logs, onClose }: Props) {
         </Section>
       )}
 
-      {logs.length > 0 && (
-        <Section title={`Logs (${logs.length})`}>
+      {(logs.length > 0 || !logsComplete) && (
+        <Section
+          title={logsComplete ? `Logs (${logs.length})` : `Logs (${logs.length} loaded so far)`}
+        >
+          {!logsComplete && (
+            <p className="text-sm text-zinc-500 mb-2">
+              This trace has more logs than are loaded. Load more on the Logs tab.
+            </p>
+          )}
           <div className="space-y-2">
             {logs.map((log) => (
               <div key={log.id}>

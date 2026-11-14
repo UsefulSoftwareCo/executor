@@ -55,11 +55,18 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createHash } from "node:crypto";
+import { collectorChanged } from "./collector-inputs.ts";
 import { lanesFor, releaseSources } from "./release-lanes.ts";
 import { savePathFiles } from "./save-path.ts";
 import { Target } from "./report-model.ts";
 import { exactly, split } from "./scenario-parts.ts";
 import { platformSignatures } from "./platform-signatures.ts";
+import {
+  connectionLatencyLevels,
+  DatabaseConnections,
+  databaseConnectionsFile,
+} from "./database-connections.ts";
+import { countEmulatorRetries, emulatorRetryLine } from "./emulator-retries.ts";
 import { deployedSuitePattern, scenarios, scenariosForSuite, type CloudMode } from "./test-plan.ts";
 
 class SelectionFailed extends Schema.TaggedError<SelectionFailed>()("SelectionFailed", {
@@ -70,7 +77,7 @@ class SelectionFailed extends Schema.TaggedError<SelectionFailed>()("SelectionFa
 const claude = "Claude Code connects";
 const inventoryLoad = "concurrent owners and admins save every account";
 const catalogScale =
-  "MCP execute over 7,000 tools|MCP execute pays for a slow app|MCP execute remembers a stalled|MCP execute serves a search from rows past|MCP execute reports an app whose aged";
+  "MCP execute over 7,000 tools|MCP execute beside stalled apps|MCP execute pays for a slow app|MCP execute remembers a stalled|MCP execute serves a search from rows past|MCP execute reports an app whose aged";
 
 /**
  * Spec files that test the E2E harness rather than the product, and the paths they exercise:
@@ -156,7 +163,7 @@ const jobs = {
     runner: 1,
 
     pattern:
-      "Cloud app queries read current authorization|Cloud onboarding|Cloud sign-in (?:keeps a new v1|skips the v1 check|admits members of only empty free or moved v1)|Cloud OAuth callbacks|Cloud OAuth token requests record|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser failures reach error collectors|browser error reports reach Sentry while|browser telemetry stays quiet on an idle page|Browser connection failures explain|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer|refuses every stored state Better Auth refuses|Billing reconciles only while visible|A dashboard read refreshed while in flight|Cloud finishes a slow app's tool listing|Cloud remembers a stalled tool listing|Cloud keeps serving aged search rows when it stops their renewal|Cloud keeps each JSON Schema definition a tool listing repeats once|definitions share a name and length but not their JSON|definition names are long and of one length|Cloud MCP session objects make|Cloud MCP request spans say whether|database failure while verifying an API key|use one API key together|Cloud cron wakes the schedule coordinator|schedule coordinator closes its database connections|Cloud runs a due schedule and requested webhook source setup while|app evaluation failures explain the likely cause|runtime limit matched from an app Worker|client request rejections are recorded on their request span|failure text reaches its caller|scheduled runs record whether the app's code|an app request Executor's network failed to send|an app's fetch receives a Brotli-encoded response|MCP tool calls deliver their tool name and outcome|Executor time|Cloud serves a tool listing its isolate cannot keep|Cloud writes the background refresh of a stale tool listing|Owners delete an organization with every app|Hosted MCP negotiates older protocol versions|Hosted MCP ends a cancelled call|Cloud lists each build's browser files|Hosted dashboard runs of approval-gated tools|Hosted dashboard approval",
+      "Cloud app queries read current authorization|Cloud onboarding|Cloud sign-in (?:keeps a new v1|skips the v1 check|admits members of only empty free or moved v1)|Cloud OAuth callbacks|Cloud OAuth token requests record|Cloud product events|Cloud feedback|Cloud tracks an unusable OAuth|app query traces|observability retains|browser failures reach error collectors|browser error reports reach Sentry while|browser telemetry stays quiet on an idle page|Browser connection failures explain|optimistic replay failures|private app crash reports|Platform admin impersonation|Cloud reports the framework pin|Cloud deploys fail promptly when the compiler does not answer|refuses every stored state Better Auth refuses|Billing reconciles only while visible|A dashboard read refreshed while in flight|Cloud finishes a slow app's tool listing|Cloud remembers a stalled tool listing|Cloud keeps serving aged search rows when it stops their renewal|Cloud MCP session objects make|Cloud MCP request spans say whether|database failure while verifying an API key|use one API key together|Cloud cron wakes the schedule coordinator|schedule coordinator closes its database connections|Cloud runs a due schedule and requested webhook source setup while|app evaluation failures explain the likely cause|runtime limit matched from an app Worker|client request rejections are recorded on their request span|failure text reaches its caller|scheduled runs record whether the app's code|an app request Executor's network failed to send|an app's fetch receives a Brotli-encoded response|MCP tool calls deliver their tool name and outcome|Executor time|Owners delete an organization with every app|Hosted MCP negotiates older protocol versions|Hosted MCP ends a cancelled call|Cloud lists each build's browser files|Hosted dashboard runs of approval-gated tools|Hosted dashboard approval",
   },
   // The scenarios above share one local Cloud and collector, and their span and latency checks
   // stall when more scenarios load it. These assert no such bound, so they start their own. The
@@ -221,6 +228,16 @@ const jobs = {
     target: "cloud",
     runner: 6,
     pattern: "Cloud requests answer and release their database connections while the telemetry",
+  },
+  // These keep tool listings of 1 to 17 million characters in app supervisors. On local Cloud
+  // every supervisor of the run lives in one AppData process, which grows with each scenario and
+  // ran out of memory at about 6.3 GB; in the cloud job they were about 1 GB of its 4.8 GB. They
+  // start their own local Cloud so that job keeps the room.
+  "cloud-listings": {
+    target: "cloud",
+    runner: 6,
+    pattern:
+      "Cloud keeps each JSON Schema definition a tool listing repeats once|definitions share a name and length but not their JSON|definition names are long and of one length|Cloud serves a tool listing its isolate cannot keep|Cloud writes the background refresh of a stale tool listing",
   },
   // Autumn faults match every caller of a route on a Cloud's Autumn emulator, and other jobs'
   // scenarios read billing and v1 plans, so this slows Autumn on its own local Cloud.
@@ -500,8 +517,44 @@ const executed = (directory: string) =>
               if (messages.includes(platformSignatures[signature])) signatures[signature] += 1;
           }
     }
-    return { ran, signatures };
+    // Each deployed stage's connection latency (e2e/sdk/database-connections.ts), by level. Like
+    // the retry count, it never decides the check: a file it cannot read is counted, not failed on.
+    const connections: Array<DatabaseConnections> = [];
+    let unreadableConnections = 0;
+    const readings = (yield* fs.exists(directory))
+      ? (yield* fs.readDirectory(directory, { recursive: true })).filter(
+          (file) => path.basename(file) === databaseConnectionsFile,
+        )
+      : [];
+    for (const reading of readings) {
+      const decoded = yield* fs
+        .readFileString(path.join(directory, reading))
+        .pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(DatabaseConnections))),
+          Effect.option,
+        );
+      if (Option.isSome(decoded)) connections.push(decoded.value);
+      else unreadableConnections += 1;
+    }
+    return { ran, signatures, connections, unreadableConnections };
   });
+
+/**
+ * The `database-connections` signature: how long deployed stages waited for a database connection.
+ * It informs and never fails a run; it is counted beside the platform signatures.
+ */
+const connectionsLine = (connections: ReadonlyArray<DatabaseConnections>) => {
+  const count = (level: DatabaseConnections["level"]) =>
+    connections.filter((reading) => reading.level === level).length;
+  const worst = connections
+    .filter((reading) => reading.worstMinuteMs !== undefined)
+    .toSorted((a, b) => b.worstMinuteMs! - a.worstMinuteMs!)[0];
+  const { severe, elevated } = connectionLatencyLevels;
+  const sources = [...new Set(connections.map((reading) => reading.source))]
+    .toSorted()
+    .join(" and ");
+  return `Database connection latency of deployed stages: ${count("severe")} severe (averaging ${severe.averageMs} ms or a minute at ${severe.worstMinuteMs} ms), ${count("elevated")} elevated (${elevated.averageMs} ms or ${elevated.worstMinuteMs} ms), ${count("normal")} normal, ${count("unknown")} unread${worst === undefined ? "" : `; the highest averaged ${worst.averageMs} ms with a worst minute of ${worst.worstMinuteMs} ms`}${connections.length === 0 ? "; no stage recorded a reading" : `, read from ${sources}`}.`;
+};
 
 /**
  * Which scheduled scenarios a full run did not execute, from the reports its jobs saved under
@@ -516,7 +569,7 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
       return yield* new SelectionFailed({
         message: "Usage: node e2e/ci-selection.ts verify <ci|deployed> <directory of saved runs>",
       });
-    const { ran, signatures } = yield* executed(directory);
+    const { ran, signatures, connections, unreadableConnections } = yield* executed(directory);
     const paths =
       suite === "ci"
         ? jobRuns.map(({ name, target, titles }) => ({ name: `the ${name} job`, target, titles }))
@@ -547,9 +600,17 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
     // Counted on every deployed run, zero included, so a rise shows without reading logs.
     const platform =
       suite === "deployed"
-        ? `\nScenario runs that failed on a platform signature: ${signatures["runtime-502"]} on Cloudflare's runtime answering 502 itself (our Worker did not answer), ${signatures.lost} on a request lost before any response, ${signatures["origin-unreachable"]} on an app origin no HTTPS connection reached within preparation's wait.\n`
+        ? `\nScenario runs that failed on a platform signature: ${signatures["runtime-502"]} on Cloudflare's runtime answering 502 itself (our Worker did not answer), ${signatures.lost} on a request lost before any response, ${signatures["origin-unreachable"]} on an app origin no HTTPS connection reached within preparation's wait.\n${connectionsLine(connections)}${unreadableConnections === 0 ? "" : ` ${unreadableConnections} database connection ${unreadableConnections === 1 ? "record" : "records"} could not be read.`}\n`
         : "";
-    const report = `## E2E coverage\n\nEvery one of the ${expected} scenario runs ${suite === "ci" ? "the jobs here schedule" : "Cloud tests on main schedules"} executed. ${Object.keys(notRunInCi).length} scenarios are in notRunInCi.\n${platform}`;
+    // Likewise the hosted emulators' bad moments that a retry absorbed, from every job's records.
+    // Counting never decides the check: a record it cannot read is reported, not failed on.
+    const emulators = `\n${yield* countEmulatorRetries([directory]).pipe(
+      Effect.map(emulatorRetryLine),
+      Effect.orElseSucceed(
+        () => "The hosted emulator calls that needed a retry could not be counted.",
+      ),
+    )}\n`;
+    const report = `## E2E coverage\n\nEvery one of the ${expected} scenario runs ${suite === "ci" ? "the jobs here schedule" : "Cloud tests on main schedules"} executed. ${Object.keys(notRunInCi).length} scenarios are in notRunInCi.\n${platform}${emulators}`;
     yield* Console.log(report);
     const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
     if (Option.isSome(summary))
@@ -692,11 +753,14 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "ci-selection.config.ts": () => import("./ci-selection.config.ts"),
   "ci-supersede.config.ts": () => import("./ci-supersede.config.ts"),
   "ci-repeat.config.ts": () => import("./ci-repeat.config.ts"),
+  "workflow-caches.config.ts": () => import("./workflow-caches.config.ts"),
   "telemetry-event-lifetime.config.ts": () => import("./telemetry-event-lifetime.config.ts"),
   "cli-startup-imports.config.ts": () => import("./cli-startup-imports.config.ts"),
+  "process-output-exit.config.ts": () => import("./process-output-exit.config.ts"),
   "cloud-deploy-origin.config.ts": () => import("./cloud-deploy-origin.config.ts"),
   "deploy-decision.config.ts": () => import("./deploy-decision.config.ts"),
   "dashboard-file-names.config.ts": () => import("./dashboard-file-names.config.ts"),
+  "database-connections.config.ts": () => import("./database-connections.config.ts"),
   "effect-mcp.config.ts": () => import("./effect-mcp.config.ts"),
   "desktop-next-server.config.ts": () => import("./desktop-next-server.config.ts"),
   "desktop-recovery.config.ts": () => import("./desktop-recovery.config.ts"),
@@ -706,6 +770,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "docker-release.config.ts": () => import("./docker-release.config.ts"),
   "installer.config.ts": () => import("./installer.config.ts"),
   "local-bootstrap.config.ts": () => import("./local-bootstrap.config.ts"),
+  "local-disk.config.ts": () => import("./local-disk.config.ts"),
   "lockfile-sync.config.ts": () => import("./lockfile-sync.config.ts"),
   "npm-launcher.config.ts": () => import("./npm-launcher.config.ts"),
   "pglite.config.ts": () => import("./pglite.config.ts"),
@@ -1059,6 +1124,22 @@ NodeRuntime.runMain(
           'Add a scenario to a job pattern in e2e/ci-selection.ts; a Cloud scenario without runtime "managed", "rate-limited" or "rolled-back" runs in Cloud tests on main. Otherwise mark the target not-run with its reason in e2e/test-plan.ts, or add it to notRunInCi in e2e/ci-selection.ts with why no CI job runs it.',
         ].join("\n"),
       });
+    // What changed since main for a pull request, so a stack's top layer covers every layer below
+    // it, or since the previous main commit on a push. A manual run has no comparison.
+    const compareBase = yield* Config.String("E2E_COMPARE_BASE").pipe(Config.withDefault(""));
+    const compareHead = yield* Config.String("E2E_COMPARE_HEAD").pipe(Config.withDefault(""));
+    const compared =
+      compareBase === "" || compareHead === "" || repository === ""
+        ? undefined
+        : (yield* gh([
+            "api",
+            `repos/${repository}/compare/${compareBase}...${compareHead}`,
+            "--jq",
+            // A renamed file counts by its old name too: moving it out of a path changes that path.
+            ".files[] | .filename, (.previous_filename // empty)",
+          ]))
+            .split("\n")
+            .filter((file) => file !== "");
     const changed =
       read === undefined
         ? ""
@@ -1076,9 +1157,26 @@ NodeRuntime.runMain(
       .split("\n")
       .map((file) => /^e2e\/tests\/([\w.-]+\.spec\.ts)$/.exec(file.trim())?.[1])
       .filter((file) => file !== undefined);
+    // The spec files a stack's top layer answers for: everything changed since main, which holds
+    // its lower layers' changes, as well as its own. A lower layer that skips leaves these checks
+    // to the layer above. Without a full comparison, every spec file counts. Only a pull request
+    // has these checks.
     const tests = yield* path.fromFileUrl(new URL("tests/", import.meta.url));
+    const stackSpecs =
+      read === undefined
+        ? []
+        : compared === undefined || compared.length >= compareFileLimit
+          ? (yield* fs.readDirectory(tests)).filter((file) => file.endsWith(".spec.ts"))
+          : [
+              ...new Set([
+                ...changedSpecs,
+                ...compared
+                  .map((file) => /^e2e\/tests\/([\w.-]+\.spec\.ts)$/.exec(file)?.[1])
+                  .filter((file) => file !== undefined),
+              ]),
+            ];
     const unregistered = yield* Effect.filter(
-      changedSpecs.filter((file) => !specFiles.has(file) && !suites.has(file)),
+      stackSpecs.filter((file) => !specFiles.has(file) && !suites.has(file)),
       (file) => fs.exists(path.join(tests, file)),
     );
     if (unregistered.length > 0)
@@ -1097,7 +1195,7 @@ NodeRuntime.runMain(
     // that needed files only managed local Cloud has reddened Cloud tests on main on three runs.
     // It merges once the description says how it was verified on a deployed stage.
     const changedDeployed = [...deployedRuns].filter((title) =>
-      changedSpecs.includes(fileOf.get(title)!),
+      stackSpecs.includes(fileOf.get(title)!),
     );
     if (read !== undefined && defaultBranch !== "" && changedDeployed.length > 0) {
       const mainPlan = yield* gh([
@@ -1169,20 +1267,6 @@ NodeRuntime.runMain(
           );
     // The harness scenarios run when a harness path changed since main, or since the previous
     // main commit on a push. Without both ends of a comparison, as on a manual run, they run.
-    const compareBase = yield* Config.String("E2E_COMPARE_BASE").pipe(Config.withDefault(""));
-    const compareHead = yield* Config.String("E2E_COMPARE_HEAD").pipe(Config.withDefault(""));
-    const compared =
-      compareBase === "" || compareHead === "" || repository === ""
-        ? undefined
-        : (yield* gh([
-            "api",
-            `repos/${repository}/compare/${compareBase}...${compareHead}`,
-            "--jq",
-            // A renamed file counts by its old name too: moving it out of a path changes that path.
-            ".files[] | .filename, (.previous_filename // empty)",
-          ]))
-            .split("\n")
-            .filter((file) => file !== "");
     const harnessChanged =
       compared === undefined ||
       compared.length >= compareFileLimit ||
@@ -1210,6 +1294,11 @@ NodeRuntime.runMain(
         : compared === undefined || compared.length >= compareFileLimit
           ? { "release-docker": ["(every file)"], "release-local": ["(every file)"] }
           : lanesFor(yield* releaseSources, compared);
+    // The collector's own job, from the same comparison: for a pull request everything since it
+    // left main, so a stack's top layer covers every layer; for a push the pushed range. Without a
+    // comparison, as on a manual run, or with one GitHub cut short, it runs.
+    const collector =
+      compared === undefined || compared.length >= compareFileLimit || collectorChanged(compared);
     const files =
       named === undefined || "all" in named
         ? undefined
@@ -1325,6 +1414,7 @@ NodeRuntime.runMain(
       ...Object.entries(lanes ?? { "release-docker": [], "release-local": [] }).map(
         ([lane, matched]) => `${lane}=${matched.length > 0 ? "true" : ""}`,
       ),
+      `collector=${collector}`,
       // Line coverage is comparable only between runs of every scenario.
       `full=${files === undefined}`,
     ].join("\n");
@@ -1385,6 +1475,10 @@ NodeRuntime.runMain(
               ? `${lane}: skipped, no file it reads changed.`
               : `${lane}: runs, for ${matched.slice(0, 5).join(", ")}${matched.length > 5 ? ` and ${matched.length - 5} more` : ""}.`,
           )),
+      "",
+      collector
+        ? "collector-native: runs (e2e/collector-inputs.ts)."
+        : "collector-native: skipped, no collector input changed (e2e/collector-inputs.ts).",
       "",
       "| Job | Scenarios | Runners |",
       "| --- | --- | --- |",

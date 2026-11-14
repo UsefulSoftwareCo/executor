@@ -25,7 +25,7 @@ export function App() {
       <header className="border-b border-white/5 shrink-0">
         <PageContainer className="flex items-center gap-6 py-3">
           <NavLink to="/" className="text-accent font-semibold text-sm no-underline tracking-tight">
-            motel
+            Executor telemetry
           </NavLink>
           <nav className="flex gap-1" role="list">
             <NavLink to="/traces" className={navLinkCls}>

@@ -455,6 +455,10 @@ layer(TestLive, { excludeTestServices: true })("Local background service recover
           const own = yield* cli.run(["apps", "list"]);
           expect(own.code, own.stderr).toBe(0);
           expect(own.stderr).not.toContain(starting);
+          // Its server's log lines, its last one included, stay out of the command's stderr: the
+          // command asked for no server.
+          const logLines = own.stderr.split("\n").filter((line) => line.startsWith('{"message":'));
+          expect(logLines, own.stderr).toEqual([]);
           expect(yield* Schema.decodeUnknownEffect(Apps)(own.stdout)).toEqual(apps);
           expect(yield* fs.exists(cli.registrationFile)).toBe(false);
           expect(yield* cli.refused(cli.port)).toBe(true);

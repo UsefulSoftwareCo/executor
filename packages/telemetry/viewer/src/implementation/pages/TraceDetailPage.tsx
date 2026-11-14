@@ -1,11 +1,16 @@
 import { useMemo, useState } from "react";
 import { useParams, Link } from "react-router-dom";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { AsyncResult } from "effect/reactivity";
 import type { LogItem } from "../../contracts/api.ts";
 
 import { TelemetryClient } from "../../contracts/client.ts";
+import { pagedList, type PagedListState } from "../../contracts/paging.ts";
 import {
+  ListEnd,
+  listCount,
+  usePagedList,
+  useRestartList,
   PageContainer,
   RefreshButton,
   SeverityBadge,
@@ -29,17 +34,17 @@ export function TraceDetailPage() {
     () => TelemetryClient.query("telemetry", "trace", { params: { traceId } }),
     [traceId],
   );
-  const logsAtom = useMemo(
-    () =>
-      TelemetryClient.query("telemetry", "traceLogs", {
-        params: { traceId },
-        query: { limit: 200 },
-      }),
-    [traceId],
-  );
+  const logsList = useMemo(() => traceLogsList(traceId), [traceId]);
 
   const traceResult = useAtomValue(traceAtom);
-  const logsResult = useAtomValue(logsAtom);
+  const logsPaging = usePagedList(logsList);
+  const refreshTrace = useAtomRefresh(traceAtom);
+  const restartLogs = useRestartList(logsList);
+  // The trace and its logs are one view: Refresh reads both again, the logs from their first page.
+  const refresh = () => {
+    refreshTrace();
+    restartLogs();
+  };
 
   if (!traceId) return <EmptyState title="No trace ID" />;
   if (!AsyncResult.isSuccess(traceResult)) {
@@ -48,7 +53,8 @@ export function TraceDetailPage() {
   }
 
   const trace = traceResult.value.data;
-  const logs = AsyncResult.isSuccess(logsResult) ? logsResult.value.data : [];
+  const logs = logsPaging.state.rows;
+  const logsComplete = logsPaging.state.end.status === "complete";
   const selectedSpan = selectedSpanId
     ? (trace.spans.find((s) => s.spanId === selectedSpanId) ?? null)
     : null;
@@ -99,7 +105,7 @@ export function TraceDetailPage() {
               {trace.isRunning && <LiveBadge />}
             </dl>
           </div>
-          <RefreshButton atom={traceAtom} />
+          <RefreshButton onRefresh={refresh} />
         </div>
       </PageContainer>
 
@@ -109,7 +115,7 @@ export function TraceDetailPage() {
           Waterfall
         </TabButton>
         <TabButton active={activeTab === "logs"} onClick={() => setActiveTab("logs")}>
-          Logs ({logs.length})
+          Logs ({AsyncResult.isSuccess(logsPaging.state.first) ? listCount(logsPaging.state) : "…"})
         </TabButton>
       </PageContainer>
 
@@ -124,30 +130,69 @@ export function TraceDetailPage() {
               selectedSpanId={selectedSpanId}
               onSelectSpan={setSelectedSpanId}
               logs={logs}
+              logsComplete={logsComplete}
             />
             {selectedSpan && (
               <SpanDetailPanel
                 span={selectedSpan}
                 logs={selectedSpanLogs}
+                logsComplete={logsComplete}
                 onClose={() => setSelectedSpanId(null)}
               />
             )}
           </>
         ) : (
-          <TraceLogsView logs={logs} onSelectSpan={setSelectedSpanId} />
+          <TraceLogsView
+            state={logsPaging.state}
+            onLoadMore={logsPaging.loadMore}
+            onRetry={logsPaging.retry}
+            onSelectSpan={setSelectedSpanId}
+          />
         )}
       </div>
     </div>
   );
 }
 
-function TraceLogsView({
-  logs,
+const traceLogsQuery = (traceId: string, cursor?: string) =>
+  TelemetryClient.query("telemetry", "traceLogs", {
+    params: { traceId },
+    query: { ...(cursor ? { cursor } : {}), limit: 200 },
+  });
+
+const traceLogsList = (traceId: string) =>
+  pagedList(
+    traceLogsQuery(traceId),
+    (cursor) => traceLogsQuery(traceId, cursor),
+    (log) => log.id,
+  );
+
+function TraceLogsView<E>({
+  state,
+  onLoadMore,
+  onRetry,
   onSelectSpan,
 }: {
-  logs: ReadonlyArray<LogItem>;
+  state: PagedListState<LogItem, E>;
+  onLoadMore: () => void;
+  onRetry: () => void;
   onSelectSpan: (id: string | null) => void;
 }) {
+  if (AsyncResult.isFailure(state.first)) {
+    return (
+      <div className="flex-1">
+        <ErrorState message="Failed to load this trace's logs" />
+      </div>
+    );
+  }
+  if (!AsyncResult.isSuccess(state.first)) {
+    return (
+      <div className="flex-1">
+        <LoadingState message="Loading logs..." />
+      </div>
+    );
+  }
+  const logs = state.rows;
   if (logs.length === 0) {
     return (
       <div className="flex-1">
@@ -186,6 +231,7 @@ function TraceLogsView({
           ))}
         </tbody>
       </table>
+      <ListEnd noun="logs" state={state} onLoadMore={onLoadMore} onRetry={onRetry} />
     </div>
   );
 }

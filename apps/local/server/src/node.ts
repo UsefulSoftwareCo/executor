@@ -29,6 +29,7 @@ import { StartupFailed } from "./contracts/startup.ts";
 import { bearerMatches, localRequest, makeLocalAuth, pairingUrl } from "./implementation/auth.ts";
 import { localApi } from "./implementation/server.ts";
 import { lockDataDirectory, serviceProof, serviceVersion } from "./implementation/service-files.ts";
+import { closeStarted } from "./implementation/exit-line.ts";
 import { startupPhase } from "./implementation/startup-diagnostics.ts";
 
 /**
@@ -154,9 +155,11 @@ export const listenLocal = (options: {
         Effect.gen(function* () {
           yield* Ref.set(product, Option.some(handler));
           // Close active connections before the adapter's final shutdown. Requests receive
-          // cancellation through Effect; an idle MCP stream cannot hold the process open.
+          // cancellation through Effect; an idle MCP stream cannot hold the process open. The
+          // close starts here; the CLI's last line says how long it took (`exit-line.ts`).
           yield* Effect.addFinalizer(() =>
-            Ref.set(closing, true).pipe(
+            Effect.sync(closeStarted).pipe(
+              Effect.andThen(Ref.set(closing, true)),
               Effect.andThen(Ref.set(product, Option.none())),
               Effect.andThen(Effect.sync(() => socket.closeAllConnections())),
             ),

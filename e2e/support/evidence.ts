@@ -60,6 +60,11 @@ export class Evidence extends Context.Service<
       contents: string | Uint8Array,
     ) => Effect.Effect<void>;
     readonly json: (name: string, contents: unknown) => Effect.Effect<void>;
+    /**
+     * Record a measured duration in milliseconds, on every run, passed or failed: in
+     * `measurements.json` and as a line of the job log, so a drift is seen before it fails a bound.
+     */
+    readonly measure: (name: string, milliseconds: number) => Effect.Effect<void>;
     readonly artifact: (name: string, contentType: string, file: string) => Effect.Effect<void>;
     /** Call before sending a traced request, so a request that never answers keeps its trace. */
     readonly sending: (request: SentRequest) => Effect.Effect<void>;
@@ -376,10 +381,17 @@ interface Planned {
 
 /** Build a fresh evidence store for a single Vitest case. Its scope writes the final outcome. */
 export const evidenceLayer = (context: TestContext) =>
-  scenarioEvidence({ file: context.task.file.name, name: context.task.name });
+  scenarioEvidence({ file: context.task.file.name, name: context.task.name }, (message) =>
+    // Vitest's verbose reporter prints a case's annotations under its result, passed or failed.
+    Effect.tryPromise(() => context.annotate(message, "measurement")).pipe(Effect.ignore),
+  );
 
 /** Record the same evidence for an interactive scenario or a committed Vitest case. */
-export const scenarioEvidence = (identity: { readonly file: string; readonly name: string }) =>
+export const scenarioEvidence = (
+  identity: { readonly file: string; readonly name: string },
+  /** Write a line to the run's own output; an interactive scenario has none. */
+  output: (message: string) => Effect.Effect<void> = () => Effect.void,
+) =>
   Layer.effect(
     Evidence,
     Effect.gen(function* () {
@@ -402,6 +414,7 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
       const started = yield* Clock.currentTimeMillis;
       const attachments: (typeof EvidenceEntries.Type)[number]["attachments"][number][] = [];
       const annotations: { type: string; description: string }[] = [];
+      const measurements: Record<string, number> = {};
       const steps: { name: string; durationMs: number; status: string; error?: string }[] = [];
       const requests = yield* Ref.make<ReadonlyArray<RequestEvidence>>([]);
       const spans = yield* Ref.make<ReadonlyArray<ClientSpan>>([]);
@@ -447,6 +460,7 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
                 target: target.metadata.target,
                 origin: target.metadata.origin,
                 status: cause === undefined ? "passed" : "failed",
+                startedAt: started,
                 duration: ended - started,
                 errors: cause === undefined ? [] : [Cause.pretty(cause)],
                 annotations,
@@ -757,6 +771,12 @@ export const scenarioEvidence = (identity: { readonly file: string; readonly nam
         browserTrace: (id) =>
           Effect.sync(() => {
             browserTraces.add(id);
+          }),
+        measure: (name, milliseconds) =>
+          Effect.gen(function* () {
+            measurements[name] = Math.round(milliseconds);
+            yield* json("measurements.json", measurements);
+            yield* output(`${name}: ${Math.round(milliseconds)} ms`);
           }),
         intervention: (name) =>
           Effect.sync(() => {

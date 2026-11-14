@@ -79,8 +79,11 @@ const crypto = require("node:crypto");
     }
     return JSON.stringify({ resourceSpans: [{ resource: { attributes: [{ key: "service.name", value: { stringValue: "collector-memory" } }] }, scopeSpans: [{ scope: { name: "collector-memory" }, spans }] }] });
   };
+  // Each request opens its own connection. Node's agent would keep the last export's connection and
+  // send the stats request on it after the memory readings, about 3 to 5 seconds later, while
+  // workerd closes a connection 5 seconds after its last request: that race reset the request.
   const ask = (method, path, payload) => new Promise((resolve, reject) => {
-    const request = http.request({ socketPath, path, method, headers: payload === undefined ? {} : { "content-type": "application/json" } }, (response) => {
+    const request = http.request({ socketPath, path, method, agent: false, headers: payload === undefined ? {} : { "content-type": "application/json" } }, (response) => {
       let text = "";
       response.on("data", (chunk) => (text += chunk));
       response.on("end", () => response.statusCode === 200 ? resolve(JSON.parse(text)) : reject(new Error(method + " " + path + " answered " + response.statusCode + " " + text)));

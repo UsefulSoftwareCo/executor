@@ -9,6 +9,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { collectorChanged, collectorInputs } from "../collector-inputs.ts";
 import { lanesFor, releaseSources, releaseSuiteConfigs } from "../release-lanes.ts";
 import { closureOf } from "../save-path.ts";
 import { scenarios } from "../test-plan.ts";
@@ -26,6 +27,7 @@ const jobs = [
   "cloud-removal-recovery",
   "cloud-batch",
   "cloud-export-hang",
+  "cloud-listings",
   "cloud-autumn",
   "cloud-isolate",
   "cloud-telemetry-flush",
@@ -212,13 +214,20 @@ interface SavedRun {
   readonly files?: (file: string) => boolean;
   /** A failed scenario's failure message, as Vitest saves it. */
   readonly failure?: (title: string) => string | undefined;
+  /** Hosted emulator calls that needed a retry, saved as `emulatorRequest` saves them. */
+  readonly emulatorRetries?: ReadonlyArray<unknown>;
 }
 
 /**
  * `node e2e/ci-selection.ts verify <suite>` over runs saved as the E2E jobs save them, each with
  * every scenario the plan schedules on its target. `status` says how one ended; passed by default.
  */
-const verify = (suite: string, saved: ReadonlyArray<SavedRun>) =>
+const verify = (
+  suite: string,
+  saved: ReadonlyArray<SavedRun>,
+  /** Database connection readings, saved as a deployed run's stage writes them. */
+  connections: ReadonlyArray<Record<string, unknown>> = [],
+) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -253,6 +262,11 @@ const verify = (suite: string, saved: ReadonlyArray<SavedRun>) =>
         "diagnostics",
       );
       yield* fs.makeDirectory(report, { recursive: true });
+      const retries = path.join(report, "..", "emulator-retries");
+      for (const [number, record] of (run.emulatorRetries ?? []).entries()) {
+        yield* fs.makeDirectory(retries, { recursive: true });
+        yield* fs.writeFileString(path.join(retries, `${number}.json`), JSON.stringify(record));
+      }
       yield* fs.writeFileString(
         path.join(report, "results.json"),
         JSON.stringify({
@@ -261,6 +275,14 @@ const verify = (suite: string, saved: ReadonlyArray<SavedRun>) =>
             assertionResults,
           })),
         }),
+      );
+    }
+    for (const [index, reading] of connections.entries()) {
+      const stage = path.join(directory, "deployed-planetscale-connection-results", `e2e-${index}`);
+      yield* fs.makeDirectory(stage, { recursive: true });
+      yield* fs.writeFileString(
+        path.join(stage, "database-connections.json"),
+        JSON.stringify(reading),
       );
     }
     const child = yield* processes.spawn(
@@ -380,7 +402,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       const run = yield* select({});
       expect(run.exitCode).toBe(0);
       expect(Object.keys(run.outputs).sort()).toEqual(
-        [...jobs, ...runnerOutputs, ...laneOutputs, "full"].sort(),
+        [...jobs, ...runnerOutputs, ...laneOutputs, "collector", "full"].sort(),
       );
       for (const job of [...jobs, ...runnerOutputs]) expect(run.outputs[job], job).not.toBe("");
       // Executor releases runs the whole release matrix on main after merge instead.
@@ -447,7 +469,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
             ),
             "cloud-workers, cloud-locks, cloud-batch, cloud-autumn",
             "cloud-domains, cloud-v1-bound, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview",
-            "cloud-removal-recovery, cloud-export-hang",
+            "cloud-removal-recovery, cloud-export-hang, cloud-listings",
           ]);
           // Each Cloud job's pattern is on exactly one runner and empty on the others. The runner
           // runs it unchanged, except cloud-product past what one local Cloud holds: each of its
@@ -976,6 +998,95 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       }),
   );
 
+  it.effect(
+    "a stack's top layer answers for the deployed scenarios its lower layers add, whatever it changes itself",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const names = yield* fs.readDirectory("patches");
+        const hashed = (yield* processes.string(
+          ChildProcess.make("git", [
+            "hash-object",
+            ...guardedFiles,
+            ...names.map((name) => `patches/${name}`),
+          ]),
+        ))
+          .trim()
+          .split("\n");
+        const plan = yield* fs.readFileString("e2e/test-plan.ts");
+        const manifest = yield* fs.readFileString("package.json");
+        const title = "Cloud product links follow the deployment origin";
+        const main = (mainPlan: string) => ({
+          "package.json": manifest,
+          patches: names
+            .map((name, index) => `${hashed[guardedFiles.length + index]} ${name}`)
+            .join("\n"),
+          ...guardedListings(hashed.slice(0, guardedFiles.length)),
+          "e2e/test-plan.ts": mainPlan,
+        });
+        const without = plan.replace(
+          JSON.stringify(title),
+          JSON.stringify("Cloud product links followed an earlier origin"),
+        );
+        // The top layer changes only groups.spec.ts; a lower layer, which skipped, added the
+        // deployed scenario in deployment-links.spec.ts. The comparison since main holds both.
+        const changed = ["e2e/tests/groups.spec.ts"];
+        const compared = ["e2e/tests/groups.spec.ts", "e2e/tests/deployment-links.spec.ts"];
+        const verified =
+          "Verified on a deployed stage: bun run e2e:deployed --database planetscale --test-name 'Cloud product links' passed on a synthetic stage";
+        const [refused, stated, known, uncompared, cutShort] = yield* Effect.all(
+          [
+            select({ body: block("none"), changed, compared, main: main(without) }),
+            select({
+              body: `${block("none")}\n${verified}\n`,
+              changed,
+              compared,
+              main: main(without),
+            }),
+            select({ body: block("none"), changed, compared, main: main(plan) }),
+            // Without a full comparison the check reads every spec file: it may ask for a line a
+            // stack did not need, but never lets a new deployed scenario through unseen.
+            select({ body: block("none"), changed, compared: "unknown", main: main(without) }),
+            select({
+              body: block("none"),
+              changed,
+              compared: Array.from({ length: 300 }, (_, index) => `notes/file-${index}.md`),
+              main: main(without),
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(refused.exitCode).toBe(1);
+        expect(refused.log).toContain("These scenarios are new to the deployed suite.");
+        expect(refused.log).toContain(`- deployment-links.spec.ts: ${title}`);
+        expect(stated.exitCode, stated.log).toBe(0);
+        // A title main already has is not new, wherever the stack changed it.
+        expect(known.exitCode, known.log).toBe(0);
+        expect(known.log).not.toContain("new to the deployed suite");
+        for (const run of [uncompared, cutShort]) {
+          expect(run.exitCode).toBe(1);
+          expect(run.log).toContain(`- deployment-links.spec.ts: ${title}`);
+        }
+      }),
+  );
+
+  it.effect("a stack's top layer refuses a spec file a lower layer added that no job runs", () =>
+    Effect.gen(function* () {
+      const root = yield* fixture({ "e2e/tests/orphan.spec.ts": "export {};\n" });
+      const run = yield* select({
+        root,
+        body: block("none"),
+        changed: ["e2e/tests/groups.spec.ts"],
+        compared: ["e2e/tests/groups.spec.ts", "e2e/tests/orphan.spec.ts"],
+      });
+      expect(run.exitCode).toBe(1);
+      expect(run.log).toContain(
+        "No CI job runs these spec files, because neither e2e/test-plan.ts nor an e2e/*.config.ts includes them: orphan.spec.ts.",
+      );
+    }),
+  );
+
   it.effect("a changed spec file that no plan or config includes fails", () =>
     Effect.gen(function* () {
       const name = "ci-selection-unregistered.spec.ts";
@@ -1420,6 +1531,146 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
     }),
   );
 
+  it.effect("a deployed run counts its stages by database connection latency", () =>
+    Effect.gen(function* () {
+      const [read, unread, none] = yield* Effect.all(
+        [
+          verify(
+            "deployed",
+            [{ target: "cloud" }],
+            [
+              {
+                source: "hyperdrive",
+                level: "normal",
+                averageMs: 4.2,
+                worstMinuteMs: 31,
+                minutes: 12,
+                queries: 9000,
+              },
+              {
+                source: "hyperdrive",
+                level: "elevated",
+                averageMs: 12.3,
+                worstMinuteMs: 71,
+                minutes: 11,
+                queries: 8000,
+              },
+              {
+                source: "spans",
+                level: "severe",
+                averageMs: 92.6,
+                worstMinuteMs: 362,
+                minutes: 13,
+                queries: 8500,
+                note: "Cloudflare's Hyperdrive analytics could not be read",
+              },
+            ],
+          ),
+          verify(
+            "deployed",
+            [{ target: "cloud" }],
+            [
+              {
+                source: "unavailable",
+                level: "unknown",
+                note: "The run has no credentials to read it",
+              },
+            ],
+          ),
+          verify("deployed", [{ target: "cloud" }]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      // It informs and never fails a run.
+      expect(read.exitCode, read.log).toBe(0);
+      expect(read.log).toContain(
+        "Database connection latency of deployed stages: 1 severe (averaging 50 ms or a minute at 300 ms), 1 elevated (10 ms or 100 ms), 1 normal, 0 unread; the highest averaged 92.6 ms with a worst minute of 362 ms, read from hyperdrive and spans.",
+      );
+      expect(unread.exitCode, unread.log).toBe(0);
+      expect(unread.log).toContain(
+        "Database connection latency of deployed stages: 0 severe (averaging 50 ms or a minute at 300 ms), 0 elevated (10 ms or 100 ms), 0 normal, 1 unread, read from unavailable.",
+      );
+      expect(none.exitCode, none.log).toBe(0);
+      expect(none.log).toContain(
+        "Database connection latency of deployed stages: 0 severe (averaging 50 ms or a minute at 300 ms), 0 elevated (10 ms or 100 ms), 0 normal, 0 unread; no stage recorded a reading.",
+      );
+    }),
+  );
+
+  it.effect("a full run counts the hosted emulator calls that needed a retry", () =>
+    Effect.gen(function* () {
+      const retry = (scenario: string | undefined, outcome: string, attempts: number) => ({
+        ...(scenario === undefined ? {} : { scenario }),
+        operation: "POST /_emulate/seed",
+        emulator: "workos/executor-onboarding-… #0123456789ab",
+        failures: Array.from(
+          { length: outcome === "answered" ? attempts - 1 : attempts },
+          () => "HTTP 500, cf-ray 0a1b2c3d4e5f6071-LAX",
+        ),
+        outcome,
+        attempts,
+        elapsedMs: attempts * 1_000,
+      });
+      const [counted, none] = yield* Effect.all(
+        [
+          verify("ci", [
+            { target: "local" },
+            { target: "self-host", emulatorRetries: [retry("Seeded dashboard", "answered", 2)] },
+            {
+              target: "cloud",
+              emulatorRetries: [
+                retry(undefined, "answered", 2),
+                retry("Cloud v1 import", "failed", 3),
+                retry("Cloud v1 import", "answered", 2),
+              ],
+            },
+          ]),
+          verify("deployed", [{ target: "cloud" }]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      expect(counted.exitCode, counted.log).toBe(0);
+      expect(counted.log).toContain(
+        "Hosted emulator calls that needed a retry: 4 (2 scenarios, 1 while setting up); 1 still failed after retrying. Worst: POST /_emulate/seed on workos/executor-onboarding-… #0123456789ab, 3 attempts over 3.0 s (failed; HTTP 500, cf-ray 0a1b2c3d4e5f6071-LAX; HTTP 500, cf-ray 0a1b2c3d4e5f6071-LAX; HTTP 500, cf-ray 0a1b2c3d4e5f6071-LAX).",
+      );
+      // Zero is reported too, beside the platform signatures.
+      expect(none.exitCode, none.log).toBe(0);
+      expect(none.log).toContain("Hosted emulator calls that needed a retry: 0.");
+      // A record that cannot be read is reported; it never fails the coverage check.
+      const unreadable = yield* verify("deployed", [
+        { target: "cloud", emulatorRetries: [{ operation: "POST /_emulate/seed" }] },
+      ]);
+      expect(unreadable.exitCode, unreadable.log).toBe(0);
+      expect(unreadable.log).toContain(
+        "The hosted emulator calls that needed a retry could not be counted.",
+      );
+    }),
+  );
+
+  it.effect("an unreadable database connection record is reported, never failed on", () =>
+    Effect.gen(function* () {
+      const run = yield* verify(
+        "deployed",
+        [{ target: "cloud" }],
+        [
+          { source: "hyperdrive", level: "unlisted-level" },
+          {
+            source: "hyperdrive",
+            level: "normal",
+            averageMs: 4.2,
+            worstMinuteMs: 31,
+            minutes: 12,
+            queries: 9000,
+          },
+        ],
+      );
+      expect(run.exitCode, run.log).toBe(0);
+      expect(run.log).toContain(
+        "Database connection latency of deployed stages: 0 severe (averaging 50 ms or a minute at 300 ms), 0 elevated (10 ms or 100 ms), 1 normal, 0 unread; the highest averaged 4.2 ms with a worst minute of 31 ms, read from hyperdrive. 1 database connection record could not be read.",
+      );
+    }),
+  );
+
   it.effect("a sharded job's parts count together, and a missing part fails the full run", () =>
     Effect.gen(function* () {
       // Three parts by spec file, as e2e-self-host's runners save them.
@@ -1478,6 +1729,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-removal-recovery",
         "cloud-batch",
         "cloud-export-hang",
+        "cloud-listings",
         "cloud-autumn",
         "cloud-isolate",
         "cloud-telemetry-flush",
@@ -1555,6 +1807,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         [["playground/demo-apps/live-inbox/package.json"], ["true", ""]],
         [[".github/actions/e2e-tools/action.yml"], ["true", "true"]],
         [["apps/hosted/self-host/Dockerfile"], ["true", ""]],
+        // The scripts the image lane's steps run to pull its bases and build it; the local lane
+        // reads every release script.
+        [["scripts/releases/pull-image-bases.sh"], ["true", "true"]],
+        [["scripts/releases/background.sh"], ["true", "true"]],
         // The image's server, which the fixtures' scenario server also runs on.
         [["apps/hosted/server/src/index.ts"], ["true", "true"]],
         [["apps/hosted/testing/src/scenario-server.ts"], ["true", "true"]],
@@ -1617,6 +1873,84 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       );
       expect(runs[0]!.summary).toContain("release-local: skipped, no file it reads changed.");
     }),
+  );
+
+  it.effect(
+    "collector-native runs for a change to each collector input, and for nothing else",
+    () =>
+      Effect.sync(() => {
+        // One line per entry of collectorInputs (e2e/collector-inputs.ts): a file the entry covers.
+        const inputs: Record<string, string> = {
+          "packages/telemetry/collector/": "packages/telemetry/collector/src/main.rs",
+        };
+        expect(Object.keys(inputs).sort()).toEqual([...collectorInputs].sort());
+        for (const [input, file] of Object.entries(inputs))
+          expect(collectorChanged([file]), input).toBe(true);
+        for (const file of [
+          "packages/telemetry/src/isolate.ts",
+          "packages/telemetry/collector-notes.md",
+          "e2e/tests/collector.spec.ts",
+        ])
+          expect(collectorChanged([file]), file).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "the select job starts collector-native when a collector input changed, and only then",
+    () =>
+      Effect.gen(function* () {
+        const crate = "packages/telemetry/collector/src/store.rs";
+        // A pull request, everything since main; a push to main, the pushed range.
+        const runs = yield* Effect.forEach(
+          [
+            { body: block("none"), compared: [crate, "notes/collector.md"] },
+            { body: block("none"), compared: ["apps/cli/src/main.ts"] },
+            { compared: [crate] },
+            { compared: ["apps/cli/src/main.ts"] },
+          ],
+          (input) => select(input),
+          { concurrency: "unbounded" },
+        );
+        for (const run of runs) expect(run.exitCode, run.log).toBe(0);
+        expect(runs.map((run) => run.outputs.collector)).toEqual([
+          "true",
+          "false",
+          "true",
+          "false",
+        ]);
+        expect(runs[0]!.summary).toContain("collector-native: runs (e2e/collector-inputs.ts).");
+        expect(runs[1]!.summary).toContain(
+          "collector-native: skipped, no collector input changed (e2e/collector-inputs.ts).",
+        );
+      }),
+  );
+
+  it.effect(
+    "collector-native runs without a comparison, or one cut short, and for a stack's top layer",
+    () =>
+      Effect.gen(function* () {
+        const crate = "packages/telemetry/collector/src/ingest.rs";
+        const runs = yield* Effect.forEach(
+          [
+            { body: block("none"), compared: "unknown" as const },
+            {
+              body: block("none"),
+              compared: Array.from({ length: 300 }, (_, index) => `notes/file-${index}.md`),
+            },
+            // The lower layer changed the crate and skips; the top layer compares with main, so
+            // its comparison holds the lower layer's change too.
+            { body: block("skip"), stackedAbove: "12", compared: [crate] },
+            { body: block("none"), compared: [crate, "e2e/tests/example.spec.ts"] },
+          ],
+          (input) => select(input),
+          { concurrency: "unbounded" },
+        );
+        for (const run of runs) expect(run.exitCode, run.log).toBe(0);
+        expect(runs[0]!.outputs.collector).toBe("true");
+        expect(runs[1]!.outputs.collector).toBe("true");
+        expect(runs[2]!.outputs).toEqual({ skip: "true" });
+        expect(runs[3]!.outputs.collector).toBe("true");
+      }),
   );
 
   it.effect("a file renamed out of a lane's path starts that lane by its old name", () =>

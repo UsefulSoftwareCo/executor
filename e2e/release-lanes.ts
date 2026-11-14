@@ -96,6 +96,9 @@ const imagePaths = [
   "scripts/pack-test-apps.ts",
   "scripts/releases/config.ts",
   "scripts/releases/workflow.ts",
+  // Pulls the image's base images and builds it in the background of the lane's job.
+  "scripts/releases/pull-image-bases.sh",
+  "scripts/releases/background.sh",
 ] as const;
 
 /** The lanes are defined there, so a change to them runs them. Main runs no lane. */

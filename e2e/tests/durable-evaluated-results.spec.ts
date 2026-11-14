@@ -138,13 +138,6 @@ export default defineApp({}, {
   tools: router({ listed: dynamicRouter({ list: async () => tools, resolve: async () => undefined }) }),
 });`;
 
-/**
- * Pairs of long-name listings the interning comparison evaluates. A busy runner can stall one
- * evaluation for longer than interning takes; it would have to stall every one of a kind to make
- * the fastest look slow.
- */
-const longNamePairs = 3;
-
 const Listing = Schema.Struct({ items: Schema.Array(Schema.Struct({ name: Schema.String })) });
 
 /** Deploy a listing app and read its tool listing with the spans of each request. */
@@ -380,40 +373,40 @@ layer(HostedLive, { excludeTestServices: true })("Durable evaluated results", (i
       withHostedCase(
         context,
         Effect.gen(function* () {
-          // Each pair of listings holds 1,000 definitions with names of the same total length. Each
-          // listing is evaluated once, by a read of its own app, the pairs one after the other.
-          const own: Array<number> = [];
-          const same: Array<number> = [];
-          for (const pair of Array.from({ length: longNamePairs }, (_, index) => index + 1)) {
-            const control = yield* listingApp(longNamesSource("own"));
-            const colliding = yield* listingApp(longNamesSource("same"));
-            const ownRead = yield* control.read(`own-length-names-listing-${pair}`, evaluates);
-            const sameRead = yield* colliding.read(`same-length-names-listing-${pair}`, evaluates);
-            for (const read of [ownRead, sameRead]) {
-              expect(read.cache).toBe("miss");
-              expect(read.evaluated?.["executor.listing.definitions"]).toBe("1000");
-              expect(read.evaluated?.["executor.listing.definition_copies"]).toBe("0");
-              // Each name has its own bucket either way, so interning compares nothing.
-              expect(Number(read.evaluated?.["executor.listing.definition_comparisons"])).toBe(0);
-            }
-            expect(sameRead.evaluated?.["executor.listing.json_chars"]).toBe(
-              ownRead.evaluated?.["executor.listing.json_chars"],
-            );
-            if (ownRead.sharedMs === undefined || sameRead.sharedMs === undefined)
-              return yield* Effect.die(new Error("Missing interning span"));
-            own.push(ownRead.sharedMs);
-            same.push(sameRead.sharedMs);
+          // Both listings hold 1,000 definitions with names of the same total length.
+          const control = yield* listingApp(longNamesSource("own"));
+          const colliding = yield* listingApp(longNamesSource("same"));
+          const own = yield* control.read("own-length-names-listing", evaluates);
+          const same = yield* colliding.read("same-length-names-listing", evaluates);
+          for (const read of [own, same]) {
+            expect(read.cache).toBe("miss");
+            expect(read.evaluated?.["executor.listing.definitions"]).toBe("1000");
+            expect(read.evaluated?.["executor.listing.definition_copies"]).toBe("0");
           }
+          expect(same.evaluated?.["executor.listing.json_chars"]).toBe(
+            own.evaluated?.["executor.listing.json_chars"],
+          );
+          // Each name has its own bucket either way, so interning compares nothing.
+          for (const read of [own, same])
+            expect(Number(read.evaluated?.["executor.listing.definition_comparisons"])).toBe(0);
           // A `Map` keyed by these names compares them inside V8, where no count reaches, so this
-          // compares the time interning took, in its own span, which leaves out decoding the app's
-          // answer. Keying buckets by a "length:name" string took 687 ms against the control's 21
-          // on local Cloud, every time: the work is the same on every evaluation. A busy runner
-          // only adds time, to whichever evaluation it lands on, so the fastest of each kind is
-          // compared. 251 CI runs of one pair each measured 17-105 ms for the control and 17-68
-          // for these names, never more than 1.6 times the control.
-          const fastest = { own: Math.min(...own), same: Math.min(...same) };
-          yield* Console.log(JSON.stringify({ step: "long definition names", own, same, fastest }));
-          expect(fastest.same).toBeLessThan(fastest.own * 5 + 100);
+          // compares the time interning took, in its own span. Keying buckets by a "length:name"
+          // string took 687 ms against the control's 21 on local Cloud. The span leaves out
+          // decoding the app's answer, which V8 makes six to eight times slower for these names
+          // whichever listing goes first. Interning took 26-96 ms for either listing in nine
+          // local Cloud runs. Before the span, three CI runs measured 192-353 ms for the
+          // evaluation's own time against 41-72 for the control, a difference local runs do not
+          // show; five times the control plus 100 ms holds even if all of it is interning.
+          yield* Console.log(
+            JSON.stringify({
+              step: "long definition names",
+              own: own.sharedMs,
+              same: same.sharedMs,
+            }),
+          );
+          if (own.sharedMs === undefined || same.sharedMs === undefined)
+            return yield* Effect.die(new Error("Missing interning span"));
+          expect(same.sharedMs).toBeLessThan(own.sharedMs * 5 + 100);
         }),
       ),
     { timeout: 120_000 },

@@ -25,7 +25,12 @@ import {
 } from "effect";
 import { developmentDatabase } from "./development.ts";
 import { cloudOrigin, roleHostsJobEnvironment, testStage, type TestStage } from "./stage.ts";
-import { postgresUrl, previewDatabase, previewPoolConnections } from "./preview-database.ts";
+import {
+  postgresUrl,
+  previewBranchSettings,
+  previewDatabase,
+  previewShape,
+} from "./preview-database.ts";
 import { missingV1PlanetscaleDatabase } from "./v1-membership-settings.ts";
 
 /**
@@ -77,12 +82,20 @@ const fixtureStage = /^test-(?:e2e|perf)-/;
 const preparedPreviewDatabase = (stage: TestStage) =>
   Effect.gen(function* () {
     const preview = yield* previewDatabase(stage);
+    const settings = yield* previewBranchSettings(stage);
     const migrations = globalThis.__ALCHEMY_RUNTIME__
       ? yield* Command.Exec.ref("Migrations")
       : yield* Command.Exec("Migrations", {
           command: "node src/migrate.ts",
           env: {
             DATABASE_URL: preview.migrationUrl,
+            // Waits for the branch's connection settings, whose restart would cut the migration.
+            ...Option.match(settings, {
+              onNone: () => ({}),
+              onSome: (hash) => ({
+                PREVIEW_BRANCH_SETTINGS: hash.pipe(Output.map(() => "applied")),
+              }),
+            }),
             // The same logical id as `cloudSecrets`, so the job signs with the secret the Worker will verify.
             BETTER_AUTH_SECRET: (yield* Random("AuthSecret")).text,
             BETTER_AUTH_URL: stage.origin,
@@ -156,7 +169,7 @@ const preparedPreviewDatabase = (stage: TestStage) =>
     return runtimeDatabase(
       migrated(preview.runtimeUrl),
       Option.map(preview.hyperdriveOrigin, (origin) =>
-        hyperdriveProps(migrated(origin), Option.some(previewPoolConnections)),
+        hyperdriveProps(migrated(origin), Option.some(previewShape(stage).poolConnections)),
       ),
     );
   });

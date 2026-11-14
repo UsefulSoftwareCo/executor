@@ -6,6 +6,8 @@
 //! - Attribute values become strings: arrays are joined with a space, key-value lists become JSON,
 //!   bytes stay base64. `intValue` keeps its decimal digits; Motel turned it into a JavaScript
 //!   number first and lost precision above 2^53.
+//! - A value inside more than [`VALUE_DEPTH`] arrays and key-value lists is kept as its JSON
+//!   text instead, so no depth refuses an export.
 //! - Trace and span ids are hex of the right length, in either case, or canonical base64. A span
 //!   whose id is neither makes the export invalid. A log's ids only correlate it with a span, so
 //!   an id that cannot be read is dropped instead.
@@ -15,6 +17,8 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 
 use serde::Deserialize;
+use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
+use serde_json::value::RawValue;
 
 /// Why an export could not be decoded. The message is returned to the sender.
 #[derive(Debug)]
@@ -32,23 +36,6 @@ impl std::fmt::Display for Invalid {
 // little beyond the rows it produces.
 
 type Text<'a> = Cow<'a, str>;
-
-#[derive(Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-struct AnyValue<'a> {
-    #[serde(borrow)]
-    string_value: Option<Text<'a>>,
-    bool_value: Option<bool>,
-    int_value: Option<Whole>,
-    #[serde(borrow)]
-    double_value: Option<DoubleValue<'a>>,
-    #[serde(borrow)]
-    bytes_value: Option<Text<'a>>,
-    #[serde(borrow)]
-    array_value: Option<ArrayValue<'a>>,
-    #[serde(borrow)]
-    kvlist_value: Option<KeyValueList<'a>>,
-}
 
 /// A whole number, in any form ProtoJSON allows for an integer field: a JSON number or a string
 /// holding one, with or without a fraction part or an exponent (`100`, `"100"`, `1e2`, `"1e2"`,
@@ -122,8 +109,10 @@ pub fn whole_number(text: &str) -> Option<i128> {
     {
         return None;
     }
-    // The exponent, saturated well beyond any shift that could still give an i128.
-    let exponent: i64 = match exponent {
+    // The exponent, exactly, or 10^20 when it is larger. Every string is shorter than
+    // usize::MAX < 10^20 bytes, so a larger exponent cannot be cancelled by the digits: it gives
+    // the same answer as 10^20 (too large, or not whole unless the digits are all zero).
+    let exponent: i128 = match exponent {
         None => 0,
         Some(exponent) => {
             let (sign, digits) = match exponent.as_bytes().first()? {
@@ -135,10 +124,13 @@ pub fn whole_number(text: &str) -> Option<i128> {
                 return None;
             }
             let significant = digits.trim_start_matches('0');
-            let magnitude: i64 = if significant.len() > 7 {
-                1_000_000
+            let magnitude: i128 = if significant.len() > 20 {
+                10_i128.pow(20)
             } else {
-                significant.parse::<i64>().unwrap_or(0).min(1_000_000)
+                significant
+                    .parse::<i128>()
+                    .unwrap_or(0)
+                    .min(10_i128.pow(20))
             };
             sign * magnitude
         }
@@ -148,7 +140,7 @@ pub fn whole_number(text: &str) -> Option<i128> {
     if significant.is_empty() {
         return Some(0);
     }
-    let shift = exponent - fraction.len() as i64;
+    let shift = exponent - fraction.len() as i128;
     let magnitude: u128 = if shift < 0 {
         let cut = usize::try_from(-shift).ok()?;
         let keep = significant.len().checked_sub(cut)?;
@@ -174,33 +166,14 @@ fn in_range<T: TryFrom<i128>>(value: Option<i128>, field: &str) -> Result<T, Inv
         .ok_or_else(|| Invalid(format!("{field} is empty or out of range")))
 }
 
-/// ProtoJSON writes a double as a number, or as a string: `"NaN"`, `"Infinity"`, `"-Infinity"`
-/// or a decimal number in quotes.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum DoubleValue<'a> {
-    Number(f64),
-    Text(#[serde(borrow)] Text<'a>),
-}
-
-#[derive(Deserialize)]
-struct ArrayValue<'a> {
-    #[serde(borrow)]
-    values: Option<Vec<AnyValue<'a>>>,
-}
-
-#[derive(Deserialize)]
-struct KeyValueList<'a> {
-    #[serde(borrow)]
-    values: Option<Vec<KeyValue<'a>>>,
-}
-
 #[derive(Deserialize)]
 struct KeyValue<'a> {
     #[serde(borrow)]
     key: Text<'a>,
+    /// Read as text here and decoded by [`parse`], so its depth does not count against the
+    /// export's.
     #[serde(borrow)]
-    value: Option<AnyValue<'a>>,
+    value: Option<&'a RawValue>,
 }
 
 #[derive(Deserialize)]
@@ -308,7 +281,7 @@ struct LogRecord<'a> {
     #[serde(borrow)]
     severity_text: Option<Text<'a>>,
     #[serde(borrow)]
-    body: Option<AnyValue<'a>>,
+    body: Option<&'a RawValue>,
     #[serde(borrow)]
     attributes: Option<Vec<KeyValue<'a>>>,
     #[serde(borrow)]
@@ -547,65 +520,435 @@ enum Value<'a> {
     Object(Vec<(Text<'a>, Value<'a>)>),
 }
 
-fn parse(value: AnyValue<'_>) -> Result<Value<'_>, Invalid> {
-    if let Some(text) = value.string_value {
-        return Ok(Value::Text(text));
+/// How many arrays and key-value lists deep a value is decoded. A value inside more of them than
+/// this is kept as its `AnyValue`'s JSON text, exactly as the export spelled it, in the place its
+/// value would have had.
+///
+/// Decoding a value recurses once per level, in serde_json and here, and so do making it a string
+/// and dropping it. Values decode on the runtime's blocking threads, which `main` gives
+/// `DECODE_STACK` of stack. Measured on x86-64 Linux, a value inside 64 key-value lists needs about
+/// 91 KiB in a release build and 544 KiB in a debug build (arrays: 91 KiB and 410 KiB); each level
+/// adds about 1.3 KiB and 8.2 KiB. The tests decode values at and past this depth on a 1 MiB
+/// thread. Text past the limit is read without recursion (serde_json keeps one byte per open
+/// bracket), so its depth is bounded only by the export's size, and costs no stack.
+///
+/// The pinned Effect exporter writes nested user data as nested values; 40 levels of arrays is
+/// 1,315 bytes.
+pub const VALUE_DEPTH: usize = 64;
+
+/// The stack of every thread that decodes an export. The runtime is built with it, so it does not
+/// depend on `RUST_MIN_STACK`: with 64 KiB there, a value 64 key-value lists deep overflowed the
+/// stack and ended the process.
+pub const DECODE_STACK: usize = 2 * 1024 * 1024;
+
+/// Decode one attribute value or log body, as Motel's `parseAnyValue` read it.
+///
+/// The export's reader keeps the value as text, which serde_json reads without recursion, and keeps
+/// its own 128-level limit for everything else. The value then gets its own reader, with
+/// serde_json's limit (128 levels of JSON, about 40 levels of arrays) off: the only recursion in it
+/// is through [`AnyValueSeed`], which stops at [`VALUE_DEPTH`]. Every other field it reads is a
+/// scalar, and a field it skips is read without recursion.
+fn parse(value: &RawValue) -> Result<Value<'_>, Invalid> {
+    let mut reader = serde_json::Deserializer::from_str(value.get());
+    reader.disable_recursion_limit();
+    let parsed = AnyValueSeed { depth: 0 }
+        .deserialize(&mut reader)
+        .and_then(|parsed| reader.end().map(|()| parsed))
+        .map_err(|error| Invalid(format!("Invalid value: {error}")))?;
+    Ok(parsed)
+}
+
+/// The names of the fields an `AnyValue`, an array or a key-value list has; anything else is
+/// skipped.
+enum Field {
+    StringValue,
+    BoolValue,
+    IntValue,
+    DoubleValue,
+    BytesValue,
+    ArrayValue,
+    KvlistValue,
+    Values,
+    Key,
+    Value,
+    Other,
+}
+
+impl<'de> Deserialize<'de> for Field {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct FieldVisitor;
+        impl Visitor<'_> for FieldVisitor {
+            type Value = Field;
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("a field name")
+            }
+            fn visit_str<E: serde::de::Error>(self, name: &str) -> Result<Field, E> {
+                Ok(match name {
+                    "stringValue" => Field::StringValue,
+                    "boolValue" => Field::BoolValue,
+                    "intValue" => Field::IntValue,
+                    "doubleValue" => Field::DoubleValue,
+                    "bytesValue" => Field::BytesValue,
+                    "arrayValue" => Field::ArrayValue,
+                    "kvlistValue" => Field::KvlistValue,
+                    "values" => Field::Values,
+                    "key" => Field::Key,
+                    "value" => Field::Value,
+                    _ => Field::Other,
+                })
+            }
+        }
+        deserializer.deserialize_identifier(FieldVisitor)
     }
-    if let Some(flag) = value.bool_value {
-        return Ok(Value::Bool(flag));
+}
+
+/// A string that borrows from the export when it needs no unescaping.
+#[derive(Deserialize)]
+struct Borrowed<'a>(#[serde(borrow)] Text<'a>);
+
+/// Store `value` in `slot`, refusing a field given twice as a derived struct does.
+fn once<T, E: serde::de::Error>(
+    slot: &mut Option<T>,
+    value: T,
+    name: &'static str,
+) -> Result<(), E> {
+    if slot.is_some() {
+        return Err(E::duplicate_field(name));
     }
-    if let Some(int) = value.int_value {
-        return Ok(Value::Int(in_range::<i64>(int.0, "intValue")?.to_string()));
+    *slot = Some(value);
+    Ok(())
+}
+
+/// Reads an `AnyValue` inside `depth` arrays and key-value lists into a [`Value`].
+#[derive(Clone, Copy)]
+struct AnyValueSeed {
+    depth: usize,
+}
+
+impl<'de> DeserializeSeed<'de> for AnyValueSeed {
+    type Value = Value<'de>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Value<'de>, D::Error> {
+        if self.depth > VALUE_DEPTH {
+            // serde_json reads a raw value with a loop and a byte per open bracket, not recursion.
+            let text = <&RawValue>::deserialize(deserializer)?;
+            return Ok(Value::Text(Cow::Borrowed(text.get())));
+        }
+        deserializer.deserialize_map(self)
     }
-    if let Some(double) = value.double_value {
-        return Ok(Value::Double(match double {
-            DoubleValue::Number(number) => number,
-            DoubleValue::Text(text) => match text.as_ref() {
-                "NaN" => f64::NAN,
-                "Infinity" => f64::INFINITY,
-                "-Infinity" => f64::NEG_INFINITY,
-                // Rust's parser also takes words such as "inf"; ProtoJSON allows only digits.
-                digits
-                    if digits
-                        .bytes()
-                        .any(|byte| byte.is_ascii_alphabetic() && byte != b'e' && byte != b'E') =>
-                {
-                    return Err(Invalid(format!("Invalid doubleValue {digits:?}")));
+}
+
+impl<'de> Visitor<'de> for AnyValueSeed {
+    type Value = Value<'de>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("an AnyValue object")
+    }
+
+    fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Value<'de>, M::Error> {
+        let mut string_value = None;
+        let mut bool_value = None;
+        let mut int_value = None;
+        let mut double_value = None;
+        let mut bytes_value = None;
+        let mut array_value = None;
+        let mut kvlist_value = None;
+        let inner = ListSeed {
+            depth: self.depth + 1,
+            entries: false,
+        };
+        while let Some(field) = map.next_key::<Field>()? {
+            match field {
+                Field::StringValue => {
+                    let text = map.next_value::<Option<Borrowed>>()?;
+                    once(&mut string_value, text, "stringValue")?;
                 }
-                digits => digits
-                    .parse::<f64>()
-                    .map_err(|_| Invalid(format!("Invalid doubleValue {digits:?}")))?,
-            },
-        }));
-    }
-    if let Some(bytes) = value.bytes_value {
-        return Ok(Value::Text(bytes));
-    }
-    if let Some(values) = value.array_value.and_then(|array| array.values) {
-        return Ok(Value::Array(
-            values.into_iter().map(parse).collect::<Result<_, _>>()?,
-        ));
-    }
-    if let Some(entries) = value.kvlist_value.and_then(|list| list.values) {
-        let mut object: Vec<(Text, Value)> = Vec::with_capacity(entries.len());
-        // Each key's place in `object`, so a repeated key is found without a scan.
-        let mut places: HashMap<Text, usize> = HashMap::with_capacity(entries.len());
-        for entry in entries {
-            let parsed = match entry.value {
-                Some(value) => parse(value)?,
-                None => Value::Null,
-            };
-            match places.get(&entry.key) {
-                Some(&place) => object[place].1 = parsed,
-                None => {
-                    places.insert(entry.key.clone(), object.len());
-                    object.push((entry.key, parsed));
+                Field::BoolValue => {
+                    let flag = map.next_value::<Option<bool>>()?;
+                    once(&mut bool_value, flag, "boolValue")?;
+                }
+                Field::IntValue => {
+                    let int = map.next_value::<Option<Whole>>()?;
+                    once(&mut int_value, int, "intValue")?;
+                }
+                Field::DoubleValue => {
+                    let double = map.next_value::<Option<Double>>()?;
+                    once(&mut double_value, double, "doubleValue")?;
+                }
+                Field::BytesValue => {
+                    let bytes = map.next_value::<Option<Borrowed>>()?;
+                    once(&mut bytes_value, bytes, "bytesValue")?;
+                }
+                Field::ArrayValue => {
+                    let array = map.next_value_seed(OptionSeed(inner))?;
+                    once(&mut array_value, array, "arrayValue")?;
+                }
+                Field::KvlistValue => {
+                    let list = map.next_value_seed(OptionSeed(ListSeed {
+                        entries: true,
+                        ..inner
+                    }))?;
+                    once(&mut kvlist_value, list, "kvlistValue")?;
+                }
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
                 }
             }
         }
-        return Ok(Value::Object(object));
+        // Motel's order: the first field that is set wins.
+        if let Some(Borrowed(text)) = string_value.flatten() {
+            return Ok(Value::Text(text));
+        }
+        if let Some(flag) = bool_value.flatten() {
+            return Ok(Value::Bool(flag));
+        }
+        if let Some(int) = int_value.flatten() {
+            return in_range::<i64>(int.0, "intValue")
+                .map(|int| Value::Int(int.to_string()))
+                .map_err(|Invalid(message)| serde::de::Error::custom(message));
+        }
+        if let Some(Double(double)) = double_value.flatten() {
+            return Ok(Value::Double(double));
+        }
+        if let Some(Borrowed(bytes)) = bytes_value.flatten() {
+            return Ok(Value::Text(bytes));
+        }
+        if let Some(Some(list)) = array_value.flatten() {
+            return Ok(list);
+        }
+        if let Some(Some(list)) = kvlist_value.flatten() {
+            return Ok(list);
+        }
+        Ok(Value::Null)
     }
-    Ok(Value::Null)
+}
+
+/// `null` or what `T` reads.
+struct OptionSeed<T>(T);
+
+impl<'de, T: DeserializeSeed<'de> + Copy> DeserializeSeed<'de> for OptionSeed<T> {
+    type Value = Option<T::Value>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_option(self)
+    }
+}
+
+impl<'de, T: DeserializeSeed<'de> + Copy> Visitor<'de> for OptionSeed<T> {
+    type Value = Option<T::Value>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("null or a value")
+    }
+
+    fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+        Ok(None)
+    }
+
+    fn visit_some<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        self.0.deserialize(deserializer).map(Some)
+    }
+}
+
+/// Reads an `ArrayValue` or a `KeyValueList` (`{"values": [...]}`) whose entries are inside
+/// `depth` of them. `None` when it has no `values`, which Motel read as null.
+#[derive(Clone, Copy)]
+struct ListSeed {
+    depth: usize,
+    entries: bool,
+}
+
+impl<'de> DeserializeSeed<'de> for ListSeed {
+    type Value = Option<Value<'de>>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> Visitor<'de> for ListSeed {
+    type Value = Option<Value<'de>>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str(if self.entries {
+            "a KeyValueList object"
+        } else {
+            "an ArrayValue object"
+        })
+    }
+
+    fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+        let mut values = None;
+        while let Some(field) = map.next_key::<Field>()? {
+            if let Field::Values = field {
+                let list = map.next_value_seed(OptionSeed(Entries(self)))?;
+                once(&mut values, list, "values")?;
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        Ok(values.flatten())
+    }
+}
+
+/// The `values` of a [`ListSeed`].
+#[derive(Clone, Copy)]
+struct Entries(ListSeed);
+
+impl<'de> DeserializeSeed<'de> for Entries {
+    type Value = Value<'de>;
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Value<'de>, D::Error> {
+        deserializer.deserialize_seq(self)
+    }
+}
+
+impl<'de> Visitor<'de> for Entries {
+    type Value = Value<'de>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a list of values")
+    }
+
+    fn visit_seq<S: SeqAccess<'de>>(self, mut seq: S) -> Result<Value<'de>, S::Error> {
+        let seed = AnyValueSeed {
+            depth: self.0.depth,
+        };
+        if !self.0.entries {
+            let mut values = Vec::new();
+            while let Some(value) = seq.next_element_seed(seed)? {
+                values.push(value);
+            }
+            return Ok(Value::Array(values));
+        }
+        let mut object: Vec<(Text, Value)> = Vec::new();
+        // Each key's place in `object`, so a repeated key is found without a scan.
+        let mut places: HashMap<Text, usize> = HashMap::new();
+        while let Some((key, value)) = seq.next_element_seed(EntrySeed(seed))? {
+            match places.get(&key) {
+                Some(&place) => object[place].1 = value,
+                None => {
+                    places.insert(key.clone(), object.len());
+                    object.push((key, value));
+                }
+            }
+        }
+        Ok(Value::Object(object))
+    }
+}
+
+/// One `KeyValue` of a key-value list: its key and its value, null when it has none.
+#[derive(Clone, Copy)]
+struct EntrySeed(AnyValueSeed);
+
+impl<'de> DeserializeSeed<'de> for EntrySeed {
+    type Value = (Text<'de>, Value<'de>);
+
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_map(self)
+    }
+}
+
+impl<'de> Visitor<'de> for EntrySeed {
+    type Value = (Text<'de>, Value<'de>);
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a KeyValue object")
+    }
+
+    fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+        let mut key = None;
+        let mut value = None;
+        while let Some(field) = map.next_key::<Field>()? {
+            match field {
+                Field::Key => {
+                    let Borrowed(text) = map.next_value()?;
+                    once(&mut key, text, "key")?;
+                }
+                Field::Value => {
+                    let parsed = map.next_value_seed(OptionSeed(self.0))?;
+                    once(&mut value, parsed, "value")?;
+                }
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        let key = key.ok_or_else(|| serde::de::Error::missing_field("key"))?;
+        Ok((key, value.flatten().unwrap_or(Value::Null)))
+    }
+}
+
+/// A `doubleValue`. ProtoJSON writes a double as a number, or as a string: `"NaN"`,
+/// `"Infinity"`, `"-Infinity"` or a decimal number in quotes.
+struct Double(f64);
+
+impl<'de> Deserialize<'de> for Double {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        deserializer.deserialize_any(DoubleVisitor)
+    }
+}
+
+struct DoubleVisitor;
+
+impl Visitor<'_> for DoubleVisitor {
+    type Value = Double;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+        formatter.write_str("a double, as a JSON number or a string")
+    }
+
+    fn visit_f64<E: serde::de::Error>(self, value: f64) -> Result<Double, E> {
+        Ok(Double(value))
+    }
+
+    fn visit_i64<E: serde::de::Error>(self, value: i64) -> Result<Double, E> {
+        Ok(Double(value as f64))
+    }
+
+    fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Double, E> {
+        Ok(Double(value as f64))
+    }
+
+    fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<Double, E> {
+        let invalid = || E::custom(format!("Invalid doubleValue {text:?}"));
+        Ok(Double(match text {
+            "NaN" => f64::NAN,
+            "Infinity" => f64::INFINITY,
+            "-Infinity" => f64::NEG_INFINITY,
+            // Rust's parser also takes words such as "inf"; ProtoJSON allows only digits.
+            digits
+                if digits
+                    .bytes()
+                    .any(|byte| byte.is_ascii_alphabetic() && byte != b'e' && byte != b'E') =>
+            {
+                return Err(invalid());
+            }
+            digits => digits.parse::<f64>().map_err(|_| invalid())?,
+        }))
+    }
 }
 
 /// Motel's `stringifyValue`: how an attribute value is stored and shown.

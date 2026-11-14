@@ -15,13 +15,19 @@ import { HttpClient } from "effect/http";
 import { startAnalyticsCollector } from "./analytics-collector.ts";
 import { serveShardedOtlpCollector } from "./otlp-collector.ts";
 import { randomBytes } from "node:crypto";
-import { createEmulatorFixture, EmulatorFixture, emulatorRequest } from "./emulators.ts";
+import {
+  createEmulatorFixture,
+  EmulatorFixture,
+  emulatorRequest,
+  EmulatorRetryRecords,
+} from "./emulators.ts";
 import {
   createV1Database,
   startCloudPostgres,
   v1DatabaseReader,
   v1DatabaseWriter,
 } from "./cloud-postgres.ts";
+import { runtimeCrashesFile, trackRuntimeCrash, type RuntimeCrash } from "./runtime-crashes.ts";
 import { v1McpForwardFile } from "./v1-mcp-forward.ts";
 import { v1SessionHandoffFile } from "./v1-session-handoff.ts";
 import {
@@ -164,7 +170,9 @@ export const startCloudEnvironment = (input: {
     const container = `executor-${stage}`;
     const fixture =
       input.signInThrough === undefined
-        ? yield* createEmulatorFixture(input.origin)
+        ? yield* createEmulatorFixture(input.origin).pipe(
+            Effect.provideService(EmulatorRetryRecords, { directory }),
+          )
         : secret(
             EmulatorFixture.make({
               version: 4,
@@ -182,6 +190,7 @@ export const startCloudEnvironment = (input: {
         (service) =>
           emulatorRequest(service.baseUrl, "/_emulate/reset", {}).pipe(
             Effect.catch(() => Console.error("Could not reset one external test emulator.")),
+            Effect.provideService(EmulatorRetryRecords, { directory }),
           ),
         { concurrency: 5, discard: true },
       ),
@@ -474,6 +483,21 @@ export const startCloudEnvironment = (input: {
     const resourceFailures = yield* Ref.make<ReadonlyArray<{ resource: string; reason: string }>>(
       [],
     );
+    // Each runtime crash and its replacement, written beside cloud.log as it is seen, so the run's
+    // report can name it on the scenarios that failed while it lasted (`runtime-crashes.ts`).
+    const crashes = yield* Ref.make<ReadonlyArray<RuntimeCrash>>([]);
+    const noteCrash = (line: string) =>
+      Effect.gen(function* () {
+        const at = yield* Clock.currentTimeMillis;
+        const changed = trackRuntimeCrash(yield* Ref.get(crashes), line, at);
+        if (changed === undefined) return;
+        yield* Ref.set(crashes, changed);
+        yield* fs
+          .writeFileString(`${directory}/${runtimeCrashesFile}`, JSON.stringify(changed, null, 2), {
+            mode: 0o600,
+          })
+          .pipe(Effect.orDie);
+      });
     const dev = yield* followAlchemyDev(server, (line) =>
       fs.writeFileString(`${directory}/cloud.log`, `${line}\n`, { flag: "a", mode: 0o600 }).pipe(
         Effect.orDie,
@@ -483,6 +507,7 @@ export const startCloudEnvironment = (input: {
             ? Effect.void
             : Ref.update(resourceFailures, (all) => [...all, failure]);
         }),
+        Effect.andThen(noteCrash(line)),
       ),
     );
     // Each failed resource and why, and for a port another socket holds, that socket and its

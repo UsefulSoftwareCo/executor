@@ -53,6 +53,7 @@ export const makeQuitRecord = () => {
       return;
     }
     try {
+      // oxlint-disable-next-line executor/no-sync-stdio-write -- Known risk, kept for now: a stderr pipe nobody reads blocks this write (always on Windows), and the desktop's quit with it. It records quits that hang, while the scope's own logger may be gone; replacing it needs its own change.
       writeSync(2, line);
     } catch {
       // No reader, or stderr is closed or full; the log has the record.

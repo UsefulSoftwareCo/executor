@@ -10,6 +10,8 @@ interface WaterfallProps {
   selectedSpanId: string | null;
   onSelectSpan: (spanId: string | null) => void;
   logs: ReadonlyArray<{ spanId: string | null }>;
+  /** False while the trace has log pages that are not loaded, so counts are lower bounds. */
+  logsComplete: boolean;
 }
 
 const ROW_HEIGHT = 26;
@@ -40,6 +42,7 @@ export function Waterfall({
   selectedSpanId,
   onSelectSpan,
   logs,
+  logsComplete,
 }: WaterfallProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -489,9 +492,14 @@ export function Waterfall({
                   {lc > 0 && (
                     <span
                       className="text-sm text-zinc-600 tabular-nums"
-                      title={`${lc} log${lc === 1 ? "" : "s"}`}
+                      title={
+                        logsComplete
+                          ? `${lc} log${lc === 1 ? "" : "s"}`
+                          : `${lc} log${lc === 1 ? "" : "s"} loaded so far; this trace has more logs`
+                      }
                     >
-                      {lc}L
+                      {lc}
+                      {logsComplete ? "" : "+"}L
                     </span>
                   )}
                 </div>
