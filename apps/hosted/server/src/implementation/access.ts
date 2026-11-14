@@ -13,8 +13,10 @@ import {
   policyDatabase,
   resourceAuthorityForApp,
   resourceAuthorityForLinks,
+  type AppAccountReads,
   type ResourceAuthority,
 } from "./resource-policy.ts";
+import type { AppAccess } from "../contracts/resource-access.ts";
 import type {
   App,
   AppAccounts,
@@ -260,19 +262,47 @@ export const selectedVersion = (
       linked,
     );
   });
+/**
+ * The app's active version for an operation that names `version`, or none, with the accounts it
+ * runs with: a version other than the active one is not found, and an app without one is not
+ * deployed.
+ */
+export const pinnedActiveVersion = (
+  selected: { readonly app: App; readonly accounts: AppAccounts },
+  version: VersionId | undefined,
+) =>
+  Effect.gen(function* () {
+    const { app, accounts } = selected;
+    if (version !== undefined && version !== app.activeVersion)
+      return yield* new VersionNotFound({ app: app.id, version });
+    if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
+    // Pin the authorized version so a concurrent promotion cannot silently change the call.
+    return { version: app.activeVersion, accounts };
+  });
 /** New tool discovery and calls use the active build; retained execution is reserved for saved invocations. */
 export const selectedActiveVersion = (
   executor: Executor,
   owner: OwnerId,
   input: { readonly app: AppId; readonly version?: VersionId | undefined },
 ) =>
+  Effect.flatMap(selectedApp(executor, owner, input.app), (selected) =>
+    pinnedActiveVersion(selected, input.version),
+  );
+/**
+ * {@link selectedApp} for an app decided from reads made for many apps at once, such as every app
+ * a search reads: the app as the request's app list read it, the caller's access to it, and the
+ * caller's and the app's links (see `resourceAuthorityForAppsWithLinks`). An app the caller may
+ * not use, or without a policy, is refused as `selectedApp` refuses it; otherwise its accounts are
+ * resolved from those links by the same rules.
+ */
+export const selectedAppFrom = (
+  app: App,
+  access: typeof AppAccess.Type | undefined,
+  links: AppAccountReads,
+) =>
   Effect.gen(function* () {
-    const { app, accounts } = yield* selectedApp(executor, owner, input.app);
-    if (input.version !== undefined && input.version !== app.activeVersion)
-      return yield* new VersionNotFound({ app: app.id, version: input.version });
-    if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
-    // Pin the authorized version so a concurrent promotion cannot silently change the call.
-    return { version: app.activeVersion, accounts };
+    if (access === undefined || !access.canUse) return yield* new OrganizationForbidden();
+    return { app, accounts: yield* callerAccounts(app, Effect.succeed(links)) };
   });
 
 /**

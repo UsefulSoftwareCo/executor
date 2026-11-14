@@ -7505,6 +7505,17 @@ export const scenarios = plan({
       local: na("Local uses its instance credential."),
     },
   },
+  searchStatements: {
+    fixtures: "actors",
+    file: "search-statements.spec.ts",
+    title:
+      "MCP search reads every app's discovery state in statements that do not grow with the apps",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("This scenario reads SQL spans from the self-host collector."),
+      local: na("Local has no hosted organization policies."),
+    },
+  },
   toolCallStatements: {
     fixtures: "actors",
     file: "tool-call-statements.spec.ts",

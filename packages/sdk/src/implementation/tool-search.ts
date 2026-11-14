@@ -175,6 +175,18 @@ export const makeToolSearch = (options: {
     /** The kept rows of the state's listing, if any. */
     listing: (state: InvocationSnapshot, listing: ToolSearchListing) =>
       Effect.flatMap(stateTarget(state), (target) => store.listing(listing, target)),
+    /**
+     * The kept rows of each state's listing, in order, read in one statement; see `listing`.
+     */
+    listings: (
+      wanted: ReadonlyArray<{
+        readonly state: InvocationSnapshot;
+        readonly listing: ToolSearchListing;
+      }>,
+    ) =>
+      Effect.forEach(wanted, ({ state, listing }) =>
+        Effect.map(stateTarget(state), (target) => ({ listing, target })),
+      ).pipe(Effect.flatMap(store.listings)),
     revive: store.revive,
     /**
      * Keep a listing's rows. The rows' digest covers what ranking and results read, so a listing

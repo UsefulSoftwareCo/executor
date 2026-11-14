@@ -100,6 +100,7 @@ import {
   ToolCallKindObserved,
   type PrefetchedInvocation,
   type PrefetchHost,
+  SearchablePrefetch,
 } from "../contracts/tools.ts";
 import type { ExecutorDatabase } from "./storage.ts";
 import type { ProviderDefinition } from "../contracts/provider.ts";
@@ -123,7 +124,7 @@ import {
   selectionAccountIds,
   type SelectionAccountsRead,
 } from "./selection.ts";
-import type { Listings, ToolListing } from "./listings.ts";
+import type { Listings, SearchableAhead, ToolListing } from "./listings.ts";
 import { pageStart, pageTools } from "./tool-pages.ts";
 import { ownsDatabase } from "../contracts/apps.ts";
 
@@ -135,6 +136,17 @@ const readApp = (db: Query, app: AppId) =>
       where: (b) => b("id", "=", app),
     }),
   );
+
+/** {@link readApp} for several apps, in one statement; an app without a row is not returned. */
+const readApps = (db: Query, apps: readonly AppId[]) =>
+  apps.length === 0
+    ? Effect.succeed([])
+    : query(() =>
+        db.findMany("apps", {
+          join: (b) => b.deployment(),
+          where: (b) => b("id", "in", apps),
+        }),
+      );
 
 /**
  * The reads {@link snapshot} makes, made ahead and at once. The account read stands in only when it
@@ -422,6 +434,13 @@ const appAccountReconnect =
           appRequirement: requirement,
         });
   };
+
+/**
+ * The reconnect a failed access check reports for this state, named as resolving the state's
+ * accounts would name it: an account the app uses as its own carries its app requirement.
+ */
+export const reconnectReported = (state: Effect.Success<ReturnType<typeof snapshot>>) =>
+  appAccountReconnect(distinctSelection(state));
 
 /**
  * Resolve current credentials, to run the app, without holding a database transaction open. It
@@ -1220,6 +1239,123 @@ export const makeTools = (
     });
     return { leaves, take };
   };
+  /**
+   * One target's reads made ahead for `tools.searchable` by {@link prefetchSearchable}: the target
+   * they were made for, the actor they ran as, the invocation state its snapshot read, and what
+   * the listing store read for it. Taken at most once.
+   */
+  interface SearchableEntry {
+    readonly target: {
+      readonly app: AppId;
+      readonly version: VersionId;
+      readonly accounts: AppAccounts;
+    };
+    readonly actor: string | undefined;
+    readonly state: InvocationSnapshot;
+    readonly ahead: SearchableAhead;
+  }
+  /** The opaque value of a {@link SearchablePrefetch}: its entries by app, each taken once. */
+  class SearchableReads {
+    readonly entries: Map<AppId, SearchableEntry>;
+    constructor(entries: Map<AppId, SearchableEntry>) {
+      this.entries = entries;
+    }
+    /** The entry made for exactly this app, version and accounts, removed as it is taken. */
+    take(input: {
+      readonly app: AppId;
+      readonly version?: VersionId | undefined;
+      readonly accounts?: AppAccounts | undefined;
+    }) {
+      const entry = this.entries.get(input.app);
+      if (
+        entry === undefined ||
+        input.version !== entry.target.version ||
+        input.accounts === undefined ||
+        !sameAccounts(entry.target.accounts, input.accounts)
+      )
+        return undefined;
+      this.entries.delete(input.app);
+      return entry;
+    }
+  }
+  /**
+   * {@link PrefetchHost}'s `searchable`: what `tools.searchable` reads for each target, for all of
+   * them at once. The apps and the accounts the targets name are read in one statement each, and
+   * each target's snapshot is made from them as it would make it from its own reads; then every
+   * target's kept rows, the actor's app rechecks and the grants are read in one statement each
+   * (`searchablePrefetch`). The host's checks have finished, so each read still follows them. A
+   * target whose snapshot fails, or whose app is another owner's, has no entry and is read live,
+   * as is every target when any of these statements fails.
+   */
+  const prefetchSearchable: PrefetchHost["searchable"] = ({ owner, targets }) =>
+    Effect.gen(function* () {
+      const actor = yield* CurrentActor;
+      const [apps, accounts] = yield* Effect.all(
+        [
+          readApps(db, [...new Set(targets.map((target) => target.app))]),
+          readSelectionAccounts(db, [
+            ...new Set(targets.flatMap((target) => namedAccounts(target.accounts))),
+          ]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      const states = yield* Effect.forEach(targets, (target) => {
+        const ids = new Set(namedAccounts(target.accounts));
+        const reads: SnapshotReads = {
+          app: Result.succeed(apps.find((row) => row.id === target.app) ?? null),
+          accounts: {
+            ids: [...ids],
+            rows: Result.succeed(accounts.filter((row) => ids.has(row.id))),
+          },
+        };
+        return snapshot(db, target, reads).pipe(
+          Effect.withSpan("sdk.invocation.snapshot"),
+          Effect.option,
+          Effect.map(Option.filter((state) => state.app.owner === owner)),
+          Effect.map(Option.map((state) => ({ target, state }))),
+        );
+      }).pipe(Effect.map((found) => found.flatMap(Option.toArray)));
+      const aheads = yield* listings.searchablePrefetch(
+        owner,
+        states.map(({ state }) => state),
+      );
+      const entries = new Map<AppId, SearchableEntry>();
+      states.forEach(({ target, state }, index) => {
+        const ahead = aheads[index];
+        // One entry per app: the first target keeps it and a later one of the same app reads live.
+        // `take` still matches the exact version and accounts, so no target gets another's entry.
+        if (ahead === undefined || entries.has(target.app)) return;
+        entries.set(target.app, { target, actor, state, ahead });
+      });
+      return { owner, value: new SearchableReads(entries) };
+    }).pipe(
+      Effect.catchCause(() => Effect.succeed({ owner, value: undefined })),
+      Effect.withSpan("sdk.tools.searchable.prefetch", {
+        attributes: { "executor.prefetch.targets": targets.length },
+      }),
+    );
+  /**
+   * The entry the host's {@link SearchablePrefetch} holds for this input, under the same owner and
+   * actor, taken so no later read reuses it.
+   */
+  const searchableAhead = (input: {
+    readonly app: AppId;
+    readonly version?: VersionId | undefined;
+    readonly accounts?: AppAccounts | undefined;
+  }) =>
+    Effect.gen(function* () {
+      const prefetched = yield* SearchablePrefetch;
+      if (prefetched === undefined || !(prefetched.value instanceof SearchableReads))
+        return undefined;
+      const entry = prefetched.value.take(input);
+      if (
+        entry === undefined ||
+        entry.state.app.owner !== prefetched.owner ||
+        entry.actor !== (yield* CurrentActor)
+      )
+        return undefined;
+      return entry;
+    });
   // A prefetch answers one call: it is provided around the whole host call, so a later call in
   // that scope (none today) must read live rather than reuse reads that may be seconds old.
   const consumedPrefetches = new WeakSet<object>();
@@ -1360,6 +1496,7 @@ export const makeTools = (
     );
   return {
     prefetchInvocation,
+    prefetchSearchable,
     /**
      * The first of these accounts whose saved sign-in must reconnect before the app's tools can
      * run with them; undefined when every account can supply credentials. Reads stored state only:
@@ -1432,8 +1569,19 @@ export const makeTools = (
       options?: ToolListOptions,
     ) =>
       Effect.gen(function* () {
-        const state = yield* listed(input);
-        const found = yield* listings.searchable(state, listingOf(state), options);
+        const ahead = yield* searchableAhead(input);
+        const state =
+          ahead === undefined
+            ? yield* listed(input)
+            : yield* Effect.as(
+                Effect.annotateCurrentSpan({
+                  "executor.app.id": ahead.state.app.id,
+                  "executor.deployment.id": ahead.state.version.id,
+                  "executor.build.id": ahead.state.version.build,
+                }),
+                ahead.state,
+              );
+        const found = yield* listings.searchable(state, listingOf(state), options, ahead?.ahead);
         return {
           listing: found.listing,
           version: state.version.id,
