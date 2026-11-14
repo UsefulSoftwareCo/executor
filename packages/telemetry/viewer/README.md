@@ -48,6 +48,32 @@ While a trace's logs are not all loaded, the per-span counts on its waterfall re
 with a tooltip saying they are loaded so far, and the span panel says "Logs (67 loaded so far)".
 A span whose logs are all on pages not yet loaded shows no count on the waterfall until they are.
 
+## A trace answered in part
+
+The Rust collector answers a trace too large to send whole with its earliest spans by start time,
+and adds `partial: {spanCount, returned}` to it. Motel never sends `partial`. When it is present
+the trace page says above the waterfall how many of how many spans are shown, the header's span
+count reads `returned of spanCount`, and its duration and error count, which the collector
+computes from the spans in the answer, are labelled as covering the spans shown. The waterfall's
+collapse tooltips say their descendant counts are of the spans shown.
+
+A trace's `warnings` (one per missing parent, and on a partial trace a first line saying it was
+cut) show above the waterfall: the first three, how many there are, and a control that opens the
+rest in a scrolling list of fixed height that renders only the rows in view. Each warning stays on
+one line; the list scrolls sideways to the end of the longest one in view, and takes keyboard
+focus so the arrow keys scroll it. The trace list cannot
+show which traces have warnings: neither Motel nor the Rust collector puts them on a trace summary.
+
+The collector, like Motel, adds a placeholder span for each missing parent and counts it in the
+trace's error count. A span is a placeholder when the trace's warnings name its id as missing
+(`missing span <id> (<n> child…)`); its name alone does not decide it. When a trace has one, the
+error count says that placeholders count as errors.
+
+The waterfall numbers the spans and links each to its parent once per trace. Descendant counts and
+collapsing follow those links, not the order of the spans, without recursion, and end on a cycle
+of parent links. Each row draws its depth guides as one element. So a chain of hundreds of
+thousands of spans opens.
+
 ## Serving
 
 The viewer must be served at the origin root, beside the API it reads:
