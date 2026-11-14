@@ -913,12 +913,6 @@ const make = Effect.gen(function* () {
         users: [{ ...user, email_verified: true }],
       }).pipe(Effect.asVoid),
     /**
-     * Make an email an active member of a new organization in the emulated v1 WorkOS, and return
-     * that organization's WorkOS id. The organization starts empty and unbilled.
-     */
-    v1Member: (email: string) =>
-      v1Workspace([email]).pipe(Effect.map((created) => created.organization)),
-    /**
      * A new organization in the emulated v1 WorkOS whose active members are these emails, and the
      * first member's WorkOS user id, which v1 rows use as `subject`.
      */
@@ -1329,19 +1323,6 @@ const make = Effect.gen(function* () {
         value.services.billing.token,
         "DELETE",
       ).pipe(Effect.asVoid),
-    /**
-     * Fail the next membership read once. Only accounts seeded with `v1Member` reach that read,
-     * so other scenarios sharing this emulator never consume the fault. The v1 import reads
-     * memberships on every request, so its scenarios run on another local Cloud.
-     */
-    failNextV1MembershipRead: request(value.services.workos.baseUrl, "/_emulate/faults", {
-      match: { method: "GET", pathPattern: "/user_management/organization_memberships" },
-      response: {
-        status: 503,
-        body: { error: "temporarily_unavailable" },
-        headers: { [armedFaultHeader]: "1" },
-      },
-    }).pipe(Effect.asVoid),
     received: (email: string) =>
       messages(email).pipe(Effect.map((rows) => rows.map((row) => row.id))),
     /**

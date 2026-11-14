@@ -136,9 +136,8 @@ export const production: Target = {
   stage: productionStage,
   configuration: {
     ...deployConfiguration,
-    // The v1 sign-in check runs only on production; previews receive none of its settings.
+    // v1's WorkOS key and database run only on production; previews receive neither.
     V1_WORKOS_API_KEY: "unused",
-    V1_MEMBERSHIP_CHECK_SINCE: "2026-01-01T00:00:00Z",
     V1_PLANETSCALE_DATABASE_NAME: "unused",
     // Production requires the GitHub App's credentials; previews have no operator clients.
     EXECUTOR_OAUTH_GITHUB_CLIENT_ID: "unused",

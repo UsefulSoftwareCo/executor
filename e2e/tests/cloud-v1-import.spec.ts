@@ -690,7 +690,7 @@ const call = (
 const decode = <S extends Schema.Top>(schema: S, response: typeof Response.Type) =>
   Schema.decodeUnknownEffect(schema)(response.body);
 
-/** Sign in with Google as the v1 member; v2 keeps them on v1 until their workspace moves. */
+/** Sign in with Google as the v1 member, so their v2 account exists before their workspace moves. */
 const googleSignIn = (email: string) =>
   Effect.gen(function* () {
     const onboarding = yield* Onboarding,
@@ -700,8 +700,8 @@ const googleSignIn = (email: string) =>
     yield* browser.use("Choose the v1 member on the Google emulator", (page) =>
       page.getByRole("button").filter({ hasText: email }).click(),
     );
-    yield* browser.use("v2 keeps the member on v1", (page) =>
-      page.getByText("Your workspace is on Executor v1").waitFor({ state: "visible" }),
+    yield* browser.use("Team setup opens for the new account", (page) =>
+      page.getByLabel("Team name", { exact: true }).waitFor({ state: "visible" }),
     );
   });
 

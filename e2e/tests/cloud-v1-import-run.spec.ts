@@ -182,8 +182,8 @@ const call = (step: string, path: string) =>
       .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Response)));
   });
 
-/** Sign in with Google as a v1 member; v2 keeps them on v1 until their workspace moves. */
-const signInOnV1 = (email: string) =>
+/** Sign in with Google as a v1 member, so their v2 account exists before their workspace moves. */
+const signInBeforeMove = (email: string) =>
   Effect.gen(function* () {
     const onboarding = yield* Onboarding,
       browser = yield* Browser;
@@ -192,8 +192,8 @@ const signInOnV1 = (email: string) =>
     yield* browser.use("Choose the v1 member on the Google emulator", (page) =>
       page.getByRole("button").filter({ hasText: email }).click(),
     );
-    yield* browser.use("v2 keeps the member on v1", (page) =>
-      page.getByText("Your workspace is on Executor v1").waitFor({ state: "visible" }),
+    yield* browser.use("Team setup opens for the new account", (page) =>
+      page.getByLabel("Team name", { exact: true }).waitFor({ state: "visible" }),
     );
   });
 
@@ -1172,7 +1172,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
             `${tracker}.org.team.search`,
           ),
         ]);
-        yield* signInOnV1(first.email);
+        yield* signInBeforeMove(first.email);
         yield* allowV1Import(workspace.organization);
         const run = v1RunId("split-names");
         const started = yield* operator.start({
@@ -1249,7 +1249,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
           former: former.user,
         });
         // The first member already has a v2 account with the same verified email.
-        yield* signInOnV1(first.email);
+        yield* signInBeforeMove(first.email);
 
         yield* allowV1Import(workspace.organization);
         const run = v1RunId("shared");
@@ -1627,7 +1627,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
           { first: workspace.user, second: teammateUser, former: former.user },
           toolkits,
         );
-        yield* signInOnV1(identity.email);
+        yield* signInBeforeMove(identity.email);
 
         yield* allowV1Import(workspace.organization);
         const run = v1RunId("rollback");
@@ -1763,7 +1763,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
         });
         const flatPrice = yield* emulators.v1TeamSubscription(flat, { version: 1 });
         yield* emulators.v1Plan(hobby, "hobby");
-        yield* signInOnV1(identity.email);
+        yield* signInBeforeMove(identity.email);
 
         yield* allowV1Import(seats, flat, hobby);
         const run = v1RunId("paid");
@@ -1913,7 +1913,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 import runs", (it) => {
           version: 3,
           seats: 1,
         });
-        yield* signInOnV1(identity.email);
+        yield* signInBeforeMove(identity.email);
         yield* allowV1Import(workspace.organization);
 
         // Autumn refuses the attach once, after the customer took v2's id.

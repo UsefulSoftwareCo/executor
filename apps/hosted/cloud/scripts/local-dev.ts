@@ -10,7 +10,7 @@
 import { randomBytes } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Clock, Config, Console, Effect, FileSystem, Path, Schema } from "effect";
+import { Config, Console, Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { freePort as freeLoopbackPort } from "../../../../scripts/dev-host.ts";
 import {
@@ -187,9 +187,6 @@ const main = Effect.scoped(
       CLOUD_DEV_APP_UI_PORT: String(appUiPort),
       EXECUTOR_APP_UI_BASE_URL: `http://localhost:${appUiPort}`,
       EXECUTOR_EMULATORS: JSON.stringify(emulators.services),
-      // The emulated v1 check runs only with a v1 database (V1_DATABASE_URL), which local
-      // development does not start. When one is set, accounts from earlier sessions skip it.
-      V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
     });
 
     // A live v1 dry run (`CLOUD_V1_IMPORT_SOURCE=live`) reads v1's production data with the

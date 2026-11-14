@@ -13,7 +13,6 @@ import {
 } from "../implementation/product-analytics.ts";
 import { cloudAuthOptions, cloudAuthSettings } from "../implementation/auth-options.ts";
 import { isOAuthProxyProduction } from "../implementation/oauth-proxy-settings.ts";
-import { Onboarding } from "../contracts/onboarding.ts";
 /** Native Alchemy auth binding for the HTTP Worker; MCP session objects use `mcp-auth.ts`. */
 import {
   CurrentUsage,
@@ -56,7 +55,7 @@ import { resolveLegacyResource } from "../implementation/v1-legacy-mcp.ts";
 import { authAudit } from "../implementation/auth-audit.ts";
 
 /** Bind during initialization; database calls capture the current invocation only. */
-export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Service) =>
+export const cloudAuth = (send: SendAuthEmail) =>
   Effect.gen(function* () {
     // Only `alchemy dev` binds the switch; see `authRateLimitSwitchBindings`.
     const environment = yield* Cloudflare.WorkerEnvironment;
@@ -130,18 +129,6 @@ export const cloudAuth = (send: SendAuthEmail, onboarding: typeof Onboarding.Ser
           }).pipe(
             Effect.provideService(CurrentUserId, usage.userId),
             Effect.provideService(CurrentUsage, { source: "dashboard" }),
-          ),
-        ),
-      // Fails closed: an unanswered v1 check refuses the create instead of allowing it.
-      (userId) =>
-        runCallback(
-          onboarding.allowsOrganization(userId).pipe(
-            Effect.mapError(
-              () =>
-                new APIError("SERVICE_UNAVAILABLE", {
-                  message: "We could not check your account. Try again.",
-                }),
-            ),
           ),
         ),
       {

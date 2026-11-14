@@ -31,7 +31,7 @@ import {
   previewDatabase,
   previewShape,
 } from "./preview-database.ts";
-import { missingV1PlanetscaleDatabase } from "./v1-membership-settings.ts";
+import { missingV1PlanetscaleDatabase } from "./v1-import-settings.ts";
 
 /**
  * Hyperdrive needs an uploaded trust root even for publicly issued certificates.
@@ -325,7 +325,7 @@ export const cloudDirectDatabaseConnection = Effect.gen(function* () {
 });
 
 /**
- * v1's Postgres for the v1 sign-in check, on production only. The stack declares a role on v1's
+ * v1's Postgres for the v1 import, on production while `CLOUD_V1_IMPORT=on`. The stack declares a role on v1's
  * PlanetScale database (`V1_PLANETSCALE_DATABASE_NAME`, branch `main`) that inherits only
  * `pg_read_all_data`, and binds its pooled URL as the `V1_DATABASE_URL` Worker secret. It never
  * declares v1's database, which v1 owns; removing the resource drops only the role. Temporary,

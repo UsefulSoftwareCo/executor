@@ -32,7 +32,7 @@ export interface AutumnReadPolicy {
 export const autumnReads = {
   /**
    * One attempt with the write timeout, for requests a person is waiting on that have their own
-   * deadline: the billing overview, and sign-in's v1 check, which gives up after ten seconds.
+   * deadline, such as the billing overview.
    */
   once: { attempt: autumnTimeout },
   /**

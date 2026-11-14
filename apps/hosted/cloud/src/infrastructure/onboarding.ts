@@ -2,7 +2,7 @@ import { BlobStore } from "@executor-js/sdk/core";
 import { firstPartyOAuthClients } from "@executor-js/hosted-server";
 import { cloudBlobs } from "./blobs.ts";
 import { cloudSecrets, v1McpForwardSecret } from "./secrets.ts";
-import { cloudOrigin, productionStage, stageName } from "./stage.ts";
+import { cloudOrigin } from "./stage.ts";
 import { PgClient } from "@effect/sql-pg";
 import { RuntimeContext } from "alchemy";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
@@ -13,11 +13,6 @@ import { FetchHttpClient } from "effect/http";
 import { Onboarding, OnboardingUnavailable, TeamIconNotFound } from "../contracts/onboarding.ts";
 import { companyLookupLive } from "../implementation/company-profile.ts";
 import { makeOnboarding } from "../implementation/onboarding.ts";
-import {
-  v1MembershipDisabled,
-  v1MembershipLive,
-  type V1MembershipSettings,
-} from "../implementation/v1-membership.ts";
 import { LocalDatabaseUrl } from "../contracts/database.ts";
 import type { V1SourceSettings } from "../implementation/v1-import/source.ts";
 import { V1ImportWrites } from "../implementation/v1-import/writes.ts";
@@ -31,6 +26,8 @@ import {
   v1ImportAccess,
   missingV1ImportWriter,
   missingV1McpForwardSecret,
+  missingV1PlanetscaleDatabase,
+  missingV1WorkosKey,
   v1ImportOperatorTokenMinLength,
   v1ImportWriterName,
   v1LiveSettings,
@@ -39,12 +36,6 @@ import { autumnServer, billingSettings } from "./billing.ts";
 import type { AutumnOptions } from "../contracts/autumn.ts";
 import type { BillingCatalog } from "../contracts/billing-catalog.ts";
 import { cloudDatabaseConnection, v1DatabaseConnection } from "./database.ts";
-import {
-  CheckSince,
-  missingV1MembershipCheckSince,
-  missingV1PlanetscaleDatabase,
-  missingV1WorkosKey,
-} from "./v1-membership-settings.ts";
 
 const configured = (value: string) => value !== "";
 
@@ -68,73 +59,6 @@ const cloudV1Database = (production: boolean, emulated: boolean) =>
     return Option.some(Effect.succeed(url));
   });
 
-/**
- * GitHub Actions passes an unset secret or variable as an empty string, so empty means unset.
- * Production (`v2`) requires v1's WorkOS key, `V1_MEMBERSHIP_CHECK_SINCE` and the name of v1's
- * PlanetScale database, and refuses to deploy without them. Only production reaches v1's
- * database, so other deployed stages refuse v1's real key. Emulated Cloud checks the WorkOS emulator only where it also has a v1 database
- * (`V1_DATABASE_URL`, managed local Cloud), and then requires the cutoff: without it, accounts
- * that already used v2 could be stopped. Anywhere else the check is off. Self-host never
- * composes this module. Returns the settings to read inside each invocation.
- */
-const cloudV1Membership = (
-  emulators: Option.Option<Redacted.Redacted<typeof EmulatedServices.Type>>,
-) =>
-  Effect.gen(function* () {
-    const production = Option.getOrUndefined(yield* stageName) === productionStage;
-    const configuredKey = (yield* Config.Redacted("V1_WORKOS_API_KEY").pipe(Config.option)).pipe(
-      Option.filter((value) => configured(Redacted.value(value))),
-    );
-    const since = (yield* Config.String("V1_MEMBERSHIP_CHECK_SINCE").pipe(Config.option)).pipe(
-      Option.filter(configured),
-    );
-    if (production && Option.isNone(configuredKey))
-      return yield* Effect.die(new Error(missingV1WorkosKey));
-    if (production && Option.isNone(since))
-      return yield* Effect.die(new Error(missingV1MembershipCheckSince));
-    const database = yield* cloudV1Database(production, Option.isSome(emulators));
-    const key = Option.isSome(emulators)
-      ? Option.some({
-          baseUrl: Redacted.value(emulators.value).workos.baseUrl,
-          key: Redacted.make(Redacted.value(emulators.value).workos.token),
-        })
-      : Option.map(configuredKey, (value) => ({ baseUrl: "https://api.workos.com", key: value }));
-    if (Option.isNone(key)) return Option.none();
-    if (Option.isNone(database)) {
-      if (Option.isSome(emulators)) return Option.none();
-      return yield* Effect.die(
-        new Error("Only production reaches v1's database; unset V1_WORKOS_API_KEY on this stage"),
-      );
-    }
-    if (Option.isNone(since))
-      return yield* Effect.die(
-        new Error("Set V1_MEMBERSHIP_CHECK_SINCE with v1's WorkOS key to enable the v1 check"),
-      );
-    const cutoff = yield* Schema.decodeUnknownEffect(CheckSince)(since.value).pipe(
-      Effect.catch(() =>
-        Effect.die(
-          new Error(
-            production
-              ? missingV1MembershipCheckSince
-              : "V1_MEMBERSHIP_CHECK_SINCE must be an ISO 8601 UTC timestamp",
-          ),
-        ),
-      ),
-    );
-    // v1 billed each WorkOS organization in the same Autumn account v2 bills from.
-    const billing = yield* billingSettings;
-    return Option.some(
-      Effect.gen(function* () {
-        return {
-          ...key.value,
-          since: cutoff,
-          database: yield* database.value,
-          billing: { serverUrl: yield* billing.serverUrl, secretKey: yield* billing.secretKey },
-        } satisfies V1MembershipSettings;
-      }),
-    );
-  });
-
 /** Resolve the secret at composition; each request owns its SQL client and company request. */
 export const cloudOnboarding = Effect.gen(function* () {
   const blobs = yield* cloudBlobs;
@@ -146,7 +70,6 @@ export const cloudOnboarding = Effect.gen(function* () {
         `${Redacted.value(emulators.value).company.baseUrl}/v1/brand/retrieve`,
       )
     : companyLookupLive(yield* Config.Redacted("CONTEXT_DEV_API_KEY"));
-  const v1Settings = yield* cloudV1Membership(emulators);
   const connection = yield* cloudDatabaseConnection;
   const service = yield* makeExecutionMemo(
     Effect.gen(function* () {
@@ -154,13 +77,10 @@ export const cloudOnboarding = Effect.gen(function* () {
       const services = yield* Layer.build(
         PgClient.layer({ url, maxConnections: 1, prepare: false }),
       );
-      const v1 = Option.isSome(v1Settings)
-        ? v1MembershipLive(yield* v1Settings.value)
-        : v1MembershipDisabled;
       return yield* makeOnboarding({ origin }).pipe(
         Effect.provideService(BlobStore, blobs),
         Effect.provideContext(services),
-        Effect.provide(Layer.mergeAll(lookup, v1).pipe(Layer.provide(FetchHttpClient.layer))),
+        Effect.provide(lookup.pipe(Layer.provide(FetchHttpClient.layer))),
       );
     }),
   );
@@ -178,12 +98,6 @@ export const cloudOnboarding = Effect.gen(function* () {
       prepare: (userId) =>
         service.pipe(
           Effect.flatMap((onboarding) => onboarding.prepare(userId)),
-          Effect.provide(RuntimeContext.phantom),
-          Effect.mapError(() => new OnboardingUnavailable()),
-        ),
-      allowsOrganization: (userId) =>
-        service.pipe(
-          Effect.flatMap((onboarding) => onboarding.allowsOrganization(userId)),
           Effect.provide(RuntimeContext.phantom),
           Effect.mapError(() => new OnboardingUnavailable()),
         ),
@@ -375,7 +289,7 @@ export interface V1ImportSettings {
  *   Vault, the v1 database (blobs from its `blob` table, as v1 keeps them without R2) and Autumn,
  *   and allows imports that write, of the organizations with a row in `private_v1_import_allowed`.
  * - Production runs it only when `CLOUD_V1_IMPORT=on` (`v1-import-settings.ts`, off by default).
- *   It then reads v1's WorkOS (`V1_WORKOS_API_KEY`, also the sign-in check's), v1's database
+ *   It then reads v1's WorkOS (`V1_WORKOS_API_KEY`, also the WorkOS API key check's), v1's database
  *   through the read-only role (`V1_DATABASE_URL`), the Autumn account v2 bills from (v1 billed
  *   there too), and v1's blob bucket through the `V1_BLOBS` binding. It starts only dry runs
  *   unless `CLOUD_V1_IMPORT_WRITES=on` too, and then imports only the organizations with a row

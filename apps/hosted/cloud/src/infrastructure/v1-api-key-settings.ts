@@ -1,7 +1,7 @@
 /**
  * Where Cloud checks Executor v1's WorkOS API keys (`implementation/v1-captured-api-keys.ts`):
  * the WorkOS emulator where the deployment has emulators, else v1's WorkOS with
- * `V1_WORKOS_API_KEY`, the key the v1 sign-in check already holds. Without either, unknown keys
+ * `V1_WORKOS_API_KEY`, the key the v1 import also reads. Without either, unknown keys
  * are refused as before. Removed with that key once validated traffic is gone
  * (`notes/v1-shutdown.md`).
  */

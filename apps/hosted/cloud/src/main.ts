@@ -76,7 +76,6 @@ import {
   cloudV1ImportReports,
   v1ImportRoutes,
 } from "./infrastructure/v1-import-workflow.ts";
-import { Onboarding } from "./contracts/onboarding.ts";
 import { cloudMcp } from "./infrastructure/mcp.ts";
 import { cloudApi } from "./implementation/api.ts";
 import { cachedFeedClient } from "./implementation/catalog-feed-cache.ts";
@@ -257,7 +256,7 @@ export default Api.make(
     const email = yield* cloudEmail.pipe(Effect.orDie);
     const onboarding = yield* cloudOnboarding.pipe(Effect.orDie);
     const v1ImportSettings = yield* cloudV1ImportSettings.pipe(Effect.orDie);
-    const auth = yield* cloudAuth(email.send, yield* Onboarding.pipe(Effect.provide(onboarding)));
+    const auth = yield* cloudAuth(email.send);
     const welcomeEmails = yield* cloudWelcomeEmails(email.welcome);
     yield* AppWorkflows;
     yield* Provisioning;

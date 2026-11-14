@@ -539,7 +539,7 @@ export const makeV1Source = (settings: V1SourceSettings) =>
       });
     /**
      * One connection for the whole step, opened by its first read and closed with the step, so a
-     * step never holds more than one of v1's connections. The v1 sign-in check opens its own.
+     * step never holds more than one of v1's connections.
      */
     const client = yield* Effect.cached(
       Layer.buildWithScope(

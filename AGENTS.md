@@ -388,7 +388,7 @@ scenarios on Linux instead of moving them to a Mac.
   in parallel with the functional jobs. This preserves the four concurrent writers,
   the catalog and listing latency bounds and the inventory case's 120-second limit without
   competing with the functional job's product servers.
-- `e2e-cloud` runs Cloud onboarding, the v1 sign-in check, delivered observability, MCP tool-call privacy, client rejection and app evaluation
+- `e2e-cloud` runs Cloud onboarding, delivered observability, MCP tool-call privacy, client rejection and app evaluation
   incident reporting, bearer refusal, billing polling, MCP session object database connection,
   API-key storage outage, supervisor-kept tool listing, Cloud SSO SAML, Safari error provenance, remote skill
   cache, team installation and app Worker build load scenarios: every scenario that needs managed local

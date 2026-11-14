@@ -19,7 +19,7 @@ import {
   type BillingCatalog,
 } from "../../contracts/billing-catalog.ts";
 import { V1ImportUnavailable } from "../../contracts/v1-import.ts";
-import { freePlans } from "../v1-membership.ts";
+import { freePlans } from "./members.ts";
 
 /**
  * What a v1 Team subscription on a flat price (USD 49 or 150 a month, with executions metered

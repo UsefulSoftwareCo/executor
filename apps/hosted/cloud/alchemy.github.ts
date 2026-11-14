@@ -18,18 +18,14 @@ import {
   executorShSetting,
 } from "./src/infrastructure/executor-sh-setting.ts";
 import {
-  CheckSince,
-  missingV1PlanetscaleDatabase,
-  missingV1MembershipCheckSince,
-  missingV1WorkosKey,
-} from "./src/infrastructure/v1-membership-settings.ts";
-import {
   type V1ImportSwitch,
   V1FirstPartyClients,
   invalidV1FirstPartyClients,
   missingV1FirstPartyClient,
   missingV1ImportWriter,
   missingV1McpForwardSecret,
+  missingV1PlanetscaleDatabase,
+  missingV1WorkosKey,
   v1ImportWriterName,
   v1McpForwardSecretName,
   v1SessionHandoffSecretName,
@@ -360,24 +356,16 @@ export default Alchemy.Stack(
     }
 
     /**
-     * The v1 sign-in check: v1's WorkOS API key, the name of v1's PlanetScale database (the
-     * deploy creates a read-only role on it), and the instant the check shipped. Accounts created
-     * before that instant skip it. Production requires all three, so this stack refuses to apply
-     * without them and says what to set: the key's Agents vault reference, the database name,
-     * and the cutoff, set in `.env.ci.op` at the merge that ships the check.
+     * v1's WorkOS API key, which the WorkOS API key check and the v1 import read, and the name of
+     * v1's PlanetScale database, on which the deploy creates the import's read-only role.
+     * Production requires both, so this stack refuses to apply without them and says what to
+     * set: the key's Agents vault reference and the database name, in `.env.ci.op`.
      */
     const v1Key = yield* Config.Redacted("V1_WORKOS_API_KEY").pipe(
       Config.option,
       Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
     );
     if (Option.isNone(v1Key)) return yield* Effect.die(new Error(missingV1WorkosKey));
-    const v1Since = yield* Config.String("V1_MEMBERSHIP_CHECK_SINCE").pipe(
-      Config.option,
-      Effect.map(
-        Option.filter((value) => Option.isSome(Schema.decodeUnknownOption(CheckSince)(value))),
-      ),
-    );
-    if (Option.isNone(v1Since)) return yield* Effect.die(new Error(missingV1MembershipCheckSince));
     const v1Database = yield* Config.String("V1_PLANETSCALE_DATABASE_NAME").pipe(
       Config.option,
       Effect.map(Option.filter((value) => value !== "")),
@@ -388,12 +376,6 @@ export default Alchemy.Stack(
       ...target,
       name: "V1_WORKOS_API_KEY",
       value: v1Key.value,
-      environment: production,
-    }).pipe(retain());
-    yield* GitHub.Variable("production-V1_MEMBERSHIP_CHECK_SINCE", {
-      ...target,
-      name: "V1_MEMBERSHIP_CHECK_SINCE",
-      value: v1Since.value,
       environment: production,
     }).pipe(retain());
     yield* GitHub.Variable("production-V1_PLANETSCALE_DATABASE_NAME", {

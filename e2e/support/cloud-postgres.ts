@@ -282,7 +282,7 @@ export const v1DatabaseWriter = "v1_import_writer";
 
 /**
  * Create an emulated Executor v1 database beside Cloud's own: v1's data tables with only the
- * columns the v1 sign-in check reads, and a login that may only select them. Scenarios write
+ * columns Cloud reads, and a login that may only select them. Scenarios write
  * rows as the owner through `cloud-rows-fixture.ts`.
  */
 export const createV1Database = (input: {

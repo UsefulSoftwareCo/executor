@@ -9679,35 +9679,6 @@ export const scenarios = plan({
     title: "Cloud onboarding skip experiment skippable still skips both steps to the dashboard",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
-  // The v1 check reads the emulated v1 database only a managed local Cloud has, and its
-  // scenarios write that database; deployed stages leave the check off.
-  v1SignInStop: {
-    file: "cloud-v1-sign-in.spec.ts",
-    title:
-      "Cloud sign-in keeps a new v1 organization member on v1 and fails closed while WorkOS is unavailable",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1SignInInvited: {
-    file: "cloud-v1-sign-in.spec.ts",
-    title:
-      "Cloud sign-in keeps a new v1 organization member who joins an invited team from creating another, and fails closed while WorkOS is unavailable",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1SignInExisting: {
-    file: "cloud-v1-sign-in.spec.ts",
-    title: "Cloud sign-in skips the v1 check for accounts from before it and for v2 team members",
-    targets: {
-      ...cloudOnboarding,
-      // Backdating an account writes the managed Cloud's own database.
-      cloud: managedCloud,
-    },
-  },
-  v1SignInEmpty: {
-    file: "cloud-v1-sign-in.spec.ts",
-    title:
-      "Cloud sign-in admits members of only empty free or moved v1 organizations, keeps members of paid or nonempty ones on v1, and fails closed while v1's database is unavailable",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
   // The import reads the emulated v1 WorkOS, Vault and database only a managed local Cloud has.
   v1ImportRun: {
     file: "cloud-v1-import.spec.ts",
@@ -9984,7 +9955,7 @@ export const scenarios = plan({
   slowAutumnDeadlines: {
     file: "cloud-autumn-slow.spec.ts",
     title:
-      "Cloud sign-in's v1 check and the billing overview each send one Autumn read while Autumn is slow, and say they are unavailable within their own deadlines",
+      "Cloud's billing overview sends one Autumn read while Autumn is slow, and says it is unavailable within its own deadline",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   localSkills: {
