@@ -43,6 +43,10 @@ export const packagedEngineInputs = [
   // scenarios exercise. No source lane runs them.
   "apps/hosted/self-host/native/**",
   "apps/hosted/self-host/entrypoint.sh",
+  // The telemetry collector that supervisor starts beside workerd and stops with it on a container
+  // stop, built in the Dockerfile's collector stage from the crate by this script.
+  "packages/telemetry/collector/**",
+  "packages/telemetry/scripts/build-collector.ts",
   // How the lane chooses them.
   "e2e/packaged-engine.ts",
 ] as const;

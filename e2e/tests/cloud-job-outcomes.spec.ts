@@ -68,7 +68,9 @@ const dispatched = (
     });
     const entry = found.data.find(({ traceId }) => !before.has(traceId));
     if (entry === undefined)
-      return yield* Effect.fail(new Error(`No ${outcome} ${job} dispatch has reached Motel`));
+      return yield* Effect.fail(
+        new Error(`No ${outcome} ${job} dispatch has reached the collector`),
+      );
     const trace = yield* telemetry.query(entry.traceId);
     const dispatch = trace.data.find(
       ({ span }) => span.operationName === "job.dispatch" && span.tags["executor.job"] === job,

@@ -29,7 +29,12 @@ import type { ToolIdentity } from "@executor-js/authorization";
 import type { ToolAuthorization } from "./authorization.ts";
 import { Context, Effect, type Exit, Result } from "effect";
 import { HttpServerRequest } from "effect/http";
-import { CurrentUserId, Forbidden } from "../contracts/auth.ts";
+import {
+  BearerAuthentication,
+  CurrentUserId,
+  Forbidden,
+  SessionAuthentication,
+} from "../contracts/auth.ts";
 import { refuse } from "./auth-telemetry.ts";
 import {
   appAccountReads,
@@ -50,6 +55,19 @@ export const browserOnly = Effect.gen(function* () {
   if (request.headers.authorization !== undefined)
     return yield* refuse("bearer_not_allowed", new Forbidden());
 });
+/** The current organization's slug, from the presented grant or else the browser session. */
+export const currentOrganizationSlug = (
+  auth: SessionAuthentication["Service"],
+  api: BearerAuthentication["Service"],
+) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const headers = new Headers(request.headers);
+    const { organization } = yield* CurrentOrganization;
+    return headers.has("authorization")
+      ? (yield* api.authenticate(headers, organization)).organizationSlug
+      : yield* auth.organizationSlug(headers, organization);
+  });
 /** Membership was checked by middleware; administrative actions require the current role. */
 export const requireOrganizationAdmin = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;

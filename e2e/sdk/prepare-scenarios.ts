@@ -18,7 +18,7 @@ import { Actors } from "../support/actors.ts";
 import { RequestFailed, SessionClients } from "../support/api.ts";
 import { errorCode, keptCauseParts } from "../support/failure-text.ts";
 import { Target } from "../support/platform.ts";
-import { OriginUnreachable, PreparedScenarios } from "./contracts.ts";
+import { OriginUnreachable, PreparedScenarios, ProvisioningFailure } from "./contracts.ts";
 import { startScenario } from "./scenario.ts";
 import { awaitCompiler } from "./compiler-readiness.ts";
 import { FixtureFailed, fixtureRequest, type FixtureControl } from "./fixtures.ts";
@@ -49,6 +49,38 @@ export const preparationFailure = (error: unknown) =>
     : Schema.is(FixtureFailed)(error)
       ? { operation: error.operation, status: error.status, reason: error.reason }
       : undefined;
+/**
+ * The class of a transport failure, from the innermost causes' messages, where Node puts it
+ * ("ssl/tls alert handshake failure", "other side closed", "connect ECONNREFUSED"), or its code.
+ */
+const transportClass = (causes: ReadonlyArray<string>, code: string | undefined) => {
+  const text = causes.join(" ").toLowerCase();
+  if (text.includes("handshake failure") || text.includes("ssl routines"))
+    return "TLS handshake failure";
+  if (code === "ECONNRESET" || text.includes("econnreset") || text.includes("other side closed"))
+    return "connection reset";
+  if (code === "ECONNREFUSED" || text.includes("econnrefused")) return "connection refused";
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN" || text.includes("enotfound"))
+    return "DNS lookup failed";
+  if (code === "ETIMEDOUT" || code === "UND_ERR_CONNECT_TIMEOUT") return "connection timed out";
+  return code;
+};
+/** What preparation.json records of an unavailable organization, in the scenario's own error. */
+export const provisioningFailure = (
+  organization: UnavailableOrganization,
+): typeof ProvisioningFailure.Type => {
+  const detail = organization.detail;
+  if (detail === undefined || !("path" in detail)) return { failure: organization.failure };
+  const transport = transportClass(detail.causes ?? [], detail.failure?.code);
+  return {
+    failure: organization.failure,
+    request: `${detail.method} ${detail.path}`,
+    ...(detail.failure === undefined
+      ? {}
+      : { stage: detail.failure.stage, elapsedMs: detail.failure.elapsedMs }),
+    ...(transport === undefined ? {} : { transport }),
+  };
+};
 /** An organization preparation could not make ready, as preparation.json lists it. */
 export interface UnavailableOrganization {
   readonly title: string;
@@ -388,7 +420,14 @@ export const prepareCloudScenarios = (input: {
             },
           ];
         }),
-        ...unavailable.map(({ title, id }) => [title, { id, status: "organization_unavailable" }]),
+        ...unavailable.map((organization) => [
+          organization.title,
+          {
+            id: organization.id,
+            status: "organization_unavailable",
+            provisioning: provisioningFailure(organization),
+          },
+        ]),
       ]),
     );
   });

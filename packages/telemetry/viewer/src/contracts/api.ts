@@ -1,6 +1,7 @@
 /**
  * The collector routes the viewer reads, with the response shapes Motel returns at the revision
- * pinned in `packages/telemetry/motel/source.json` (its `src/domain.ts` and `src/httpApi.ts`).
+ * b1783f4d344fd2e0fa584ef00b3e71838a8a1e03 of UsefulSoftwareCo/motel (its `src/domain.ts` and
+ * `src/httpApi.ts`).
  * The collector that replaces Motel returns the same shapes, so this schema serves both, with one
  * addition Motel never sends: `partial` on a trace answered in part (the collector's README,
  * "A trace answered in part").

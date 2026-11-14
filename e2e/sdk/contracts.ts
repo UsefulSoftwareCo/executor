@@ -21,6 +21,20 @@ export const OriginUnreachable = Schema.Struct({
   since: Schema.optional(Schema.String),
 });
 
+/**
+ * Why an organization was not provisioned, in words: the error's tag, the request that failed and
+ * where (`before response`, `response`), and the class of its transport error read from the
+ * innermost causes (a TLS handshake failure, a reset, a refused connection). Built only from
+ * the request's method and path template, error tags and codes, never a body or a header.
+ */
+export const ProvisioningFailure = Schema.Struct({
+  failure: Schema.String,
+  request: Schema.optional(Schema.String),
+  stage: Schema.optional(Schema.String),
+  transport: Schema.optional(Schema.String),
+  elapsedMs: Schema.optional(Schema.Number),
+});
+
 /** Preparation failures belong to their scenario and remain native setup failures. */
 export const PreparedScenarios = Schema.Record(
   Schema.NonEmptyString,
@@ -28,6 +42,7 @@ export const PreparedScenarios = Schema.Record(
     id: ScenarioId,
     status: Schema.Literals(["ready", "organization_unavailable", "domain_unavailable"]),
     unreachable: Schema.optional(OriginUnreachable),
+    provisioning: Schema.optional(ProvisioningFailure),
   }),
 );
 

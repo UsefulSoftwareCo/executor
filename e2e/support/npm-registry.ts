@@ -24,6 +24,72 @@ const upstream = "https://registry.npmjs.org";
  */
 export const stalledPackage = "@executor-fixture/stalled-package";
 const stalledPath = `/@${encodeURIComponent(stalledPackage.slice(1))}`;
+
+/**
+ * A synthetic package whose one module is far over the build's 2,000,000-byte limit on the app's
+ * own files: dense generated objects, which cost the compiler what a large bundled library does.
+ * Package files are not limited, so an app that imports it builds. The archive is made here.
+ */
+export const largeModulePackage = {
+  name: "@executor-fixture/large-module",
+  version: "1.0.0",
+  bytes: 3_000_000,
+} as const;
+/** `index.js` of exactly `bytes` bytes, exporting `count`, the number of its objects. */
+const largeModule = (() => {
+  const entry = (at: number) =>
+    `  { id: ${at}, name: "item ${at}", tags: ["a", "b"], nested: { x: ${at}, y: "z" } },\n`;
+  const open = "const items = [\n";
+  const close = "];\nexport const count = items.length;\n";
+  const entries: string[] = [];
+  let used = open.length + close.length + 3;
+  while (used + entry(entries.length).length <= largeModulePackage.bytes) {
+    used += entry(entries.length).length;
+    entries.push(entry(entries.length));
+  }
+  return {
+    source: `${open}${entries.join("")}${close}//${" ".repeat(largeModulePackage.bytes - used)}\n`,
+    count: entries.length,
+  };
+})();
+/** The number of objects the large module exports as `count`. */
+export const largeModuleCount = largeModule.count;
+/** A gzipped ustar archive of `files`, each under `package/`, as npm packs one. */
+const packArchive = (files: Readonly<Record<string, string>>) => {
+  const blocks: Buffer[] = [];
+  for (const [name, text] of Object.entries(files)) {
+    const body = Buffer.from(text);
+    const header = Buffer.alloc(512);
+    header.write(`package/${name}`, 0, 100);
+    header.write("0000644\0", 100);
+    header.write("0000000\0", 108);
+    header.write("0000000\0", 116);
+    header.write(`${body.length.toString(8).padStart(11, "0")}\0`, 124);
+    header.write("00000000000\0", 136);
+    header.fill(" ", 148, 156);
+    header.write("0", 156);
+    header.write("ustar\0", 257);
+    header.write("00", 263);
+    const sum = header.reduce((total, byte) => total + byte, 0);
+    header.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148);
+    blocks.push(header, body, Buffer.alloc((512 - (body.length % 512)) % 512));
+  }
+  blocks.push(Buffer.alloc(1024));
+  const tar = Buffer.concat(blocks);
+  return Effect.promise(() =>
+    new Response(new Blob([tar]).stream().pipeThrough(new CompressionStream("gzip"))).arrayBuffer(),
+  ).pipe(Effect.map((gzipped) => new Uint8Array(gzipped)));
+};
+const largeModuleArchive = packArchive({
+  "package.json": JSON.stringify({
+    name: largeModulePackage.name,
+    version: largeModulePackage.version,
+    type: "module",
+    main: "index.js",
+    exports: { ".": "./index.js" },
+  }),
+  "index.js": largeModule.source,
+});
 const JsonObject = Schema.Record(Schema.String, Schema.Json);
 const Manifest = Schema.Struct({ name: Schema.Literal("apps"), version: Schema.NonEmptyString });
 class RegistryFailed extends Schema.TaggedError<RegistryFailed>()("RegistryFailed", {
@@ -142,6 +208,8 @@ const lockedReply = (staged: Staged) =>
         ...(name === "apps" ? { [staged.version]: staged.entry(base) } : {}),
       },
     });
+    const largeArchivePath = tarballPath(largeModulePackage.name, largeModulePackage.version);
+    const largeArchive = yield* largeModuleArchive;
     const replies: Replies = (url, base) => {
       if (url === staged.tarballPath)
         return Effect.succeed({
@@ -149,6 +217,29 @@ const lockedReply = (staged: Staged) =>
           type: "application/octet-stream",
           body: staged.bytes,
         });
+      if (url === largeArchivePath)
+        return Effect.succeed({
+          status: 200,
+          type: "application/octet-stream",
+          body: largeArchive,
+        });
+      if (decodeURIComponent(url.slice(1)) === largeModulePackage.name)
+        return Effect.succeed(
+          json(200, {
+            name: largeModulePackage.name,
+            "dist-tags": { latest: largeModulePackage.version },
+            versions: {
+              [largeModulePackage.version]: {
+                name: largeModulePackage.name,
+                version: largeModulePackage.version,
+                dist: {
+                  tarball: `${base}${largeArchivePath}`,
+                  integrity: integrityOf(largeArchive),
+                },
+              },
+            },
+          }),
+        );
       const archive = archives.get(url);
       if (archive !== undefined)
         return read(archive.name, archive.version).pipe(

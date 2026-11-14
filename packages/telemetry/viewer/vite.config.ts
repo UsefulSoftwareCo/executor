@@ -12,7 +12,7 @@ export default defineConfig({
   plugins: [notices.recordingStylesheetSources(tailwindcss()), react(), notices.write],
   server: collector === undefined ? {} : { proxy: { "/api": collector } },
   build: {
-    outDir: "../dist/collector/viewer",
+    outDir: "../dist/viewer",
     emptyOutDir: true,
   },
 });

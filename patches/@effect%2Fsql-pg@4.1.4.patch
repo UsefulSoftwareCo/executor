@@ -160,7 +160,7 @@ index 25c6fbe0c019cc0c5cd8160a517c6162c86214ea..1fd839230545d312f7dd5e811ffb32e5
  //# sourceMappingURL=PgConnection.d.ts.map
 \ No newline at end of file
 diff --git a/dist/PgConnection.js b/dist/PgConnection.js
-index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..5f2bf15aecb93d0d731c207d0033250d73623728 100644
+index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..fdea9a6c014d1de38b0f7c760d4524bd25a1d56c 100644
 --- a/dist/PgConnection.js
 +++ b/dist/PgConnection.js
 @@ -2,8 +2,11 @@ import * as Cause from "effect/Cause";
@@ -561,7 +561,7 @@ index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..5f2bf15aecb93d0d731c207d0033250d
      if (!this.pipelineIsIdle()) return;
      this.consumer = undefined;
      this.session.parser.readField = undefined;
-@@ -323,6 +614,7 @@ class PgConnectionImpl {
+@@ -323,11 +614,16 @@ class PgConnectionImpl {
        this.pipelineInFlight.length = 0;
        this.pipelineHead = 0;
      }
@@ -569,7 +569,25 @@ index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..5f2bf15aecb93d0d731c207d0033250d
    };
    /** Writes everything queued since the last flush as one batch. */
    flushPipeline = () => {
-@@ -352,7 +644,10 @@ class PgConnectionImpl {
+     this.pipelineFlushScheduled = false;
+     if (this.deadWith !== undefined) return;
++    // Nothing is written behind a batch's `COMMIT` until it has answered: through Hyperdrive, a
++    // statement written while a `BEGIN` … `COMMIT` on the connection is still unanswered is never
++    // answered. What waits stays queued; the flush after the answer's chunk (`onBatchEnd`) sends it.
++    if (this.transactionOnWire()) return;
+     let capacity = maxPipelineDepth - this.pipelineDepth();
+     if (capacity <= 0) return;
+     const wasEmpty = this.pipelineDepth() === 0;
+@@ -344,6 +640,8 @@ class PgConnectionImpl {
+       batch.push(entry);
+       this.pipelineInFlight.push(entry);
+       capacity--;
++      // A batch's `COMMIT` ends the write; what was queued after it waits for its answer.
++      if (entry.closesTransaction === true) break;
+     }
+     this.pipelinePending.splice(0, index);
+     if (batch.length === 0) {
+@@ -352,25 +650,112 @@ class PgConnectionImpl {
      }
      if (wasEmpty) this.session.parser.readField = batch[0].machine.readField;
      const frame = batch.length === 1 ? batch[0].plan.frame : concat(batch.map(entry => entry.plan.frame));
@@ -580,7 +598,18 @@ index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..5f2bf15aecb93d0d731c207d0033250d
        this.session.socket.write(frame);
      } catch (cause) {
        this.fatal(connectionQueryError(cause, "PgConnection: Failed to write query batch"));
-@@ -364,13 +659,90 @@ class PgConnectionImpl {
+     }
+   };
++  /** Whether a batch's `COMMIT` is written and not yet answered. */
++  transactionOnWire = () => {
++    for (let index = this.pipelineHead; index < this.pipelineInFlight.length; index++) {
++      if (this.pipelineInFlight[index].closesTransaction === true) return true;
++    }
++    return false;
++  };
+   schedulePipelineFlush = () => {
+     if (this.pipelineFlushScheduled || this.pipelineDepth() >= maxPipelineDepth) return;
+     this.pipelineFlushScheduled = true;
      // A microtask is what lets fibers submitted in the same tick share a write.
      queueMicrotask(this.flushPipeline);
    };
@@ -672,7 +701,7 @@ index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..5f2bf15aecb93d0d731c207d0033250d
      let plan;
      try {
        plan = this.encodeQuery(sql, params, cache);
-@@ -387,21 +759,23 @@ class PgConnectionImpl {
+@@ -387,21 +772,23 @@ class PgConnectionImpl {
        abandoned: false
      };
      this.pipelinePending.push(entry);
@@ -701,7 +730,7 @@ index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..5f2bf15aecb93d0d731c207d0033250d
    /**
     * Runs one cycle. A reused statement the backend has since dropped, or whose
     * plan no longer matches its columns, is parsed again on a second attempt;
-@@ -461,6 +835,82 @@ class PgConnectionImpl {
+@@ -461,6 +848,84 @@ class PgConnectionImpl {
      const cache = prepare ? this.prepared : undefined;
      return this.multiplex ? this.pipelineCycle(sql, params, wantRows, cache) : this.owner.withPermit(this.cycleOwned(sql, params, wantRows, cache));
    };
@@ -776,7 +805,9 @@ index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..5f2bf15aecb93d0d731c207d0033250d
 +      return entries;
 +    }
 +    for (const item of inside) enqueue(item.sql, item.params, item.wantRows, item.deferred, wrap);
-+    if (wrap) enqueue("COMMIT", emptyParams, false, Deferred.makeUnsafe(), false);
++    if (wrap && enqueue("COMMIT", emptyParams, false, Deferred.makeUnsafe(), false)) {
++      entries[entries.length - 1].closesTransaction = true;
++    }
 +    this.consumer = this.pipelineConsumer;
 +    this.schedulePipelineFlush();
 +    return entries;
@@ -784,7 +815,7 @@ index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..5f2bf15aecb93d0d731c207d0033250d
    query = (sql, params, prepare = true) => Effect.map(this.run(sql, params ?? emptyParams, true, prepare), takeResult);
    queryValues = (sql, params, prepare = true) => Effect.map(this.run(sql, params ?? emptyParams, false, prepare), takeValues);
    stream = (sql, params) => streamRows(this, this.pin, sql, params ?? emptyParams);
-@@ -1132,8 +1582,15 @@ const drainAborted = (conn, timeoutMessage, abort) => {
+@@ -1132,8 +1597,15 @@ const drainAborted = (conn, timeoutMessage, abort) => {
    const cancelAndDrain = Effect.andThen(conn.cancel, Deferred.await(drained));
    return Effect.andThen(Effect.raceFirst(Deferred.await(drained), grace), Effect.suspend(() => Deferred.isDoneUnsafe(drained) ? Effect.void : cancelAndDrain));
  };
@@ -802,7 +833,7 @@ index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..5f2bf15aecb93d0d731c207d0033250d
    if (conn.deadWith !== undefined) {
      resume(Effect.fail(conn.deadWith));
      return;
-@@ -1142,12 +1599,32 @@ const runQuery = (conn, plan, wantRows) => Effect.callback(resume => {
+@@ -1142,12 +1614,32 @@ const runQuery = (conn, plan, wantRows) => Effect.callback(resume => {
      conn.consumer = undefined;
      resume(effect);
    });
@@ -837,7 +868,7 @@ index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..5f2bf15aecb93d0d731c207d0033250d
    } catch (cause) {
      conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"));
    }
-@@ -1525,33 +2002,43 @@ const sendCancelRequest = (config, session) => Effect.callback(resume => {
+@@ -1525,33 +2017,43 @@ const sendCancelRequest = (config, session) => Effect.callback(resume => {
    if (config.stream !== undefined) begin();else socket.once("connect", begin);
    return Effect.sync(finish);
  });
@@ -887,7 +918,7 @@ index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..5f2bf15aecb93d0d731c207d0033250d
    const onError = cause => failConnect(cause, "PgConnection: Failed to connect");
    const onClose = () => failConnect(new Error("Connection closed unexpectedly"), "PgConnection: Connection closed during startup");
    const password = () => {
-@@ -1649,7 +2136,7 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
+@@ -1649,7 +2151,7 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
          secretKey = message.secret;
          return;
        case "ErrorResponse":
@@ -896,7 +927,7 @@ index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..5f2bf15aecb93d0d731c207d0033250d
        case "ReadyForQuery":
          if (scram !== undefined) {
            return failAuth(new Error("The server completed authentication without proving its identity"), "PgConnection: SCRAM exchange did not complete");
-@@ -1708,7 +2195,7 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
+@@ -1708,7 +2210,7 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
        if (messages.length !== 1 || message._tag !== "ErrorResponse") {
          return failConnect(new Error("Expected one ErrorResponse after SSLRequest"), "PgConnection: Invalid SSLRequest response");
        }
@@ -905,7 +936,7 @@ index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..5f2bf15aecb93d0d731c207d0033250d
      }
      socket.off("data", onSslResponse);
      if (chunk.length !== 1) {
-@@ -1759,12 +2246,10 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
+@@ -1759,12 +2261,10 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
        })
      });
    } catch (cause) {
@@ -922,7 +953,7 @@ index 791d1cf5b0014993f13fda641d3c7a0be8e4dfda..5f2bf15aecb93d0d731c207d0033250d
      })));
      return;
    }
-@@ -1773,7 +2258,10 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
+@@ -1773,7 +2273,10 @@ const connect = (config, resolvedPassword) => Effect.callback(resume => {
    if (config.stream !== undefined) {
      begin();
    } else {
@@ -1055,7 +1086,7 @@ index 1b8881f1717666f7434fe6ac6245671523ec0619..6c4c1fb8181192068b63b658e60ac6b0
  //# sourceMappingURL=PgPool.d.ts.map
 \ No newline at end of file
 diff --git a/dist/PgPool.js b/dist/PgPool.js
-index 4b9c73361f97db293299bbfa379712fe63d6aafb..f7e8483422dbec5c0f4a1954400fecfd51040da0 100644
+index 4b9c73361f97db293299bbfa379712fe63d6aafb..5b5f5226537a26a976a0f6b795d270af89a64e9e 100644
 --- a/dist/PgPool.js
 +++ b/dist/PgPool.js
 @@ -8,6 +8,8 @@ import * as Clock from "effect/Clock";
@@ -1417,7 +1448,7 @@ index 0892ccb889bf3a03b13490e4c5680a1b6989e9b6..501ca57b1e4f2c1bf9f5079ae37e9567
  /**
   * Creates a scoped PostgreSQL client backed by one connection.
 diff --git a/src/PgConnection.ts b/src/PgConnection.ts
-index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b10c0dd52 100644
+index c0740bc46059cf1e21c2783a04cc48000fc7906e..cee1cbae48ba029d04dfc2f35c216b1de04083e7 100644
 --- a/src/PgConnection.ts
 +++ b/src/PgConnection.ts
 @@ -14,9 +14,11 @@ import * as Cause from "effect/Cause"
@@ -1859,12 +1890,14 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
  
  interface Session {
    readonly socket: Duplex
-@@ -363,8 +706,20 @@ interface PipelineEntry {
+@@ -363,8 +706,22 @@ interface PipelineEntry {
    readonly deferred: Deferred.Deferred<QueryOutput, SqlError>
    readonly machine: QueryMachine
    abandoned: boolean
 +  /** Which socket write sent it (a {@link pipelined} batch's span counts them); unset until sent. */
 +  write?: number | undefined
++  /** A {@link pipelined} batch's `COMMIT`: nothing is written behind it until it answers. */
++  closesTransaction?: boolean | undefined
  }
  
 +/**
@@ -1880,7 +1913,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
  const abortDrainTimeoutMillis = 5000
  const abortDrainGraceMillis = 10
  /** PostgreSQL `query_canceled` SQLSTATE. */
-@@ -399,6 +754,7 @@ class PgConnectionImpl implements PgConnection {
+@@ -399,6 +756,7 @@ class PgConnectionImpl implements PgConnection {
    cancelPending = false
    /** Reported by the latest `ReadyForQuery`. */
    transactionStatus: PgProtocol.TransactionStatus = "I"
@@ -1888,7 +1921,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
    readonly channels = new Map<string, Set<Queue.Queue<Notification, SqlError>>>()
    readonly retireHooks = new Set<() => void>()
    /** Queued but not yet written; drained into `pipelineInFlight` on flush. */
-@@ -407,7 +763,20 @@ class PgConnectionImpl implements PgConnection {
+@@ -407,7 +765,20 @@ class PgConnectionImpl implements PgConnection {
    readonly pipelineInFlight: Array<PipelineEntry> = []
    pipelineHead = 0
    pipelineFlushScheduled = false
@@ -1909,7 +1942,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
    readonly [internalsKey]: ConnectionInternals
  
    constructor(config: Config, resolved: ResolvedConfig, session: Session, registry: PgTypes.Registry | undefined) {
-@@ -422,7 +791,25 @@ class PgConnectionImpl implements PgConnection {
+@@ -422,7 +793,25 @@ class PgConnectionImpl implements PgConnection {
      this[internalsKey] = {
        base: this,
        deadError: () => this.deadWith,
@@ -1936,7 +1969,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
      }
      session.parser.onFieldError = this.onFieldError
      session.socket.on("data", this.onData)
-@@ -431,6 +818,7 @@ class PgConnectionImpl implements PgConnection {
+@@ -431,6 +820,7 @@ class PgConnectionImpl implements PgConnection {
    }
  
    private readonly onData = (chunk: Uint8Array): void => {
@@ -1944,7 +1977,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
      try {
        this.session.parser.pushEach(chunk, this.dispatch)
      } catch (cause) {
-@@ -527,6 +915,7 @@ class PgConnectionImpl implements PgConnection {
+@@ -527,6 +917,7 @@ class PgConnectionImpl implements PgConnection {
    }
  
    private retire(): void {
@@ -1952,7 +1985,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
      if (this.closed) return
      for (const hook of this.retireHooks) hook()
    }
-@@ -618,7 +1007,22 @@ class PgConnectionImpl implements PgConnection {
+@@ -618,7 +1009,22 @@ class PgConnectionImpl implements PgConnection {
  
    private readonly pipelineIsIdle = (): boolean => this.pipelineDepth() === 0 && this.pipelinePending.length === 0
  
@@ -1975,7 +2008,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
      if (!this.pipelineIsIdle()) return
      this.consumer = undefined
      this.session.parser.readField = undefined
-@@ -654,6 +1058,7 @@ class PgConnectionImpl implements PgConnection {
+@@ -654,12 +1060,17 @@ class PgConnectionImpl implements PgConnection {
        this.pipelineInFlight.length = 0
        this.pipelineHead = 0
      }
@@ -1983,7 +2016,26 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
    }
  
    /** Writes everything queued since the last flush as one batch. */
-@@ -686,7 +1091,10 @@ class PgConnectionImpl implements PgConnection {
+   private readonly flushPipeline = (): void => {
+     this.pipelineFlushScheduled = false
+     if (this.deadWith !== undefined) return
++    // Nothing is written behind a batch's `COMMIT` until it has answered: through Hyperdrive, a
++    // statement written while a `BEGIN` … `COMMIT` on the connection is still unanswered is never
++    // answered. What waits stays queued; the flush after the answer's chunk (`onBatchEnd`) sends it.
++    if (this.transactionOnWire()) return
+     let capacity = maxPipelineDepth - this.pipelineDepth()
+     if (capacity <= 0) return
+     const wasEmpty = this.pipelineDepth() === 0
+@@ -676,6 +1087,8 @@ class PgConnectionImpl implements PgConnection {
+       batch.push(entry)
+       this.pipelineInFlight.push(entry)
+       capacity--
++      // A batch's `COMMIT` ends the write; what was queued after it waits for its answer.
++      if (entry.closesTransaction === true) break
+     }
+     this.pipelinePending.splice(0, index)
+     if (batch.length === 0) {
+@@ -686,13 +1099,24 @@ class PgConnectionImpl implements PgConnection {
      const frame = batch.length === 1
        ? batch[0].plan.frame
        : concat(batch.map((entry) => entry.plan.frame))
@@ -1994,7 +2046,21 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
        this.session.socket.write(frame)
      } catch (cause) {
        this.fatal(connectionQueryError(cause, "PgConnection: Failed to write query batch"))
-@@ -700,6 +1108,128 @@ class PgConnectionImpl implements PgConnection {
+     }
+   }
+ 
++  /** Whether a batch's `COMMIT` is written and not yet answered. */
++  private readonly transactionOnWire = (): boolean => {
++    for (let index = this.pipelineHead; index < this.pipelineInFlight.length; index++) {
++      if (this.pipelineInFlight[index].closesTransaction === true) return true
++    }
++    return false
++  }
++
+   private readonly schedulePipelineFlush = (): void => {
+     if (this.pipelineFlushScheduled || this.pipelineDepth() >= maxPipelineDepth) return
+     this.pipelineFlushScheduled = true
+@@ -700,6 +1124,128 @@ class PgConnectionImpl implements PgConnection {
      queueMicrotask(this.flushPipeline)
    }
  
@@ -2123,7 +2189,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
    /**
     * One cycle on a multiplexed connection. The `owner` permit is only taken to
     * queue the statement, so a pin still orders against submissions without
-@@ -710,10 +1240,24 @@ class PgConnectionImpl implements PgConnection {
+@@ -710,10 +1256,24 @@ class PgConnectionImpl implements PgConnection {
      params: ReadonlyArray<unknown>,
      wantRows: boolean,
      cache: PreparedCache | undefined
@@ -2148,7 +2214,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
          let plan: Plan
          try {
            plan = this.encodeQuery(sql, params, cache)
-@@ -725,20 +1269,17 @@ class PgConnectionImpl implements PgConnection {
+@@ -725,20 +1285,17 @@ class PgConnectionImpl implements PgConnection {
          const machine = new QueryMachine(this, plan, wantRows, (result) => this.finishPipelineEntry(entry, result))
          entry = { plan, deferred, machine, abandoned: false }
          this.pipelinePending.push(entry)
@@ -2172,7 +2238,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
        }
      )
  
-@@ -751,7 +1292,11 @@ class PgConnectionImpl implements PgConnection {
+@@ -751,7 +1308,11 @@ class PgConnectionImpl implements PgConnection {
      params: ReadonlyArray<unknown>,
      wantRows: boolean,
      cache: PreparedCache | undefined
@@ -2185,7 +2251,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
  
    /**
     * Runs one cycle. A reused statement the backend has since dropped, or whose
-@@ -846,6 +1391,107 @@ class PgConnectionImpl implements PgConnection {
+@@ -846,6 +1407,109 @@ class PgConnectionImpl implements PgConnection {
        : this.owner.withPermit(this.cycleOwned(sql, params, wantRows, cache))
    }
  
@@ -2284,7 +2350,9 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
 +      return entries
 +    }
 +    for (const item of inside) enqueue(item.sql, item.params, item.wantRows, item.deferred, wrap)
-+    if (wrap) enqueue("COMMIT", emptyParams, false, Deferred.makeUnsafe(), false)
++    if (wrap && enqueue("COMMIT", emptyParams, false, Deferred.makeUnsafe(), false)) {
++      entries[entries.length - 1].closesTransaction = true
++    }
 +    this.consumer = this.pipelineConsumer
 +    this.schedulePipelineFlush()
 +    return entries
@@ -2293,7 +2361,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
    readonly query = (sql: string, params?: ReadonlyArray<unknown>, prepare = true): Effect.Effect<Result, SqlError> =>
      Effect.map(this.run(sql, params ?? emptyParams, true, prepare), takeResult)
  
-@@ -1648,11 +2294,26 @@ const drainAborted = (
+@@ -1648,11 +2312,26 @@ const drainAborted = (
    )
  }
  
@@ -2321,7 +2389,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
  ): Effect.Effect<QueryOutput, SqlError> =>
    Effect.callback<QueryOutput, SqlError>((resume) => {
      if (conn.deadWith !== undefined) {
-@@ -1663,12 +2324,32 @@ const runQuery = (
+@@ -1663,12 +2342,32 @@ const runQuery = (
        conn.consumer = undefined
        resume(effect)
      })
@@ -2356,7 +2424,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
      } catch (cause) {
        conn.fatal(connectionQueryError(cause, "PgConnection: Failed to write query"))
      }
-@@ -2109,10 +2790,34 @@ const sendCancelRequest = (config: ResolvedConfig, session: Session): Effect.Eff
+@@ -2109,10 +2808,34 @@ const sendCancelRequest = (config: ResolvedConfig, session: Session): Effect.Eff
      return Effect.sync(finish)
    })
  
@@ -2391,7 +2459,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
      let encrypted = false
      let parser: PgProtocol.Parser<unknown> | undefined
      let sslErrorParser: PgProtocol.Parser | undefined
-@@ -2120,16 +2825,21 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
+@@ -2120,16 +2843,21 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
      let processId = 0
      let secretKey = 0
  
@@ -2417,7 +2485,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
  
      const onError = (cause: Error) => failConnect(cause, "PgConnection: Failed to connect")
      const onClose = () =>
-@@ -2222,7 +2932,7 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
+@@ -2222,7 +2950,7 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
            secretKey = message.secret
            return
          case "ErrorResponse":
@@ -2426,7 +2494,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
          case "ReadyForQuery":
            if (scram !== undefined) {
              return failAuth(
-@@ -2283,7 +2993,7 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
+@@ -2283,7 +3011,7 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
              "PgConnection: Invalid SSLRequest response"
            )
          }
@@ -2435,7 +2503,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
        }
        socket.off("data", onSslResponse)
        if (chunk.length !== 1) {
-@@ -2337,10 +3047,9 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
+@@ -2337,10 +3065,9 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
            ...(config.keepAlive !== undefined && { keepAlive: true, keepAliveInitialDelay: config.keepAlive })
          })
      } catch (cause) {
@@ -2449,7 +2517,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
        ))
        return
      }
-@@ -2349,7 +3058,10 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
+@@ -2349,7 +3076,10 @@ const connect = (config: ResolvedConfig, resolvedPassword: string | undefined):
      if (config.stream !== undefined) {
        begin()
      } else {
@@ -2462,7 +2530,7 @@ index c0740bc46059cf1e21c2783a04cc48000fc7906e..ebf5cb4fcd939bf48f469d4db4f0046b
  
      return Effect.sync(() => {
 diff --git a/src/PgPool.ts b/src/PgPool.ts
-index 1fb1de888e1bfbc17e051949716952d284c110e3..07794884e7166a9a6a0fe9b888dbcf54ede1f1ed 100644
+index 1fb1de888e1bfbc17e051949716952d284c110e3..96eef71a283f99a1ab50ecc8f570fcaa522cbd0e 100644
 --- a/src/PgPool.ts
 +++ b/src/PgPool.ts
 @@ -8,6 +8,8 @@ import * as Clock from "effect/Clock"

@@ -200,7 +200,7 @@ const listingApp = (files: string = listingSource(0)) =>
 
 const listed = (names: ReadonlyArray<string>) => names.includes("sdk.tools.listing");
 /**
- * A read that evaluated. The evaluation ends after the response, so its spans can reach Motel
+ * A read that evaluated. The evaluation ends after the response, so its spans can reach the collector
  * before the request's own: the read waits for the listing span, which holds the cache outcome.
  */
 const evaluates = (names: ReadonlyArray<string>) =>

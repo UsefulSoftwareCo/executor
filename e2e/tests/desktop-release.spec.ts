@@ -433,7 +433,9 @@ createRoot(root).render(<App />);`,
                     entry.span.tags["http.response.status_code"] === "200",
                 )
               )
-                return yield* Effect.fail(new Error("The actual tool-call trace must reach Motel"));
+                return yield* Effect.fail(
+                  new Error("The actual tool-call trace must reach the collector"),
+                );
             }).pipe(
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
               Effect.timeout("20 seconds"),

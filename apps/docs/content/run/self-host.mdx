@@ -94,7 +94,7 @@ from the internet, so turn this on only when that URL is reachable publicly over
 HTTPS. Startup fails for any other address on your own origin. Clients your users
 already registered or entered stay in use when you turn this on.
 
-The bundled Motel collector records traces by default. You can export to your own collector instead. See
+The bundled telemetry collector records traces by default. You can export to your own collector instead. See
 [Tracing](/run/tracing).
 
 ## Run it
@@ -268,14 +268,17 @@ mounted at `/app/data`. This includes the database, app source and builds, app
 data and generated keys (`auth-secret.key` and `encryption.key`).
 The key files are readable only by the server user. Back up the whole volume.
 
-Motel stores telemetry separately at `/app/motel-data`. Replacing the container
+The telemetry collector stores telemetry separately at `/app/motel-data` (`EXECUTOR_MOTEL_DATA_DIR`;
+the name is historical, from Motel, the collector earlier images ran). Replacing the container
 discards that telemetry by default. Mount a separate volume there if you need
-to retain it. Motel keeps telemetry until the first of three bounds is reached:
-seven days, one million spans or 1 GiB, evicting the oldest traces first. A busy
-server reaches 1 GiB first, so it may keep only the last hours or minutes of
-traces. When exports arrive faster than Motel can store them, it refuses the
-excess rather than holding it in memory, and it counts every export it does not
-store. The server log reports those losses.
+to retain it. The collector keeps telemetry for seven days and at most 1 GiB, evicting the oldest
+first. A busy server reaches 1 GiB first, so it may keep only the last hours of traces. When
+exports arrive faster than it can store them, it refuses the excess rather than holding it in
+memory, and it counts every export it does not store; `executor-host telemetry /api/ingest`
+reports the counts. Images that ran Motel left its store, up to about 1 GiB, in a `motel` folder
+there; the collector neither reads nor removes it. Without a volume at `/app/motel-data` it went with
+the old container; with one, delete it by hand with
+`docker exec executor-v2 rm -rf /app/motel-data/motel`.
 
 If you supply keys through environment variables, keep those values in your
 secret manager as well; Executor does not save those overrides to disk. Keep

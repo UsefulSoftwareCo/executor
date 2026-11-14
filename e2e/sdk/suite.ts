@@ -1,5 +1,16 @@
 /** CLI composition root: Effect owns server processes, Vitest, raw evidence and target isolation. */
-import { Config, Console, Effect, FileSystem, Option, Path, Redacted, Schema } from "effect";
+import {
+  Cause,
+  Config,
+  Console,
+  Effect,
+  Exit,
+  FileSystem,
+  Option,
+  Path,
+  Redacted,
+  Schema,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomBytes } from "node:crypto";
 import {
@@ -17,6 +28,8 @@ import { type FixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
 import { RecordingPaceMs, Target } from "../support/platform.ts";
 import { roleHost } from "../support/role-hosts.ts";
 import { prepareCloudScenarios } from "./prepare-scenarios.ts";
+import { removalSettlementFile, settleRemovals } from "./removal-settlement.ts";
+import { removalStallsFile } from "./removal-evidence.ts";
 import { holdRun, pruneRuns } from "./run-retention.ts";
 
 class RunFailed extends Schema.TaggedError<RunFailed>()("RunFailed", { message: Schema.String }) {}
@@ -75,6 +88,7 @@ export const runSuite = ({
   readonly oauthProxyPreview?: boolean;
   readonly attachment?: {
     readonly origin: string;
+    readonly directory?: string;
     readonly fixtures: typeof FixtureControl.Type;
     readonly emulators: string;
     readonly appUiBaseUrl?: string;
@@ -330,7 +344,7 @@ export const runSuite = ({
                     `${directory}/prepared-scenarios.json`,
                     JSON.stringify(preparedScenarios, null, 2),
                   );
-                  return yield* processes.exitCode(
+                  const exit = yield* processes.exitCode(
                     ChildProcess.make(
                       "node",
                       [
@@ -426,6 +440,21 @@ export const runSuite = ({
                       },
                     ),
                   );
+                  // Scenarios return once their organization's removal is accepted; the erasure is
+                  // checked once here, before this scope or the deployment's tears the Cloud down.
+                  const fixtures = environment?.fixtures ?? attachment?.fixtures;
+                  if (target !== "cloud" || fixtures === undefined) return Number(exit);
+                  const settled = yield* settleRemovals(fixtures, {
+                    report: path.join(directory, "report", removalSettlementFile),
+                    // Where the fixture process was started: the stage's directory when deployed.
+                    stalls: path.join(attachment?.directory ?? directory, removalStallsFile),
+                  }).pipe(Effect.exit);
+                  if (Exit.isSuccess(settled)) return Number(exit);
+                  const failure = Cause.squash(settled.cause);
+                  yield* Console.error(
+                    `End-of-run removal check failed: ${failure instanceof Error ? failure.message : String(failure)}`,
+                  );
+                  return Number(exit) === 0 ? 1 : Number(exit);
                 }),
               );
               return { target, code, metadata, directory };

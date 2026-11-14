@@ -1,14 +1,16 @@
 import { BillingMeter } from "../contracts/billing-meter.ts";
 import { billingMembers } from "../infrastructure/billing-members.ts";
 import {
+  BearerAuthentication,
   SessionAuthentication,
+  currentOrganizationSlug,
   organizationOwner,
   requireOrganizationAdmin,
   type OrganizationId,
 } from "@executor-js/hosted-server";
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Cause, Effect, Fiber, Layer, Schema } from "effect";
-import { FetchHttpClient, HttpServerRequest } from "effect/http";
+import { FetchHttpClient } from "effect/http";
 import { SqlClient } from "effect/sql";
 import { AutumnClient, type AutumnRequestFailed } from "../contracts/autumn.ts";
 import { autumnLive, autumnReads } from "./autumn-client.ts";
@@ -340,12 +342,10 @@ export const billingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "billing",
     const billing = yield* Billing;
     const meter = yield* BillingMeter;
     const auth = yield* SessionAuthentication;
-    const destination = (organization: OrganizationId) =>
-      Effect.gen(function* () {
-        const request = yield* HttpServerRequest.HttpServerRequest;
-        const slug = yield* auth.organizationSlug(new Headers(request.headers), organization);
-        return new URL(`/org/${encodeURIComponent(slug)}/billing`, auth.origin);
-      });
+    const api = yield* BearerAuthentication;
+    const destination = currentOrganizationSlug(auth, api).pipe(
+      Effect.map((slug) => new URL(`/org/${encodeURIComponent(slug)}/billing`, auth.origin)),
+    );
     return handlers
       .handle("overview", () =>
         Effect.gen(function* () {
@@ -361,17 +361,13 @@ export const billingHandlers = HttpApiBuilder.group(ExecutorCloudApi, "billing",
       .handle("checkout", ({ payload }) =>
         Effect.gen(function* () {
           const { organization } = yield* requireOrganizationAdmin;
-          return yield* billing.checkout(
-            organization,
-            payload.plan,
-            yield* destination(organization),
-          );
+          return yield* billing.checkout(organization, payload.plan, yield* destination);
         }),
       )
       .handle("portal", () =>
         Effect.gen(function* () {
           const { organization } = yield* requireOrganizationAdmin;
-          return yield* billing.portal(organization, yield* destination(organization));
+          return yield* billing.portal(organization, yield* destination);
         }),
       );
   }),

@@ -1194,7 +1194,9 @@ export const scenarios = plan({
     title: "App cache failures during evaluation keep their safe reason in responses and traces",
     targets: {
       "self-host": scheduled,
-      cloud: na("Uses the shared runtime contract; self-host delivers its traces to Motel."),
+      cloud: na(
+        "Uses the shared runtime contract; self-host delivers its traces to its bundled collector.",
+      ),
       local: na("Hosted API fixture; the runtime and collector are shared with Local."),
     },
   },
@@ -1444,6 +1446,52 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: scheduled,
       local: na("Local has no organizations; its scenario lifecycle uses independent processes."),
+    },
+  },
+  fixtureRemovalSettlement: {
+    fixtures: "actors",
+    file: "fixture-removal-settlement.spec.ts",
+    title:
+      "A Cloud scenario's clean-up returns once its organization's removal is accepted while the removal cannot start, and the end-of-run removal check names that scenario, its phase and since when until the removal finishes, then finds the organization, the removal and its users gone",
+    sdkScenarios: ["Stalled removal organization"],
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host has a single instance organization and no organization removal."),
+      local: na("Local has no hosted organizations."),
+    },
+  },
+  fixtureRemovalSettlementMany: {
+    fixtures: "actors",
+    file: "fixture-removal-settlement.spec.ts",
+    title:
+      "The end-of-run removal check answers each look within its request limit while one of 24 accepted removals cannot delete its users, finishes the other 23 meanwhile, and finishes the last once its users can be deleted",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host has a single instance organization and no organization removal."),
+      local: na("Local has no hosted organizations."),
+    },
+  },
+  fixtureRemovalSettlementDropped: {
+    fixtures: "actors",
+    file: "fixture-removal-settlement.spec.ts",
+    title:
+      "The end-of-run removal check asks again after a dropped request and counts a removal finished only from an answer that says so",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host has a single instance organization and no organization removal."),
+      local: na("Local has no hosted organizations."),
+    },
+  },
+  fixtureRemovalSettlementDone: {
+    fixtures: "actors",
+    file: "fixture-removal-settlement.spec.ts",
+    title:
+      "The end-of-run removal check keeps waiting for a removal recorded done while its organization row is still there",
+    sdkScenarios: ["Done removal organization"],
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host has a single instance organization and no organization removal."),
+      local: na("Local has no hosted organizations."),
     },
   },
   cloudSsoOidc: {
@@ -2492,7 +2540,7 @@ export const scenarios = plan({
     title: "SDK batches invocation accounts and finished workflow history",
     targets: {
       "self-host": scheduled,
-      cloud: na("This query budget reads the self-host Motel collector."),
+      cloud: na("This query budget reads the self-host collector."),
       local: na("This scenario uses hosted organization routes."),
     },
   },
@@ -2503,7 +2551,7 @@ export const scenarios = plan({
       "Tool invocations resolve one committed set of linked accounts without holding a transaction",
     targets: {
       "self-host": scheduled,
-      cloud: na("This scenario reads SQL spans from the self-host Motel collector."),
+      cloud: na("This scenario reads SQL spans from the self-host collector."),
       local: na("This scenario uses hosted organization routes."),
     },
   },
@@ -4369,6 +4417,57 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: scheduled,
       local: na("Hosted deploy routes; local shares the workerd build path."),
+    },
+  },
+  compiledFileLimit: {
+    fixtures: "actors",
+    file: "compiled-file-limit.spec.ts",
+    title:
+      "Builds refuse an app's own JavaScript or TypeScript file over 2 MB and create no app; a file just under it, a larger JSON import and a package with a larger file build",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud's compiler Worker runs the same compileWorkerApp, and Cloudflare's CPU limit already bounds its compile; self-host covers the shared build.",
+      ),
+      local: na("Hosted deploy routes; localCompiledFileLimit covers local through the CLI."),
+    },
+  },
+  localCompiledFileLimitImports: {
+    file: "local-compiled-file-limit.spec.ts",
+    title: "local refuses a file over the compile limit before resolving any import in it",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Needs a product started against a registry that holds requests; the shared build is the same.",
+      ),
+      cloud: na(
+        "Needs a product started against a registry that holds requests; the shared build is the same.",
+      ),
+    },
+  },
+  compiledFileLimitResponsive: {
+    fixtures: "actors",
+    file: "compiled-file-limit.spec.ts",
+    title:
+      "Apps keep answering while a build refuses a 15 MB file: no longer than they wait for one file just under the limit to compile",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud's compiler Worker runs the same compileWorkerApp in its own isolate, so it never holds an app's thread.",
+      ),
+      local: na(
+        "Self-host covers the shared build; local runs it in the same kind of app runtime.",
+      ),
+    },
+  },
+  localCompiledFileLimit: {
+    file: "local-compiled-file-limit.spec.ts",
+    title:
+      "apps CLI deploy reports a file over the compile limit with its path, size and the limit",
+    targets: {
+      local: scheduled,
+      "self-host": na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
+      cloud: na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
     },
   },
   appOperationFailureDetails: {
@@ -7402,7 +7501,7 @@ export const scenarios = plan({
     title: "MCP and API bearer authentication reads its grant in one SQL statement",
     targets: {
       "self-host": scheduled,
-      cloud: na("This scenario reads SQL spans from the self-host Motel collector."),
+      cloud: na("This scenario reads SQL spans from the self-host collector."),
       local: na("Local uses its instance credential."),
     },
   },
@@ -7413,7 +7512,7 @@ export const scenarios = plan({
       "An MCP tool call checks its access and links in one statement and its caller in one more",
     targets: {
       "self-host": scheduled,
-      cloud: na("This scenario reads SQL spans from the self-host Motel collector."),
+      cloud: na("This scenario reads SQL spans from the self-host collector."),
       local: na("Local has no hosted organization policies."),
     },
   },
@@ -7560,9 +7659,26 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: na(
-        "Reads SQL spans from the self-host Motel collector; cloud-tool-call-batch.spec.ts covers Cloud's batch.",
+        "Reads SQL spans from the self-host collector; cloud-tool-call-batch.spec.ts covers Cloud's batch.",
       ),
       local: na("Local has no hosted organization policies."),
+    },
+  },
+  cloudMcpConcurrentRecheck: {
+    fixtures: "actors",
+    file: "cloud-concurrent-recheck.spec.ts",
+    title:
+      "Cloud MCP tool calls made at once with a key whose last use is stale all answer, also the calls that read the key again",
+    targets: {
+      // Not run until its contention is certain on a shared database: its round releases the key
+      // row's lock once two key checks wait on it, and other scenarios' sessions queued on the
+      // `apikey` table behind the hold were counted as waiters (#4420). The production hang
+      // count and the `commit-unanswered` and `commit-rollback` pool probe cases cover the fix.
+      cloud: na(
+        "Its round's contention is not yet certain on a database other scenarios share; see #4420.",
+      ),
+      "self-host": na("Self-host runs a batch under PGlite's lock, not on a multiplexed pool."),
+      local: na("Local MCP sessions use the local database."),
     },
   },
   cloudExportHang: {
@@ -9521,6 +9637,30 @@ export const scenarios = plan({
       ),
     },
   },
+  telemetryViewer: {
+    file: "telemetry-viewer.spec.ts",
+    title:
+      "The local collector serves the trace viewer: its trace list, a trace, a reload, an unknown trace and the logs filters",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "The image's collector has no address a browser can reach, so it serves no viewer.",
+      ),
+      cloud: na("Cloud exports to its own collector, not the bundled one."),
+    },
+  },
+  telemetryPartialTrace: {
+    file: "telemetry-partial-trace.spec.ts",
+    title:
+      "A trace the collector answers in part fails a check that reads it and stays marked in evidence",
+    targets: {
+      "self-host": scheduled,
+      local: na(
+        "The suite's span reader is the same on every target; the self-host run covers it.",
+      ),
+      cloud: na("Attached Cloud reads Axiom, which answers no trace in part."),
+    },
+  },
   telemetryStoreIdleAtBound: {
     file: "telemetry-store-bound.spec.ts",
     title:
@@ -10968,10 +11108,10 @@ export const scenarios = plan({
   telemetry: {
     fixtures: "actors",
     file: "hosted.spec.ts",
-    title: "real requests reach Motel with correlated server spans",
+    title: "real requests reach the collector with correlated server spans",
     targets: {
       "self-host": scheduled,
-      cloud: na("Cloud exports to Axiom; this test checks the self-host Motel collector."),
+      cloud: na("Cloud exports to Axiom; this test checks the self-host collector."),
       local: na("This test checks hosted organization routes and self-host service spans."),
     },
   },

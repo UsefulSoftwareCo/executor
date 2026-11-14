@@ -2,7 +2,8 @@
  * Diagnostics export: one zip in Downloads that a user can attach to a report.
  *
  * Only allowlisted log files from the data directory's `diagnostics/` are read. Keys, the
- * installation record, databases, retained builds, the browser profile and Motel's trace store are
+ * installation record, databases, retained builds, the browser profile and the telemetry collector's
+ * store are
  * never opened. Logs already carry redacted values; the export also masks credential shapes
  * (bearer values, pairing and signed-link tokens, 64-character hex keys and credential-named
  * JSON fields) as a second barrier before anything leaves the machine.
@@ -85,7 +86,7 @@ export const makeExportDiagnosticsAction = (options: {
           "keys and installation record",
           "databases and retained builds",
           "browser profile",
-          "Motel trace storage",
+          "telemetry collector storage",
         ],
       };
       files["manifest.json"] = strToU8(`${JSON.stringify(manifest, null, 2)}\n`);

@@ -75,7 +75,7 @@ layer(TestLive, { excludeTestServices: true })("Telemetry backpressure", (it) =>
             Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 25 }),
           );
 
-        // Motel's answer when its ingest queue is full.
+        // The collector's answer when its ingest queue is full.
         const full = yield* report([{ status: 429, retryAfter: () => "1" }]);
         expect(full.status, "a report the full queue refused is sent again").toBe(202);
         expect(full.arrivals.map(({ status }) => status)).toEqual([429, 200]);
@@ -100,7 +100,7 @@ layer(TestLive, { excludeTestServices: true })("Telemetry backpressure", (it) =>
         );
         yield* stored(dated.traceId);
 
-        // OTLP throttles with 503 too, as Motel does while its storage is unavailable.
+        // OTLP throttles with 503 too, as the collector does while it stops.
         const unavailable = yield* report([{ status: 503, retryAfter: () => "2" }]);
         expect(unavailable.status, "a throttled 503 is sent again after its delay").toBe(202);
         expect(unavailable.arrivals.map(({ status }) => status)).toEqual([503, 200]);

@@ -9,7 +9,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { collectorChanged, collectorInputs } from "../collector-inputs.ts";
+import { collectorChanged, collectorInputs, collectorScenarios } from "../collector-inputs.ts";
 import dockerReleaseConfig from "../docker-release.config.ts";
 import { lanesFor, releaseSources, releaseSuiteConfigs } from "../release-lanes.ts";
 import {
@@ -341,6 +341,15 @@ const workflowJob = (name: string) =>
 
 /** The select outputs that start each E2E job, as its `if` in checks.yml reads them. */
 const startedBy = {
+  // The run's one collector build, for every job below that starts or packages it.
+  collector: [
+    "local-shards",
+    "self-host-shards",
+    "self-host-inventory",
+    "self-host-catalog",
+    "cloud-runners",
+    "release-local",
+  ],
   "e2e-local": ["local-shards"],
   "e2e-self-host": ["self-host-shards"],
   "e2e-self-host-scale": ["self-host-inventory", "self-host-catalog"],
@@ -1846,10 +1855,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         [["packages/telemetry/collector/src/http.rs"], ["true", "true"]],
         [["packages/telemetry/collector/Cargo.lock"], ["true", "true"]],
         [["packages/telemetry/scripts/build-collector.ts"], ["true", "true"]],
-        // The actions that build it run only in the matrix after merge until the cutover wires them
-        // into these lanes, so they start neither.
-        [[".github/actions/collector/action.yml"], ["", ""]],
-        [[".github/actions/rustup/action.yml"], ["", ""]],
+        // The actions that build it: the release-local jobs build or restore the collector through
+        // them before packaging it; the image builds its own in its Dockerfile.
+        [[".github/actions/collector/action.yml"], ["", "true"]],
+        [[".github/actions/rustup/action.yml"], ["", "true"]],
         [["apps/docs/public/install.sh"], ["", "true"]],
         [["scripts/releases/config.ts"], ["true", "true"]],
         // The lanes' own definition runs both.
@@ -2070,7 +2079,8 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "packages/telemetry/src/isolate.ts",
           "packages/telemetry/collector-notes.md",
           "e2e/tests/collector.spec.ts",
-          "packages/telemetry/scripts/build-motel.ts",
+          // Another script beside the build script.
+          "packages/telemetry/scripts/check-notices.ts",
           ".github/actions/setup/action.yml",
           ".github/actions/collector-notes.md",
         ])
@@ -2105,6 +2115,19 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         expect(runs[1]!.summary).toContain(
           "collector-native: skipped, no collector input changed (e2e/collector-inputs.ts).",
         );
+        // A crate change runs the scenarios that exercise the collector, whatever the block names;
+        // another change runs none of them.
+        for (const file of collectorScenarios) {
+          expect(runs[0]!.summary, file).toContain(file);
+          expect(runs[1]!.summary, file).not.toContain(file);
+        }
+        expect(runs[0]!.summary).toContain(
+          "A collector input changed (e2e/collector-inputs.ts), so the scenarios that exercise it run",
+        );
+        expect(runs[0]!.outputs["self-host"]).toContain(
+          "The bundled collector at its size bound keeps its traces",
+        );
+        expect(runs[1]!.summary).toContain("No E2E scenarios");
       }),
   );
 
@@ -2655,10 +2678,6 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               // Windows and macOS only.
               "Install Chromium on desktop runners",
               "Smoke-test the installed CLI",
-              // The wait for this run's collector job and its one build, which nothing packages yet;
-              // the lane gets its own collector step when packaging starts using it.
-              "Wait for the telemetry collector",
-              "Fetch the telemetry collector",
             ],
           ],
           [
@@ -2681,10 +2700,6 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               "Record the packaged desktop app's digest",
               // Runs only when the job failed; the lane's own e2e evidence covers CI.
               "Gather the failed scenarios' evidence",
-              // The wait for this run's collector job and its one build, which nothing packages yet;
-              // the lane gets its own collector step when packaging starts using it.
-              "Wait for the telemetry collector",
-              "Fetch the telemetry collector",
             ],
           ],
         ] as const;
@@ -2775,6 +2790,27 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         );
       }),
   );
+  it.effect("the e2e check names a failed collector job as the cause of the jobs that waited", () =>
+    Effect.gen(function* () {
+      const outputs = { "local-shards": "1/1", "release-local": "true" };
+      const results = Object.fromEntries(
+        e2eJobs.map((job) => [job, chosen(outputs, job) ? "failure" : "skipped"]),
+      ) as Record<E2eJob, string>;
+      const failed = yield* gate({ result: "success", outputs }, results);
+      expect(failed.exitCode).toBe(1);
+      expect(failed.log).toContain(
+        "::error::collector (linux-x64): failure. The E2E jobs that wait for its build fail with it; rerun that job first.",
+      );
+      expect(failed.log).toContain("::error::e2e-local: selected, but failure");
+      // A collector that succeeded is never named as a cause.
+      const passed = yield* gate(
+        { result: "success", outputs },
+        { ...results, collector: "success" },
+      );
+      expect(passed.exitCode).toBe(1);
+      expect(passed.log).not.toContain("The E2E jobs that wait for its build fail with it");
+    }),
+  );
   it.effect(
     "the e2e check fails when either release-local job of a selected lane fails, is cancelled or is skipped",
     () =>
@@ -2787,8 +2823,9 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
             ),
             ...change,
           }) as Record<E2eJob, string>;
-        // The lane is two jobs, and selecting it selects both.
+        // The lane is two jobs, and selecting it selects both, and the collector build they package.
         expect(e2eJobs.filter((job) => chosen(outputs, job))).toEqual([
+          "collector",
           "release-local-cli",
           "release-local-desktop",
         ]);
@@ -2805,6 +2842,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           { result: "success", outputs: {} },
           {
             ...results(),
+            collector: "skipped",
             "release-local-cli": "skipped",
             "release-local-desktop": "success",
           },

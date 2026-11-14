@@ -494,40 +494,42 @@ func serve(mode string) error {
 		return err
 	}
 	defer os.RemoveAll(temporary)
-	motel, err := filepath.Abs(setting("EXECUTOR_MOTEL_DATA_DIR", "/app/motel-data"))
+	// The telemetry collector's data directory. The variable's name is historical: it named the
+	// directory of Motel, the collector earlier images ran, and operators may have set it.
+	telemetry, err := filepath.Abs(setting("EXECUTOR_MOTEL_DATA_DIR", "/app/motel-data"))
 	if err != nil {
 		return err
 	}
-	if motel == directory || strings.HasPrefix(motel, directory+string(os.PathSeparator)) || strings.HasPrefix(directory, motel+string(os.PathSeparator)) {
+	if telemetry == directory || strings.HasPrefix(telemetry, directory+string(os.PathSeparator)) || strings.HasPrefix(directory, telemetry+string(os.PathSeparator)) {
 		return errors.New("EXECUTOR_MOTEL_DATA_DIR must be separate from the product data directory")
 	}
 	if mode == "export" {
-		motel = filepath.Join(temporary, "motel")
+		telemetry = filepath.Join(temporary, "telemetry")
 	}
-	if err = os.MkdirAll(motel, 0700); err != nil {
+	if err = os.MkdirAll(telemetry, 0700); err != nil {
 		return err
 	}
 	productRoot, err := filepath.EvalSymlinks(directory)
 	if err != nil {
 		return err
 	}
-	motelRoot, err := filepath.EvalSymlinks(motel)
+	telemetryRoot, err := filepath.EvalSymlinks(telemetry)
 	if err != nil {
 		return err
 	}
-	if motelRoot == productRoot || strings.HasPrefix(motelRoot, productRoot+string(os.PathSeparator)) || strings.HasPrefix(productRoot, motelRoot+string(os.PathSeparator)) {
-		return errors.New("Motel and product data cannot share a datastore")
+	if telemetryRoot == productRoot || strings.HasPrefix(telemetryRoot, productRoot+string(os.PathSeparator)) || strings.HasPrefix(productRoot, telemetryRoot+string(os.PathSeparator)) {
+		return errors.New("Telemetry and product data cannot share a datastore")
 	}
 	productInfo, err := os.Stat(productRoot)
 	if err != nil {
 		return err
 	}
-	motelInfo, err := os.Stat(motelRoot)
+	telemetryInfo, err := os.Stat(telemetryRoot)
 	if err != nil {
 		return err
 	}
-	if os.SameFile(productInfo, motelInfo) {
-		return errors.New("Motel and product data cannot share a datastore")
+	if os.SameFile(productInfo, telemetryInfo) {
+		return errors.New("Telemetry and product data cannot share a datastore")
 	}
 	paths := map[string]string{"product-data": filepath.Join(directory, "product"), "legacy-data": filepath.Join(directory, "hosted.pglite"), "app-data": filepath.Join(directory, "workerd"), "workflow-data": filepath.Join(directory, "workerd", "workflows"), "builds": filepath.Join(directory, "builds")}
 	if mode == "export" {
@@ -645,12 +647,13 @@ func serve(mode string) error {
 	if err != nil {
 		return err
 	}
-	// The collector listens only on a private Unix socket. The product reaches it through its MOTEL
-	// binding and operators through `executor-host telemetry`; no address an app can fetch reaches it.
-	// The socket lives in this host's own temporary directory, so containers that share TMPDIR and
-	// mount their product volumes at the same path never share or remove each other's collector.
-	collector := filepath.Join(temporary, "motel.sock")
-	args := []string{"serve", configPath, "-I/", "--experimental", "--external-addr=native=unix:" + socket, "--external-addr=motel=unix:" + collector, "--socket-addr=http=unix:" + filepath.Join(temporary, "product.sock")}
+	// The collector listens only on a private Unix socket. The product reaches it through its
+	// COLLECTOR binding and operators through `executor-host telemetry`; no address an app or a
+	// browser can fetch reaches it. The socket lives in this host's own temporary directory, so
+	// containers that share TMPDIR and mount their product volumes at the same path never share or
+	// remove each other's collector.
+	collector := filepath.Join(temporary, "collector.sock")
+	args := []string{"serve", configPath, "-I/", "--experimental", "--external-addr=native=unix:" + socket, "--external-addr=collector=unix:" + collector, "--socket-addr=http=unix:" + filepath.Join(temporary, "product.sock")}
 	for name, path := range paths {
 		args = append(args, "--directory-path="+name+"="+path)
 	}
@@ -692,18 +695,6 @@ func serve(mode string) error {
 		}
 		return exportDatabase(filepath.Join(temporary, "export.sock"), os.Args[2])
 	}
-	motelConfig, err := os.ReadFile(filepath.Join(runtime, "motel.capnp"))
-	if err != nil {
-		command.Process.Kill()
-		<-stopped
-		return err
-	}
-	motelConfigPath := filepath.Join(temporary, "motel.capnp")
-	if err = os.WriteFile(motelConfigPath, bytes.ReplaceAll(motelConfig, []byte("@@RUNTIME@@"), []byte(strings.Trim(strconv.Quote(runtime), "\""))), 0600); err != nil {
-		command.Process.Kill()
-		<-stopped
-		return err
-	}
 	forget, err := recordTelemetrySocket(directory, collector)
 	if err != nil {
 		command.Process.Kill()
@@ -711,18 +702,21 @@ func serve(mode string) error {
 		return err
 	}
 	defer forget()
-	stopMotel := supervise(func() *exec.Cmd {
-		// A collector that exited leaves its socket file behind; the next one binds the same path.
+	stopCollector := supervise(func() *exec.Cmd {
+		// A collector that was killed leaves its socket file behind, and the collector never
+		// removes a path it did not create; this directory is the host's own, so the next one
+		// binds the same path.
 		os.Remove(collector)
-		command := exec.Command(filepath.Join(runtime, "workerd"), "serve", motelConfigPath, "-I/", "--experimental", "--directory-path=motel-data="+motel, "--socket-addr=motel=unix:"+collector)
+		command := exec.Command(filepath.Join(runtime, "executor-collector"), append([]string{"serve", "--data=" + telemetry, "--listen=unix:" + collector}, collectorBounds...)...)
 		configureChild(command)
+		// Its one stdout line says it is listening; its log is JSON lines on stderr.
 		command.Stdout = os.Stderr
 		command.Stderr = os.Stderr
 		command.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + temporary}
 		command.Dir = runtime
 		return command
 	}, time.Second, 30*time.Second, time.After)
-	defer stopMotel()
+	defer stopCollector()
 
 	proxy := productProxy(filepath.Join(temporary, "product.sock"), workerdIdleTimeout, proxies...)
 	publicListener, err := net.Listen("tcp", net.JoinHostPort(setting("HOST", "0.0.0.0"), port))
@@ -759,6 +753,10 @@ func serve(mode string) error {
 		return <-stopped
 	}
 }
+
+// collectorBounds are the bounds the image gives its telemetry collector, the ones it gave Motel:
+// four exports at once of at most 16 MiB each, a week of telemetry in at most 1 GiB.
+var collectorBounds = []string{"--max-pending=4", "--max-export-bytes=16777216", "--max-store-mb=1024", "--retention-hours=168"}
 
 // startupProgressInterval is how often the log says the product is still opening.
 const startupProgressInterval = 15 * time.Second
@@ -1108,7 +1106,7 @@ func queryTelemetry(args []string, output io.Writer) error {
 	}}
 	defer transport.CloseIdleConnections()
 	client := http.Client{Transport: transport, Timeout: 30 * time.Second}
-	response, err := client.Get("http://motel.internal" + args[0])
+	response, err := client.Get("http://collector.internal" + args[0])
 	if err != nil {
 		return errors.New("the telemetry collector is not running")
 	}

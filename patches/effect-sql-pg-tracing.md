@@ -56,6 +56,12 @@ caller per connection, `PgPool.held`, settling abandoned and unawaited statement
 `notes/database-pool.md` describes them. Like everything else here they are in both `src/` and
 `dist/`, so a port from either copy keeps them; only `dist/` is loaded.
 
+Nothing is written on a connection while a `pipelined` batch's `COMMIT` on it is unanswered: a
+leaf's statement issued meanwhile waits in the connection's queue and goes out with the flush that
+follows the answer, and a batch's `COMMIT` ends the socket write it is in. Through Hyperdrive a
+statement written behind an unanswered `COMMIT` was never answered (`notes/database-pool.md`,
+"Batches").
+
 ## Connection retries
 
 The patch also adds a `connectRetries` option (default `0`) to `PgConnection`
