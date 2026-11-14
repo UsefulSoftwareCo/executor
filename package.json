@@ -110,6 +110,7 @@
     "e2e:apps-job": "vitest run --config e2e/apps-job.config.ts",
     "e2e:collector-job": "vitest run --config e2e/collector-job.config.ts",
     "e2e:macos-staple": "vitest run --config e2e/macos-staple.config.ts",
+    "e2e:npm-channel": "vitest run --config e2e/npm-channel.config.ts",
     "e2e:apps-published": "vitest run --config e2e/apps-published.config.ts",
     "e2e:ci-selection": "vitest run --config e2e/ci-selection.config.ts",
     "e2e:deploy-decision": "vitest run --config e2e/deploy-decision.config.ts",
