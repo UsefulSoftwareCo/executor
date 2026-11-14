@@ -1,20 +1,64 @@
 /**
  * MCP events: `events/list`, `events/subscribe` and `events/unsubscribe` over the caller's backend.
- * An event is named `<app slug>.<event>`. Its subscription arguments are the event's filters,
- * each optional. Webhook delivery is the only mode.
+ * Webhook delivery is the only mode.
+ *
+ * `events/list` returns one event, {@link appEventName}, the same for every caller. Clients such as
+ * ChatGPT save the list once, when the server is scanned, and offer it to every user; a list of
+ * the caller's own apps would offer one user's events to everyone, and none of theirs. Its
+ * arguments select the events: an app's slug and one of its events, the slug alone for all of the
+ * app's events, or nothing for every event of every app the connection can use. With an app and an
+ * event, that event's filters may be added. Each delivery carries `{ app, event, data }`.
+ *
+ * An app's event can also be subscribed to by its own name, `<app slug>.<event>`, with its filters
+ * as the arguments; subscriptions made that way keep refreshing.
  */
 import { Effect, Match, Predicate, Redacted, Schema } from "effect";
 import { McpSchema, type McpServer } from "effect/ai";
-import { EventArguments, type AppEventDefinition } from "@executor-js/sdk/core";
-import type { McpBackend, McpEventError, McpEventKey } from "../contracts/backend.ts";
+import { EventArguments } from "@executor-js/sdk/core";
+import type {
+  McpBackend,
+  McpEventError,
+  McpEventKey,
+  McpEventTarget,
+} from "../contracts/backend.ts";
 import { withOperationSpan } from "./telemetry.ts";
 
-/** Subscription arguments: the filters, every one optional, nothing else. */
-const inputSchema = (
-  filters: AppEventDefinition["filters"],
-): McpSchema.EventDefinition["inputSchema"] => {
-  const { required: _required, ...rest } = filters;
-  return { ...rest, type: "object", additionalProperties: false };
+/** The one listed event. Apps cannot declare it: an app's events need its slug before the dot. */
+export const appEventName = "executor.app_event";
+
+const appEventDefinition: McpSchema.EventDefinition = {
+  name: appEventName,
+  title: "Executor app events",
+  description:
+    "Events from the user's Executor apps. With no arguments, every event of every app this connection can use, including apps added later. Set app to an app's slug, such as minecraft-watch, for only its events, and event as well, such as server.offline, for only that one. With both, that event's own filters may be added as further arguments. Prefer the narrowest selection the user asked for: every delivery reaches this chat. Each delivery's data is { app, event, data }.",
+  delivery: ["webhook"],
+  inputSchema: {
+    type: "object",
+    properties: {
+      app: {
+        type: "string",
+        description: "The app's slug. Omit it to receive every app's events.",
+      },
+      event: {
+        type: "string",
+        description: "One event the app declares. Omit it for all of the app's events. Needs app.",
+      },
+    },
+    additionalProperties: {
+      type: ["string", "number", "boolean"],
+      description: "A filter the selected event declares. Needs app and event.",
+    },
+  },
+  payloadSchema: {
+    type: "object",
+    properties: {
+      app: { type: "string", description: "The slug of the app that emitted the event." },
+      event: { type: "string", description: "The event's name within the app." },
+      data: { description: "The event's data, as the app declares it." },
+    },
+    required: ["app", "event", "data"],
+    additionalProperties: false,
+  },
 };
 
 const mcpError = (code: number, message: string, data?: Schema.Json) =>
@@ -87,50 +131,58 @@ export const eventsHandler = (backend: McpBackend<Error>): McpServer.EventsHandl
       const app = (yield* backend.listApps()).find((candidate) => candidate.slug === slug);
       return app === undefined ? undefined : { app: app.id, event };
     });
+  /**
+   * The subscription key. For {@link appEventName}, `app` and `event` leave the arguments for the
+   * selection, which is part of the key, and the rest are the selected event's filters.
+   */
   const key = (params: {
     readonly name: string;
     readonly arguments?: Readonly<Record<string, Schema.Json>> | undefined;
     readonly delivery: { readonly url: string };
   }) =>
-    decodeArguments(params.arguments).pipe(
-      Effect.map((args): McpEventKey => ({
+    Effect.gen(function* () {
+      const args = yield* decodeArguments(params.arguments);
+      if (params.name !== appEventName)
+        return {
+          name: params.name,
+          callbackUrl: params.delivery.url,
+          arguments: args,
+        } satisfies McpEventKey;
+      const { app, event, ...filters } = args;
+      if (
+        (app !== undefined && (typeof app !== "string" || app === "")) ||
+        (event !== undefined && (typeof event !== "string" || event === "")) ||
+        (event !== undefined && app === undefined)
+      )
+        return yield* Effect.fail(
+          mcpError(
+            McpSchema.INVALID_PARAMS_ERROR_CODE,
+            "app is an app's slug and event one of its events; event needs app",
+            { field: "arguments" },
+          ),
+        );
+      return {
         name: params.name,
         callbackUrl: params.delivery.url,
-        arguments: args,
-      })),
-    );
+        arguments: filters,
+        selection: {
+          ...(app === undefined ? {} : { app }),
+          ...(event === undefined ? {} : { event }),
+        },
+      } satisfies McpEventKey;
+    });
+  /** The events a new subscription's key refers to now, among the apps this caller can reach. */
+  const target = (subscription: McpEventKey) =>
+    Effect.gen(function* () {
+      const selection = subscription.selection;
+      if (selection === undefined) return yield* resolve(subscription.name);
+      if (selection.app === undefined) return { app: null, event: null } as const;
+      const app = (yield* backend.listApps()).find((candidate) => candidate.slug === selection.app);
+      return app === undefined ? undefined : { app: app.id, event: selection.event ?? null };
+    });
   return {
     list: () =>
-      Effect.gen(function* () {
-        const apps = yield* backend.listApps();
-        const pages = yield* Effect.forEach(
-          apps,
-          (app) =>
-            backend.eventDefinitions({ app: app.id }).pipe(
-              Effect.map((definitions) =>
-                definitions.map((definition): McpSchema.EventDefinition => ({
-                  name: `${app.slug}.${definition.name}`,
-                  title: `${app.name}: ${definition.name}`,
-                  description: definition.description,
-                  delivery: ["webhook"],
-                  inputSchema: inputSchema(definition.filters),
-                  payloadSchema: definition.payload,
-                })),
-              ),
-              // Refusals leave the app out; storage and other failures fail the listing, so a
-              // client never mistakes an outage for events that were removed.
-              Effect.catchIf(
-                (error) =>
-                  Predicate.isTagged(error, "GrantForbidden") ||
-                  Predicate.isTagged(error, "OrganizationForbidden") ||
-                  Predicate.isTagged(error, "AppNotFound"),
-                () => Effect.succeed([]),
-              ),
-            ),
-          { concurrency: 8 },
-        );
-        return { events: pages.flat() };
-      }).pipe(Effect.mapError(projectError), withOperationSpan("mcp.events.list")),
+      Effect.succeed({ events: [appEventDefinition] }).pipe(withOperationSpan("mcp.events.list")),
     subscribe: (params) =>
       Effect.gen(function* () {
         if (params.delivery.mode !== "webhook")
@@ -152,11 +204,13 @@ export const eventsHandler = (backend: McpBackend<Error>): McpServer.EventsHandl
         // A saved subscription keeps its app and event, so its refreshes still work after the
         // app's slug changes. The SDK checks it against the current declaration.
         const existing = yield* backend.findEventSubscription(subscription);
-        const target =
+        const selected: McpEventTarget | undefined =
           existing === null
-            ? yield* resolve(params.name)
-            : { app: existing.app, event: existing.event };
-        if (target === undefined)
+            ? yield* target(subscription)
+            : existing.app === null
+              ? { app: null, event: null }
+              : { app: existing.app, event: existing.event };
+        if (selected === undefined)
           return yield* Effect.fail(
             mcpError(McpSchema.NOT_FOUND_ERROR_CODE, "No event with this name", {
               kind: "event",
@@ -164,7 +218,7 @@ export const eventsHandler = (backend: McpBackend<Error>): McpServer.EventsHandl
           );
         const granted = yield* backend.subscribeEvent({
           key: subscription,
-          target,
+          target: selected,
           secret: Redacted.make(params.delivery.secret),
           ...(params.ttlMs === undefined ? {} : { ttlMs: params.ttlMs }),
         });

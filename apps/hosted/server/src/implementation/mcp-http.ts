@@ -104,7 +104,6 @@ const RequestBackend = Context.Reference<McpBackend<RequestError>>("hosted/McpRe
     callTool: unavailable,
     resumeInvocation: unavailable,
     authorizeElicitation: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
-    eventDefinitions: unavailable,
     findEventSubscription: unavailable,
     subscribeEvent: unavailable,
     unsubscribeEvent: unavailable,
@@ -141,8 +140,6 @@ const requestBackend: McpBackend<RequestError> = {
     Effect.flatMap(RequestBackend, (backend) =>
       backend.resumeInvocation(request, response, options),
     ),
-  eventDefinitions: (input) =>
-    Effect.flatMap(RequestBackend, (backend) => backend.eventDefinitions(input)),
   findEventSubscription: (key) =>
     Effect.flatMap(RequestBackend, (backend) => backend.findEventSubscription(key)),
   subscribeEvent: (input) =>

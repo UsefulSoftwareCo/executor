@@ -38,6 +38,7 @@ import {
   Granted,
   RpcError,
   RpcResult,
+  appEvent,
   eventFixtures,
   secrets,
 } from "../support/events.ts";
@@ -353,7 +354,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP organization spans", (it) 
               const listed = yield* rpc("events/list", {});
               expect(
                 (yield* answered(EventList, listed.text)).events.map((event) => event.name),
-              ).toContain(name);
+              ).toEqual([appEvent]);
               const subscribed = yield* rpc("events/subscribe", {
                 name,
                 arguments: filters,

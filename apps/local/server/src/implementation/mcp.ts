@@ -29,6 +29,7 @@ import {
   type ToolInvocationOptions,
 } from "@executor-js/sdk/core";
 import { appVersion, versionRequirementAccounts } from "./app-accounts.ts";
+import { localOwner } from "./owners.ts";
 import type { SqlClient } from "effect/sql";
 import { Context, Effect, Schema } from "effect";
 import { HttpServerResponse } from "effect/http";
@@ -39,10 +40,18 @@ import { HttpServerResponse } from "effect/http";
  */
 const grantedBackend = (sql: SqlClient.SqlClient, executor: Executor, principal: string) =>
   ({
-    eventDefinitions: (input) => executor.events.definitions(input),
     findEventSubscription: (key) => executor.events.find({ ...key, principal }),
-    subscribeEvent: ({ key, ...input }) =>
-      executor.events.subscribe({ ...input, key: { ...key, principal }, subject: principal }),
+    // A selection of every app is the local owner's.
+    subscribeEvent: ({ key, target, ...input }) =>
+      executor.events.subscribe({
+        ...input,
+        target:
+          target.app === null
+            ? { owner: localOwner, app: null, event: null }
+            : { app: target.app, event: target.event },
+        key: { ...key, principal },
+        subject: principal,
+      }),
     unsubscribeEvent: ({ key }) => executor.events.unsubscribe({ ...key, principal }),
     listSkills: (input, options) => executor.skills.list(input, options),
     readSkill: (input) => executor.skills.read(input),
@@ -148,7 +157,6 @@ export const localMcp = (
         callTool: () => Effect.fail(new LocalMcpUnauthorized()),
         resumeInvocation: () => Effect.fail(new LocalMcpUnauthorized()),
         authorizeElicitation: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
-        eventDefinitions: () => Effect.fail(new LocalMcpUnauthorized()),
         findEventSubscription: () => Effect.fail(new LocalMcpUnauthorized()),
         subscribeEvent: () => Effect.fail(new LocalMcpUnauthorized()),
         unsubscribeEvent: () => Effect.fail(new LocalMcpUnauthorized()),
@@ -198,8 +206,6 @@ export const localMcp = (
           Effect.flatMap(RequestBackend, (b) => b.resumeInvocation(request, response, options)),
         authorizeElicitation: (input) =>
           Effect.flatMap(RequestBackend, (b) => b.authorizeElicitation(input)),
-        eventDefinitions: (input) =>
-          Effect.flatMap(RequestBackend, (b) => b.eventDefinitions(input)),
         findEventSubscription: (key) =>
           Effect.flatMap(RequestBackend, (b) => b.findEventSubscription(key)),
         subscribeEvent: (input) => Effect.flatMap(RequestBackend, (b) => b.subscribeEvent(input)),

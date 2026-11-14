@@ -24,6 +24,7 @@ import {
   type CallbackFailure,
   type EventOptions,
   type EventSubscriptionKey,
+  type EventTarget,
   type ExecutorEvents,
 } from "../contracts/events.ts";
 import { AccountId, AppId, StorageError } from "../contracts/shared.ts";
@@ -65,11 +66,15 @@ const hex = (bytes: ArrayBuffer) =>
 const digest = (text: string) =>
   Effect.promise(() => crypto.subtle.digest("SHA-256", encoder.encode(text))).pipe(Effect.map(hex));
 
-/** The deterministic ID of a subscription key. */
+/** The deterministic ID of a subscription key. Keys without a selection keep their earlier IDs. */
 export const subscriptionId = (key: EventSubscriptionKey) =>
-  digest(canonical([key.principal, key.callbackUrl, key.name, key.arguments])).pipe(
-    Effect.map((value) => EventSubscriptionId.make(`evs_${value.slice(0, 32)}`)),
-  );
+  digest(
+    canonical(
+      key.selection === undefined
+        ? [key.principal, key.callbackUrl, key.name, key.arguments]
+        : [key.principal, key.callbackUrl, key.name, key.arguments, key.selection],
+    ),
+  ).pipe(Effect.map((value) => EventSubscriptionId.make(`evs_${value.slice(0, 32)}`)));
 
 /** A Standard Webhooks secret is `whsec_` and the base64 of 24 to 64 random bytes. */
 const secretKey = (secret: string) => {
@@ -278,29 +283,52 @@ export const makeEvents = (input: {
       // A saved subscription keeps the app and event it was created for, so its refreshes keep
       // working after the app's slug changes. Its event and arguments are checked against the
       // current declaration: a refresh is how a client learns that they no longer exist.
-      const target = existing?.metadata ?? request.target;
+      const target: EventTarget | undefined =
+        existing === null
+          ? request.target
+          : existing.metadata.app === null
+            ? { owner: existing.metadata.owner, app: null, event: null }
+            : { app: existing.metadata.app, event: existing.metadata.event };
       if (target === undefined) return yield* new EventNotFound({ kind: "event" });
-      const app = target.app;
-      const event = "event" in target ? target.event : request.target!.event;
-      const { owner, events } = yield* declared(app);
-      const definition =
-        owner !== undefined && Object.hasOwn(events, event) ? events[event] : undefined;
+      const { app, event } = target;
+      // A selection of every app needs no app; one of an app's events, or all of them, needs the
+      // app to exist, and one event its declaration. Filters belong to one event, so a selection
+      // of several takes no arguments.
+      const resolved =
+        app === null
+          ? { owner: target.owner, exists: true, filters: undefined }
+          : yield* declared(app).pipe(
+              Effect.map(({ owner, events }) => ({
+                owner,
+                exists: owner !== undefined && (event === null || Object.hasOwn(events, event)),
+                filters:
+                  event !== null && Object.hasOwn(events, event)
+                    ? events[event]!.filters
+                    : undefined,
+              })),
+            );
+      const owner = resolved.owner;
       const fits =
-        definition !== undefined && fitsFilters(definition.filters, request.key.arguments);
+        resolved.exists &&
+        (resolved.filters === undefined
+          ? Object.keys(request.key.arguments).length === 0
+          : fitsFilters(resolved.filters, request.key.arguments));
       if (existing !== null && !fits) {
         // Deliveries could never match it again; stop it so nothing waits on it.
         yield* stopWith(id, "changed");
-        return yield* definition === undefined
-          ? new EventNotFound({ kind: "event" })
-          : new EventDefinitionChanged();
+        return yield* resolved.exists
+          ? new EventDefinitionChanged()
+          : new EventNotFound({ kind: "event" });
       }
-      if (owner === undefined || definition === undefined)
+      if (owner === undefined || !resolved.exists)
         return yield* new EventNotFound({ kind: "event" });
       if (!fits)
         return yield* new EventSubscriptionInvalid({
           field: "arguments",
           message:
-            "The arguments must be filters this event declares, each with a value its schema accepts.",
+            resolved.filters === undefined
+              ? "A selection of several events takes no filter arguments; select one event to filter it."
+              : "The arguments must be filters this event declares, each with a value its schema accepts.",
         });
       const time = yield* now;
       const current = existing === null ? undefined : yield* secretsOf(id, existing.row.encrypted);
@@ -360,6 +388,7 @@ export const makeEvents = (input: {
                 event,
                 name: request.key.name,
                 arguments: request.key.arguments,
+                selection: request.key.selection ?? null,
                 callbackUrl: request.key.callbackUrl,
                 principal: request.key.principal,
                 createdAt: new Date(time),
@@ -483,14 +512,28 @@ export const makeEvents = (input: {
     Effect.gen(function* () {
       if (events.length === 0) return;
       const time = yield* now;
+      const appRow = yield* query(() =>
+        db.findFirst("apps", { select: ["owner"], where: (b) => b("id", "=", app) }),
+      );
+      // Subscriptions to the app's events, to all of them, and to every app of its owner.
       const subscriptions = yield* query(() =>
         db.findMany("eventSubscriptions", {
           where: (b) =>
             b.and(
-              b("app", "=", app),
               b("status", "=", "active"),
               b("expiresAt", ">", new Date(time)),
-              b("event", "in", [...new Set(events.map((occurrence) => occurrence.name))]),
+              b.or(
+                b.and(
+                  b("app", "=", app),
+                  b.or(
+                    b("event", "in", [...new Set(events.map((occurrence) => occurrence.name))]),
+                    b("event", "is", null),
+                  ),
+                ),
+                appRow === null
+                  ? false
+                  : b.and(b("app", "is", null), b("owner", "=", appRow.owner)),
+              ),
             ),
         }),
       );
@@ -504,7 +547,7 @@ export const makeEvents = (input: {
           );
           const matching = subscriptions.filter(
             (row) =>
-              row.event === occurrence.name &&
+              (row.event === occurrence.name || row.event === null) &&
               Option.match(Schema.decodeUnknownOption(EventArguments)(row.arguments), {
                 onNone: () => false,
                 onSome: (args) => matches(args, occurrence.filters),
@@ -675,6 +718,8 @@ export const makeEvents = (input: {
       const authorized = yield* options!
         .authorize({
           subscription: found.metadata,
+          app: AppId.make(occurrence.app),
+          event: occurrence.name,
           account: occurrence.account,
           // Unreadable account lists fail closed: the delivery is retried, never sent unchecked.
           accounts: yield* Schema.decodeUnknownEffect(Schema.Array(AccountId))(
@@ -710,11 +755,25 @@ export const makeEvents = (input: {
           Effect.flatMap((value) => Schema.decodeUnknownEffect(EventBody)(Redacted.value(value))),
           Effect.mapError(() => new StorageError()),
         );
+      // A selection receives several events, so each delivery says which one it is.
+      const source =
+        found.metadata.selection === null
+          ? undefined
+          : yield* query(() =>
+              db.findFirst("apps", {
+                select: ["slug"],
+                where: (b) => b("id", "=", occurrence.app),
+              }),
+            );
+      if (source === null) return yield* finish(delivery, { status: "dropped" }, time);
       const text = JSON.stringify({
         eventId: occurrence.eventId,
         name: found.metadata.name,
         timestamp: occurrence.occurredAt.toISOString(),
-        data: body.data,
+        data:
+          source === undefined
+            ? body.data
+            : { app: source.slug, event: occurrence.name, data: body.data },
         cursor: null,
       });
       if (encoder.encode(text).byteLength > limits.maxBodyBytes)

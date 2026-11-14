@@ -534,7 +534,6 @@ export const makeExecutions = (
         searchableTools: (input, options) =>
           exchange((backend) => backend.searchableTools(input, options)),
         searchTools: (input) => exchange((backend) => backend.searchTools(input)),
-        eventDefinitions: (input) => exchange((backend) => backend.eventDefinitions(input)),
         findEventSubscription: (key) => exchange((backend) => backend.findEventSubscription(key)),
         subscribeEvent: (input) => exchange((backend) => backend.subscribeEvent(input)),
         unsubscribeEvent: (input) => exchange((backend) => backend.unsubscribeEvent(input)),

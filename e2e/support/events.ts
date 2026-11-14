@@ -162,6 +162,22 @@ export const Occurrence = Schema.fromJsonString(
     cursor: Schema.Null,
   }),
 );
+/** The one event `events/list` offers every caller; its arguments select apps' events. */
+export const appEvent = "executor.app_event";
+/** A delivery to a selection: the app and event beside the data. */
+export const Selected = Schema.fromJsonString(
+  Schema.Struct({
+    eventId: Schema.String,
+    name: Schema.Literal(appEvent),
+    timestamp: Schema.String,
+    data: Schema.Struct({
+      app: Schema.String,
+      event: Schema.String,
+      data: Schema.Struct({ title: Schema.String, number: Schema.Number }),
+    }),
+    cursor: Schema.Null,
+  }),
+);
 export const RpcResult = Schema.Struct({ result: Schema.Record(Schema.String, Schema.Unknown) });
 export const RpcError = Schema.Struct({
   error: Schema.Struct({
@@ -302,9 +318,15 @@ export const eventFixtures = Effect.gen(function* () {
     all.filter((delivery) => delivery.kind === "event");
 
   const emitter = yield* deploy(`Issue events ${suffix}`, emitterFiles);
-  const emit = (repo: string, number: number, id = randomUUID()) =>
+  /** Emit `issue.opened` from an app deployed with {@link emitterFiles}. */
+  const emitFrom = (
+    app: { readonly id: string },
+    repo: string,
+    number: number,
+    id = randomUUID(),
+  ) =>
     api
-      .request(actors.owner, "POST", `${prefix}/apps/${emitter.id}/tools/call`, {
+      .request(actors.owner, "POST", `${prefix}/apps/${app.id}/tools/call`, {
         tool: "open",
         kind: "mutation",
         input: { repo, title: `Issue ${number}`, number, id },
@@ -315,6 +337,8 @@ export const eventFixtures = Effect.gen(function* () {
         ),
         Effect.as(id),
       );
+  const emit = (repo: string, number: number, id = randomUUID()) =>
+    emitFrom(emitter, repo, number, id);
 
   const rpcAs = (
     credential: Redacted.Redacted<string>,
@@ -402,6 +426,8 @@ export const eventFixtures = Effect.gen(function* () {
     awaitDeliveries,
     events,
     emit,
+    emitFrom,
+    deploy,
     rpcAs,
     ok,
     refused,

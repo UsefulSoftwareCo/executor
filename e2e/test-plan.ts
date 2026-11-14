@@ -9297,7 +9297,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "mcp-events.spec.ts",
     title:
-      "an MCP client lists app events, subscribes with a verified webhook and receives signed, retried, filtered deliveries until it unsubscribes or loses access",
+      "an MCP client lists the one event every caller is offered, subscribes to an app's event with a verified webhook and receives signed, retried, filtered deliveries until it unsubscribes or loses access",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -9337,11 +9337,22 @@ export const scenarios = plan({
       local: na("This scenario uses hosted personal access token and webhook routes."),
     },
   },
+  mcpEventSelections: {
+    fixtures: "actors",
+    file: "mcp-events-selections.spec.ts",
+    title:
+      "the one listed event selects every app's events, one app's or one event's with its filters, as separate subscriptions whose deliveries name their app and event, including an app deployed after subscribing",
+    targets: {
+      "self-host": scheduled,
+      cloud: scheduled,
+      local: na("This scenario uses hosted personal access token and webhook routes."),
+    },
+  },
   mcpEventGrants: {
     fixtures: "actors",
     file: "mcp-events-grants.spec.ts",
     title:
-      "an OAuth grant selects an app's events beside its tools, all by default or by name, and selecting none hides them, refuses subscribing and stops its deliveries",
+      "an OAuth grant selects an app's events beside its tools, all by default or by name, and selecting none refuses subscribing and stops its deliveries, while a selection of every app keeps delivering the apps the grant still includes",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -9351,7 +9362,7 @@ export const scenarios = plan({
   localMcpEvents: {
     file: "local-mcp-events.spec.ts",
     title:
-      "local delivers MCP events to a verified loopback receiver, retries a refused delivery and stops after unsubscribing",
+      "local delivers MCP events to a verified loopback receiver, retries a refused delivery, stops after unsubscribing and delivers a selection of every app with each event's app and name",
     targets: {
       local: scheduled,
       "self-host": na("Self-host and Cloud cover events in the MCP events scenarios."),
