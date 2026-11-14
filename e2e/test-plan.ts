@@ -7670,7 +7670,13 @@ export const scenarios = plan({
     title:
       "Cloud MCP tool calls made at once with a key whose last use is stale all answer, also the calls that read the key again",
     targets: {
-      cloud: scheduled,
+      // Not run until its contention is certain on a shared database: its round releases the key
+      // row's lock once two key checks wait on it, and other scenarios' sessions queued on the
+      // `apikey` table behind the hold were counted as waiters (#4420). The production hang
+      // count and the `commit-unanswered` and `commit-rollback` pool probe cases cover the fix.
+      cloud: na(
+        "Its round's contention is not yet certain on a database other scenarios share; see #4420.",
+      ),
       "self-host": na("Self-host runs a batch under PGlite's lock, not on a multiplexed pool."),
       local: na("Local MCP sessions use the local database."),
     },

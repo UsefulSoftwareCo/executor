@@ -724,10 +724,11 @@ const main = Effect.gen(function* () {
     action: Schema.Literals(["age", "hold", "release", "blocked"]),
     seconds: Schema.optional(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 3600 }))),
   });
-  const holds = new Map<string, PoolClient>();
+  /** Each scenario's open hold: its connection and that connection's backend, which others wait on. */
+  const holds = new Map<string, { readonly client: PoolClient; readonly pid: number }>();
   yield* Effect.addFinalizer(() =>
     Effect.promise(async () => {
-      for (const client of holds.values()) {
+      for (const { client } of holds.values()) {
         await client.query("rollback").catch(() => undefined);
         client.release();
       }
@@ -766,10 +767,12 @@ const main = Effect.gen(function* () {
         const held = yield* Effect.tryPromise({
           try: async () => {
             await client.query("begin");
-            return client.query(`update apikey set "lastRequest" = now() where ${mine}`, [
-              input.key,
-              users,
-            ]);
+            const updated = await client.query(
+              `update apikey set "lastRequest" = now() where ${mine}`,
+              [input.key, users],
+            );
+            const backend = await client.query<{ pid: number }>("select pg_backend_pid() as pid");
+            return { rowCount: updated.rowCount, pid: Number(backend.rows[0]?.pid) };
           },
           catch: () => new TestAccountFailed({ stage: "database" }),
         }).pipe(
@@ -780,12 +783,13 @@ const main = Effect.gen(function* () {
             }),
           ),
         );
-        holds.set(input.id, client);
+        holds.set(input.id, { client, pid: held.pid });
         return { updated: held.rowCount ?? 0 };
       }
       case "release": {
-        const client = holds.get(input.id);
-        if (client === undefined) return { released: false };
+        const hold = holds.get(input.id);
+        if (hold === undefined) return { released: false };
+        const client = hold.client;
         holds.delete(input.id);
         yield* Effect.tryPromise({
           try: () => client.query("commit"),
@@ -794,13 +798,30 @@ const main = Effect.gen(function* () {
         return { released: true };
       }
       case "blocked": {
-        // Statements of the key check waiting for a lock; only those this role can see.
+        // Sessions waiting on the scenario's hold: those whose blockers include its backend.
+        // Postgres queues later lockers behind the first waiter, so a session counts when the hold
+        // blocks it or blocks a session that blocks it. Only the bearer key check's statement
+        // (`loadPat`) counts as a key check; any other waiter is listed by how its statement
+        // begins (this database is a test stage's or local Cloud's).
+        const hold = holds.get(input.id);
+        if (hold === undefined) return { keyChecks: 0, others: [] };
         const rows = yield* run(
-          `select count(*)::int as n from pg_stat_activity
-            where query ilike '%from apikey where key%' and cardinality(pg_blocking_pids(pid)) > 0`,
-          [],
+          `with recursive waiting(pid) as (
+              select pid from pg_stat_activity where $1::int = any(pg_blocking_pids(pid))
+              union
+              select a.pid from pg_stat_activity a join waiting w on w.pid = any(pg_blocking_pids(a.pid))
+            )
+            select a.query like '%from apikey where key =%' as key_check,
+              left(regexp_replace(a.query, '\\s+', ' ', 'g'), 40) as statement
+              from waiting w join pg_stat_activity a on a.pid = w.pid`,
+          [hold.pid],
         );
-        return { blocked: Number(rows.rows[0]?.n ?? 0) };
+        return {
+          keyChecks: rows.rows.filter((row) => row.key_check === true).length,
+          others: rows.rows
+            .filter((row) => row.key_check !== true)
+            .map((row) => String(row.statement ?? "")),
+        };
       }
     }
   });

@@ -1497,15 +1497,21 @@ return listed;`;
           // A leaf that reads again once its first statement answers, as a bearer recheck whose key
           // was contended does, writes nothing while its batch's `COMMIT` is unanswered: through
           // Hyperdrive such a statement is never answered, and the call waits until its deadline.
-          // The read goes out, and answers, once the `COMMIT` has.
+          // The read goes out, and answers, once the `COMMIT` has: also when a statement inside the
+          // batch failed, so its `COMMIT` is answered as a rollback.
           const later = yield* step(
             "A batch leaf's later statement waits for its batch's COMMIT to answer before it is written",
             "commit-unanswered",
           );
-          expect(later).toEqual({
-            leaves: ["ok", "ok", "ok"],
+          expect(later).toEqual({ leaves: ["ok", "ok", "ok"], behindCommit: 0, later: "answered" });
+          const rolledBack = yield* step(
+            "A batch leaf's later statement waits for a COMMIT answered as a rollback, then is written",
+            "commit-rollback",
+          );
+          expect(rolledBack).toEqual({
+            leaves: ["ok", "failed", "failed"],
             behindCommit: 0,
-            laterAfterCommit: true,
+            later: "answered",
           });
 
           // A connect attempt that reaches its timeout, and one whose caller gives up while it

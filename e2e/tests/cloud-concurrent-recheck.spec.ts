@@ -52,6 +52,12 @@ const Execution = Schema.Struct({
 
 /** Calls each `execute` makes at once, as the production programs that hung did. */
 const parallel = 6;
+/**
+ * Key checks waiting on the hold that make it certain one is a tool call's. One request checks its
+ * key in one statement at a time, so a request's own checks are at most one waiter; two at once
+ * include a tool call's check, which the commit then makes contended (`bearer-access.ts`).
+ */
+const waitersForCertainty = 2;
 /** Rounds, each with the key's last use cleared first. */
 const rounds = 6;
 
@@ -209,10 +215,14 @@ layer(HostedLive, { excludeTestServices: true })("Cloud concurrent recheck", (it
               action,
               ...(seconds === undefined ? {} : { seconds }),
             }).pipe(Effect.orDie);
+          /** The sessions waiting on the scenario's hold of the key row, directly or in its queue. */
           const blocked = (key: string) =>
             keyUse(key, "blocked").pipe(
-              Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ blocked: Schema.Number }))),
-              Effect.map((value) => value.blocked),
+              Effect.flatMap(
+                Schema.decodeUnknownEffect(
+                  Schema.Struct({ keyChecks: Schema.Number, others: Schema.Array(Schema.String) }),
+                ),
+              ),
               Effect.orDie,
             );
           const outcomes: Array<Record<string, unknown>> = [];
@@ -247,27 +257,40 @@ layer(HostedLive, { excludeTestServices: true })("Cloud concurrent recheck", (it
                   });
                 }
                 const started = yield* Clock.currentTimeMillis;
-                // Used 56 seconds ago: the request's own checks and the first call's find the use
-                // recorded; the calls made six seconds later find it stale and record it.
-                yield* keyUse(roundKey.id, "age", 56);
-                const fiber = yield* Effect.forkChild(
-                  Effect.exit(
-                    executeOn(
-                      roundClient,
-                      `Round ${round}: ${parallel} calls at once, ${cold ? "cold" : "warm"} pool`,
-                      `await ${tool.replace(".token", ".slow")}({ ms: 6000 });
+                // Used 52 seconds ago: the request's own checks and the round's first call find the
+                // use recorded, so they write nothing and pass the lock below; the calls made ten
+                // seconds later find it stale, and their checks wait for the lock to record it.
+                yield* keyUse(roundKey.id, "age", 52);
+                // The hold is taken before the calls and always released here, whatever fails
+                // meanwhile: a lock left held would stall the key's deletion until the fixture ends.
+                const { fiber, waiting, waiters } = yield* Effect.scoped(
+                  Effect.gen(function* () {
+                    yield* Effect.acquireRelease(keyUse(roundKey.id, "hold"), () =>
+                      keyUse(roundKey.id, "release").pipe(Effect.ignore),
+                    );
+                    const fiber = yield* Effect.forkChild(
+                      Effect.exit(
+                        executeOn(
+                          roundClient,
+                          `Round ${round}: ${parallel} calls at once, ${cold ? "cold" : "warm"} pool`,
+                          `await ${tool.replace(".token", ".slow")}({ ms: 10000 });
 return await Promise.all(Array.from({ length: ${parallel} }, () => ${tool}({})));`,
-                    ).pipe(Effect.timeout("45 seconds")),
-                  ),
+                        ).pipe(Effect.timeout("45 seconds")),
+                      ),
+                    );
+                    // Release only once tool calls' key checks wait on the hold. A check updates
+                    // the key's last use only when its snapshot finds it stale; one that does waits
+                    // for the hold, and when the hold commits a fresh use the check finds the row
+                    // changed, so it is contended and its call reads the key again.
+                    const seen = yield* blocked(roundKey.id).pipe(
+                      Effect.filterOrFail((found) => found.keyChecks >= waitersForCertainty),
+                      Effect.retry({ schedule: Schedule.spaced("50 millis"), times: 600 }),
+                      Effect.option,
+                    );
+                    const waiting = seen._tag === "Some" ? seen.value : yield* blocked(roundKey.id);
+                    return { fiber, waiting: waiting.keyChecks, waiters: waiting.others };
+                  }),
                 );
-                // While the first call runs, take the key row's lock: the calls' checks wait for
-                // it, as behind a concurrent request that records the use. Committing a fresh use
-                // makes each check that waited contended, so it reads the key again.
-                yield* Effect.sleep("4000 millis");
-                yield* keyUse(roundKey.id, "hold");
-                yield* Effect.sleep("3500 millis");
-                const waiting = yield* blocked(roundKey.id);
-                yield* keyUse(roundKey.id, "release");
                 const result = yield* Fiber.join(fiber);
                 const ms = (yield* Clock.currentTimeMillis) - started;
                 const request = (yield* evidence.requests)
@@ -300,6 +323,7 @@ return await Promise.all(Array.from({ length: ${parallel} }, () => ${tool}({})))
                   cold,
                   ms,
                   waiting,
+                  waiters,
                   calls: calls?._tag === "Some" ? calls.value : "unavailable",
                   reads:
                     calls?._tag === "Some"
@@ -310,6 +334,12 @@ return await Promise.all(Array.from({ length: ${parallel} }, () => ${tool}({})))
                 });
                 yield* evidence.json("concurrent-recheck-rounds.json", outcomes);
               }
+              expect(
+                outcomes
+                  .filter((entry) => Number(entry.waiting) < waitersForCertainty)
+                  .map((entry) => entry.round),
+                `Rounds whose set-up failed: fewer than ${waitersForCertainty} key checks waited on the key row's lock at once within 30 seconds`,
+              ).toEqual([]);
               expect(
                 outcomes
                   .filter((entry) => String(entry.outcome).includes("TimeoutError"))

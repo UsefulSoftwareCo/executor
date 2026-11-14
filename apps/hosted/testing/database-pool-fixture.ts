@@ -28,6 +28,9 @@
  *   the batch's `COMMIT` is unanswered (through Hyperdrive such a statement is never answered); it
  *   is written, and answered, once the `COMMIT` is. A proxy holds the server's answer to the
  *   `COMMIT` for a moment and counts what the client writes meanwhile.
+ * - `commit-rollback`: the same when a statement inside the batch fails, so its `COMMIT` is
+ *   answered as a rollback: the later statement still waits for that answer, then is written and
+ *   answered.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -49,6 +52,7 @@ import {
   Fiber,
   FileSystem,
   Layer,
+  Option,
   Redacted,
   Schedule,
   Schema,
@@ -69,6 +73,7 @@ const cases = [
   "batch",
   "connect-abandoned",
   "commit-unanswered",
+  "commit-rollback",
 ] as const;
 
 /** The protocol code of a `CancelRequest`, the first message on its own connection. */
@@ -124,8 +129,9 @@ const proxy = (target: URL, dropCancels: boolean) =>
 
 /**
  * A TCP proxy to the database that holds the server's answer to each `COMMIT` (its
- * `CommandComplete`, and every message after it) for `holdMillis`, and counts the client's writes
- * that arrive while it holds one: writes made while a `COMMIT` is unanswered, as the client sees it.
+ * `CommandComplete`, `COMMIT` or, for a transaction that failed, `ROLLBACK`, and every message
+ * after it) for `holdMillis`, and counts the client's writes that arrive while it holds one: writes
+ * made while a `COMMIT` is unanswered, as the client sees it.
  */
 const commitHoldingProxy = (target: URL, holdMillis: number) =>
   Effect.acquireRelease(
@@ -149,8 +155,9 @@ const commitHoldingProxy = (target: URL, holdMillis: number) =>
               if (rest.length < length) break;
               const message = rest.subarray(0, length);
               rest = rest.subarray(length);
-              const commit =
-                message[0] === 0x43 && message.subarray(5, 11).toString("latin1") === "COMMIT";
+              const tag =
+                message[0] === 0x43 ? message.subarray(5, length - 1).toString("latin1") : "";
+              const commit = tag === "COMMIT" || tag === "ROLLBACK";
               if (commit && !holding) {
                 holding = true;
                 setTimeout(() => {
@@ -585,7 +592,8 @@ const command = Command.make("database-pool-fixture", {
                 },
               };
             }
-            case "commit-unanswered": {
+            case "commit-unanswered":
+            case "commit-rollback": {
               const holding = yield* commitHoldingProxy(target, 300);
               const address = holding.server.address();
               if (address === null || typeof address === "string")
@@ -606,24 +614,31 @@ const command = Command.make("database-pool-fixture", {
               ).pipe(Effect.orDie);
               const sql = Context.get(client, SqlClient.SqlClient);
               // The first leaf reads again once its first statement answers, as a bearer recheck
-              // whose key was contended does: its batch's `COMMIT` has not answered yet.
-              let laterMs = -1;
-              const started = Date.now();
+              // whose key was contended does: its batch's `COMMIT` has not answered yet. It runs
+              // outside the batch's transaction, so a failure inside the transaction does not
+              // reach it.
+              let later = "not read";
               const recheck = Effect.gen(function* () {
                 yield* sql`SELECT 1 AS first`;
-                yield* sql`SELECT 2 AS later`;
-                laterMs = Date.now() - started;
+                const rows = yield* sql<{ readonly later: number }>`SELECT 2 AS later`;
+                later = rows[0]?.later === 2 ? "answered" : "wrong rows";
               });
+              // A statement that fails inside the transaction aborts it, so its `COMMIT` is
+              // answered as a rollback.
+              const inside = args.case === "commit-rollback" ? sql`SELECT 1 / 0` : sql`SELECT 3`;
               const exits = yield* PgPool.held(
-                PgConnection.pipelined([recheck, sql`SELECT 3`, sql`SELECT 4`], {
+                PgConnection.pipelined([recheck, inside, sql`SELECT 4`], {
                   outside: 1,
                   begin: "ISOLATION LEVEL REPEATABLE READ READ ONLY",
                 }),
-              ).pipe(Effect.timeout("10 seconds"), Effect.orDie);
+              ).pipe(Effect.timeoutOption("10 seconds"));
               return {
-                leaves: exits.map((exit) => (Exit.isSuccess(exit) ? "ok" : "failed")),
+                leaves: Option.match(exits, {
+                  onNone: () => "timed out",
+                  onSome: (exits) => exits.map((exit) => (Exit.isSuccess(exit) ? "ok" : "failed")),
+                }),
                 behindCommit: holding.behindCommit.count,
-                laterAfterCommit: laterMs >= 300,
+                later,
               };
             }
             case "batch": {
