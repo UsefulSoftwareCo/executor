@@ -61,6 +61,20 @@ The binaries and a `SHA256SUMS` file are published to the release
 `bun-runtime-1.4.4-<first 12 hex of sha256(lockdown.patch)>`. An existing
 release is never overwritten.
 
+Builds do not trust the release's own `SHA256SUMS`: `fetch.sh` checks each
+download against the digest pinned in `SHA256SUMS` beside this README, which
+only a reviewed commit changes. After a new release is published, pin it once
+with `bash scripts/releases/bun-runtime/pin.sh <release>` and commit the file;
+until then every build that needs the new runtime stops and prints that command.
+
+`pin.sh` refuses a release whose assets changed after it was published or whose
+assets' digests, as GitHub reports them, differ from its `SHA256SUMS`. It prints
+who published the release, the commit it was built from, and how that commit's
+build inputs differ from the checkout's. A reviewer of a pin change checks that
+output, which the pull request quotes: the release was published by
+`github-actions[bot]`, and its commit's build inputs match the pull request's or
+differ only in lines that cannot change the built files.
+
 To build locally on macOS (arm64), use LLVM 23, rustup and Bun 1.4.2, the Bun
 that Bun 1.4.4's build scripts pin:
 
@@ -88,4 +102,8 @@ bash ../scripts/releases/bun-runtime/smoke.sh build/release/bun
    `is_standalone_executable()`.
 4. Regenerate the patch with `git diff > lockdown.patch`, build, and run
    `smoke.sh`.
-5. Merge to `main`. The new patch hash produces a new release name.
+5. Build and publish the release (the pull request's `release-local` lane prints
+   how), then pin it: `bash scripts/releases/bun-runtime/pin.sh <release>`, and
+   commit `SHA256SUMS` in the same pull request, quoting `pin.sh`'s output in
+   its description.
+6. Merge to `main`. The new patch hash produces a new release name.
