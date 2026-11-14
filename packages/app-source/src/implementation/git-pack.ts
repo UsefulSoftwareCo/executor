@@ -239,9 +239,13 @@ const deflate = (bytes: Uint8Array) =>
 
 /**
  * A version 2 pack of these objects, each zlib-compressed, ending in the SHA-1 of the pack. Each
- * object is read, checked against its ID and compressed as the stream reaches it.
+ * object is read, checked against its ID and compressed as the stream reaches it. Every run of the
+ * stream hashes its own bytes, so a refused request can send the same pack again.
  */
-export const packStream = (objects: ReadonlyArray<PackObject>) => {
+export const packStream = (objects: ReadonlyArray<PackObject>) =>
+  Stream.suspend(() => packRun(objects));
+
+const packRun = (objects: ReadonlyArray<PackObject>) => {
   const hash = new Sha1();
   const header = new Uint8Array(12);
   header.set(encoder.encode("PACK"));
@@ -309,10 +313,23 @@ export const receivePackBody = (
 export interface PushReport {
   readonly unpacked: boolean;
   readonly refs: ReadonlyMap<string, "ok" | { readonly refused: string }>;
+  /** The report's lines as the server sent them: ref names, statuses and refusal reasons. */
+  readonly lines: ReadonlyArray<string>;
 }
 
+/**
+ * The server refused the whole request with a Git `ERR` line instead of a report: it unpacked
+ * nothing and updated no ref, so the request had no effect.
+ */
+export class ReceivePackRefused extends Schema.TaggedError<ReceivePackRefused>()(
+  "ReceivePackRefused",
+  { message: Schema.String },
+) {}
+
 /** Parse a `report-status` answer, with or without side-band framing. */
-export const parseReport = (bytes: Uint8Array): Effect.Effect<PushReport, SourceError> =>
+export const parseReport = (
+  bytes: Uint8Array,
+): Effect.Effect<PushReport, SourceError | ReceivePackRefused> =>
   Effect.gen(function* () {
     const lines: string[] = [];
     const read = (input: Uint8Array, banded: boolean) => {
@@ -341,6 +358,10 @@ export const parseReport = (bytes: Uint8Array): Effect.Effect<PushReport, Source
     const first = bytes.length > 4 ? bytes[4] : undefined;
     if (!read(bytes, first === 1 || first === 2 || first === 3))
       return yield* new SourceError({ reason: "git" });
+    // A server that refuses the request outright answers one `ERR <message>` line.
+    const [opening] = lines;
+    if (opening?.startsWith("ERR "))
+      return yield* new ReceivePackRefused({ message: opening.slice(4) });
     const unpack = lines.find((line) => line.startsWith("unpack "));
     if (unpack === undefined) return yield* new SourceError({ reason: "git" });
     const refs = new Map<string, "ok" | { readonly refused: string }>();
@@ -350,7 +371,7 @@ export const parseReport = (bytes: Uint8Array): Effect.Effect<PushReport, Source
       const ng = /^ng (\S+) ?(.*)$/u.exec(line);
       if (ng?.[1] !== undefined) refs.set(ng[1], { refused: ng[2] ?? "" });
     }
-    return { unpacked: unpack === "unpack ok", refs };
+    return { unpacked: unpack === "unpack ok", refs, lines };
   });
 
 /**
@@ -381,10 +402,18 @@ export const batchBlobs = <A extends { readonly size: number }>(blobs: ReadonlyA
   return batches;
 };
 
-/** The receive-pack request and the report it answers. */
+/** Send one receive-pack request, its ref updates and the body that carries them, and read its report. */
 export type ReceivePack = (
+  updates: ReadonlyArray<RefUpdate>,
   body: Stream.Stream<Uint8Array, SourceError>,
-) => Effect.Effect<Uint8Array, SourceError>;
+) => Effect.Effect<PushReport, SourceError>;
+
+/** Send `updates` with `objects`; the receiver sees the updates it is asked to make. */
+const receiveUpdates = (
+  receive: ReceivePack,
+  updates: ReadonlyArray<RefUpdate>,
+  objects: ReadonlyArray<PackObject>,
+) => receive(updates, receivePackBody(updates, objects));
 
 /**
  * Push `final` (a commit and the objects it needs) to `ref`, moving it only from `expected`.
@@ -417,39 +446,32 @@ export const pushObjects = (input: {
         seconds: input.seconds,
       });
       const commit = objectId("commit", commitBytes);
-      const report = yield* input
-        .receive(
-          receivePackBody(
-            [{ ref: input.staging, old: staged, new: commit }],
-            [
-              ...batch,
-              { type: "tree", object: tree, size: listing.length, read: Effect.succeed(listing) },
-              {
-                type: "commit",
-                object: commit,
-                size: commitBytes.length,
-                read: Effect.succeed(commitBytes),
-              },
-            ],
-          ),
-        )
-        .pipe(Effect.flatMap(parseReport));
+      const report = yield* receiveUpdates(
+        input.receive,
+        [{ ref: input.staging, old: staged, new: commit }],
+        [
+          ...batch,
+          { type: "tree", object: tree, size: listing.length, read: Effect.succeed(listing) },
+          {
+            type: "commit",
+            object: commit,
+            size: commitBytes.length,
+            read: Effect.succeed(commitBytes),
+          },
+        ],
+      );
       if (!report.unpacked || report.refs.get(input.staging) !== "ok")
         return yield* new SourceError({ reason: "git" });
       staged = commit;
     }
-    const report = yield* input
-      .receive(
-        receivePackBody(
-          [
-            { ref: input.ref, old: input.expected, new: input.commit.object },
-            ...(staged === null ? [] : [{ ref: input.staging, old: staged, new: null }]),
-          ],
-          [...last, ...input.trees, input.commit],
-        ),
-      )
-      .pipe(Effect.flatMap(parseReport));
-    return report;
+    return yield* receiveUpdates(
+      input.receive,
+      [
+        { ref: input.ref, old: input.expected, new: input.commit.object },
+        ...(staged === null ? [] : [{ ref: input.staging, old: staged, new: null }]),
+      ],
+      [...last, ...input.trees, input.commit],
+    );
   });
 
 /** A Git object ID. */

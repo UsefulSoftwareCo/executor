@@ -1,6 +1,6 @@
 /** Git access to Cloudflare Artifacts through host-owned repository credentials. Loaded on first use. */
 import { protectGit } from "./protected-git.ts";
-import { Clock, Context, Effect, Exit, Redacted, Schema, Scope, Stream } from "effect";
+import { Clock, Context, Effect, Exit, Redacted, Schedule, Schema, Scope, Stream } from "effect";
 import {
   FetchHttpClient,
   HttpBody,
@@ -31,7 +31,16 @@ import {
 } from "@executor-js/sdk/core";
 
 import type { ArtifactsTokens } from "../contracts/artifacts-tokens.ts";
-import { buildTrees, commitObject, objectId, pushObjects, type PackObject } from "./git-pack.ts";
+import {
+  buildTrees,
+  commitObject,
+  objectId,
+  parseReport,
+  pushObjects,
+  type PackObject,
+  type ReceivePackRefused,
+  type RefUpdate,
+} from "./git-pack.ts";
 
 /** Blobs one coordinator call reads, so each call's storage operations stay well inside a Worker's. */
 const blobsPerCall = 500;
@@ -120,6 +129,42 @@ const observeFailure = (error: SourceError) =>
       ...details,
     });
   });
+
+/** Longest push attribute; reports are a few short lines, so this bounds only a misbehaving server. */
+const pushAttributeChars = 1024;
+const bounded = (text: string) => text.slice(0, pushAttributeChars);
+/** `ref old new` per update, as sent; object IDs name content and ref names are host-chosen. */
+const pushUpdates = (updates: ReadonlyArray<RefUpdate>) =>
+  bounded(
+    updates
+      .map((update) => `${update.ref} ${update.old ?? "none"} ${update.new ?? "none"}`)
+      .join("; "),
+  );
+/**
+ * An answer that is not a report, as escaped text: Git framing and server messages, never file
+ * contents, which a receive-pack answer does not carry.
+ */
+const printable = (bytes: Uint8Array) =>
+  bounded(
+    Array.from(bytes.subarray(0, pushAttributeChars), (byte) =>
+      byte >= 0x20 && byte < 0x7f && byte !== 0x5c
+        ? String.fromCharCode(byte)
+        : `\\x${byte.toString(16).padStart(2, "0")}`,
+    ).join(""),
+  );
+/** The report-status lines: `unpack`, then `ok <ref>` or `ng <ref> <reason>` per ref. */
+const pushLines = (lines: ReadonlyArray<string>) => bounded(lines.join("; "));
+
+/** Artifacts' refusal of a receive-pack while another one runs on the same repository. */
+const receivePackBusy = (error: SourceError | ReceivePackRefused) =>
+  error._tag === "ReceivePackRefused" && error.message === "artifacts_git_receive_pack_busy";
+/**
+ * Waits for the push holding the repository: observed pushes take 0.1-0.9 s. Six more attempts
+ * wait about 6 s in all; a push still refused then fails, as a busy repository and not a
+ * conflict. Jitter keeps refused pushes that started together from meeting again.
+ */
+const busyRetry = Schedule.exponential("100 millis").pipe(Schedule.jittered);
+const busyAttempts = 6;
 
 /** Adapt one isomorphic-git call; sequencing and recovery remain in Effect. */
 const gitCall = <A>(evaluate: () => Promise<A>) =>
@@ -574,34 +619,66 @@ export const cloudflareRepositories = (
           ),
           Effect.scoped,
         );
-        const receive = (body: Stream.Stream<Uint8Array, SourceError>) =>
-          send(
-            HttpClientRequest.post(`${value.remote.href}/git-receive-pack`).pipe(
-              HttpClientRequest.setHeader("accept", "application/x-git-receive-pack-result"),
-              HttpClientRequest.bodyStream(body, {
-                contentType: "application/x-git-receive-pack-request",
-              }),
-            ),
-          ).pipe(
-            Effect.flatMap(({ response, body }) =>
-              response.status === 200
-                ? Stream.runCollect(body).pipe(
-                    Effect.map((chunks) => {
-                      const out = new Uint8Array(
-                        chunks.reduce((size, chunk) => size + chunk.length, 0),
-                      );
-                      let offset = 0;
-                      for (const chunk of chunks) {
-                        out.set(chunk, offset);
-                        offset += chunk.length;
-                      }
-                      return out;
-                    }),
-                  )
-                : Effect.fail(new SourceError({ reason: "git" })),
-            ),
+        const receive = (
+          updates: ReadonlyArray<RefUpdate>,
+          body: Stream.Stream<Uint8Array, SourceError>,
+        ) =>
+          Effect.gen(function* () {
+            yield* Effect.annotateCurrentSpan("source.git.push.updates", pushUpdates(updates));
+            const { response, body: answer } = yield* send(
+              HttpClientRequest.post(`${value.remote.href}/git-receive-pack`).pipe(
+                HttpClientRequest.setHeader("accept", "application/x-git-receive-pack-result"),
+                HttpClientRequest.bodyStream(body, {
+                  contentType: "application/x-git-receive-pack-request",
+                }),
+              ),
+            );
+            yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
+            if (response.status !== 200) return yield* new SourceError({ reason: "git" });
+            const chunks = yield* Stream.runCollect(answer).pipe(
+              Effect.tapError(() =>
+                Effect.annotateCurrentSpan("source.git.push.failure", "report-stream"),
+              ),
+            );
+            const out = new Uint8Array(chunks.reduce((size, chunk) => size + chunk.length, 0));
+            let offset = 0;
+            for (const chunk of chunks) {
+              out.set(chunk, offset);
+              offset += chunk.length;
+            }
+            yield* Effect.annotateCurrentSpan("source.git.push.response_bytes", out.length);
+            const report = yield* parseReport(out).pipe(
+              Effect.tapError((error) =>
+                error._tag === "ReceivePackRefused"
+                  ? Effect.all([
+                      Effect.annotateCurrentSpan("source.git.push.failure", "refused"),
+                      Effect.annotateCurrentSpan("source.git.push.refusal", bounded(error.message)),
+                    ])
+                  : Effect.all([
+                      Effect.annotateCurrentSpan("source.git.push.failure", "unreadable-report"),
+                      Effect.annotateCurrentSpan("source.git.push.response", printable(out)),
+                    ]),
+              ),
+            );
+            // The server's own words for each ref; a refusal is otherwise invisible after reconcile.
+            yield* Effect.annotateCurrentSpan("source.git.push.report", pushLines(report.lines));
+            const [target] = updates;
+            const status = target === undefined ? undefined : report.refs.get(target.ref);
+            yield* Effect.annotateCurrentSpan(
+              "source.git.push.ref_status",
+              status === undefined ? "unreported" : status === "ok" ? "ok" : status.refused,
+            );
+            return report;
+          }).pipe(
             Effect.scoped,
             Effect.withSpan("source.git.push"),
+            // Artifacts serves one receive-pack per repository at a time and refuses the others
+            // before reading them. Nothing of a refused request was applied, and every update is
+            // compare-and-swap from the value it names, so sending it again once the other push
+            // finishes cannot overwrite that push: it lands, or reports `stale ref` and the commit
+            // reconciles against what the other push wrote.
+            Effect.retry({ while: receivePackBusy, schedule: busyRetry, times: busyAttempts }),
+            Effect.catchTag("ReceivePackRefused", (error) => Effect.fail(failure(error))),
           );
         const report = yield* pushObjects({
           receive,

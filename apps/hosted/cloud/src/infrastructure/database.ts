@@ -25,8 +25,12 @@ import {
 } from "effect";
 import { developmentDatabase } from "./development.ts";
 import { cloudOrigin, roleHostsJobEnvironment, testStage, type TestStage } from "./stage.ts";
-import { postgresUrl, previewDatabase, previewPoolConnections } from "./preview-database.ts";
-import { missingV1PlanetscaleDatabase } from "./v1-membership-settings.ts";
+import {
+  postgresUrl,
+  previewBranchSettings,
+  previewDatabase,
+  previewShape,
+} from "./preview-database.ts";
 
 /**
  * Hyperdrive needs an uploaded trust root even for publicly issued certificates.
@@ -77,12 +81,20 @@ const fixtureStage = /^test-(?:e2e|perf)-/;
 const preparedPreviewDatabase = (stage: TestStage) =>
   Effect.gen(function* () {
     const preview = yield* previewDatabase(stage);
+    const settings = yield* previewBranchSettings(stage);
     const migrations = globalThis.__ALCHEMY_RUNTIME__
       ? yield* Command.Exec.ref("Migrations")
       : yield* Command.Exec("Migrations", {
           command: "node src/migrate.ts",
           env: {
             DATABASE_URL: preview.migrationUrl,
+            // Waits for the branch's connection settings, whose restart would cut the migration.
+            ...Option.match(settings, {
+              onNone: () => ({}),
+              onSome: (hash) => ({
+                PREVIEW_BRANCH_SETTINGS: hash.pipe(Output.map(() => "applied")),
+              }),
+            }),
             // The same logical id as `cloudSecrets`, so the job signs with the secret the Worker will verify.
             BETTER_AUTH_SECRET: (yield* Random("AuthSecret")).text,
             BETTER_AUTH_URL: stage.origin,
@@ -156,7 +168,7 @@ const preparedPreviewDatabase = (stage: TestStage) =>
     return runtimeDatabase(
       migrated(preview.runtimeUrl),
       Option.map(preview.hyperdriveOrigin, (origin) =>
-        hyperdriveProps(migrated(origin), Option.some(previewPoolConnections)),
+        hyperdriveProps(migrated(origin), Option.some(previewShape(stage).poolConnections)),
       ),
     );
   });
@@ -312,32 +324,6 @@ export const cloudDirectDatabaseConnection = Effect.gen(function* () {
 });
 
 /**
- * v1's Postgres for the v1 sign-in check, on production only. The stack declares a role on v1's
- * PlanetScale database (`V1_PLANETSCALE_DATABASE_NAME`, branch `main`) that inherits only
- * `pg_read_all_data`, and binds its pooled URL as the `V1_DATABASE_URL` Worker secret. It never
- * declares v1's database, which v1 owns; removing the resource drops only the role. Temporary,
- * with the v1 import window. Without the name a production deploy stops and says what to set.
- */
-export const v1DatabaseConnection = Effect.gen(function* () {
-  const role = globalThis.__ALCHEMY_RUNTIME__
-    ? yield* Planetscale.PostgresRole.ref("V1ReaderRole")
-    : yield* Planetscale.PostgresRole("V1ReaderRole", {
-        database: yield* Config.String("V1_PLANETSCALE_DATABASE_NAME").pipe(
-          Config.option,
-          Effect.map(Option.filter((name) => name !== "")),
-          Effect.flatMap(
-            Option.match({
-              onNone: () => Effect.die(new Error(missingV1PlanetscaleDatabase)),
-              onSome: Effect.succeed,
-            }),
-          ),
-        ),
-        inheritedRoles: ["pg_read_all_data"],
-      });
-  return yield* Output.named(role.pooledOrigin.pipe(Output.map(postgresUrl)), "V1_DATABASE_URL");
-}).pipe(Effect.orDie);
-
-/**
  * How long one attempt to open a runtime connection may take. A connection usually opens in
  * about 100 ms, but a few attempts stall until they time out while connections opened just before
  * and after take the usual time. An attempt that fails has sent no statement, so the pool makes
@@ -353,9 +339,17 @@ const connectAttemptTimeout = Duration.millis(2500);
  * Each `sql.connect` span records its `db.connect.attempt`, and the second also records why the
  * first failed as `db.connect.retry_reason`. A failed attempt, a timed-out one included, is an
  * error span with `db.connect.failure`. When both fail, the statement fails with the
- * driver's `SqlError`; statements themselves are never repeated. Each also records the pool's
- * `db.connect.route`. Beside the client it provides {@link OpenedConnections}, its count of those
- * spans.
+ * driver's `SqlError`. Each also records the pool's `db.connect.route`. Beside the client it
+ * provides {@link OpenedConnections}, its count of those spans.
+ *
+ * A statement whose connection a proxy or the server closed under it runs once more, when its
+ * run is all reads outside a transaction and outside a `PgPool.held` batch, on a connection of
+ * this pool opened after the loss (`PgPool.use` in the @effect/sql-pg patch,
+ * `patches/effect-sql-pg-tracing.md`). A write is never repeated. The repeat closes any older idle
+ * connection it is handed, healthy or not, one at a time, so no more than `maxConnections` are
+ * open at once; later statements reconnect. It costs one connect when the database can be reached.
+ * When it cannot, that connect gets the same two attempts, so a read fails up to 5 s later than
+ * without the repeat. Each repeat is a `sql.connection.repeat` span.
  */
 export const cloudDatabasePool = (options: {
   readonly url: Redacted.Redacted;

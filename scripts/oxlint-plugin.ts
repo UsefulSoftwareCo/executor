@@ -246,6 +246,157 @@ const staticKey = (node: ESTree.MemberExpression) => {
   return undefined;
 };
 
+/** A destructured property's name when it is written statically: `{ a }`, `{ a: b }`, `{ "a": b }`. */
+const propertyKey = (node: { readonly computed: boolean; readonly key: ESTree.PropertyKey }) => {
+  if (node.computed)
+    return node.key.type === "Literal" && typeof node.key.value === "string"
+      ? node.key.value
+      : undefined;
+  if (node.key.type === "Identifier") return node.key.name;
+  return node.key.type === "Literal" && typeof node.key.value === "string"
+    ? node.key.value
+    : undefined;
+};
+
+/** Browser APIs that exist only in secure contexts, by the global that holds them. */
+const secureContextOnly = new Map([
+  ["crypto", new Set(["randomUUID", "subtle"])],
+  ["navigator", new Set(["clipboard"])],
+]);
+/** Globals whose properties are the browser globals: `window.crypto`, `globalThis.navigator`. */
+const globalObjects = new Set(["window", "globalThis", "self"]);
+/** What an expression denotes: a global object, or the browser global that holds the APIs. */
+type Holder = "global" | "crypto" | "navigator";
+
+/** The holder reached by reading `key` from `holder`: `window.crypto` is `crypto`. */
+const member = (holder: Holder | undefined, key: string | undefined): Holder | undefined => {
+  if (holder !== "global" || key === undefined) return undefined;
+  if (globalObjects.has(key)) return "global";
+  return key === "crypto" || key === "navigator" ? key : undefined;
+};
+/** Whether reading `key` from `holder` is one of the secure-context-only APIs. */
+const isSecureOnly = (holder: Holder | undefined, key: string | undefined) =>
+  holder !== undefined && key !== undefined && secureContextOnly.get(holder)?.has(key) === true;
+
+/** How far a chain of `const` aliases is followed before the rule gives up on it. */
+const aliasDepth = 4;
+
+/** The property keys from a binding pattern down to the identifier `name`; undefined if not static. */
+const pathTo = (pattern: ESTree.Node, name: string): readonly string[] | undefined => {
+  if (pattern.type === "Identifier") return pattern.name === name ? [] : undefined;
+  if (pattern.type === "AssignmentPattern") return pathTo(pattern.left, name);
+  if (pattern.type !== "ObjectPattern") return undefined;
+  for (const property of pattern.properties) {
+    if (property.type !== "Property") continue;
+    const inner = pathTo(property.value, name);
+    if (inner === undefined) continue;
+    const key = propertyKey(property);
+    return key === undefined ? undefined : [key, ...inner];
+  }
+  return undefined;
+};
+
+/**
+ * Every read of `crypto.randomUUID`, `crypto.subtle` or `navigator.clipboard`, feature detection
+ * included. Only the helpers that wrap them may read them; `.oxlintrc.jsonc` exempts those files.
+ * The rule resolves names, not control flow: a guard never makes a read acceptable here.
+ */
+const noSecureContextApi = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Keep browser code off APIs that exist only in secure contexts." },
+    messages: {
+      secureOnly:
+        "{{name}} is undefined on a plain HTTP origin other than localhost, where a self-hosted dashboard may be served. Call randomUuid from @executor-js/utils/random-uuid or copyText from @executor-js/ui/lib/clipboard instead. Any feature detection for it belongs inside such a helper.",
+    },
+  },
+  create: (context) => {
+    const source = context.sourceCode;
+
+    /** The variable this file declares for a name at a node, if any; none means the global. */
+    const declared = (node: ESTree.Node, name: string) => {
+      for (
+        let scope: ReturnType<typeof source.getScope> | null = source.getScope(node);
+        scope;
+        scope = scope.upper
+      ) {
+        const variable = scope.set.get(name);
+        if (variable !== undefined && variable.defs.length > 0) return variable;
+      }
+      return undefined;
+    };
+
+    /** What an expression denotes, following `const` aliases and destructuring. */
+    const denotes = (node: ESTree.Node, depth = 0): Holder | undefined => {
+      if (depth > aliasDepth) return undefined;
+      if (
+        node.type === "ParenthesizedExpression" ||
+        node.type === "TSNonNullExpression" ||
+        node.type === "TSAsExpression" ||
+        node.type === "TSSatisfiesExpression"
+      )
+        return denotes(node.expression, depth);
+      if (node.type === "MemberExpression")
+        return member(denotes(node.object, depth), staticKey(node));
+      if (node.type !== "Identifier") return undefined;
+      const variable = declared(node, node.name);
+      // Oxlint's `isGlobalReference` needs the name in its configured globals; this needs no list.
+      if (variable === undefined) {
+        if (globalObjects.has(node.name)) return "global";
+        return node.name === "crypto" || node.name === "navigator" ? node.name : undefined;
+      }
+      const [definition, ...others] = variable.defs;
+      if (definition === undefined || others.length > 0 || definition.type !== "Variable")
+        return undefined;
+      const declarator = definition.node;
+      const declaration = definition.parent;
+      if (
+        declarator.type !== "VariableDeclarator" ||
+        declaration?.type !== "VariableDeclaration" ||
+        declaration.kind !== "const" ||
+        declarator.init === null
+      )
+        return undefined;
+      // `const c = crypto` aliases it; `const { crypto: { subtle } } = window` reads a path from it.
+      const path = pathTo(declarator.id, node.name);
+      if (path === undefined) return undefined;
+      return path.reduce<Holder | undefined>(
+        (holder, key) => member(holder, key),
+        denotes(declarator.init, depth + 1),
+      );
+    };
+
+    const report = (node: ESTree.Node, holder: Holder, key: string) =>
+      context.report({ node, messageId: "secureOnly", data: { name: `${holder}.${key}` } });
+
+    /** Report each secure-context-only API a destructuring pattern reads from `holder`. */
+    const destructured = (pattern: ESTree.Node, holder: Holder | undefined) => {
+      if (holder === undefined) return;
+      if (pattern.type === "AssignmentPattern") return destructured(pattern.left, holder);
+      if (pattern.type !== "ObjectPattern") return;
+      for (const property of pattern.properties) {
+        if (property.type !== "Property") continue;
+        const key = propertyKey(property);
+        if (key !== undefined && isSecureOnly(holder, key)) report(property, holder, key);
+        else destructured(property.value, member(holder, key));
+      }
+    };
+
+    return {
+      MemberExpression(node) {
+        const holder = denotes(node.object);
+        const key = staticKey(node);
+        if (holder !== undefined && key !== undefined && isSecureOnly(holder, key))
+          report(node, holder, key);
+      },
+      // `const { randomUUID } = crypto` reads it as surely as `crypto.randomUUID`, at any depth.
+      VariableDeclarator(node) {
+        if (node.init !== null) destructured(node.id, denotes(node.init));
+      },
+    };
+  },
+});
+
 /**
  * Resolves names the way a file imports them: `import { Effect as Fx } from "effect"`,
  * `import * as Fx from "effect/Effect"`, `import * as effect from "effect"` (then `effect.Effect`),
@@ -546,6 +697,57 @@ const exportableSchemaPattern = defineRule({
   }),
 });
 
+/** `process.stdout.fd` or `process.stderr.fd`. */
+const isStdioFd = (node: ESTree.Node) =>
+  node.type === "MemberExpression" &&
+  !node.computed &&
+  node.property.type === "Identifier" &&
+  node.property.name === "fd" &&
+  node.object.type === "MemberExpression" &&
+  !node.object.computed &&
+  node.object.property.type === "Identifier" &&
+  (node.object.property.name === "stdout" || node.object.property.name === "stderr") &&
+  node.object.object.type === "Identifier" &&
+  node.object.object.name === "process";
+
+/** A descriptor or path that names stdout or stderr: 1, 2, `process.stdout.fd`, `/dev/stderr`. */
+const namesStdio = (node: ESTree.Node | undefined) =>
+  node !== undefined &&
+  ((node.type === "Literal" &&
+    (node.value === 1 ||
+      node.value === 2 ||
+      node.value === "/dev/stdout" ||
+      node.value === "/dev/stderr")) ||
+    isStdioFd(node));
+
+const syncWrites = new Set(["writeSync", "writeFileSync", "appendFileSync"]);
+
+const noSyncStdioWrite = defineRule({
+  meta: {
+    type: "problem",
+    docs: { description: "Write stdout and stderr through a stream, never synchronously." },
+    messages: {
+      syncStdio:
+        "{{call}} to stdout or stderr waits for its reader. A pipe nobody reads blocks it for good: on Windows always, and on Linux and macOS when the process never opened that stream. The process then cannot answer or exit, as the local server's exit line once did. Write through the process's output stream (processOutput in the local CLI), which waits without blocking.",
+    },
+  },
+  create: (context) => ({
+    CallExpression(node) {
+      const callee = node.callee;
+      const name =
+        callee.type === "Identifier"
+          ? callee.name
+          : callee.type === "MemberExpression" &&
+              !callee.computed &&
+              callee.property.type === "Identifier"
+            ? callee.property.name
+            : undefined;
+      if (name !== undefined && syncWrites.has(name) && namesStdio(node.arguments[0]))
+        context.report({ node, messageId: "syncStdio", data: { call: name } });
+    },
+  }),
+});
+
 export default definePlugin({
   meta: { name: "executor" },
   rules: {
@@ -556,5 +758,7 @@ export default definePlugin({
     "account-middleware-through-helper": accountMiddlewareThroughHelper,
     "exportable-schema-pattern": exportableSchemaPattern,
     "authored-code-through-adapter": authoredCodeThroughAdapter,
+    "no-secure-context-api": noSecureContextApi,
+    "no-sync-stdio-write": noSyncStdioWrite,
   },
 });

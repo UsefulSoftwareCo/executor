@@ -1,12 +1,11 @@
-/** `executor pair`: a client of the running server that reads keys and writes nothing. */
+/** `executor service pair`: a client of the running server that reads keys and writes nothing. */
 import { Config, Console, Effect, Option, Redacted, Schedule } from "effect";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { HttpApiClient } from "effect/http-api";
-import { LocalAuthApi } from "../contracts/auth.ts";
+import { LocalAuthApi, LocalConfigurationError } from "../contracts/auth.ts";
 import { serverPortConfig } from "../contracts/config.ts";
 import { PairFailed } from "../contracts/startup.ts";
-import { LocalConfigurationError } from "./bootstrap.ts";
 import { registered } from "./service-client.ts";
 import { connectionRefused, serviceDirectory } from "./service-files.ts";
 
@@ -116,7 +115,7 @@ const portUrl = serverPortConfig.pipe(
   ),
 );
 
-/** How long `executor pair` waits for a registered server that is not ready. */
+/** How long `executor service pair` waits for a registered server that is not ready. */
 const startingWait = "30 seconds";
 
 /**

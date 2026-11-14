@@ -35,7 +35,7 @@ import {
 import { Base64Url } from "effect/encoding";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { listenPortConfig } from "../contracts/config.ts";
-import type { LocalConfigurationReason } from "../contracts/auth.ts";
+import { LocalConfigurationError, type LocalConfigurationReason } from "../contracts/auth.ts";
 import {
   ServiceFailed,
   ServiceInfo,
@@ -53,7 +53,7 @@ import {
   reportStartupFailure,
   type LocalListener,
 } from "../node.ts";
-import { keyStorageSetting, localConfiguration, LocalConfigurationError } from "./bootstrap.ts";
+import { keyStorageSetting, localConfiguration } from "./bootstrap.ts";
 import { ownProcess, ownProcessUnread } from "./process-identity.ts";
 import {
   answersAs,

@@ -8,6 +8,7 @@ import { FetchHttpClient, HttpClientRequest } from "effect/http";
 import * as oauth from "oauth4webapi";
 import {
   AuthorizationServerSignal,
+  type FirstPartyOAuthClientId,
   maxOAuthServiceErrorLength,
   maxOAuthServiceTextLength,
   type OAuthClientRegistration,
@@ -487,17 +488,66 @@ const failure = (error: unknown): OAuthProtocolFailed => {
 };
 
 /**
- * `failure`, keeping the service's own error from an authorization response. It comes through the
- * browser, not in answer to a request Executor sent, so it repeats nothing secret of Executor's.
+ * Whose OAuth client a request authenticates as, in the terms a sign-in chooses one:
+ *
+ * - `first_party`: the operator's own client (`FirstPartyOAuthClient`), named by its ID. One
+ *   client and secret serve every organization on the host.
+ * - `stored`: a stored client the attempt or grant names, registered by Executor or saved by a
+ *   person.
+ * - `entered`: a client only the attempt or grant holds: entered for one sign-in, the host's client
+ *   metadata document, an imported grant's own, or a client credentials account's.
  */
-const callbackFailure = (error: unknown): OAuthProtocolFailed => {
-  const failed = failure(error);
-  const serviceError =
-    error instanceof oauth.AuthorizationResponseError
-      ? serviceErrorResponse(error.error, error.error_description, [])
-      : undefined;
-  return serviceError === undefined ? failed : new OAuthProtocolFailed({ ...failed, serviceError });
-};
+export type OAuthClientKind =
+  | { readonly kind: "first_party"; readonly id: FirstPartyOAuthClientId }
+  | { readonly kind: "stored" }
+  | { readonly kind: "entered" };
+
+/**
+ * What a span records about the client a request authenticates as and where it is sent: the
+ * client's kind, the operator's client ID (never the OAuth `client_id` it is configured with),
+ * the client authentication method, which says whether a secret is sent at all, and the host of
+ * the endpoint. Only the host: never the endpoint's path or query, or any credential.
+ */
+export const clientSpanAttributes = (
+  client: OAuthClientKind,
+  method: OAuthRegistration["token_endpoint_auth_method"],
+  endpoint: { readonly name: "token_endpoint" | "revocation_endpoint"; readonly url: string },
+) => ({
+  "oauth.client.kind": client.kind,
+  ...(client.kind === "first_party" ? { "oauth.first_party.id": client.id } : {}),
+  "oauth.client.auth_method": method,
+  [`oauth.${endpoint.name}.host`]: new URL(endpoint.url).hostname,
+});
+
+/**
+ * The secrets to redact from what the service says in a failed answer, or undefined to keep none
+ * of its words. A service answering the operator's client is answering a secret shared by every
+ * organization, and can echo part of it, a new encoding of it, or a token it minted, none of which
+ * redaction can recognize. Its failures therefore keep only their reason, HTTP status, RFC 6749
+ * error code and Retry-After, never `serviceError`.
+ */
+const serviceWords = (client: OAuthClientKind, sent: SentSecrets) =>
+  client.kind === "first_party" ? undefined : sent;
+
+/**
+ * `failure`, keeping the service's own error from an authorization response. It comes through the
+ * browser, not in answer to a request Executor sent, so it repeats no secret Executor sent. A
+ * service can still put one there that it knows, so the operator's client keeps none of it; see
+ * `serviceWords`.
+ */
+const callbackFailure =
+  (client: OAuthClientKind) =>
+  (error: unknown): OAuthProtocolFailed => {
+    const failed = failure(error);
+    const sent = serviceWords(client, []);
+    const serviceError =
+      sent !== undefined && error instanceof oauth.AuthorizationResponseError
+        ? serviceErrorResponse(error.error, error.error_description, sent)
+        : undefined;
+    return serviceError === undefined
+      ? failed
+      : new OAuthProtocolFailed({ ...failed, serviceError });
+  };
 
 /**
  * The endpoint answered with an OAuth error: an error body (RFC 6749 §5.2) or a client
@@ -527,12 +577,29 @@ const protocolStage =
       | "clientCredentials"
       | "refresh"
       | "revoke",
+    attributes: Readonly<Record<string, string>> = {},
   ) =>
   <A, R>(program: Effect.Effect<A, OAuthProtocolFailed, R>) =>
     program.pipe(
       Effect.tapError(observeFailure),
-      Effect.withSpan(`oauth.${stage}`, { attributes: { "oauth.stage": stage } }),
+      Effect.withSpan(`oauth.${stage}`, { attributes: { ...attributes, "oauth.stage": stage } }),
     );
+/** The span of a token request authenticated as `client`; see `clientSpanAttributes`. */
+const tokenStage = (
+  stage: "exchange" | "clientCredentials" | "refresh",
+  input: {
+    readonly clientKind: OAuthClientKind;
+    readonly client: OAuthRegistration;
+    readonly server: OAuthTokenServer;
+  },
+) =>
+  protocolStage(
+    stage,
+    clientSpanAttributes(input.clientKind, input.client.token_endpoint_auth_method, {
+      name: "token_endpoint",
+      url: input.server.token_endpoint,
+    }),
+  );
 
 /**
  * Microsoft identity platform's multi-tenant endpoints (`common`, `organizations`) publish
@@ -1040,7 +1107,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
     run: (settings: ReturnType<typeof requestOptions>) => Promise<A>,
     options: {
       readonly format?: OAuthTokenRequestFormat | undefined;
-      readonly sent?: SentSecrets;
+      readonly sent?: SentSecrets | undefined;
     } = {},
   ) =>
     Effect.gen(function* () {
@@ -1701,7 +1768,12 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
      * issuer, and then any RFC 6749 §4.1.2.1 `error`. Failures here never reached the token endpoint.
      */
     callback: (
-      input: { server: OAuthServer; client: OAuthRegistration; state: string },
+      input: {
+        server: OAuthServer;
+        client: OAuthRegistration;
+        clientKind: OAuthClientKind;
+        state: string;
+      },
       callback: URL,
     ) =>
       Effect.try({
@@ -1723,12 +1795,13 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             });
           return parameters;
         },
-        catch: callbackFailure,
+        catch: callbackFailure(input.clientKind),
       }).pipe(protocolStage("authorize")),
     exchange: (
       input: {
         server: OAuthServer;
         client: OAuthRegistration;
+        clientKind: OAuthClientKind;
         redirectUri: string;
         verifier: string;
         resource?: string | undefined;
@@ -1763,12 +1836,17 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         },
         {
           format: input.tokenRequestFormat,
-          sent: [parameters.get("code"), input.verifier, ...clientSecrets(input.client)],
+          sent: serviceWords(input.clientKind, [
+            parameters.get("code"),
+            input.verifier,
+            ...clientSecrets(input.client),
+          ]),
         },
-      ).pipe(protocolStage("exchange")),
+      ).pipe(tokenStage("exchange", input)),
     clientCredentials: (input: {
       server: OAuthTokenServer;
       client: OAuthConfidentialRegistration;
+      clientKind: OAuthClientKind;
       scopes: readonly string[];
       resource?: string | undefined;
       scopeSeparator?: string | undefined;
@@ -1794,11 +1872,15 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             recognizedTokenTypes: await tokenTypes(response),
           });
         },
-        { format: input.tokenRequestFormat, sent: clientSecrets(input.client) },
-      ).pipe(protocolStage("clientCredentials")),
+        {
+          format: input.tokenRequestFormat,
+          sent: serviceWords(input.clientKind, clientSecrets(input.client)),
+        },
+      ).pipe(tokenStage("clientCredentials", input)),
     refresh: (input: {
       server: OAuthServer;
       client: OAuthRegistration;
+      clientKind: OAuthClientKind;
       refreshToken: string;
       redirectUri?: string | undefined;
       resource?: string | undefined;
@@ -1835,13 +1917,17 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         },
         {
           format: input.tokenRequestFormat,
-          sent: [input.refreshToken, ...clientSecrets(input.client)],
+          sent: serviceWords(input.clientKind, [
+            input.refreshToken,
+            ...clientSecrets(input.client),
+          ]),
         },
-      ).pipe(protocolStage("refresh")),
+      ).pipe(tokenStage("refresh", input)),
     /** RFC 7009 revocation with the grant's own client authentication. */
     revoke: (input: {
-      server: OAuthTokenServer;
+      server: OAuthTokenServer & { readonly revocation_endpoint: string };
       client: OAuthRegistration;
+      clientKind: OAuthClientKind;
       token: string;
       tokenTypeHint: "refresh_token" | "access_token";
     }) =>
@@ -1855,7 +1941,15 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             { ...settings, additionalParameters: { token_type_hint: input.tokenTypeHint } },
           ),
         ),
-      ).pipe(protocolStage("revoke")),
+      ).pipe(
+        protocolStage(
+          "revoke",
+          clientSpanAttributes(input.clientKind, input.client.token_endpoint_auth_method, {
+            name: "revocation_endpoint",
+            url: input.server.revocation_endpoint,
+          }),
+        ),
+      ),
   };
 };
 

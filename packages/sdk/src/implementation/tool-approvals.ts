@@ -1,6 +1,8 @@
 /** Pending tool calls are encrypted; consumption clears their payload before external work. */
 import { approvalElicitation, ApprovedBy, Caller, type ApprovalResponse } from "apps/contracts";
-import { Clock, type Crypto, Effect, Redacted, Schema } from "effect";
+import { Clock, Effect, Redacted, Schema } from "effect";
+import type { HostCrypto } from "./host-crypto.ts";
+
 import {
   defaultToolApprovalLimits,
   ToolApprovalIssuer,
@@ -54,10 +56,10 @@ const Record = Schema.Struct({
 export function makeToolApprovals(
   db: Query,
   credentials: Credentials,
-  crypto: Crypto.Crypto,
+  crypto: HostCrypto,
   inTransaction: Effect.Effect<boolean>,
 ) {
-  const next = crypto.randomUUIDv4.pipe(Effect.mapError(() => new StorageError()));
+  const next = crypto.random.uuidV4();
   const read = (requestId: ApprovalRequestId, owner?: OwnerId) =>
     Effect.gen(function* () {
       const row = yield* query(() =>

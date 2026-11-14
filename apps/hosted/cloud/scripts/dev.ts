@@ -41,6 +41,10 @@ NodeRuntime.runMain(
           stdin: "inherit",
           stdout: "inherit",
           stderr: "inherit",
+          // Alchemy runs in its own process group, which a signal to this script's group does not
+          // reach. Stopping it stops its sidecars and their workerd; this script exits only once
+          // all of that has, so whoever started it knows the ports are free.
+          forceKillAfter: "10 seconds",
         }),
       );
       process.exitCode = Number(yield* child.exitCode);

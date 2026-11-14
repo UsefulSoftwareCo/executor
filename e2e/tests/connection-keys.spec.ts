@@ -124,8 +124,7 @@ layer(HostedLive, { excludeTestServices: true })("Connection keys", (it) => {
         const lifetime = Date.parse(key.expiresAt) - Date.now();
         expect(lifetime).toBeGreaterThan(3500_000);
         expect(lifetime).toBeLessThanOrEqual(3600_000);
-        const audit = yield* telemetry.logs(trace, "MCP connection key minted").pipe(
-          Effect.map((found) => found.join("\n")),
+        const audit = yield* telemetry.logs(trace).pipe(
           Effect.filterOrFail((text) => text.includes(key.id)),
           Effect.retry({ schedule: Schedule.spaced("1 second"), times: 20 }),
         );
@@ -470,8 +469,7 @@ layer(HostedLive, { excludeTestServices: true })("Connection keys", (it) => {
           { traceparent: `00-${trace}-${randomBytes(8).toString("hex")}-01` },
         );
         expect(revoked.status, JSON.stringify(revoked.body)).toBeLessThan(300);
-        const audit = yield* telemetry.logs(trace, "MCP connection key revoked").pipe(
-          Effect.map((found) => found.join("\n")),
+        const audit = yield* telemetry.logs(trace).pipe(
           Effect.filterOrFail((text) => text.includes(current.id)),
           Effect.retry({ schedule: Schedule.spaced("1 second"), times: 20 }),
         );

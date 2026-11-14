@@ -3,7 +3,7 @@ import { Effect, Option, Schema, Stream } from "effect";
 import { FetchHttpClient, HttpClient, HttpServerResponse } from "effect/http";
 import { dashboardRoutes, fileHeaders } from "../web.ts";
 import { BlobKey, BlobStoreError, SourceError, type BlobStorage } from "@executor-js/sdk/core";
-import { pageOf, rangeWindow, windowed } from "@executor-js/sdk/blobs";
+import { pageOf, rangeWindow, removeEach, windowed } from "@executor-js/sdk/blobs";
 import { gitRepositories } from "@executor-js/app-source/host";
 import {
   parseDestination,
@@ -61,6 +61,10 @@ export const bindingBlobStore = (disk: HttpBinding): BlobStorage => {
     put: (key, body) =>
       send("put", key, [204], { method: "PUT", body: new Uint8Array(body) }).pipe(Effect.asVoid),
     remove: (key) => send("remove", key, [204, 404], { method: "DELETE" }).pipe(Effect.asVoid),
+    removeAll: (keys) =>
+      removeEach(keys, (key) =>
+        send("remove", key, [204, 404], { method: "DELETE" }).pipe(Effect.asVoid),
+      ),
     list: (folder, options) =>
       send("list", folder, [200, 404]).pipe(
         Effect.flatMap((response) =>

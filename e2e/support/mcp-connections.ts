@@ -1,8 +1,10 @@
 /** Scoped connection fixtures through public product routes and the standard OAuth endpoints. */
 import { expect } from "@effect/vitest";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Schema } from "effect";
+import { secret } from "./failure-text.ts";
 import { HttpClient, HttpClientRequest } from "effect/http";
 import { createHash, randomBytes } from "node:crypto";
+import { Actors } from "./actors.ts";
 import { Api, body, type Session } from "./api.ts";
 import { Evidence } from "./evidence.ts";
 import { Target } from "./platform.ts";
@@ -67,10 +69,14 @@ const Grants = Schema.Array(
  * goes to a loopback URL that is never contacted; the consent response carries it.
  * An undefined resource sends no RFC 8707 `resource` parameter, as some MCP clients do.
  */
+/** The logo the scoped connection client registers; the tool call log reads it back. */
+export const scopedClientLogo = "https://scoped-client.e2e.invalid/logo.png";
+
 export const consentTo = (
   session: Session,
   resource: string | undefined,
   headers: Record<string, string> = {},
+  scope = "mcp offline_access",
 ) =>
   Effect.gen(function* () {
     const api = yield* Api,
@@ -85,6 +91,7 @@ export const consentTo = (
       "/api/auth/oauth2/register",
       {
         client_name: "Scoped connection client",
+        logo_uri: scopedClientLogo,
         redirect_uris: [redirect],
         token_endpoint_auth_method: "none",
         grant_types: ["authorization_code", "refresh_token"],
@@ -104,7 +111,7 @@ export const consentTo = (
       redirect_uri: redirect,
       code_challenge: createHash("sha256").update(verifier).digest("base64url"),
       code_challenge_method: "S256",
-      scope: "mcp offline_access",
+      scope,
       ...resourceField,
       state: randomBytes(16).toString("hex"),
     });
@@ -157,7 +164,7 @@ export const consentTo = (
           return yield* response.json;
         }),
       );
-      return Redacted.make((yield* Schema.decodeUnknownEffect(Tokens)(exchanged)).access_token);
+      return secret((yield* Schema.decodeUnknownEffect(Tokens)(exchanged)).access_token);
     });
     return {
       status: consented.status,
@@ -210,3 +217,19 @@ export default defineApp({}, async () => ({
   },
   appsManifest,
 ];
+
+const Organizations = Schema.Array(
+  Schema.Struct({ id: Schema.String, slug: Schema.String, name: Schema.String }),
+);
+/** The scenario organization as `/mcp/whoami` names it. */
+export const scenarioOrganization = Effect.gen(function* () {
+  const api = yield* Api,
+    actors = yield* Actors;
+  const listed = yield* body(
+    Organizations,
+    yield* api.request(actors.owner, "GET", "/api/auth/organization/list"),
+  );
+  const found = listed.find((item) => item.id === actors.organization.id);
+  if (found === undefined) return yield* Effect.die("The scenario organization is not listed");
+  return { id: found.id, slug: found.slug, name: found.name };
+});

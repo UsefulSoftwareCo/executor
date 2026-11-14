@@ -5,7 +5,7 @@ import { LocalMcpAuthorizePage } from "../pages/mcp-authorize.tsx";
 /** OAuth consent uses the local dashboard identity and retains the original signed query. */
 export const Route = createFileRoute("/mcp/authorize")({
   component: () => (
-    <AuthenticationGate loading={<McpConsentLoading />}>
+    <AuthenticationGate loading={<McpConsentLoading rows={2} />}>
       <LocalMcpAuthorizePage />
     </AuthenticationGate>
   ),

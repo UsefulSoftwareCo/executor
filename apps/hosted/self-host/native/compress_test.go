@@ -30,7 +30,7 @@ func workerdResponses(t *testing.T, handler http.HandlerFunc) string {
 }
 
 func compressingFront(t *testing.T, handler http.HandlerFunc) *httptest.Server {
-	front := httptest.NewServer(compressedHandler(productProxy(workerdResponses(t, handler), workerdIdleTimeout, nil)))
+	front := httptest.NewServer(compressedHandler(productProxy(workerdResponses(t, handler), workerdIdleTimeout)))
 	t.Cleanup(front.Close)
 	return front
 }
@@ -329,7 +329,7 @@ func TestGitPushesStreamBothWaysUnencoded(t *testing.T) {
 		}
 		received <- body.String()
 	})
-	front := httptest.NewServer(publicHandler(productProxy(upstream, workerdIdleTimeout, nil)))
+	front := httptest.NewServer(publicHandler(productProxy(upstream, workerdIdleTimeout)))
 	t.Cleanup(front.Close)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

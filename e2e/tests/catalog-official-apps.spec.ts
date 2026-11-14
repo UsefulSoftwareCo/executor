@@ -13,7 +13,7 @@ import { officialApps } from "../support/public-catalogs.ts";
 import { holdQuery } from "../support/query-transition.ts";
 import { scenarios } from "../test-plan.ts";
 
-const Catalog = Schema.Array(
+const Entries = Schema.Array(
   Schema.Struct({
     id: Schema.String,
     package: Schema.String,
@@ -30,6 +30,11 @@ const Catalog = Schema.Array(
     ),
   }),
 );
+/** A listing whose feed was read: the official apps are all there. */
+const Catalog = Schema.Struct({
+  apps: Entries,
+  feed: Schema.Struct({ status: Schema.Literal("listed") }),
+});
 const Installed = Schema.Struct({
   id: Schema.String,
   name: Schema.String,
@@ -60,7 +65,7 @@ layer(HostedLive, { excludeTestServices: true })("Official app catalog", (it) =>
           browser = yield* Browser,
           actors = yield* Actors;
         const prefix = `/api/organizations/${actors.organization.id}`;
-        const entries = yield* body(
+        const { apps: entries } = yield* body(
           Catalog,
           yield* api.request(actors.owner, "GET", "/api/catalog"),
         );

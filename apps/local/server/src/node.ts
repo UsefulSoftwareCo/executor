@@ -6,6 +6,7 @@
  * other request answers 503 until the product is ready, and again once it starts closing.
  */
 import { createServer } from "node:http";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ScheduleHostReady } from "@executor-js/sdk/scheduling";
@@ -28,16 +29,20 @@ import { StartupFailed } from "./contracts/startup.ts";
 import { bearerMatches, localRequest, makeLocalAuth, pairingUrl } from "./implementation/auth.ts";
 import { localApi } from "./implementation/server.ts";
 import { lockDataDirectory, serviceProof, serviceVersion } from "./implementation/service-files.ts";
+import { closeStarted } from "./implementation/exit-line.ts";
 import { startupPhase } from "./implementation/startup-diagnostics.ts";
 
 /**
- * The process services every request runs with: Node's platform and HTTP support, and telemetry.
+ * The process services every request runs with: Node's platform and HTTP support, telemetry, and
+ * the random IDs and digests the SDK takes from its host.
  * Build them before listening, so a failure to listen still reaches the diagnostics file.
  */
 export const localServices = (directory: string, options: LocalTelemetryOptions = {}) =>
   Layer.mergeAll(
     localTelemetry(directory, "executor-local", options).pipe(Layer.provide(NodeServices.layer)),
     NodeHttpServer.layerHttpServices,
+    NodeCrypto.layerSecureRandom,
+    NodeCrypto.layerDigest,
   );
 export type LocalServices = Layer.Success<ReturnType<typeof localServices>>;
 
@@ -150,9 +155,11 @@ export const listenLocal = (options: {
         Effect.gen(function* () {
           yield* Ref.set(product, Option.some(handler));
           // Close active connections before the adapter's final shutdown. Requests receive
-          // cancellation through Effect; an idle MCP stream cannot hold the process open.
+          // cancellation through Effect; an idle MCP stream cannot hold the process open. The
+          // close starts here; the CLI's last line says how long it took (`exit-line.ts`).
           yield* Effect.addFinalizer(() =>
-            Ref.set(closing, true).pipe(
+            Effect.sync(closeStarted).pipe(
+              Effect.andThen(Ref.set(closing, true)),
               Effect.andThen(Ref.set(product, Option.none())),
               Effect.andThen(Effect.sync(() => socket.closeAllConnections())),
             ),
@@ -215,6 +222,8 @@ export const reportStartupFailure = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       const annotations = Schema.is(StartupFailed)(error)
         ? {
             "startup.stage": error.stage,
+            ...(error.database === undefined ? {} : { "startup.database": error.database }),
+            ...(error.step === undefined ? {} : { "startup.step": error.step }),
             "error.type": "StartupFailed",
             ...(error.code === undefined ? {} : { "error.code": error.code }),
           }

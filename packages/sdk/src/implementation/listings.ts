@@ -9,6 +9,7 @@ import {
   type ToolListingPolicy,
 } from "../contracts/declarations.ts";
 import {
+  refusedHostApi,
   type Tool,
   ToolListingTimedOut,
   ToolSearchListing,
@@ -277,6 +278,11 @@ export const makeListings = (options: {
             outcome.at - load.started < policy.slowFailureMillis
           )
             return;
+          // Executor refused the app a host API document of another revision. That says what the
+          // host served at that moment, not how the app lists: the caller is told to retry in a
+          // few seconds, and the retry must read the document again rather than this refusal.
+          if (outcome.error._tag === "AppEvaluationFailed" && refusedHostApi(outcome.error.failure))
+            return;
           const current = yield* cache.get(id);
           if (
             current?.kind === "value" &&
@@ -336,7 +342,13 @@ export const makeListings = (options: {
       const run = (load: PendingLoad, owner: "host" | "reader") =>
         evaluated.pipe(
           // Before readers have it, so they share its definitions too.
-          Effect.map((listing): Outcome => new Evaluated(shareListing(listing))),
+          // In its own span: what interning and counting the listing cost, apart from decoding
+          // the app's answer.
+          Effect.flatMap((listing) =>
+            Effect.sync((): Outcome => new Evaluated(shareListing(listing))).pipe(
+              Effect.withSpan("sdk.tools.listing.share"),
+            ),
+          ),
           Effect.catch((error) =>
             Clock.currentTimeMillis.pipe(
               Effect.map((at): Outcome =>

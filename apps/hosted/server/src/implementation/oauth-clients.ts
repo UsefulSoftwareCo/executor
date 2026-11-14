@@ -19,7 +19,7 @@ import {
 import { Effect, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
-import { Authentication } from "../contracts/auth.ts";
+import { SessionAuthentication } from "../contracts/auth.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
 import { OrganizationForbidden, organizationOwner } from "../contracts/organization.ts";
@@ -285,7 +285,7 @@ export const hostedOAuthClientHandlers = HttpApiBuilder.group(
   "oauthClients",
   (handlers) =>
     Effect.gen(function* () {
-      const redirectUri = accountOAuthRedirectUri(yield* Authentication);
+      const redirectUri = accountOAuthRedirectUri(yield* SessionAuthentication);
       return handlers
         .handle("list", () => oauthClientDirectory(redirectUri))
         .handle("register", ({ payload }) => registerOAuthClient(payload))

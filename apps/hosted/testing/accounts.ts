@@ -57,7 +57,7 @@ export const testAccountAuth = (settings: {
       organization({ disableOrganizationDeletion: true }),
       {
         ...helpers,
-        // Better Auth 1.7.16 emits options: undefined; omit it for exact optional property types.
+        // Better Auth 1.7.20 emits options: undefined; omit it for exact optional property types.
         init(ctx: Parameters<typeof helpers.init>[0]) {
           const { options, ...result } = helpers.init(ctx);
           return { ...result, ...(options === undefined ? {} : { options }) };

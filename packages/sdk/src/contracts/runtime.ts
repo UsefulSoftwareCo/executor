@@ -248,7 +248,8 @@ export const boundBuildMessage = (message: string) =>
     : `${message.slice(0, maxBuildMessageLength - 1)}…`;
 /**
  * Describe an underlying failure as `Name: message`, bounded. Executor's own wrappers of an
- * underlying failure contribute only their message.
+ * underlying failure contribute only their message; a runtime failure without one, its kind's
+ * fixed description.
  */
 export const describeBuildCause = (cause: unknown) =>
   boundBuildMessage(
@@ -257,7 +258,9 @@ export const describeBuildCause = (cause: unknown) =>
         ? Schema.is(RuntimeProtocolFailed)(cause) || Schema.is(HostDeclarationInvalid)(cause)
           ? cause.message
           : `${cause.name}: ${cause.message}`
-        : cause.name
+        : Schema.is(RuntimeProtocolFailed)(cause) && cause.reason !== undefined
+          ? runtimeFailures[cause.reason]
+          : cause.name
       : typeof cause === "string"
         ? cause
         : (JSON.stringify(cause) ?? String(cause)),
@@ -404,7 +407,7 @@ export interface Runtime<Requirements = never> {
    *
    * `retain: false` compiles and declares without writing anything: the build is neither
    * retained nor cached, so its id names nothing and must not be loaded. For checks that must
-   * not create anything, such as the v1 import's dry run.
+   * not create anything.
    */
   readonly build: (input: {
     readonly files: CodeFiles;

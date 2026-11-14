@@ -102,8 +102,8 @@ export const ServiceSettings = Schema.Struct({
   /** Extra environment for the background server process. */
   env: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   /**
-   * `executor` and `executor apps` without --host or EXECUTOR_HOST run a private server for the
-   * command instead, as with `--standalone`. `executor service start`, `executor pair` and the
+   * `executor` and client commands without a named or remembered host run a private server for
+   * the command instead, as with `--standalone`. `executor service start`, `executor service pair` and the
    * desktop still use the background server.
    */
   disabled: Schema.optional(Schema.Boolean),
@@ -250,6 +250,17 @@ export const serviceUnsetCommand = Command.make("unset", {
 }).pipe(
   Command.withDescription(
     "Remove a setting. Stops the background server so it restarts without it",
+  ),
+);
+
+/** Pair with the running server without opening local storage. */
+export const servicePairCommand = Command.make("pair").pipe(
+  Command.withDescription("Print a new connection link for the running server"),
+);
+/** Replace the saved local API key. A running server uses the new key after it restarts. */
+export const serviceRotateKeyCommand = Command.make("rotate-key").pipe(
+  Command.withDescription(
+    "Replace the saved local API key. Run `executor service restart` to use it, then update clients that used the old key",
   ),
 );
 

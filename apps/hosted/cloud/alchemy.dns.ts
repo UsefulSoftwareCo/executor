@@ -29,7 +29,12 @@ import { productZoneCertificateCoverage } from "./src/infrastructure/product-zon
 import { hostRoles, productZone } from "./src/infrastructure/stage.ts";
 
 type Declared =
-  | { readonly type: "CNAME" | "TXT"; readonly name: string; readonly content: string }
+  | {
+      readonly type: "CNAME" | "TXT";
+      readonly name: string;
+      readonly content: string;
+      readonly proxied?: true;
+    }
   | {
       readonly type: "AAAA";
       readonly name: string;
@@ -50,7 +55,16 @@ const records: ReadonlyArray<
   // WorkOS hosts executor-v1's AuthKit pages and admin portal.
   { id: "WorkosAdmin", type: "CNAME", name: "admin", content: "cname.workos-dns.com", ttl: "1" },
   { id: "WorkosAuth", type: "CNAME", name: "auth", content: "cname.workos-dns.com", ttl: "1" },
-  { id: "WorkosSignin", type: "CNAME", name: "signin", content: "cname.workos-dns.com", ttl: "1" },
+  // v1's AuthKit. Proxied, so the API Worker's route `signin.executor.sh/*` answers it instead of
+  // WorkOS (`notes/v1-shutdown.md`, "AuthKit"). Rollback: proxying off.
+  {
+    id: "WorkosSignin",
+    type: "CNAME",
+    name: "signin",
+    content: "cname.workos-dns.com",
+    proxied: true,
+    ttl: "1",
+  },
   {
     id: "WorkosVerification",
     type: "TXT",

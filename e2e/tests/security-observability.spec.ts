@@ -117,8 +117,7 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
           const bearer = (token: string) => ({ authorization: `Bearer ${token}` });
           /** The trace's `security.audit` records, once one names `action`. */
           const audit = (traceId: string, action: string) =>
-            telemetry.logs(traceId, "security.audit").pipe(
-              Effect.map(([trace]) => trace ?? ""),
+            telemetry.logs(traceId).pipe(
               Effect.filterOrFail(
                 (logs) => logs.includes(action),
                 () => new Error(`The ${action} record has not reached the collector`),
@@ -374,12 +373,14 @@ layer(HostedLive, { excludeTestServices: true })("Security observability", (it) 
                       /"audit\.outcome":\s*"failure"/u,
                     );
                   const spans = yield* delivered(label, traceId);
-                  const [traceLogs, searched] = yield* telemetry.logs(traceId, marker);
+                  const traceLogs = yield* telemetry.logs(traceId);
+                  // The marker is this request's own, so it may appear nowhere in the environment.
+                  const searched = yield* telemetry.logsWholeEnvironment(marker);
                   for (const [where, value] of [
                     ["records", logs],
                     ["spans", JSON.stringify(spans)],
-                    ["trace logs", traceLogs ?? ""],
-                    ["logs found by the marker", searched ?? ""],
+                    ["trace logs", traceLogs],
+                    ["logs found by the marker", searched],
                   ] as const)
                     expect(value, `${label}: no ${where} hold the marker`).not.toContain(marker);
                   return logs;

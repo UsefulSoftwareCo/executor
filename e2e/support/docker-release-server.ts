@@ -76,7 +76,11 @@ export const releasedServerWith = (options: {
     );
     yield* Effect.addFinalizer((exit) =>
       Exit.isFailure(exit)
-        ? run(["logs", id]).pipe(Effect.flatMap(Console.error), Effect.ignore)
+        ? processes
+            .string(ChildProcess.make("docker", ["logs", id], { stderr: "pipe" }), {
+              includeStderr: true,
+            })
+            .pipe(Effect.flatMap(Console.error), Effect.ignore)
         : Effect.void,
     );
     let cookie = "";
@@ -161,6 +165,10 @@ export const releasedServerWith = (options: {
       encryptionKey,
       logs,
       restartCount,
+      port,
+      origin,
+      session: cookie,
+      organization: organization.id,
     };
   });
 

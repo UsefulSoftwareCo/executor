@@ -10,7 +10,7 @@
 import { randomBytes } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Clock, Config, Console, Effect, FileSystem, Path, Schema } from "effect";
+import { Config, Console, Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { freePort as freeLoopbackPort } from "../../../../scripts/dev-host.ts";
 import {
@@ -20,7 +20,6 @@ import {
   localDevelopmentFiles,
   localDevelopmentStage,
 } from "./local-development.ts";
-import { v1LiveSettings } from "../src/infrastructure/v1-import-settings.ts";
 
 class LocalDevelopmentFailed extends Schema.TaggedError<LocalDevelopmentFailed>()(
   "LocalDevelopmentFailed",
@@ -59,18 +58,6 @@ const inherited = [
   "DOCKER_HOST",
   "DOCKER_CONTEXT",
   "NODE_EXTRA_CA_CERTS",
-] as const;
-
-/** Passed through only for a live v1 dry run; see `cloudV1LiveSource`. */
-const liveV1DryRun = [
-  "CLOUD_V1_IMPORT_SOURCE",
-  ...Object.values(v1LiveSettings),
-  "V1_IMPORT_OPERATOR_TOKEN",
-  "V1_FIRST_PARTY_CLIENT_IDS",
-  ...["GITHUB", "GOOGLE", "SLACK"].flatMap((client) => [
-    `EXECUTOR_OAUTH_${client}_CLIENT_ID`,
-    `EXECUTOR_OAUTH_${client}_CLIENT_SECRET`,
-  ]),
 ] as const;
 
 const main = Effect.scoped(
@@ -187,18 +174,7 @@ const main = Effect.scoped(
       CLOUD_DEV_APP_UI_PORT: String(appUiPort),
       EXECUTOR_APP_UI_BASE_URL: `http://localhost:${appUiPort}`,
       EXECUTOR_EMULATORS: JSON.stringify(emulators.services),
-      // The emulated v1 check runs only with a v1 database (V1_DATABASE_URL), which local
-      // development does not start. When one is set, accounts from earlier sessions skip it.
-      V1_MEMBERSHIP_CHECK_SINCE: new Date(yield* Clock.currentTimeMillis).toISOString(),
     });
-
-    // A live v1 dry run (`CLOUD_V1_IMPORT_SOURCE=live`) reads v1's production data with the
-    // operator's credentials and production's first-party client IDs, bound for this process only.
-    if (process.env.CLOUD_V1_IMPORT_SOURCE === "live")
-      for (const key of liveV1DryRun) {
-        const value = process.env[key];
-        if (value !== undefined) env[key] = value;
-      }
 
     yield* fs.writeFileString(
       localDevelopmentFiles.session,

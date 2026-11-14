@@ -414,13 +414,6 @@ export default defineApp({ app: { accounts: { team: team.many() } } },
           );
         const hook = yield* settled("setup-required");
         const setupPath = `${prefix}/webhook-setup/${app.id}/${hook.id}`;
-        // Remove the webhook, set up or not, so the app can be removed.
-        yield* Effect.addFinalizer(() =>
-          Effect.gen(function* () {
-            yield* api.request(actors.owner, "DELETE", setupPath);
-            yield* api.request(actors.owner, "POST", `${setupPath}/confirm-removal`);
-          }).pipe(Effect.orDie),
-        );
         /** A synthetic signing secret that spans lines. It is not a real secret. */
         const secret = "synthetic+signing/secret==\nsecond line%2B é\n";
 

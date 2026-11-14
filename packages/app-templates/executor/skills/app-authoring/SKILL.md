@@ -37,10 +37,8 @@ build through `execute`; source then travels as data inside tool calls.
 | Upgrade an app to a newer `apps` version                     | [upgrades/0.0.1-beta.90.md](upgrades/0.0.1-beta.90.md) |
 | Upgrade an app from before `apps@0.0.1-beta.38`              | [upgrades/0.0.1-beta.38.md](upgrades/0.0.1-beta.38.md) |
 
-For a new UI with storage, start with `starter.md`. It links to the topics
-needed to adapt the example. For an existing app, read its current source and
-the reference for the part being changed. Tools generated from an MCP server, OpenAPI definition or GraphQL
-schema are a starting point; when one is missing or wrong, write your own tool
+For a new UI with storage, start with `starter.md`; for an existing app, read its source and the relevant topic.
+Generated MCP, OpenAPI and GraphQL tools are a starting point. When one is missing or wrong, write your own
 beside it with the same account ([integrations.md](integrations.md#custom-tools-beside-generated-ones)).
 
 Load files through the MCP `skills` tool using the returned app slug,

@@ -1,6 +1,7 @@
 /** Synthetic app fixture deployed and removed through the running product's public API. */
 import { expect } from "@effect/vitest";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Schema } from "effect";
+import { reveal } from "./failure-text.ts";
 import { randomUUID } from "node:crypto";
 import { Actors } from "./actors.ts";
 import { Api, body } from "./api.ts";
@@ -64,7 +65,7 @@ export const deployLocalMcpApp = Effect.gen(function* () {
     target = yield* Target,
     evidence = yield* Evidence,
     session = yield* api.session();
-  const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
+  const headers = { authorization: `Bearer ${reveal(target.apiKey)}` };
   const name = `MCP evidence ${randomUUID().slice(0, 8)}`,
     receipt = randomUUID();
   const response = yield* session.send(

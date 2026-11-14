@@ -257,7 +257,7 @@ layer(HostedLive, { excludeTestServices: true })("Apps CLI call", (it) => {
         const signedIn = (actor: typeof actors.owner) =>
           Effect.gen(function* () {
             const cli = yield* appsCli;
-            const login = yield* cli.login(hosts.api, actor);
+            const login = yield* cli.login(hosts.api, ["apps", "login"], undefined, actor);
             expect(login.finished.code, login.finished.stderr).toBe(0);
             return cli;
           });

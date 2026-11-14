@@ -360,6 +360,17 @@ layer(HostedLive, { excludeTestServices: true })("OAuth failure diagnostics", (i
           const failed = yield* complete(started.connection, started.callback, span);
           const recorded = tags(failed, span);
           expect(recorded, rejection.name).toMatchObject(rejection.expected);
+          // The sign-in uses the client Executor registered for it, a stored client, never the
+          // operator's, and the span names the token endpoint's host alone.
+          if (span === "oauth.exchange") {
+            expect(recorded, rejection.name).toMatchObject({
+              "oauth.client.kind": "stored",
+              "oauth.token_endpoint.host": new URL(issuer.origin).hostname,
+            });
+            expect(Object.keys(recorded ?? {}), rejection.name).not.toContain(
+              "oauth.first_party.id",
+            );
+          }
           for (const name of rejection.absent ?? [])
             expect(Object.keys(recorded ?? {}), rejection.name).not.toContain(name);
           withoutFreeText(failed, span);

@@ -1,6 +1,6 @@
 /** Run the shipped collector as separate processes; query only their public HTTP API. */
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Deferred, Effect, FileSystem, Layer, Path, Schema, Stream } from "effect";
+import { Deferred, Effect, FileSystem, Layer, Option, Path, Ref, Schema, Stream } from "effect";
 import {
   HttpBody,
   HttpClient,
@@ -13,6 +13,7 @@ import {
 } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createServer } from "node:http";
+import { SpanQuery } from "./contracts.ts";
 
 /** workerd's control message once the collector socket accepts connections. */
 const Listening = Schema.Struct({
@@ -128,6 +129,36 @@ export const serveOtlpCollector = (
     const url = yield* serveMotel(directory, "motel", "collector.log", bounds);
     yield* announce(directory, url);
     return url;
+  });
+
+/**
+ * The spans a collector this scenario served itself (`serveOtlpCollector`) holds that started in
+ * [from, to), of one operation or all, newest first. That collector receives only this scenario's
+ * servers, so all of it is the scenario's.
+ */
+export const ownCollectorSpans = (
+  collector: string,
+  window: { readonly from: number; readonly to: number; readonly operation?: string | undefined },
+) =>
+  Effect.gen(function* () {
+    const http = yield* HttpClient.HttpClient;
+    return yield* Effect.scoped(
+      Effect.gen(function* () {
+        const url = new URL("/api/spans/search", collector);
+        if (window.operation !== undefined) url.searchParams.set("operation", window.operation);
+        url.searchParams.set("lookback", "1h");
+        url.searchParams.set("limit", "10000");
+        const response = yield* http.get(url.href);
+        return yield* response.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(SpanQuery)));
+      }),
+    ).pipe(
+      Effect.map(({ data }) =>
+        data.filter(({ span }) => {
+          const at = Date.parse(span.startTime);
+          return at >= window.from && at < window.to;
+        }),
+      ),
+    );
   });
 
 const Json = Schema.Record(Schema.String, Schema.Json);
@@ -268,7 +299,59 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
           ]);
       return parts;
     };
+    // The spans received for the traces a scenario watches, by trace and span ID, so it can tell a
+    // span exported twice. Only watched traces are counted; `*` watches every trace, for a scenario
+    // whose Cloud serves it alone.
+    const watched = new Map<string, Map<string, number>>();
+    const watch = Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const trace = new URL(request.url, "http://collector").searchParams.get("trace") ?? "";
+      if (!watched.has(trace)) watched.set(trace, new Map());
+      return HttpServerResponse.empty({ status: 204 });
+    });
+    const received = Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const trace = new URL(request.url, "http://collector").searchParams.get("trace") ?? "";
+      const seen = [...(watched.get(trace) ?? new Map<string, number>()).values()];
+      return HttpServerResponse.jsonUnsafe({
+        spans: seen.length,
+        duplicated: seen.filter((count) => count > 1).length,
+      });
+    });
+    // While a scenario holds exports, each one is accepted and left unanswered until it releases
+    // them, as an endpoint that hangs; the exporter's own deadline gives up on it first.
+    const held = yield* Ref.make(Option.none<Deferred.Deferred<void>>());
+    const hold = Effect.gen(function* () {
+      const released = yield* Deferred.make<void>();
+      yield* Ref.set(held, Option.some(released));
+      return HttpServerResponse.empty({ status: 204 });
+    });
+    const release = Effect.gen(function* () {
+      const current = yield* Ref.getAndSet(held, Option.none());
+      if (Option.isSome(current)) yield* Deferred.succeed(current.value, undefined);
+      return HttpServerResponse.empty({ status: 204 });
+    });
+    // While a scenario refuses exports, each one is answered 503 with the Retry-After it names, as
+    // a collector shedding load does, and is not stored.
+    const refusing = yield* Ref.make(Option.none<string>());
+    const refuse = Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const after = new URL(request.url, "http://collector").searchParams.get("retryAfter") ?? "1";
+      yield* Ref.set(refusing, Option.some(after));
+      return HttpServerResponse.empty({ status: 204 });
+    });
+    const accept = Ref.set(refusing, Option.none()).pipe(
+      Effect.as(HttpServerResponse.empty({ status: 204 })),
+    );
     const exported = Effect.gen(function* () {
+      const refused = yield* Ref.get(refusing);
+      if (Option.isSome(refused))
+        return HttpServerResponse.empty({ status: 503, headers: { "retry-after": refused.value } });
+      const holding = yield* Ref.get(held);
+      if (Option.isSome(holding)) {
+        yield* Deferred.await(holding.value);
+        return HttpServerResponse.empty({ status: 503 });
+      }
       const request = yield* HttpServerRequest.HttpServerRequest;
       const bytes = new Uint8Array(yield* request.arrayBuffer);
       const text = new TextDecoder().decode(bytes);
@@ -281,6 +364,13 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
       if (path === "/v1/traces") {
         const decoded = Schema.decodeUnknownOption(TraceExport)(text);
         if (decoded._tag === "None") return yield* unchanged;
+        for (const resource of decoded.value.resourceSpans)
+          for (const scope of resource.scopeSpans)
+            for (const span of scope.spans) {
+              const id = `${span.traceId ?? ""}:${String(span["spanId"] ?? "")}`;
+              for (const seen of [watched.get(span.traceId ?? ""), watched.get("*")])
+                seen?.set(id, (seen.get(id) ?? 0) + 1);
+            }
         const parts = split(
           decoded.value.resourceSpans,
           (resource) => resource.scopeSpans,
@@ -377,6 +467,12 @@ export const serveShardedOtlpCollector = (directory: string, shards: number) =>
           HttpRouter.add("GET", "/api/spans/search", search),
           HttpRouter.add("GET", "/api/logs/search", search),
           HttpRouter.add("GET", "/api/ingest", ingestStatus),
+          HttpRouter.add("POST", "/api/e2e/exports/hold", hold),
+          HttpRouter.add("POST", "/api/e2e/exports/release", release),
+          HttpRouter.add("POST", "/api/e2e/exports/refuse", refuse),
+          HttpRouter.add("POST", "/api/e2e/exports/accept", accept),
+          HttpRouter.add("POST", "/api/e2e/exports/watch", watch),
+          HttpRouter.add("GET", "/api/e2e/exports/received", received),
         ),
         { disableLogger: true, disableListenLog: true },
       ).pipe(

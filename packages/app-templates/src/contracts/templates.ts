@@ -118,7 +118,7 @@ export interface ProtocolAppOptions {
    * Also declare `workspace: provider.many()` in the app scope, for accounts its managers link for
    * everyone, beside each member's own `service` accounts. Each tool takes an account from either.
    */
-  readonly sharedAccounts?: boolean | undefined;
+  readonly appLinkedAccounts?: boolean | undefined;
   /**
    * Also declare `fixed: fixedProvider` in the app scope, whose one account's credentials every
    * request sends under the selected account's own. Only with sign-in methods; the provider then

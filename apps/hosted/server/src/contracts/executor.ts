@@ -8,6 +8,20 @@ export class HostedExecutor extends Context.Service<
 >()("hosted/Executor") {}
 
 /**
+ * Starts work beside the current request and keeps it alive after the response, within the host's
+ * lifetime for that request or server, as the executor's own `background` option does: on Cloud
+ * the Worker event's or Durable Object call's background work, which its scope waits for (at most
+ * 20 seconds) after the response is sent; on self-host the server's scope. Succeeds with false when
+ * the host no longer accepts work, and the caller then runs it itself. Unset where no host provides
+ * one: work offered to it runs before the response.
+ */
+export type HostedBackgroundWork = (work: Effect.Effect<void>) => Effect.Effect<boolean>;
+export const HostedBackground = Context.Reference<HostedBackgroundWork | undefined>(
+  "hosted/Background",
+  { defaultValue: () => undefined },
+);
+
+/**
  * How this host's SQL client sends statements issued at the same time together: `group` runs an
  * effect as one statement group, whose concurrent statements share one connection and go out in
  * one write. Cloud's session objects group on their pool (`PgPool.grouped`), where a connection

@@ -1,0 +1,3377 @@
+diff --git a/dist/JsonSchema.d.ts b/dist/JsonSchema.d.ts
+index 2187a621f7122b7a6094b22c30f77de76898a4a8..ce6e24b59f03ae04d705f5e3d2a9fd272d1e6769 100644
+--- a/dist/JsonSchema.d.ts
++++ b/dist/JsonSchema.d.ts
+@@ -17,6 +17,21 @@
+ export interface JsonSchema {
+     [x: string]: unknown;
+ }
++
++/**
++ * Options for converting OpenAPI schemas to Draft 2020-12.
++ *
++ * @category decoding
++ * @since 4.0.0
++ */
++export interface FromOpenApiOptions {
++  /**
++   * Observe each reference in schema positions before its URI is rewritten.
++   * Reference targets are not followed. Examples, defaults and ignored OpenAPI
++   * 3.0 reference siblings are not visited. Callback exceptions propagate.
++   */
++  readonly onReference?: ((reference: string) => void) | undefined
++}
+ /**
+  * The set of JSON Schema dialects supported by this module.
+  *
+@@ -332,7 +347,7 @@ export declare function fromSchemaDraft2020_12(js: JsonSchema): Document<"draft-
+  * @category decoding
+  * @since 4.0.0
+  */
+-export declare function fromSchemaOpenApi3_1(js: JsonSchema): Document<"draft-2020-12">;
++export declare function fromSchemaOpenApi3_1(js: JsonSchema, options?: FromOpenApiOptions): Document<"draft-2020-12">;
+ /**
+  * Parses a raw OpenAPI 3.0 JSON Schema into a `Document<"draft-2020-12">`.
+  *
+@@ -383,7 +398,7 @@ export declare function fromSchemaOpenApi3_1(js: JsonSchema): Document<"draft-20
+  * @category decoding
+  * @since 4.0.0
+  */
+-export declare function fromSchemaOpenApi3_0(schema: JsonSchema): Document<"draft-2020-12">;
++export declare function fromSchemaOpenApi3_0(schema: JsonSchema, options?: FromOpenApiOptions): Document<"draft-2020-12">;
+ /**
+  * Converts a `Document<"draft-2020-12">` to a `Document<"draft-07">`.
+  *
+diff --git a/dist/JsonSchema.js b/dist/JsonSchema.js
+index 089db2034b07fd3ebadc4407220d815396113f9c..ab54699cff182f38133af0a3feff08bad7383a20 100644
+--- a/dist/JsonSchema.js
++++ b/dist/JsonSchema.js
+@@ -223,9 +223,11 @@ export function fromSchemaDraft2020_12(js) {
+  * @category decoding
+  * @since 4.0.0
+  */
+-export function fromSchemaOpenApi3_1(js) {
++export function fromSchemaOpenApi3_1(js, options) {
+   const isRootResource = createsResource(js.$id);
+   const schema = transformSchema(js, (schema, inEmbeddedResource) => {
++    if (typeof schema.$ref === "string") options?.onReference?.(schema.$ref);
++    if (typeof schema.$dynamicRef === "string") options?.onReference?.(schema.$dynamicRef);
+     if (!isRootResource && !inEmbeddedResource) rewriteSchemaRef(schema, rewriteOpenApiComponentsReference);
+     if (isMetaSchemaUri(schema.$schema, META_SCHEMA_URI_OPEN_API_3_1)) {
+       InternalRecord.assignProperty(schema, "$schema", META_SCHEMA_URI_DRAFT_2020_12);
+@@ -290,8 +292,8 @@ export function fromSchemaOpenApi3_1(js) {
+  * @category decoding
+  * @since 4.0.0
+  */
+-export function fromSchemaOpenApi3_0(schema) {
+-  return fromSchemaDraft2020_12(convertOpenApi30(schema));
++export function fromSchemaOpenApi3_0(schema, options) {
++  return fromSchemaDraft2020_12(convertOpenApi30(schema, options));
+ }
+ /**
+  * Converts a `Document<"draft-2020-12">` to a `Document<"draft-07">`.
+@@ -952,10 +954,11 @@ function convertDependencies(source, out, context, targetDialect) {
+   }
+   if (Object.keys(dependencies).length > 0) InternalRecord.assignProperty(out, "dependencies", dependencies);
+ }
+-function convertOpenApi30(root) {
++function convertOpenApi30(root, options) {
+   return convertSchema(root, (source, context) => {
+     const out = {};
+     if (typeof source.$ref === "string") {
++      options?.onReference?.(source.$ref);
+       context.reference(out, rewriteOpenApiComponentsReference(source.$ref));
+       return out;
+     }
+diff --git a/dist/Semaphore.js b/dist/Semaphore.js
+index 92e5585c8b28d0b35ad1af408d74906a1299d374..6af5f4caa305422dc9da4b72383e45577a6e29e7 100644
+--- a/dist/Semaphore.js
++++ b/dist/Semaphore.js
+@@ -45,6 +45,8 @@ export const makeUnsafe = permits => new SemaphoreImpl(permits);
+ // The first queued request that fits in the free permits. Larger requests
+ // ahead of it keep their place but are overtaken, as documented on `take`.
+ const firstAvailableWaiter = self => {
++  // Executor: with no free permit only a request for none fits, so the queue is not searched.
++  if (self.free <= 0 && self.zeroPermitWaiters === 0) return undefined;
+   for (const waiter of self.waiters) {
+     if (waiter.permits <= self.free) return waiter;
+   }
+@@ -61,10 +63,14 @@ const takePermits = (self, n, onAcquire, restore = identity) => core.withFiber(f
+     resume: undefined
+   };
+   const remove = () => {
+-    if (self.waiters.delete(waiter)) self.releaseUnsafe(fiber, 0);
++    if (self.waiters.delete(waiter)) {
++      if (n === 0) self.zeroPermitWaiters--;
++      self.releaseUnsafe(fiber, 0);
++    }
+     return undefined;
+   };
+   self.waiters.add(waiter);
++  if (n === 0) self.zeroPermitWaiters++;
+   internal.onExitUnsafe(fiber, remove);
+   const wait = restore(internal.callback(resume => {
+     // The fiber may have yielded since the last check, missing a wake.
+@@ -84,6 +90,8 @@ const takePermits = (self, n, onAcquire, restore = identity) => core.withFiber(f
+ });
+ class SemaphoreImpl {
+   waiters = /*#__PURE__*/new Set();
++  // Executor: queued requests for no permits, which fit even when none are free.
++  zeroPermitWaiters = 0;
+   taken = 0;
+   permits;
+   constructor(permits) {
+@@ -113,10 +121,22 @@ class SemaphoreImpl {
+         // that were already woken still count against the budget, since they
+         // keep their place until they acquire. Resumed fibers run inline and
+         // can add or remove waiters, so iterate over a snapshot.
++        //
++        // Executor: upstream copies every waiter here on each release, which
++        // makes a queue of n requests cost n * n and a burst of thousands
++        // stall. The requests to wake are chosen first, stopping once the
++        // free permits are spoken for, and only those are resumed. A request
++        // an earlier one removed is skipped; its removal starts another pass.
+         let remaining = this.free;
+-        for (const waiter of Array.from(this.waiters)) {
+-          if (!this.waiters.has(waiter) || waiter.permits > remaining) continue;
++        const woken = [];
++        for (const waiter of this.waiters) {
++          if (remaining <= 0 && this.zeroPermitWaiters === 0) break;
++          if (waiter.permits > remaining) continue;
+           remaining -= waiter.permits;
++          woken.push(waiter);
++        }
++        for (const waiter of woken) {
++          if (!this.waiters.has(waiter)) continue;
+           const resume = waiter.resume;
+           waiter.resume = undefined;
+           resume?.(internal.void);
+diff --git a/dist/ai/McpSchema.d.ts b/dist/ai/McpSchema.d.ts
+index f5e7ced5d92d423859b80f7bd17e865b48c0a401..f35eb4f0975aac9977ea3b92d349ced6c9a7cdb7 100644
+--- a/dist/ai/McpSchema.d.ts
++++ b/dist/ai/McpSchema.d.ts
+@@ -4674,5 +4674,204 @@ declare const EnabledWhen_base: Context.ServiceClass<EnabledWhen, "effect/ai/Mcp
+  */
+ export declare class EnabledWhen extends EnabledWhen_base {
+ }
++/**
++ * JSON-RPC error code for a referenced entity that does not exist, such as an unknown
++ * event name. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export declare const NOT_FOUND_ERROR_CODE: -32011;
++/**
++ * JSON-RPC error code for a principal that may not use this event or arguments. Defined
++ * by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export declare const FORBIDDEN_ERROR_CODE: -32012;
++/**
++ * JSON-RPC error code for a server-imposed limit, such as the number of subscriptions.
++ * Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export declare const RESOURCE_EXHAUSTED_ERROR_CODE: -32013;
++/**
++ * JSON-RPC error code for a well-formed request that asks for an unsupported option, such
++ * as a delivery mode the event does not offer. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export declare const UNSUPPORTED_ERROR_CODE: -32014;
++/**
++ * JSON-RPC error code for a webhook callback that failed verification or could not be
++ * reached. `data.reason` names the category. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export declare const CALLBACK_ENDPOINT_ERROR_CODE: -32015;
++/**
++ * How a client receives an event's occurrences.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const EventDeliveryMode: Schema.Literals<readonly ["poll", "push", "webhook"]>;
++/**
++ * An event type a server offers: its subscription arguments, payload shape, and the delivery
++ * modes it supports.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const EventDefinition: Schema.Struct<{
++    readonly name: Schema.String;
++    readonly title: Schema.decodeTo<Schema.toType<Schema.optional<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
++    readonly description: Schema.decodeTo<Schema.toType<Schema.optional<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
++    readonly delivery: Schema.$Array<Schema.Literals<readonly ["poll", "push", "webhook"]>>;
++    readonly inputSchema: Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>;
++    readonly payloadSchema: Schema.decodeTo<Schema.toType<Schema.optional<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
++    readonly _meta: Schema.decodeTo<Schema.toType<Schema.optional<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
++}>;
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type EventDefinition = typeof EventDefinition.Type;
++/**
++ * One page of `events/list`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const ListEventsResult: Schema.Struct<{
++    readonly events: Schema.$Array<Schema.Struct<{
++        readonly name: Schema.String;
++        readonly title: Schema.decodeTo<Schema.toType<Schema.optional<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
++        readonly description: Schema.decodeTo<Schema.toType<Schema.optional<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
++        readonly delivery: Schema.$Array<Schema.Literals<readonly ["poll", "push", "webhook"]>>;
++        readonly inputSchema: Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>;
++        readonly payloadSchema: Schema.decodeTo<Schema.toType<Schema.optional<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
++        readonly _meta: Schema.decodeTo<Schema.toType<Schema.optional<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
++    }>>;
++    readonly nextCursor: Schema.decodeTo<Schema.toType<Schema.optional<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
++}>;
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type ListEventsResult = typeof ListEventsResult.Type;
++/**
++ * An `events/list` request.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const ListEventsParams: Schema.Struct<{
++    readonly cursor: Schema.decodeTo<Schema.toType<Schema.optional<Schema.String>>, Schema.optionalKey<Schema.String>, never, never>;
++}>;
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type ListEventsParams = typeof ListEventsParams.Type;
++/**
++ * Where a webhook subscription delivers. The secret is a Standard Webhooks `whsec_` value
++ * supplied by the client.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const WebhookEventDelivery: Schema.Struct<{
++    readonly mode: Schema.Literal<"webhook">;
++    readonly url: Schema.String;
++    readonly secret: Schema.String;
++}>;
++/**
++ * An `events/subscribe` request. The same principal, URL, name and arguments address the same
++ * subscription; repeating the request refreshes it.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const SubscribeEventParams: Schema.Struct<{
++    readonly name: Schema.String;
++    readonly arguments: Schema.decodeTo<Schema.toType<Schema.optional<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
++    readonly delivery: Schema.Struct<{
++        readonly mode: Schema.Literal<"webhook">;
++        readonly url: Schema.String;
++        readonly secret: Schema.String;
++    }>;
++    readonly cursor: Schema.decodeTo<Schema.toType<Schema.optional<Schema.NullOr<Schema.String>>>, Schema.optionalKey<Schema.NullOr<Schema.String>>, never, never>;
++    readonly maxAgeMs: Schema.decodeTo<Schema.toType<Schema.optional<Schema.Int>>, Schema.optionalKey<Schema.Int>, never, never>;
++    readonly ttlMs: Schema.decodeTo<Schema.toType<Schema.optional<Schema.NullOr<Schema.Int>>>, Schema.optionalKey<Schema.NullOr<Schema.Int>>, never, never>;
++}>;
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type SubscribeEventParams = typeof SubscribeEventParams.Type;
++/**
++ * The server's grant for an `events/subscribe` request. `refreshBefore` is an ISO 8601 time, or
++ * `null` when the subscription does not expire.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const SubscribeEventResult: Schema.Struct<{
++    readonly id: Schema.String;
++    readonly refreshBefore: Schema.NullOr<Schema.String>;
++    readonly cursor: Schema.NullOr<Schema.String>;
++    readonly truncated: Schema.decodeTo<Schema.toType<Schema.optional<Schema.Boolean>>, Schema.optionalKey<Schema.Boolean>, never, never>;
++    readonly deliveryStatus: Schema.decodeTo<Schema.toType<Schema.optional<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
++}>;
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type SubscribeEventResult = typeof SubscribeEventResult.Type;
++/**
++ * An `events/unsubscribe` request. It names the subscription by the same key as
++ * `events/subscribe`, without the secret.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const UnsubscribeEventParams: Schema.Struct<{
++    readonly name: Schema.String;
++    readonly arguments: Schema.decodeTo<Schema.toType<Schema.optional<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>>, Schema.optionalKey<Schema.$Record<Schema.String, Schema.Codec<Schema.Json, Schema.Json, never, never>>>, never, never>;
++    readonly delivery: Schema.Struct<{
++        readonly mode: Schema.Literal<"webhook">;
++        readonly url: Schema.String;
++    }>;
++}>;
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type UnsubscribeEventParams = typeof UnsubscribeEventParams.Type;
+ export {};
+ //# sourceMappingURL=McpSchema.d.ts.map
+\ No newline at end of file
+diff --git a/dist/ai/McpSchema.js b/dist/ai/McpSchema.js
+index bff6370f579aee3b70b79e70ef319c149501007f..8ebdfcca6a9573c10605ca656a85932a0d5ba9d4 100644
+--- a/dist/ai/McpSchema.js
++++ b/dist/ai/McpSchema.js
+@@ -2732,4 +2732,158 @@ export function param(name, schema) {
+  * @since 4.0.0
+  */
+ export class EnabledWhen extends /*#__PURE__*/Context.Service()("effect/ai/McpSchema/EnabledWhen") {}
++// =============================================================================
++// Events
++// =============================================================================
++/**
++ * JSON-RPC error code for a referenced entity that does not exist, such as an unknown
++ * event name. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const NOT_FOUND_ERROR_CODE = -32011;
++/**
++ * JSON-RPC error code for a principal that may not use this event or arguments. Defined
++ * by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const FORBIDDEN_ERROR_CODE = -32012;
++/**
++ * JSON-RPC error code for a server-imposed limit, such as the number of subscriptions.
++ * Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const RESOURCE_EXHAUSTED_ERROR_CODE = -32013;
++/**
++ * JSON-RPC error code for a well-formed request that asks for an unsupported option, such
++ * as a delivery mode the event does not offer. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const UNSUPPORTED_ERROR_CODE = -32014;
++/**
++ * JSON-RPC error code for a webhook callback that failed verification or could not be
++ * reached. `data.reason` names the category. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const CALLBACK_ENDPOINT_ERROR_CODE = -32015;
++/**
++ * How a client receives an event's occurrences.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const EventDeliveryMode = /*#__PURE__*/Schema.Literals(["poll", "push", "webhook"]);
++/**
++ * An event type a server offers: its subscription arguments, payload shape, and the delivery
++ * modes it supports.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const EventDefinition = /*#__PURE__*/Schema.Struct({
++  name: Schema.String,
++  title: /*#__PURE__*/optional(Schema.String),
++  description: /*#__PURE__*/optional(Schema.String),
++  delivery: /*#__PURE__*/Schema.Array(EventDeliveryMode),
++  inputSchema: Schema.JsonObject,
++  payloadSchema: /*#__PURE__*/optional(Schema.JsonObject),
++  _meta: /*#__PURE__*/optional(Schema.JsonObject)
++});
++/**
++ * One page of `events/list`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const ListEventsResult = /*#__PURE__*/Schema.Struct({
++  events: /*#__PURE__*/Schema.Array(EventDefinition),
++  nextCursor: /*#__PURE__*/optional(Schema.String)
++});
++/**
++ * An `events/list` request.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const ListEventsParams = /*#__PURE__*/Schema.Struct({
++  cursor: /*#__PURE__*/optional(Schema.String)
++});
++/**
++ * Where a webhook subscription delivers. The secret is a Standard Webhooks `whsec_` value
++ * supplied by the client.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const WebhookEventDelivery = /*#__PURE__*/Schema.Struct({
++  mode: /*#__PURE__*/Schema.Literal("webhook"),
++  url: Schema.String,
++  secret: Schema.String
++});
++/**
++ * An `events/subscribe` request. The same principal, URL, name and arguments address the same
++ * subscription; repeating the request refreshes it.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const SubscribeEventParams = /*#__PURE__*/Schema.Struct({
++  name: Schema.String,
++  arguments: /*#__PURE__*/optional(/*#__PURE__*/Schema.Record(Schema.String, Schema.Json)),
++  delivery: WebhookEventDelivery,
++  cursor: /*#__PURE__*/optional(/*#__PURE__*/Schema.NullOr(Schema.String)),
++  maxAgeMs: /*#__PURE__*/optional(Schema.Int),
++  ttlMs: /*#__PURE__*/optional(/*#__PURE__*/Schema.NullOr(Schema.Int))
++});
++/**
++ * The server's grant for an `events/subscribe` request. `refreshBefore` is an ISO 8601 time, or
++ * `null` when the subscription does not expire.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const SubscribeEventResult = /*#__PURE__*/Schema.Struct({
++  id: Schema.String,
++  refreshBefore: /*#__PURE__*/Schema.NullOr(Schema.String),
++  cursor: /*#__PURE__*/Schema.NullOr(Schema.String),
++  truncated: /*#__PURE__*/optional(Schema.Boolean),
++  deliveryStatus: /*#__PURE__*/optional(Schema.JsonObject)
++});
++/**
++ * An `events/unsubscribe` request. It names the subscription by the same key as
++ * `events/subscribe`, without the secret.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const UnsubscribeEventParams = /*#__PURE__*/Schema.Struct({
++  name: Schema.String,
++  arguments: /*#__PURE__*/optional(/*#__PURE__*/Schema.Record(Schema.String, Schema.Json)),
++  delivery: /*#__PURE__*/Schema.Struct({
++    mode: /*#__PURE__*/Schema.Literal("webhook"),
++    url: Schema.String
++  })
++});
+ //# sourceMappingURL=McpSchema.js.map
+\ No newline at end of file
+diff --git a/dist/ai/McpServer.d.ts b/dist/ai/McpServer.d.ts
+index 0d27695a965ebb5bb573fc7636e66ea9eb877177..4181db28a6cd1c994b450ae0a3bd8f62d8b7e198 100644
+--- a/dist/ai/McpServer.d.ts
++++ b/dist/ai/McpServer.d.ts
+@@ -610,8 +610,8 @@ export interface CacheHints {
+  *
+  * Each request handled by the server runs in a server span that follows the
+  * OpenTelemetry MCP semantic conventions. Spans are named after the JSON-RPC
+- * method, with the tool or prompt name appended for `tools/call` and
+- * `prompts/get` (for example `tools/call get_weather`). A W3C `traceparent` in
++ * method alone, such as `tools/call`: the tool, prompt or resource a caller
++ * names is not recorded until the server has resolved it. A W3C `traceparent` in
+  * `params._meta` becomes the span's parent, and the transport span (such as
+  * the HTTP server span) is linked. Tool arguments are recorded only when
+  * `Toolkit.RecordToolArguments` is `true`.
+@@ -743,6 +743,39 @@ export declare const layerStdio: <const Protocols extends Arr.NonEmptyReadonlyAr
+     readonly cacheHints?: CacheHints | undefined;
+     readonly registrations?: Layer.Layer<RA, RE, RR> | undefined;
+ }) => Layer.Layer<McpServer | McpRequest.From<"Requires", ProvidedServices<Protocols>>, Cause.IllegalArgumentError | RE, Stdio | RegistrationServices<RR> | McpRequest.From<"Requires", RemainingRequestServices<RR, ProvidedServices<Protocols>>>>;
++/**
++ * Keeps MCP HTTP sessions beyond a server's memory, for `layerHttp`'s `sessions` option.
++ *
++ * `save` runs when `initialize` opens a session and when the client sets its log level, never
++ * for other requests. `load` runs only for a session id the server does not hold. It passes what
++ * `save` stored to `restore`, if anything, which decodes it and registers the session, and
++ * returns whether the server now holds it. A value the server cannot read, or a version it no
++ * longer serves, returns `false`: the session stays unknown, and the store should not keep
++ * that value as in use. Neither may fail.
++ *
++ * A store keeps protocol state only: who may use a session is for the host to check on every
++ * request.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.0.0
++ */
++export interface SessionStore {
++    readonly save: (sessionId: string, session: StoredSession) => Effect.Effect<void>;
++    readonly load: (sessionId: string, restore: (stored: unknown) => boolean) => Effect.Effect<void>;
++}
++/**
++ * What a {@link SessionStore} keeps of one session: its negotiated `initialize`, encoded as JSON,
++ * and the log level the client set, if any.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.0.0
++ */
++export type StoredSession = {
++    readonly initialize: typeof McpSchema.Initialize.payloadSchema.Encoded;
++    readonly logLevel?: McpSchema.LoggingLevel;
++};
+ /**
+  * Registers a Streamable HTTP MCP endpoint at `options.path`.
+  *
+@@ -819,6 +852,22 @@ export declare const layerHttp: <const Protocols extends Arr.NonEmptyReadonlyArr
+     readonly allowSessionTermination?: boolean | undefined;
+     readonly allowSubscriptions?: boolean | undefined;
+     readonly registrations?: Layer.Layer<RA, RE, RR> | undefined;
++    /**
++     * Keeps sessions beyond this server's memory, so a client continues its session after the
++     * server restarts. Without one, a restart forgets every session (`404`).
++     */
++    readonly sessions?: SessionStore | undefined;
++    /**
++     * The most sessions kept in memory. Past it the least recently used session that owns no work is
++     * forgotten, and its client gets `404` and initializes again. A session owns work while one of its
++     * requests runs, its response stream included, or while `heldSession` says so; when every session
++     * owns work, a new `initialize` is refused with `503` and `Retry-After: 1`. Each `initialize` takes
++     * its session's place when admitted, so sessions opened together never pass the bound. Without a
++     * bound every session stays for the server's life.
++     */
++    readonly maxSessions?: number | undefined;
++    /** Whether the application holds work that only this session can reach, such as a paused program. */
++    readonly heldSession?: ((sessionId: string) => boolean) | undefined;
+ }) => Layer.Layer<McpServer | McpRequest.From<"Requires", ProvidedServices<Protocols, true>>, Cause.IllegalArgumentError | RE, HttpRouter.HttpRouter | RegistrationServices<RR> | HttpRouter.Request.From<"Requires", RemainingRequestServices<RR, ProvidedServices<Protocols, true>>>>;
+ /**
+  * Registers a request-scoped Streamable HTTP MCP endpoint at `options.path`.
+@@ -872,6 +921,21 @@ export declare const layerHttpRequestScoped: <const Protocols extends Arr.NonEmp
+     readonly allowedOrigins?: ReadonlyArray<string> | undefined;
+     readonly registrations?: Layer.Layer<RA, RE, RR> | undefined;
+ }) => Layer.Layer<McpServer | McpRequest.From<"Requires", ProvidedServices<Protocols, true>>, Cause.IllegalArgumentError | RE, HttpRouter.HttpRouter | RegistrationServices<RR> | HttpRouter.Request.From<"Requires", RemainingRequestServices<RR, ProvidedServices<Protocols, true>>>>;
++declare const ResultContent_base: Context.ServiceClass<ResultContent, "effect/ai/McpServer/ResultContent", (encoded: unknown) => {
++    readonly content: (typeof CallToolResult.Encoded)["content"];
++    readonly structuredContent?: (typeof CallToolResult.Encoded)["structuredContent"];
++}>;
++/**
++ * Builds a tool's successful result from its encoded value, in place of one JSON text block with
++ * the value as `structuredContent`. The returned fields use the MCP wire encoding and are decoded
++ * as a `CallToolResult`, so image data is base64. Declared failures keep the default result.
++ *
++ * @stability unstable
++ * @category handlers
++ * @since 4.0.0
++ */
++export declare class ResultContent extends ResultContent_base {
++}
+ /**
+  * The requirements of a toolkit registration.
+  *
+@@ -919,6 +983,42 @@ export declare const registerToolkit: <Tools extends Record<string, Tool.Any>>(t
+  * @since 4.0.0
+  */
+ export declare const toolkit: <Tools extends Record<string, Tool.Any>>(toolkit: Toolkit.Toolkit<Tools>) => Layer.Layer<never, never, ToolkitRequirements<Tools>>;
++/**
++ * Handlers for the draft MCP events extension: listing event types and managing webhook
++ * subscriptions. Each handler runs with the request's `McpRequestContext`, so it can
++ * authorize the principal that sent it. Failures are MCP errors and reach the client
++ * unchanged, such as `CALLBACK_ENDPOINT_ERROR_CODE` with `data.reason`.
++ *
++ * Only protocols that define events serve these methods; currently `2026-07-28`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export interface EventsHandler<R = never> {
++    readonly list: (request: McpSchema.ListEventsParams) => Effect.Effect<McpSchema.ListEventsResult, McpSchema.McpError, R>;
++    readonly subscribe: (request: McpSchema.SubscribeEventParams) => Effect.Effect<McpSchema.SubscribeEventResult, McpSchema.McpError, R>;
++    readonly unsubscribe: (request: McpSchema.UnsubscribeEventParams) => Effect.Effect<void, McpSchema.McpError, R>;
++}
++/**
++ * Registers the server's events handlers. The server then advertises the `events`
++ * capability and serves `events/list`, `events/subscribe` and `events/unsubscribe`.
++ * The services the handlers need are taken when they are registered.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const registerEvents: <R>(handler: EventsHandler<R>) => Effect.Effect<void, never, McpServer | Exclude<R, McpRequestContext>>;
++/**
++ * Registers events handlers as a layer, like `toolkit` does for tools. Pass it to a
++ * transport's `registrations`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export declare const events: <R>(handler: EventsHandler<R>) => Layer.Layer<never, never, McpServer | Exclude<R, McpRequestContext>>;
+ /**
+  * Utility type that validates a completion-handler record against the allowed
+  * parameter keys.
+diff --git a/dist/ai/McpServer.js b/dist/ai/McpServer.js
+index d675c7feba0f00b8d573427d154608e3dc0ccfe5..c225d835202ee99c6c9ee5ade72b726755b9c054 100644
+--- a/dist/ai/McpServer.js
++++ b/dist/ai/McpServer.js
+@@ -894,39 +894,17 @@ const requestSpanOptions = (method, request, options) => {
+   if (request.isNotification !== true) attributes["jsonrpc.request.id"] = String(request.id);
+   if (options.sessionId !== undefined) attributes["mcp.session.id"] = options.sessionId;
+   if (options.networkTransport !== undefined) attributes["network.transport"] = options.networkTransport;
+-  let target;
+-  switch (method) {
+-    case "tools/call":
+-      {
+-        attributes["gen_ai.operation.name"] = "execute_tool";
+-        if (typeof params?.name === "string") {
+-          target = params.name;
+-          attributes["gen_ai.tool.name"] = target;
+-        }
+-        if (options.recordToolArguments && params?.arguments !== undefined) {
+-          attributes["gen_ai.tool.call.arguments"] = Toolkit.stringifyToolArguments(params.arguments);
+-        }
+-        break;
+-      }
+-    case "prompts/get":
+-      {
+-        if (typeof params?.name === "string") {
+-          target = params.name;
+-          attributes["gen_ai.prompt.name"] = target;
+-        }
+-        break;
+-      }
+-    case "resources/read":
+-    case "resources/subscribe":
+-    case "resources/unsubscribe":
+-      {
+-        // Resource URIs can be unbounded and sensitive, so they stay out of the span name.
+-        if (typeof params?.uri === "string") attributes["mcp.resource.uri"] = params.uri;
+-        break;
+-      }
++  // The name a caller asks for is the caller's text until the server resolves it: a tool that does
++  // not exist, a prompt name, a resource URI. The span is named after the method alone and records
++  // none of them. `Toolkit.handle` records `gen_ai.tool.name` once it runs a registered tool.
++  if (method === "tools/call") {
++    attributes["gen_ai.operation.name"] = "execute_tool";
++    if (options.recordToolArguments && params?.arguments !== undefined) {
++      attributes["gen_ai.tool.call.arguments"] = Toolkit.stringifyToolArguments(params.arguments);
++    }
+   }
+   return {
+-    name: target === undefined ? method : `${method} ${target}`,
++    name: method,
+     kind: "server",
+     attributes,
+     parent: remoteParentSpan(params)
+@@ -1002,8 +980,8 @@ const normalizeCacheHints = cacheHints => {
+  *
+  * Each request handled by the server runs in a server span that follows the
+  * OpenTelemetry MCP semantic conventions. Spans are named after the JSON-RPC
+- * method, with the tool or prompt name appended for `tools/call` and
+- * `prompts/get` (for example `tools/call get_weather`). A W3C `traceparent` in
++ * method alone, such as `tools/call`: the tool, prompt or resource a caller
++ * names is not recorded until the server has resolved it. A W3C `traceparent` in
+  * `params._meta` becomes the span's parent, and the transport span (such as
+  * the HTTP server span) is linked. Tool arguments are recorded only when
+  * `Toolkit.RecordToolArguments` is `true`.
+@@ -1812,7 +1790,10 @@ const mcpStdioSerialization = protocols => {
+  * @since 4.0.0
+  */
+ export const layerHttp = options => {
+-  const runtime = McpRuntime.layer(options.protocols);
++  const runtime = McpRuntime.layer(options.protocols, options.sessions, {
++    maxHttpSessions: options.maxSessions,
++    heldHttpSession: options.heldSession
++  });
+   return layerWithRuntime(options, "http").pipe(Layer.provide(layerMcpProtocolHttp(options)), Layer.provide(runtime), Layer.provide(RpcSerialization.layerJsonRpc()));
+ };
+ /**
+@@ -1912,10 +1893,7 @@ const addMcpHttpRoutes = /*#__PURE__*/Effect.fnUntraced(function* (options, http
+   const runtime = yield* McpRuntime.ServerRuntime;
+   const router = yield* HttpRouter.HttpRouter;
+   const allowSessionTermination = options.allowSessionTermination === true && runtime.protocols.some(protocol => protocol.runtime._tag === "Stateful");
+-  const forbidden = Effect.succeed(HttpServerResponse.empty({
+-    status: 403
+-  }));
+-  const withAllowedOrigin = handler => request => isAllowedMcpOrigin(request, options.allowedOrigins) ? handler(request) : forbidden;
++  const withAllowedOrigin = handler => request => isAllowedMcpOrigin(request, options.allowedOrigins) ? handler(request) : Effect.succeed(forbiddenOrigin(request));
+   const methodNotAllowedResponse = Effect.succeed(HttpServerResponse.empty({
+     status: 405,
+     headers: {
+@@ -1929,46 +1907,58 @@ const addMcpHttpRoutes = /*#__PURE__*/Effect.fnUntraced(function* (options, http
+   yield* router.add("DELETE", options.path, allowSessionTermination ? withAllowedOrigin(request => runtime.terminateHttpSession(request.headers)) : methodNotAllowed);
+   yield* router.add("POST", options.path, request => {
+     if (!isAllowedMcpOrigin(request, options.allowedOrigins)) {
+-      return Effect.succeed(HttpServerResponse.empty({
+-        status: 403
+-      }));
++      return Effect.succeed(forbiddenOrigin(request));
+     }
+     if (mcpMediaTypes(request.headers["content-type"])[0] !== "application/json") {
+-      return Effect.succeed(HttpServerResponse.empty({
+-        status: 415
+-      }));
++      return Effect.succeed(transportRejection(415, "Unsupported Media Type: send JSON-RPC messages with Content-Type: application/json"));
+     }
+     const accepted = mcpMediaTypes(request.headers["accept"]);
+     if (!accepted.includes("application/json") || !accepted.includes("text/event-stream")) {
+-      return Effect.succeed(HttpServerResponse.empty({
+-        status: 406
+-      }));
++      return Effect.succeed(transportRejection(406, "Not Acceptable: the Accept header must list both application/json and text/event-stream"));
+     }
+     return Effect.gen(function* () {
+       const parsed = yield* Effect.result(Effect.flatMap(request.text, Schema.decodeEffect(Schema.UnknownFromJsonString)));
+-      const admission = runtime.admitHttp(request.headers, parsed);
+-      if (admission._tag === "Rejected") {
+-        return admission.response;
+-      }
+-      const toResponse = response => {
+-        // Completed responses may already contain notifications followed by the result.
+-        const hasMultipleMessages = response.body._tag === "Uint8Array" && response.body.body.subarray(0, -1).includes(10);
+-        return admission.isSubscription || response.body._tag === "Stream" || hasMultipleMessages ? toServerSentEvents(response, admission.isSubscription) : response;
+-      };
+-      if (admission.acknowledge) {
+-        return yield* Effect.catchCause(Effect.map(httpEffect, toResponse), () => Effect.succeed(HttpServerResponse.empty({
++      const sessionId = request.headers[MCP_SESSION_ID_HEADER];
++      if (sessionId !== undefined) yield* runtime.restoreHttp(sessionId);
++      // Executor: the runtime finds the place an `initialize` reserved under the request in the
++      // current context.
++      const httpRequest = yield* HttpServerRequest.HttpServerRequest;
++      // Executor: admission's place and a session's hold are taken with interruption masked until
++      // their release is installed, so a client that disconnects in between cannot strand either.
++      // Interruption is restored around the request's own work.
++      return yield* Effect.uninterruptibleMask(restore => {
++        const admission = runtime.admitHttp(request.headers, parsed, httpRequest);
++        if (admission._tag === "Rejected") {
++          return Effect.succeed(admission.response);
++        }
++        const toResponse = response => {
++          // Completed responses may already contain notifications followed by the result.
++          const hasMultipleMessages = response.body._tag === "Uint8Array" && response.body.body.subarray(0, -1).includes(10);
++          return admission.isSubscription || response.body._tag === "Stream" || hasMultipleMessages ? toServerSentEvents(response, admission.isSubscription) : response;
++        };
++        const answered = admission.acknowledge ? Effect.catchCause(Effect.map(httpEffect, toResponse), () => Effect.succeed(HttpServerResponse.empty({
+           status: 202
+-        })));
+-      }
+-      return yield* Effect.flatMap(httpEffect, response => {
+-        if (response.body._tag !== "Uint8Array" || response.body.body.length > 0) {
+-          return Effect.succeed(toResponse(response));
++        }))) : Effect.flatMap(httpEffect, response => {
++          if (response.body._tag !== "Uint8Array" || response.body.body.length > 0) {
++            return Effect.succeed(toResponse(response));
++          }
++          // Only fully cancelled request POSTs may return an empty SSE response.
++          // https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server
++          return httpPostResponses.get(request)?.expected === 0 ? Effect.succeed(HttpServerResponse.stream(Stream.empty, {
++            contentType: "text/event-stream"
++          })) : Effect.die(new Error("MCP request ended without writing its response"));
++        });
++        if (sessionId === undefined) {
++          // Executor: an initialize opens its session in the place admission reserved; a request
++          // that ends without opening it gives the place back.
++          const release = admission.release;
++          return release === undefined ? restore(answered) : Effect.ensuring(restore(answered), Effect.sync(release));
+         }
+-        // Only fully cancelled request POSTs may return an empty SSE response.
+-        // https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server
+-        return httpPostResponses.get(request)?.expected === 0 ? Effect.succeed(HttpServerResponse.stream(Stream.empty, {
+-          contentType: "text/event-stream"
+-        })) : Effect.die(new Error("MCP request ended without writing its response"));
++        // Executor: the session is kept until this request's response has been sent, so a reply,
++        // cancellation or answer that belongs to it can still reach it when newer sessions pass the
++        // bound. The hold belongs to the request's scope, which closes once the response has been
++        // sent, its stream included, or when the request ends any other way.
++        return Effect.andThen(Effect.acquireRelease(Effect.sync(() => runtime.holdHttp(sessionId)), release => Effect.sync(release)), restore(answered));
+       });
+     });
+   });
+@@ -2082,6 +2072,19 @@ const isAllowedMcpOrigin = (request, allowedOrigins) => {
+   const origin = request.headers["origin"];
+   return origin === undefined || (allowedOrigins ?? []).includes(origin);
+ };
++// Rejections before the JSON-RPC message is read. Clients print the body after their own prefix,
++// so it is a JSON-RPC error without a request ID that names the fix.
++const transportRejection = (status, message) => HttpServerResponse.jsonUnsafe({
++  jsonrpc: "2.0",
++  id: null,
++  error: {
++    code: McpSchema.INVALID_REQUEST_ERROR_CODE,
++    message
++  }
++}, {
++  status
++});
++const forbiddenOrigin = request => transportRejection(403, `Forbidden: Origin '${request.headers["origin"]}' may not call this MCP endpoint`);
+ const mcpMediaTypes = header => header === undefined ? [] : header.split(",").flatMap(part => {
+   const [mediaType, ...parameters] = part.split(";");
+   const quality = parameters.map(parameter => parameter.trim().toLowerCase()).find(parameter => parameter.startsWith("q="));
+@@ -2118,6 +2121,17 @@ const toolResultContent = encoded => encoded === undefined ? [] : [{
+   type: "text",
+   text: JSON.stringify(encoded)
+ }];
++/**
++ * Builds a tool's successful result from its encoded value, in place of one JSON text block with
++ * the value as `structuredContent`. The returned fields use the MCP wire encoding and are decoded
++ * as a `CallToolResult`, so image data is base64. Declared failures keep the default result.
++ *
++ * @stability unstable
++ * @category handlers
++ * @since 4.0.0
++ */
++export class ResultContent extends /*#__PURE__*/Context.Service()("effect/ai/McpServer/ResultContent") {}
++const decodeCallToolResult = /*#__PURE__*/Schema.decodeUnknownEffect(CallToolResult);
+ /**
+  * Registers a `Toolkit` with the `McpServer`.
+  *
+@@ -2167,6 +2181,7 @@ export const registerToolkit = /*#__PURE__*/Effect.fnUntraced(function* (toolkit
+     };
+     const annotations = tool.annotations;
+     const toolMeta = Context.getOrUndefined(annotations, Tool.Meta);
++    const resultContent = Context.getOrUndefined(annotations, ResultContent);
+     const isDeclaredFailure = Schema.is(tool.failureSchema);
+     // MCP content is JSON. Failures raised in "error" mode skip the Toolkit's encoding, so they use the JSON codec here.
+     const encodeFailureJson = Schema.encodeUnknownEffect(Schema.toCodecJson(tool.failureSchema));
+@@ -2230,6 +2245,10 @@ export const registerToolkit = /*#__PURE__*/Effect.fnUntraced(function* (toolkit
+         return built.handle(tool.name, payload ?? {}, undefined, decodeOptions).pipe(Stream.unwrap, Stream.runLast, Effect.flatMap(Effect.fromOption), Effect.flatMap(result => {
+           // The Toolkit encodes successes and "return"-mode failures with their JSON codec.
+           if (!result.isFailure) {
++            // Executor: a tool annotated with `ResultContent` builds its own result.
++            if (resultContent !== undefined) {
++              return Effect.orDie(decodeCallToolResult(resultContent(result.encodedResult)));
++            }
+             // An absent result, such as `Schema.Void`, has no structured form.
+             return Effect.succeed(result.result === undefined ? new CallToolResult({
+               isError: false,
+@@ -2281,6 +2300,34 @@ const toolJsonSchema = (schema, strict) => {
+  * @since 4.0.0
+  */
+ export const toolkit = toolkit => Layer.effectDiscard(registerToolkit(toolkit));
++/**
++ * Registers the server's events handlers. The server then advertises the `events`
++ * capability and serves `events/list`, `events/subscribe` and `events/unsubscribe`.
++ * The services the handlers need are taken when they are registered.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const registerEvents = handler => Effect.gen(function* () {
++  const server = yield* McpServer;
++  const services = omitRequestServices(yield* Effect.context());
++  const run = (effect, invocation) => provideInvocationContext(effect, invocation).pipe(Effect.provideContext(services));
++  yield* internalState.get(server).core.events.register({
++    list: (request, invocation) => run(handler.list(request), invocation),
++    subscribe: (request, invocation) => run(handler.subscribe(request), invocation),
++    unsubscribe: (request, invocation) => run(handler.unsubscribe(request), invocation)
++  });
++});
++/**
++ * Registers events handlers as a layer, like `toolkit` does for tools. Pass it to a
++ * transport's `registrations`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const events = handler => Layer.effectDiscard(registerEvents(handler));
+ // Leave defects and interruption to makeInvoke; convert only expected failures.
+ const handlerFailureToInternalError = cause => Cause.hasDies(cause) || Cause.hasInterrupts(cause) ? Effect.failCause(cause) : Effect.fail(new InternalError({
+   message: Cause.prettyErrors(cause)[0].message
+diff --git a/dist/ai/internal/mcpCore.js b/dist/ai/internal/mcpCore.js
+index 4c416a837fd627e48c53d7b10fb73198484c40f3..7c382def63b60997c0db184b8b2159cfd9046789 100644
+--- a/dist/ai/internal/mcpCore.js
++++ b/dist/ai/internal/mcpCore.js
+@@ -234,11 +234,19 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+       return Array.from(children.values()).sort((a, b) => a.uri < b.uri ? -1 : a.uri > b.uri ? 1 : 0);
+     })
+   };
++  let eventsHandler;
++  const events = {
++    register: handler => Effect.sync(() => {
++      eventsHandler = handler;
++    }),
++    current: Effect.sync(() => eventsHandler)
++  };
+   const registrationPresence = Effect.sync(() => ({
+     tools: registrations.size > 0,
+     resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0,
+     prompts: promptRegistrations.size > 0,
+-    skills: skillRegistrations.size > 0
++    skills: skillRegistrations.size > 0,
++    events: eventsHandler !== undefined
+   }));
+   return {
+     tools,
+@@ -246,6 +254,7 @@ export const make = /*#__PURE__*/Effect.sync(() => {
+     prompts,
+     completions,
+     skills,
++    events,
+     registrationPresence
+   };
+ });
+diff --git a/dist/ai/internal/mcpProtocol/v2026_07_28.js b/dist/ai/internal/mcpProtocol/v2026_07_28.js
+index af1ceed91e3edfce4ffd56b150de8b40088d61e8..a9fd56c5a8b5c093e7e96fb522d292f526a2ee88 100644
+--- a/dist/ai/internal/mcpProtocol/v2026_07_28.js
++++ b/dist/ai/internal/mcpProtocol/v2026_07_28.js
+@@ -260,6 +260,14 @@ export const makeHandlers = (core, _lifecycle, context) => {
+   const decodeListSkillsResult = Schema.decodeUnknownEffect(McpSkills.ListSkillsResult);
+   const decodeGetSkillResult = Schema.decodeUnknownEffect(McpSkills.GetSkillResult);
+   const decodeReadResourceDirectoryResult = Schema.decodeUnknownEffect(McpSkills.ReadResourceDirectoryResult);
++  const decodeListEventsResult = Schema.decodeUnknownEffect(McpSchema.ListEventsResult);
++  const decodeSubscribeEventResult = Schema.decodeUnknownEffect(McpSchema.SubscribeEventResult);
++  const decodeUnsubscribeEventResult = Schema.decodeUnknownEffect(McpSchema.UnsubscribeEventResult);
++  // Events are reachable only once a handler is registered, like a capability the server lacks.
++  const eventsHandler = Effect.flatMap(core.events.current, handler => handler === undefined ? failWithHttpStatus(404, new McpProtocol.ProtocolError({
++    code: PublicMcpSchema.METHOD_NOT_FOUND_ERROR_CODE,
++    message: "Method not found"
++  })) : Effect.succeed(handler));
+   const sendNotification = context.sendNotification;
+   const supportsSubscriptions = sendNotification !== undefined;
+   // Older adapters accept arbitrary JSON; this binding requires extension settings objects.
+@@ -291,6 +299,7 @@ export const makeHandlers = (core, _lifecycle, context) => {
+     if (presence.prompts) capabilities.prompts = {
+       listChanged: supportsSubscriptions
+     };
++    if (presence.events) capabilities.events = {};
+     return {
+       supportedVersions: context.supportedVersions,
+       capabilities,
+@@ -592,6 +601,40 @@ export const makeHandlers = (core, _lifecycle, context) => {
+       }, context.serverInfo);
+       return yield* decodeReadResourceDirectoryResult(result);
+     }, Effect.mapError(projectError)),
++    "events/list": Effect.fnUntraced(function* (request) {
++      const handler = yield* eventsHandler;
++      const invocation = yield* getInvocation;
++      const page = yield* handler.list(omitUndefined({
++        cursor: request.cursor
++      }), invocation);
++      const result = yield* projectCompleteResult({
++        events: page.events.map(event => omitUndefined(event)),
++        nextCursor: page.nextCursor
++      }, context.serverInfo);
++      return yield* decodeListEventsResult(result);
++    }, Effect.mapError(projectError)),
++    "events/subscribe": Effect.fnUntraced(function* (request) {
++      const handler = yield* eventsHandler;
++      const invocation = yield* getInvocation;
++      const {
++        _meta: _,
++        ...params
++      } = request;
++      const granted = yield* handler.subscribe(PublicMcpSchema.SubscribeEventParams.make(omitUndefined(params)), invocation);
++      const result = yield* projectCompleteResult(granted, context.serverInfo);
++      return yield* decodeSubscribeEventResult(result);
++    }, Effect.mapError(projectError)),
++    "events/unsubscribe": Effect.fnUntraced(function* (request) {
++      const handler = yield* eventsHandler;
++      const invocation = yield* getInvocation;
++      const {
++        _meta: _,
++        ...params
++      } = request;
++      yield* handler.unsubscribe(PublicMcpSchema.UnsubscribeEventParams.make(omitUndefined(params)), invocation);
++      const result = yield* projectCompleteResult({}, context.serverInfo);
++      return yield* decodeUnsubscribeEventResult(result);
++    }, Effect.mapError(projectError)),
+     "notifications/cancelled": Effect.fnUntraced(function* (_request) {
+       return yield* Effect.void;
+     })
+diff --git a/dist/ai/internal/mcpRuntime.js b/dist/ai/internal/mcpRuntime.js
+index 88238ffacc4206a0e2958d067d0c4f337469cbdf..a164dee8996cbef0609368ffafd98f3aabfbaa4d 100644
+--- a/dist/ai/internal/mcpRuntime.js
++++ b/dist/ai/internal/mcpRuntime.js
+@@ -8,6 +8,8 @@ import * as HttpServerResponse from "../../http/HttpServerResponse.js";
+ import * as Layer from "../../Layer.js";
+ import * as Predicate from "../../Predicate.js";
+ import * as Result from "../../Result.js";
++import * as Schema from "../../Schema.js";
++import { CurrentLogLevel } from "../../References.js";
+ import * as RpcGroup from "../../rpc/RpcGroup.js";
+ import * as PublicMcpSchema from "../McpSchema.js";
+ import * as McpProtocol from "./mcpProtocol.js";
+@@ -73,9 +75,56 @@ export const selectStatefulProtocol = (protocols, offeredVersion) => protocols.f
+ /**
+  * @internal
+  */
+-export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
++export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols, sessions, options) {
+   const statefulProtocol = protocols.find(protocol => protocol.runtime._tag === "Stateful");
+-  const stateful = statefulProtocol === undefined ? undefined : McpStatefulRuntime.make();
++  const stateful = statefulProtocol === undefined ? undefined : McpStatefulRuntime.make(options);
++  // Set when the server installs its handlers. The server starts in its own fiber, so a woken
++  // server's first request can arrive before that; it then uses the level in effect.
++  let defaultLogLevel;
++  let getListChangeRevision;
++  const decodeStored = Schema.decodeUnknownOption(McpStatefulRuntime.StoredSession);
++  // What the store keeps: the negotiated initialize and any level the client set, never
++  // anything about who the caller is. The host authenticates every request itself.
++  const storedSession = (binding, logLevel) => ({
++    initialize: Schema.encodeSync(PublicMcpSchema.Initialize.payloadSchema)(binding.initializePayload),
++    ...(logLevel === undefined ? {} : {
++      logLevel
++    })
++  });
++  const restoreHttp = sessionId => {
++    if (sessions === undefined || stateful === undefined || stateful.resolveSessionId(sessionId) !== undefined) {
++      return Effect.void;
++    }
++    return Effect.flatMap(CurrentLogLevel, currentLevel => sessions.load(sessionId, stored => {
++      // A concurrent request may have restored it before this one read the store.
++      if (stateful.resolveSessionId(sessionId) !== undefined) return true;
++      const decoded = decodeStored(stored);
++      if (decoded._tag === "None") return false;
++      const initializePayload = decoded.value.initialize;
++      // A session negotiated a version this server no longer serves stays unknown: 404.
++      const protocol = registry.protocols.find(protocol => protocol.runtime._tag === "Stateful" && protocol.protocolVersion === initializePayload.protocolVersion);
++      if (protocol === undefined) return false;
++      // With every session owning work there is no place for it either: 404, and the client's
++      // initialize is refused until one finishes.
++      return stateful.registerHttp(sessionId, {
++        initializePayload,
++        negotiatedProfile: {
++          protocolVersion: initializePayload.protocolVersion,
++          clientCapabilities: initializePayload.capabilities,
++          clientInfo: initializePayload.clientInfo,
++          requestMetadata: initializePayload._meta
++        },
++        protocol: protocol,
++        supportsResourceSubscriptions: false,
++        logLevel: defaultLogLevel ?? currentLevel,
++        // The restored client lists again; changes up to now are in what it reads next.
++        listChangeRevision: getListChangeRevision?.() ?? 0,
++        ...(decoded.value.logLevel === undefined ? {} : {
++          mcpLogLevel: decoded.value.logLevel
++        })
++      }) !== undefined;
++    }));
++  };
+   const protocolVersions = protocols.map(protocol => protocol.protocolVersion);
+   let statelessDescriptor;
+   let statelessProtocol;
+@@ -91,9 +140,11 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+   }
+   const registry = yield* McpProtocolRegistry.make(protocols);
+   const sessionTerminationListeners = new Set();
++  // The place each admitted `initialize` reserved for its session, by the HTTP request carrying it.
++  const reservedSessions = new WeakMap();
+   const unsupportedProtocolVersion = requested => ({
+     code: PublicMcpSchema.UNSUPPORTED_PROTOCOL_VERSION_ERROR_CODE,
+-    message: `Unsupported protocol version '${requested}'`,
++    message: `Unsupported protocol version '${requested}'. Supported versions: ${protocolVersions.join(", ")}`,
+     data: {
+       supported: protocolVersions,
+       requested
+@@ -103,10 +154,15 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+     const protocolVersion = headers[MCP_PROTOCOL_VERSION_HEADER];
+     const sessionId = headers[MCP_SESSION_ID_HEADER];
+     const binding = sessionId === undefined ? undefined : stateful?.resolveSessionId(sessionId);
++    // A forgotten session is 404, and the client must initialize again (MCP 2025-11-25, Session Management).
+     if (sessionId !== undefined && binding === undefined) {
+       return {
+         _tag: "Rejected",
+-        status: 404
++        status: 404,
++        error: {
++          code: PublicMcpSchema.INVALID_REQUEST_ERROR_CODE,
++          message: "Session not found: this Mcp-Session-Id is unknown or has expired, for example after a server restart. Start a new session by sending initialize without an Mcp-Session-Id header"
++        }
+       };
+     }
+     if (!isInitialize && protocolVersion !== undefined) {
+@@ -261,7 +317,9 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+       };
+     }),
+     resolveRequest: (clientId, headers) => stateful?.resolve(clientId, headers),
+-    admitHttp: (headers, parsed) => {
++    restoreHttp,
++    holdHttp: sessionId => stateful?.holdHttp(sessionId) ?? (() => {}),
++    admitHttp: (headers, parsed, request) => {
+       const reject = (status, error, id = null) => ({
+         _tag: "Rejected",
+         response: error === undefined ? HttpServerResponse.empty({
+@@ -280,8 +338,8 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+           return reject(400, unsupportedProtocolVersion(version));
+         }
+         const admission = selectHttpProtocol(headers, undefined);
+-        // Session and protocol-header errors take precedence over parse errors.
+-        return admission._tag === "Rejected" && (admission.error === undefined || admission.error.code === PublicMcpSchema.HEADER_MISMATCH_ERROR_CODE) ? reject(admission.status, admission.error) : reject(200, new PublicMcpSchema.ParseError({
++        // Session and protocol-header errors do not depend on the body; they take precedence over parse errors.
++        return admission._tag === "Rejected" && (admission.status === 404 || admission.error.code === PublicMcpSchema.HEADER_MISMATCH_ERROR_CODE) ? reject(admission.status, admission.error) : reject(200, new PublicMcpSchema.ParseError({
+           message: "Parse error"
+         }));
+       }
+@@ -293,8 +351,13 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+           }));
+         }
+         const admission = selectHttpProtocol(headers, input);
+-        if (admission._tag === "Rejected" || input.some(hasRequestProtocolVersion) || input.some(message => Predicate.hasProperty(message, "method") && message.method === "initialize") || admission.binding?.protocol.runtime.transport.jsonRpc.acceptsBatches !== true) {
+-          return reject(400);
++        if (admission._tag === "Rejected") {
++          return reject(admission.status, admission.error);
++        }
++        if (input.some(hasRequestProtocolVersion) || input.some(message => Predicate.hasProperty(message, "method") && message.method === "initialize") || admission.binding?.protocol.runtime.transport.jsonRpc.acceptsBatches !== true) {
++          return reject(400, new PublicMcpSchema.InvalidRequest({
++            message: "JSON-RPC batches are not accepted here; send each message in its own POST request"
++          }));
+         }
+         return {
+           _tag: "Accepted",
+@@ -324,12 +387,12 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+       const hasSession = headers[MCP_SESSION_ID_HEADER] !== undefined;
+       if (isInitialize && hasSession) {
+         return reject(400, new PublicMcpSchema.InvalidRequest({
+-          message: "initialize must not include an MCP-Session-Id header"
++          message: "initialize starts a new session; send it without an Mcp-Session-Id header"
+         }), id);
+       }
+       if (!isInitialize && !hasSession && admission.protocol?.runtime._tag !== "Stateless") {
+         return reject(400, stateful === undefined ? undefined : new PublicMcpSchema.InvalidRequest({
+-          message: "MCP-Session-Id header is required; send initialize to start a session"
++          message: "Mcp-Session-Id header is required; send initialize first and include the Mcp-Session-Id it returns on later requests"
+         }), id);
+       }
+       if (isRequest && admission.protocol?.runtime._tag === "Stateless" && !(admission.protocol.handlerRpcs?.requests.has(input.method) ?? admission.protocol.clientRpcs.requests.has(input.method))) {
+@@ -337,11 +400,41 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+           message: `Method not found: ${input.method}`
+         }), id);
+       }
+-      return {
++      const accepted = {
+         _tag: "Accepted",
+         acknowledge: !isRequest || !hasId,
+         isSubscription: Predicate.hasProperty(input, "method") && input.method === "subscriptions/listen"
+       };
++      if (!isInitialize || stateful === undefined || admission.protocol?.runtime._tag === "Stateless") {
++        return accepted;
++      }
++      // The new session's place is taken here, in one step with the check, so initialize requests
++      // admitted together cannot pass the bound. Past it a session that owns no work is forgotten;
++      // when every session owns some, forgetting one would strand it, so the session is refused.
++      const reservation = stateful.reserveHttp();
++      if (reservation === undefined) {
++        return {
++          _tag: "Rejected",
++          response: HttpServerResponse.jsonUnsafe({
++            jsonrpc: "2.0",
++            id,
++            error: {
++              code: PublicMcpSchema.RESOURCE_EXHAUSTED_ERROR_CODE,
++              message: "Too many MCP sessions in use: every session this server keeps for this client is running a request or holds a paused program. Retry initialize when one of them finishes."
++            }
++          }, {
++            status: 503,
++            headers: {
++              "retry-after": "1"
++            }
++          })
++        };
++      }
++      reservedSessions.set(request, reservation);
++      return {
++        ...accepted,
++        release: reservation.release
++      };
+     },
+     effectLogLevel: (clientId, headers, fallback) => stateful?.effectLogLevel(clientId, headers, fallback) ?? fallback,
+     disconnect: clientId => stateful?.disconnect(clientId),
+@@ -374,6 +467,8 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+     deliveryClientIds: () => stateful?.initializedClientIds() ?? [],
+     canDeliver: (clientId, headers, notification, fallback, listChangeRevision) => stateful?.canDeliver(clientId, headers, notification, fallback, listChangeRevision) ?? true,
+     installHandlers: Effect.fnUntraced(function* (options) {
++      defaultLogLevel = options.defaultLogLevel;
++      getListChangeRevision = options.getListChangeRevision;
+       const contextMap = new Map();
+       const installationContext = {
+         subscribeServerNotifications: options.subscribeServerNotifications,
+@@ -445,9 +540,19 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+                 logLevel: options.defaultLogLevel,
+                 listChangeRevision: options.getListChangeRevision?.() ?? 0
+               };
++              let saved = Effect.void;
+               if (httpRequest !== undefined) {
+                 const sessionId = SecureRandom.uuidV4Unsafe();
+-                stateful.registerHttp(sessionId, registration);
++                const reservation = reservedSessions.get(httpRequest);
++                reservedSessions.delete(httpRequest);
++                const session = stateful.registerHttp(sessionId, registration, reservation);
++                // Only an initialize whose request ended first, giving its place back, finds none.
++                if (session === undefined) {
++                  return Effect.die(new Error("MCP session not opened: no place is free and every session owns work"));
++                }
++                // Kept before the client learns the id, so a server that restarts right after
++                // still knows it.
++                if (sessions !== undefined) saved = sessions.save(sessionId, storedSession(session, undefined));
+                 appendPreResponseHandlerUnsafe(fiber.context, (_request, response) => Effect.succeed(HttpServerResponse.setHeaders(response, {
+                   [MCP_SESSION_ID_HEADER]: sessionId,
+                   [MCP_PROTOCOL_VERSION_HEADER]: protocol.protocolVersion
+@@ -455,7 +560,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+               } else {
+                 stateful.registerConnection(clientId, registration);
+               }
+-              return Effect.succeed({
++              return Effect.as(saved, {
+                 capabilities,
+                 instructions: options.serverInfo.instructions,
+                 serverInfo: PublicMcpSchema.Implementation.make({
+@@ -468,7 +573,11 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+               });
+             });
+           }),
+-          setLogLevel: stateful.setLogLevel,
++          setLogLevel: (level, clientId, headers) => Effect.andThen(stateful.setLogLevel(level, clientId, headers), () => {
++            const sessionId = headers[MCP_SESSION_ID_HEADER];
++            const session = sessionId === undefined ? undefined : stateful.resolveSessionId(sessionId);
++            return sessions === undefined || sessionId === undefined || session === undefined ? Effect.void : sessions.save(sessionId, storedSession(session, level));
++          }),
+           subscribe: stateful.subscribe,
+           unsubscribe: stateful.unsubscribe,
+           clientNotification: Effect.fnUntraced(function* (notification, clientId) {
+@@ -486,5 +595,5 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (protocols) {
+ /**
+  * @internal
+  */
+-export const layer = protocols => Layer.effect(ServerRuntime)(make(protocols));
++export const layer = (protocols, sessions, options) => Layer.effect(ServerRuntime)(make(protocols, sessions, options));
+ //# sourceMappingURL=mcpRuntime.js.map
+\ No newline at end of file
+diff --git a/dist/ai/internal/mcpSchema/v2026_07_28.js b/dist/ai/internal/mcpSchema/v2026_07_28.js
+index 9d4be684f731bae339b3f9c9b52d80c1c4a1d0e9..7d6d1139fcb7776b50149062defda72c16e82897 100644
+--- a/dist/ai/internal/mcpSchema/v2026_07_28.js
++++ b/dist/ai/internal/mcpSchema/v2026_07_28.js
+@@ -66,6 +66,9 @@ export const ServerCapabilities = /*#__PURE__*/Schema.StructWithRest(/*#__PURE__
+   tools: /*#__PURE__*/optional(/*#__PURE__*/Schema.Struct({
+     listChanged: /*#__PURE__*/optional(Schema.Boolean)
+   })),
++  events: /*#__PURE__*/optional(/*#__PURE__*/Schema.Struct({
++    listChanged: /*#__PURE__*/optional(Schema.Boolean)
++  })),
+   extensions: /*#__PURE__*/optional(/*#__PURE__*/Schema.Record(Schema.String, UnknownObject))
+ }), [UnknownObject]);
+ /**
+@@ -723,7 +726,88 @@ export class SubscriptionsAcknowledgedNotification extends /*#__PURE__*/Rpc.make
+ /**
+  * @internal
+  */
+-export class ClientRequestRpcs extends /*#__PURE__*/RpcGroup.make(Discover, Complete, GetPrompt, ListPrompts, ListResources, ListResourceTemplates, ReadResource, SubscriptionsListen, CallTool, ListTools) {}
++export const EventDefinition = /*#__PURE__*/Schema.StructWithRest(/*#__PURE__*/Schema.Struct({
++  name: Schema.String,
++  title: /*#__PURE__*/optional(Schema.String),
++  description: /*#__PURE__*/optional(Schema.String),
++  delivery: /*#__PURE__*/Schema.Array(/*#__PURE__*/Schema.Literals(["poll", "push", "webhook"])),
++  inputSchema: Schema.JsonObject,
++  payloadSchema: /*#__PURE__*/optional(Schema.JsonObject),
++  _meta: Meta
++}), [Schema.JsonObject]);
++/**
++ * @internal
++ */
++export const ListEventsResult = /*#__PURE__*/Schema.StructWithRest(/*#__PURE__*/Schema.Struct({
++  ...PaginatedResult,
++  events: /*#__PURE__*/Schema.Array(EventDefinition)
++}), [Schema.JsonObject]);
++/**
++ * @internal
++ */
++export class ListEvents extends /*#__PURE__*/Rpc.make("events/list", {
++  success: ListEventsResult,
++  error: McpError,
++  payload: PaginatedRequestParams
++}) {}
++const EventArguments = /*#__PURE__*/optional(/*#__PURE__*/Schema.Record(Schema.String, Schema.Json));
++/**
++ * @internal
++ */
++export const SubscribeEventResult = /*#__PURE__*/Schema.StructWithRest(/*#__PURE__*/Schema.Struct({
++  ...ResultMeta,
++  id: Schema.String,
++  refreshBefore: /*#__PURE__*/Schema.NullOr(Schema.String),
++  cursor: /*#__PURE__*/Schema.NullOr(Schema.String),
++  truncated: /*#__PURE__*/optional(Schema.Boolean),
++  deliveryStatus: /*#__PURE__*/optional(Schema.JsonObject)
++}), [Schema.JsonObject]);
++/**
++ * @internal
++ */
++export class SubscribeEvent extends /*#__PURE__*/Rpc.make("events/subscribe", {
++  success: SubscribeEventResult,
++  error: McpError,
++  payload: {
++    ...RequestParams.fields,
++    name: Schema.String,
++    arguments: EventArguments,
++    delivery: /*#__PURE__*/Schema.Struct({
++      mode: /*#__PURE__*/Schema.Literal("webhook"),
++      url: Schema.String,
++      secret: Schema.String
++    }),
++    cursor: /*#__PURE__*/optional(/*#__PURE__*/Schema.NullOr(Schema.String)),
++    maxAgeMs: /*#__PURE__*/optional(Schema.Int),
++    ttlMs: /*#__PURE__*/optional(/*#__PURE__*/Schema.NullOr(Schema.Int))
++  }
++}) {}
++/**
++ * @internal
++ */
++export const UnsubscribeEventResult = /*#__PURE__*/Schema.StructWithRest(/*#__PURE__*/Schema.Struct({
++  ...ResultMeta
++}), [Schema.JsonObject]);
++/**
++ * @internal
++ */
++export class UnsubscribeEvent extends /*#__PURE__*/Rpc.make("events/unsubscribe", {
++  success: UnsubscribeEventResult,
++  error: McpError,
++  payload: {
++    ...RequestParams.fields,
++    name: Schema.String,
++    arguments: EventArguments,
++    delivery: /*#__PURE__*/Schema.Struct({
++      mode: /*#__PURE__*/Schema.Literal("webhook"),
++      url: Schema.String
++    })
++  }
++}) {}
++/**
++ * @internal
++ */
++export class ClientRequestRpcs extends /*#__PURE__*/RpcGroup.make(Discover, Complete, GetPrompt, ListPrompts, ListResources, ListResourceTemplates, ReadResource, SubscriptionsListen, CallTool, ListTools, ListEvents, SubscribeEvent, UnsubscribeEvent) {}
+ /**
+  * @internal
+  */
+diff --git a/dist/ai/internal/mcpStatefulRuntime.js b/dist/ai/internal/mcpStatefulRuntime.js
+index 8dc76b8517b220a92f6f719e7acf40d9c8d3fdca..2207ee22701902da9807c27bff12a8f8f39b6851 100644
+--- a/dist/ai/internal/mcpStatefulRuntime.js
++++ b/dist/ai/internal/mcpStatefulRuntime.js
+@@ -3,27 +3,75 @@
+  */
+ import * as Effect from "../../Effect.js";
+ import * as LogLevel from "../../LogLevel.js";
++import * as Schema from "../../Schema.js";
+ import * as PublicMcpSchema from "../McpSchema.js";
+ import * as McpProtocol from "./mcpProtocol.js";
+ const MCP_SESSION_ID_HEADER = "mcp-session-id";
++/**
++ * What a session store keeps of one HTTP session: the `initialize` it negotiated, encoded, and
++ * the level the client last set. Stored values are decoded again when they are read, so a
++ * value an older or newer server wrote and this one cannot read is an unknown session.
++ *
++ * @internal
++ */
++export const StoredSession = /*#__PURE__*/Schema.Struct({
++  initialize: PublicMcpSchema.Initialize.payloadSchema,
++  logLevel: /*#__PURE__*/Schema.optionalKey(PublicMcpSchema.LoggingLevel)
++});
+ const makeSession = registration => ({
+   initializePayload: registration.initializePayload,
+   negotiatedProfile: registration.negotiatedProfile,
+   protocol: registration.protocol,
+   resourceSubscriptions: registration.supportsResourceSubscriptions ? new Set() : undefined,
+   listChangeRevision: registration.listChangeRevision,
+-  logLevel: {
++  logLevel: registration.mcpLogLevel === undefined ? {
+     _tag: "Effect",
+     level: registration.logLevel
++  } : {
++    _tag: "Mcp",
++    level: registration.mcpLogLevel
+   }
+ });
++/** The place every session takes when there is no bound: nothing is kept, so nothing to give back. */
++const unboundedReservation = {
++  release: () => {}
++};
+ /**
+  * @internal
+  */
+-export const make = () => {
++export const make = options => {
+   const bySessionId = new Map();
+   const byClientId = new Map();
+   const initializedClientIds = new Set();
++  const maxHttpSessions = options?.maxHttpSessions;
++  const held = options?.heldHttpSession;
++  // Requests in flight per HTTP session. A session with any, or with work the host holds for it,
++  // owns work: forgetting it would strand a pending reply, a cancellation or a paused program.
++  const inFlight = new Map();
++  const owned = sessionId => inFlight.has(sessionId) || held?.(sessionId) === true;
++  // Moves a session to the end, so `bySessionId` iterates least recently used first.
++  const touch = (sessionId, session) => {
++    bySessionId.delete(sessionId);
++    bySessionId.set(sessionId, session);
++  };
++  /** The least recently used session that owns no work. */
++  const evictable = () => {
++    for (const sessionId of bySessionId.keys()) {
++      if (!owned(sessionId)) return sessionId;
++    }
++    return undefined;
++  };
++  // Places taken for sessions that have not opened yet. Sessions and places together never pass
++  // the bound: every place is taken by one synchronous check, and a session opens only in one.
++  const reservations = new Set();
++  /** Room for one more session: a free place, or one the least recently used idle session leaves. */
++  const makeRoom = () => {
++    if (maxHttpSessions === undefined || bySessionId.size + reservations.size < maxHttpSessions) return true;
++    const oldest = evictable();
++    if (oldest === undefined) return false;
++    bySessionId.delete(oldest);
++    return true;
++  };
+   const resolveSession = (clientId, headers) => {
+     const sessionId = headers[MCP_SESSION_ID_HEADER];
+     return sessionId === undefined ? byClientId.get(clientId) : bySessionId.get(sessionId);
+@@ -33,9 +81,10 @@ export const make = () => {
+     return session?.logLevel._tag === "Mcp" ? McpProtocol.mcpLogLevels[session.logLevel.level].effect : session?.logLevel.level ?? fallback;
+   };
+   return {
+-    registerHttp: (sessionId, registration) => {
++    registerHttp: (sessionId, registration, reservation) => {
++      if (!(reservation !== undefined && reservations.delete(reservation)) && !makeRoom()) return undefined;
+       const session = makeSession(registration);
+-      bySessionId.set(sessionId, session);
++      touch(sessionId, session);
+       return session;
+     },
+     registerConnection: (clientId, registration) => {
+@@ -44,7 +93,11 @@ export const make = () => {
+       return session;
+     },
+     resolve: resolveSession,
+-    resolveSessionId: sessionId => bySessionId.get(sessionId),
++    resolveSessionId: sessionId => {
++      const session = bySessionId.get(sessionId);
++      if (session !== undefined && maxHttpSessions !== undefined) touch(sessionId, session);
++      return session;
++    },
+     terminateSession: sessionId => bySessionId.delete(sessionId),
+     setLogLevel: (level, clientId, headers) => Effect.sync(() => {
+       const session = resolveSession(clientId, headers);
+@@ -91,6 +144,33 @@ export const make = () => {
+     markInitialized: clientId => {
+       initializedClientIds.add(clientId);
+     },
++    holdHttp: sessionId => {
++      const session = bySessionId.get(sessionId);
++      if (session === undefined) return () => {};
++      inFlight.set(sessionId, (inFlight.get(sessionId) ?? 0) + 1);
++      touch(sessionId, session);
++      let released = false;
++      return () => {
++        if (released) return;
++        released = true;
++        const remaining = (inFlight.get(sessionId) ?? 1) - 1;
++        if (remaining > 0) inFlight.set(sessionId, remaining);else inFlight.delete(sessionId);
++        const current = bySessionId.get(sessionId);
++        if (current !== undefined) touch(sessionId, current);
++      };
++    },
++    reserveHttp: () => {
++      // Without a bound there is nothing to count, so no place is kept.
++      if (maxHttpSessions === undefined) return unboundedReservation;
++      if (!makeRoom()) return undefined;
++      const reservation = {
++        release: () => {
++          reservations.delete(reservation);
++        }
++      };
++      reservations.add(reservation);
++      return reservation;
++    },
+     initializedClientIds: () => initializedClientIds.values(),
+     disconnect: clientId => {
+       byClientId.delete(clientId);
+diff --git a/dist/observability/OtlpExporter.js b/dist/observability/OtlpExporter.js
+index 17ce2b8cdf65361d3c5d86507bdb04785605eb90..329b452f67526890636ed53147e6a380ba812617 100644
+--- a/dist/observability/OtlpExporter.js
++++ b/dist/observability/OtlpExporter.js
+@@ -175,6 +175,11 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (options) {
+     runExportFork(runExport);
+     return FiberSet.awaitEmpty(exportFibers);
+   }).pipe(Effect.ignore, Effect.interruptible, Effect.timeoutOption(options.shutdownTimeout)));
++  // With an infinite interval nothing is exported on a timer: only a flush, a full batch and
++  // the scope's close export. Such an exporter runs no loop, so a push never resumes a fiber.
++  // A host that keeps one exporter for many requests, such as a Cloudflare Worker's isolate,
++  // must not resume a fiber that last ran in another request.
++  const timed = Duration.isFinite(exportInterval);
+   // `armed` is open while there is something to export. It changes in the
+   // same synchronous step as the buffer check, so a push is never stranded.
+   const armed = yield* Latch.make(exportsEmpty);
+@@ -184,15 +189,17 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (options) {
+     wake.openUnsafe();
+   });
+   // Forked after the shutdown finalizer, so the loop stops before the shutdown flush.
+-  yield* Effect.gen(function* () {
+-    while (true) {
+-      wake.closeUnsafe();
+-      yield* armed.await;
+-      yield* Effect.race(Effect.sleep(exportInterval), wake.await);
+-      yield* Fiber.await(yield* FiberSet.run(exportFibers, runExport));
+-      yield* disarmIfEmpty;
+-    }
+-  }).pipe(Effect.forkIn(scope));
++  if (timed) {
++    yield* Effect.gen(function* () {
++      while (true) {
++        wake.closeUnsafe();
++        yield* armed.await;
++        yield* Effect.race(Effect.sleep(exportInterval), wake.await);
++        yield* Fiber.await(yield* FiberSet.run(exportFibers, runExport));
++        yield* disarmIfEmpty;
++      }
++    }).pipe(Effect.forkIn(scope));
++  }
+   const exportNow = Effect.andThen(runExport, disarmIfEmpty);
+   const flusher = yield* Flusher;
+   yield* flusher.register(exportNow);
+@@ -203,7 +210,7 @@ export const make = /*#__PURE__*/Effect.fnUntraced(function* (options) {
+       buffer.push(data);
+       if (options.maxBatchSize !== "disabled" && buffer.length >= options.maxBatchSize) {
+         runExportFork(exportNow);
+-      } else {
++      } else if (timed) {
+         armed.openUnsafe();
+       }
+     }
+diff --git a/dist/reactivity/AtomHttpApi.d.ts b/dist/reactivity/AtomHttpApi.d.ts
+index 890ba41d124894bb4d7c314d1fa2a825815c4865..809842c7ad05b631ca95ff4f6340da53805d0638 100644
+--- a/dist/reactivity/AtomHttpApi.d.ts
++++ b/dist/reactivity/AtomHttpApi.d.ts
+@@ -53,6 +53,11 @@ export interface AtomHttpApiClient<Self, Id extends string, Groups extends HttpA
+         readonly reactivityKeys?: Reactivity.KeysInput | undefined;
+         readonly timeToLive?: Duration.Input | undefined;
+         readonly serializationKey?: string | undefined;
++        /**
++         * With a `serializationKey`: keep a hydrated value instead of requesting it again when the
++         * query mounts, until it is refreshed or a dependency changes. See `Atom.serializable`.
++         */
++        readonly skipInitialRun?: boolean | undefined;
+     } : never) => [Endpoint] extends [
+         HttpApiEndpoint.HttpApiEndpoint<infer _Identifier, infer _Method, infer _Path, infer _Params, infer _Query, infer _Payload, infer _Headers, infer _Success, infer _Error, infer _Middleware, infer _RE>
+     ] ? Atom.Atom<AsyncResult.AsyncResult<ResponseByMode<Endpoint, ResponseMode>, ErrorByMode<_Error, _Middleware, ResponseMode>>> : never;
+diff --git a/dist/reactivity/AtomHttpApi.js b/dist/reactivity/AtomHttpApi.js
+index 9d8343ea149cc81faca0aa74dc311eb85486f0ac..060d3183159dabe5e934a9a798cdcf118a0f0922 100644
+--- a/dist/reactivity/AtomHttpApi.js
++++ b/dist/reactivity/AtomHttpApi.js
+@@ -89,7 +89,8 @@ export const Service = () => (id, options) => {
+         schema: AsyncResult.Schema({
+           success: Schema.Union(HttpApiEndpoint.getSuccessSchemas(endpoint)),
+           error: Schema.Union(HttpApiEndpoint.getErrorSchemas(endpoint))
+-        })
++        }),
++        skipInitialRun: opts.skipInitialRun
+       });
+     }
+     if (opts.timeToLive) {
+@@ -109,7 +110,8 @@ export const Service = () => (id, options) => {
+       sseOptions: request.sseOptions,
+       reactivityKeys: request.reactivityKeys,
+       timeToLive: request.timeToLive !== undefined ? Duration.fromInputUnsafe(request.timeToLive) : undefined,
+-      serializationKey: request.serializationKey
++      serializationKey: request.serializationKey,
++      skipInitialRun: request.skipInitialRun
+     };
+     return queryFamily(key);
+   };
+diff --git a/dist/sql/Statement.js b/dist/sql/Statement.js
+index 32b312d7c3709b2298f0faf5c30bf6902fb6c794..3c170ae8b1bdb55fdc15c72eff69a49fe7f156a4 100644
+--- a/dist/sql/Statement.js
++++ b/dist/sql/Statement.js
+@@ -714,20 +714,17 @@ export const spanTarget = spanAttributes => {
+ };
+ /**
+  * Returns the span name for statements run by a client with the given span
+- * attributes, following the OpenTelemetry database span conventions: the
+- * {@link spanTarget}, then `db.system.name`, falling back to `sql.execute`.
++ * attributes: always `sql.execute`.
+  *
+  * @stability unstable
+  * @category tracing
+  * @since 4.0.1
+  */
+ export const spanName = spanAttributes => {
+-  const target = spanTarget(spanAttributes);
+-  if (target !== undefined) {
+-    return target;
+-  }
+-  const system = spanAttribute(spanAttributes, "db.system.name");
+-  return isNonEmptyString(system) ? system : "sql.execute";
++  // One fixed name for every statement of every client. The target and system stay on the span
++  // as `db.namespace`, `server.address` and `db.system.name`.
++  void spanAttributes;
++  return "sql.execute";
+ };
+ // internal
+ const ATTR_DB_QUERY_TEXT = "db.query.text";
+diff --git a/src/JsonSchema.ts b/src/JsonSchema.ts
+index 9f9ee0ee67262f8b6b80cc783fe0d9948be80967..7f2850eaed8b67a59edbda734fdb14680faec37e 100644
+--- a/src/JsonSchema.ts
++++ b/src/JsonSchema.ts
+@@ -34,6 +34,21 @@ export interface JsonSchema {
+   [x: string]: unknown
+ }
+ 
++/**
++ * Options for converting OpenAPI schemas to Draft 2020-12.
++ *
++ * @category decoding
++ * @since 4.0.0
++ */
++export interface FromOpenApiOptions {
++  /**
++   * Observe each reference in schema positions before its URI is rewritten.
++   * Reference targets are not followed. Examples, defaults and ignored OpenAPI
++   * 3.0 reference siblings are not visited. Callback exceptions propagate.
++   */
++  readonly onReference?: ((reference: string) => void) | undefined
++}
++
+ /**
+  * The set of JSON Schema dialects supported by this module.
+  *
+@@ -382,9 +397,11 @@ export function fromSchemaDraft2020_12(js: JsonSchema): Document<"draft-2020-12"
+  * @category decoding
+  * @since 4.0.0
+  */
+-export function fromSchemaOpenApi3_1(js: JsonSchema): Document<"draft-2020-12"> {
++export function fromSchemaOpenApi3_1(js: JsonSchema, options?: FromOpenApiOptions): Document<"draft-2020-12"> {
+   const isRootResource = createsResource(js.$id)
+   const schema = transformSchema(js, (schema, inEmbeddedResource) => {
++    if (typeof schema.$ref === "string") options?.onReference?.(schema.$ref)
++    if (typeof schema.$dynamicRef === "string") options?.onReference?.(schema.$dynamicRef)
+     if (!isRootResource && !inEmbeddedResource) rewriteSchemaRef(schema, rewriteOpenApiComponentsReference)
+     if (isMetaSchemaUri(schema.$schema, META_SCHEMA_URI_OPEN_API_3_1)) {
+       InternalRecord.assignProperty(schema, "$schema", META_SCHEMA_URI_DRAFT_2020_12)
+@@ -450,8 +467,8 @@ export function fromSchemaOpenApi3_1(js: JsonSchema): Document<"draft-2020-12">
+  * @category decoding
+  * @since 4.0.0
+  */
+-export function fromSchemaOpenApi3_0(schema: JsonSchema): Document<"draft-2020-12"> {
+-  return fromSchemaDraft2020_12(convertOpenApi30(schema))
++export function fromSchemaOpenApi3_0(schema: JsonSchema, options?: FromOpenApiOptions): Document<"draft-2020-12"> {
++  return fromSchemaDraft2020_12(convertOpenApi30(schema, options))
+ }
+ 
+ /**
+@@ -1353,11 +1370,12 @@ function convertDependencies(
+   if (Object.keys(dependencies).length > 0) InternalRecord.assignProperty(out, "dependencies", dependencies)
+ }
+ 
+-function convertOpenApi30(root: JsonSchema): JsonSchema {
++function convertOpenApi30(root: JsonSchema, options?: FromOpenApiOptions): JsonSchema {
+   return convertSchema(root, (source, context) => {
+     const out: JsonSchema = {}
+ 
+     if (typeof source.$ref === "string") {
++      options?.onReference?.(source.$ref)
+       context.reference(out, rewriteOpenApiComponentsReference(source.$ref))
+       return out
+     }
+diff --git a/src/Semaphore.ts b/src/Semaphore.ts
+index c1b6bd5b027cffcc2c8045b2008873193e2c128f..2821cb4192327d2d70d933104e1a6ca8ebba7b17 100644
+--- a/src/Semaphore.ts
++++ b/src/Semaphore.ts
+@@ -241,6 +241,8 @@ interface Waiter {
+ // The first queued request that fits in the free permits. Larger requests
+ // ahead of it keep their place but are overtaken, as documented on `take`.
+ const firstAvailableWaiter = (self: SemaphoreImpl): Waiter | undefined => {
++  // Executor: with no free permit only a request for none fits, so the queue is not searched.
++  if (self.free <= 0 && self.zeroPermitWaiters === 0) return undefined
+   for (const waiter of self.waiters) {
+     if (waiter.permits <= self.free) return waiter
+   }
+@@ -261,10 +263,14 @@ const takePermits = <A, E, R>(
+     // it acquires or is interrupted, and re-checks eligibility when it runs.
+     const waiter: Waiter = { permits: n, resume: undefined }
+     const remove = () => {
+-      if (self.waiters.delete(waiter)) self.releaseUnsafe(fiber, 0)
++      if (self.waiters.delete(waiter)) {
++        if (n === 0) self.zeroPermitWaiters--
++        self.releaseUnsafe(fiber, 0)
++      }
+       return undefined
+     }
+     self.waiters.add(waiter)
++    if (n === 0) self.zeroPermitWaiters++
+     internal.onExitUnsafe(fiber, remove)
+     const wait = restore(internal.callback<void>((resume) => {
+       // The fiber may have yielded since the last check, missing a wake.
+@@ -285,6 +291,8 @@ const takePermits = <A, E, R>(
+ 
+ class SemaphoreImpl implements Semaphore {
+   public waiters = new Set<Waiter>()
++  // Executor: queued requests for no permits, which fit even when none are free.
++  public zeroPermitWaiters = 0
+   public taken = 0
+   public permits: number
+ 
+@@ -325,10 +333,22 @@ class SemaphoreImpl implements Semaphore {
+         // that were already woken still count against the budget, since they
+         // keep their place until they acquire. Resumed fibers run inline and
+         // can add or remove waiters, so iterate over a snapshot.
++        //
++        // Executor: upstream copies every waiter here on each release, which
++        // makes a queue of n requests cost n * n and a burst of thousands
++        // stall. The requests to wake are chosen first, stopping once the
++        // free permits are spoken for, and only those are resumed. A request
++        // an earlier one removed is skipped; its removal starts another pass.
+         let remaining = this.free
+-        for (const waiter of Array.from(this.waiters)) {
+-          if (!this.waiters.has(waiter) || waiter.permits > remaining) continue
++        const woken: Array<Waiter> = []
++        for (const waiter of this.waiters) {
++          if (remaining <= 0 && this.zeroPermitWaiters === 0) break
++          if (waiter.permits > remaining) continue
+           remaining -= waiter.permits
++          woken.push(waiter)
++        }
++        for (const waiter of woken) {
++          if (!this.waiters.has(waiter)) continue
+           const resume = waiter.resume
+           waiter.resume = undefined
+           resume?.(internal.void)
+diff --git a/src/ai/McpSchema.ts b/src/ai/McpSchema.ts
+index ba6c8308c32c069d47aee10daf8361a244c4d9e6..49e207340576873874653ce5ecc88efedad1ee54 100644
+--- a/src/ai/McpSchema.ts
++++ b/src/ai/McpSchema.ts
+@@ -3624,3 +3624,213 @@ export class EnabledWhen extends Context.Service<
+ >()(
+   "effect/ai/McpSchema/EnabledWhen"
+ ) {}
++
++// =============================================================================
++// Events
++// =============================================================================
++
++/**
++ * JSON-RPC error code for a referenced entity that does not exist, such as an unknown
++ * event name. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const NOT_FOUND_ERROR_CODE = -32011 as const
++
++/**
++ * JSON-RPC error code for a principal that may not use this event or arguments. Defined
++ * by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const FORBIDDEN_ERROR_CODE = -32012 as const
++
++/**
++ * JSON-RPC error code for a server-imposed limit, such as the number of subscriptions.
++ * Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const RESOURCE_EXHAUSTED_ERROR_CODE = -32013 as const
++
++/**
++ * JSON-RPC error code for a well-formed request that asks for an unsupported option, such
++ * as a delivery mode the event does not offer. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const UNSUPPORTED_ERROR_CODE = -32014 as const
++
++/**
++ * JSON-RPC error code for a webhook callback that failed verification or could not be
++ * reached. `data.reason` names the category. Defined by the draft MCP events extension.
++ *
++ * @stability unstable
++ * @category constants
++ * @since 4.0.0
++ */
++export const CALLBACK_ENDPOINT_ERROR_CODE = -32015 as const
++
++/**
++ * How a client receives an event's occurrences.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const EventDeliveryMode = Schema.Literals(["poll", "push", "webhook"])
++
++/**
++ * An event type a server offers: its subscription arguments, payload shape, and the delivery
++ * modes it supports.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const EventDefinition = Schema.Struct({
++  name: Schema.String,
++  title: optional(Schema.String),
++  description: optional(Schema.String),
++  delivery: Schema.Array(EventDeliveryMode),
++  inputSchema: Schema.JsonObject,
++  payloadSchema: optional(Schema.JsonObject),
++  _meta: optional(Schema.JsonObject)
++})
++
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type EventDefinition = typeof EventDefinition.Type
++
++/**
++ * One page of `events/list`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const ListEventsResult = Schema.Struct({
++  events: Schema.Array(EventDefinition),
++  nextCursor: optional(Schema.String)
++})
++
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type ListEventsResult = typeof ListEventsResult.Type
++
++/**
++ * An `events/list` request.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const ListEventsParams = Schema.Struct({
++  cursor: optional(Schema.String)
++})
++
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type ListEventsParams = typeof ListEventsParams.Type
++
++/**
++ * Where a webhook subscription delivers. The secret is a Standard Webhooks `whsec_` value
++ * supplied by the client.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const WebhookEventDelivery = Schema.Struct({
++  mode: Schema.Literal("webhook"),
++  url: Schema.String,
++  secret: Schema.String
++})
++
++/**
++ * An `events/subscribe` request. The same principal, URL, name and arguments address the same
++ * subscription; repeating the request refreshes it.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const SubscribeEventParams = Schema.Struct({
++  name: Schema.String,
++  arguments: optional(Schema.Record(Schema.String, Schema.Json)),
++  delivery: WebhookEventDelivery,
++  cursor: optional(Schema.NullOr(Schema.String)),
++  maxAgeMs: optional(Schema.Int),
++  ttlMs: optional(Schema.NullOr(Schema.Int))
++})
++
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type SubscribeEventParams = typeof SubscribeEventParams.Type
++
++/**
++ * The server's grant for an `events/subscribe` request. `refreshBefore` is an ISO 8601 time, or
++ * `null` when the subscription does not expire.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const SubscribeEventResult = Schema.Struct({
++  id: Schema.String,
++  refreshBefore: Schema.NullOr(Schema.String),
++  cursor: Schema.NullOr(Schema.String),
++  truncated: optional(Schema.Boolean),
++  deliveryStatus: optional(Schema.JsonObject)
++})
++
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type SubscribeEventResult = typeof SubscribeEventResult.Type
++
++/**
++ * An `events/unsubscribe` request. It names the subscription by the same key as
++ * `events/subscribe`, without the secret.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const UnsubscribeEventParams = Schema.Struct({
++  name: Schema.String,
++  arguments: optional(Schema.Record(Schema.String, Schema.Json)),
++  delivery: Schema.Struct({
++    mode: Schema.Literal("webhook"),
++    url: Schema.String
++  })
++})
++
++/**
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export type UnsubscribeEventParams = typeof UnsubscribeEventParams.Type
+diff --git a/src/ai/McpServer.ts b/src/ai/McpServer.ts
+index b544b6f138b5550bc4fbb465f879d1d04e6443c2..80f4371ec8f69f4c1e0e2f402fa14d4c7a4ad2ae 100644
+--- a/src/ai/McpServer.ts
++++ b/src/ai/McpServer.ts
+@@ -1533,36 +1533,17 @@ const requestSpanOptions = (
+   if (request.isNotification !== true) attributes["jsonrpc.request.id"] = String(request.id)
+   if (options.sessionId !== undefined) attributes["mcp.session.id"] = options.sessionId
+   if (options.networkTransport !== undefined) attributes["network.transport"] = options.networkTransport
+-  let target: string | undefined
+-  switch (method) {
+-    case "tools/call": {
+-      attributes["gen_ai.operation.name"] = "execute_tool"
+-      if (typeof params?.name === "string") {
+-        target = params.name
+-        attributes["gen_ai.tool.name"] = target
+-      }
+-      if (options.recordToolArguments && params?.arguments !== undefined) {
+-        attributes["gen_ai.tool.call.arguments"] = Toolkit.stringifyToolArguments(params.arguments)
+-      }
+-      break
+-    }
+-    case "prompts/get": {
+-      if (typeof params?.name === "string") {
+-        target = params.name
+-        attributes["gen_ai.prompt.name"] = target
+-      }
+-      break
+-    }
+-    case "resources/read":
+-    case "resources/subscribe":
+-    case "resources/unsubscribe": {
+-      // Resource URIs can be unbounded and sensitive, so they stay out of the span name.
+-      if (typeof params?.uri === "string") attributes["mcp.resource.uri"] = params.uri
+-      break
++  // The name a caller asks for is the caller's text until the server resolves it: a tool that does
++  // not exist, a prompt name, a resource URI. The span is named after the method alone and records
++  // none of them. `Toolkit.handle` records `gen_ai.tool.name` once it runs a registered tool.
++  if (method === "tools/call") {
++    attributes["gen_ai.operation.name"] = "execute_tool"
++    if (options.recordToolArguments && params?.arguments !== undefined) {
++      attributes["gen_ai.tool.call.arguments"] = Toolkit.stringifyToolArguments(params.arguments)
+     }
+   }
+   return {
+-    name: target === undefined ? method : `${method} ${target}`,
++    name: method,
+     kind: "server",
+     attributes,
+     parent: remoteParentSpan(params)
+@@ -1706,8 +1687,8 @@ const normalizeCacheHints = (
+  *
+  * Each request handled by the server runs in a server span that follows the
+  * OpenTelemetry MCP semantic conventions. Spans are named after the JSON-RPC
+- * method, with the tool or prompt name appended for `tools/call` and
+- * `prompts/get` (for example `tools/call get_weather`). A W3C `traceparent` in
++ * method alone, such as `tools/call`: the tool, prompt or resource a caller
++ * names is not recorded until the server has resolved it. A W3C `traceparent` in
+  * `params._meta` becomes the span's parent, and the transport span (such as
+  * the HTTP server span) is linked. Tool arguments are recorded only when
+  * `Toolkit.RecordToolArguments` is `true`.
+@@ -2740,6 +2721,41 @@ const mcpStdioSerialization = (
+   })
+ }
+ 
++/**
++ * Keeps MCP HTTP sessions beyond a server's memory, for `layerHttp`'s `sessions` option.
++ *
++ * `save` runs when `initialize` opens a session and when the client sets its log level, never
++ * for other requests. `load` runs only for a session id the server does not hold. It passes what
++ * `save` stored to `restore`, if anything, which decodes it and registers the session, and
++ * returns whether the server now holds it. A value the server cannot read, or a version it no
++ * longer serves, returns `false`: the session stays unknown, and the store should not keep
++ * that value as in use. Neither may fail.
++ *
++ * A store keeps protocol state only: who may use a session is for the host to check on every
++ * request.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.0.0
++ */
++export interface SessionStore {
++  readonly save: (sessionId: string, session: StoredSession) => Effect.Effect<void>
++  readonly load: (sessionId: string, restore: (stored: unknown) => boolean) => Effect.Effect<void>
++}
++
++/**
++ * What a {@link SessionStore} keeps of one session: its negotiated `initialize`, encoded as JSON,
++ * and the log level the client set, if any.
++ *
++ * @stability unstable
++ * @category layers
++ * @since 4.0.0
++ */
++export type StoredSession = {
++  readonly initialize: typeof McpSchema.Initialize.payloadSchema.Encoded
++  readonly logLevel?: McpSchema.LoggingLevel
++}
++
+ /**
+  * Registers a Streamable HTTP MCP endpoint at `options.path`.
+  *
+@@ -2821,6 +2837,22 @@ export const layerHttp = <
+   readonly allowSessionTermination?: boolean | undefined
+   readonly allowSubscriptions?: boolean | undefined
+   readonly registrations?: Layer.Layer<RA, RE, RR> | undefined
++  /**
++   * Keeps sessions beyond this server's memory, so a client continues its session after the
++   * server restarts. Without one, a restart forgets every session (`404`).
++   */
++  readonly sessions?: SessionStore | undefined
++  /**
++   * The most sessions kept in memory. Past it the least recently used session that owns no work is
++   * forgotten, and its client gets `404` and initializes again. A session owns work while one of its
++   * requests runs, its response stream included, or while `heldSession` says so; when every session
++   * owns work, a new `initialize` is refused with `503` and `Retry-After: 1`. Each `initialize` takes
++   * its session's place when admitted, so sessions opened together never pass the bound. Without a
++   * bound every session stays for the server's life.
++   */
++  readonly maxSessions?: number | undefined
++  /** Whether the application holds work that only this session can reach, such as a paused program. */
++  readonly heldSession?: ((sessionId: string) => boolean) | undefined
+ }): Layer.Layer<
+   McpServer | McpRequest.From<"Requires", ProvidedServices<Protocols, true>>,
+   Cause.IllegalArgumentError | RE,
+@@ -2828,7 +2860,10 @@ export const layerHttp = <
+   | RegistrationServices<RR>
+   | HttpRouter.Request.From<"Requires", RemainingRequestServices<RR, ProvidedServices<Protocols, true>>>
+ > => {
+-  const runtime = McpRuntime.layer(options.protocols)
++  const runtime = McpRuntime.layer(options.protocols, options.sessions, {
++    maxHttpSessions: options.maxSessions,
++    heldHttpSession: options.heldSession
++  })
+   return layerWithRuntime(options, "http").pipe(
+     Layer.provide(layerMcpProtocolHttp(options)),
+     Layer.provide(runtime),
+@@ -2987,12 +3022,11 @@ const addMcpHttpRoutes = Effect.fnUntraced(function*(
+   const router = yield* HttpRouter.HttpRouter
+   const allowSessionTermination = options.allowSessionTermination === true &&
+     runtime.protocols.some((protocol) => protocol.runtime._tag === "Stateful")
+-  const forbidden = Effect.succeed(HttpServerResponse.empty({ status: 403 }))
+   const withAllowedOrigin = (
+     handler: (request: HttpServerRequest.HttpServerRequest) => Effect.Effect<HttpServerResponse.HttpServerResponse>
+   ) =>
+   (request: HttpServerRequest.HttpServerRequest) =>
+-    isAllowedMcpOrigin(request, options.allowedOrigins) ? handler(request) : forbidden
++    isAllowedMcpOrigin(request, options.allowedOrigins) ? handler(request) : Effect.succeed(forbiddenOrigin(request))
+   const methodNotAllowedResponse = Effect.succeed(HttpServerResponse.empty({
+     status: 405,
+     headers: { allow: allowSessionTermination ? "POST, DELETE" : "POST" }
+@@ -3010,46 +3044,76 @@ const addMcpHttpRoutes = Effect.fnUntraced(function*(
+   )
+   yield* router.add("POST", options.path, (request) => {
+     if (!isAllowedMcpOrigin(request, options.allowedOrigins)) {
+-      return Effect.succeed(HttpServerResponse.empty({ status: 403 }))
++      return Effect.succeed(forbiddenOrigin(request))
+     }
+     if (mcpMediaTypes(request.headers["content-type"])[0] !== "application/json") {
+-      return Effect.succeed(HttpServerResponse.empty({ status: 415 }))
++      return Effect.succeed(
++        transportRejection(415, "Unsupported Media Type: send JSON-RPC messages with Content-Type: application/json")
++      )
+     }
+     const accepted = mcpMediaTypes(request.headers["accept"])
+     if (!accepted.includes("application/json") || !accepted.includes("text/event-stream")) {
+-      return Effect.succeed(HttpServerResponse.empty({ status: 406 }))
++      return Effect.succeed(
++        transportRejection(
++          406,
++          "Not Acceptable: the Accept header must list both application/json and text/event-stream"
++        )
++      )
+     }
+     return Effect.gen(function*() {
+       const parsed = yield* Effect.result(
+         Effect.flatMap(request.text, Schema.decodeEffect(Schema.UnknownFromJsonString))
+       )
+-      const admission = runtime.admitHttp(request.headers, parsed)
+-      if (admission._tag === "Rejected") {
+-        return admission.response
+-      }
+-      const toResponse = (response: HttpServerResponse.HttpServerResponse) => {
+-        // Completed responses may already contain notifications followed by the result.
+-        const hasMultipleMessages = response.body._tag === "Uint8Array" &&
+-          response.body.body.subarray(0, -1).includes(10)
+-        return admission.isSubscription || response.body._tag === "Stream" || hasMultipleMessages
+-          ? toServerSentEvents(response, admission.isSubscription)
+-          : response
+-      }
+-      if (admission.acknowledge) {
+-        return yield* Effect.catchCause(
+-          Effect.map(httpEffect, toResponse),
+-          () => Effect.succeed(HttpServerResponse.empty({ status: 202 }))
+-        )
+-      }
+-      return yield* Effect.flatMap(httpEffect, (response) => {
+-        if (response.body._tag !== "Uint8Array" || response.body.body.length > 0) {
+-          return Effect.succeed(toResponse(response))
++      const sessionId = request.headers[MCP_SESSION_ID_HEADER]
++      if (sessionId !== undefined) yield* runtime.restoreHttp(sessionId)
++      // Executor: the runtime finds the place an `initialize` reserved under the request in the
++      // current context.
++      const httpRequest = yield* HttpServerRequest.HttpServerRequest
++      // Executor: admission's place and a session's hold are taken with interruption masked until
++      // their release is installed, so a client that disconnects in between cannot strand either.
++      // Interruption is restored around the request's own work.
++      return yield* Effect.uninterruptibleMask((restore) => {
++        const admission = runtime.admitHttp(request.headers, parsed, httpRequest)
++        if (admission._tag === "Rejected") {
++          return Effect.succeed(admission.response)
++        }
++        const toResponse = (response: HttpServerResponse.HttpServerResponse) => {
++          // Completed responses may already contain notifications followed by the result.
++          const hasMultipleMessages = response.body._tag === "Uint8Array" &&
++            response.body.body.subarray(0, -1).includes(10)
++          return admission.isSubscription || response.body._tag === "Stream" || hasMultipleMessages
++            ? toServerSentEvents(response, admission.isSubscription)
++            : response
++        }
++        const answered = admission.acknowledge
++          ? Effect.catchCause(
++            Effect.map(httpEffect, toResponse),
++            () => Effect.succeed(HttpServerResponse.empty({ status: 202 }))
++          )
++          : Effect.flatMap(httpEffect, (response) => {
++            if (response.body._tag !== "Uint8Array" || response.body.body.length > 0) {
++              return Effect.succeed(toResponse(response))
++            }
++            // Only fully cancelled request POSTs may return an empty SSE response.
++            // https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server
++            return httpPostResponses.get(request)?.expected === 0
++              ? Effect.succeed(HttpServerResponse.stream(Stream.empty, { contentType: "text/event-stream" }))
++              : Effect.die(new Error("MCP request ended without writing its response"))
++          })
++        if (sessionId === undefined) {
++          // Executor: an initialize opens its session in the place admission reserved; a request
++          // that ends without opening it gives the place back.
++          const release = admission.release
++          return release === undefined ? restore(answered) : Effect.ensuring(restore(answered), Effect.sync(release))
+         }
+-        // Only fully cancelled request POSTs may return an empty SSE response.
+-        // https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#sending-messages-to-the-server
+-        return httpPostResponses.get(request)?.expected === 0
+-          ? Effect.succeed(HttpServerResponse.stream(Stream.empty, { contentType: "text/event-stream" }))
+-          : Effect.die(new Error("MCP request ended without writing its response"))
++        // Executor: the session is kept until this request's response has been sent, so a reply,
++        // cancellation or answer that belongs to it can still reach it when newer sessions pass the
++        // bound. The hold belongs to the request's scope, which closes once the response has been
++        // sent, its stream included, or when the request ends any other way.
++        return Effect.andThen(
++          Effect.acquireRelease(Effect.sync(() => runtime.holdHttp(sessionId)), (release) => Effect.sync(release)),
++          restore(answered)
++        )
+       })
+     })
+   })
+@@ -3175,6 +3239,18 @@ const isAllowedMcpOrigin = (
+   return origin === undefined || (allowedOrigins ?? []).includes(origin)
+ }
+ 
++// Rejections before the JSON-RPC message is read. Clients print the body after their own prefix,
++// so it is a JSON-RPC error without a request ID that names the fix.
++const transportRejection = (status: 403 | 406 | 415, message: string): HttpServerResponse.HttpServerResponse =>
++  HttpServerResponse.jsonUnsafe({
++    jsonrpc: "2.0",
++    id: null,
++    error: { code: McpSchema.INVALID_REQUEST_ERROR_CODE, message }
++  }, { status })
++
++const forbiddenOrigin = (request: HttpServerRequest.HttpServerRequest): HttpServerResponse.HttpServerResponse =>
++  transportRejection(403, `Forbidden: Origin '${request.headers["origin"]}' may not call this MCP endpoint`)
++
+ const mcpMediaTypes = (header: string | undefined): ReadonlyArray<string> =>
+   header === undefined
+     ? []
+@@ -3221,6 +3297,22 @@ const toolErrorResult = (message: string): CallToolResult =>
+ const toolResultContent = (encoded: unknown): CallToolResult["content"] =>
+   encoded === undefined ? [] : [{ type: "text", text: JSON.stringify(encoded) }]
+ 
++/**
++ * Builds a tool's successful result from its encoded value, in place of one JSON text block with
++ * the value as `structuredContent`. The returned fields use the MCP wire encoding and are decoded
++ * as a `CallToolResult`, so image data is base64. Declared failures keep the default result.
++ *
++ * @stability unstable
++ * @category handlers
++ * @since 4.0.0
++ */
++export class ResultContent extends Context.Service<ResultContent, (encoded: unknown) => {
++  readonly content: (typeof CallToolResult.Encoded)["content"]
++  readonly structuredContent?: (typeof CallToolResult.Encoded)["structuredContent"]
++}>()("effect/ai/McpServer/ResultContent") {}
++
++const decodeCallToolResult = Schema.decodeUnknownEffect(CallToolResult)
++
+ /**
+  * The requirements of a toolkit registration.
+  *
+@@ -3309,6 +3401,7 @@ export const registerToolkit: <Tools extends Record<string, Tool.Any>>(
+     }
+     const annotations = tool.annotations
+     const toolMeta = Context.getOrUndefined(annotations, Tool.Meta)
++    const resultContent = Context.getOrUndefined(annotations, ResultContent)
+     const isDeclaredFailure = Schema.is(tool.failureSchema)
+     // MCP content is JSON. Failures raised in "error" mode skip the Toolkit's encoding, so they use the JSON codec here.
+     const encodeFailureJson = Schema.encodeUnknownEffect(Schema.toCodecJson(tool.failureSchema)) as (
+@@ -3399,6 +3492,10 @@ export const registerToolkit: <Tools extends Record<string, Tool.Any>>(
+           > => {
+             // The Toolkit encodes successes and "return"-mode failures with their JSON codec.
+             if (!result.isFailure) {
++              // Executor: a tool annotated with `ResultContent` builds its own result.
++              if (resultContent !== undefined) {
++                return Effect.orDie(decodeCallToolResult(resultContent(result.encodedResult)))
++              }
+               // An absent result, such as `Schema.Void`, has no structured form.
+               return Effect.succeed(
+                 result.result === undefined
+@@ -3464,6 +3561,71 @@ export const toolkit = <Tools extends Record<string, Tool.Any>>(
+   toolkit: Toolkit.Toolkit<Tools>
+ ): Layer.Layer<never, never, ToolkitRequirements<Tools>> => Layer.effectDiscard(registerToolkit(toolkit))
+ 
++/**
++ * Handlers for the draft MCP events extension: listing event types and managing webhook
++ * subscriptions. Each handler runs with the request's `McpRequestContext`, so it can
++ * authorize the principal that sent it. Failures are MCP errors and reach the client
++ * unchanged, such as `CALLBACK_ENDPOINT_ERROR_CODE` with `data.reason`.
++ *
++ * Only protocols that define events serve these methods; currently `2026-07-28`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export interface EventsHandler<R = never> {
++  readonly list: (
++    request: McpSchema.ListEventsParams
++  ) => Effect.Effect<McpSchema.ListEventsResult, McpSchema.McpError, R>
++  readonly subscribe: (
++    request: McpSchema.SubscribeEventParams
++  ) => Effect.Effect<McpSchema.SubscribeEventResult, McpSchema.McpError, R>
++  readonly unsubscribe: (
++    request: McpSchema.UnsubscribeEventParams
++  ) => Effect.Effect<void, McpSchema.McpError, R>
++}
++
++/**
++ * Registers the server's events handlers. The server then advertises the `events`
++ * capability and serves `events/list`, `events/subscribe` and `events/unsubscribe`.
++ * The services the handlers need are taken when they are registered.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const registerEvents = <R>(
++  handler: EventsHandler<R>
++): Effect.Effect<void, never, McpServer | Exclude<R, McpRequestContext>> =>
++  Effect.gen(function*() {
++    const server = yield* McpServer
++    const services = omitRequestServices(yield* Effect.context<Exclude<R, McpRequestContext>>())
++    const run = <A>(
++      effect: Effect.Effect<A, McpSchema.McpError, R>,
++      invocation: McpCore.McpInvocation
++    ): Effect.Effect<A, McpSchema.McpError> =>
++      provideInvocationContext(effect, invocation).pipe(
++        Effect.provideContext(services as Context.Context<Exclude<R, McpRequestContext>>)
++      )
++    yield* internalState.get(server)!.core.events.register({
++      list: (request, invocation) => run(handler.list(request), invocation),
++      subscribe: (request, invocation) => run(handler.subscribe(request), invocation),
++      unsubscribe: (request, invocation) => run(handler.unsubscribe(request), invocation)
++    })
++  })
++
++/**
++ * Registers events handlers as a layer, like `toolkit` does for tools. Pass it to a
++ * transport's `registrations`.
++ *
++ * @stability unstable
++ * @category events
++ * @since 4.0.0
++ */
++export const events = <R>(
++  handler: EventsHandler<R>
++): Layer.Layer<never, never, McpServer | Exclude<R, McpRequestContext>> => Layer.effectDiscard(registerEvents(handler))
++
+ /**
+  * Utility type that validates a completion-handler record against the allowed
+  * parameter keys.
+diff --git a/src/ai/internal/mcpCore.ts b/src/ai/internal/mcpCore.ts
+index 643982d6121f953016735b150011c88142119050..9c1d1c460fea9e2ac085b94fd08e459586e3c5cd 100644
+--- a/src/ai/internal/mcpCore.ts
++++ b/src/ai/internal/mcpCore.ts
+@@ -498,6 +498,35 @@ export type ServerNotification = Data.TaggedEnum<{
+  */
+ export const ServerNotification = Data.taggedEnum<ServerNotification>()
+ 
++/**
++ * One server's events: listing, and webhook subscriptions. Handlers fail with an MCP error,
++ * whose code and data reach the client unchanged.
++ *
++ * @internal
++ */
++export interface EventsHandler {
++  readonly list: (
++    request: McpSchema.ListEventsParams,
++    invocation: McpInvocation
++  ) => Effect.Effect<McpSchema.ListEventsResult, McpSchema.McpError>
++  readonly subscribe: (
++    request: McpSchema.SubscribeEventParams,
++    invocation: McpInvocation
++  ) => Effect.Effect<McpSchema.SubscribeEventResult, McpSchema.McpError>
++  readonly unsubscribe: (
++    request: McpSchema.UnsubscribeEventParams,
++    invocation: McpInvocation
++  ) => Effect.Effect<void, McpSchema.McpError>
++}
++
++/**
++ * @internal
++ */
++export interface Events {
++  readonly register: (handler: EventsHandler) => Effect.Effect<void>
++  readonly current: Effect.Effect<EventsHandler | undefined>
++}
++
+ /**
+  * @internal
+  */
+@@ -507,11 +536,13 @@ export interface McpCore {
+   readonly prompts: Prompts
+   readonly completions: Completions
+   readonly skills: Skills
++  readonly events: Events
+   readonly registrationPresence: Effect.Effect<{
+     readonly tools: boolean
+     readonly resources: boolean
+     readonly prompts: boolean
+     readonly skills: boolean
++    readonly events: boolean
+   }>
+ }
+ 
+@@ -717,12 +748,22 @@ export const make: Effect.Effect<McpCore> = Effect.sync(() => {
+     })
+   }
+ 
++  let eventsHandler: EventsHandler | undefined
++  const events: Events = {
++    register: (handler) =>
++      Effect.sync(() => {
++        eventsHandler = handler
++      }),
++    current: Effect.sync(() => eventsHandler)
++  }
++
+   const registrationPresence = Effect.sync(() => ({
+     tools: registrations.size > 0,
+     resources: resourceRegistrations.length > 0 || resourceTemplateRegistrations.length > 0,
+     prompts: promptRegistrations.size > 0,
+-    skills: skillRegistrations.size > 0
++    skills: skillRegistrations.size > 0,
++    events: eventsHandler !== undefined
+   }))
+ 
+-  return { tools, resources, prompts, completions, skills, registrationPresence }
++  return { tools, resources, prompts, completions, skills, events, registrationPresence }
+ })
+diff --git a/src/ai/internal/mcpProtocol/v2026_07_28.ts b/src/ai/internal/mcpProtocol/v2026_07_28.ts
+index a701ec874b4604680ca3163781aa70a6e3f906fe..7bb6f90b7796a3d38f104df18e8638ac1ef1a886 100644
+--- a/src/ai/internal/mcpProtocol/v2026_07_28.ts
++++ b/src/ai/internal/mcpProtocol/v2026_07_28.ts
+@@ -370,6 +370,20 @@ export const makeHandlers = (
+   const decodeListSkillsResult = Schema.decodeUnknownEffect(McpSkills.ListSkillsResult)
+   const decodeGetSkillResult = Schema.decodeUnknownEffect(McpSkills.GetSkillResult)
+   const decodeReadResourceDirectoryResult = Schema.decodeUnknownEffect(McpSkills.ReadResourceDirectoryResult)
++  const decodeListEventsResult = Schema.decodeUnknownEffect(McpSchema.ListEventsResult)
++  const decodeSubscribeEventResult = Schema.decodeUnknownEffect(McpSchema.SubscribeEventResult)
++  const decodeUnsubscribeEventResult = Schema.decodeUnknownEffect(McpSchema.UnsubscribeEventResult)
++  // Events are reachable only once a handler is registered, like a capability the server lacks.
++  const eventsHandler = Effect.flatMap(core.events.current, (handler) =>
++    handler === undefined
++      ? failWithHttpStatus(
++        404,
++        new McpProtocol.ProtocolError({
++          code: PublicMcpSchema.METHOD_NOT_FOUND_ERROR_CODE,
++          message: "Method not found"
++        })
++      )
++      : Effect.succeed(handler))
+   const sendNotification = context.sendNotification
+   const supportsSubscriptions = sendNotification !== undefined
+   // Older adapters accept arbitrary JSON; this binding requires extension settings objects.
+@@ -391,6 +405,7 @@ export const makeHandlers = (
+       capabilities.resources = { listChanged: supportsSubscriptions, subscribe: supportsSubscriptions }
+     }
+     if (presence.prompts) capabilities.prompts = { listChanged: supportsSubscriptions }
++    if (presence.events) capabilities.events = {}
+     return { supportedVersions: context.supportedVersions, capabilities, serverInfo: context.serverInfo }
+   })
+   const requireSkills = (method: string) =>
+@@ -728,6 +743,42 @@ export const makeHandlers = (
+       const result = yield* projectCompleteResult({ ...cacheHint("skills"), resources }, context.serverInfo)
+       return yield* decodeReadResourceDirectoryResult(result)
+     }, Effect.mapError(projectError)),
++    "events/list": Effect.fnUntraced(function*(request: typeof McpSchema.ListEvents.payloadSchema.Type) {
++      const handler = yield* eventsHandler
++      const invocation = yield* getInvocation
++      const page = yield* handler.list(omitUndefined({ cursor: request.cursor }), invocation)
++      const result = yield* projectCompleteResult({
++        events: page.events.map((event) => omitUndefined(event)),
++        nextCursor: page.nextCursor
++      }, context.serverInfo)
++      return yield* decodeListEventsResult(result)
++    }, Effect.mapError(projectError)),
++    "events/subscribe": Effect.fnUntraced(function*(
++      request: typeof McpSchema.SubscribeEvent.payloadSchema.Type
++    ) {
++      const handler = yield* eventsHandler
++      const invocation = yield* getInvocation
++      const { _meta: _, ...params } = request
++      const granted = yield* handler.subscribe(
++        PublicMcpSchema.SubscribeEventParams.make(omitUndefined(params) as typeof params),
++        invocation
++      )
++      const result = yield* projectCompleteResult(granted, context.serverInfo)
++      return yield* decodeSubscribeEventResult(result)
++    }, Effect.mapError(projectError)),
++    "events/unsubscribe": Effect.fnUntraced(function*(
++      request: typeof McpSchema.UnsubscribeEvent.payloadSchema.Type
++    ) {
++      const handler = yield* eventsHandler
++      const invocation = yield* getInvocation
++      const { _meta: _, ...params } = request
++      yield* handler.unsubscribe(
++        PublicMcpSchema.UnsubscribeEventParams.make(omitUndefined(params) as typeof params),
++        invocation
++      )
++      const result = yield* projectCompleteResult({}, context.serverInfo)
++      return yield* decodeUnsubscribeEventResult(result)
++    }, Effect.mapError(projectError)),
+     "notifications/cancelled": Effect.fnUntraced(function*(
+       _request: typeof McpSchema.CancelledNotification.payloadSchema.Type
+     ) {
+diff --git a/src/ai/internal/mcpProtocol.ts b/src/ai/internal/mcpProtocol.ts
+index 53936511ec4561717111d825115b4310488d18b5..f40915ba2b66184a08d9e52c2f413fa9deebb5ef 100644
+--- a/src/ai/internal/mcpProtocol.ts
++++ b/src/ai/internal/mcpProtocol.ts
+@@ -484,6 +484,7 @@ export interface HandlerInstallationContext {
+     readonly resources: boolean
+     readonly prompts: boolean
+     readonly skills: boolean
++    readonly events: boolean
+   }>
+ }
+ 
+diff --git a/src/ai/internal/mcpRuntime.ts b/src/ai/internal/mcpRuntime.ts
+index 9d4c96e01ef3b898db9ae388a1805af8fef5efff..499250711fcdc07fae1215119b83fa69914a9491 100644
+--- a/src/ai/internal/mcpRuntime.ts
++++ b/src/ai/internal/mcpRuntime.ts
+@@ -14,6 +14,8 @@ import * as Layer from "../../Layer.ts"
+ import type * as LogLevel from "../../LogLevel.ts"
+ import * as Predicate from "../../Predicate.ts"
+ import * as Result from "../../Result.ts"
++import * as Schema from "../../Schema.ts"
++import { CurrentLogLevel } from "../../References.ts"
+ import * as RpcGroup from "../../rpc/RpcGroup.ts"
+ import type * as RpcMessage from "../../rpc/RpcMessage.ts"
+ import type * as Scope from "../../Scope.ts"
+@@ -97,11 +99,11 @@ type HttpProtocolSelection =
+   | {
+     readonly _tag: "Rejected"
+     readonly status: 400 | 404
+-    readonly error?: {
++    readonly error: {
+       readonly code: number
+       readonly message: string
+       readonly data?: unknown
+-    } | undefined
++    }
+   }
+ 
+ /**
+@@ -112,6 +114,11 @@ export type HttpAdmission =
+     readonly _tag: "Accepted"
+     readonly acknowledge: boolean
+     readonly isSubscription: boolean
++    /**
++     * Gives back the session place reserved for this `initialize` if its request ends before the
++     * session opens. Call it when the request ends.
++     */
++    readonly release?: (() => void) | undefined
+   }
+   | {
+     readonly _tag: "Rejected"
+@@ -173,7 +180,18 @@ export interface ServerRuntimeShape {
+     request: RpcMessage.RequestEncoded
+   ) => Effect.Effect<PreparedRequest, unknown>
+   readonly resolveRequest: (clientId: number, headers: Headers.Headers) => RequestBinding | undefined
+-  readonly admitHttp: (headers: Headers.Headers, input: Result.Result<unknown, unknown>) => HttpAdmission
++  /**
++   * Bring an HTTP session this runtime does not hold back from its session store, if the store
++   * has it. Nothing happens for a session in memory, or without a store.
++   */
++  readonly restoreHttp: (sessionId: string) => Effect.Effect<void>
++  /** Keep an HTTP session while a request of it runs; returns the release. */
++  readonly holdHttp: (sessionId: string) => () => void
++  readonly admitHttp: (
++    headers: Headers.Headers,
++    input: Result.Result<unknown, unknown>,
++    request: HttpServerRequest.HttpServerRequest
++  ) => HttpAdmission
+   readonly effectLogLevel: (
+     clientId: number,
+     headers: Headers.Headers,
+@@ -218,10 +236,61 @@ export const selectStatefulProtocol = <Protocol extends PublicMcpProtocol.AnyPro
+  * @internal
+  */
+ export const make = Effect.fnUntraced(function*(
+-  protocols: NonEmptyReadonlyArray<PublicMcpProtocol.AnyProtocolAdapter>
++  protocols: NonEmptyReadonlyArray<PublicMcpProtocol.AnyProtocolAdapter>,
++  sessions?: McpStatefulRuntime.SessionStore | undefined,
++  options?: McpStatefulRuntime.Options | undefined
+ ) {
+   const statefulProtocol = protocols.find((protocol) => protocol.runtime._tag === "Stateful")
+-  const stateful = statefulProtocol === undefined ? undefined : McpStatefulRuntime.make()
++  const stateful = statefulProtocol === undefined ? undefined : McpStatefulRuntime.make(options)
++  // Set when the server installs its handlers. The server starts in its own fiber, so a woken
++  // server's first request can arrive before that; it then uses the level in effect.
++  let defaultLogLevel: LogLevel.LogLevel | undefined
++  let getListChangeRevision: (() => number) | undefined
++  const decodeStored = Schema.decodeUnknownOption(McpStatefulRuntime.StoredSession)
++  // What the store keeps: the negotiated initialize and any level the client set, never
++  // anything about who the caller is. The host authenticates every request itself.
++  const storedSession = (
++    binding: McpStatefulRuntime.Binding,
++    logLevel: PublicMcpSchema.LoggingLevel | undefined
++  ): McpStatefulRuntime.StoredSession => ({
++    initialize: Schema.encodeSync(PublicMcpSchema.Initialize.payloadSchema)(binding.initializePayload),
++    ...(logLevel === undefined ? {} : { logLevel })
++  })
++  const restoreHttp = (sessionId: string): Effect.Effect<void> => {
++    if (sessions === undefined || stateful === undefined || stateful.resolveSessionId(sessionId) !== undefined) {
++      return Effect.void
++    }
++    return Effect.flatMap(CurrentLogLevel, (currentLevel) =>
++      sessions.load(sessionId, (stored) => {
++        // A concurrent request may have restored it before this one read the store.
++        if (stateful.resolveSessionId(sessionId) !== undefined) return true
++        const decoded = decodeStored(stored)
++        if (decoded._tag === "None") return false
++        const initializePayload = decoded.value.initialize
++        // A session negotiated a version this server no longer serves stays unknown: 404.
++        const protocol = registry.protocols.find((protocol) =>
++          protocol.runtime._tag === "Stateful" && protocol.protocolVersion === initializePayload.protocolVersion
++        )
++        if (protocol === undefined) return false
++        // With every session owning work there is no place for it either: 404, and the client's
++        // initialize is refused until one finishes.
++        return stateful.registerHttp(sessionId, {
++          initializePayload,
++          negotiatedProfile: {
++            protocolVersion: initializePayload.protocolVersion as PublicMcpProtocol.StatefulProtocolVersion,
++            clientCapabilities: initializePayload.capabilities,
++            clientInfo: initializePayload.clientInfo,
++            requestMetadata: initializePayload._meta
++          },
++          protocol: protocol as PublicMcpProtocol.ProtocolAdapter,
++          supportsResourceSubscriptions: false,
++          logLevel: defaultLogLevel ?? currentLevel,
++          // The restored client lists again; changes up to now are in what it reads next.
++          listChangeRevision: getListChangeRevision?.() ?? 0,
++          ...(decoded.value.logLevel === undefined ? {} : { mcpLogLevel: decoded.value.logLevel })
++        }) !== undefined
++      }))
++  }
+   const protocolVersions = protocols.map((protocol) => protocol.protocolVersion)
+   let statelessDescriptor: PublicMcpProtocol.StatelessRuntimeDescriptor | undefined
+   let statelessProtocol: PublicMcpProtocol.AnyProtocolAdapter | undefined
+@@ -239,17 +308,28 @@ export const make = Effect.fnUntraced(function*(
+   }
+   const registry = yield* McpProtocolRegistry.make(protocols)
+   const sessionTerminationListeners = new Set<(binding: RequestBinding) => Effect.Effect<void>>()
++  // The place each admitted `initialize` reserved for its session, by the HTTP request carrying it.
++  const reservedSessions = new WeakMap<HttpServerRequest.HttpServerRequest, McpStatefulRuntime.Reservation>()
+   const unsupportedProtocolVersion = (requested: string) => ({
+     code: PublicMcpSchema.UNSUPPORTED_PROTOCOL_VERSION_ERROR_CODE,
+-    message: `Unsupported protocol version '${requested}'`,
++    message: `Unsupported protocol version '${requested}'. Supported versions: ${protocolVersions.join(", ")}`,
+     data: { supported: protocolVersions, requested }
+   })
+   const selectHttpSession = (headers: Headers.Headers, isInitialize: boolean): HttpProtocolSelection => {
+     const protocolVersion = headers[MCP_PROTOCOL_VERSION_HEADER]
+     const sessionId = headers[MCP_SESSION_ID_HEADER]
+     const binding = sessionId === undefined ? undefined : stateful?.resolveSessionId(sessionId)
++    // A forgotten session is 404, and the client must initialize again (MCP 2025-11-25, Session Management).
+     if (sessionId !== undefined && binding === undefined) {
+-      return { _tag: "Rejected", status: 404 }
++      return {
++        _tag: "Rejected",
++        status: 404,
++        error: {
++          code: PublicMcpSchema.INVALID_REQUEST_ERROR_CODE,
++          message:
++            "Session not found: this Mcp-Session-Id is unknown or has expired, for example after a server restart. Start a new session by sending initialize without an Mcp-Session-Id header"
++        }
++      }
+     }
+     if (!isInitialize && protocolVersion !== undefined) {
+       if (!protocolVersions.includes(protocolVersion)) {
+@@ -390,7 +470,9 @@ export const make = Effect.fnUntraced(function*(
+       return { protocol, profile, requestContext }
+     }),
+     resolveRequest: (clientId, headers) => stateful?.resolve(clientId, headers),
+-    admitHttp: (headers, parsed) => {
++    restoreHttp,
++    holdHttp: (sessionId) => stateful?.holdHttp(sessionId) ?? (() => {}),
++    admitHttp: (headers, parsed, request) => {
+       const reject = (status: number, error?: unknown, id: string | number | null = null): HttpAdmission => ({
+         _tag: "Rejected",
+         response: error === undefined
+@@ -403,9 +485,9 @@ export const make = Effect.fnUntraced(function*(
+           return reject(400, unsupportedProtocolVersion(version))
+         }
+         const admission = selectHttpProtocol(headers, undefined)
+-        // Session and protocol-header errors take precedence over parse errors.
++        // Session and protocol-header errors do not depend on the body; they take precedence over parse errors.
+         return admission._tag === "Rejected" &&
+-            (admission.error === undefined || admission.error.code === PublicMcpSchema.HEADER_MISMATCH_ERROR_CODE)
++            (admission.status === 404 || admission.error.code === PublicMcpSchema.HEADER_MISMATCH_ERROR_CODE)
+           ? reject(admission.status, admission.error)
+           : reject(200, new PublicMcpSchema.ParseError({ message: "Parse error" }))
+       }
+@@ -415,13 +497,20 @@ export const make = Effect.fnUntraced(function*(
+           return reject(400, new PublicMcpSchema.InvalidRequest({ message: "Invalid Request" }))
+         }
+         const admission = selectHttpProtocol(headers, input)
++        if (admission._tag === "Rejected") {
++          return reject(admission.status, admission.error)
++        }
+         if (
+-          admission._tag === "Rejected" ||
+           input.some(hasRequestProtocolVersion) ||
+           input.some((message) => Predicate.hasProperty(message, "method") && message.method === "initialize") ||
+           admission.binding?.protocol.runtime.transport.jsonRpc.acceptsBatches !== true
+         ) {
+-          return reject(400)
++          return reject(
++            400,
++            new PublicMcpSchema.InvalidRequest({
++              message: "JSON-RPC batches are not accepted here; send each message in its own POST request"
++            })
++          )
+         }
+         return {
+           _tag: "Accepted",
+@@ -454,7 +543,9 @@ export const make = Effect.fnUntraced(function*(
+       if (isInitialize && hasSession) {
+         return reject(
+           400,
+-          new PublicMcpSchema.InvalidRequest({ message: "initialize must not include an MCP-Session-Id header" }),
++          new PublicMcpSchema.InvalidRequest({
++            message: "initialize starts a new session; send it without an Mcp-Session-Id header"
++          }),
+           id
+         )
+       }
+@@ -462,7 +553,8 @@ export const make = Effect.fnUntraced(function*(
+         return reject(
+           400,
+           stateful === undefined ? undefined : new PublicMcpSchema.InvalidRequest({
+-            message: "MCP-Session-Id header is required; send initialize to start a session"
++            message:
++              "Mcp-Session-Id header is required; send initialize first and include the Mcp-Session-Id it returns on later requests"
+           }),
+           id
+         )
+@@ -476,11 +568,34 @@ export const make = Effect.fnUntraced(function*(
+       ) {
+         return reject(404, new PublicMcpSchema.MethodNotFound({ message: `Method not found: ${input.method}` }), id)
+       }
+-      return {
+-        _tag: "Accepted",
++      const accepted = {
++        _tag: "Accepted" as const,
+         acknowledge: !isRequest || !hasId,
+         isSubscription: Predicate.hasProperty(input, "method") && input.method === "subscriptions/listen"
+       }
++      if (!isInitialize || stateful === undefined || admission.protocol?.runtime._tag === "Stateless") {
++        return accepted
++      }
++      // The new session's place is taken here, in one step with the check, so initialize requests
++      // admitted together cannot pass the bound. Past it a session that owns no work is forgotten;
++      // when every session owns some, forgetting one would strand it, so the session is refused.
++      const reservation = stateful.reserveHttp()
++      if (reservation === undefined) {
++        return {
++          _tag: "Rejected",
++          response: HttpServerResponse.jsonUnsafe({
++            jsonrpc: "2.0",
++            id,
++            error: {
++              code: PublicMcpSchema.RESOURCE_EXHAUSTED_ERROR_CODE,
++              message:
++                "Too many MCP sessions in use: every session this server keeps for this client is running a request or holds a paused program. Retry initialize when one of them finishes."
++            }
++          }, { status: 503, headers: { "retry-after": "1" } })
++        }
++      }
++      reservedSessions.set(request, reservation)
++      return { ...accepted, release: reservation.release }
+     },
+     effectLogLevel: (clientId, headers, fallback) => stateful?.effectLogLevel(clientId, headers, fallback) ?? fallback,
+     disconnect: (clientId) => stateful?.disconnect(clientId),
+@@ -515,6 +630,8 @@ export const make = Effect.fnUntraced(function*(
+     canDeliver: (clientId, headers, notification, fallback, listChangeRevision) =>
+       stateful?.canDeliver(clientId, headers, notification, fallback, listChangeRevision) ?? true,
+     installHandlers: Effect.fnUntraced(function*(options) {
++      defaultLogLevel = options.defaultLogLevel
++      getListChangeRevision = options.getListChangeRevision
+       const contextMap = new Map<string, unknown>()
+       const installationContext: McpProtocol.HandlerInstallationContext = {
+         subscribeServerNotifications: options.subscribeServerNotifications,
+@@ -572,9 +689,19 @@ export const make = Effect.fnUntraced(function*(
+                 logLevel: options.defaultLogLevel,
+                 listChangeRevision: options.getListChangeRevision?.() ?? 0
+               }
++              let saved: Effect.Effect<void> = Effect.void
+               if (httpRequest !== undefined) {
+                 const sessionId = SecureRandom.uuidV4Unsafe()
+-                stateful.registerHttp(sessionId, registration)
++                const reservation = reservedSessions.get(httpRequest)
++                reservedSessions.delete(httpRequest)
++                const session = stateful.registerHttp(sessionId, registration, reservation)
++                // Only an initialize whose request ended first, giving its place back, finds none.
++                if (session === undefined) {
++                  return Effect.die(new Error("MCP session not opened: no place is free and every session owns work"))
++                }
++                // Kept before the client learns the id, so a server that restarts right after
++                // still knows it.
++                if (sessions !== undefined) saved = sessions.save(sessionId, storedSession(session, undefined))
+                 appendPreResponseHandlerUnsafe(
+                   fiber.context,
+                   (_request, response) =>
+@@ -586,7 +713,7 @@ export const make = Effect.fnUntraced(function*(
+               } else {
+                 stateful.registerConnection(clientId, registration)
+               }
+-              return Effect.succeed({
++              return Effect.as(saved, {
+                 capabilities,
+                 instructions: options.serverInfo.instructions,
+                 serverInfo: PublicMcpSchema.Implementation.make({
+@@ -599,7 +726,14 @@ export const make = Effect.fnUntraced(function*(
+               })
+             })
+           }),
+-          setLogLevel: stateful.setLogLevel,
++          setLogLevel: (level, clientId, headers) =>
++            Effect.andThen(stateful.setLogLevel(level, clientId, headers), () => {
++              const sessionId = headers[MCP_SESSION_ID_HEADER]
++              const session = sessionId === undefined ? undefined : stateful.resolveSessionId(sessionId)
++              return sessions === undefined || sessionId === undefined || session === undefined
++                ? Effect.void
++                : sessions.save(sessionId, storedSession(session, level))
++            }),
+           subscribe: stateful.subscribe,
+           unsubscribe: stateful.unsubscribe,
+           clientNotification: Effect.fnUntraced(function*(notification, clientId) {
+@@ -619,5 +753,8 @@ export const make = Effect.fnUntraced(function*(
+  * @internal
+  */
+ export const layer = (
+-  protocols: NonEmptyReadonlyArray<PublicMcpProtocol.AnyProtocolAdapter>
+-): Layer.Layer<ServerRuntime, Cause.IllegalArgumentError> => Layer.effect(ServerRuntime)(make(protocols))
++  protocols: NonEmptyReadonlyArray<PublicMcpProtocol.AnyProtocolAdapter>,
++  sessions?: McpStatefulRuntime.SessionStore | undefined,
++  options?: McpStatefulRuntime.Options | undefined
++): Layer.Layer<ServerRuntime, Cause.IllegalArgumentError> =>
++  Layer.effect(ServerRuntime)(make(protocols, sessions, options))
+diff --git a/src/ai/internal/mcpSchema/v2026_07_28.ts b/src/ai/internal/mcpSchema/v2026_07_28.ts
+index 866afa476803a6f7a3ab5674dea53ab613b6d61e..2ebad31fe424f9ad16029aff7e5aa2560155ee3b 100644
+--- a/src/ai/internal/mcpSchema/v2026_07_28.ts
++++ b/src/ai/internal/mcpSchema/v2026_07_28.ts
+@@ -73,6 +73,7 @@ export const ServerCapabilities = Schema.StructWithRest(
+       listChanged: optional(Schema.Boolean)
+     })),
+     tools: optional(Schema.Struct({ listChanged: optional(Schema.Boolean) })),
++    events: optional(Schema.Struct({ listChanged: optional(Schema.Boolean) })),
+     extensions: optional(Schema.Record(Schema.String, UnknownObject))
+   }),
+   [UnknownObject]
+@@ -810,6 +811,101 @@ export class SubscriptionsAcknowledgedNotification extends Rpc.make(
+   { payload: { ...NotificationParams.fields, notifications: SubscriptionFilter } }
+ ) {}
+ 
++/**
++ * @internal
++ */
++export const EventDefinition = Schema.StructWithRest(
++  Schema.Struct({
++    name: Schema.String,
++    title: optional(Schema.String),
++    description: optional(Schema.String),
++    delivery: Schema.Array(Schema.Literals(["poll", "push", "webhook"])),
++    inputSchema: Schema.JsonObject,
++    payloadSchema: optional(Schema.JsonObject),
++    _meta: Meta
++  }),
++  [Schema.JsonObject]
++)
++/**
++ * @internal
++ */
++export const ListEventsResult = Schema.StructWithRest(
++  Schema.Struct({
++    ...PaginatedResult,
++    events: Schema.Array(EventDefinition)
++  }),
++  [Schema.JsonObject]
++)
++/**
++ * @internal
++ */
++export class ListEvents extends Rpc.make("events/list", {
++  success: ListEventsResult,
++  error: McpError,
++  payload: PaginatedRequestParams
++}) {}
++
++const EventArguments = optional(Schema.Record(Schema.String, Schema.Json))
++
++/**
++ * @internal
++ */
++export const SubscribeEventResult = Schema.StructWithRest(
++  Schema.Struct({
++    ...ResultMeta,
++    id: Schema.String,
++    refreshBefore: Schema.NullOr(Schema.String),
++    cursor: Schema.NullOr(Schema.String),
++    truncated: optional(Schema.Boolean),
++    deliveryStatus: optional(Schema.JsonObject)
++  }),
++  [Schema.JsonObject]
++)
++/**
++ * @internal
++ */
++export class SubscribeEvent extends Rpc.make("events/subscribe", {
++  success: SubscribeEventResult,
++  error: McpError,
++  payload: {
++    ...RequestParams.fields,
++    name: Schema.String,
++    arguments: EventArguments,
++    delivery: Schema.Struct({
++      mode: Schema.Literal("webhook"),
++      url: Schema.String,
++      secret: Schema.String
++    }),
++    cursor: optional(Schema.NullOr(Schema.String)),
++    maxAgeMs: optional(Schema.Int),
++    ttlMs: optional(Schema.NullOr(Schema.Int))
++  }
++}) {}
++
++/**
++ * @internal
++ */
++export const UnsubscribeEventResult = Schema.StructWithRest(
++  Schema.Struct({ ...ResultMeta }),
++  [Schema.JsonObject]
++)
++/**
++ * @internal
++ */
++export class UnsubscribeEvent extends Rpc.make("events/unsubscribe", {
++  success: UnsubscribeEventResult,
++  error: McpError,
++  payload: {
++    ...RequestParams.fields,
++    name: Schema.String,
++    arguments: EventArguments,
++    delivery: Schema.Struct({
++      mode: Schema.Literal("webhook"),
++      url: Schema.String
++    })
++  }
++}) {}
++
+ /**
+  * @internal
+  */
+@@ -823,7 +919,10 @@ export class ClientRequestRpcs extends RpcGroup.make(
+   ReadResource,
+   SubscriptionsListen,
+   CallTool,
+-  ListTools
++  ListTools,
++  ListEvents,
++  SubscribeEvent,
++  UnsubscribeEvent
+ ) {}
+ 
+ /**
+diff --git a/src/ai/internal/mcpStatefulRuntime.ts b/src/ai/internal/mcpStatefulRuntime.ts
+index 3ab8dd2b3dd2d945394f7342a51b25fc479dfc15..9664d458e2bdd5cd2498fc5394e59cb32d2002a7 100644
+--- a/src/ai/internal/mcpStatefulRuntime.ts
++++ b/src/ai/internal/mcpStatefulRuntime.ts
+@@ -4,6 +4,7 @@
+ import * as Effect from "../../Effect.ts"
+ import type * as Headers from "../../http/Headers.ts"
+ import * as LogLevel from "../../LogLevel.ts"
++import * as Schema from "../../Schema.ts"
+ import type * as PublicMcpProtocol from "../McpProtocol.ts"
+ import * as PublicMcpSchema from "../McpSchema.ts"
+ import type * as McpCore from "./mcpCore.ts"
+@@ -41,13 +42,54 @@ export interface Registration extends Binding {
+    * up to this revision are already reflected in what the client lists next.
+    */
+   readonly listChangeRevision: number
++  /** A level the client set with `logging/setLevel`, for a session brought back from a store. */
++  readonly mcpLogLevel?: PublicMcpSchema.LoggingLevel | undefined
++}
++
++/**
++ * What a session store keeps of one HTTP session: the `initialize` it negotiated, encoded, and
++ * the level the client last set. Stored values are decoded again when they are read, so a
++ * value an older or newer server wrote and this one cannot read is an unknown session.
++ *
++ * @internal
++ */
++export const StoredSession = Schema.Struct({
++  initialize: PublicMcpSchema.Initialize.payloadSchema,
++  logLevel: Schema.optionalKey(PublicMcpSchema.LoggingLevel)
++})
++
++/**
++ * @internal
++ */
++export type StoredSession = typeof StoredSession.Encoded
++
++/**
++ * Keeps HTTP sessions beyond the server's memory. `save` runs when `initialize` opens a session
++ * and when its log level changes, never for other requests; `load` runs only for a session id
++ * the server does not hold, and passes what it finds to `restore`, which returns whether the
++ * server now holds the session. Neither may fail: a session the store cannot keep still works
++ * until the server forgets it.
++ *
++ * @internal
++ */
++export interface SessionStore {
++  readonly save: (sessionId: string, session: StoredSession) => Effect.Effect<void>
++  readonly load: (sessionId: string, restore: (stored: unknown) => boolean) => Effect.Effect<void>
+ }
+ 
+ /**
+  * @internal
+  */
+ export interface StatefulRuntime {
+-  readonly registerHttp: (sessionId: string, registration: Registration) => Binding
++  /**
++   * Open an HTTP session in the place `reservation` holds, or without an open one in a place taken
++   * now. `undefined` when there is no place: past the bound every session owns work.
++   */
++  readonly registerHttp: (
++    sessionId: string,
++    registration: Registration,
++    reservation?: Reservation | undefined
++  ) => Binding | undefined
+   readonly registerConnection: (clientId: number, registration: Registration) => Binding
+   readonly resolve: (clientId: number, headers: Headers.Headers) => Binding | undefined
+   readonly resolveSessionId: (sessionId: string) => Binding | undefined
+@@ -80,6 +122,16 @@ export interface StatefulRuntime {
+     fallback: LogLevel.LogLevel
+   ) => LogLevel.LogLevel
+   readonly markInitialized: (clientId: number) => void
++  /**
++   * Keep an HTTP session while one of its requests runs, its response stream included. Returns the
++   * release, which may be called more than once.
++   */
++  readonly holdHttp: (sessionId: string) => () => void
++  /**
++   * Take a place for one new HTTP session, forgetting the least recently used session that owns no
++   * work when the bound is reached. `undefined` when every session owns work.
++   */
++  readonly reserveHttp: () => Reservation | undefined
+   readonly initializedClientIds: () => Iterable<number>
+   readonly disconnect: (clientId: number) => void
+ }
+@@ -90,16 +142,81 @@ const makeSession = (registration: Registration): Session => ({
+   protocol: registration.protocol,
+   resourceSubscriptions: registration.supportsResourceSubscriptions ? new Set() : undefined,
+   listChangeRevision: registration.listChangeRevision,
+-  logLevel: { _tag: "Effect", level: registration.logLevel }
++  logLevel: registration.mcpLogLevel === undefined
++    ? { _tag: "Effect", level: registration.logLevel }
++    : { _tag: "Mcp", level: registration.mcpLogLevel }
+ })
+ 
++/**
++ * A place for one HTTP session, taken when its `initialize` is admitted. Places held count toward
++ * the bound like sessions, so `initialize` requests admitted together cannot pass it between
++ * admission and registration.
++ *
++ * @internal
++ */
++export interface Reservation {
++  /** Gives the place back if no session took it. Does nothing after that, or a second time. */
++  readonly release: () => void
++}
++
++/** The place every session takes when there is no bound: nothing is kept, so nothing to give back. */
++const unboundedReservation: Reservation = { release: () => {} }
++
++/**
++ * @internal
++ */
++export interface Options {
++  /**
++   * The most HTTP sessions kept; past it the least recently used is forgotten. Without a bound,
++   * every session its client did not end with DELETE stays for the server's life, including each
++   * one a client that opens a session per call leaves behind. A forgotten session answers `404`
++   * and its client initializes again (MCP 2025-11-25, Session Management).
++   */
++  readonly maxHttpSessions?: number | undefined
++  /**
++   * Whether the host still holds work that only this HTTP session can reach, such as a paused
++   * program its client resumes through the session. Such a session, like one with a request in
++   * flight, is never the one forgotten past `maxHttpSessions`.
++   */
++  readonly heldHttpSession?: ((sessionId: string) => boolean) | undefined
++}
++
+ /**
+  * @internal
+  */
+-export const make = (): StatefulRuntime => {
++export const make = (options?: Options): StatefulRuntime => {
+   const bySessionId = new Map<string, Session>()
+   const byClientId = new Map<number, Session>()
+   const initializedClientIds = new Set<number>()
++  const maxHttpSessions = options?.maxHttpSessions
++  const held = options?.heldHttpSession
++  // Requests in flight per HTTP session. A session with any, or with work the host holds for it,
++  // owns work: forgetting it would strand a pending reply, a cancellation or a paused program.
++  const inFlight = new Map<string, number>()
++  const owned = (sessionId: string) => inFlight.has(sessionId) || held?.(sessionId) === true
++  // Moves a session to the end, so `bySessionId` iterates least recently used first.
++  const touch = (sessionId: string, session: Session) => {
++    bySessionId.delete(sessionId)
++    bySessionId.set(sessionId, session)
++  }
++  /** The least recently used session that owns no work. */
++  const evictable = () => {
++    for (const sessionId of bySessionId.keys()) {
++      if (!owned(sessionId)) return sessionId
++    }
++    return undefined
++  }
++  // Places taken for sessions that have not opened yet. Sessions and places together never pass
++  // the bound: every place is taken by one synchronous check, and a session opens only in one.
++  const reservations = new Set<Reservation>()
++  /** Room for one more session: a free place, or one the least recently used idle session leaves. */
++  const makeRoom = () => {
++    if (maxHttpSessions === undefined || bySessionId.size + reservations.size < maxHttpSessions) return true
++    const oldest = evictable()
++    if (oldest === undefined) return false
++    bySessionId.delete(oldest)
++    return true
++  }
+ 
+   const resolveSession = (clientId: number, headers: Headers.Headers): Session | undefined => {
+     const sessionId = headers[MCP_SESSION_ID_HEADER]
+@@ -118,9 +235,10 @@ export const make = (): StatefulRuntime => {
+   }
+ 
+   return {
+-    registerHttp: (sessionId, registration) => {
++    registerHttp: (sessionId, registration, reservation) => {
++      if (!(reservation !== undefined && reservations.delete(reservation)) && !makeRoom()) return undefined
+       const session = makeSession(registration)
+-      bySessionId.set(sessionId, session)
++      touch(sessionId, session)
+       return session
+     },
+     registerConnection: (clientId, registration) => {
+@@ -129,7 +247,11 @@ export const make = (): StatefulRuntime => {
+       return session
+     },
+     resolve: resolveSession,
+-    resolveSessionId: (sessionId) => bySessionId.get(sessionId),
++    resolveSessionId: (sessionId) => {
++      const session = bySessionId.get(sessionId)
++      if (session !== undefined && maxHttpSessions !== undefined) touch(sessionId, session)
++      return session
++    },
+     terminateSession: (sessionId) => bySessionId.delete(sessionId),
+     setLogLevel: (level, clientId, headers) =>
+       Effect.sync(() => {
+@@ -183,6 +305,34 @@ export const make = (): StatefulRuntime => {
+     markInitialized: (clientId) => {
+       initializedClientIds.add(clientId)
+     },
++    holdHttp: (sessionId) => {
++      const session = bySessionId.get(sessionId)
++      if (session === undefined) return () => {}
++      inFlight.set(sessionId, (inFlight.get(sessionId) ?? 0) + 1)
++      touch(sessionId, session)
++      let released = false
++      return () => {
++        if (released) return
++        released = true
++        const remaining = (inFlight.get(sessionId) ?? 1) - 1
++        if (remaining > 0) inFlight.set(sessionId, remaining)
++        else inFlight.delete(sessionId)
++        const current = bySessionId.get(sessionId)
++        if (current !== undefined) touch(sessionId, current)
++      }
++    },
++    reserveHttp: () => {
++      // Without a bound there is nothing to count, so no place is kept.
++      if (maxHttpSessions === undefined) return unboundedReservation
++      if (!makeRoom()) return undefined
++      const reservation: Reservation = {
++        release: () => {
++          reservations.delete(reservation)
++        }
++      }
++      reservations.add(reservation)
++      return reservation
++    },
+     initializedClientIds: () => initializedClientIds.values(),
+     disconnect: (clientId) => {
+       byClientId.delete(clientId)
+diff --git a/src/observability/OtlpExporter.ts b/src/observability/OtlpExporter.ts
+index 372754ab20c91b5f503e47b1043b73a89fe4fea3..dd8aa3b2c31cc43412a1c66b3a509d6a51f1cab3 100644
+--- a/src/observability/OtlpExporter.ts
++++ b/src/observability/OtlpExporter.ts
+@@ -266,6 +266,11 @@ export const make: (
+     )
+   )
+ 
++  // With an infinite interval nothing is exported on a timer: only a flush, a full batch and
++  // the scope's close export. Such an exporter runs no loop, so a push never resumes a fiber.
++  // A host that keeps one exporter for many requests, such as a Cloudflare Worker's isolate,
++  // must not resume a fiber that last ran in another request.
++  const timed = Duration.isFinite(exportInterval)
+   // `armed` is open while there is something to export. It changes in the
+   // same synchronous step as the buffer check, so a push is never stranded.
+   const armed = yield* Latch.make(exportsEmpty)
+@@ -275,15 +280,17 @@ export const make: (
+     wake.openUnsafe()
+   })
+   // Forked after the shutdown finalizer, so the loop stops before the shutdown flush.
+-  yield* Effect.gen(function*() {
+-    while (true) {
+-      wake.closeUnsafe()
+-      yield* armed.await
+-      yield* Effect.race(Effect.sleep(exportInterval), wake.await)
+-      yield* Fiber.await(yield* FiberSet.run(exportFibers, runExport))
+-      yield* disarmIfEmpty
+-    }
+-  }).pipe(Effect.forkIn(scope))
++  if (timed) {
++    yield* Effect.gen(function*() {
++      while (true) {
++        wake.closeUnsafe()
++        yield* armed.await
++        yield* Effect.race(Effect.sleep(exportInterval), wake.await)
++        yield* Fiber.await(yield* FiberSet.run(exportFibers, runExport))
++        yield* disarmIfEmpty
++      }
++    }).pipe(Effect.forkIn(scope))
++  }
+   const exportNow = Effect.andThen(runExport, disarmIfEmpty)
+ 
+   const flusher = yield* Flusher
+@@ -296,7 +303,7 @@ export const make: (
+       buffer.push(data)
+       if (options.maxBatchSize !== "disabled" && buffer.length >= options.maxBatchSize) {
+         runExportFork(exportNow)
+-      } else {
++      } else if (timed) {
+         armed.openUnsafe()
+       }
+     }
+diff --git a/src/reactivity/AtomHttpApi.ts b/src/reactivity/AtomHttpApi.ts
+index 6173ebb71d241dc249eb602115f1163d1efd836b..98c0986722b628a2ab4aaaaa5c7f2447d0761f19 100644
+--- a/src/reactivity/AtomHttpApi.ts
++++ b/src/reactivity/AtomHttpApi.ts
+@@ -118,6 +118,11 @@ export interface AtomHttpApiClient<Self, Id extends string, Groups extends HttpA
+         readonly reactivityKeys?: Reactivity.KeysInput | undefined
+         readonly timeToLive?: Duration.Input | undefined
+         readonly serializationKey?: string | undefined
++        /**
++         * With a `serializationKey`: keep a hydrated value instead of requesting it again when the
++         * query mounts, until it is refreshed or a dependency changes. See `Atom.serializable`.
++         */
++        readonly skipInitialRun?: boolean | undefined
+       }
+       : never
+   ) => [Endpoint] extends [
+@@ -276,7 +281,8 @@ export const Service =
+           schema: AsyncResult.Schema({
+             success: Schema.Union(HttpApiEndpoint.getSuccessSchemas(endpoint)),
+             error: Schema.Union(HttpApiEndpoint.getErrorSchemas(endpoint))
+-          }) as any
++          }) as any,
++          skipInitialRun: opts.skipInitialRun
+         })
+       }
+       if (opts.timeToLive) {
+@@ -300,6 +306,7 @@ export const Service =
+         readonly reactivityKeys?: Reactivity.KeysInput | undefined
+         readonly timeToLive?: Duration.Input | undefined
+         readonly serializationKey?: string | undefined
++        readonly skipInitialRun?: boolean | undefined
+       }
+     ) => {
+       const key: QueryKey = {
+@@ -315,7 +322,8 @@ export const Service =
+         timeToLive: request.timeToLive !== undefined
+           ? Duration.fromInputUnsafe(request.timeToLive)
+           : undefined,
+-        serializationKey: request.serializationKey
++        serializationKey: request.serializationKey,
++        skipInitialRun: request.skipInitialRun
+       }
+       return queryFamily(key)
+     }) as any
+@@ -341,6 +349,7 @@ interface QueryKey {
+   sseOptions: Sse.DecodeOptions | undefined
+   timeToLive: Duration.Duration | undefined
+   serializationKey: string | undefined
++  skipInitialRun: boolean | undefined
+ }
+ 
+ type ResponseByMode<
+diff --git a/src/sql/Statement.ts b/src/sql/Statement.ts
+index 6e14746b141642de8f83f6b732dc098cd958f6e2..1cdf69e2b102d3f316b558632511042efef2946f 100644
+--- a/src/sql/Statement.ts
++++ b/src/sql/Statement.ts
+@@ -1382,20 +1382,17 @@ export const spanTarget = (spanAttributes: ReadonlyArray<readonly [string, unkno
+ 
+ /**
+  * Returns the span name for statements run by a client with the given span
+- * attributes, following the OpenTelemetry database span conventions: the
+- * {@link spanTarget}, then `db.system.name`, falling back to `sql.execute`.
++ * attributes: always `sql.execute`.
+  *
+  * @stability unstable
+  * @category tracing
+  * @since 4.0.1
+  */
+ export const spanName = (spanAttributes: ReadonlyArray<readonly [string, unknown]>): string => {
+-  const target = spanTarget(spanAttributes)
+-  if (target !== undefined) {
+-    return target
+-  }
+-  const system = spanAttribute(spanAttributes, "db.system.name")
+-  return isNonEmptyString(system) ? system : "sql.execute"
++  // One fixed name for every statement of every client. The target and system stay on the span
++  // as `db.namespace`, `server.address` and `db.system.name`.
++  void spanAttributes
++  return "sql.execute"
+ }
+ 
+ // internal

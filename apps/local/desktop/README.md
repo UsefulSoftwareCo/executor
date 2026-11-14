@@ -243,7 +243,7 @@ saves it as `port` in `service.json`, keeping its other settings, and restarts t
 server. A bind can still race another process after the check. An invalid `service.json` locks
 the form and names the file.
 
-**File → Rotate local API key…** confirms, stops the background server, runs `executor
+**File → Rotate local API key…** confirms, stops the background server, runs `executor service
 rotate-key` with the same runtime and starts the server again. That replaces the API key where the
 data directory keeps it (OS credential store or `keys.json`) and retains the encryption key, so
 saved accounts and MCP sign-ins still work. Browser sessions are unaffected; scripts and clients

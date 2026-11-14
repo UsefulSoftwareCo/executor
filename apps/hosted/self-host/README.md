@@ -23,7 +23,9 @@ docker run --detach --name executor-v2 --init --restart unless-stopped \
 
 Open `http://localhost:4400` and create the first administrator. The container
 includes the dashboard, API, MCP server, database, and app runtime. For a pinned
-release, use `beta-<full Git commit SHA>` instead of the moving `beta` tag.
+release, use a published version such as `2.0.0-beta.N` instead of the moving
+`beta` tag. The `beta` tag moves only once a release is public, so it always
+exists; a version tag exists once its GitHub release is published.
 Before updating, stop the container and back up its volume. Pull the new image,
 remove only the stopped container, and repeat the run command with the same
 volume and secrets.
@@ -58,6 +60,49 @@ instructions for your client. MCP uses browser sign-in.
 
 The health endpoint is [http://localhost:4400/health](http://localhost:4400/health).
 
+### Health checks
+
+`/health` answers `200` once the server is ready. The thread that answers it also runs the rest of
+the product and commits its storage, syncing each commit to disk before it continues, so on a slow
+disk every response, `/health` included, can wait seconds behind one commit. With 30 apps running
+schedules on a desktop disk, `/health` took up to 16.5 seconds (99th percentile 12.9 seconds); on a
+disk limited to 5 writes a second, up to 34 seconds.
+
+The image's own check allows 30 seconds a probe and marks the container unhealthy after three
+failures in a row: a server that stops answering is marked unhealthy within three minutes, and one
+that never answers from its first boot after about five. 30 seconds covers every stall measured on
+the desktop disk but not the slowest answer on the throttled one, so on a disk that slow a check can
+still fail now and then; only three failures in a row count. Give your own probes the same room:
+
+- **Kubernetes.** A probe's `timeoutSeconds` defaults to 1 second, which ordinary commit stalls on a
+  slow disk exceed. When a liveness probe fails `failureThreshold` times in a row, the kubelet
+  restarts the container; one failed probe does not. Give a readiness probe the liveness probe's
+  timeout.
+
+  ```yaml
+  startupProbe:
+    httpGet: { path: /health, port: 4400 }
+    periodSeconds: 10
+    timeoutSeconds: 10
+    failureThreshold: 18 # about three minutes, whether probes fail at once or time out
+  livenessProbe:
+    httpGet: { path: /health, port: 4400 }
+    periodSeconds: 30
+    timeoutSeconds: 30
+    failureThreshold: 3
+  ```
+
+  Until the server is ready, `/health` answers `503` at once, and one success ends the startup
+  probe, so it can wait less than the liveness probe: its 18 attempts take about three minutes
+  either way. With these settings a server that stops answering is restarted 90 to 120 seconds
+  later, or 60 to 90 seconds once its connections are refused, plus the pod's termination grace
+  period.
+
+- **Railway** checks `/health` only while a deployment starts, to decide when to send it traffic,
+  and does not probe a running service. Set the path to `/health` and the timeout to 120 seconds.
+- **Docker Compose or another supervisor** with its own check: allow 30 seconds a probe and three
+  failures, for example `timeout: 30s`, `interval: 30s` and `retries: 3`.
+
 ### Runtime packaging
 
 The Docker build produces a standalone server bundle. It prepares the trusted
@@ -73,8 +118,11 @@ The image runs Executor's build of workerd from
 [UsefulSoftwareCo/workerd](https://github.com/UsefulSoftwareCo/workerd), pinned by
 release and SHA-256 in `workerd.json`; packaging downloads it and fails on any other
 digest. It adds idle-isolate and memory-pressure garbage collection and TCMalloc
-memory release, set by `memory` in the generated `workerd.capnp`. Cloud and local
-development keep upstream workerd.
+memory release, set by `memory` in the generated `workerd.capnp`, and for Motel's
+process in `motel.capnp`: Motel collects its isolate after 2 seconds idle and
+returns the freed memory. With 30 apps on per-minute schedules that held it near
+90 MB, where it had risen to about 430 MB. Cloud and local development keep
+upstream workerd.
 
 The runtime uses Debian 12 distroless with Git's native commands and HTTP backend,
 their shared libraries, and the small set of tools used to prepare data volumes.
@@ -241,6 +289,27 @@ To stop the server while retaining its data:
 docker compose -f apps/hosted/self-host/compose.yaml down
 ```
 
+## App catalog
+
+Onboarding and **Add app** list Executor's official apps from the published
+feed at `https://catalog.executor.sh/index.json`. The server reads the feed's
+index whenever the catalog is listed, which is more often than those two pages
+open: each dashboard page load lists it once to show app icons, and each catalog
+query from an agent lists it again. Reads that overlap share one request. When
+the feed sends an `ETag`, as the published feed does, the server asks whether
+the index changed since its last read and downloads it again only when it has;
+a feed that sends no `ETag` is downloaded and decoded on every read, and so is
+the first read after the server restarts. Adding an app fetches that app's source, and the
+browser loads app icons from the same host.
+
+To read another copy of the feed, set `EXECUTOR_CATALOG_URL` to its
+`index.json`. On an instance without outbound internet access, set
+`EXECUTOR_CATALOG_URL=off`: onboarding and Add app then say the catalog is off
+and list only the built-in Executor app, and you can still add apps by URL or
+build your own. When the feed cannot be reached or read, both pages say so with
+a retry, and the built-in Executor app stays listed. An agent's catalog query
+fails with the same explanation, as it failed before.
+
 ## Serve other users
 
 The supplied Compose file binds port 4400 to the host's loopback interface.
@@ -275,6 +344,49 @@ uses its socket address. A client-supplied `x-executor-client-ip` is always
 overwritten. Invalid or incomplete proxy settings refuse startup. These settings
 apply to the packaged Go/workerd host; the Bun development server uses its own
 direct socket address.
+
+### Rate limits behind a proxy
+
+Sign-in and the other auth routes are rate-limited per client address. Behind a
+proxy every connection comes from the proxy, so by default all users share one
+limit, and three failed sign-ins from one person lock everyone out for about
+ten seconds. Set `EXECUTOR_TRUSTED_PROXIES` to the addresses your proxies
+connect to the container from, separated by commas. The Docker image and the
+Compose build read it; running `src/main.ts` from source, as `bun run hosted:dev`
+does, does not.
+
+A request from a listed address takes its client from `X-Forwarded-For`, read
+from the right past every listed address. Each proxy must append the address it
+received the request from, as Caddy, Traefik, Cloudflare and nginx's
+`$proxy_add_x_forwarded_for` do. When every listed address is such a proxy and
+no client can connect from one, the entry used was written by your proxy, so
+what a client puts in the header itself is never used. Requests from any other
+address use the connection's address, and with the setting empty nothing
+changes. Startup fails on an entry that is neither an address nor a CIDR range.
+
+List each proxy's exact address. A CIDR range is safe only when it holds your
+proxies and nothing else. Any machine or container that connects from a listed
+address can put any address in `X-Forwarded-For`, directly or through your proxy,
+and is limited, and recorded in sessions and audit records, under that address.
+So do not list a Docker network's subnet that other containers share, and never
+list `0.0.0.0/0` or `::/0`, which trusts every client.
+
+- A proxy on the host, such as Caddy or nginx forwarding to `127.0.0.1:4400`,
+  connects from the gateway of the container's Docker network. Find it with
+  `docker inspect <container> --format '{{range .NetworkSettings.Networks}}{{.Gateway}} {{end}}'`;
+  under Compose, use `$(docker compose -f apps/hosted/self-host/compose.yaml ps -q server)`
+  as the container. It is often `172.17.0.1` for `docker run`, and a different
+  address for each Compose network. Publishing the port on loopback, as the
+  supplied command and Compose file do, keeps remote clients off it, but every
+  process on the host reaches the container from that same gateway address.
+  Listing the gateway trusts all of them, so do it only on a host where the
+  people who can run processes are ones you trust.
+- A proxy in another container on the same Docker network connects from that
+  container's address. Give the proxy a fixed address and list only that, or
+  put it and Executor on a network of their own.
+- Cloudflare Tunnel: list the address `cloudflared` connects from, by the same
+  rules. Cloudflare appends each visitor's address to `X-Forwarded-For` and
+  `cloudflared` passes it on, so no other setting is needed.
 
 Localhost derives app UI addresses automatically. For a public installation,
 set `EXECUTOR_APP_UI_BASE_URL` to a separate HTTPS base such as
@@ -326,6 +438,13 @@ Optional OIDC SSO and observability settings are listed in [compose.yaml](compos
 docker compose -f apps/hosted/self-host/compose.yaml ps
 docker compose -f apps/hosted/self-host/compose.yaml logs --tail 100 server
 ```
+
+The server opens its database as soon as it starts and logs
+`Executor is still starting` every 15 seconds until it can serve requests, then
+`Executor is ready at <BETTER_AUTH_URL>`. Until then every request, including
+`/health`, gets an immediate `503` with `Executor is starting`. The first boot creates the database,
+which can take a minute or more on slower hardware. The image's health check
+allows two minutes for that before failures count.
 
 The first source build downloads its dependencies. Later builds reuse Docker's
 cache. The Compose commands above build from source and do not depend on the

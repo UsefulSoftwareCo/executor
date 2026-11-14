@@ -96,6 +96,13 @@ export const connectionInput = (draft: ConnectionDraft): ConnectionInput | undef
   return { id: draft.id, name: draft.name.trim() || defaultConnectionName(draft.apps), apps };
 };
 
+/** A saved connection as the sign-in page lists it: its name and the names of the apps it reaches. */
+export interface ConsentConnection {
+  readonly id: ConnectionId;
+  readonly name: string;
+  readonly apps: readonly string[];
+}
+
 /** Create a new connection or replace an existing one's name and access. */
 export interface ConnectionSave {
   readonly existing: boolean;

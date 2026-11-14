@@ -9,14 +9,10 @@ export interface RowStatement {
 }
 
 /**
- * Apply statements in one transaction to a managed Cloud database: Cloud's own
- * (`sso-database.json`) or the emulated v1 database (`v1-database.json`). Returns each
- * statement's rows.
+ * Apply statements in one transaction to a managed Cloud's own database (`sso-database.json`).
+ * Returns each statement's rows.
  */
-export const writeRows = (
-  database: "sso-database.json" | "v1-database.json",
-  statements: ReadonlyArray<RowStatement>,
-) =>
+export const writeRows = (database: "sso-database.json", statements: ReadonlyArray<RowStatement>) =>
   Effect.gen(function* () {
     const target = yield* Target,
       fs = yield* FileSystem.FileSystem,

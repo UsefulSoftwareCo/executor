@@ -19,6 +19,7 @@ import { Api } from "../support/api.ts";
 import { TestLive, withCase } from "../support/case.ts";
 import { Collector } from "../support/contracts.ts";
 import { Evidence, FailureTraceBudget } from "../support/evidence.ts";
+import { ServerProcess, serverProcessFile } from "../support/managed-server.ts";
 import { Target } from "../support/platform.ts";
 import { serverControl } from "../support/server-control.ts";
 import {
@@ -70,8 +71,11 @@ layer(TestLive, { excludeTestServices: true })("Failure evidence cases", (it) =>
         const http = yield* HttpClient.HttpClient;
         const evidence = yield* Evidence;
         const probe = yield* probes;
-        // The parent scenario checks this origin refuses connections once the cases have ended.
-        yield* evidence.json("product.json", { origin: target.metadata.origin });
+        // The parent scenario checks this product's processes are gone once the cases have ended.
+        const product = yield* fs
+          .readFileString(`${target.directory}/${serverProcessFile}`)
+          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(ServerProcess))));
+        yield* evidence.json("product.json", { origin: target.metadata.origin, ...product });
         for (const role of roles("old", slowTraceRead.requests)) yield* probe(role);
         // Evidence reads traces through a proxy that holds every trace read.
         const file = `${target.directory}/data/diagnostics/collector.json`;

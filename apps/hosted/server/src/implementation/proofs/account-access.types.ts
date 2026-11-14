@@ -9,13 +9,11 @@ import {
   type AccountProof,
   type AccountTarget,
 } from "../../contracts/account-grants.ts";
-import type { AccountAccess } from "../../contracts/resource-access.ts";
 import { checkAccount, disconnectAccount, getAccount, updateAccount } from "../accounts.ts";
 import { AccountGrants } from "./account-access.ts";
 
 declare const owner: OwnerId;
 declare const account: AccountId;
-declare const access: typeof AccountAccess.Type;
 declare const inspect: AccountProof<"inspect">;
 
 /** Accepts an effect only when no account target remains among its requirements. */
@@ -58,7 +56,7 @@ export const rejected = [
 
 // Proofs come only from a grant: they cannot be built or exchanged between actions.
 // @ts-expect-error A hand-built value carries no evidence.
-export const built: AccountProof<"delete"> = { owner, account, access };
+export const built: AccountProof<"delete"> = { owner, account };
 // @ts-expect-error An inspect proof is not a delete proof.
 export const exchanged: AccountProof<"delete"> = inspect;
 

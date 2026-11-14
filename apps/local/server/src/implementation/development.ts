@@ -1,5 +1,5 @@
 /** Scoped Vite adapter shared by browser and desktop development hosts. */
-import { createServer as createHttpServer, type IncomingMessage } from "node:http";
+import { createServer as createHttpServer, IncomingMessage, ServerResponse } from "node:http";
 import * as NodeHttpServerRequest from "@effect/platform-node/NodeHttpServerRequest";
 import {
   dashboardDocument,
@@ -78,8 +78,11 @@ export const developmentWeb = (settings: ServerConfig, options: DevelopmentWebOp
     const assets = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const incoming = NodeHttpServerRequest.toIncomingMessage(request);
-      if (isHmrUpgrade(incoming)) return yield* hmrUpgrade(incoming);
       const response = NodeHttpServerRequest.toServerResponse(request);
+      // Effect 4.1 may hand over an HTTP/2 request; this development server only speaks HTTP/1.
+      if (!(incoming instanceof IncomingMessage) || !(response instanceof ServerResponse))
+        return HttpServerResponse.empty({ status: 505 });
+      if (isHmrUpgrade(incoming)) return yield* hmrUpgrade(incoming);
       return yield* Effect.callback<HttpServerResponse.HttpServerResponse>((resume) => {
         const cleanup = () => {
           response.off("finish", done);

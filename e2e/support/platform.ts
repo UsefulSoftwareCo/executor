@@ -4,6 +4,7 @@ import { Config, Context, Effect, FileSystem, Layer, Redacted, Schema } from "ef
 import { FetchHttpClient } from "effect/http";
 import { RunMetadata } from "../report-model.ts";
 import { FixtureControl, PreparedScenarios } from "../sdk/contracts.ts";
+import { indented, keepCause, keptCauseText, secretConfig } from "./failure-text.ts";
 
 /** Per-action capture delay; zero keeps unattended runs at full speed. */
 export const RecordingPaceMs = Schema.Int.check(Schema.isBetween({ minimum: 0, maximum: 3000 }));
@@ -35,14 +36,14 @@ export class Target extends Context.Service<
       const metadata = yield* fs
         .readFileString(`${directory}/run.json`)
         .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(RunMetadata))));
-      const apiKey = yield* Config.Redacted("EXECUTOR_E2E_API_KEY");
+      const apiKey = yield* secretConfig("EXECUTOR_E2E_API_KEY");
       const recordingPaceMs = yield* Config.Number("E2E_RECORDING_PACE_MS").pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(RecordingPaceMs)),
       );
       const observeUI = yield* Config.Boolean("E2E_UI_OBSERVE").pipe(Config.withDefault(false));
       const fixtures = yield* Config.String("E2E_FIXTURES").pipe(Config.withDefault(""));
       const rows = yield* Config.Number("E2E_ROWS").pipe(
-        Config.withDefault(1000),
+        Config.withDefault(300),
         Effect.flatMap(
           Schema.decodeUnknownEffect(
             Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 10000 })),
@@ -75,20 +76,34 @@ export class Target extends Context.Service<
 export const RuntimeLive = Target.layer.pipe(
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, FetchHttpClient.layer)),
 );
-/** Boundary failure with a safe operation label; raw SDK errors stay redacted. */
+/**
+ * Boundary failure with its operation label and, when it is printed, the masked text of its cause
+ * (see `failure-text.ts`). The raw SDK error stays redacted: it can hold headers, cookies and
+ * tokens.
+ */
 export class DriverFailed extends Schema.TaggedError<DriverFailed>()("DriverFailed", {
   operation: Schema.String,
   cause: Schema.Redacted(Schema.Unknown),
 }) {
   get message() {
-    return `Driver operation failed: ${this.operation}`;
+    return `Driver operation failed: ${this.operation}\n  ${indented(keptCauseText(this) ?? "A redacted value")}`;
   }
 }
+/**
+ * Keep a new failure's redacted cause beside it, so its message can name the cause after a test
+ * runner's serializer has replaced the error's own `cause` property.
+ */
+export const withCause = <E extends { readonly cause?: Redacted.Redacted<unknown> | undefined }>(
+  error: E,
+): E => {
+  keepCause(error, error.cause);
+  return error;
+};
 /** Lift exactly one third-party operation. Orchestration stays in Effect. */
 export const driver = <A>(operation: string, run: (signal: AbortSignal) => Promise<A>) =>
   Effect.tryPromise({
     try: run,
-    catch: (cause) => new DriverFailed({ operation, cause: Redacted.make(cause) }),
+    catch: (cause) => withCause(new DriverFailed({ operation, cause: Redacted.make(cause) })),
   });
 /** Public wire response, fully consumed inside the request scope. */
 export interface Response {

@@ -6,6 +6,7 @@ import { holdOrganizationEntry } from "../support/organization-entry.ts";
 import { holdQuery, refreshVisiblePage } from "../support/query-transition.ts";
 import { Onboarding } from "../support/onboarding.ts";
 import { scenarios } from "../test-plan.ts";
+import { noPageErrors } from "../support/page-errors.ts";
 
 /** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
@@ -46,8 +47,8 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
       context,
       Effect.gen(function* () {
         const onboarding = yield* Onboarding;
-        yield* onboarding.socialSignIn("github");
-        yield* onboarding.confirmTeam(yield* onboarding.prepareTeam, "connect");
+        const { team, setup } = yield* onboarding.readyTeam;
+        yield* onboarding.connectAssistant(team, setup);
       }).pipe(Effect.provide(Onboarding.layer)),
     ),
   );
@@ -92,7 +93,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
           ),
         ).toBe(name);
         yield* browser.checkpoint("Team details retained for retry");
-        const team = yield* onboarding.confirmTeam(name, "revisit");
+        const team = yield* onboarding.confirmTeam(name, "skip", { checkInstall: false });
         yield* browser.use("Existing members can revisit the setup URL", (page) =>
           page.goto("/create"),
         );
@@ -100,6 +101,17 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
           "Existing membership returns to Apps without another team form",
           (page) => page.waitForURL(`**/org/${team.slug}/apps`),
         );
+      }).pipe(Effect.provide(Onboarding.layer)),
+    ),
+  );
+
+  it.effect(scenarios.onboardingGuideRevisit.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const onboarding = yield* Onboarding;
+        const { team, setup } = yield* onboarding.readyTeam;
+        yield* onboarding.revisitAssistant(team, setup);
       }).pipe(Effect.provide(Onboarding.layer)),
     ),
   );
@@ -113,7 +125,9 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
         yield* onboarding.emailSignIn(yield* onboarding.freshEmail, "signup");
         yield* authenticator.register;
         expect(yield* onboarding.organizations).toEqual([]);
-        const team = yield* onboarding.confirmTeam(yield* onboarding.prepareTeam);
+        const team = yield* onboarding.confirmTeam(yield* onboarding.prepareTeam, "skip", {
+          checkInstall: false,
+        });
         yield* onboarding.signOut;
         yield* authenticator.signIn;
         expect(yield* onboarding.organizations).toEqual([team]);
@@ -166,12 +180,14 @@ layer(TestLive, { excludeTestServices: true })("Cloud onboarding", (it) => {
         yield* browser.use("The sign-in page has hydrated", (page) =>
           page.waitForFunction(() => document.documentElement.hasAttribute("data-hydrated")),
         );
-        expect(failures).toEqual([]);
+        yield* noPageErrors(failures);
         yield* browser.checkpoint("Passkey enrollment can be skipped");
         yield* browser.use("Choose Not now", (page) =>
           page.getByRole("button", { name: "Not now", exact: true }).click(),
         );
-        const team = yield* onboarding.confirmTeam(yield* onboarding.prepareTeam);
+        const team = yield* onboarding.confirmTeam(yield* onboarding.prepareTeam, "skip", {
+          checkInstall: false,
+        });
         yield* onboarding.signOut;
         yield* onboarding.emailSignIn(email);
         yield* browser.use("Returning email user opens the existing team", (page) =>

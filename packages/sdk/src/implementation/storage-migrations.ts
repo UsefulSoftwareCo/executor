@@ -15,6 +15,8 @@ import {
   version4013Tables,
   version4014Tables,
   version4015Tables,
+  version4017Tables,
+  eventSelectionIndexes,
   appScheduleIndex,
   scopedRunKeyIndex,
   version402Tables,
@@ -77,6 +79,7 @@ export const currentIndexes = [
   ...boundedReadIndexes,
   ...storedOAuthClientIssuerIndexes,
   ...queueReadIndexes,
+  ...eventSelectionIndexes,
 ] as const;
 
 /** Versions built by {@link indexOnlyVersion}. */
@@ -652,6 +655,29 @@ export const storageSchemas = [
   version4015Schema,
   // Additive: three indexes; the running server's queries are unchanged.
   indexOnlyVersion(version4015Schema, "4.0.16", queueReadIndexes),
+  // Additive for the running server: subscription `app` and `event` become nullable and a nullable
+  // `selection` is added, with an index. The running server writes both on every row and never
+  // names `selection`. A row only this server writes, with no app or event, fails to decode there:
+  // its deliveries are retried, never sent unchecked, until this server takes over.
+  schema({
+    version: "4.0.17",
+    tables: version4017Tables,
+    relations: {
+      accounts: ({ one }) => ({
+        providerDefinition: one("providers", ["provider", "id"]).foreignKey(),
+      }),
+      apps: ({ one }) => ({
+        deployment: one("deployments", ["activeDeployment", "id"], ["code", "code"]).foreignKey(),
+      }),
+    },
+    up: ({ auto }) =>
+      auto.pipe(
+        Effect.map((operations) => [
+          ...operations,
+          ...eventSelectionIndexes.map((sql) => ({ type: "custom" as const, sql })),
+        ]),
+      ),
+  }),
 ] as const;
 
 /** Checked when this module loads, so a misbuilt index-only version fails every host's start. */

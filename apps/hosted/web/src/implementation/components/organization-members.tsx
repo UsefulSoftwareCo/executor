@@ -1,6 +1,6 @@
 import { EmptyState } from "@executor-js/ui/dashboard/empty-state";
 import { useAtomRefresh, useAtomSet, useAtomValue } from "@effect/atom-react";
-import { Avatar, AvatarFallback, AvatarImage } from "@executor-js/ui/components/avatar";
+import { MemberAvatar } from "./member-avatar.tsx";
 import { DisabledTooltip } from "@executor-js/ui/components/disabled-tooltip";
 import { Button } from "@executor-js/ui/components/button";
 import {
@@ -12,6 +12,7 @@ import {
   DialogTrigger,
 } from "@executor-js/ui/components/dialog";
 import { Input } from "@executor-js/ui/components/input";
+import { copyText } from "@executor-js/ui/lib/clipboard";
 import { Skeleton } from "@executor-js/ui/components/skeleton";
 import {
   Select,
@@ -786,7 +787,7 @@ function InvitationSent({
             className="shrink-0"
             onClick={async () => {
               try {
-                await navigator.clipboard.writeText(sent.link);
+                await copyText(sent.link);
                 setCopied(true);
                 setCopyError(null);
               } catch {
@@ -813,21 +814,5 @@ function InvitationSent({
         </Button>
       </DialogFooter>
     </>
-  );
-}
-
-function MemberAvatar({ name, image }: { readonly name: string; readonly image: string | null }) {
-  const initials = name
-    .trim()
-    .split(/\s+/)
-    .map((part) => part[0])
-    .join("")
-    .slice(0, 2)
-    .toUpperCase();
-  return (
-    <Avatar size="sm" aria-hidden>
-      <AvatarImage src={image ?? undefined} alt="" referrerPolicy="no-referrer" />
-      <AvatarFallback>{initials || "?"}</AvatarFallback>
-    </Avatar>
   );
 }

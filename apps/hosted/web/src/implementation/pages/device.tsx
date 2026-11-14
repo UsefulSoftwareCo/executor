@@ -5,7 +5,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { Cause, Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
-import { grantTarget } from "@executor-js/mcp-auth/grants";
+import { grantTarget, type GrantTarget } from "@executor-js/mcp-auth/grants";
 import {
   deviceVerificationPath,
   formatUserCode,
@@ -13,35 +13,28 @@ import {
   type DeviceRequestView,
 } from "@executor-js/mcp-auth/device";
 import {
+  McpConsentActions,
   McpConsentLayout,
   McpConsentLoading,
+  McpConsentRow,
   McpConsentSummary,
 } from "@executor-js/ui/dashboard/mcp-consent";
 import { Button } from "@executor-js/ui/components/button";
 import { Input } from "@executor-js/ui/components/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@executor-js/ui/components/select";
 import {
   McpConnectionFailed,
   deviceDecisionAtom,
   deviceRequestAtom,
   mcpClientAtom,
 } from "../../contracts/mcp.ts";
-import { organizationsAtom } from "../../contracts/organization.ts";
+import { organizationsAtom, type OrganizationSummary } from "../../contracts/organization.ts";
 import { useResourceOrigins } from "../resource-origin.ts";
+import { useGrantChoices } from "../components/grant-choices.tsx";
 
 /** `verification_uri_complete` carries the code; the plain `verification_uri` asks for it. */
 export const deviceSearch = (search: Record<string, unknown>) => ({
   user_code: typeof search.user_code === "string" ? search.user_code : "",
 });
-
-const actions =
-  "mcp-consent-actions flex items-center justify-end gap-2.5 border-t border-t-border pt-5 max-[480px]:flex-wrap";
 
 /**
  * RFC 8628 verification: a signed-in person enters or confirms the code a device shows, sees
@@ -100,7 +93,7 @@ function EnterCode({
             {error}
           </p>
         )}
-        <div className={actions}>
+        <div className="mcp-consent-actions grid gap-2.5">
           <Button type="submit" disabled={value.trim() === ""}>
             Continue
           </Button>
@@ -113,7 +106,7 @@ function EnterCode({
 function DeviceLookup({ code }: { readonly code: string }) {
   const request = useAtomValue(deviceRequestAtom(code));
   return AsyncResult.builder(request)
-    .onInitial(() => <McpConsentLoading />)
+    .onInitial(() => <McpConsentLoading rows={4} noteLines={1} />)
     .onFailure((cause) => {
       const failure = Cause.squash(cause);
       return (
@@ -136,39 +129,7 @@ function DeviceReview({ code, view }: { readonly code: string; readonly view: De
   const target = grantTarget(resourceOrigins, [view.resource]);
   const client = useAtomValue(mcpClientAtom(view.clientId));
   const organizations = useAtomValue(organizationsAtom);
-  const decide = useAtomSet(deviceDecisionAtom, { mode: "promiseExit" });
-  const state = useAtomValue(deviceDecisionAtom);
-  const [selected, setSelected] = useState("");
-  const [error, setError] = useState<string | null>(null);
   const [decided, setDecided] = useState<"approved" | "denied">();
-  const available = AsyncResult.isSuccess(organizations) ? organizations.value : [];
-  const organization = selected || available[0]?.id || "";
-  // A scoped connection belongs to one organization; the server binds the grant to it.
-  const scoped = target?.kind === "mcp" && target.connection !== undefined;
-  const submit = async (accept: boolean) => {
-    const action = accept ? "approve_device" : "deny_device";
-    reportBrowserUsage({ area: "mcp", action, outcome: "started" });
-    setError(null);
-    const result = await decide({
-      userCode: code,
-      accept,
-      organization: accept && !scoped ? organization : undefined,
-    });
-    reportBrowserUsage({
-      area: "mcp",
-      action,
-      outcome: Exit.isSuccess(result) ? "success" : "failure",
-    });
-    if (Exit.isSuccess(result)) setDecided(result.value.status);
-    else {
-      const failure = Cause.squash(result.cause);
-      setError(
-        failure instanceof McpConnectionFailed
-          ? failure.message
-          : "Unable to complete this request. Try again.",
-      );
-    }
-  };
   if (decided === "approved")
     return (
       <McpConsentLayout description={<p>Your device is connected.</p>}>
@@ -192,69 +153,91 @@ function DeviceReview({ code, view }: { readonly code: string; readonly view: De
       </McpConsentLayout>
     );
   if (!AsyncResult.isSuccess(client) || !AsyncResult.isSuccess(organizations))
-    return <McpConsentLoading />;
+    return <McpConsentLoading rows={4} noteLines={1} />;
+  return (
+    <DeviceDecision
+      code={code}
+      target={target}
+      client={client.value.client_name ?? "An application"}
+      organizations={organizations.value}
+      onDecided={setDecided}
+    />
+  );
+}
+
+function DeviceDecision({
+  code,
+  target,
+  client,
+  organizations,
+  onDecided,
+}: {
+  readonly code: string;
+  readonly target: GrantTarget;
+  readonly client: string;
+  readonly organizations: readonly OrganizationSummary[];
+  readonly onDecided: (decision: "approved" | "denied") => void;
+}) {
+  const decide = useAtomSet(deviceDecisionAtom, { mode: "promiseExit" });
+  const state = useAtomValue(deviceDecisionAtom);
+  const [error, setError] = useState<string | null>(null);
+  const choices = useGrantChoices({ target, organizations, disabled: state.waiting });
+  const submit = async (accept: boolean) => {
+    const action = accept ? "approve_device" : "deny_device";
+    reportBrowserUsage({ area: "mcp", action, outcome: "started" });
+    setError(null);
+    const result = await decide({ userCode: code, accept, ...choices.decision });
+    reportBrowserUsage({
+      area: "mcp",
+      action,
+      outcome: Exit.isSuccess(result) ? "success" : "failure",
+    });
+    if (Exit.isSuccess(result)) {
+      onDecided(result.value.status);
+      return true;
+    }
+    const failure = Cause.squash(result.cause);
+    setError(
+      failure instanceof McpConnectionFailed
+        ? failure.message
+        : "Unable to complete this request. Try again.",
+    );
+    return false;
+  };
   return (
     <McpConsentLayout
       description={
         <p>
-          <strong>{client.value.client_name ?? "An application"}</strong> on another device wants to
-          connect to Executor.
+          <strong>{client}</strong> on another device wants to connect to Executor.
         </p>
       }
     >
-      <div className="grid gap-2 text-[13px]">
-        <span className="[font-weight:550]">Code</span>
-        <p className="m-0 text-muted-foreground">
-          Check that your device shows{" "}
-          <span className="font-mono text-[15px] tracking-[0.12em] text-foreground [font-weight:550]">
-            {formatUserCode(code)}
-          </span>
-          . If it does not, deny this request.
-        </p>
-      </div>
-      {available.length > 0 && !scoped && (
-        <div className="mcp-consent-organization grid gap-2 text-[13px] [font-weight:550] [&_[data-slot='select-trigger']]:w-full">
-          <label htmlFor="device-organization">Organization</label>
-          <Select value={organization} onValueChange={setSelected} disabled={state.waiting}>
-            <SelectTrigger id="device-organization">
-              <SelectValue placeholder="Choose an organization" />
-            </SelectTrigger>
-            <SelectContent>
-              {available.map((item) => (
-                <SelectItem key={item.id} value={item.id}>
-                  {item.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-      )}
-      {available.length === 0 ? (
+      {organizations.length === 0 ? (
         <EmptyState size="compact" title="No organizations">
           Ask an organization admin for an invitation, then return here to connect.
         </EmptyState>
       ) : (
-        <McpConsentSummary target={target} />
+        <McpConsentSummary note="Only continue if your device shows this code.">
+          <McpConsentRow label="Code">
+            <span className="font-mono tracking-[0.12em] text-foreground [font-weight:550]">
+              {formatUserCode(code)}
+            </span>
+          </McpConsentRow>
+          {choices.rows}
+        </McpConsentSummary>
       )}
       {error && (
         <p role="alert" className="auth-error text-destructive text-[13px]">
           {error}
         </p>
       )}
-      <div className={actions}>
-        <Button variant="outline" disabled={state.waiting} onClick={() => submit(false)}>
-          Deny
-        </Button>
-        {available.length > 0 && (
-          <Button
-            disabled={(!scoped && organization === "") || state.waiting}
-            loading={state.waiting}
-            onClick={() => submit(true)}
-          >
-            Connect
-          </Button>
-        )}
-      </div>
+      <McpConsentActions
+        decline="Deny"
+        onDecline={() => submit(false)}
+        onConnect={organizations.length > 0 ? () => submit(true) : undefined}
+        connectDisabled={!choices.ready}
+        waiting={state.waiting}
+      />
     </McpConsentLayout>
   );
 }

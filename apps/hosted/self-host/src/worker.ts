@@ -1,5 +1,5 @@
 /** Product Worker. One durable actor owns PostgreSQL, auth, sessions and background work. */
-import * as BrowserCrypto from "@effect/platform-browser/BrowserCrypto";
+import { Digest } from "effect/crypto";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
 import type { DurableObjectState, Fetcher } from "@cloudflare/workers-types";
 import { PGlite } from "@electric-sql/pglite";
@@ -49,6 +49,7 @@ import {
   prepareProductFilesystem,
   completeProductBootstrap,
 } from "./implementation/workerd/storage-migration.ts";
+import { endsWithRequest } from "./implementation/workerd/request-lifetime.ts";
 import skills from "executor:skills";
 import dashboard from "executor:dashboard";
 import pgliteWasmModule from "executor:pglite.wasm";
@@ -145,7 +146,7 @@ const prepare = (state: DurableObjectState, env: Environment) =>
             )
           : telemetryLayer(telemetry),
         HttpServer.layerServices,
-        BrowserCrypto.layer,
+        Digest.layerWebCrypto,
         Layer.succeed(ScheduleHostReady, Effect.void),
       ),
     );
@@ -185,7 +186,7 @@ const prepare = (state: DurableObjectState, env: Environment) =>
       const context = yield* Effect.context<never>();
       const addressed = Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
-        return yield* http.pipe(
+        const response = yield* http.pipe(
           Effect.provideService(
             HttpServerRequest.HttpServerRequest,
             request.modify({
@@ -193,6 +194,7 @@ const prepare = (state: DurableObjectState, env: Environment) =>
             }),
           ),
         );
+        return endsWithRequest(request, response);
       });
       return {
         fetch: HttpEffect.toWebHandlerWith<never, Effect.Services<typeof addressed>>(context)(

@@ -20,7 +20,7 @@ type trustedProxy struct {
 func trustedProxyConfiguration() (*trustedProxy, error) {
 	header := strings.ToLower(strings.TrimSpace(os.Getenv("EXECUTOR_TRUSTED_PROXY_HEADER")))
 	peers := strings.TrimSpace(os.Getenv("EXECUTOR_TRUSTED_PROXIES"))
-	if header == "" && peers == "" {
+	if header == "" {
 		return nil, nil
 	}
 	if header == "" || peers == "" {

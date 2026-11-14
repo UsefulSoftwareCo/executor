@@ -1,6 +1,7 @@
 import { billingHandlers } from "./billing.ts";
 import { onboardingHandlers, setupHandlers } from "./onboarding-handlers.ts";
 import { organizationRemovalHandlers } from "./organization-removal.ts";
+import { userRemovalHandlers } from "./user-removal.ts";
 import {
   hostedApiDocumentRoute,
   hostedHandlers,
@@ -30,6 +31,7 @@ export const cloudApi = (document: LazyHostedApiDocument) =>
           onboardingHandlers,
           setupHandlers,
           organizationRemovalHandlers,
+          userRemovalHandlers,
         ).pipe(Layer.provide(requestRejections)),
       ),
     ),

@@ -138,12 +138,62 @@ layer(HostedLive, { excludeTestServices: true })("Workspace source", (it) => {
         });
         expect(stale.status).toBe(409);
         expect(yield* read(path)).toEqual(winner);
+      }),
+    ),
+  );
 
-        const pending = yield* create("concurrent initialization");
-        const snapshots = yield* Effect.forEach([0, 1, 2], () => read(pending), { concurrency: 3 });
-        const current = yield* read(pending);
-        expect(current.files).toEqual(files("initial"));
-        for (const snapshot of snapshots) expect(snapshot).toEqual(current);
+  it.effect(scenarios.workspaceFirstReads.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors;
+        const prefix = `/api/organizations/${actors.organization.id}/apps`;
+        const create = (label: string) =>
+          Effect.gen(function* () {
+            const response = yield* api.request(actors.owner, "POST", prefix, {
+              name: `Source ${label} ${randomUUID().slice(0, 8)}`,
+              files: files("initial"),
+            });
+            expect(response.status).toBe(200);
+            const app = yield* body(App, response);
+            expect(app.repository).toBeNull();
+            yield* Effect.addFinalizer(() =>
+              api.request(actors.owner, "DELETE", `${prefix}/${app.id}`).pipe(Effect.orDie),
+            );
+            return `${prefix}/${app.id}`;
+          });
+        const read = (path: string) =>
+          Effect.gen(function* () {
+            const response = yield* api.request(actors.owner, "GET", `${path}/workspace`);
+            expect(response.status).toBe(200);
+            return yield* body(Workspace, response);
+          });
+        // Every first read of a new app initializes its repository, so these race. Cloud's Git
+        // storage serves one push per repository at a time and refuses the others as busy; many
+        // apps, each read by several callers at once, make those refusals likely on every run.
+        const apps = [0, 1, 2, 3, 4, 5];
+        for (const round of [0, 1]) {
+          const pending = yield* Effect.forEach(
+            apps,
+            (index) => create(`first read ${round}.${index}`),
+            { concurrency: apps.length },
+          );
+          yield* Effect.forEach(
+            pending,
+            (path) =>
+              Effect.gen(function* () {
+                const snapshots = yield* Effect.forEach(apps, () => read(path), {
+                  concurrency: apps.length,
+                });
+                const current = yield* read(path);
+                expect(current.files).toEqual(files("initial"));
+                expect(current.revision.commit).toMatch(/^[a-f0-9]{40}$/);
+                for (const snapshot of snapshots) expect(snapshot).toEqual(current);
+              }),
+            { concurrency: apps.length },
+          );
+        }
       }),
     ),
   );

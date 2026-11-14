@@ -3,6 +3,7 @@ import { collectEvidence, writeEvidenceReport } from "../evidence-reporter.ts";
 import { combineEvidenceReports } from "../evidence-results.ts";
 import { EvidenceReport, RunMetadata } from "../report-model.ts";
 import { BrowserDriver } from "../support/browser.ts";
+import { holdRun } from "./run-retention.ts";
 
 /** Render a retained suite on request. Needs local renderer tools, never a live target or credentials. */
 export const renderSuiteEvidence = (directory: string) =>
@@ -10,6 +11,8 @@ export const renderSuiteEvidence = (directory: string) =>
     const fs = yield* FileSystem.FileSystem,
       path = yield* Path.Path;
     const root = path.resolve(directory);
+    // A later run's pruning must not remove the run while this writes its report.
+    yield* holdRun(root);
     const saved = yield* fs
       .readFileString(path.join(root, "evidence.json"))
       .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(EvidenceReport))));
@@ -36,4 +39,4 @@ export const renderSuiteEvidence = (directory: string) =>
     );
     yield* writeEvidenceReport(output, combineEvidenceReports(reports, saved.plan));
     yield* Console.log(`Test evidence: ${output}/index.html`);
-  });
+  }).pipe(Effect.scoped);

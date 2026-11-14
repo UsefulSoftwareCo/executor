@@ -19,6 +19,7 @@
  * Attributes outside these namespaces are the product's own and pass through.
  */
 import { Effect, Exit, Layer, Option, Schema, Tracer } from "effect";
+import { HttpClient, HttpMiddleware } from "effect/http";
 import { declaredOwner, ownerAttribute } from "./ownership.ts";
 import { recordedCause } from "./recorded-failure.ts";
 import type { TraceSampler } from "./sampling.ts";
@@ -120,7 +121,11 @@ export const routeTemplates = (templates: Iterable<`/${string}`>) => {
  * probe all record `/api/auth/*`, `/docs/*` or `/api/*`. A handler that serves a fixed set of
  * endpoints under its wildcard names the request's endpoint with `routeTemplates`.
  */
-const allowlistedSpan = (span: Tracer.Span, propagatesSampled: boolean): Tracer.Span => {
+const allowlistedSpan = (
+  span: Tracer.Span,
+  propagatesSampled: boolean,
+  ended: () => void,
+): Tracer.Span => {
   let path = false;
   let route: string | undefined;
   return {
@@ -159,7 +164,7 @@ const allowlistedSpan = (span: Tracer.Span, propagatesSampled: boolean): Tracer.
     // A successful transport can carry a failed domain operation. The producer
     // explicitly marks that outcome; arbitrary result payloads are never inspected.
     // A failure records the fixed message an error declares in place of an app's text.
-    end: (endTime: bigint, exit: Exit.Exit<unknown, unknown>) =>
+    end: (endTime: bigint, exit: Exit.Exit<unknown, unknown>) => {
       span.end(
         endTime,
         Exit.isSuccess(exit)
@@ -167,7 +172,9 @@ const allowlistedSpan = (span: Tracer.Span, propagatesSampled: boolean): Tracer.
             ? Exit.fail(new LogicalOperationFailed())
             : exit
           : Exit.failCause(recordedCause(exit.cause)),
-      ),
+      );
+      ended();
+    },
     attribute: (key: string, value: unknown) => {
       if (!spanAttributeAllowed(key)) return;
       if (key === "url.path" && typeof value === "string") {
@@ -192,16 +199,36 @@ const allowlistedSpan = (span: Tracer.Span, propagatesSampled: boolean): Tracer.
 };
 
 /**
+ * Executor's names for HTTP spans: `http.server GET` and `http.client GET`. Effect's defaults are
+ * the bare method since 4.1; dashboards, alerts and the app telemetry vocabulary use these.
+ */
+const httpSpanNames = Layer.mergeAll(
+  Layer.succeed(HttpMiddleware.SpanNameGenerator, (request) => `http.server ${request.method}`),
+  Layer.succeed(HttpClient.SpanNameGenerator, (request) => `http.client ${request.method}`),
+);
+
+/**
  * Wrap whichever tracer is already in scope; provide this above the exporter. `recordAll` records
  * every span whatever its parent's sampled flag; a `sampler` decides instead which traces reach the
  * exporter (see `sampling.ts`). With `propagation: "unsampled"`, spans are recorded as before but
  * tell the services they call that they were not sampled.
+ * `ended` runs after each span has ended, once the exporter holds it.
  */
 export const spanAttributes = (
   clock?: "system" | "cloudflare-io",
   recordAll = false,
   sampler?: TraceSampler,
   propagation: "sampled" | "unsampled" = "sampled",
+  ended: () => void = () => {},
+): Layer.Layer<never> =>
+  Layer.merge(httpSpanNames, tracerWithAllowlist(clock, recordAll, sampler, propagation, ended));
+
+const tracerWithAllowlist = (
+  clock: "system" | "cloudflare-io" | undefined,
+  recordAll: boolean,
+  sampler: TraceSampler | undefined,
+  propagation: "sampled" | "unsampled",
+  ended: () => void,
 ): Layer.Layer<never> =>
   Layer.effect(Tracer.Tracer)(
     Tracer.Tracer.pipe(
@@ -213,6 +240,7 @@ export const spanAttributes = (
               ? sampler.span(tracer, options)
               : tracer.span(recordAll ? { ...options, sampled: true } : options),
             propagation === "sampled",
+            ended,
           );
           if (
             recordAll &&

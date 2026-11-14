@@ -6,6 +6,7 @@ import { Browser } from "../support/browser.ts";
 import { batchedReads, batchPath } from "../support/read-batches.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { scenarios } from "../test-plan.ts";
+import { noPageErrors } from "../support/page-errors.ts";
 
 /** React reports a server/browser markup difference with one of these messages or codes. */
 const hydrationFailure = /hydrat|Minified React error #(418|419|423|425)/i;
@@ -93,7 +94,7 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
         yield* browser.use("Let every streamed region hydrate", (page) =>
           page.waitForTimeout(1500),
         );
-        expect(failures).toEqual([]);
+        yield* noPageErrors(failures);
         expect(repeatedReads).toEqual([]);
         yield* browser.checkpoint("Server-rendered apps page after hydration");
 
@@ -196,7 +197,7 @@ layer(HostedLive, { excludeTestServices: true })("Server-rendered dashboard", (i
           page.getByText("Organization unavailable").waitFor({ state: "visible" }),
         );
         yield* browser.use("Let the refused page hydrate", (page) => page.waitForTimeout(1500));
-        expect(failures).toEqual([]);
+        yield* noPageErrors(failures);
         expect(refusedReads).toEqual([]);
         yield* browser.checkpoint("Refused organization after hydration");
       }),

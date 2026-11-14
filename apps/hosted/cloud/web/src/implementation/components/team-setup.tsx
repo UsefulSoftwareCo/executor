@@ -34,7 +34,6 @@ import {
   OnboardingDraft,
   OnboardingInvitation,
   OnboardingTeamCreated,
-  OnboardingV1Workspace,
   type TeamDetails,
 } from "../../../../src/contracts/onboarding.ts";
 import { prepareTeamAtom, createTeamAtom, setupSequenceAtom } from "../../contracts/onboarding.ts";
@@ -134,9 +133,7 @@ function TeamEntry({
         ? "invitation"
         : Schema.is(OnboardingDraft)(prepared.value)
           ? "team_details"
-          : Schema.is(OnboardingV1Workspace)(prepared.value)
-            ? "v1_workspace"
-            : "ready";
+          : "ready";
   useEffect(() => {
     reportBrowserUsage({ area: "onboarding", action: step, outcome: "viewed" });
   }, [step]);
@@ -163,7 +160,6 @@ function TeamEntry({
       </SetupPage>
     );
   const entry = AsyncResult.isSuccess(created) ? created.value : prepared.value;
-  if (Schema.is(OnboardingV1Workspace)(entry)) return <V1Workspace />;
   if (Schema.is(OnboardingInvitation)(entry)) {
     if (mcp)
       return (
@@ -207,25 +203,6 @@ function TeamEntry({
     );
   }
   return children;
-}
-
-/**
- * People in an Executor v1 organization keep using v1; v2 creates no team for them. Their
- * workspace moves to v2 on the server, with nothing for them to do (`notes/v1-import.md`).
- */
-function V1Workspace() {
-  return (
-    <HostedEntry
-      title="Your workspace is on Executor v1"
-      description="We're getting Executor v2 ready for you. Only new users can use it for now. Use the button below to sign in to Executor v1 and keep using it."
-    >
-      <div className="flex flex-wrap gap-3">
-        <Button asChild>
-          <a href="https://executor.sh/login">Sign in to Executor v1</a>
-        </Button>
-      </div>
-    </HostedEntry>
-  );
 }
 
 function TeamForm({

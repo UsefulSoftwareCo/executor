@@ -161,7 +161,13 @@ const build = Effect.gen(function* () {
     (yield* Config.String("EXECUTOR_RELEASE_PUBLISH").pipe(Config.withDefault(""))) === "true"
   )
     return yield* Effect.die(new Error("A published macOS build must be signed and notarized."));
-  yield* buildStandalone(root, output, stage, target, signing);
+  // `--submission=<file>`: notarize without waiting; `macos-notarization.ts <file>` waits.
+  const submission = process.argv
+    .find((argument) => argument.startsWith("--submission="))
+    ?.slice("--submission=".length);
+  if (submission !== undefined && (submission === "" || signing !== "notarize"))
+    return yield* Effect.die(new Error("--submission=<file> needs a file and --notarize."));
+  yield* buildStandalone(root, output, stage, target, signing, submission);
   const bytes = Number((yield* fs.stat(path.join(output, platformArchive(target)))).size);
   yield* Console.log(`Native artifact: ${output} (${(bytes / 1024 / 1024).toFixed(1)} MiB)`);
 });

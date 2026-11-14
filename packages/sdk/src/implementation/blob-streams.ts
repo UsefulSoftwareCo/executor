@@ -1,6 +1,6 @@
-/** Shared pieces of streamed blob reads and folder listings, for every store adapter. */
-import { Stream } from "effect";
-import type { BlobBody, BlobRange } from "../contracts/blobs.ts";
+/** Shared pieces of streamed blob reads, folder listings and removals, for every store adapter. */
+import { Effect, Result, Stream } from "effect";
+import { BlobStoreError, type BlobBody, type BlobKey, type BlobRange } from "../contracts/blobs.ts";
 
 /** The clamped byte window a range selects in an object of `size` bytes. */
 export const rangeWindow = (size: number, range: BlobRange | undefined) => {
@@ -41,3 +41,19 @@ export const pageOf = (
   const sorted = names.filter((name) => after === undefined || name > after).sort();
   return { names: sorted.slice(0, options.limit), truncated: sorted.length > options.limit };
 };
+
+/**
+ * `removeAll` for a store that removes one key per request: every key is tried even after one
+ * fails, and the call then fails if any did, so one failed request leaves only its own object.
+ */
+export const removeEach = (
+  keys: ReadonlyArray<BlobKey>,
+  remove: (key: BlobKey) => Effect.Effect<void, BlobStoreError>,
+) =>
+  Effect.forEach(keys, (key) => Effect.result(remove(key)), { concurrency: 8 }).pipe(
+    Effect.flatMap((results) =>
+      results.some(Result.isFailure)
+        ? Effect.fail(new BlobStoreError({ operation: "remove" }))
+        : Effect.void,
+    ),
+  );

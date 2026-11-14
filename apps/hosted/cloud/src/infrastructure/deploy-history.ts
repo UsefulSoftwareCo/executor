@@ -23,6 +23,8 @@ import {
 
 const deployWorkflow = "deploy.yml";
 const deployJob = "deploy";
+/** The job that decides whether a run deploys (`scripts/deploy-decision.ts`). */
+const decideJob = "decide";
 /** The deploy step's names over the workflow's history, newest first. */
 const deploySteps = ["Deploy analytics and the v2 stage", "Deploy the v2 stage"];
 /**
@@ -35,12 +37,18 @@ const rerunWindow = Duration.days(32);
 const listSpan = Duration.days(7);
 const listLimit = 1000;
 
-/** Reads one GitHub REST resource with `GITHUB_TOKEN`. */
+/**
+ * Reads one GitHub REST resource with `GITHUB_TOKEN`, from `GITHUB_API_URL`, which Actions sets to
+ * the API of the server the workflow runs on.
+ */
 export const githubGet = <S extends Schema.Top>(schema: S, path: string) =>
   Effect.gen(function* () {
     const token = yield* Config.Redacted("GITHUB_TOKEN");
+    const api = yield* Config.NonEmptyString("GITHUB_API_URL").pipe(
+      Config.withDefault("https://api.github.com"),
+    );
     const client = yield* HttpClient.HttpClient;
-    const request = HttpClientRequest.get(`https://api.github.com/${path}`).pipe(
+    const request = HttpClientRequest.get(`${api.replace(/\/$/, "")}/${path}`).pipe(
       HttpClientRequest.bearerToken(token),
       HttpClientRequest.setHeaders({
         accept: "application/vnd.github+json",
@@ -66,6 +74,8 @@ const DeployRun = Schema.Struct({
   /** The latest attempt. */
   run_attempt: Schema.Number,
   event: Schema.String,
+  /** `completed` once every attempt so far has finished. */
+  status: Schema.String,
   head_sha: Schema.String,
   created_at: Schema.DateTimeUtcFromString,
   /** Changes whenever an attempt starts or finishes. */
@@ -197,6 +207,57 @@ const readDeployStep = (repository: string, runId: number, number: number) =>
     });
   });
 
+/** One attempt's deploy job that started: when, and how far its deploy step has got. */
+export interface DeployStart {
+  readonly run: DeployRun;
+  readonly number: number;
+  readonly startedAt: DateTime.Utc;
+  /** Whether the deploy step finished and succeeded. */
+  readonly succeeded: boolean;
+  /** The deploy step's conclusion, or its status while it has none. */
+  readonly state: string;
+}
+
+/**
+ * When one attempt's deploy job started and how its deploy step stands, finished or not, or nothing
+ * when the job never started in this attempt: it was skipped, waits, was cancelled first, or was
+ * copied from an earlier attempt, which is read on its own. A job that started and lists no step
+ * yet counts as started. An attempt with a decide job and no deploy job counts as a start that did
+ * not succeed: the deploy job was renamed, and whether it ran cannot be read.
+ */
+const readDeployStart = (repository: string, runId: number, number: number) =>
+  Effect.gen(function* () {
+    const { jobs } = yield* githubGet(
+      Jobs,
+      `repos/${repository}/actions/runs/${runId}/attempts/${number}/jobs?per_page=100`,
+    );
+    const job = jobs.find((candidate) => candidate.name === deployJob);
+    if (job === undefined) {
+      const decide = jobs.find((candidate) => candidate.name === decideJob);
+      if (decide === undefined) return Option.none<Omit<DeployStart, "run" | "number">>();
+      return Option.some<Omit<DeployStart, "run" | "number">>({
+        startedAt: decide.started_at ?? decide.created_at,
+        succeeded: false,
+        state: `unknown: the run has no job named ${deployJob}`,
+      });
+    }
+    if (job.conclusion === "skipped" || job.started_at === null)
+      return Option.none<Omit<DeployStart, "run" | "number">>();
+    if (DateTime.isLessThan(job.started_at, job.created_at))
+      return Option.none<Omit<DeployStart, "run" | "number">>();
+    const step = job.steps?.find((candidate) => deploySteps.includes(candidate.name));
+    return Option.some<Omit<DeployStart, "run" | "number">>({
+      startedAt: job.started_at,
+      succeeded: step?.status === "completed" && step.conclusion === "success",
+      state:
+        (job.steps ?? []).length === 0
+          ? "started, with no step listed yet"
+          : step === undefined
+            ? `missing (no step named ${deploySteps.join(" or ")})`
+            : (step.conclusion ?? step.status),
+    });
+  });
+
 /** The Deploy workflow's runs and attempts, each read from GitHub once. */
 export const makeDeployHistory = (repository: string) =>
   Effect.gen(function* () {
@@ -213,6 +274,11 @@ export const makeDeployHistory = (repository: string) =>
       lookup: ([runId, number]: readonly [number, number]) =>
         readDeployStep(repository, runId, number),
     });
+    const starts = yield* Cache.make({
+      capacity: 100_000,
+      lookup: ([runId, number]: readonly [number, number]) =>
+        readDeployStart(repository, runId, number),
+    });
     return {
       repository,
       /** When the Deploy workflow was created; no run is older. */
@@ -222,6 +288,10 @@ export const makeDeployHistory = (repository: string) =>
       attempt: (run: DeployRun, number: number) =>
         Cache.get(steps, [run.id, number] as const).pipe(
           Effect.map(Option.map((step): DeployAttempt => ({ ...step, run, number }))),
+        ),
+      start: (run: DeployRun, number: number) =>
+        Cache.get(starts, [run.id, number] as const).pipe(
+          Effect.map(Option.map((start): DeployStart => ({ ...start, run, number }))),
         ),
       run: (runId: number) => githubGet(DeployRun, `repos/${repository}/actions/runs/${runId}`),
     };
@@ -270,6 +340,82 @@ export const lastDeployBefore = (history: DeployHistory, before: DateTime.Utc) =
         }
       }
     }
+  });
+
+/**
+ * The deploy job that started last, of every attempt of every run but `except`, whatever became of
+ * it: production holds what that deploy left, which is only the commit it deployed if its deploy
+ * step succeeded. A deploy that failed partway or was cancelled may have replaced some Workers.
+ */
+export const newestDeployStart = (history: DeployHistory, now: DateTime.Utc, except: number) =>
+  Effect.gen(function* () {
+    let newest: DeployStart | undefined;
+    for (let start = listSpanOf(now); ; start = DateTime.subtractDuration(start, listSpan)) {
+      const end = DateTime.addDuration(start, listSpan);
+      // Runs created before `end` started every job before `end` plus the rerun window.
+      if (
+        newest !== undefined &&
+        DateTime.isLessThanOrEqualTo(DateTime.addDuration(end, rerunWindow), newest.startedAt)
+      )
+        return newest;
+      if (DateTime.isLessThanOrEqualTo(end, history.since)) return newest;
+      for (const run of yield* history.runsCreatedIn(start)) {
+        if (run.id === except) continue;
+        // A finished run was last updated no earlier than any of its jobs started.
+        if (
+          newest !== undefined &&
+          run.status === "completed" &&
+          DateTime.isLessThanOrEqualTo(run.updated_at, newest.startedAt)
+        )
+          continue;
+        for (let number = run.run_attempt; number >= 1; number--) {
+          const attempt = yield* history.start(run, number);
+          if (
+            Option.isSome(attempt) &&
+            (newest === undefined || DateTime.isLessThan(newest.startedAt, attempt.value.startedAt))
+          )
+            newest = attempt.value;
+        }
+      }
+    }
+  });
+
+/**
+ * A deploy someone asked for after `base` started and lost: a manual dispatch, or a re-run, that
+ * finished without its deploy job ever starting. The concurrency group keeps one run waiting, and a
+ * newer run cancels the waiting one before it has any job, whatever started it. A push loses
+ * nothing that way, since the next push compares every change since the base; a dispatch or a
+ * re-run makes no commit, so what it asked for (a release's docs, a changed secret) would be lost.
+ */
+export const lostRequest = (
+  history: DeployHistory,
+  base: DeployStart,
+  now: DateTime.Utc,
+  except: number,
+) =>
+  Effect.gen(function* () {
+    // A re-run of a run created up to the rerun window before the base can come after it.
+    const from = DateTime.subtractDuration(base.startedAt, rerunWindow);
+    for (const start of listSpansBetween(from, now).toReversed())
+      for (const run of yield* history.runsCreatedIn(start)) {
+        if (run.id === except || run.status !== "completed") continue;
+        if (!DateTime.isLessThan(base.startedAt, run.updated_at)) continue;
+        const attempts =
+          run.event === "workflow_dispatch" && DateTime.isLessThan(base.startedAt, run.created_at)
+            ? Array.from({ length: run.run_attempt }, (_, index) => index + 1)
+            : run.run_attempt > 1
+              ? [run.run_attempt]
+              : [];
+        if (attempts.length === 0) continue;
+        const started = yield* Effect.forEach(attempts, (number) => history.start(run, number));
+        if (started.every(Option.isNone))
+          return {
+            run,
+            number: run.run_attempt,
+            kind: attempts.length === 1 && run.run_attempt > 1 ? "re-run" : "manual dispatch",
+          } as const;
+      }
+    return undefined;
   });
 
 /** A commit as GitHub's REST API returns it, on its own or in a comparison. */

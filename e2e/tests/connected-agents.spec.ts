@@ -19,12 +19,17 @@ import { serverControl } from "../support/server-control.ts";
 const Agent = Schema.Struct({
   id: Schema.String,
   name: Schema.NullOr(Schema.String),
+  icon: Schema.NullOr(Schema.String),
   connectedAt: Schema.String,
   lastActiveAt: Schema.NullOr(Schema.String),
   access: Schema.Struct({ kind: Schema.String }),
 });
 const Grants = Schema.Array(Schema.Struct({ grant: Schema.Struct({ id: Schema.String }) }));
 const day = 24 * 60 * 60_000;
+/** A logo URL an agent registers; the browser is served it without leaving the test. */
+const agentLogo = "https://agent-logo.e2e.invalid/mark.png";
+const pixel =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 class GrantStillListed extends Schema.TaggedError<GrantStillListed>()("GrantStillListed", {}) {}
 
@@ -52,15 +57,44 @@ layer(HostedLive, { excludeTestServices: true })("Connected agents", (it) => {
 
         const listed = yield* agents(actors.owner);
         const agent = listed.find((item) => item.id === grant.grantId);
-        expect(agent).toMatchObject({ name: "Executor E2E client", access: { kind: "all" } });
+        expect(agent).toMatchObject({
+          name: "Executor E2E client",
+          icon: null,
+          access: { kind: "all" },
+        });
         expect(agent?.lastActiveAt).not.toBeNull();
         // Each member sees only the agents they authorized.
         expect((yield* agents(actors.member)).some((item) => item.id === grant.grantId)).toBe(
           false,
         );
 
+        // An agent that registers a logo is listed with it.
+        const pictured = yield* evidence.step(
+          "Authorize an agent that registers a logo",
+          oauth.authorizeNamed("Pictured agent", agentLogo),
+        );
+        expect(
+          (yield* agents(actors.owner)).find((item) => item.id === pictured.grantId),
+        ).toMatchObject({ name: "Pictured agent", icon: agentLogo });
+        yield* browser.use("Serve the agent's logo from its own origin", (page) =>
+          page
+            .context()
+            .route(agentLogo, (route) =>
+              route.fulfill({ contentType: "image/png", body: Buffer.from(pixel, "base64") }),
+            ),
+        );
+
         yield* browser.use("Open Connections", (page) =>
           page.goto(`/org/${actors.organization.slug}/connect`),
+        );
+        yield* browser.use("The agent shows the logo it registered", (page) =>
+          page
+            .getByRole("region", { name: "Connected agents" })
+            .getByRole("listitem")
+            .filter({ hasText: "Pictured agent" })
+            .locator(`img[src="${agentLogo}"]`)
+            // Resolves only once the image has loaded.
+            .evaluate((image) => (image as HTMLImageElement).decode()),
         );
         const row = (page: Page) =>
           page

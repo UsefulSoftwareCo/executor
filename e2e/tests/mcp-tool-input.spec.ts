@@ -2,6 +2,7 @@
  * A running tool of an account-free app asks for input through `ctx.elicit`. The call has no
  * accounts, so its pending interaction names only the app and tool. Model mode returns it to the
  * agent and browser mode adds a review link; each answer resumes the same program and invocation.
+ * Automatic mode skips the tool's approval but still returns its question to the agent.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Redacted, Schema } from "effect";
@@ -70,7 +71,7 @@ type Connection = Effect.Success<ReturnType<McpClient["Service"]["connect"]>>;
 const call = (
   client: Connection,
   step: string,
-  name: "execute" | "resume",
+  name: "execute" | "call" | "resume",
   args: Record<string, unknown>,
 ) =>
   client
@@ -137,6 +138,46 @@ const modelMode = (client: Connection, app: { id: string; slug: string }) =>
       approved.requestId,
       "Approved answer",
     );
+  });
+
+/**
+ * Automatic mode: a tool that needs approval runs at once, from `execute` and from `call`, because
+ * the agent's own permission prompt confirmed the call. Its question still reaches the agent.
+ */
+const automaticMode = (client: Connection, app: { id: string; slug: string }) =>
+  Effect.gen(function* () {
+    const evidence = yield* Evidence;
+    const executed = yield* call(
+      client,
+      "Execute a tool that needs approval; it runs at once and asks for input",
+      "execute",
+      { code: program(app.slug, "approvedName") },
+    ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(InputRequired)));
+    yield* evidence.json("automatic-execute-input-required.json", executed);
+    expect(executed.tool).toStrictEqual({ app: app.id, tool: "approvedName" });
+    expect(executed.elicitation.message).toBe(message);
+    yield* answer(
+      client,
+      "Answer the executed tool's question",
+      executed.requestId,
+      "Automatic answer",
+    );
+
+    const called = yield* call(
+      client,
+      "Call a tool that needs approval; it runs at once and asks for input",
+      "call",
+      { calls: { path: `tools[${JSON.stringify(app.slug)}].approvedName`, input: {} } },
+    ).pipe(Effect.flatMap(Schema.decodeUnknownEffect(InputRequired)));
+    yield* evidence.json("automatic-call-input-required.json", called);
+    expect(called.tool).toStrictEqual({ app: app.id, tool: "approvedName" });
+    const resumed = yield* call(client, "Answer the called tool's question", "resume", {
+      requestId: called.requestId,
+      response: { action: "accept", content: { name: "Called answer" } },
+    }).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Completed)));
+    yield* evidence.json("automatic-call-completed.json", resumed);
+    expect(resumed.execution).toMatchObject({ ok: true });
+    expect(JSON.stringify(resumed.execution)).toContain("Called answer");
   });
 
 /** Browser mode: the user answers on the review page, then the agent collects it through resume. */
@@ -210,6 +251,10 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP tool input", (it) =
           yield* mcp.connect(key.key, "tool-input-model", { organization, mode: "model" }),
           app,
         );
+        yield* automaticMode(
+          yield* mcp.connect(key.key, "tool-input-automatic", { organization, mode: "automatic" }),
+          app,
+        );
         yield* browserMode(
           yield* mcp.connect(key.key, "tool-input-browser", { organization, mode: "browser" }),
           app,
@@ -243,6 +288,10 @@ layer(TestLive, { excludeTestServices: true })("Local MCP tool input", (it) => {
         );
         yield* modelMode(
           yield* mcp.connect(target.apiKey, "local-tool-input-model", { mode: "model" }),
+          app,
+        );
+        yield* automaticMode(
+          yield* mcp.connect(target.apiKey, "local-tool-input-automatic", { mode: "automatic" }),
           app,
         );
         // The paired dashboard session reviews; the programmatic key never answers in the browser.

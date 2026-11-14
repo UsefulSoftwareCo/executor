@@ -4,7 +4,7 @@
  * through the dashboard's link route before the app uses it.
  */
 import { expect } from "@effect/vitest";
-import { Effect, Redacted, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { Api, body, type Session } from "./api.ts";
 import {
   accountLinks,
@@ -15,13 +15,14 @@ import {
 } from "./app-accounts.ts";
 import { Browser } from "./browser.ts";
 import { Target } from "./platform.ts";
+import { reveal } from "./failure-text.ts";
 
 /** The local agent: the API key and no browser origin, as an agent's own calls carry. */
 export const localAgent = Effect.gen(function* () {
   const api = yield* Api,
     target = yield* Target,
     session = yield* api.session();
-  const headers = { authorization: `Bearer ${Redacted.value(target.apiKey)}` };
+  const headers = { authorization: `Bearer ${reveal(target.apiKey)}` };
   const agent: Session = {
     ...session,
     send: (method, path, data, extra = {}) => {

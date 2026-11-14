@@ -1,5 +1,5 @@
 /** Callback transport shared by hosts. App responses cannot write cookies or execute HTML on the dashboard origin. */
-import { ByteSize, Effect, Schema } from "effect";
+import { ByteSize, Effect, Result, Schema } from "effect";
 import { Base64 } from "effect/encoding";
 import {
   HttpIncomingMessage,
@@ -11,19 +11,37 @@ import { WebhookRequestData, defaultWebhookTransportLimits } from "apps/contract
 import type { Executor } from "../contracts/executor.ts";
 import { WebhookCallbackParams } from "../contracts/webhooks.ts";
 
+/**
+ * Why this request was not answered with the app's response, on the request's own span: refusals
+ * that arise here, before a delivery runs or after it returned. Fixed labels only.
+ */
+const refused = (refusal: "body-too-large" | "invalid-response-body") =>
+  Effect.annotateCurrentSpan("executor.webhook.refusal", refusal);
+
 /** Mount explicitly in a host route map; this handler has no dashboard/session authentication. */
 export const webhookCallback = (executor: Executor) =>
   Effect.gen(function* () {
     const { appId, subscriptionId } = yield* HttpRouter.schemaPathParams(WebhookCallbackParams);
     const incoming = yield* HttpServerRequest.HttpServerRequest;
-    const body = yield* incoming.arrayBuffer.pipe(
+    const read = yield* incoming.arrayBuffer.pipe(
       Effect.provideService(
         HttpIncomingMessage.MaxBodySize,
         ByteSize.bytes(defaultWebhookTransportLimits.maxBodyBytes),
       ),
+      Effect.result,
     );
-    if (body.byteLength > defaultWebhookTransportLimits.maxBodyBytes)
+    // The body limit stops the read itself, so a body over it fails here rather than reaching the
+    // length check below; both answer the 413 this callback declares.
+    if (Result.isFailure(read)) {
+      const { reason } = read.failure;
+      if (reason._tag !== "RequestParseError" || reason.reason !== "BodyTooLarge")
+        return yield* Effect.fail(read.failure);
+    }
+    const body = Result.isSuccess(read) ? read.success : undefined;
+    if (body === undefined || body.byteLength > defaultWebhookTransportLimits.maxBodyBytes) {
+      yield* refused("body-too-large");
       return HttpServerResponse.empty({ status: 413 });
+    }
     const headers: Record<string, string> = {};
     for (const [name, value] of Object.entries(incoming.headers)) {
       if (value !== undefined && name.toLowerCase() !== "cookie") headers[name] = value;
@@ -39,7 +57,11 @@ export const webhookCallback = (executor: Executor) =>
       subscription: subscriptionId,
       request: input,
     });
-    const bytes = yield* Effect.fromResult(Base64.decode(response.body));
+    // The delivery span has the app's status; a body that does not decode is answered by the
+    // catch-all below, and this request's span says why.
+    const bytes = yield* Effect.fromResult(Base64.decode(response.body)).pipe(
+      Effect.tapError(() => refused("invalid-response-body")),
+    );
     // Preserve provider challenge/backoff headers without granting app code control of the host origin.
     const providerHeaders: Record<string, string> = {};
     for (const name of ["webhook-allowed-origin", "webhook-allowed-rate", "retry-after", "allow"]) {

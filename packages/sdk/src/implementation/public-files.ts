@@ -6,7 +6,7 @@
  */
 import { Effect, Option, Schema, Stream } from "effect";
 import { RuntimeBuildUnavailable, type RuntimePublicFile } from "../contracts/runtime.ts";
-import { BlobKey, type BlobStorage } from "../contracts/blobs.ts";
+import { BlobKey, removeAllKeys, type BlobStorage } from "../contracts/blobs.ts";
 import {
   PublicFileManifest,
   PublicFilePath,
@@ -193,19 +193,35 @@ export const adoptStoredFiles = (
     stored,
   ).pipe(Effect.asVoid);
 
-/** Release every public file of a removed lineage. Missing objects are already released. */
+/**
+ * Release every public file of a removed lineage, as many per request as the store deletes at
+ * once. Missing objects are already released.
+ */
 export const releasePublicFiles = (blobs: BlobStorage, code: AppCodeId) =>
   Effect.gen(function* () {
     const folder = publicFileFolder(code);
-    const names = yield* listed(blobs, folder);
+    const keys = [...(yield* listed(blobs, folder))].flatMap((name) =>
+      Option.match(Schema.decodeUnknownOption(GitObjectId)(name), {
+        onNone: () => [],
+        onSome: (object) => [publicFileKey(code, object)],
+      }),
+    );
     yield* Effect.forEach(
-      names,
-      (name) =>
-        Schema.decodeUnknownEffect(GitObjectId)(name).pipe(
-          Effect.flatMap((object) => blobs.remove(publicFileKey(code, object))),
-          Effect.ignore,
+      Array.from({ length: Math.ceil(keys.length / removeAllKeys) }, (_, index) =>
+        keys.slice(index * removeAllKeys, (index + 1) * removeAllKeys),
+      ),
+      // A failed batch can leave up to `removeAllKeys` files no version serves; the other
+      // batches still run, and the removal is not undone.
+      (batch) =>
+        blobs.removeAll(batch).pipe(
+          Effect.catchTag("BlobStoreError", () =>
+            Effect.logWarning("Releasing a batch of a removed app's public files failed", {
+              code,
+              files: batch.length,
+            }),
+          ),
         ),
-      { concurrency: 8, discard: true },
+      { discard: true },
     );
   }).pipe(Effect.withSpan("sdk.apps.public.release"));
 

@@ -24,13 +24,18 @@ const Document = Schema.fromJsonString(
 );
 const path = "/oauth/client-metadata.json";
 
-/** The document at `origin`, which must name itself and list `origin`'s callback. */
+/**
+ * The document at `origin`, which must name itself and list `origin`'s callback. Its logo must
+ * be an image on `origin`: authorization servers show it on their consent page, and the edge
+ * answers paths it does not serve with something else.
+ */
 const documentAt = (at: string, origin: string) =>
   Effect.gen(function* () {
     const response = yield* rawRequest(`${at}${path}`);
     expect(response.status, `${at}${path}`).toBe(200);
     expect(response.contentType, `${at}${path}`).toContain("application/json");
-    expect(yield* Schema.decodeUnknownEffect(Document)(response.text), `${at}${path}`).toEqual({
+    const document = yield* Schema.decodeUnknownEffect(Document)(response.text);
+    expect(document, `${at}${path}`).toEqual({
       client_id: `${origin}${path}`,
       client_uri: origin,
       logo_uri: `${origin}/favicon.png`,
@@ -38,6 +43,9 @@ const documentAt = (at: string, origin: string) =>
       token_endpoint_auth_method: "none",
       application_type: "web",
     });
+    const logo = yield* rawRequest(document.logo_uri);
+    expect(logo.status, document.logo_uri).toBe(200);
+    expect(logo.contentType, document.logo_uri).toBe("image/png");
   });
 
 layer(HostedLive, { excludeTestServices: true })("Cloud client metadata document", (it) => {

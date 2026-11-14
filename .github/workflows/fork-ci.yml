@@ -78,7 +78,8 @@ jobs:
           node --input-type=module <<'JS'
           import { globSync, readFileSync } from "node:fs";
           for (const file of globSync(".local/e2e/**/telemetry.json")) {
-            for (const trace of JSON.parse(readFileSync(file, "utf8"))) {
+            for (const line of readFileSync(file, "utf8").split("\n").filter(Boolean)) {
+              const trace = JSON.parse(line);
               const spans = (trace.data ?? []).map(row => row.span).filter(span =>
                 /app\.|sdk\.tools|mcp\.|MCP|build.*load|runtime/.test(span.operationName));
               console.log(JSON.stringify({file, id: trace.id, spans: spans.map(s => ({

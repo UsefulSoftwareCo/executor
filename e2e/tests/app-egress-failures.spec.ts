@@ -22,8 +22,8 @@ import { Evidence, Telemetry } from "../support/evidence.ts";
 import { Target } from "../support/platform.ts";
 import {
   SentryEvent,
-  sentryEventText,
-  sentryEvents,
+  sentryEventTextWholeEnvironment,
+  sentryEventsWholeEnvironment,
   sentryExceptions,
 } from "../support/sentry-events.ts";
 
@@ -343,7 +343,7 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
         // fetch starts its own). Local workerd rejects a closed port where Cloudflare answers 521.
         const closedTraces = [...fetchedTraces, operationTrace];
         const egress = cloud
-          ? (yield* sentryExceptions.pipe(
+          ? (yield* sentryExceptions([...closedTraces, providerTrace]).pipe(
               Effect.repeat({
                 schedule: Schedule.spaced("100 millis"),
                 until: (exceptions) =>
@@ -392,7 +392,8 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
         );
         expect(
           naming(
-            (yield* sentryEventText).map((text) => {
+            // Every report anywhere: the closed host is this scenario's own, so none may name it.
+            (yield* sentryEventTextWholeEnvironment).map((text) => {
               const event = Schema.decodeUnknownSync(SentryRecord)(text);
               return {
                 trace: event.contexts?.trace?.trace_id,
@@ -410,7 +411,8 @@ layer(HostedLive, { excludeTestServices: true })("App egress failures", (it) => 
           ]);
         expect(reported[providerTrace]).toEqual([]);
         // The report names no user or organization; its message above names no host or app.
-        for (const event of (yield* sentryEvents).filter((event) =>
+        // Every report of this failure anywhere: Cloud reports none with a user or organization.
+        for (const event of (yield* sentryEventsWholeEnvironment).filter((event) =>
           event.exception?.values.some((value) => value.type === egressFailure),
         )) {
           expect(event.user).toBeUndefined();

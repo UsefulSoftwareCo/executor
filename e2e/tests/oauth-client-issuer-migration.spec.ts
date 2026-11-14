@@ -197,7 +197,9 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
           },
         });
         const seen = (yield* dataStepSummaries(log, step)).length;
-        yield* legacyStorage([
+        const [current] = yield* legacyStorage([
+          // The schema version this build records, before the fixture labels the database 4.0.11.
+          { sql: `SELECT value FROM private_executor_settings WHERE key = 'version'` },
           { sql: `DROP INDEX executor_stored_oauth_clients_owner_issuer` },
           // App accounts (4.0.14) and the profile removal of 4.0.13, which come after the version
           // this fixture writes.
@@ -361,7 +363,7 @@ layer(TestLive, { excludeTestServices: true })("OAuth client issuer migration", 
           },
         ]);
         yield* serverControl("start");
-        expect(version).toEqual([{ value: "4.0.16" }]);
+        expect(version, "every step from 4.0.11 ran to the current version").toEqual(current);
         expect(credentials).toEqual([
           { client: ids.a },
           { client: ids.a },

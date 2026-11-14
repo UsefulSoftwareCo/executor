@@ -5,9 +5,10 @@
  * never linked to a second account.
  */
 import { expect, layer } from "@effect/vitest";
-import { Clock, Effect, FileSystem, Schedule, Schema } from "effect";
+import { Clock, Effect, Schedule, Schema } from "effect";
 import { Browser } from "../support/browser.ts";
 import { TestLive, withCase } from "../support/case.ts";
+import { analyticsEvents } from "../support/collector-events.ts";
 import { Onboarding } from "../support/onboarding.ts";
 import { Target } from "../support/platform.ts";
 import { targetHosts } from "../support/role-hosts.ts";
@@ -17,18 +18,6 @@ const visitorCookie = "executor_visitor";
 /** posthog-js keeps its state under this key with `persistence: "localStorage"`. */
 const postHogState = "ph_synthetic-ingestion-key_posthog";
 
-const Event = Schema.Struct({
-  event: Schema.String,
-  distinct_id: Schema.optional(Schema.String),
-  properties: Schema.Record(Schema.String, Schema.Json),
-});
-const Batch = Schema.Struct({ batch: Schema.Array(Event) });
-const readEvents = (text: string) =>
-  text
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .flatMap((line) => Schema.decodeUnknownSync(Schema.fromJsonString(Batch))(line).batch);
 const Session = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
 
 layer(TestLive, { excludeTestServices: true })("Site visitor attribution", (it) => {
@@ -38,8 +27,7 @@ layer(TestLive, { excludeTestServices: true })("Site visitor attribution", (it) 
       Effect.gen(function* () {
         const browser = yield* Browser,
           onboarding = yield* Onboarding,
-          target = yield* Target,
-          fs = yield* FileSystem.FileSystem;
+          target = yield* Target;
         expect(target.metadata.mode).toBe("managed");
         const { edge, browser: app } = targetHosts(target);
         const cookiesAt = (origin: string) =>
@@ -117,9 +105,9 @@ layer(TestLive, { excludeTestServices: true })("Site visitor attribution", (it) 
         expect(yield* cookiesAt(app)).toEqual([]);
 
         // The server links the visit to the new account before recording the sign-up.
-        const events = yield* fs.readFileString(`${target.directory}/analytics.ndjson`).pipe(
-          Effect.map((text) =>
-            readEvents(text).filter(
+        const events = yield* analyticsEvents({ person: userId }).pipe(
+          Effect.map((events) =>
+            events.filter(
               (event) =>
                 event.distinct_id === userId &&
                 (event.event === "$identify" || event.event === "cloud_signup_completed"),

@@ -348,9 +348,20 @@ interface OAuthRequest {
 }
 
 type Stage = "callback_validation" | "token_exchange" | "user_info" | "account_session";
+/** What a sign-in did with the provider's photo; see `user.validateUserInfo` in auth-options. */
+export type ProviderPhotoRefresh =
+  | "new_user"
+  | "absent"
+  | "unchanged"
+  | "updated"
+  | "user_missing"
+  | "failed";
 interface Progress {
   stage: Stage;
   sessionCreated: boolean;
+  /** Whether the provider's verified profile carried a photo. Never the photo's address. */
+  photo: "present" | "absent" | "unknown";
+  photoRefresh: ProviderPhotoRefresh | "none";
 }
 interface Observation {
   readonly provider: "github" | "google" | "other";
@@ -506,12 +517,20 @@ export const authObservability = () => {
                 () => provider.validateAuthorizationCode(...args),
                 (value) => value != null,
               ),
-            getUserInfo: (...args) =>
-              stage(
+            getUserInfo: async (...args) => {
+              const info = await stage(
                 "user_info",
                 () => provider.getUserInfo(...args),
                 (value) => value?.user != null,
-              ),
+              );
+              const observation = requests.getStore();
+              if (observation !== undefined && info?.user != null) {
+                const { image } = info.user;
+                observation.progress.photo =
+                  typeof image === "string" && image.length > 0 ? "present" : "absent";
+              }
+              return info;
+            },
           })),
         },
       };
@@ -568,6 +587,10 @@ export const authObservability = () => {
       const observation = requests.getStore();
       if (observation !== undefined) observation.progress.sessionCreated = true;
     },
+    providerPhoto: (refresh: ProviderPhotoRefresh) => {
+      const observation = requests.getStore();
+      if (observation !== undefined) observation.progress.photoRefresh = refresh;
+    },
     observe: <E, R>(handler: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>) =>
       Effect.gen(function* () {
         const request = yield* HttpServerRequest.HttpServerRequest;
@@ -595,7 +618,12 @@ export const authObservability = () => {
           });
         return yield* Effect.gen(function* () {
           const context = yield* Effect.context<R>();
-          const progress: Progress = { stage: "callback_validation", sessionCreated: false };
+          const progress: Progress = {
+            stage: "callback_validation",
+            sessionCreated: false,
+            photo: "unknown",
+            photoRefresh: "none",
+          };
           const exit = yield* Effect.promise((signal) =>
             requests.run(
               {
@@ -614,6 +642,8 @@ export const authObservability = () => {
               "auth.error_code": "internal_error",
               "auth.stage": progress.stage,
               "auth.session_created": progress.sessionCreated,
+              "auth.profile.photo": progress.photo,
+              "auth.photo.refresh": progress.photoRefresh,
               "executor.outcome": "failed",
             };
             yield* record(attributes);
@@ -647,6 +677,8 @@ export const authObservability = () => {
             "auth.error_code": code,
             "auth.stage": progress.stage,
             "auth.session_created": progress.sessionCreated,
+            "auth.profile.photo": progress.photo,
+            "auth.photo.refresh": progress.photoRefresh,
             "http.response.status_code": response.status,
             "executor.outcome": outcome === "failure" ? "failed" : outcome,
           };
