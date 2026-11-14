@@ -25,7 +25,7 @@ jobs:
           persist-credentials: false
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: 1.3.11
+          bun-version: 1.4.4
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -44,9 +44,9 @@ jobs:
           done
 
   # Self-host scenarios for scoped-connection widening, OAuth registration, app
-  # User-Agent, and load-failure containment, plus local MCP search. Motel's collector build requires
-  # Bun 1.4.4, so this job does not share check's 1.3.11 pin. No extra secrets:
-  # the runner mints its own API key. CI disables the e2e prepare cache.
+  # User-Agent, and load-failure containment, plus local MCP search. Both jobs use
+  # Bun 1.4.4: the collector build and upstream's new-file patches need the newer Bun.
+  # No extra secrets: the runner mints its own API key. CI disables the prepare cache.
   security-e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 60
