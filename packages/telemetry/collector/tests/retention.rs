@@ -3,6 +3,8 @@
 //! through deletion, returning free pages, and the store format policy. `process.rs` kills the
 //! binary during a drain and holds the write-ahead log's bound under load.
 
+mod support;
+
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -16,12 +18,7 @@ struct Scratch(PathBuf);
 
 impl Scratch {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "executor-collector-retention-{name}-{}",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&path);
-        std::fs::create_dir_all(&path).expect("scratch directory");
+        let path = support::directory("retention", name);
         Scratch(path)
     }
 
@@ -1395,11 +1392,15 @@ impl Service {
             })));
         let writer = store::start(
             store::own(data).expect("owns"),
-            4,
+            store::Admission {
+                pending: 4,
+                max_export_bytes: 16 << 20,
+            },
             std::sync::Arc::new(std::sync::Mutex::new(store::LossBook::default())),
             std::sync::Arc::new(store::MemoryRelease::default()),
             limits,
             shared.clone(),
+            std::sync::Arc::new(store::ReadGate::default()),
         )
         .expect("starts");
         Service {
@@ -1414,7 +1415,7 @@ impl Service {
             .store(wall_ms, std::sync::atomic::Ordering::SeqCst);
     }
 
-    fn send(&self, export: store::Export) -> Result<usize, String> {
+    fn send(&self, export: store::Export) -> Result<usize, store::Unstored> {
         let (reply, answer) = tokio::sync::oneshot::channel();
         self.writer
             .as_ref()
@@ -1654,4 +1655,687 @@ fn eviction_by_arrival_holds_after_the_clock_is_corrected() {
     );
     drop(connection);
     service.stop();
+}
+
+/// Every query's answer, through the same code the HTTP routes use, as JSON.
+fn answer(
+    connection: &mut Connection,
+    query: impl FnOnce(
+        &Connection,
+        &mut executor_collector::readers::Out,
+    ) -> Result<(), executor_collector::readers::Stop>,
+) -> (u16, serde_json::Value) {
+    let (status, body) = executor_collector::readers::collect(connection, query).expect("answers");
+    (
+        status.as_u16(),
+        serde_json::from_slice(&body).expect("JSON"),
+    )
+}
+
+#[test]
+fn queries_leave_out_a_trace_being_evicted() {
+    use executor_collector::query::{self, LogFilter, Query};
+    let scratch = Scratch::new("hidden");
+    let mut connection = store::open(&scratch.database()).expect("opens");
+    // Recent by the span clock, so every lookback includes it; old by the ingest clock.
+    let now_ns = query::now_ms() * 1_000_000;
+    let spans: Vec<String> = (0..3_000u64)
+        .map(|span| {
+            format!(
+                r#"{{"traceId":"{}","spanId":"{}","name":"op","startTimeUnixNano":"{}","endTimeUnixNano":"{}"}}"#,
+                trace_id(1),
+                span_id(span),
+                now_ns - 60_000_000_000 + span as i64,
+                now_ns - 59_000_000_000 + span as i64
+            )
+        })
+        .collect();
+    let body = format!(
+        r#"{{"resourceSpans":[{{"resource":{{"attributes":[{{"key":"service.name","value":{{"stringValue":"svc"}}}}]}},"scopeSpans":[{{"spans":[{}]}}]}}]}}"#,
+        spans.join(",")
+    );
+    store_spans(
+        &mut connection,
+        &decode_spans(body.as_bytes()).expect("decodes"),
+    )
+    .expect("stores");
+    let logs = format!(
+        r#"{{"resourceLogs":[{{"resource":{{"attributes":[{{"key":"service.name","value":{{"stringValue":"svc"}}}}]}},"scopeLogs":[{{"logRecords":[{{"timeUnixNano":"{}","body":{{"stringValue":"of the trace"}},"traceId":"{}"}}]}}]}}]}}"#,
+        now_ns - 30_000_000_000,
+        trace_id(1)
+    );
+    store_logs(
+        &mut connection,
+        &decode_logs(logs.as_bytes()).expect("decodes"),
+    )
+    .expect("stores");
+    // A service whose only activity is a log of the trace; and, as controls, a live trace and a
+    // log without a trace in services of their own.
+    let log_of = |service: &str, trace: Option<String>| {
+        let trace = trace.map_or(String::new(), |trace| format!(r#","traceId":"{trace}""#));
+        format!(
+            r#"{{"resourceLogs":[{{"resource":{{"attributes":[{{"key":"service.name","value":{{"stringValue":"{service}"}}}}]}},"scopeLogs":[{{"logRecords":[{{"timeUnixNano":"{}","body":{{"stringValue":"x"}}{trace}}}]}}]}}]}}"#,
+            now_ns - 30_000_000_000
+        )
+    };
+    for body in [
+        log_of("svc-logs", Some(trace_id(1))),
+        log_of("live-logs", None),
+    ] {
+        store_logs(
+            &mut connection,
+            &decode_logs(body.as_bytes()).expect("decodes"),
+        )
+        .expect("stores");
+    }
+    let live = format!(
+        r#"{{"resourceSpans":[{{"resource":{{"attributes":[{{"key":"service.name","value":{{"stringValue":"live"}}}}]}},"scopeSpans":[{{"spans":[{{"traceId":"{}","spanId":"{}","name":"op","startTimeUnixNano":"{}","endTimeUnixNano":"{}"}}]}}]}}]}}"#,
+        trace_id(2),
+        span_id(1),
+        now_ns - 60_000_000_000,
+        now_ns - 59_000_000_000
+    );
+    store_spans(
+        &mut connection,
+        &decode_spans(live.as_bytes()).expect("decodes"),
+    )
+    .expect("stores");
+    // The controls are young by the step's clock; only the trace is old.
+    age_trace(&connection, 2, NOW_MS, NOW_MS);
+    age_new_logs(&connection, NOW_MS);
+    let mut reader = Connection::open_with_flags(
+        scratch.database(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("reader");
+    let id = trace_id(1);
+    let empty = Query::parse(None);
+    let by_trace = Query::parse(Some(&format!("traceId={id}&lookback=1h")));
+    let checks = |reader: &mut Connection| -> Vec<(&'static str, bool)> {
+        let (status, _) = answer(reader, |c, out| query::trace(c, out, &id));
+        let (_, spans) = answer(reader, |c, out| query::trace_spans(c, out, &id));
+        let (_, list) = answer(reader, |c, out| query::traces(c, out, &empty));
+        let (_, search) = answer(reader, |c, out| query::search_spans(c, out, &by_trace));
+        let (_, trace_logs) = answer(reader, |c, out| {
+            query::logs(
+                c,
+                out,
+                LogFilter {
+                    query: &empty,
+                    trace: Some(&id),
+                },
+            )
+        });
+        let (_, logs) = answer(reader, |c, out| {
+            query::logs(
+                c,
+                out,
+                LogFilter {
+                    query: &by_trace,
+                    trace: None,
+                },
+            )
+        });
+        let stats_query = Query::parse(Some("groupBy=service&agg=count"));
+        let (_, stats) = answer(reader, |c, out| query::trace_stats(c, out, &stats_query));
+        let (_, services) = answer(reader, query::services);
+        let listed = |service: &str| {
+            services["data"]
+                .as_array()
+                .is_some_and(|names| names.iter().any(|name| name == service))
+        };
+        assert!(listed("live") && listed("live-logs"), "{services}");
+        let count = |value: &serde_json::Value| value["data"].as_array().map_or(0, Vec::len);
+        vec![
+            ("its spans' service", listed("svc")),
+            ("its logs' service", listed("svc-logs")),
+            ("the trace", status == 200),
+            ("its spans", count(&spans) > 0),
+            ("the list", list.to_string().contains(&id)),
+            ("a search", count(&search) > 0),
+            ("its logs", count(&trace_logs) > 0),
+            ("a log search", count(&logs) > 0),
+            (
+                "stats",
+                stats["data"]
+                    .as_array()
+                    .is_some_and(|groups| groups.iter().any(|group| group["group"] == "svc")),
+            ),
+        ]
+    };
+    for (what, seen) in checks(&mut reader) {
+        assert!(seen, "before eviction, {what} did not show the trace");
+    }
+    age_trace(
+        &connection,
+        1,
+        NOW_MS - 200 * HOUR_MS,
+        NOW_MS - 200 * HOUR_MS,
+    );
+    // One step deletes 1,000 of its 3,000 spans and marks it.
+    retention::step(&mut connection, &WEEK, NOW_MS, STEP_ROWS).expect("step");
+    assert!(
+        retention::evicting(&connection)
+            .expect("evicting")
+            .is_some()
+    );
+    // 2,000 of the trace's, and the live trace's one.
+    assert_eq!(count(&connection, "SELECT count(*) FROM spans"), 2_001);
+    for (what, seen) in checks(&mut reader) {
+        assert!(!seen, "{what} showed a trace being evicted");
+    }
+}
+
+/// A query stops at its deadline even while SQLite is busy inside one statement: an attribute
+/// search that matches nothing scans every span in its window and returns no row, so only
+/// SQLite's progress handler can end it.
+#[test]
+fn a_query_ends_at_its_deadline_inside_a_long_statement() {
+    use executor_collector::query::{self, Query};
+    use executor_collector::readers::{Stop, collect_within};
+    use std::time::Duration;
+    let scratch = Scratch::new("deadline");
+    let mut connection = store::open(&scratch.database()).expect("opens");
+    let now_ns = query::now_ms() * 1_000_000;
+    for part in 0..40u64 {
+        let spans: Vec<String> = (0..5_000u64)
+            .map(|index| {
+                let span = part * 5_000 + index;
+                format!(
+                    r#"{{"traceId":"{}","spanId":"{}","name":"op","startTimeUnixNano":"{}","endTimeUnixNano":"{}","attributes":[{{"key":"k","value":{{"stringValue":"value {span}"}}}}]}}"#,
+                    trace_id(span / 50 + 1),
+                    span_id(span),
+                    now_ns - 60_000_000_000 + span as i64,
+                    now_ns - 59_000_000_000 + span as i64
+                )
+            })
+            .collect();
+        let body = format!(
+            r#"{{"resourceSpans":[{{"resource":{{"attributes":[{{"key":"service.name","value":{{"stringValue":"svc"}}}}]}},"scopeSpans":[{{"spans":[{}]}}]}}]}}"#,
+            spans.join(",")
+        );
+        store_spans(
+            &mut connection,
+            &decode_spans(body.as_bytes()).expect("decodes"),
+        )
+        .expect("stores");
+    }
+    let mut reader = Connection::open_with_flags(
+        scratch.database(),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("reader");
+    let search = Query::parse(Some("attr.k=nothing&lookback=1h&limit=500"));
+    // Without a short deadline the search reads all 200,000 spans.
+    let started = Instant::now();
+    collect_within(&mut reader, Duration::from_secs(30), |c, out| {
+        query::search_spans(c, out, &search)
+    })
+    .expect("answers");
+    let whole = started.elapsed();
+    assert!(
+        whole > Duration::from_millis(30),
+        "the full search took only {whole:?}; the test needs a longer one"
+    );
+    let started = Instant::now();
+    let result = collect_within(&mut reader, Duration::from_millis(2), |c, out| {
+        query::search_spans(c, out, &search)
+    });
+    let stopped = started.elapsed();
+    assert!(
+        matches!(result, Err(Stop::Deadline)),
+        "the search was not stopped: {result:?}"
+    );
+    assert!(
+        stopped < whole / 3,
+        "stopping took {stopped:?}, the whole search {whole:?}"
+    );
+    // The connection is usable after an interrupted query.
+    let (status, _) = executor_collector::readers::collect(&mut reader, |c, out| {
+        query::search_spans(c, out, &Query::parse(Some("lookback=1h&limit=1")))
+    })
+    .expect("answers");
+    assert_eq!(status.as_u16(), 200);
+}
+
+/// Matching a log body against a query with no words, as SQLite's `LIKE` did, costs the body's
+/// length times the query's at worst. A 4 MiB body and a 20,000-character query would take
+/// minutes; the query still ends at its deadline.
+#[test]
+fn text_matching_ends_at_the_query_deadline() {
+    use executor_collector::query::{self, LogFilter, Query};
+    use executor_collector::readers::{Stop, collect_within};
+    use std::time::Duration;
+    let scratch = Scratch::new("like-deadline");
+    let mut connection = store::open(&scratch.database()).expect("opens");
+    let now_ns = query::now_ms() * 1_000_000;
+    let body = "a-".repeat(2 * 1024 * 1024);
+    let logs = format!(
+        r#"{{"resourceLogs":[{{"resource":{{"attributes":[]}},"scopeLogs":[{{"logRecords":[{{"timeUnixNano":"{}","body":{{"stringValue":"{body}"}}}}]}}]}}]}}"#,
+        now_ns - 1_000_000_000
+    );
+    store_logs(
+        &mut connection,
+        &decode_logs(logs.as_bytes()).expect("decodes"),
+    )
+    .expect("stores");
+    let pattern = format!("{}b", "a-".repeat(10_000));
+    let path = scratch.database();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .expect("reader");
+        let search = Query::parse(Some(&format!("body={pattern}&lookback=1h")));
+        let started = Instant::now();
+        let result = collect_within(&mut reader, Duration::from_millis(200), |c, out| {
+            query::logs(
+                c,
+                out,
+                LogFilter {
+                    query: &search,
+                    trace: None,
+                },
+            )
+        });
+        let _ = sender.send((result.map(|(status, _)| status), started.elapsed()));
+    });
+    let (result, took) = receiver
+        .recv_timeout(Duration::from_secs(10))
+        .expect("the match ran past its deadline for 10 s");
+    assert!(matches!(result, Err(Stop::Deadline)), "{result:?}");
+    assert!(
+        took < Duration::from_secs(2),
+        "the match stopped after {took:?}"
+    );
+}
+
+/// A trace whose skeleton would pass `SKELETON_BYTES` is answered with its first spans by start
+/// time, and says so: a warning on the trace, `meta` on its spans list. A trace under it is
+/// answered whole, with neither. Read with a long budget, so only the ceiling cuts.
+#[test]
+fn a_trace_past_the_skeleton_ceiling_is_answered_in_part_and_says_so() {
+    use executor_collector::query;
+    use executor_collector::readers::collect_within;
+    use std::time::Duration;
+    let scratch = Scratch::new("ceiling");
+    let mut connection = store::open(&scratch.database()).expect("opens");
+    const BASE: u64 = 1_800_000_000_000_000_000;
+    // Each span's parent (empty for none) and start, by its index, which is also the order it is
+    // stored in.
+    type Shape = dyn Fn(u64) -> (String, u64);
+    let store_shaped = |connection: &mut Connection, trace: &str, spans: u64, shape: &Shape| {
+        for first in (0..spans).step_by(50_000) {
+            let rows: Vec<String> = (first..(first + 50_000).min(spans))
+                .map(|index| {
+                    let (parent, start) = shape(index);
+                    format!(
+                        r#"{{"traceId":"{trace}","spanId":"{:016x}","parentSpanId":"{parent}","name":"s","startTimeUnixNano":"{start}","endTimeUnixNano":"{}"}}"#,
+                        index + 1,
+                        start + 500
+                    )
+                })
+                .collect();
+            let body = format!(
+                r#"{{"resourceSpans":[{{"resource":{{"attributes":[{{"key":"service.name","value":{{"stringValue":"huge"}}}}]}},"scopeSpans":[{{"spans":[{}]}}]}}]}}"#,
+                rows.join(",")
+            );
+            store_spans(connection, &decode_spans(body.as_bytes()).expect("decodes"))
+                .expect("stores");
+        }
+    };
+    let store_trace = |connection: &mut Connection, trace: &str, spans: u64, orphans: bool| {
+        store_shaped(connection, trace, spans, &move |index| {
+            let parent = match (orphans, index) {
+                (true, _) => format!("{:016x}", 0xf000_0000_0000 + index),
+                (false, 0) => String::new(),
+                (false, _) => format!("{index:016x}"),
+            };
+            (parent, BASE + index)
+        });
+    };
+    // Within one millisecond, spans that start later are stored first, and each start is shared
+    // by two spans: the first stored of the two comes first.
+    let reversed = |spans: u64, index: u64| BASE + 1 + (spans - 1 - index) / 2;
+    let (chain, orphans, small) = (
+        "000000000000000000000000000c0de1",
+        "000000000000000000000000000c0de0",
+        "000000000000000000000000000c0de2",
+    );
+    store_trace(&mut connection, chain, 200_000, false);
+    store_trace(&mut connection, orphans, 80_000, true);
+    store_trace(&mut connection, small, 50_000, false);
+    // Cut by the query (more spans than a skeleton holds, every parent kept: a root that starts
+    // first and its children), and by the skeleton's budget (orphans, each parent missing).
+    let (flat, reversed_orphans) = (
+        "000000000000000000000000000c0de3",
+        "000000000000000000000000000c0de4",
+    );
+    let root = format!("{:016x}", 1);
+    store_shaped(&mut connection, flat, 200_000, &move |index| match index {
+        0 => (String::new(), BASE),
+        _ => (root.clone(), reversed(200_000, index)),
+    });
+    store_shaped(&mut connection, reversed_orphans, 80_000, &move |index| {
+        (
+            format!("{:016x}", 0xf000_0000_0000 + index),
+            reversed(80_000, index),
+        )
+    });
+    let read = |connection: &mut Connection, spans_route: bool, trace: &str| {
+        let (status, body) = collect_within(connection, Duration::from_secs(300), |c, out| {
+            if spans_route {
+                query::trace_spans(c, out, trace)
+            } else {
+                query::trace(c, out, trace)
+            }
+        })
+        .expect("answers");
+        assert_eq!(status.as_u16(), 200);
+        serde_json::from_slice::<serde_json::Value>(&body).expect("JSON")
+    };
+    for (trace, total) in [(chain, 200_000), (orphans, 80_000)] {
+        let spans = read(&mut connection, true, trace);
+        let rows = spans["data"].as_array().expect("data");
+        let returned = rows.len();
+        // Synthetic parents for missing spans are rows too; the real spans are fewer than the trace's.
+        let real = rows
+            .iter()
+            .filter(|row| {
+                !row["span"]["operationName"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("[missing parent"))
+            })
+            .count();
+        assert!(real > 0 && real < total, "{trace}: {real} of {total}");
+        // The chain's first spans are a whole chain; every orphan's parent is synthetic.
+        if trace == orphans {
+            assert_eq!(
+                returned,
+                2 * real,
+                "{trace}: a synthetic parent for each span"
+            );
+        } else {
+            assert_eq!(returned, real, "{trace}");
+        }
+        assert_eq!(spans["meta"]["truncated"], true, "{trace}");
+        assert_eq!(spans["meta"]["spanCount"], total, "{trace}");
+        // `returned` counts the trace's stored spans in the answer, not its synthetic parents.
+        assert_eq!(spans["meta"]["returned"], real, "{trace}");
+        let whole = read(&mut connection, false, trace);
+        assert_eq!(
+            whole["data"]["partial"],
+            serde_json::json!({ "spanCount": total, "returned": real }),
+            "{trace}"
+        );
+        let warning = format!("the trace has {total} spans; this answer holds the first");
+        assert!(
+            whole["data"]["warnings"]
+                .as_array()
+                .is_some_and(|warnings| warnings
+                    .iter()
+                    .any(|w| w.as_str().is_some_and(|w| w.starts_with(&warning)))),
+            "{trace}: {}",
+            whole["data"]["warnings"]
+        );
+    }
+    // The spans kept are the earliest by start in nanoseconds, then storage order, by either cut.
+    for (trace, total, shape) in [
+        (
+            flat,
+            200_000u64,
+            &(|index: u64| {
+                if index == 0 {
+                    BASE
+                } else {
+                    reversed(200_000, index)
+                }
+            }) as &dyn Fn(u64) -> u64,
+        ),
+        (reversed_orphans, 80_000, &|index: u64| {
+            reversed(80_000, index)
+        }),
+    ] {
+        let spans = read(&mut connection, true, trace);
+        let kept: std::collections::BTreeSet<String> = spans["data"]
+            .as_array()
+            .expect("data")
+            .iter()
+            .map(|row| &row["span"])
+            .filter(|span| {
+                !span["operationName"]
+                    .as_str()
+                    .is_some_and(|name| name.starts_with("[missing parent"))
+            })
+            .map(|span| span["spanId"].as_str().expect("id").to_owned())
+            .collect();
+        let mut order: Vec<u64> = (0..total).collect();
+        order.sort_by_key(|index| (shape(*index), *index));
+        let expected: std::collections::BTreeSet<String> = order[..kept.len()]
+            .iter()
+            .map(|index| format!("{:016x}", index + 1))
+            .collect();
+        assert!(kept.len() < total as usize, "{trace}: cut");
+        assert_eq!(spans["meta"]["returned"], kept.len(), "{trace}");
+        assert!(
+            kept == expected,
+            "{trace}: other spans were kept than the earliest {}",
+            kept.len()
+        );
+    }
+    // Under the ceiling: whole, with no `meta`, no `partial` and no warning about it.
+    let spans = read(&mut connection, true, small);
+    assert_eq!(spans["data"].as_array().map(Vec::len), Some(50_000));
+    assert!(spans.get("meta").is_none(), "{}", spans["meta"]);
+    let whole = read(&mut connection, false, small);
+    assert_eq!(
+        whole["data"]["spans"].as_array().map(Vec::len),
+        Some(50_000)
+    );
+    assert_eq!(whole["data"]["warnings"], serde_json::json!([]));
+    assert!(
+        whole["data"].get("partial").is_none(),
+        "{}",
+        whole["data"]["partial"]
+    );
+}
+
+/// A read the writer asks to give way gives way, and is answered so, even when the writer has
+/// withdrawn the request by the time the read looks at why SQLite stopped it: the order "asked
+/// to give way, the statement interrupted, the request withdrawn, the reason decided". The query
+/// here withdraws the request itself, between the interrupt and its return. The answer is 503
+/// with `Retry-After: 1`, `yielded` moves and `cutOff` does not.
+#[test]
+fn a_read_asked_to_give_way_is_answered_so_after_the_request_is_withdrawn() {
+    use executor_collector::connection::ResponseDeadline;
+    use executor_collector::readers::{Readers, Stop};
+    use executor_collector::store::{MemoryRelease, ReadGate};
+    use std::sync::Arc;
+    let scratch = Scratch::new("give-way");
+    drop(store::open(&scratch.database()).expect("creates"));
+    let gate = Arc::new(ReadGate::default());
+    let readers = Readers::open(
+        &scratch.database(),
+        gate.clone(),
+        Arc::new(MemoryRelease::default()),
+    )
+    .expect("readers");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(2 << 20)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    gate.set_preempting(true);
+    let withdraw = gate.clone();
+    let response = runtime.block_on(readers.answer(&ResponseDeadline::default(), move |connection, _| {
+        // A statement long enough that only the interrupt ends it.
+        let result: rusqlite::Result<i64> = connection.query_row(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n",
+            [],
+            |row| row.get(0),
+        );
+        // The writer emptied the log and stopped asking before the read decides why it ended.
+        withdraw.set_preempting(false);
+        Err(result.map_or_else(Stop::from, |_| Stop::Failed("the statement finished".to_owned())))
+    }));
+    assert_eq!(response.status().as_u16(), 503);
+    assert_eq!(
+        response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok()),
+        Some("1"),
+        "a read that gave way is told to retry"
+    );
+    let figures = readers.figures();
+    assert_eq!(figures["yielded"], 1, "{figures}");
+    assert_eq!(figures["cutOff"], 0, "{figures}");
+}
+
+/// A read the store refuses for a moment (busy, locked, or in SQLite's locking-protocol retry) is
+/// answered 503 with `Retry-After: 1` before its answer starts, and counted, not 500; a damaged
+/// store stays a 500.
+#[test]
+fn a_busy_store_answers_retry_shortly_not_a_failure() {
+    use executor_collector::connection::ResponseDeadline;
+    use executor_collector::readers::{Readers, Stop};
+    use executor_collector::store::{MemoryRelease, ReadGate};
+    use std::sync::Arc;
+    let scratch = Scratch::new("busy-read");
+    drop(store::open(&scratch.database()).expect("creates"));
+    let readers = Readers::open(
+        &scratch.database(),
+        Arc::new(ReadGate::default()),
+        Arc::new(MemoryRelease::default()),
+    )
+    .expect("readers");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let error = |code: i32| {
+        rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            Some("from the test".to_owned()),
+        )
+    };
+    let cases = [
+        ("busy", rusqlite::ffi::SQLITE_BUSY, 503),
+        ("locked", rusqlite::ffi::SQLITE_LOCKED, 503),
+        ("locking protocol", rusqlite::ffi::SQLITE_PROTOCOL, 503),
+        ("damaged", rusqlite::ffi::SQLITE_CORRUPT, 500),
+    ];
+    for (case, code, status) in cases {
+        let failure = error(code);
+        let response =
+            runtime.block_on(readers.answer(&ResponseDeadline::default(), move |_, _| {
+                Err(Stop::from(failure))
+            }));
+        assert_eq!(response.status().as_u16(), status, "{case}");
+        let retry = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok());
+        assert_eq!(retry, (status == 503).then_some("1"), "{case}");
+    }
+    assert_eq!(readers.figures()["storeBusy"], 3, "{}", readers.figures());
+}
+
+/// A query that unwinds after its head was sent ends its answer short, not as a whole 200: the
+/// body is cut off, so the server sends no terminating chunk and the caller sees the transfer
+/// end early (or, when the server had not yet written them, without even the head). Through the HTTP server
+/// the collector runs (axum over its `Guarding` listener), for a query that unwinds before its
+/// first chunk and one that unwinds after it.
+#[test]
+fn a_query_that_unwinds_after_its_head_never_ends_its_answer_cleanly() {
+    use executor_collector::connection::{Guarding, ResponseDeadline};
+    use executor_collector::readers::Readers;
+    use executor_collector::store::{MemoryRelease, ReadGate};
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+    let scratch = Scratch::new("unwinding-query");
+    drop(store::open(&scratch.database()).expect("creates"));
+    let readers = Readers::open(
+        &scratch.database(),
+        Arc::new(ReadGate::default()),
+        Arc::new(MemoryRelease::default()),
+    )
+    .expect("readers");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .expect("runtime");
+    let wire = runtime.block_on(async move {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listens");
+        let address = listener.local_addr().expect("address");
+        let route = |prefix: bool| {
+            let readers = readers.clone();
+            move |axum::extract::ConnectInfo(deadline): axum::extract::ConnectInfo<
+                ResponseDeadline,
+            >| {
+                let readers = readers.clone();
+                async move {
+                    readers
+                        .answer(&deadline, move |_, out| {
+                            out.start(axum::http::StatusCode::OK)?;
+                            if prefix {
+                                out.text("{\"data\":[")?;
+                                out.flush()?;
+                            }
+                            panic!("the query unwinds after its head");
+                        })
+                        .await
+                }
+            }
+        };
+        let router = axum::Router::new()
+            .route("/before", axum::routing::get(route(false)))
+            .route("/after", axum::routing::get(route(true)));
+        let server = tokio::spawn(std::future::IntoFuture::into_future(axum::serve(
+            Guarding(listener),
+            router.into_make_service_with_connect_info::<ResponseDeadline>(),
+        )));
+        let mut answers = Vec::new();
+        for path in ["/before", "/after"] {
+            let raw = tokio::task::spawn_blocking(move || {
+                let mut stream = std::net::TcpStream::connect(address).expect("connects");
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .expect("timeout");
+                stream
+                    .write_all(
+                        format!("GET {path} HTTP/1.1\r\nHost: c\r\nConnection: close\r\n\r\n")
+                            .as_bytes(),
+                    )
+                    .expect("sends");
+                let mut raw = Vec::new();
+                let _ = stream.read_to_end(&mut raw);
+                raw
+            })
+            .await
+            .expect("reads");
+            answers.push((path, raw));
+        }
+        server.abort();
+        answers
+    });
+    for (path, raw) in wire {
+        let text = String::from_utf8_lossy(&raw);
+        assert!(
+            !raw.ends_with(b"0\r\n\r\n"),
+            "{path}: the answer ended with a terminating chunk, as a whole one: {text}"
+        );
+        // The server may not have written the head (and the first chunk) when the body ends
+        // with its error; it then closes the connection with nothing written. Either way, no
+        // complete answer.
+        assert!(
+            raw.is_empty() || text.starts_with("HTTP/1.1 200"),
+            "{path}: {text}"
+        );
+    }
 }

@@ -1,0 +1,64 @@
+{
+  "query": "/api/traces?lookback=1d&limit=100",
+  "status": 200,
+  "shape": {
+    "types": ["object"],
+    "fields": {
+      "data": {
+        "types": ["array"],
+        "items": {
+          "types": ["object"],
+          "fields": {
+            "isRunning": {
+              "types": ["boolean"]
+            },
+            "traceId": {
+              "types": ["string"]
+            },
+            "serviceName": {
+              "types": ["string"]
+            },
+            "rootOperationName": {
+              "types": ["string"]
+            },
+            "startedAt": {
+              "types": ["string"]
+            },
+            "durationMs": {
+              "types": ["number"]
+            },
+            "spanCount": {
+              "types": ["number"]
+            },
+            "errorCount": {
+              "types": ["number"]
+            },
+            "warnings": {
+              "types": ["array"]
+            }
+          }
+        }
+      },
+      "meta": {
+        "types": ["object"],
+        "fields": {
+          "limit": {
+            "types": ["number"]
+          },
+          "lookback": {
+            "types": ["string"]
+          },
+          "returned": {
+            "types": ["number"]
+          },
+          "truncated": {
+            "types": ["boolean"]
+          },
+          "nextCursor": {
+            "types": ["string"]
+          }
+        }
+      }
+    }
+  }
+}

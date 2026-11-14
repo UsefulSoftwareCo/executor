@@ -58,23 +58,44 @@ the host's proxy and workerd, and response compression cases such as streamed
 chunks, that a real image cannot hit reliably. CI runs it in the `self-host-native` job.
 
 The second is the telemetry collector crate in `packages/telemetry/collector`.
-Its `cargo test` suite in `tests/` is limited to five files:
+Its `cargo test` suite in `tests/` is limited to seven files, which share
+`tests/support/` (scratch directories, and removing those a killed run left):
 
-- `otlp_mapping.rs`: the OTLP/JSON field mapping, through the crate's library.
+- `otlp_mapping.rs`: the OTLP/JSON field mapping, the span event limit, the
+  name limit, the decoding budget and the row limit, through the crate's
+  library.
+- `body.rs`: that a response body's end never overtakes a chunk queued before
+  it, placed at the exact interleaving and raced, through the crate's library.
+  The interleaving cannot be placed from outside the process.
+- `memory.rs`: what decoding, the writer and a reader hold, counted by an
+  allocator that wraps the system one (and SQLite's own statistics), for a
+  corpus of export shapes and the densest exports at the default limit against
+  what the code allows each; the writer's fixed state per trace; what one
+  export writes to the data directory against the limit the writer enforces, at 1, 4 and 16 MiB, and an export touching many stored pages refused by it (under `target/tmp`, as their files pass 100 MB). One test at a time, as the counter sees
+  the whole process.
 - `store.rs`: the store's handling of resent and changed spans, trace summaries
-  and resource references, that an export is all or nothing, and creating a new
-  file, through the crate's library. A failure part way through a transaction
-  cannot be caused from outside the process.
+  (written in batches, their upkeep counted in SQLite's work), resource
+  references and service names stored once, an export past its write limit rolled back with every table as it was, that an export is all or nothing, creating a new
+  file, and that operation and body matching agrees with SQLite's FTS5
+  `unicode61` tokenizer for every code point and with Motel's full-text and
+  `LIKE` queries, through the crate's library. A failure part way through a
+  transaction cannot be caused from outside the process, and the comparison
+  needs SQLite's own tokenizer beside the collector's.
 - `retention.rs`: eviction by age and by size and its order, the bound on one
   retention step with a very large trace, a span that arrives for a trace being
-  evicted, resource references through deletion, returning free pages, and the
-  store format policy: which files it refuses with nothing changed, which links
-  and file types at its names it refuses, which stores it empties in place
-  (SQLite's own tables after `ANALYZE` or `AUTOINCREMENT` included), that a reset
-  failing part way changes nothing, the last checks before a store is served or
-  a reset commits, every state a cut-off first start can leave, a hot journal
-  over the application id included, and stamps that never go back when the
-  host's clock does, through the crate's library.
+  evicted, resource references through deletion, returning free pages, the store
+  format policy (which files it refuses with nothing changed, which links and
+  file types at its names it refuses, which stores it empties in place, SQLite's
+  own tables after `ANALYZE` or `AUTOINCREMENT` included, that a reset failing
+  part way changes nothing, the last checks before a store is served or a reset
+  commits, and every state a cut-off first start can leave, a hot journal over
+  the application id included), stamps that never go back when the host's clock
+  does, that queries, the service list included, leave out a trace being
+  evicted, that a trace past the skeleton ceiling is answered in part, keeps its
+  earliest spans by either cut and says so, that a read asked to give way is answered so after the request is
+  withdrawn, that a query ends at its deadline inside SQLite and while
+  matching text, and that a busy, locked or locking-protocol read answers 503
+  and a fault 500, through the crate's library.
   Clocks of hours and those file states cannot be set up from outside the
   process.
 - `lifecycle.rs`: that the shutdown drain ends however the stop and the drain
@@ -89,10 +110,26 @@ Its `cargo test` suite in `tests/` is limited to five files:
   collector per directory with its lock file untouched, a store start-up cannot
   read ending the start, the data directory named in each way, a foreign store
   with a live log refused with nothing changed, the first status after an export,
-  the status while rows expire with the writer idle, the write-ahead log's bound under sustained ingest with
-  readers, eviction with a small `RUST_MIN_STACK`, and resident memory returned
-  after a burst. These would be E2E scenarios, but nothing in `e2e/` builds the binary
-  yet.
+  the status while rows expire with the writer idle, the write-ahead log's bound
+  under sustained ingest with readers, eviction and queries with a small
+  `RUST_MIN_STACK`, each query route's fields and types against Motel's recorded
+  answers in `tests/fixtures/motel`, every filter and parameter of every route by
+  the rows it selects, malformed query strings on every route, lookbacks,
+  repeated parameters, malformed cursors, exact cursors at page boundaries and
+  paging while traces move, each route's default and maximum limit, a trace's
+  logs within its lookback, bounded readers and their deadline, text matching cut
+  off by the deadline, a caller hanging up (in SQL or the query's loops) and
+  stopping, responses holding their reader until sent, 64 KiB chunks, memory with
+  large resources, large names, very large traces, an event-dense span and
+  exports made only of events, span events past the limit dropped, counted and
+  warned, names past the decoded depth, after the 128th event or in a repeated
+  key accepted and named nowhere, refused exports answered briefly (wrong kinds included), an export that writes too much to disk refused and counted, a lowered
+  export limit emptying the store and a raised one keeping it, every
+  transition of the
+  read gate, a gate opening when checkpoints fail, readers held at the gate so
+  exports are not refused, reads during eviction, and resident memory returned
+  after a burst.
+  These would be E2E scenarios, but nothing in `e2e/` builds the binary yet.
 
 CI runs it in the `collector-native` job when the crate, its build script
 (`packages/telemetry/scripts/build-collector.ts`) or the `collector` and `rustup` actions in

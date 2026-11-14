@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::Router;
 use axum::body::Bytes;
-use axum::extract::{Request, State};
+use axum::extract::{ConnectInfo, Path, RawQuery, Request, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -21,8 +21,11 @@ use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
 
+use crate::connection::{self, ResponseDeadline};
 use crate::log;
 use crate::otlp;
+use crate::query::{self, LogFilter, Query};
+use crate::readers::Readers;
 use crate::store::{self, Export, Job, Losses, MemoryRelease, Shared, SharedLosses};
 
 const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(60);
@@ -37,6 +40,7 @@ pub struct App {
     pub release: Arc<MemoryRelease>,
     /// The writer's figures: the store's size for admission and `/api/ingest`.
     pub store: Arc<Shared>,
+    pub readers: Arc<Readers>,
 }
 
 /// An admitted export: its permit, held until the export is stored or refused. Dropping it, on
@@ -58,7 +62,17 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/logs", post(logs))
         .route("/api/health", get(health))
         .route("/api/ingest", get(ingest_status))
+        .route("/api/services", get(services))
+        .route("/api/traces", get(traces_list))
+        .route("/api/traces/stats", get(trace_stats))
+        .route("/api/traces/{trace_id}", get(trace))
+        .route("/api/traces/{trace_id}/spans", get(trace_spans))
+        .route("/api/traces/{trace_id}/logs", get(trace_logs))
+        .route("/api/spans/search", get(search_spans))
+        .route("/api/logs", get(logs_search))
+        .route("/api/logs/search", get(logs_search))
         .fallback(not_found)
+        .layer(axum::middleware::from_fn(connection::new_request))
         .with_state(app)
 }
 
@@ -75,6 +89,7 @@ enum Loss {
     Invalid,
     StoreFailed,
     OverBound,
+    TooMuchDisk,
 }
 
 /// An export is refused while the store's pages in use are more than this share of the bound.
@@ -84,6 +99,132 @@ const OVER_BOUND_PERCENT: u64 = 110;
 
 async fn health() -> Response {
     axum::Json(json!({ "ok": true, "service": "executor-collector", "version": env!("CARGO_PKG_VERSION") })).into_response()
+}
+
+async fn services(
+    State(app): State<Arc<App>>,
+    ConnectInfo(deadline): ConnectInfo<ResponseDeadline>,
+) -> Response {
+    app.readers.answer(&deadline, query::services).await
+}
+
+async fn traces_list(
+    State(app): State<Arc<App>>,
+    ConnectInfo(deadline): ConnectInfo<ResponseDeadline>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let query = Query::parse(raw.as_deref());
+    if !query.is_valid(query::TRACES_PARAMETERS) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    app.readers
+        .answer(&deadline, move |connection, out| {
+            query::traces(connection, out, &query)
+        })
+        .await
+}
+
+async fn trace_stats(
+    State(app): State<Arc<App>>,
+    ConnectInfo(deadline): ConnectInfo<ResponseDeadline>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let query = Query::parse(raw.as_deref());
+    if !query.is_valid(query::STATS_PARAMETERS) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    app.readers
+        .answer(&deadline, move |connection, out| {
+            query::trace_stats(connection, out, &query)
+        })
+        .await
+}
+
+async fn trace(
+    State(app): State<Arc<App>>,
+    ConnectInfo(deadline): ConnectInfo<ResponseDeadline>,
+    Path(trace_id): Path<String>,
+) -> Response {
+    app.readers
+        .answer(&deadline, move |connection, out| {
+            query::trace(connection, out, &trace_id)
+        })
+        .await
+}
+
+async fn trace_spans(
+    State(app): State<Arc<App>>,
+    ConnectInfo(deadline): ConnectInfo<ResponseDeadline>,
+    Path(trace_id): Path<String>,
+) -> Response {
+    app.readers
+        .answer(&deadline, move |connection, out| {
+            query::trace_spans(connection, out, &trace_id)
+        })
+        .await
+}
+
+async fn trace_logs(
+    State(app): State<Arc<App>>,
+    ConnectInfo(deadline): ConnectInfo<ResponseDeadline>,
+    Path(trace_id): Path<String>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let query = Query::parse(raw.as_deref());
+    if !query.is_valid(query::TRACE_LOGS_PARAMETERS) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    app.readers
+        .answer(&deadline, move |connection, out| {
+            query::logs(
+                connection,
+                out,
+                LogFilter {
+                    query: &query,
+                    trace: Some(&trace_id),
+                },
+            )
+        })
+        .await
+}
+
+async fn search_spans(
+    State(app): State<Arc<App>>,
+    ConnectInfo(deadline): ConnectInfo<ResponseDeadline>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let query = Query::parse(raw.as_deref());
+    if !query.is_valid(query::SPAN_SEARCH_PARAMETERS) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    app.readers
+        .answer(&deadline, move |connection, out| {
+            query::search_spans(connection, out, &query)
+        })
+        .await
+}
+
+async fn logs_search(
+    State(app): State<Arc<App>>,
+    ConnectInfo(deadline): ConnectInfo<ResponseDeadline>,
+    RawQuery(raw): RawQuery,
+) -> Response {
+    let query = Query::parse(raw.as_deref());
+    if !query.is_valid(query::LOGS_PARAMETERS) {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    app.readers
+        .answer(&deadline, move |connection, out| {
+            query::logs(
+                connection,
+                out,
+                LogFilter {
+                    query: &query,
+                    trace: None,
+                },
+            )
+        })
+        .await
 }
 
 async fn not_found() -> Response {
@@ -111,9 +252,11 @@ fn status_json(app: &App, losses: &Losses) -> Value {
             "invalid": losses.refused.invalid,
             "storeFailed": losses.refused.store_failed,
             "overBound": losses.refused.over_bound,
+            "tooMuchDisk": losses.refused.too_much_disk,
         },
         "refusedBytes": losses.refused_bytes,
         "lastRefusedAt": losses.last_refused_at,
+        "droppedEvents": losses.dropped_events,
         "evictions": {
             "passes": figures.eviction_passes,
             "traces": figures.evicted_traces,
@@ -134,7 +277,11 @@ fn status_json(app: &App, losses: &Losses) -> Value {
             "walFull": figures.wal_full,
             "checkpointsBlocked": figures.checkpoints_blocked,
             "walEmptied": figures.wal_emptied,
+            "walRefuseBytes": figures.wal_refuse_bytes,
+            "gateClosed": figures.gate_closed,
+            "gateClosings": figures.gate_closings,
         },
+        "readers": app.readers.figures(),
     })
 }
 
@@ -204,14 +351,23 @@ async fn ingest(app: Arc<App>, signal: Signal, request: Request) -> Response {
     let figures = app.store.figures();
     // Data past the bound means eviction is behind; a full write-ahead log means a reader keeps
     // a checkpoint from emptying it. Both are refused until they clear.
-    if figures.settled_used_bytes > figures.max_bytes / 100 * OVER_BOUND_PERCENT || figures.wal_full
-    {
+    if figures.wal_full {
         return refuse(
             &app,
             Loss::OverBound,
             bytes,
             StatusCode::TOO_MANY_REQUESTS,
-            "The telemetry store is over its size bound",
+            "The telemetry store's write-ahead log is full: a reader keeps it from being emptied",
+            None,
+        );
+    }
+    if figures.settled_used_bytes > figures.max_bytes / 100 * OVER_BOUND_PERCENT {
+        return refuse(
+            &app,
+            Loss::OverBound,
+            bytes,
+            StatusCode::TOO_MANY_REQUESTS,
+            "The telemetry store is over its size bound: eviction is behind",
             None,
         );
     }
@@ -241,7 +397,8 @@ async fn ingest(app: Arc<App>, signal: Signal, request: Request) -> Response {
                 Err(_) => continue,
             },
             Err(error) => {
-                let message = format!("The export's body could not be read: {error}");
+                let message =
+                    otlp::bounded(format_args!("The export's body could not be read: {error}"));
                 let bytes = declared.unwrap_or(read.len() as u64);
                 return refuse(
                     &app,
@@ -304,21 +461,31 @@ async fn store(
             std::borrow::Cow::Borrowed(&body)
         };
         match signal {
-            Signal::Traces => otlp::decode_spans(&text).map(Export::Spans),
-            Signal::Logs => otlp::decode_logs(&text).map(Export::Logs),
+            Signal::Traces => otlp::decode_spans_within(&text, limit).map(Export::Spans),
+            Signal::Logs => otlp::decode_logs_within(&text, limit).map(Export::Logs),
         }
-        .map(|export| Job {
-            export,
-            reply,
-            maintenance_at_queue: store
-                .maintenance_micros
-                .load(std::sync::atomic::Ordering::SeqCst),
+        .map(|export| {
+            let dropped_events = match &export {
+                Export::Spans(spans) => spans.events_dropped,
+                Export::Logs(_) => 0,
+            };
+            let job = Job {
+                export,
+                reply,
+                maintenance_at_queue: store
+                    .maintenance_micros
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            };
+            (job, dropped_events)
         })
-        .map_err(|invalid| Unreadable::Invalid(invalid.0))
+        .map_err(|undecodable| match undecodable {
+            otlp::Undecodable::Invalid(invalid) => Unreadable::Invalid(invalid.0),
+            otlp::Undecodable::TooLarge => Unreadable::Decoded,
+        })
     })
     .await;
-    let job = match decoded {
-        Ok(Ok(job)) => job,
+    let (job, dropped_events) = match decoded {
+        Ok(Ok(decoded)) => decoded,
         Ok(Err(Unreadable::Invalid(message))) => {
             return refuse(
                 &app,
@@ -336,6 +503,16 @@ async fn store(
                 bytes,
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "Telemetry export exceeds the collector's size limit once decompressed",
+                None,
+            );
+        }
+        Ok(Err(Unreadable::Decoded)) => {
+            return refuse(
+                &app,
+                Loss::TooLarge,
+                bytes,
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Telemetry export takes more memory to decode than the collector allows",
                 None,
             );
         }
@@ -368,6 +545,9 @@ async fn store(
     }
     let response = match answer.await {
         Ok(Ok(count)) => {
+            if dropped_events > 0 {
+                store::lock(&app.losses).record(|losses| losses.dropped_events += dropped_events);
+            }
             let key = if signal == Signal::Traces {
                 "insertedSpans"
             } else {
@@ -375,7 +555,15 @@ async fn store(
             };
             axum::Json(json!({ key: count })).into_response()
         }
-        Ok(Err(error)) => {
+        Ok(Err(store::Unstored::TooMuchDisk(detail))) => refuse(
+            &app,
+            Loss::TooMuchDisk,
+            bytes,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Telemetry export takes more disk to store than the collector allows",
+            Some(detail),
+        ),
+        Ok(Err(store::Unstored::Failed(error))) => {
             let message = format!(
                 "The {} export could not be stored",
                 if signal == Signal::Traces {
@@ -403,6 +591,9 @@ async fn store(
 enum Unreadable {
     Invalid(String),
     TooLarge,
+    /// It would take more than its budget to decode (`otlp::DECODE_SHARE`), or a row of it more text
+    /// than a row may hold (`otlp::ROW_SHARE`).
+    Decoded,
 }
 
 /// Decompress a gzip body, refusing it once it passes `limit` bytes: the size limit holds after
@@ -414,7 +605,9 @@ fn gunzip(body: &[u8], limit: usize) -> Result<Vec<u8>, Unreadable> {
         .take(limit as u64 + 1)
         .read_to_end(&mut text)
         .map_err(|error| {
-            Unreadable::Invalid(format!("The export's gzip body could not be read: {error}"))
+            Unreadable::Invalid(otlp::bounded(format_args!(
+                "The export's gzip body could not be read: {error}"
+            )))
         })?;
     if read > limit {
         return Err(Unreadable::TooLarge);
@@ -448,6 +641,9 @@ fn refuse(
     message: &str,
     cause: Option<String>,
 ) -> Response {
+    // Every message is bounded where it is made (`otlp::Excerpt`); a cause from the store or a
+    // task is not ours, so it is cut to `otlp::MESSAGE_BYTES` for the log line.
+    let cause = cause.map(otlp::bounded);
     let counts = {
         let mut book = store::lock(&app.losses);
         book.record(|losses| {
@@ -458,6 +654,7 @@ fn refuse(
                 Loss::Invalid => &mut refused.invalid,
                 Loss::StoreFailed => &mut refused.store_failed,
                 Loss::OverBound => &mut refused.over_bound,
+                Loss::TooMuchDisk => &mut refused.too_much_disk,
             } += 1;
             losses.refused_bytes += bytes;
             losses.last_refused_at = Some(iso_now());
@@ -483,6 +680,7 @@ fn refuse(
             Loss::Invalid => "invalid",
             Loss::StoreFailed => "storeFailed",
             Loss::OverBound => "overBound",
+            Loss::TooMuchDisk => "tooMuchDisk",
         };
         let mut fields = vec![
             ("reason", Value::from(reason)),

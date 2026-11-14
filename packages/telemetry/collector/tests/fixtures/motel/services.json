@@ -1,0 +1,15 @@
+{
+  "query": "/api/services",
+  "status": 200,
+  "shape": {
+    "types": ["object"],
+    "fields": {
+      "data": {
+        "types": ["array"],
+        "items": {
+          "types": ["string"]
+        }
+      }
+    }
+  }
+}

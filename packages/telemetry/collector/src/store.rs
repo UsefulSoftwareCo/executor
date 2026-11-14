@@ -22,7 +22,7 @@ use crate::retention::{self, Limits};
 
 /// The store's format, kept in `PRAGMA user_version`. Raise it with every change to `SCHEMA`.
 /// A store of another format is replaced, not migrated: see `open`.
-pub const FORMAT: i64 = 2;
+pub const FORMAT: i64 = 4;
 
 /// Marks a SQLite file as a telemetry store, in `PRAGMA application_id` ("EXTC"). A file with
 /// another application id belongs to something else and is never replaced.
@@ -56,10 +56,15 @@ CREATE TABLE resources (
   service_name TEXT NOT NULL
 );
 
+CREATE TABLE services (
+  id INTEGER PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE
+);
+
 CREATE TABLE traces (
   id INTEGER PRIMARY KEY,
   trace_id BLOB NOT NULL UNIQUE,
-  service_name TEXT NOT NULL,
+  service INTEGER,
   root_name TEXT,
   root_started_ns INTEGER,
   started_ns INTEGER NOT NULL,
@@ -70,9 +75,10 @@ CREATE TABLE traces (
   error_count INTEGER NOT NULL,
   running_count INTEGER NOT NULL
 );
-CREATE INDEX traces_started ON traces (started_ns);
-CREATE INDEX traces_service_started ON traces (service_name, started_ns);
+CREATE INDEX traces_started ON traces (started_ns, trace_id);
+CREATE INDEX traces_service_started ON traces (service, started_ns, trace_id);
 CREATE INDEX traces_last_seen ON traces (last_seen_ms);
+
 
 CREATE TABLE spans (
   id INTEGER PRIMARY KEY,
@@ -87,11 +93,12 @@ CREATE TABLE spans (
   end_ns INTEGER NOT NULL,
   status INTEGER NOT NULL,
   attributes_json TEXT NOT NULL,
-  events_json TEXT
+  events_json TEXT,
+  events_dropped INTEGER NOT NULL
 );
 CREATE UNIQUE INDEX spans_trace_span ON spans (trace, span_id);
 CREATE INDEX spans_start ON spans (start_ns);
-CREATE INDEX spans_resource ON spans (resource);
+CREATE INDEX spans_resource_start ON spans (resource, start_ns);
 
 CREATE TABLE logs (
   id INTEGER PRIMARY KEY,
@@ -107,7 +114,7 @@ CREATE TABLE logs (
 );
 CREATE INDEX logs_time ON logs (time_ns);
 CREATE INDEX logs_trace ON logs (trace_id, time_ns) WHERE trace_id IS NOT NULL;
-CREATE INDEX logs_resource ON logs (resource);
+CREATE INDEX logs_resource_time ON logs (resource, time_ns);
 ";
 
 /// Set before the first table exists; SQLite cannot change it afterwards without a `VACUUM` that
@@ -123,6 +130,9 @@ pub struct Losses {
     pub refused: Refused,
     pub refused_bytes: u64,
     pub last_refused_at: Option<String>,
+    /// Span events not stored, past `otlp::EVENT_LIMIT`, in exports that were stored.
+    #[serde(default)]
+    pub dropped_events: u64,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize, PartialEq, Eq, Debug)]
@@ -133,6 +143,9 @@ pub struct Refused {
     pub invalid: u64,
     pub store_failed: u64,
     pub over_bound: u64,
+    /// Exports refused while being stored, for writing more to disk than one export may
+    /// (`WriteLimit`).
+    pub too_much_disk: u64,
 }
 
 /// Loss counts shared between the HTTP handlers, which count, and the writer, which saves them.
@@ -168,10 +181,203 @@ pub enum Export {
     Logs(Logs),
 }
 
+/// Why the writer did not store an export.
+#[derive(Debug)]
+pub enum Unstored {
+    /// It would have written more than `WriteLimit` allows: rolled back, nothing of it stored.
+    TooMuchDisk(String),
+    /// The store failed.
+    Failed(String),
+}
+
+/// What one export may add to the data directory while it is stored: to the database (its
+/// pages, in use or not) and to the write-ahead log (its file). Measured as the export is
+/// written, not predicted from what it was charged: SQLite's page layout decides it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteLimit {
+    pub database_bytes: u64,
+    pub log_bytes: u64,
+}
+
+impl WriteLimit {
+    /// Times `--max-export-bytes` one export may grow the database by, and the log by.
+    pub const DATABASE_SHARE: u64 = 20;
+    pub const LOG_SHARE: u64 = 20;
+    /// No limit: what the library's plain `store_spans` and `store_logs` use.
+    pub const NONE: WriteLimit = WriteLimit {
+        database_bytes: u64::MAX,
+        log_bytes: u64::MAX,
+    };
+
+    /// The limits under a size limit of `limit` bytes.
+    pub fn for_export_limit(limit: usize) -> WriteLimit {
+        let limit = limit as u64;
+        WriteLimit {
+            database_bytes: Self::DATABASE_SHARE.saturating_mul(limit),
+            log_bytes: Self::LOG_SHARE.saturating_mul(limit),
+        }
+    }
+}
+
+/// How often, in rows written, an export's growth is measured while it is stored; and once more
+/// before it commits, after its pages have been written to the log.
+pub const GROWTH_CHECK_ROWS: usize = 64;
+
+/// Why an export was not stored, in the library's terms.
+#[derive(Debug)]
+pub enum StoreError {
+    /// It grew the database or the log past its `WriteLimit`; it was rolled back.
+    TooMuchDisk {
+        database_bytes: u64,
+        log_bytes: u64,
+    },
+    Sqlite(rusqlite::Error),
+}
+
+impl From<rusqlite::Error> for StoreError {
+    fn from(error: rusqlite::Error) -> Self {
+        StoreError::Sqlite(error)
+    }
+}
+
+impl std::fmt::Display for StoreError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            StoreError::TooMuchDisk {
+                database_bytes,
+                log_bytes,
+            } => write!(
+                formatter,
+                "the export grew the database by {database_bytes} bytes and the write-ahead log by {log_bytes} bytes while it was stored, more than one export may"
+            ),
+            StoreError::Sqlite(error) => error.fmt(formatter),
+        }
+    }
+}
+
+fn pragma_number(connection: &Connection, sql: &str) -> rusqlite::Result<u64> {
+    connection
+        .query_row(sql, [], |row| row.get::<_, i64>(0))
+        .map(|value| value.max(0) as u64)
+}
+
+/// The pages this connection has written to the write-ahead log since the count was last
+/// restarted, as SQLite counts them (`SQLITE_DBSTATUS_CACHE_WRITE`: "the number of pages written to
+/// the wal file in wal mode databases"), spilled mid-transaction or committed; with `restart`, the
+/// count starts again from zero after it is read. SQLite's own count, so it is the same on every
+/// platform; the `-wal` file's size as a directory entry reports it can lag for an open file (on
+/// Windows), and does not grow when a reset log is written over from its start. SQLite keeps the
+/// count in 31 bits, so it is restarted for each export (`Growth::begin`): no export's measurement
+/// comes near the wrap, which would read as no growth at all.
+pub fn pages_written(connection: &Connection, restart: bool) -> rusqlite::Result<u64> {
+    db_status(
+        connection,
+        rusqlite::ffi::SQLITE_DBSTATUS_CACHE_WRITE,
+        restart,
+    )
+}
+
+/// One of SQLite's per-connection counters (`sqlite3_db_status`), its current value. A failed call
+/// is an error, not a zero.
+pub fn db_status(connection: &Connection, counter: i32, restart: bool) -> rusqlite::Result<u64> {
+    let (mut current, mut highest) = (0, 0);
+    // SAFETY: the handle is this open connection's; the call only reads a counter into the two
+    // integers, which outlive it.
+    let code = unsafe {
+        rusqlite::ffi::sqlite3_db_status(
+            connection.handle(),
+            counter,
+            &mut current,
+            &mut highest,
+            i32::from(restart),
+        )
+    };
+    if code == rusqlite::ffi::SQLITE_OK {
+        Ok(current.max(0) as u64)
+    } else {
+        Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            Some(format!("sqlite3_db_status({counter}) failed")),
+        ))
+    }
+}
+
+/// A log frame's header, beside the page it holds.
+const FRAME_HEADER_BYTES: u64 = 24;
+
+/// An export's growth, measured while it is stored.
+struct Growth {
+    limit: WriteLimit,
+    page_size: u64,
+    pages_at_start: u64,
+    rows: usize,
+}
+
+impl Growth {
+    /// The counts as the export's transaction begins. `PRAGMA page_count` read inside the
+    /// transaction counts the pages it has added and not yet committed, so the database's growth
+    /// is measured as it happens; the log's is the pages SQLite has written to it since, each with
+    /// its frame header (a page written twice counts twice: never less than the log grew), counted
+    /// from zero: the count is restarted here.
+    fn begin(connection: &Connection, limit: WriteLimit) -> rusqlite::Result<Growth> {
+        let mut growth = Growth {
+            limit,
+            page_size: 0,
+            pages_at_start: 0,
+            rows: 0,
+        };
+        if limit == WriteLimit::NONE {
+            return Ok(growth);
+        }
+        growth.page_size = pragma_number(connection, "PRAGMA page_size")?;
+        growth.pages_at_start = pragma_number(connection, "PRAGMA page_count")?;
+        // Restarted, so this export's count starts from zero, whatever was written before it.
+        pages_written(connection, true)?;
+        Ok(growth)
+    }
+
+    /// A row was written: measure every `GROWTH_CHECK_ROWS`.
+    fn row(&mut self, connection: &Connection) -> Result<(), StoreError> {
+        self.rows += 1;
+        if self.rows.is_multiple_of(GROWTH_CHECK_ROWS) {
+            self.check(connection)
+        } else {
+            Ok(())
+        }
+    }
+
+    fn check(&self, connection: &Connection) -> Result<(), StoreError> {
+        if self.limit == WriteLimit::NONE {
+            return Ok(());
+        }
+        let pages = pragma_number(connection, "PRAGMA page_count")?;
+        let database_bytes = pages.saturating_sub(self.pages_at_start) * self.page_size;
+        let log_bytes = pages_written(connection, false)? * (self.page_size + FRAME_HEADER_BYTES);
+        if database_bytes > self.limit.database_bytes || log_bytes > self.limit.log_bytes {
+            return Err(StoreError::TooMuchDisk {
+                database_bytes,
+                log_bytes,
+            });
+        }
+        Ok(())
+    }
+
+    /// Before the commit: write the pages the page cache still holds to the log, so the last
+    /// measurement sees all the export writes but the commit's own frame; an export that would
+    /// commit past its limit is rolled back instead.
+    fn finish(&self, connection: &Connection) -> Result<(), StoreError> {
+        if self.limit == WriteLimit::NONE {
+            return Ok(());
+        }
+        connection.cache_flush()?;
+        self.check(connection)
+    }
+}
+
 /// An export queued for the writer, with the reply its sender waits for.
 pub struct Job {
     pub export: Export,
-    pub reply: oneshot::Sender<Result<usize, String>>,
+    pub reply: oneshot::Sender<Result<usize, Unstored>>,
     /// `Shared::maintenance_micros` when the export was queued, to measure how long it then waited
     /// behind retention steps.
     pub maintenance_at_queue: u64,
@@ -221,13 +427,70 @@ pub struct Figures {
     pub longest_step_micros: u64,
     /// The longest one export waited in the queue while retention steps ran.
     pub longest_export_wait_micros: u64,
-    /// The write-ahead log is over `WAL_REFUSE_BYTES`: exports are refused until a checkpoint
+    /// The write-ahead log is over `wal_refuse_bytes`: exports are refused until a checkpoint
     /// empties it.
     pub wal_full: bool,
     /// Truncating checkpoints that could not empty the log because a reader was using it.
     pub checkpoints_blocked: u64,
     /// Truncating checkpoints that emptied the log.
     pub wal_emptied: u64,
+    /// The log's size past which exports are refused: `WAL_REFUSE_SHARE` of the bound, at least
+    /// `WAL_REFUSE_MIN_BYTES`.
+    pub wal_refuse_bytes: u64,
+    /// New reads are held at the gate.
+    pub gate_closed: bool,
+    /// Times the gate was closed.
+    pub gate_closings: u64,
+}
+
+/// The door new read transactions pass through. The writer closes it when readers keep a
+/// checkpoint from emptying the write-ahead log, and opens it once the log is emptied: readers can
+/// wait a moment, an export refused is data its sender must hold or lose.
+///
+/// Reads already running are left to finish within their deadline, unless the log grows past
+/// `WAL_PREEMPT_PERCENT` of the size at which exports are refused: then they give way at once
+/// (`preempting`), because waiting longer would refuse exports.
+pub struct ReadGate {
+    closed: tokio::sync::watch::Sender<bool>,
+    preempt: AtomicBool,
+}
+
+impl Default for ReadGate {
+    fn default() -> Self {
+        ReadGate {
+            closed: tokio::sync::watch::Sender::new(false),
+            preempt: AtomicBool::new(false),
+        }
+    }
+}
+
+impl ReadGate {
+    pub fn is_closed(&self) -> bool {
+        *self.closed.borrow()
+    }
+
+    /// Whether running reads must give way now.
+    pub fn preempting(&self) -> bool {
+        self.preempt.load(Ordering::SeqCst)
+    }
+
+    /// Ask running reads to give way, or stop asking. The writer does this (`settle_wal`); public
+    /// so the library tests can drive the order of a request and its withdrawal.
+    pub fn set_preempting(&self, preempt: bool) {
+        self.preempt.store(preempt, Ordering::SeqCst);
+    }
+
+    fn set(&self, closed: bool) {
+        self.closed.send_replace(closed);
+    }
+
+    /// Wait for the gate to be open, for at most `limit`. Returns whether it is open.
+    pub async fn wait_open(&self, limit: Duration) -> bool {
+        let mut state = self.closed.subscribe();
+        tokio::time::timeout(limit, state.wait_for(|closed| !*closed))
+            .await
+            .is_ok_and(|waited| waited.is_ok())
+    }
 }
 
 impl Figures {
@@ -417,16 +680,27 @@ pub fn own(data: &Path) -> Result<Owned, String> {
 }
 
 /// Open or create the store in the directory `owned` holds and start its writer. See `open`.
+/// What the service admits: how many exports at once, and how large each may be.
+#[derive(Clone, Copy, Debug)]
+pub struct Admission {
+    /// `--max-pending`: the writer's queue holds as many.
+    pub pending: usize,
+    /// `--max-export-bytes`.
+    pub max_export_bytes: usize,
+}
+
 pub fn start(
     owned: Owned,
-    queue: usize,
+    admission: Admission,
     losses: SharedLosses,
     release: Arc<MemoryRelease>,
     limits: Limits,
     shared: Arc<Shared>,
+    gate: Arc<ReadGate>,
 ) -> Result<Writer, String> {
     let database = database_path(&owned.data);
-    let connection = open(&database)?;
+    let mut connection = open(&database)?;
+    admit_limit(&mut connection, &database, admission.max_export_bytes)?;
     if let Some(saved) = connection
         .query_row("SELECT value FROM meta WHERE key = 'losses'", [], |row| {
             row.get::<_, String>(0)
@@ -437,7 +711,7 @@ pub fn start(
         let saved: Losses = serde_json::from_str(&saved).unwrap_or_default();
         lock(&losses).counts = saved;
     }
-    let (jobs, inbox) = mpsc::sync_channel::<Job>(queue);
+    let (jobs, inbox) = mpsc::sync_channel::<Job>(admission.pending);
     let (done, finished) = mpsc::channel();
     let stopping = Arc::new(AtomicBool::new(false));
     // Start-up's own reads fail the start: retrying is for the work after it is serving.
@@ -445,6 +719,7 @@ pub fn start(
         .map_err(|error| format!("cannot read the store: {error}"))?;
     let mut state = WriterState {
         connection,
+        write_limit: WriteLimit::for_export_limit(admission.max_export_bytes),
         database,
         limits,
         shared,
@@ -454,6 +729,9 @@ pub fn start(
         last_failure_log: None,
         last_truncate: None,
         clock,
+        gate,
+        gate_closed_at: None,
+        gate_rest_until: None,
     };
     let now = state.clock.now(state.shared.wall_ms());
     let (evict, vacuum) = retention::work(&state.connection, &limits, now)
@@ -473,12 +751,28 @@ pub fn start(
             .name("store-writer".to_owned())
             .stack_size(WRITER_STACK)
             .spawn(move || {
+                let _abort = AbortOnPanic;
                 run(state, inbox, losses, &release, &stopping);
                 let _ = done.send(());
             })
             .map_err(|error| format!("cannot start the writer: {error}"))?,
     };
     Ok(writer)
+}
+
+/// Ends the process if the writer thread panics. A panic anywhere else ends only the request it
+/// happened in (the release profile unwinds): the HTTP server and the reader tasks catch it. The
+/// writer has no one to hand its work to, and a collector that accepts exports nobody stores is
+/// worse than one that stops, so its supervisor restarts it.
+struct AbortOnPanic;
+
+impl Drop for AbortOnPanic {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            crate::log::error("the store writer panicked; the collector stops", &[]);
+            std::process::abort();
+        }
+    }
 }
 
 /// The names SQLite itself manages beside the database: its write-ahead log, the log's index and
@@ -751,6 +1045,21 @@ fn reset(connection: &mut Connection, path: &Path) -> Result<(), String> {
     let Some(reason) = mismatch(&transaction)? else {
         return Ok(());
     };
+    empty_in(&transaction)?;
+    commit_checked(transaction, path)?;
+    log::warn(
+        "emptied the telemetry store and gave it this collector's format",
+        &[
+            ("path", path.display().to_string().into()),
+            ("reason", reason.into()),
+        ],
+    );
+    Ok(())
+}
+
+/// Drop every table, index, trigger and view of the collector's in `transaction` and create
+/// this format's schema, empty.
+fn empty_in(transaction: &Transaction) -> Result<(), String> {
     let objects: Vec<(String, String)> = transaction
         .prepare(&format!(
             "SELECT type, name FROM sqlite_schema WHERE {OURS}"
@@ -774,14 +1083,66 @@ fn reset(connection: &mut Connection, path: &Path) -> Result<(), String> {
     transaction
         .pragma_update(None, "user_version", FORMAT)
         .map_err(sqlite)?;
-    commit_checked(transaction, path)?;
-    log::warn(
-        "emptied the telemetry store and gave it this collector's format",
-        &[
-            ("path", path.display().to_string().into()),
-            ("reason", reason.into()),
-        ],
-    );
+    Ok(())
+}
+
+/// The range `--max-export-bytes` may take. Below it no product export fits; above it a row
+/// (`otlp::ROW_SHARE` times the limit) could pass SQLite's largest string, 10^9 bytes.
+pub const EXPORT_LIMITS: std::ops::RangeInclusive<usize> = 64 << 10..=128 << 20;
+
+/// Make the store's rows ones admitted under `limit` (`--max-export-bytes`) or a smaller one.
+/// The store records the largest limit it has been started with (recorded at the start, before
+/// any row is admitted, so a start that stores nothing still raises it); started with a smaller
+/// one, it is emptied in place, as a store of another format is, so every row a reader or the
+/// writer reads was admitted under a limit no larger than the one the memory bounds are worked
+/// out from. A larger limit is recorded and keeps everything.
+pub fn admit_limit(connection: &mut Connection, path: &Path, limit: usize) -> Result<(), String> {
+    let limit_value = i64::try_from(limit).unwrap_or(i64::MAX);
+    let read = |connection: &Connection| -> Result<Option<i64>, String> {
+        connection
+            .query_row(
+                "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'max_export_bytes'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sqlite)
+    };
+    // The same limit as last time changes nothing, so a start does not need to write.
+    if read(connection)? == Some(limit_value) {
+        return Ok(());
+    }
+    let transaction = connection
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .map_err(sqlite)?;
+    // Read again inside the transaction: another start may have changed it.
+    let admitted = read(&transaction)?;
+    let lowered = admitted.is_some_and(|admitted| admitted > limit_value);
+    if lowered {
+        empty_in(&transaction)?;
+    }
+    if admitted != Some(limit_value) {
+        transaction
+            .execute(
+                "INSERT INTO meta (key, value) VALUES ('max_export_bytes', ?1)
+                 ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+                [limit_value.to_string()],
+            )
+            .map_err(sqlite)?;
+    }
+    if lowered {
+        commit_checked(transaction, path)?;
+        log::warn(
+            "emptied the telemetry store: it has been started with a larger --max-export-bytes",
+            &[
+                ("path", path.display().to_string().into()),
+                ("admitted", admitted.unwrap_or_default().into()),
+                ("limit", limit_value.into()),
+            ],
+        );
+    } else {
+        transaction.commit().map_err(sqlite)?;
+    }
     Ok(())
 }
 
@@ -808,9 +1169,10 @@ pub fn commit_checked(transaction: rusqlite::Transaction<'_>, path: &Path) -> Re
 pub fn finish(connection: Connection) -> Result<Connection, String> {
     servable(&connection)?;
     connection
-        .execute_batch(
-            "PRAGMA synchronous = NORMAL; PRAGMA journal_size_limit = 16777216; PRAGMA cache_size = -8192;",
-        )
+        .execute_batch("PRAGMA synchronous = NORMAL; PRAGMA journal_size_limit = 16777216;")
+        .map_err(sqlite)?;
+    connection
+        .pragma_update(None, "cache_size", -((WRITER_CACHE_BYTES / 1024) as i64))
         .map_err(sqlite)?;
     Ok(connection)
 }
@@ -863,6 +1225,9 @@ fn schema_matches(connection: &Connection) -> Result<bool, String> {
     Ok(schema(connection).map_err(sqlite)? == schema(&expected).map_err(sqlite)?)
 }
 
+/// The writer's page cache.
+pub const WRITER_CACHE_BYTES: usize = 8192 * 1024;
+
 /// The longest any one statement waits for a lock held by another process. An export that waits
 /// longer fails with 500 and its sender resends it.
 pub const BUSY_TIMEOUT: Duration = Duration::from_millis(500);
@@ -876,7 +1241,29 @@ const IDLE_WAKE: Duration = Duration::from_millis(250);
 /// Past this size the writer empties the write-ahead log with a truncating checkpoint.
 pub const WAL_CHECKPOINT_BYTES: u64 = 8 * 1024 * 1024;
 /// Past this size exports are refused and retention pauses until the log is emptied.
-pub const WAL_REFUSE_BYTES: u64 = 32 * 1024 * 1024;
+pub const WAL_REFUSE_MIN_BYTES: u64 = 32 * 1024 * 1024;
+/// ... and at least this share of `--max-store-mb`, as a divisor.
+pub const WAL_REFUSE_SHARE: u64 = 16;
+/// The longest the gate stays closed. Every read ends within `readers::QUERY_DEADLINE`, so a log
+/// still not emptied after this is held by a reader outside the collector, which the gate cannot
+/// hold back; the gate then opens and stays open for `GATE_REST`.
+const GATE_MOST: Duration = Duration::from_secs(6);
+const GATE_REST: Duration = Duration::from_secs(30);
+
+/// While the gate is closed, running reads give way once the log passes this share of
+/// `wal_refuse_bytes`, in percent. Chosen by measurement: see README, "Disk use and the
+/// write-ahead log".
+pub const WAL_PREEMPT_PERCENT: u64 = 50;
+
+/// The log size past which running reads give way, for a store bound of `max_bytes`.
+pub fn wal_preempt_bytes(max_bytes: u64) -> u64 {
+    wal_refuse_bytes(max_bytes) / 100 * WAL_PREEMPT_PERCENT
+}
+
+/// The log size past which exports are refused, for a store bound of `max_bytes`.
+pub fn wal_refuse_bytes(max_bytes: u64) -> u64 {
+    (max_bytes / WAL_REFUSE_SHARE).max(WAL_REFUSE_MIN_BYTES)
+}
 /// How long one truncating checkpoint waits for readers still using the log.
 const TRUNCATE_WAIT: Duration = Duration::from_millis(50);
 /// How often the writer tries to empty a log between the two sizes.
@@ -910,6 +1297,8 @@ impl Work {
 /// The writer thread's own state: its connection and retention's progress.
 struct WriterState {
     connection: Connection,
+    /// What one export may add while it is stored.
+    write_limit: WriteLimit,
     database: PathBuf,
     limits: Limits,
     shared: Arc<Shared>,
@@ -923,6 +1312,11 @@ struct WriterState {
     last_truncate: Option<Instant>,
     /// What rows are stamped with and aged by.
     clock: IngestClock,
+    gate: Arc<ReadGate>,
+    /// When the gate was closed, while it is.
+    gate_closed_at: Option<Instant>,
+    /// The gate is not closed again before this.
+    gate_rest_until: Option<Instant>,
 }
 
 impl WriterState {
@@ -949,7 +1343,7 @@ impl WriterState {
     }
 
     fn wal_full(&self) -> bool {
-        retention::wal_bytes(&self.database) > WAL_REFUSE_BYTES
+        retention::wal_bytes(&self.database) > wal_refuse_bytes(self.limits.max_bytes)
     }
 
     /// Keep the write-ahead log bounded. SQLite's own checkpoints, run as transactions commit,
@@ -959,18 +1353,31 @@ impl WriterState {
     /// the log then grows without end: on 13 Nov 2026 a load test grew it to 19 GB beside a
     /// 64 MB database with a reader that began a 5-second read as soon as the last one ended.
     ///
-    /// So past `WAL_CHECKPOINT_BYTES` the writer runs a truncating checkpoint, which copies the
-    /// rest of the log, waits at most `TRUNCATE_WAIT` for readers still using it, and empties
-    /// the file. Past `WAL_REFUSE_BYTES` exports are refused and retention pauses, so nothing new
-    /// is written to the log: a reader that starts then reads only the database, older readers
-    /// end within their deadline, and the next attempt empties the log.
+    /// So, in order of who can best afford to wait:
+    ///
+    /// 1. Past `WAL_CHECKPOINT_BYTES` the writer runs a truncating checkpoint, which copies the
+    ///    rest of the log, waits at most `TRUNCATE_WAIT` for readers still using it, and empties
+    ///    the file.
+    /// 2. When readers keep it from emptying the log, the writer closes the read gate: new
+    ///    queries wait there (`readers::GATE_WAIT`), and every read already running ends within
+    ///    its deadline, so the log empties within one read. Past `WAL_PREEMPT_PERCENT` of the
+    ///    refusal size, running reads give way at once, since waiting for them would refuse
+    ///    exports. The writer retries every `TRUNCATE_WAIT` and opens the gate once the log is
+    ///    empty. A gate still closed after `GATE_MOST` means a reader outside the collector holds
+    ///    the log; the gate opens and rests.
+    /// 3. Past `wal_refuse_bytes` exports are refused and retention pauses, so nothing new is
+    ///    written to the log: a reader that starts then reads only the database, older readers
+    ///    end, and the next attempt empties the log.
     fn settle_wal(&mut self) {
         let wal = retention::wal_bytes(&self.database);
         if wal <= WAL_CHECKPOINT_BYTES {
+            self.open_gate(None);
             return;
         }
-        let full = wal > WAL_REFUSE_BYTES;
+        let full = wal > wal_refuse_bytes(self.limits.max_bytes);
+        let gated = self.gate.is_closed();
         if !full
+            && !gated
             && self
                 .last_truncate
                 .is_some_and(|at| at.elapsed() < TRUNCATE_EVERY)
@@ -990,11 +1397,56 @@ impl WriterState {
             .maintenance_micros
             .fetch_add(started.elapsed().as_micros() as u64, Ordering::SeqCst);
         match result {
-            Ok(0) => self.shared.update(|figures| figures.wal_emptied += 1),
-            Ok(_) => self
-                .shared
-                .update(|figures| figures.checkpoints_blocked += 1),
-            Err(error) => self.failed(&error),
+            Ok(0) => {
+                self.shared.update(|figures| figures.wal_emptied += 1);
+                self.open_gate(None);
+            }
+            Ok(_) => {
+                self.shared
+                    .update(|figures| figures.checkpoints_blocked += 1);
+                // Reads running when the gate closed finish within their deadline, unless the log
+                // is so far along that waiting for them would refuse exports.
+                self.gate.set_preempting(
+                    self.gate_closed_at.is_some() && wal > wal_preempt_bytes(self.limits.max_bytes),
+                );
+                match self.gate_closed_at {
+                    Some(at) if at.elapsed() >= GATE_MOST => {
+                        self.open_gate(Some(Instant::now() + GATE_REST));
+                    }
+                    Some(_) => {}
+                    None if self
+                        .gate_rest_until
+                        .is_none_or(|until| until <= Instant::now()) =>
+                    {
+                        self.gate_closed_at = Some(Instant::now());
+                        self.gate.set(true);
+                        self.shared.update(|figures| figures.gate_closings += 1);
+                    }
+                    None => {}
+                }
+            }
+            Err(error) => {
+                self.failed(&error);
+                // A gate closed for a checkpoint that keeps failing opens after `GATE_MOST` as
+                // one held by an outside reader does: readers are never held for good.
+                if self
+                    .gate_closed_at
+                    .is_some_and(|at| at.elapsed() >= GATE_MOST)
+                {
+                    self.open_gate(Some(Instant::now() + GATE_REST));
+                }
+            }
+        }
+    }
+
+    /// Open the read gate, resting it until `rest` when given.
+    fn open_gate(&mut self, rest: Option<Instant>) {
+        self.gate.set_preempting(false);
+        if self.gate_closed_at.take().is_some() {
+            self.gate.set(false);
+        }
+        if rest.is_some() {
+            self.gate_rest_until = rest;
         }
     }
 
@@ -1071,7 +1523,9 @@ impl WriterState {
         let size = retention::Size::read(&self.connection).unwrap_or_default();
         let draining = retention::draining(&self.connection).unwrap_or(false);
         let wal = retention::wal_bytes(&self.database);
-        let wal_full = wal > WAL_REFUSE_BYTES;
+        let wal_refuse = wal_refuse_bytes(self.limits.max_bytes);
+        let wal_full = wal > wal_refuse;
+        let gate_closed = self.gate.is_closed();
         let limits = self.limits;
         let pending = self.work.any();
         // A store the writer cannot read now counts as owing work at once.
@@ -1089,6 +1543,8 @@ impl WriterState {
             figures.maintenance_pending = pending;
             figures.next_expiry_ms = next_expiry;
             figures.wal_full = wal_full;
+            figures.wal_refuse_bytes = wal_refuse;
+            figures.gate_closed = gate_closed;
         });
     }
 
@@ -1107,10 +1563,17 @@ impl WriterState {
         // One stamp for the whole export, later than every stamp before it.
         let stamp = self.clock.stamp(self.shared.wall_ms());
         let result = match &job.export {
-            Export::Spans(spans) => store_spans_at(&mut self.connection, spans, stamp),
-            Export::Logs(logs) => store_logs_at(&mut self.connection, logs, stamp),
+            Export::Spans(spans) => {
+                store_spans_within(&mut self.connection, spans, stamp, self.write_limit)
+            }
+            Export::Logs(logs) => {
+                store_logs_within(&mut self.connection, logs, stamp, self.write_limit)
+            }
         }
-        .map_err(|error| error.to_string());
+        .map_err(|error| match error {
+            StoreError::TooMuchDisk { .. } => Unstored::TooMuchDisk(error.to_string()),
+            StoreError::Sqlite(error) => Unstored::Failed(error.to_string()),
+        });
         drop(job.export);
         let after =
             retention::Size::read(&self.connection).map_or(before, |size| size.used_bytes());
@@ -1152,7 +1615,7 @@ fn run(
             })
         } else {
             // With the log full, the writer tries again to empty it after each short wait.
-            let wake = if state.wal_full() {
+            let wake = if state.wal_full() || state.gate.is_closed() {
                 TRUNCATE_WAIT
             } else {
                 IDLE_WAKE
@@ -1361,6 +1824,7 @@ type StoredSpan = (
     i64,
     String,
     Option<String>,
+    i64,
 );
 
 fn same_span(stored: &StoredSpan, span: &SpanRow, resource: i64) -> bool {
@@ -1374,17 +1838,38 @@ fn same_span(stored: &StoredSpan, span: &SpanRow, resource: i64) -> bool {
         && stored.7 == span.status
         && stored.8 == span.attributes_json
         && stored.9 == span.events_json
+        && stored.10 == span.events_dropped as i64
 }
 
 fn is_running(span: &SpanRow) -> bool {
-    span.end_ns <= 0 || span.end_ns < span.start_ns
+    running(span.start_ns, span.end_ns)
+}
+
+/// Whether a span is still running, as Motel decided it: from its times in whole milliseconds,
+/// truncated, so a span that ends before it starts within one millisecond has ended.
+pub fn running(start_ns: i64, end_ns: i64) -> bool {
+    let (start, end) = (start_ns / 1_000_000, end_ns / 1_000_000);
+    end <= 0 || end < start
 }
 
 /// A trace's summary row, held while an export changes it and written once at the end.
+/// The most traces' summaries the writer holds while it stores an export: past it, they are
+/// written and forgotten, and a trace the export touches again is read again.
+pub const SUMMARY_BATCH: usize = 4096;
+
+/// What the writer holds for each trace an export touches: its id and its summary.
+pub const SUMMARY_BYTES: usize = std::mem::size_of::<([u8; 16], Option<Summary>)>();
+
+/// A trace's summary while an export updates it: fixed-size, whatever the trace's names. The name
+/// and service of a root (or earliest span) this export set are read from the export when the
+/// summary is written; stored names are never loaded.
 struct Summary {
     id: i64,
-    service_name: String,
-    root_name: Option<String>,
+    /// The trace's service as stored (`services`), to forget it when the trace takes another.
+    service: Option<i64>,
+    /// The span of this export, as its group and its place in the group, that is now the trace's
+    /// root or, until one arrives, its earliest span; `None` while that is the one stored.
+    root_from: Option<(usize, usize)>,
     root_started_ns: Option<i64>,
     started_ns: i64,
     ended_ns: i64,
@@ -1401,17 +1886,17 @@ impl Summary {
     /// Count a span added to the trace. The root is the earliest span without a parent; until
     /// one arrives, the trace takes the service of its earliest span. On equal start times the
     /// span stored first wins, matching `recompute_summary`.
-    fn add(&mut self, span: &SpanRow, service: &str) {
+    fn add(&mut self, span: &SpanRow, place: (usize, usize)) {
         let first = self.span_count == 0;
         let earliest = first || span.start_ns < self.started_ns;
         if span.parent_span_id.is_none()
             && self.root_started_ns.is_none_or(|root| span.start_ns < root)
         {
-            self.root_name = Some(span.name.clone());
+            self.root_from = Some(place);
             self.root_started_ns = Some(span.start_ns);
-            self.service_name = service.to_owned();
         } else if self.root_started_ns.is_none() && earliest {
-            self.service_name = service.to_owned();
+            // Until a root arrives, the earliest span stands for it.
+            self.root_from = Some(place);
         }
         if earliest {
             self.started_ns = span.start_ns;
@@ -1429,8 +1914,25 @@ impl Summary {
     /// copy is or could become the trace's root, its earliest span or its latest. Returns false
     /// when it could, and the trace must be recomputed. Ties count as could, so the result always
     /// matches `recompute_summary`'s choice by start time, then storage order.
-    fn replace(&mut self, old: &StoredSpan, new: &SpanRow) -> bool {
+    ///
+    /// A replacement that keeps the span's start, whether it has a parent, its name and its
+    /// resource changes only the trace's end and counts, whatever span it is: the trace's root
+    /// and earliest span stay the same. So a span sent again and again with new attributes or a
+    /// new end, root included, keeps upkeep linear in the spans sent.
+    fn replace(&mut self, old: &StoredSpan, new: &SpanRow, resource: i64) -> bool {
         let (old_parent, old_start, old_end, old_status) = (&old.0, old.5, old.6, old.7);
+        let same_place = old_start == new.start_ns
+            && old_parent.is_none() == new.parent_span_id.is_none()
+            && old.3 == new.name
+            && old.1 == resource;
+        if same_place && (new.end_ns >= old_end || old_end < self.ended_ns) {
+            let old_running = running(old_start, old_end);
+            self.error_count += new.status - old_status;
+            self.running_count += i64::from(is_running(new)) - i64::from(old_running);
+            self.ended_ns = self.ended_ns.max(new.end_ns);
+            self.written = true;
+            return true;
+        }
         if old_parent.is_none()
             || new.parent_span_id.is_none()
             || old_start <= self.started_ns
@@ -1439,7 +1941,7 @@ impl Summary {
         {
             return false;
         }
-        let old_running = old_end <= 0 || old_end < old_start;
+        let old_running = running(old_start, old_end);
         self.error_count += new.status - old_status;
         self.running_count += i64::from(is_running(new)) - i64::from(old_running);
         self.ended_ns = self.ended_ns.max(new.end_ns);
@@ -1454,20 +1956,20 @@ fn load_summary(
 ) -> rusqlite::Result<Option<Summary>> {
     transaction
         .prepare_cached(
-            "SELECT id, service_name, root_name, root_started_ns, started_ns, ended_ns, span_count, error_count, running_count
+            "SELECT id, root_started_ns, started_ns, ended_ns, span_count, error_count, running_count, service
              FROM traces WHERE trace_id = ?1",
         )?
         .query_row([trace_id.as_slice()], |row| {
             Ok(Summary {
                 id: row.get(0)?,
-                service_name: row.get(1)?,
-                root_name: row.get(2)?,
-                root_started_ns: row.get(3)?,
-                started_ns: row.get(4)?,
-                ended_ns: row.get(5)?,
-                span_count: row.get(6)?,
-                error_count: row.get(7)?,
-                running_count: row.get(8)?,
+                service: row.get(7)?,
+                root_from: None,
+                root_started_ns: row.get(1)?,
+                started_ns: row.get(2)?,
+                ended_ns: row.get(3)?,
+                span_count: row.get(4)?,
+                error_count: row.get(5)?,
+                running_count: row.get(6)?,
                 recompute: false,
                 written: false,
             })
@@ -1491,18 +1993,36 @@ pub fn store_spans_at(
     export: &Spans,
     now: i64,
 ) -> rusqlite::Result<usize> {
+    store_spans_within(connection, export, now, WriteLimit::NONE).map_err(|error| match error {
+        StoreError::Sqlite(error) => error,
+        StoreError::TooMuchDisk { .. } => unreachable!("no write limit"),
+    })
+}
+
+/// `store_spans_at`, refusing (and rolling back) an export that grows the database or the log
+/// past `limit` while it is stored.
+pub fn store_spans_within(
+    connection: &mut Connection,
+    export: &Spans,
+    now: i64,
+    limit: WriteLimit,
+) -> Result<usize, StoreError> {
     let transaction = connection.transaction()?;
+    let mut growth = Growth::begin(&transaction, limit)?;
     // Traces this export touched, by id, in the order first seen; `None` for a trace not stored.
     let mut traces: HashMap<[u8; 16], Option<Summary>> = HashMap::new();
     let mut counted = 0;
     // A span of the trace being evicted is counted and not written; see `retention`.
     let evicting = crate::retention::evicting(&transaction)?;
-    for (resource, spans) in &export.groups {
+    for (group, (resource, spans)) in export.groups.iter().enumerate() {
         // Found once per resource per export; created only when a span that refers to it is
         // written.
         let mut resource_known: Option<Option<i64>> = None;
-        for span in spans {
+        for (place, span) in spans.iter().enumerate() {
             counted += 1;
+            if traces.len() >= SUMMARY_BATCH && !traces.contains_key(&span.trace_id) {
+                write_summaries(&transaction, export, &mut traces, now)?;
+            }
             if let std::collections::hash_map::Entry::Vacant(entry) = traces.entry(span.trace_id) {
                 entry.insert(load_summary(&transaction, &span.trace_id)?);
             }
@@ -1526,11 +2046,11 @@ pub fn store_spans_at(
             let stored: Option<StoredSpan> = match summary_id {
                 Some(trace) => transaction
                     .prepare_cached(
-                        "SELECT parent_span_id, resource, scope_name, name, kind, start_ns, end_ns, status, attributes_json, events_json
+                        "SELECT parent_span_id, resource, scope_name, name, kind, start_ns, end_ns, status, attributes_json, events_json, events_dropped
                          FROM spans WHERE trace = ?1 AND span_id = ?2",
                     )?
                     .query_row(params![trace, span.span_id.as_slice()], |row| {
-                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?))
+                        Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?))
                     })
                     .optional()?,
                 None => None,
@@ -1554,14 +2074,14 @@ pub fn store_spans_at(
                 None => {
                     let id: i64 = transaction
                         .prepare_cached(
-                            "INSERT INTO traces (trace_id, service_name, started_ns, ended_ns, first_seen_ms, last_seen_ms, span_count, error_count, running_count)
-                             VALUES (?1, '', 0, 0, ?2, ?2, 0, 0, 0) RETURNING id",
+                            "INSERT INTO traces (trace_id, service, started_ns, ended_ns, first_seen_ms, last_seen_ms, span_count, error_count, running_count)
+                             VALUES (?1, NULL, 0, 0, ?2, ?2, 0, 0, 0) RETURNING id",
                         )?
                         .query_row(params![span.trace_id.as_slice(), now], |row| row.get(0))?;
                     slot.insert(Summary {
                         id,
-                        service_name: String::new(),
-                        root_name: None,
+                        service: None,
+                        root_from: None,
                         root_started_ns: None,
                         started_ns: 0,
                         ended_ns: 0,
@@ -1586,17 +2106,20 @@ pub fn store_spans_at(
                 span.status,
                 span.attributes_json,
                 span.events_json,
+                span.events_dropped as i64,
             ];
             if stored.is_some() {
                 transaction
                     .prepare_cached(
                         "UPDATE spans SET parent_span_id = ?3, resource = ?4, scope_name = ?5, name = ?6, kind = ?7, start_ns = ?8,
-                           end_ns = ?9, status = ?10, attributes_json = ?11, events_json = ?12
+                           end_ns = ?9, status = ?10, attributes_json = ?11, events_json = ?12,
+                           events_dropped = ?13
                          WHERE trace = ?1 AND span_id = ?2",
                     )?
                     .execute(values)?;
+                growth.row(&transaction)?;
                 if let Some(old) = &stored
-                    && !summary.replace(old, span)
+                    && !summary.replace(old, span, resource_id)
                 {
                     summary.recompute = true;
                 }
@@ -1611,31 +2134,78 @@ pub fn store_spans_at(
             } else {
                 transaction
                     .prepare_cached(
-                        "INSERT INTO spans (trace, span_id, parent_span_id, resource, scope_name, name, kind, start_ns, end_ns, status, attributes_json, events_json)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                        "INSERT INTO spans (trace, span_id, parent_span_id, resource, scope_name, name, kind, start_ns, end_ns, status, attributes_json, events_json, events_dropped)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                     )?
                     .execute(values)?;
-                summary.add(span, &resource.service_name);
+                growth.row(&transaction)?;
+                summary.add(span, (group, place));
             }
         }
     }
+    write_summaries(&transaction, export, &mut traces, now)?;
+    growth.finish(&transaction)?;
+    transaction.commit()?;
+    Ok(counted)
+}
+
+/// Write the summaries an export has updated and forget them, so the next spans of those traces
+/// load them again: called when `SUMMARY_BATCH` are held and at the end of the export.
+fn write_summaries(
+    transaction: &Transaction,
+    export: &Spans,
+    traces: &mut HashMap<[u8; 16], Option<Summary>>,
+    now: i64,
+) -> rusqlite::Result<()> {
+    // Each resource's service, found once for the batch.
+    let mut services: Vec<Option<i64>> = vec![None; export.groups.len()];
     for summary in traces
-        .into_values()
-        .flatten()
+        .drain()
+        .filter_map(|(_, summary)| summary)
         .filter(|summary| summary.written)
     {
         if summary.recompute {
-            recompute_summary(&transaction, summary.id, now)?;
-        } else {
+            recompute_summary(transaction, summary.id, now)?;
+        } else if let Some((group, place)) = summary.root_from {
+            // The root's name is the export's, borrowed; the service is written once, in
+            // `services`, and the trace refers to it.
+            let (resource, spans) = &export.groups[group];
+            let service = match services[group] {
+                Some(service) => service,
+                None => {
+                    let service = service_id(transaction, &resource.service_name)?;
+                    services[group] = Some(service);
+                    service
+                }
+            };
             transaction
                 .prepare_cached(
-                    "UPDATE traces SET service_name = ?2, root_name = ?3, root_started_ns = ?4, started_ns = ?5, ended_ns = ?6,
+                    "UPDATE traces SET service = ?2, root_name = ?3, root_started_ns = ?4, started_ns = ?5, ended_ns = ?6,
                        last_seen_ms = ?7, span_count = ?8, error_count = ?9, running_count = ?10 WHERE id = ?1",
                 )?
                 .execute(params![
                     summary.id,
-                    summary.service_name,
-                    summary.root_name,
+                    service,
+                    spans[place].name,
+                    summary.root_started_ns,
+                    summary.started_ns,
+                    summary.ended_ns,
+                    now,
+                    summary.span_count,
+                    summary.error_count,
+                    summary.running_count,
+                ])?;
+            if let Some(old) = summary.service.filter(|old| *old != service) {
+                forget_service(transaction, old)?;
+            }
+        } else {
+            transaction
+                .prepare_cached(
+                    "UPDATE traces SET root_started_ns = ?2, started_ns = ?3, ended_ns = ?4,
+                       last_seen_ms = ?5, span_count = ?6, error_count = ?7, running_count = ?8 WHERE id = ?1",
+                )?
+                .execute(params![
+                    summary.id,
                     summary.root_started_ns,
                     summary.started_ns,
                     summary.ended_ns,
@@ -1646,15 +2216,14 @@ pub fn store_spans_at(
                 ])?;
         }
     }
-    transaction.commit()?;
-    Ok(counted)
+    Ok(())
 }
 
 /// Recompute a trace's summary from all its spans. Needed only after a span was replaced.
 fn recompute_summary(transaction: &Transaction, trace: i64, now: i64) -> rusqlite::Result<()> {
     let (spans, errors, running, started, ended): (i64, i64, i64, i64, i64) = transaction
         .prepare_cached(
-            "SELECT count(*), total(status), total(end_ns <= 0 OR end_ns < start_ns), min(start_ns), max(end_ns)
+            "SELECT count(*), total(status), total(end_ns / 1000000 <= 0 OR end_ns / 1000000 < start_ns / 1000000), min(start_ns), max(end_ns)
              FROM spans WHERE trace = ?1",
         )?
         .query_row([trace], |row| Ok((row.get(0)?, row.get::<_, f64>(1)? as i64, row.get::<_, f64>(2)? as i64, row.get(3)?, row.get(4)?)))?;
@@ -1667,23 +2236,51 @@ fn recompute_summary(transaction: &Transaction, trace: i64, now: i64) -> rusqlit
         .optional()?;
     let (root_name, root_started, service) = match root {
         Some((name, started, service)) => (Some(name), Some(started), service),
-        None => (
-            None,
-            None,
-            transaction
+        None => {
+            // Until a root arrives, the earliest span stands for it.
+            let (name, service) = transaction
                 .prepare_cached(
-                    "SELECT resources.service_name FROM spans JOIN resources ON resources.id = spans.resource
+                    "SELECT spans.name, resources.service_name FROM spans JOIN resources ON resources.id = spans.resource
                      WHERE spans.trace = ?1 ORDER BY spans.start_ns, spans.id LIMIT 1",
                 )?
-                .query_row([trace], |row| row.get(0))?,
-        ),
+                .query_row([trace], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            (Some(name), None, service)
+        }
     };
+    let old: Option<i64> = transaction
+        .prepare_cached("SELECT service FROM traces WHERE id = ?1")?
+        .query_row([trace], |row| row.get(0))?;
+    let service = service_id(transaction, &service)?;
     transaction
         .prepare_cached(
-            "UPDATE traces SET service_name = ?2, root_name = ?3, root_started_ns = ?4, started_ns = ?5, ended_ns = ?6,
+            "UPDATE traces SET service = ?2, root_name = ?3, root_started_ns = ?4, started_ns = ?5, ended_ns = ?6,
                last_seen_ms = ?7, span_count = ?8, error_count = ?9, running_count = ?10 WHERE id = ?1",
         )?
         .execute(params![trace, service, root_name, root_started, started, ended, now, spans, errors, running])?;
+    if let Some(old) = old.filter(|old| *old != service) {
+        forget_service(transaction, old)?;
+    }
+    Ok(())
+}
+
+/// The id of the service named `name`, added when it is new. A trace refers to its service, so
+/// the name is written once however many traces have it.
+fn service_id(transaction: &Transaction, name: &str) -> rusqlite::Result<i64> {
+    transaction
+        .prepare_cached("INSERT INTO services (name) VALUES (?1) ON CONFLICT (name) DO NOTHING")?
+        .execute([name])?;
+    transaction
+        .prepare_cached("SELECT id FROM services WHERE name = ?1")?
+        .query_row([name], |row| row.get(0))
+}
+
+/// Remove a service no trace refers to any more.
+pub(crate) fn forget_service(transaction: &Transaction, service: i64) -> rusqlite::Result<()> {
+    transaction
+        .prepare_cached(
+            "DELETE FROM services WHERE id = ?1 AND NOT EXISTS (SELECT 1 FROM traces WHERE service = ?1)",
+        )?
+        .execute([service])?;
     Ok(())
 }
 
@@ -1699,7 +2296,22 @@ pub fn store_logs_at(
     export: &Logs,
     now: i64,
 ) -> rusqlite::Result<usize> {
+    store_logs_within(connection, export, now, WriteLimit::NONE).map_err(|error| match error {
+        StoreError::Sqlite(error) => error,
+        StoreError::TooMuchDisk { .. } => unreachable!("no write limit"),
+    })
+}
+
+/// `store_logs_at`, refusing (and rolling back) an export that grows the database or the log
+/// past `limit` while it is stored.
+pub fn store_logs_within(
+    connection: &mut Connection,
+    export: &Logs,
+    now: i64,
+    limit: WriteLimit,
+) -> Result<usize, StoreError> {
     let transaction = connection.transaction()?;
+    let mut growth = Growth::begin(&transaction, limit)?;
     let mut counted = 0;
     for (resource, logs) in &export.groups {
         if logs.is_empty() {
@@ -1723,8 +2335,10 @@ pub fn store_logs_at(
                 log.attributes_json,
             ])?;
             counted += 1;
+            growth.row(&transaction)?;
         }
     }
+    growth.finish(&transaction)?;
     transaction.commit()?;
     Ok(counted)
 }
