@@ -31,6 +31,7 @@ import {
   inlineBytes,
   PackageName,
   hostedExecutorOrigin,
+  compiledFileLimit,
   publicFileLimits,
   sourceLimits,
   wireRevision,
@@ -100,7 +101,7 @@ const commit = (purpose: string) =>
   );
 const files = Flag.Path("files", { pathType: "either", mustExist: true }).pipe(
   Flag.withDescription(
-    `Complete app source: a directory read recursively (skipping ${ignoredSource.join(", ")}), or a JSON file containing [{"path": "index.ts", "content": "..."}]. It must include a root index.ts. Code outside ui/public/ is UTF-8 text, at most ${formatCount(sourceLimits.files)} files and ${formatBytes(sourceLimits.bytes)}. Files under ui/public/ may be binary: at most ${formatCount(publicFileLimits.files)} files, each at most ${formatCount(publicFileLimits.fileBytes)} bytes. A source larger than ${formatBytes(sourceLimits.bytes)} in total is pushed with Git. The CLI checks this before uploading`,
+    `Complete app source: a directory read recursively (skipping ${ignoredSource.join(", ")}), or a JSON file containing [{"path": "index.ts", "content": "..."}]. It must include a root index.ts. Code outside ui/public/ is UTF-8 text, at most ${formatCount(sourceLimits.files)} files and ${formatBytes(sourceLimits.bytes)}; files under ui/public/ may be binary: at most ${formatCount(publicFileLimits.files)} files, each at most ${formatCount(publicFileLimits.fileBytes)} bytes. A source larger than ${formatBytes(sourceLimits.bytes)} in total is pushed with Git. The CLI checks these limits before uploading. The host's build also refuses any of the app's own JavaScript or TypeScript files over ${formatCount(compiledFileLimit)} bytes; that limit is checked by the host, not before uploading, and does not cover files inside imported packages`,
   ),
 );
 const publication = {

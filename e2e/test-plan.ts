@@ -4419,6 +4419,57 @@ export const scenarios = plan({
       local: na("Hosted deploy routes; local shares the workerd build path."),
     },
   },
+  compiledFileLimit: {
+    fixtures: "actors",
+    file: "compiled-file-limit.spec.ts",
+    title:
+      "Builds refuse an app's own JavaScript or TypeScript file over 2 MB and create no app; a file just under it, a larger JSON import and a package with a larger file build",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud's compiler Worker runs the same compileWorkerApp, and Cloudflare's CPU limit already bounds its compile; self-host covers the shared build.",
+      ),
+      local: na("Hosted deploy routes; localCompiledFileLimit covers local through the CLI."),
+    },
+  },
+  localCompiledFileLimitImports: {
+    file: "local-compiled-file-limit.spec.ts",
+    title: "local refuses a file over the compile limit before resolving any import in it",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Needs a product started against a registry that holds requests; the shared build is the same.",
+      ),
+      cloud: na(
+        "Needs a product started against a registry that holds requests; the shared build is the same.",
+      ),
+    },
+  },
+  compiledFileLimitResponsive: {
+    fixtures: "actors",
+    file: "compiled-file-limit.spec.ts",
+    title:
+      "Apps keep answering while a build refuses a 15 MB file: no longer than they wait for one file just under the limit to compile",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud's compiler Worker runs the same compileWorkerApp in its own isolate, so it never holds an app's thread.",
+      ),
+      local: na(
+        "Self-host covers the shared build; local runs it in the same kind of app runtime.",
+      ),
+    },
+  },
+  localCompiledFileLimit: {
+    file: "local-compiled-file-limit.spec.ts",
+    title:
+      "apps CLI deploy reports a file over the compile limit with its path, size and the limit",
+    targets: {
+      local: scheduled,
+      "self-host": na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
+      cloud: na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
+    },
+  },
   appOperationFailureDetails: {
     fixtures: "actors",
     managementApps: ["owner"],
