@@ -9772,6 +9772,13 @@ export const scenarios = plan({
       "An MCP SDK client holding AuthKit's registration and tokens for a v1 URL rediscovers v2's authorization server once it is refused, signs in there once and lists its tools",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ShutdownConsentPage: {
+    fixtures: "actors",
+    file: "cloud-v1-shutdown.spec.ts",
+    title:
+      "A person approves a client for one of v1's MCP URLs on Cloud's consent page in the browser, and the grant lists the URL's tools",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ShutdownEdgePages: {
     fixtures: "actors",
     file: "cloud-v1-shutdown.spec.ts",

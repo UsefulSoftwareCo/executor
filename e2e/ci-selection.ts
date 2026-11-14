@@ -184,7 +184,7 @@ const jobs = {
     target: "cloud",
     runner: 5,
     pattern:
-      "cloud role hosts serve only|a grant is for its one resource|role host resource seed|Cloud's edge serves v1|An MCP SDK client holding AuthKit|Cloud request spans name the host|Cloud sign-in explains that a passkey|Cloud connected-account sign-ins return through|Cloud serves its site for the edge|keep serving the published skills index|Apps directory on the edge reads|Cloud's API host serves the SDK|Cloud's own social sign-ins on app\\.|hosted wildcard routes trace their template|Cloud links the site's anonymous visitor",
+      "cloud role hosts serve only|a grant is for its one resource|role host resource seed|Cloud's edge serves v1|An MCP SDK client holding AuthKit|A person approves a client for one of v1's MCP URLs|Cloud request spans name the host|Cloud sign-in explains that a passkey|Cloud connected-account sign-ins return through|Cloud serves its site for the edge|keep serving the published skills index|Apps directory on the edge reads|Cloud's API host serves the SDK|Cloud's own social sign-ins on app\\.|hosted wildcard routes trace their template|Cloud links the site's anonymous visitor",
   },
   "cloud-workers": {
     target: "cloud",

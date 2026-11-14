@@ -18,10 +18,12 @@ import { Effect, FileSystem, Layer, Redacted, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { Actors } from "../support/actors.ts";
 import { Api, body, type Session } from "../support/api.ts";
+import { Browser } from "../support/browser.ts";
 import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
 import { writeRows } from "../support/cloud-rows.ts";
 import { Emulators } from "../support/emulators.ts";
 import { McpClient } from "../support/mcp-client.ts";
+import { McpOAuth } from "../support/mcp-oauth.ts";
 import { Execution, consentTo } from "../support/mcp-connections.ts";
 import { Onboarding } from "../support/onboarding.ts";
 import { Target, driver } from "../support/platform.ts";
@@ -530,6 +532,32 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
         expect(listed.tools.map((tool) => tool.name)).toContain("execute");
         expect(authorizations).toBe(1);
       }),
+    ),
+  );
+
+  it.effect(scenarios.v1ShutdownConsentPage.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const actors = yield* Actors,
+          browser = yield* Browser,
+          mcp = yield* McpClient,
+          oauth = yield* McpOAuth,
+          target = yield* Target;
+        const { edge } = targetHosts(target);
+        // Codex and Claude Code send the person to the consent page in their browser. Its
+        // document carries the edge as the legacy MCP origin, and the page must keep it once it
+        // hydrates, or it cannot load a request for one of v1's URLs.
+        yield* browser.login(actors.owner);
+        const grant = yield* oauth.authorizeAt("mcp", edge);
+        expect(grant.resource).toBe(`${edge}/mcp`);
+        const client = yield* mcp.connect(
+          Redacted.make(Redacted.value(grant.tokens).access_token),
+          "legacy-consent-page",
+          { origin: edge, path: "/mcp" },
+        );
+        expect(yield* listTools(client)).toContain("execute");
+      }).pipe(Effect.provide(Layer.merge(McpOAuth.layer, McpClient.layer))),
     ),
   );
 
