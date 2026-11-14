@@ -49,6 +49,7 @@ import {
   requestFiles,
   type LocalFile,
 } from "./implementation/cli-source.ts";
+import { checkCommand } from "./implementation/cli-check.ts";
 import { UserFacingError } from "@executor-js/utils/user-facing-error";
 import {
   AppClientError,
@@ -617,6 +618,7 @@ export const appsCommand = <E = never, R = never>(
       },
     ]),
     Command.withSubcommands([
+      checkCommand,
       Command.make("login", {
         host: Flag.String("host").pipe(
           Flag.withDescription(

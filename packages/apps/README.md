@@ -27,6 +27,8 @@ export default defineApp({}, async ({ signal }) => ({
 
 | Import         | Helper                   | App dependency              |
 | -------------- | ------------------------ | --------------------------- |
+| `apps/check`   | `checkApp`               | None                        |
+| `apps/oxlint`  | `appConfig`, plugin      | Oxlint CLI                  |
 | `apps/mcp`     | `mcpRouter`, `mcpHealth` | `@modelcontextprotocol/sdk` |
 | `apps/graphql` | `graphqlRouter`          | `graphql`                   |
 | `apps/openapi` | `liveOpenapiRouter`      | None                        |
@@ -34,6 +36,27 @@ export default defineApp({}, async ({ signal }) => ({
 MCP and GraphQL are optional peers. Subpath imports isolate their module graphs;
 optional peers keep unused libraries out of the dependency installation. Apps
 reach MCP servers over HTTP; they cannot start local processes.
+
+`checkApp(files)` checks the manifest and source-file limits without I/O. The
+Executor CLI's `executor apps check --files <directory>` reads a source directory
+or JSON file and applies the same checks before upload. It requires `type: module`
+and an exact `dependencies.apps` version. It keeps that pin and does not compare
+it with a host release.
+
+`apps/oxlint` exports a plain ESLint-compatible JavaScript plugin and `appConfig()`
+for Oxlint. The config loads the installed `apps` package by name. Import
+`defineApp`, `mutation`, `query` and `decodeJson` by name from `apps` in the file
+that calls each function. Renamed imports such as `mutation as write` are
+supported when calls remain direct. The root entry must directly default-export
+`defineApp(...)`. Import `QueryContext` and `MutationContext` types directly
+from `apps` in the module that uses them. Aliasing, destructuring, passing,
+returning or re-exporting a framework function, or re-exporting a context type,
+is rejected, including through a helper module. Ordinary helpers and DTO
+properties named `mutation` or `write` remain valid. Browser files under `ui/`
+may use browser HTTP; app source should use the context's `fetch`. CommonJS
+loading through global `require`, global `module`, or `node:module`/`module`
+imports is rejected in app and browser source. These checks do not type-check the
+app or prove that a host can build and run it.
 
 `defineApp` declares behavior, not a name. Package identity lives in
 `package.json.name`; the host separately names each installed copy.
