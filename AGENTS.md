@@ -119,6 +119,8 @@ so move a patch with its dependency's version, or remove both. Git is stricter
 than Bun: after `bun patch --commit`, drop `.bun-tag-*` sections and sections
 whose `b/` path is outside the package, and keep `\ No newline at end of file`
 markers. Its fixtures are in `scripts/check-patches-fixtures.ts`.
+Never edit files under `node_modules` directly; run `bun patch <pkg>` first. On Linux those
+files can be hard links into Bun's install cache, which every workspace on the host shares.
 
 Pin every dependency to one exact version; `versions:check`
 (`scripts/check-exact-versions.ts`) fails on anything else, including in
