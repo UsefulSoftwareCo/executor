@@ -1,6 +1,12 @@
 import { useRef, useState, type ReactNode } from "react";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowUpRight01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
+import {
+  AiChat02Icon,
+  ArrowUpRight01Icon,
+  BrowserIcon,
+  FlashIcon,
+  LaptopIcon,
+} from "@hugeicons/core-free-icons";
 import type { ApprovalMode, GrantAccessChoice, GrantTarget } from "@executor-js/mcp-auth/grants";
 import { Button } from "../components/button.tsx";
 import {
@@ -199,7 +205,20 @@ export interface ConsentOption {
   readonly value: string;
   readonly label: string;
   readonly detail?: string | undefined;
+  /** Shown before the label, in the menu and in the closed menu's value. */
+  readonly icon?: IconSvgElement | undefined;
 }
+
+/** An option's icon, muted beside its text. */
+const OptionIcon = ({ icon, className }: { icon: IconSvgElement; className?: string }) => (
+  <HugeiconsIcon
+    icon={icon}
+    size={16}
+    strokeWidth={1.75}
+    aria-hidden
+    className={`shrink-0 text-muted-foreground ${className ?? ""}`}
+  />
+);
 
 /** An entry's padding, as `SelectItem` lays out a menu entry with a detail line, on each screen. */
 const entry =
@@ -227,6 +246,7 @@ export function McpConsentSelect({
   /** Further menu entries, after the options. */
   readonly children?: ReactNode;
 }) {
+  const shown = options.find((option) => option.value === value);
   return (
     <Select value={value} onValueChange={onChange} disabled={disabled}>
       <SelectTrigger
@@ -234,16 +254,28 @@ export function McpConsentSelect({
         aria-busy={busy || undefined}
         className="-mr-2 h-8 gap-1.5 border-0 bg-transparent px-2 text-[14px] font-normal shadow-none hover:bg-muted data-[state=open]:bg-muted max-[740px]:text-[14px] dark:bg-transparent"
       >
-        <SelectValue>{options.find((option) => option.value === value)?.label}</SelectValue>
+        <SelectValue>
+          {shown?.icon === undefined ? (
+            shown?.label
+          ) : (
+            <span className="flex items-center gap-1.5">
+              <OptionIcon icon={shown.icon} />
+              {shown.label}
+            </span>
+          )}
+        </SelectValue>
       </SelectTrigger>
       <SelectContent align="end" className="min-w-64">
         {options.map((option) => (
           <SelectItem key={option.value} value={option.value} className="items-start py-2">
-            <span className={`${entryLines} text-left`}>
-              <span className="font-medium">{option.label}</span>
-              {option.detail !== undefined && (
-                <span className="text-[13px] text-muted-foreground">{option.detail}</span>
-              )}
+            <span className="flex items-start gap-2.5">
+              {option.icon !== undefined && <OptionIcon icon={option.icon} className="mt-0.5" />}
+              <span className={`${entryLines} text-left`}>
+                <span className="font-medium">{option.label}</span>
+                {option.detail !== undefined && (
+                  <span className="text-[13px] text-muted-foreground">{option.detail}</span>
+                )}
+              </span>
             </span>
           </SelectItem>
         ))}
@@ -255,18 +287,39 @@ export function McpConsentSelect({
 
 const approvalOptions: readonly (ConsentOption & { readonly value: ApprovalMode })[] = [
   {
+    value: "automatic",
+    label: "Automatic",
+    detail: "Executor does not ask. Your agent's own permission prompts decide.",
+    icon: FlashIcon,
+  },
+  {
     value: "model",
     label: "Through your agent",
     detail: "Your agent shows you the request and resumes the call.",
+    icon: AiChat02Icon,
   },
-  { value: "browser", label: "In Executor", detail: "You review the call in your browser." },
+  {
+    value: "browser",
+    label: "In your browser",
+    detail: "You review the call on an Executor page.",
+    icon: BrowserIcon,
+  },
   // Last, because the page cannot know whether this client supports MCP prompts.
   {
     value: "native",
     label: "In your client",
     detail: "Your client prompts you, if it supports MCP prompts.",
+    icon: LaptopIcon,
   },
 ];
+
+/**
+ * The approval mode a sign-in page preselects for what the request's resource names. The plain MCP
+ * URL names model mode, the default before automatic mode existed; on the page it now preselects
+ * automatic. Credentials without a grant record keep taking model mode from that URL.
+ */
+export const preselectedApprovalMode = (named: ApprovalMode): ApprovalMode =>
+  named === "model" ? "automatic" : named;
 
 /** Where approvals are answered: a menu when the person may change it, otherwise its name. */
 export function McpConsentApprovals({
@@ -300,8 +353,21 @@ export function McpConsentApprovals({
   );
 }
 
-/** What the request's resource names, for a page that offers no choice. */
-export function McpConsentTargetRows({ target }: { readonly target: GrantTarget }) {
+/**
+ * What the request's resource names, for a page that offers no choice of access. With `onMode`,
+ * the approvals row is a menu showing `mode`.
+ */
+export function McpConsentTargetRows({
+  target,
+  mode,
+  onMode,
+  disabled,
+}: {
+  readonly target: GrantTarget;
+  readonly mode?: ApprovalMode | undefined;
+  readonly onMode?: ((mode: ApprovalMode) => void) | undefined;
+  readonly disabled?: boolean | undefined;
+}) {
   return (
     <>
       <McpConsentRow label="Access">
@@ -311,7 +377,9 @@ export function McpConsentTargetRows({ target }: { readonly target: GrantTarget 
             ? "All apps"
             : "One of your connections"}
       </McpConsentRow>
-      {target.kind === "mcp" && <McpConsentApprovals mode={target.mode} />}
+      {target.kind === "mcp" && (
+        <McpConsentApprovals mode={mode ?? target.mode} onMode={onMode} disabled={disabled} />
+      )}
     </>
   );
 }

@@ -85,9 +85,9 @@ extra configuration. A full-account token on `/mcp` must say which organization
 to use with an `X-Executor-Organization` header. A token limited to one
 organization is rejected on any other organization's URL.
 
-The same token works with model, native, and browser approval delivery. Add
-`?elicitation_mode=native` or `?elicitation_mode=browser` to the MCP URL when
-needed. Tool approval rules still apply. Browser approvals require the token
+The same token works with model, native, browser, and automatic approval
+delivery. The plain MCP URL uses model mode; add `?elicitation_mode=native`,
+`?elicitation_mode=browser`, or `?elicitation_mode=automatic` when needed. Tool approval rules still apply. Browser approvals require the token
 owner to sign in. Revocation or expiry stops new MCP calls and continuations,
 including on already-connected clients.
 

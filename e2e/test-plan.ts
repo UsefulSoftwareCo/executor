@@ -7206,11 +7206,11 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "mcp-sign-in-page.spec.ts",
     title:
-      "The sign-in page shows organization, access and approvals as rows, and approves every app through the agent by default",
+      "The sign-in page shows organization, access and approvals as rows, and approves every app automatically by default",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
-      local: na("Local sign-in offers no choices; localSignInPage covers its page."),
+      local: na("Local sign-in offers no access choice; localSignInPage covers its page."),
     },
   },
   signInPageConnection: {
@@ -7221,18 +7221,18 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
-      local: na("Local sign-in offers no choices; localSignInPage covers its page."),
+      local: na("Local sign-in offers no access choice; localSignInPage covers its page."),
     },
   },
   signInPageBrowserApprovals: {
     fixtures: "actors",
     file: "mcp-sign-in-page.spec.ts",
     title:
-      "Choosing In Executor on the sign-in page sends the credential's approvals to the browser",
+      "Choosing In your browser on the sign-in page sends the credential's approvals to the browser",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
-      local: na("Local sign-in offers no choices; localSignInPage covers its page."),
+      local: na("Local sign-in offers no access choice; localSignInPage covers its page."),
     },
   },
   signInPageConnectionUrl: {
@@ -7243,7 +7243,7 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
-      local: na("Local sign-in offers no choices; localSignInPage covers its page."),
+      local: na("Local sign-in offers no access choice; localSignInPage covers its page."),
     },
   },
   signInPageNewConnection: {
@@ -7254,7 +7254,7 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
-      local: na("Local sign-in offers no choices; localSignInPage covers its page."),
+      local: na("Local sign-in offers no access choice; localSignInPage covers its page."),
     },
   },
   signInPageDevice: {
@@ -7265,7 +7265,7 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
-      local: na("Local sign-in offers no choices; localSignInPage covers its page."),
+      local: na("Local sign-in offers no access choice; localSignInPage covers its page."),
     },
   },
   signInPageConnectionsLoading: {
@@ -7276,7 +7276,7 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
-      local: na("Local sign-in offers no choices; localSignInPage covers its page."),
+      local: na("Local sign-in offers no access choice; localSignInPage covers its page."),
     },
   },
   localEarlyConsentDecision: {
@@ -7291,7 +7291,8 @@ export const scenarios = plan({
   },
   localSignInPage: {
     file: "local-mcp-sign-in-page.spec.ts",
-    title: "Local sign-in shows its access and approvals as plain rows with Cancel and Connect",
+    title:
+      "Local sign-in shows its access as a plain row and its approvals as a menu, with Cancel and Connect",
     targets: {
       local: scheduled,
       "self-host": na("Hosted sign-in is covered by the signInPage scenarios."),
@@ -8085,7 +8086,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "mcp-tool-input.spec.ts",
     title:
-      "Hosted MCP model and browser modes return an account-free tool's input request and resume it with the answer",
+      "Hosted MCP model, browser and automatic modes return an account-free tool's input request and resume it with the answer, and automatic mode skips its approval",
     targets: {
       "self-host": scheduled,
       cloud: scheduled,
@@ -8095,7 +8096,7 @@ export const scenarios = plan({
   localMcpToolInput: {
     file: "mcp-tool-input.spec.ts",
     title:
-      "Local MCP model and browser modes return an account-free tool's input request and resume it with the answer",
+      "Local MCP model, browser and automatic modes return an account-free tool's input request and resume it with the answer, and automatic mode skips its approval",
     targets: {
       local: scheduled,
       "self-host": na("Hosted products run the same flow in mcpToolInput."),

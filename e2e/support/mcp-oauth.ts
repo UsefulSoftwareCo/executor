@@ -11,7 +11,7 @@ import { Browser } from "./browser.ts";
 import { Evidence } from "./evidence.ts";
 import { Target, driver } from "./platform.ts";
 import { targetHosts } from "./role-hosts.ts";
-import { chooseConsentOrganization, consentValue } from "./consent-page.ts";
+import { chooseConsent, chooseConsentOrganization, consentValue } from "./consent-page.ts";
 import { heldValue, reveal, secret } from "./failure-text.ts";
 
 const Tokens = Schema.Struct({
@@ -547,6 +547,12 @@ const make = Effect.gen(function* () {
         );
         expect(shown).toEqual([organization.name, named.name]);
       }
+      // Fixtures answer approvals through the agent, as they did before the page preselected
+      // automatic approval; the sign-in page scenarios cover that default.
+      if (review === undefined && kind === "mcp")
+        yield* browser.use("Answer approvals through the agent", (page) =>
+          chooseConsent(page, "Approvals", "Through your agent"),
+        );
       yield* browser.checkpoint("OAuth consent before approval");
       yield* browser.use("Approve the client connection", (page) =>
         page.getByRole("button", { name: "Connect", exact: true }).click(),
