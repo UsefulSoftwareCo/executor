@@ -9680,47 +9680,25 @@ export const scenarios = plan({
     title: "Cloud onboarding skip experiment skippable still skips both steps to the dashboard",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
-  // The import reads the emulated v1 WorkOS, Vault and database only a managed local Cloud has.
-  v1ImportRun: {
-    file: "cloud-v1-import.spec.ts",
+  v1McpForward: {
+    fixtures: "actors",
+    file: "cloud-v1-mcp-forward.spec.ts",
     title:
-      "Cloud v1 import moves a single-member workspace on the server into a new organization with v1's tool names, the member's accounts linked for them and the workspace's linked for everyone, and approvals, reports what could not move, and writes nothing to v1",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportChecks: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import carries v1's account checks with their identity field, fails a check that redirects without sending its credentials on, keeps fixed credentials out of app source, skips policies v1 never applied, and names OpenAPI tools v1 stored no operations for as v1 compiled them",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportToolkits: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import turns toolkits into scoped MCP connections with v1's tools, linked accounts and approvals, and artifacts into undeployed apps that need repair",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportMcpForward: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import keeps a workspace that fails verification frozen in v1, and accepts MCP requests v1 forwards for an imported workspace, with a new signed bearer for each request of a session, scopes a toolkit's bearer to the caller's own copy, and refuses a wrong signature, an expired or too long-lived bearer, an account, organization or toolkit copy the import never mapped, and a toolkit claim without its connection",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportOptInToolkits: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import moves an organization into the toolkit copies the opt-in import keyed by the toolkit alone, updating the copy its member kept and keeping the one they changed in v2 without making either a second copy, and runs v1's forwarded toolkit requests under those copies",
+      "Cloud accepts MCP requests v1 forwards for a moved workspace, with a new signed bearer for each request of a session, scopes a toolkit's bearer to the caller's own copy and runs its calls under it, also for a copy the import recorded under another id, and refuses a wrong signature, an expired or too long-lived bearer, an account, organization or toolkit copy the import never mapped, and a toolkit claim without its connection",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1HandoffSignIn: {
+    fixtures: "actors",
     file: "cloud-v1-session-handoff.spec.ts",
     title:
-      "Cloud v1 import hands a moved workspace's member from their v1 session to v2: the handoff starts a session for the user the import mapped and opens the organization with no referrer, a browser signed in as them is only redirected to the organization it last used while still a member, one signed in as another member keeps its session, and a used token opens sign-in",
+      "Cloud v1 session handoff hands a moved workspace's member from their v1 session to v2: the handoff starts a session for the user the import mapped and opens the organization with no referrer, a browser signed in as them is only redirected to the organization it last used while still a member, one signed in as another member keeps its session, and a used token opens sign-in",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1HandoffRefusals: {
+    fixtures: "actors",
     file: "cloud-v1-session-handoff.spec.ts",
     title:
-      "Cloud v1 import opens v2 sign-in without a session for a handoff with a wrong signature, an expired or too long-lived token, another audience or version, a WorkOS user the import never mapped, or a member who has left the organization",
+      "Cloud v1 session handoff opens v2 sign-in without a session for a handoff with a wrong signature, an expired or too long-lived token, another audience or version, a WorkOS user the import never mapped, or a member who has left the organization",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ShutdownMcpUrls: {
@@ -9759,197 +9737,10 @@ export const scenarios = plan({
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   v1ShutdownApiKeyCapture: {
+    fixtures: "actors",
     file: "cloud-v1-shutdown.spec.ts",
     title:
-      "Cloud validates a v1 WorkOS API key it does not hold against v1's WorkOS on its first use, stores it as a native key of its owner pinned to the organization it moved to, and then serves it on v1's URLs, v2's MCP and v2's API with WorkOS refusing every call; an unknown key is refused and not asked about again soon, an unanswered WorkOS is a retryable 503, and a key of an organization that did not move, or one its owner deleted in v2, is not stored; the import records the organization's v1 URLs and the backfill writes them again",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportToolkitCalls: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import makes toolkits over the workspace's and a member's connections callable through their v1 URLs, running the org toolkit's copy as the app the workspace's account is linked to and the personal toolkit's as the member's account",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportSplitConnections: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import moves an integration whose connections have different v1 rules as an app per connection, each with only its connection's account, tools and rules and a member's private to them, keeps one app for an integration whose moving connections share their rules, selects both apps for a toolkit over both connections and forwards each v1 call to its connection's app, plans the same apps in its dry run, and reuses every app, account and toolkit copy when it runs again",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportStampedApprovals: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import keeps asking before an MCP tool v1 stamped as needing approval after its server drops the destructive hint, and leaves the tools v1 allowed without a rule of their own",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportUnlistedRules: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import decides the tools v1 never listed by v1's rules: an MCP tool a rule blocks by name is left out, one no rule names asks as v1's catch-all rule says, an OpenAPI operation v1 compiled asks as its rule says, and the repair finds the import's own apps unchanged",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportRepair: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import repairs an MCP app moved before v1's approval stamps became rules: it plans without writing, deploys the earlier importer's app with the stamp as its own rule, gives an app an earlier import deployed the importer's source now, leaves an app whose users turned its approvals off or dropped them in v2 as they chose, keeps the code of an app its users changed beside its approvals and adds v1's approvals beneath it, finds nothing left on a second run, and runs the version a repair replaced again only while the app still runs the repair's",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportRollback: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import marks a verified workspace moved in v1 and gives it back on rollback only once its v2 organization is deleted, also after Workflows forgot its import instance, clearing its import map but its users, and imports it again into a new organization where every member's toolkit copy is live and v1's toolkit URL forwards to it",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportPaidBilling: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import carries a paid v1 Team subscription over to v2's Team plan on the same Stripe subscription with its renewal: per member with its seats and a cancellation at the end of its period, a flat price kept with unlimited members, and a grandfathered Hobby organization moved to v2's Free plan with its v1 customer untouched",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportBillingReturn: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import keeps a paid workspace whose subscription did not carry over frozen with its billing held, offering no v2 billing or checkout, gives the subscription back to v1 on the same Stripe subscription with its seats, past a free customer v1 made meanwhile, and then deleting the v2 organization cancels nothing and the workspace rolls back",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportRequests: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import sends each OpenAPI request where v1 did, for YAML, public, unnamed-method, one service's multi-host and several services' APIs and an operation server that uses the first document server's variable without declaring it, refuses an API that would send an account's credentials to several hosts over plain HTTP, skips an API whose server variable no server declares or with no absolute server URL and no base URL without naming its specification's URL, drops an account check whose server variable turns it to plain HTTP, and converts only a workspace whose every item moved",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportOAuthRenewal: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import signs in and renews OAuth accounts with each connection's v1 client, granted scopes and resource, not the integration's method, refuses a token endpoint v1 no longer trusted, sends an OAuth integration's fixed credentials from a second account linked for everyone, and leaves out fixed headers that repeat the connection's own client ID and secret",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportCopiedMove: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import moves an organization already copied to v2 into that copy: its dry run reports the copy's slug, an account v1 renewed later takes v1's newer tokens while one v2 renewed keeps its own, both keep fitting their app after v1 renamed its integration, and an app its members deployed in v2 since keeps their version, while what they removed in v2 stays removed, also when v1 removed it too, and a teammate they added stays",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  // The operator clients it moves grants to are the ones every managed local Cloud starts with.
-  v1ImportFirstParty: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import moves connections that signed in through Executor's own apps to v2's operator client of the same name, including a GitHub-shaped MCP server that names the scopeless client's endpoints, which renews them with the granted scopes, sends the token to each of a service's hosts the client reaches, and refuses an app v2 does not offer, a scope it does not allow, a host its tokens never reach, a server that does not sign in with it and one whose resource metadata names another resource, each of which its dry run refuses first for the same reason",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportBuilds: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import writes an OpenAPI document with characters beyond ASCII as ASCII JSON that reads as v1's, also for a large API whose name and base URL path go beyond Latin-1, which builds and calls with its v1 key, builds OpenAPI and GraphQL apps whose v1 OAuth clients set scopes in their authorization URLs, which reconnect sending v1's authorization and token requests, refusing a client whose request v2 cannot send as v1 did, and says why and where a stored specification cannot be read",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportMicrosoftGraph: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import reads the large Graph document v1's Microsoft presets share one entry at a time, as v1 read it, and moves each preset into an app with exactly its v1 operations under v1's names and only the components they reach, skips a preset whose document has an entry that cannot be parsed, naming its line, and refuses one whose document is not block YAML",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportPlanOutage: {
-    file: "cloud-v1-import.spec.ts",
-    title:
-      "Cloud v1 import retries v1 plan reads that time out or fail and still reports the organization",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportLongNames: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import gives every app an address of its own when its name is longer than an address holds: a long integration label's apps per connection, numbered for members' connections of one long name, shorten the label so each keeps its connection's name and number, artifacts of one long title are numbered by retries that each change the address, the dry run plans those names and reports the artifact left without one, and the import started again after it is renamed keeps every app the first run made",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportSplitNames: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import numbers the apps of members' connections that share a name when their integration becomes an app per connection, each private to its member, beside the workspace connection's app for everyone",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportShared: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import moves a shared workspace on the server and cuts it over once it verifies: the oldest admin owns it, members keep their roles without a welcome email, org connections become the owner's accounts linked for everyone and members' their own, a member's approve rule is dropped while their block applies to everyone, every member gets their own copy of an org toolkit, and a former member's rows stay behind",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportToolkitScale: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import dry runs and moves a workspace of 20 members with 10 toolkits of over a thousand rules over 8 MCP servers of 200 tools, one of them an app per connection, planning and saving every member's copy of each toolkit with exactly the tools its rules and the workspace's allow",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportSlugDisplacement: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import gives a v1 workspace the slug a v2 team holds only when the operator listed that team in its allow table row: the dry run plans the team's new slug and writes nothing, the import renames the team and creates the workspace at the slug in one transaction, the team's member keeps it and its apps at the new slug while the old slug names the workspace, a listed team that does not hold the slug is reported and left alone, and an unlisted holder keeps its slug while the workspace takes a suffix",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportInto: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import moves an empty v1 workspace into the v2 team its one member owns when the operator listed that team in its allow table row: the dry run plans it and writes nothing, the import records the workspace against the team and marks it moved at the team's slug without creating an organization, user, membership or billing hold or changing the team, v1's forwarded MCP requests run in the team, starting it again and a later dry run find the team through its map row, billing return is refused, and a rollback gives the workspace back to v1 without deleting the team",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportIntoLeave: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import moves a v1 workspace into its member's v2 team without its data when the operator lists it to leave v1's data behind: the dry run counts v1's items and plans none, the import marks it moved at the team's slug with nothing copied and v1's rows untouched, and a rollback gives it back without changing the team",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportIntoCopy: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import copies a paid, shared v1 workspace into the empty v2 team its owner owns when the operator lists it: the team keeps its name and slug, gains the workspace's app, accounts and toolkit copies, its teammate joins, its subscription carries over to the team, a second copy into the team is refused as it is no longer empty, after its billing goes back a rollback removes only what the import added, and importing it again copies it into the team once more, each member's toolkit copy under a new live connection v1's toolkit URL forwards to while the first import's copies stay revoked",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportIntoEnterprise: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import copies an Enterprise v1 workspace into the empty v2 team on v2's Enterprise plan that its owner owns when the operator lists it to copy: the dry run plans it with no billing and still flags SSO, the import copies its items, its newcomer joins, a member already in the team keeps their membership and role, the team's and v1's billing stay as they were with no hold, a rollback needs no billing return and removes only what the import added, and an Enterprise workspace the operator did not list is still held back",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportIntoSelected: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import copies only the listed integration of a paid, shared v1 workspace into the v2 team its members already work in, beside the team's own apps, when the operator lists it to copy selected integrations: the dry run plans that app and its accounts and lists the integration it leaves in v1, the import adds the app with the workspace connection's account linked for everyone and each member's own, no toolkit copy, rule of another integration or member, carries its Team plan over to the team, records the workspace against the team and marks it moved at the team's slug, a later dry run finds the team through its map row, a workspace whose integration's app would take a name one of the team's apps has is refused and left in v1, and once its billing goes back a rollback removes only what the import added",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportIntoRefused: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import refuses to move a v1 workspace into a listed existing v2 organization when it has items to copy, a second active member, a pending invitation or a paid plan, Enterprise included, also when it would leave its data behind, when its owner has no v2 account or does not own the organization, also to copy into it, when the organization does not exist, when the listed mode is unknown, and to copy selected integrations when a member is not in the organization, a listed integration is not in v1 or none is listed, or when integrations are listed for another mode: the dry run says why, and the import holds it back and gives it to v1 again without writing its import map or changing the organization",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportAllowed: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import writes only organizations with a row in its allow table, refuses one without a row, a start that adds one and a start that pages through v1, writing nothing to v1 or v2, and runs dry runs whatever the table holds",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportDryRun: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import dry runs report TRACE tools, connections that cannot move, missing secrets, first-party clients v2 lacks or holds under another client ID than v1's, rules that match no v2 tool, artifact roles that do not map, v1 rows the import cannot read and pending members, check a held-back Enterprise organization's items, write nothing to v1, v2 or the app build store, aggregate a run a page at a time, skip ids that are not v1 organization ids, and answer only the operator",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportStale: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import dry runs skip and report what v1 cannot run either, without blocking the organization: a local MCP server, an API with no absolute base URL or a server variable no server declares, an unreadable specification, a GraphQL endpoint that is not http(s), their connections and rules, an operation on a WebSocket server, a tool the organization's revised specification dropped, connections whose OAuth client, credential or Vault secret is gone, and rules that match no tool; move an API on two services' hosts, an org connection whose secret a member saved, flagging members who saved different values, a token saved on an OAuth method without a client, and OAuth MCP servers with fixed headers, reporting those that repeat the server's own OAuth client",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  v1ImportFailingInV1: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import moves an organization whose OAuth MCP server does not respond while its sign-in is set up, for its owner to reconnect, when v1's last verdict on that connection was a failure, and still refuses one whose connection v1 last saw healthy or never checked",
-    targets: { ...cloudOnboarding, cloud: managedCloud },
-  },
-  // The bound counts every run's organizations on a Cloud, so this runs on its own local Cloud.
-  v1ImportBounded: {
-    file: "cloud-v1-import-run.spec.ts",
-    title:
-      "Cloud v1 import keeps at most the bound of organizations running across every run, defers the rest until one finishes, does not start or count again an organization its run has running, and reports an organization whose assessment keeps failing, with the kind of failure, instead of leaving it pending",
+      "Cloud validates a v1 WorkOS API key it does not hold against v1's WorkOS on its first use, stores it as a native key of its owner pinned to the organization it moved to, and then serves it on v1's URLs, v2's MCP and v2's API with WorkOS refusing every call; an unknown key is refused and not asked about again soon, an unanswered WorkOS is a retryable 503, and a key of an organization that did not move, or one its owner deleted in v2, is not stored",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
   // Autumn faults match every caller of a route, so this runs on its own managed local Cloud.

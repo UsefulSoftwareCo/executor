@@ -21,12 +21,7 @@ import {
   emulatorRequest,
   EmulatorRetryRecords,
 } from "./emulators.ts";
-import {
-  createV1Database,
-  startCloudPostgres,
-  v1DatabaseReader,
-  v1DatabaseWriter,
-} from "./cloud-postgres.ts";
+import { startCloudPostgres } from "./cloud-postgres.ts";
 import { runtimeCrashesFile, trackRuntimeCrash, type RuntimeCrash } from "./runtime-crashes.ts";
 import { v1McpForwardFile } from "./v1-mcp-forward.ts";
 import { v1SessionHandoffFile } from "./v1-session-handoff.ts";
@@ -39,21 +34,12 @@ import {
 import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
 import { roleHost } from "./role-hosts.ts";
 import { freePort } from "./ports.ts";
-import {
-  OperatorOAuthFixture,
-  operatorOAuthFile,
-  v1FirstPartyClients,
-  v1FirstPartyCredentials,
-} from "./operator-oauth.ts";
+import { OperatorOAuthFixture, operatorOAuthFile } from "./operator-oauth.ts";
 import { reveal, secret } from "./failure-text.ts";
 
-/** v1's client ID for the test client, which is not v2's: its v1 grants cannot move. */
-export const v1SyntheticCloudMailClientId = "synthetic-v1-cloud-mail-client";
-
 /**
- * The operator settings for `fixture`: one test client, whose tokens go only to its own host, the
- * clients v1's first-party connections move to (`v1FirstPartyClients`), and their credentials.
- * Emulated Cloud adds the definitions to its reviewed clients.
+ * The operator settings for `fixture`: one test client, whose tokens go only to its own host, and
+ * its credentials. Emulated Cloud adds the definition to its reviewed clients.
  */
 const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
   const origin = `http://127.0.0.1:${fixture.port}`;
@@ -71,30 +57,9 @@ const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
         defaultScopes: ["mail.read"],
         placement: { hosts: [`127.0.0.1:${fixture.port}`] },
       },
-      ...v1FirstPartyClients(`http://127.0.0.1:${fixture.v1Port}`),
     ]),
     EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_ID: fixture.clientId,
     EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_SECRET: fixture.clientSecret,
-    // v1's client IDs: the same as v2's for the clients v1's connections move to, and another for
-    // the test client, so a v1 grant of it is a client the import must not move it to.
-    V1_FIRST_PARTY_CLIENT_IDS: JSON.stringify({
-      ...Object.fromEntries(
-        Object.entries(v1FirstPartyCredentials).map(([id, credentials]) => [
-          id,
-          credentials.clientId,
-        ]),
-      ),
-      "synthetic-cloud-mail": v1SyntheticCloudMailClientId,
-    }),
-    ...Object.fromEntries(
-      Object.entries(v1FirstPartyCredentials).flatMap(([id, credentials]) => {
-        const prefix = `EXECUTOR_OAUTH_${id.toUpperCase().replaceAll("-", "_")}`;
-        return [
-          [`${prefix}_CLIENT_ID`, credentials.clientId],
-          [`${prefix}_CLIENT_SECRET`, credentials.secret],
-        ];
-      }),
-    ),
   };
 };
 
@@ -206,7 +171,6 @@ export const startCloudEnvironment = (input: {
       port: yield* freePort,
       clientId: "first-party-client",
       clientSecret: randomBytes(16).toString("hex"),
-      v1Port: yield* freePort,
     });
     const operatorOAuthPath = `${directory}/${operatorOAuthFile}`;
     yield* fs.writeFileString(operatorOAuthPath, JSON.stringify(operatorOAuth), { mode: 0o600 });
@@ -220,25 +184,6 @@ export const startCloudEnvironment = (input: {
       { mode: 0o600 },
     );
     yield* Effect.addFinalizer(() => fs.remove(ssoDatabase).pipe(Effect.orDie));
-    // The emulated v1 database: the Worker reads it as v1's read-only login, scenarios write it.
-    const v1ReaderPassword = randomBytes(24).toString("hex");
-    const v1WriterPassword = randomBytes(24).toString("hex");
-    const v1Database = `${directory}/v1-database.json`;
-    yield* fs.writeFileString(
-      v1Database,
-      JSON.stringify({
-        database: `postgresql://executor:${databasePassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
-      }),
-      { mode: 0o600 },
-    );
-    yield* Effect.addFinalizer(() => fs.remove(v1Database).pipe(Effect.orDie));
-    // The v1 import's operator routes: scenarios start runs with this token, as an operator does.
-    const v1ImportOperatorToken = randomBytes(24).toString("hex");
-    const v1ImportOperator = `${directory}/v1-import-operator.json`;
-    yield* fs.writeFileString(v1ImportOperator, JSON.stringify({ token: v1ImportOperatorToken }), {
-      mode: 0o600,
-    });
-    yield* Effect.addFinalizer(() => fs.remove(v1ImportOperator).pipe(Effect.orDie));
     // The secret the synthetic v1 signs forwarded MCP bearers with; scenarios read it from here.
     const v1ForwardSecret = randomBytes(32).toString("hex");
     const v1Forward = `${directory}/${v1McpForwardFile}`;
@@ -300,10 +245,6 @@ export const startCloudEnvironment = (input: {
       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
       CLOUD_DEV_EXTERNAL_DATABASE: "true",
       EXECUTOR_EMULATORS: JSON.stringify(reveal(fixture).services),
-      V1_DATABASE_URL: `postgresql://${v1DatabaseReader}:${v1ReaderPassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
-      V1_IMPORT_OPERATOR_TOKEN: v1ImportOperatorToken,
-      // Imports freeze and cut over each organization in the emulated v1 through this login.
-      V1_IMPORT_WRITER_DATABASE_URL: `postgresql://${v1DatabaseWriter}:${v1WriterPassword}@127.0.0.1:${input.databasePort}/executor_v1?sslmode=disable`,
       V1_MCP_FORWARD_SECRET: v1ForwardSecret,
       V1_SESSION_HANDOFF_SECRET: v1HandoffSecret,
       // Serve the role hosts as production does, at `app.`, `mcp.` and `api.` of the origin's host.
@@ -442,12 +383,6 @@ export const startCloudEnvironment = (input: {
       databasePassword,
       dockerEnv,
       log: `${directory}/postgres.log`,
-    });
-    yield* createV1Database({
-      container,
-      dockerEnv,
-      readerPassword: v1ReaderPassword,
-      writerPassword: v1WriterPassword,
     });
     const built =
       input.prebuilt === true

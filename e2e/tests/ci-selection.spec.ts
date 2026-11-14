@@ -39,7 +39,6 @@ const jobs = [
   "cloud-isolate",
   "cloud-telemetry-flush",
   "cloud-connections",
-  "cloud-v1-bound",
   "cloud-rate-limit",
   "cloud-rollback",
   "cloud-oauth-proxy-preview",
@@ -484,7 +483,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               (_, index) => `cloud-product ${index + 1}/${productParts}`,
             ),
             "cloud-workers, cloud-locks, cloud-batch, cloud-autumn",
-            "cloud-domains, cloud-v1-bound, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview",
+            "cloud-domains, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview",
             "cloud-removal-recovery, cloud-export-hang, cloud-listings",
           ]);
           // Each Cloud job's pattern is on exactly one runner and empty on the others. The runner
@@ -1750,7 +1749,6 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-isolate",
         "cloud-telemetry-flush",
         "cloud-connections",
-        "cloud-v1-bound",
         "cloud-rate-limit",
         "cloud-rollback",
         "cloud-oauth-proxy-preview",

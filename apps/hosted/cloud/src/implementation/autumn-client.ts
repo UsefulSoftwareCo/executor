@@ -1,5 +1,5 @@
 /** Small Effect HTTP adapter for the cloud product's Autumn operations. */
-import { type Duration, Effect, Layer, Option, Redacted, Schedule, Schema } from "effect";
+import { type Duration, Effect, Layer, Redacted, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import {
   AutumnClient,
@@ -11,9 +11,6 @@ import {
   type AutumnOptions,
 } from "../contracts/autumn.ts";
 
-/** Autumn's error body; only its stable code is read. */
-const NotFound = Schema.Struct({ code: Schema.String });
-
 /**
  * How long a read may take. Writes are never retried, since a write whose answer was lost may
  * have taken, so only reads are the consumer's choice.
@@ -21,8 +18,6 @@ const NotFound = Schema.Struct({ code: Schema.String });
 export interface AutumnReadPolicy {
   /** Each attempt's timeout. */
   readonly attempt: Duration.Input;
-  /** More attempts after a retryable failure, and the bound on all of them, waits included. */
-  readonly retry?: { readonly times: number; readonly budget: Duration.Input };
 }
 
 /**
@@ -35,25 +30,7 @@ export const autumnReads = {
    * deadline, such as the billing overview.
    */
   once: { attempt: autumnTimeout },
-  /**
-   * The v1 import's plan check: eight seconds an attempt, then up to two more about 200 and 400
-   * milliseconds apart, with jitter, within twenty seconds in all.
-   */
-  patient: { attempt: "8 seconds", retry: { times: 2, budget: "20 seconds" } },
 } as const satisfies Record<string, AutumnReadPolicy>;
-
-const readRetryDelay = Schedule.exponential("200 millis").pipe(Schedule.jittered);
-
-/**
- * Whether another attempt could answer: no response, a timeout, a server error or a rate limit.
- * A response Autumn gave, an unexpected status or a body that does not decode is final.
- */
-const retryable = (error: AutumnRequestFailed) =>
-  error.reason === "transport" ||
-  error.reason === "timeout" ||
-  (error.reason === "status" &&
-    error.status !== undefined &&
-    (error.status >= 500 || error.status === 429));
 
 /**
  * Use the injected HTTP client. Every call owns its response scope and obeys caller cancellation.
@@ -75,8 +52,6 @@ export const autumnLive = (options: AutumnOptions, reads: AutumnReadPolicy) =>
           output: Schema.ConstraintDecoder<A>,
           /** Reads follow the consumer's read policy; anything else is sent once. */
           kind: "read" | "write",
-          /** A 404 with this error code is an answer, decoded as `null`, not a failure. */
-          notFound?: string,
         ) =>
         (payload: I) => {
           const failed = (reason: AutumnRequestFailed["reason"], cause: unknown, status?: number) =>
@@ -109,19 +84,12 @@ export const autumnLive = (options: AutumnOptions, reads: AutumnReadPolicy) =>
                   .pipe(Effect.mapError((cause) => failed("transport", cause)));
                 yield* Effect.annotateCurrentSpan("http.response.status_code", response.status);
                 // Require confirmed provider responses, never queued or fail-open answers.
-                const missing = notFound !== undefined && response.status === 404;
-                if (response.status !== 200 && !missing)
+                if (response.status !== 200)
                   return { status: response.status, answered: false } as const;
                 const json = yield* response.json.pipe(
                   Effect.mapError((cause) => failed("response", cause, response.status)),
                 );
-                if (!missing) return { status: 200, answered: true, json } as const;
-                // Only the named code answers; any other 404, such as an unknown route, fails.
-                const named = Option.exists(
-                  Schema.decodeUnknownOption(NotFound)(json),
-                  (body) => body.code === notFound,
-                );
-                return { status: 404, answered: named, json: null } as const;
+                return { status: 200, answered: true, json } as const;
               }).pipe(
                 Effect.withSpan("autumn.http", {
                   kind: "client",
@@ -147,20 +115,6 @@ export const autumnLive = (options: AutumnOptions, reads: AutumnReadPolicy) =>
           ).pipe(
             Effect.timeout(kind === "read" ? reads.attempt : autumnTimeout),
             Effect.catchTag("TimeoutError", (cause) => Effect.fail(failed("timeout", cause))),
-            (attempt) =>
-              kind === "write" || reads.retry === undefined
-                ? attempt
-                : attempt.pipe(
-                    Effect.retry({
-                      times: reads.retry.times,
-                      schedule: readRetryDelay,
-                      while: retryable,
-                    }),
-                    Effect.timeout(reads.retry.budget),
-                    Effect.catchTag("TimeoutError", (cause) =>
-                      Effect.fail(failed("timeout", cause)),
-                    ),
-                  ),
             // Replace the generic HTTP span: a private instance path carries a capability.
             Effect.provideService(HttpClient.TracerDisabledWhen, () => true),
             Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
@@ -174,22 +128,6 @@ export const autumnLive = (options: AutumnOptions, reads: AutumnReadPolicy) =>
           AutumnRequests.getOrCreateCustomer,
           AutumnResponses.getOrCreateCustomer,
           "write",
-        ),
-        getCustomer: post(
-          "getCustomer",
-          "customers.get",
-          AutumnRequests.getCustomer,
-          AutumnResponses.getCustomer,
-          "read",
-          "customer_not_found",
-        ),
-        getCustomerPlans: post(
-          "getCustomerPlans",
-          "customers.get",
-          AutumnRequests.getCustomerPlans,
-          AutumnResponses.getCustomerPlans,
-          "read",
-          "customer_not_found",
         ),
         listPlans: post(
           "listPlans",
@@ -212,14 +150,6 @@ export const autumnLive = (options: AutumnOptions, reads: AutumnReadPolicy) =>
           AutumnResponses.attach,
           "write",
         ),
-        // A preview changes nothing, so it is retried like a read.
-        previewAttach: post(
-          "previewAttach",
-          "billing.preview_attach",
-          AutumnRequests.previewAttach,
-          AutumnResponses.previewAttach,
-          "read",
-        ),
         openCustomerPortal: post(
           "openCustomerPortal",
           "billing.open_customer_portal",
@@ -233,27 +163,6 @@ export const autumnLive = (options: AutumnOptions, reads: AutumnReadPolicy) =>
           AutumnRequests.updateSubscription,
           AutumnResponses.updateSubscription,
           "write",
-        ),
-        renameCustomer: post(
-          "renameCustomer",
-          "customers.update",
-          AutumnRequests.renameCustomer,
-          AutumnResponses.renameCustomer,
-          "write",
-        ),
-        deleteCustomer: post(
-          "deleteCustomer",
-          "customers.delete",
-          AutumnRequests.deleteCustomer,
-          AutumnResponses.deleteCustomer,
-          "write",
-        ),
-        verifyBilling: post(
-          "verifyBilling",
-          "billing.verify",
-          AutumnRequests.verifyBilling,
-          AutumnResponses.verifyBilling,
-          "read",
         ),
       });
     }),

@@ -54,6 +54,6 @@ export const EmulatedServices = Schema.Struct({
   mail: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
   company: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
   billing: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
-  /** Stands in for v1's WorkOS environment in the v1 import and the WorkOS API key check. */
+  /** Stands in for v1's WorkOS environment in the WorkOS API key check. */
   workos: Schema.Struct({ baseUrl: BaseUrl, token: Schema.NonEmptyString }),
 });

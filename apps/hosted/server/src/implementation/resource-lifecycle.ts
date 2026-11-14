@@ -31,7 +31,6 @@ import { usableAppLinks } from "./resource-policy.ts";
 
 type AppCreation =
   | { readonly kind: "member" }
-  | { readonly kind: "shared" }
   | { readonly kind: "system" }
   | { readonly kind: "copy"; readonly from: AppId };
 const AppCreation = Context.Reference<AppCreation>("hosted/AppCreation", {
@@ -56,14 +55,8 @@ export const copiedAppCreation =
 export const organizationAppCreation = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   effect.pipe(Effect.provideService(AppCreation, { kind: "system" }));
 /**
- * An app a member creates for everyone in the organization: the member is its creator and its
- * audience is everyone, such as an integration the v1 import moves for the organization's owner.
- */
-export const sharedAppCreation = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(Effect.provideService(AppCreation, { kind: "shared" }));
-/**
- * An account a system installer saves for a named member, who owns it: a managed per-user key, or
- * an account the v1 import moves for the organization's owner. Every account is personal.
+ * An account a system installer saves for a named member, who owns it, such as a managed per-user
+ * key. Every account is personal.
  */
 export const personalAccountCreation =
   (user: string) =>

@@ -7,28 +7,26 @@
  * switch does.
  *
  * v1 organizations reach the edge only through Cloud's lookup table (`private_v1_legacy_org`),
- * which imports and the backfill write. Scenarios that need no import write its rows directly,
- * for synthetic organization ids and slugs, as the backfill would.
+ * which the import and the backfill wrote. Scenarios write its rows directly, for synthetic
+ * organization ids and slugs, as they did.
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Redacted, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { Effect, Layer, Redacted, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { writeRows } from "../support/cloud-rows.ts";
 import { Emulators } from "../support/emulators.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { Execution, consentTo } from "../support/mcp-connections.ts";
-import { Onboarding } from "../support/onboarding.ts";
 import { Target, driver } from "../support/platform.ts";
 import { rawRequest, targetHosts } from "../support/role-hosts.ts";
-import { allowV1Import, v1ImportOperator, v1RunId } from "../support/v1-import.ts";
+import { recordMovedV1Organization } from "../support/v1-moved.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Identity = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
@@ -674,89 +672,37 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
   );
 });
 
-const importServices = Layer.mergeAll(Onboarding.layer, Emulators.layer, McpClient.layer);
-
-/** Run the v1 URL backfill against the managed Cloud's and the synthetic v1's databases. */
-const backfill = (organization: string, apply: boolean) =>
-  Effect.gen(function* () {
-    const target = yield* Target,
-      fs = yield* FileSystem.FileSystem,
-      processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const database = (file: string) =>
-      fs.readFileString(`${target.directory}/${file}`).pipe(
-        Effect.flatMap(
-          Schema.decodeUnknownEffect(
-            Schema.fromJsonString(Schema.Struct({ database: Schema.String })),
-          ),
-        ),
-        Effect.map((found) => found.database),
-      );
-    const output = yield* processes.string(
-      ChildProcess.make(
-        "node",
-        [
-          "apps/hosted/cloud/scripts/v1-legacy-urls.ts",
-          "--organization",
-          organization,
-          ...(apply ? ["--apply"] : []),
-        ],
-        {
-          env: {
-            PATH: process.env.PATH ?? "",
-            DATABASE_URL: yield* database("sso-database.json"),
-            V1_DATABASE_URL: yield* database("v1-database.json"),
-          },
-          extendEnv: false,
-        },
-      ),
-    );
-    return yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(
-        Schema.Struct({
-          mode: Schema.String,
-          cutOver: Schema.Number,
-          written: Schema.Number,
-          refused: Schema.Array(Schema.Unknown),
-        }),
-      ),
-    )(output);
-  });
-
 const Count = Schema.Array(Schema.Array(Schema.Struct({ count: Schema.Number })));
 
-layer(TestLive, { excludeTestServices: true })("Cloud after v1's shutdown, moved", (it) => {
+layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown, moved", (it) => {
   it.effect(
     scenarios.v1ShutdownApiKeyCapture.title,
     (context) =>
-      withCase(
+      withHostedCase(
         context,
         Effect.gen(function* () {
-          const emulators = yield* Emulators,
-            operator = yield* v1ImportOperator,
+          const actors = yield* Actors,
+            emulators = yield* Emulators,
             mcp = yield* McpClient,
             target = yield* Target;
           const { edge, mcp: mcpOrigin, api: apiOrigin } = targetHosts(target);
-          // A v1 workspace moved by the operator's import, which records its v1 URLs.
+          // A v1 workspace in v1's WorkOS that moved to the scenario's organization, its member
+          // mapped to the owner, recorded with its v1 URLs as the import recorded them.
           const email = `shutdown-${randomUUID().slice(0, 8)}@example.test`;
           const workspace = yield* emulators.v1Workspace([email]);
           const slug = v1Slug("moved");
-          yield* writeRows("v1-database.json", [
+          const owner = yield* userOf(actors.owner);
+          yield* writeRows("sso-database.json", [
             {
-              sql: "insert into organizations (id, name, slug) values ($1, 'Synthetic workspace', $2)",
-              params: [workspace.organization, slug],
+              sql: "insert into private_v1_legacy_org (v1_org_id, v1_slug, v2_org_id) values ($1, $2, $3)",
+              params: [workspace.organization, slug, actors.organization.id],
             },
           ]);
-          yield* allowV1Import(workspace.organization);
-          const run = v1RunId("shutdown");
-          const started = yield* operator.start({
-            mode: "import",
-            runId: run,
-            organizations: [workspace.organization],
+          yield* recordMovedV1Organization({
+            v1Organization: workspace.organization,
+            v2Organization: actors.organization.id,
+            users: [{ v1: workspace.user, v2: owner }],
           });
-          expect(started.status, JSON.stringify(started.body)).toBe(200);
-          const report = yield* operator.waitForReport(run, workspace.organization);
-          expect(report.status, report.reason ?? "").toBe("imported");
-          expect(report.cutover).toBe(true);
           yield* expectDiscovery(edge, `/${slug}/mcp`);
           yield* expectDiscovery(edge, `/${workspace.organization}/mcp`);
 
@@ -793,7 +739,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud after v1's shutdown, moved
           expect(stored[0]?.[0]).toEqual({
             prefix: "sk_",
             name: "Imported from Executor v1",
-            organization: report.v2Organization?.id,
+            organization: actors.organization.id,
             lasting: true,
             enabled: true,
           });
@@ -856,30 +802,9 @@ layer(TestLive, { excludeTestServices: true })("Cloud after v1's shutdown, moved
           ]);
           expect((yield* initializeAt(`${edge}/${slug}/mcp`, key.value)).status).toBe(401);
           expect(yield* counts(keyHash(key.value), key.id)).toEqual([0, 1]);
-
-          // The backfill writes the organization's v1 URLs again from the import's records and v1.
-          yield* writeRows("sso-database.json", [
-            {
-              sql: "delete from private_v1_legacy_org where v1_org_id = $1",
-              params: [workspace.organization],
-            },
-          ]);
-          const gone = yield* rawRequest(
-            `${edge}/.well-known/oauth-protected-resource/${slug}/mcp`,
-          );
-          expect(gone.status).toBe(404);
-          const dryRun = yield* backfill(workspace.organization, false);
-          expect(dryRun).toMatchObject({ mode: "dry run", cutOver: 1, written: 1, refused: [] });
-          expect(
-            (yield* rawRequest(`${edge}/.well-known/oauth-protected-resource/${slug}/mcp`)).status,
-            "the dry run writes nothing",
-          ).toBe(404);
-          const applied = yield* backfill(workspace.organization, true);
-          expect(applied).toMatchObject({ mode: "apply", cutOver: 1, written: 1, refused: [] });
-          yield* expectDiscovery(edge, `/${slug}/mcp`);
-        }).pipe(Effect.provide(importServices)),
+        }).pipe(Effect.provide(Layer.merge(Emulators.layer, McpClient.layer))),
       ),
-    // The import, then many requests on v1's URLs and v2's.
+    // Many requests on v1's URLs and v2's.
     { timeout: 180_000 },
   );
 });

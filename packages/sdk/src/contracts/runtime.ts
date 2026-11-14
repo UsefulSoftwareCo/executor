@@ -407,7 +407,7 @@ export interface Runtime<Requirements = never> {
    *
    * `retain: false` compiles and declares without writing anything: the build is neither
    * retained nor cached, so its id names nothing and must not be loaded. For checks that must
-   * not create anything, such as the v1 import's dry run.
+   * not create anything.
    */
   readonly build: (input: {
     readonly files: CodeFiles;

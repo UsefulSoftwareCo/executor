@@ -104,8 +104,6 @@ const ownedIds = {
   worker: "executor.worker.identity",
   /** A Tail record names the trace of the request it records. */
   requestTrace: "executor.trace_id",
-  /** A v1 import names the v1 workspace it imports. */
-  v1Workspace: "executor.v1_import.organization",
 } as const;
 type OwnedId = keyof typeof ownedIds;
 /**
