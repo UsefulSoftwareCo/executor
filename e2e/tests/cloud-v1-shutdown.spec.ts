@@ -670,6 +670,131 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
       }),
     ),
   );
+
+  it.effect(scenarios.v1ShutdownAuthKitHost.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const target = yield* Target;
+        const { authKit, browser, deployment } = targetHosts(target);
+        const shutDown = "Executor v1's sign-in has shut down. Sign in to Executor again.";
+        const expectJson = (
+          response: Effect.Success<ReturnType<typeof rawRequest>>,
+          status: number,
+          error: string,
+          label: string,
+        ) => {
+          expect(response.status, label).toBe(status);
+          expect(response.contentType, label).toContain("application/json");
+          expect(response.cacheControl, label).toBe("no-store");
+          expect(JSON.parse(response.text), label).toEqual({ error, error_description: shutDown });
+        };
+
+        // AuthKit's metadata is gone, so a client that reads it before refreshing finds no
+        // server there, and the MCP URL's 401 names v2's.
+        for (const path of [
+          "/.well-known/oauth-authorization-server",
+          "/.well-known/openid-configuration",
+          "/.well-known/oauth-authorization-server/oauth2",
+          "/.well-known/openid-configuration/oauth2",
+          "/oauth2/.well-known/openid-configuration",
+        ]) {
+          expectJson(yield* rawRequest(`${authKit}${path}`), 404, "not_found", path);
+          expect((yield* rawRequest(`${authKit}${path}`, { method: "HEAD" })).status, path).toBe(
+            404,
+          );
+        }
+
+        // A refresh at AuthKit's token endpoint is a dead grant, which clients answer by
+        // signing in again.
+        const refresh = yield* rawRequest(`${authKit}/oauth2/token`, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: randomBytes(24).toString("base64url"),
+            client_id: "client_SYNTHETIC_AUTHKIT",
+          }).toString(),
+        });
+        expectJson(refresh, 400, "invalid_grant", "token");
+        expect(refresh.allowOrigin).toBe("*");
+
+        // Revoking a token AuthKit issued succeeds, as RFC 7009 answers an unknown token.
+        const revoked = yield* rawRequest(`${authKit}/oauth2/revoke`, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ token: randomBytes(24).toString("base64url") }).toString(),
+        });
+        expect(revoked.status).toBe(200);
+        expect(revoked.text).toBe("");
+
+        expectJson(yield* rawRequest(`${authKit}/oauth2/jwks`), 404, "not_found", "jwks");
+        expectJson(
+          yield* rawRequest(`${authKit}/oauth2/register`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ redirect_uris: ["http://127.0.0.1:9/callback"] }),
+          }),
+          410,
+          "gone",
+          "register",
+        );
+
+        // AuthKit's sign-in page, which a client opens in the person's browser, says how to
+        // reconnect, and shows nothing the request carried.
+        const marker = `marker${randomUUID().replaceAll("-", "")}`;
+        const authorize = yield* rawRequest(
+          `${authKit}/oauth2/authorize?${new URLSearchParams({
+            client_id: `client_${marker}`,
+            redirect_uri: `http://127.0.0.1:9/${marker}`,
+            state: `<script>${marker}</script>`,
+            response_type: "code",
+          })}`,
+          { headers: { accept: "text/html" } },
+        );
+        expect(authorize.status).toBe(410);
+        expect(authorize.contentType).toContain("text/html");
+        expect(authorize.cacheControl).toBe("no-store");
+        expect(authorize.text).toContain("Executor v1's sign-in has shut down");
+        expect(authorize.text).toContain("Clear authentication");
+        expect(authorize.text).toContain("claude mcp remove");
+        expect(authorize.text).toContain(`<a href="${browser}">Open Executor</a>`);
+        expect(authorize.text).not.toContain(marker);
+        for (const path of ["/", "/sign-in", "/api/auth/get-session"]) {
+          const page = yield* rawRequest(`${authKit}${path}`);
+          expect(page.status, path).toBe(410);
+          expect(page.text, path).toContain("Executor v1's sign-in has shut down");
+        }
+
+        // Nothing else is served there, MCP included. Claude Code, finding no metadata, refreshes
+        // at the default `/token`; a 410 there keeps "Clear authentication" in its menu, which
+        // signs in to v2, and shows this answer's description as the server's issue.
+        for (const [method, path] of [
+          ["POST", "/token"],
+          ["POST", "/mcp"],
+          ["POST", "/oauth2/authorize"],
+          ["DELETE", "/oauth2/token"],
+          ["PUT", "/.well-known/openid-configuration"],
+        ] as const) {
+          expectJson(
+            yield* rawRequest(`${authKit}${path}`, {
+              method,
+              headers: { "content-type": "application/json" },
+              body: "{}",
+            }),
+            410,
+            "gone",
+            `${method} ${path}`,
+          );
+        }
+
+        // The table is the AuthKit host's alone: the deployment still serves v2's issuer metadata.
+        const issuer = yield* rawRequest(`${deployment}/.well-known/oauth-authorization-server`);
+        expect(issuer.status).toBe(200);
+        expect(JSON.parse(issuer.text)).toHaveProperty("token_endpoint");
+      }),
+    ),
+  );
 });
 
 const Count = Schema.Array(Schema.Array(Schema.Struct({ count: Schema.Number })));

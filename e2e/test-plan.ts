@@ -9736,6 +9736,13 @@ export const scenarios = plan({
       "Cloud's edge serves v1's client ID metadata documents byte for byte and the site's own terms, privacy and Google OAuth pages after v1 shuts down, redirects v1's dashboards to the organizations they moved to and v1's sign-in to v2's, shows a page for a connected-account sign-in v1 started, and answers 410 for the rest of v1's API",
     targets: { ...cloudOnboarding, cloud: managedCloud },
   },
+  v1ShutdownAuthKitHost: {
+    fixtures: "actors",
+    file: "cloud-v1-shutdown.spec.ts",
+    title:
+      "Cloud answers v1's AuthKit sign-in host after v1 shuts down: its metadata is gone, a refresh there is a dead grant, a revocation succeeds, its sign-in page tells the person how to reconnect without showing what the request carried, and nothing else is served there",
+    targets: { ...cloudOnboarding, cloud: managedCloud },
+  },
   v1ShutdownApiKeyCapture: {
     fixtures: "actors",
     file: "cloud-v1-shutdown.spec.ts",

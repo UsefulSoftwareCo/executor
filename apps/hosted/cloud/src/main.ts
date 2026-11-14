@@ -110,6 +110,7 @@ import {
   v1SignIn,
   v1SignUp,
 } from "./implementation/v1-edge.ts";
+import { v1AuthKitHost } from "./implementation/v1-authkit.ts";
 import { withNotFoundDocument, notFoundDocument } from "./implementation/not-found.ts";
 import { openAiAppsChallenge } from "./implementation/openai-apps-challenge.ts";
 import {
@@ -773,6 +774,8 @@ export default Api.make(
         mcp: mcpHost,
         api: apiHost,
         edge: edgeHost.pipe(apiGoneOnEdge(`${auth.resourceOrigins.api[0]}/api`)),
+        // What v1's AuthKit host answers once v2 takes it over from WorkOS.
+        authKit: v1AuthKitHost(auth.origin),
       },
     );
     return {

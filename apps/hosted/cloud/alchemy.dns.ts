@@ -50,6 +50,9 @@ const records: ReadonlyArray<
   // WorkOS hosts executor-v1's AuthKit pages and admin portal.
   { id: "WorkosAdmin", type: "CNAME", name: "admin", content: "cname.workos-dns.com", ttl: "1" },
   { id: "WorkosAuth", type: "CNAME", name: "auth", content: "cname.workos-dns.com", ttl: "1" },
+  // v1's AuthKit. The API Worker's route `signin.executor.sh/*` takes it over once this record is
+  // proxied in Cloudflare (`notes/v1-shutdown.md`, "AuthKit"); declare it proxied here then, or a
+  // deploy of this stack turns proxying off again.
   { id: "WorkosSignin", type: "CNAME", name: "signin", content: "cname.workos-dns.com", ttl: "1" },
   {
     id: "WorkosVerification",
