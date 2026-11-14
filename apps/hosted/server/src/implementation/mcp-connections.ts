@@ -117,7 +117,7 @@ const resolvePolicy = (apps: readonly ConnectionApp[]) =>
     };
   });
 
-/** RequireBrowserSession rejects bearer credentials; RequireOrganization checks current membership. */
+/** RequireOrganization checks current membership; RequireBrowserSession rejects bearer credentials for every change. */
 export const hostedMcpConnectionHandlers = HttpApiBuilder.group(
   HostedApi,
   "mcpConnections",

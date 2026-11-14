@@ -7,7 +7,6 @@ import {
 import { ApiError } from "@executor-js/utils/api-error";
 import { Context, Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
-import { RequireBrowserSession } from "@executor-js/hosted-server";
 
 /** The cloud projection of Autumn's catalog. Prices come from the selected provider catalog. */
 export const BillingPlan = Schema.Struct({
@@ -90,7 +89,10 @@ export class Billing extends Context.Service<
   }
 >()("cloud/Billing") {}
 
-/** Billing is deliberately absent from the shared and self-hosted API. */
+/**
+ * Billing is deliberately absent from the shared and self-hosted API. Owners and admins reach it
+ * from the dashboard or an agent; checkout and the portal return a link the person opens to pay.
+ */
 export const billingGroup = HttpApiGroup.make("billing")
   .add(
     HttpApiEndpoint.get("overview", "/api/organizations/:organization/billing", {
@@ -121,5 +123,4 @@ export const billingGroup = HttpApiGroup.make("billing")
       error: [BillingUnavailable, OrganizationForbidden],
     }),
   )
-  .middleware(RequireOrganization)
-  .middleware(RequireBrowserSession);
+  .middleware(RequireOrganization);

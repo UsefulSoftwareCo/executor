@@ -40,16 +40,17 @@ const saveErrors = [
   AccountNotFound,
   AccountSelectionInvalid,
 ] as const;
-/** Bearer credentials, including a connection's own grants, cannot manage connections. */
+/**
+ * Agents may list the member's connections. Bearer credentials, including a connection's own
+ * grants, cannot change them or the connected agents: that would let an agent widen its own access.
+ */
 export const HostedMcpConnections = HttpApiGroup.make("mcpConnections")
   .add(
     HttpApiEndpoint.get("list", path, {
       params: organization,
       success: Schema.Array(ConnectionView),
       error: errors,
-    })
-      .annotate(RequiredAction, "manage")
-      .middleware(RequireBrowserSession),
+    }).annotate(RequiredAction, "read"),
   )
   .add(
     HttpApiEndpoint.post("create", path, {

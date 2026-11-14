@@ -169,6 +169,10 @@ revoking the connection revokes every grant issued through it. Personal access
 tokens and the local server key are not limited by a connection; they keep full
 access at the plain URL and are refused at a connection's URL.
 
+An agent can list your scoped connections with the Executor app, but creating,
+editing and revoking them happens on the dashboard, so an agent never widens its
+own access.
+
 On hosted and self-host, **Connected agents** on the same page lists each
 client you approved, with the apps it can reach, and revokes its grant.
 

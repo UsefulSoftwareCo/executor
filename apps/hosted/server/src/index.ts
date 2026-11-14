@@ -64,7 +64,11 @@ export {
   lookupOrganizationSlug,
   noOrganizationRemovals,
 } from "./implementation/organization.ts";
-export { requireOrganizationAdmin, requireOrganizationOwner } from "./implementation/access.ts";
+export {
+  currentOrganizationSlug,
+  requireOrganizationAdmin,
+  requireOrganizationOwner,
+} from "./implementation/access.ts";
 export { hostedMiddlewareLive } from "./implementation/middleware.ts";
 export * from "./contracts/organization-removal.ts";
 export {
