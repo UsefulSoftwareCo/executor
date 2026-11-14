@@ -7540,6 +7540,17 @@ export const scenarios = plan({
       local: na("Local uses PGlite, not this PostgreSQL pool."),
     },
   },
+  cloudDatabaseConnectionRepeat: {
+    fixtures: "actors",
+    file: "cloud-database-placement.spec.ts",
+    title:
+      "Cloud's database pool runs a statement whose connection the far end dropped once more on a fresh connection, unless it may have changed data or is in a transaction",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host uses PGlite, not this PostgreSQL pool."),
+      local: na("Local uses PGlite, not this PostgreSQL pool."),
+    },
+  },
   toolCallBatch: {
     fixtures: "actors",
     file: "tool-call-batch.spec.ts",

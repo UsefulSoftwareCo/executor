@@ -278,6 +278,50 @@ const poolCase = (name: string) =>
     )(output.trim().split("\n").at(-1) ?? "");
   });
 
+/** One case of the probe of the pool's repeat after a dropped connection (connection-repeat-fixture.ts). */
+const repeatCase = (name: string) =>
+  Effect.gen(function* () {
+    const target = yield* Target;
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const output = yield* processes.string(
+      ChildProcess.make(
+        "node",
+        [
+          "apps/hosted/testing/connection-repeat-fixture.ts",
+          "--configuration",
+          `${target.directory}/sso-database.json`,
+          "--case",
+          name,
+        ],
+        { env: { PATH: process.env.PATH ?? "", NODE_ENV: "test" }, extendEnv: false },
+      ),
+    );
+    return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(RepeatCase))(
+      output.trim().split("\n").at(-1) ?? "",
+    );
+  });
+
+/** What the statements after a drop did. */
+const RepeatSeen = Schema.Struct({
+  dropped: Schema.Number,
+  outcome: Schema.String,
+  millis: Schema.Number,
+  connects: Schema.Number,
+  peak: Schema.Number,
+  healthyClosed: Schema.Number,
+  repeats: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)),
+  rows: Schema.optionalKey(Schema.Number),
+});
+const RepeatCase = Schema.Union([
+  RepeatSeen,
+  Schema.Struct({ event: RepeatSeen, object: RepeatSeen }),
+  Schema.Struct({ runs: Schema.Array(RepeatSeen) }),
+  Schema.Struct({
+    mismatches: Schema.Array(Schema.Struct({ sql: Schema.String, expected: Schema.String })),
+    statements: Schema.Number,
+  }),
+]);
+
 layer(HostedLive, { excludeTestServices: true })("Cloud database placement", (it) => {
   it.effect(scenarios.cloudCronJobsPlaced.title, (context) =>
     withHostedCase(
@@ -1448,5 +1492,136 @@ return listed;`;
         }),
       ),
     { timeout: 180_000 },
+  );
+
+  it.effect(
+    scenarios.cloudDatabaseConnectionRepeat.title,
+    (context) =>
+      withHostedCase(
+        context,
+        Effect.gen(function* () {
+          const evidence = yield* Evidence;
+          const step = (title: string, name: string) =>
+            evidence.step(
+              title,
+              repeatCase(name).pipe(
+                Effect.tap((seen) => evidence.json(`repeat-${name}.json`, seen)),
+              ),
+            );
+          const one = (value: typeof RepeatCase.Type) => {
+            if (!("outcome" in value)) throw new Error("Expected one result");
+            return value;
+          };
+          const both = (value: typeof RepeatCase.Type) => {
+            if (!("event" in value))
+              throw new Error("Expected the event and object pools' results");
+            return value;
+          };
+
+          // A proxy between the pool and the database ends each idle connection's server side
+          // while the client's socket stays open, as Hyperdrive and PlanetScale's routing can; the
+          // pool learns only when it writes its next statement.
+          const read = both(yield* step("A read on a dropped connection runs once more", "read"));
+          for (const shape of ["event", "object"] as const) {
+            const result = read[shape];
+            expect(result.dropped, `The ${shape} pool's idle connection was dropped`).toBe(1);
+            expect(result.outcome, `The ${shape} pool's read succeeds`).toBe("ok");
+            expect(result.connects, "On one fresh connection of the pool").toBe(1);
+            expect(result.repeats).toHaveLength(1);
+            expect(result.repeats[0]).toMatchObject({
+              "db.connection.repeat": "connection-lost",
+              "db.connection.repeat_reason": "PgConnection: Connection closed",
+              "db.connection.repeat_outcome": "succeeded",
+            });
+            expect(typeof result.repeats[0]?.["db.connection.lost_idle_ms"]).toBe("number");
+            expect(typeof result.repeats[0]?.["db.connection.lost_age_ms"]).toBe("number");
+          }
+
+          // A write may have reached the server before the client learnt the connection was
+          // gone; whether it applied cannot be known, so it is never sent again. The session
+          // object's write goes out on the multiplexed path, in a statement group.
+          const write = both(yield* step("A write is not repeated", "write"));
+          for (const shape of ["event", "object"] as const) {
+            expect(write[shape].outcome, `The ${shape} pool's write`).toBe(
+              "effect/sql/SqlError: PgConnection: Connection closed",
+            );
+            expect(write[shape].repeats, `The ${shape} pool's write is not repeated`).toEqual([]);
+            expect(write[shape].rows, "No row was written, once or twice").toBe(0);
+          }
+
+          // The connection is lost after BEGIN and one statement; the transaction's next read
+          // fails, and nothing of it runs again outside the transaction.
+          const transaction = one(
+            yield* step("A statement in a transaction is not repeated", "transaction"),
+          );
+          expect(transaction.dropped).toBe(1);
+          expect(transaction.outcome).toBe("effect/sql/SqlError: PgConnection: Connection closed");
+          expect(transaction.repeats).toEqual([]);
+
+          // No new connection can be made: the repeat's one attempt and the retry every attempt
+          // gets both fail, promptly, and the caller gets the first error, saying so.
+          const down = one(
+            yield* step("With the database unreachable the repeat fails once", "down"),
+          );
+          expect(down.outcome).toBe(
+            "effect/sql/SqlError: PgConnection: Connection closed (one repeat on a fresh connection also failed)",
+          );
+          expect(down.connects, "One attempt and its retry, no loop").toBe(2);
+          expect(down.millis).toBeLessThan(10_000);
+          expect(down.repeats).toHaveLength(1);
+          expect(down.repeats[0]?.["db.connection.repeat_outcome"]).toBe("failed");
+
+          // More concurrent reads than the pool holds, after every connection is dropped: the
+          // repeats take the pool's own connections, so no more than its cap are ever open.
+          const cap = both(yield* step("Repeats stay within the pool's cap", "cap"));
+          for (const [shape, limit] of [
+            ["event", 2],
+            ["object", 4],
+          ] as const) {
+            expect(cap[shape].dropped).toBe(limit);
+            expect(cap[shape].outcome, `The ${shape} pool's 8 reads`).toBe("ok");
+            expect(cap[shape].peak, `Open at once in the ${shape} pool`).toBeLessThanOrEqual(limit);
+            expect(cap[shape].repeats.length).toBeGreaterThan(0);
+          }
+
+          // A burst kills every idle connection of a full session-object pool, then one read: its
+          // repeat skips the dead connections one at a time, each closed before the next is taken,
+          // so no more sockets than the pool's cap are open at once.
+          const burst = one(yield* step("A repeat after a burst stays within the cap", "burst"));
+          expect(burst.dropped).toBe(4);
+          expect(burst.outcome, "The read after the burst").toBe("ok");
+          expect(burst.repeats).toHaveLength(1);
+          expect(burst.peak, "Sockets open at once in a pool capped at 4").toBeLessThanOrEqual(4);
+
+          // One of four idle connections dropped, one read, several times over: when the read
+          // lands on the dropped one, its repeat closes the older idle connections, dead or not,
+          // and still never has more than the cap open.
+          const dropOne = yield* step("A repeat after one drop stays within the cap", "drop-one");
+          if (!("runs" in dropOne)) return yield* Effect.die("Expected the drop-one runs");
+          for (const run of dropOne.runs) {
+            expect(run.outcome).toBe("ok");
+            expect(run.peak, "Sockets open at once in a pool capped at 4").toBeLessThanOrEqual(4);
+          }
+          expect(
+            dropOne.runs.filter((run) => run.repeats.length > 0).length,
+            "Runs in which the read met the dropped connection",
+          ).toBeGreaterThan(0);
+
+          // A tool call's reads run in a held, read-only snapshot batch. A leaf that reads, loses
+          // the connection and reads again fails: repeated on another connection, the second read
+          // would leave the hold and its snapshot.
+          const held = one(yield* step("A read inside a held batch is not repeated", "held"));
+          expect(held.dropped).toBe(1);
+          expect(held.outcome).toBe("effect/sql/SqlError: PgConnection: Connection closed");
+          expect(held.repeats).toEqual([]);
+
+          // What the repeat counts as a read, from the statement's text.
+          const classify = yield* step("Statements are classified as reads or writes", "classify");
+          if (!("mismatches" in classify)) return yield* Effect.die("Expected the classification");
+          expect(classify.mismatches).toEqual([]);
+          expect(classify.statements).toBeGreaterThan(30);
+        }),
+      ),
+    { timeout: 120_000 },
   );
 });

@@ -366,9 +366,17 @@ const connectAttemptTimeout = Duration.millis(2500);
  * Each `sql.connect` span records its `db.connect.attempt`, and the second also records why the
  * first failed as `db.connect.retry_reason`. A failed attempt, a timed-out one included, is an
  * error span with `db.connect.failure`. When both fail, the statement fails with the
- * driver's `SqlError`; statements themselves are never repeated. Each also records the pool's
- * `db.connect.route`. Beside the client it provides {@link OpenedConnections}, its count of those
- * spans.
+ * driver's `SqlError`. Each also records the pool's `db.connect.route`. Beside the client it
+ * provides {@link OpenedConnections}, its count of those spans.
+ *
+ * A statement whose connection a proxy or the server closed under it runs once more, when its
+ * run is all reads outside a transaction and outside a `PgPool.held` batch, on a connection of
+ * this pool opened after the loss (`PgPool.use` in the @effect/sql-pg patch,
+ * `patches/effect-sql-pg-tracing.md`). A write is never repeated. The repeat closes any older idle
+ * connection it is handed, healthy or not, one at a time, so no more than `maxConnections` are
+ * open at once; later statements reconnect. It costs one connect when the database can be reached.
+ * When it cannot, that connect gets the same two attempts, so a read fails up to 5 s later than
+ * without the repeat. Each repeat is a `sql.connection.repeat` span.
  */
 export const cloudDatabasePool = (options: {
   readonly url: Redacted.Redacted;
