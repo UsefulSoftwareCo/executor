@@ -43,6 +43,7 @@ import type { ToolCallCaller } from "../contracts/tool-call-log.ts";
 import { loggedToolCall, loggedToolResume, recordCallDetails } from "./tool-call-log.ts";
 import { patGrantOf } from "./mcp-oauth.ts";
 import { listTools, searchableTools, searchTools } from "./tools.ts";
+import { observeToolSearch } from "./product-analytics.ts";
 import { listAppSkills, readAppSkill } from "./skills.ts";
 
 /**
@@ -297,7 +298,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
       observe("listTools", grantRefusal(listTools(input, options)), "read"),
     searchableTools: (input, options) =>
       observe("searchableTools", grantRefusal(searchableTools(input, options)), "read"),
-    searchTools: (input) => observe("searchTools", searchTools(input), "read"),
+    searchTools: (input) =>
+      observe("searchTools", observeToolSearch(input, searchTools(input)), "read"),
     callTool: (input, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {
         const execution = yield* CurrentMcpExecution;
