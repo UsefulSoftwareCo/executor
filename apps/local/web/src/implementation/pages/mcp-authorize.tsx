@@ -3,7 +3,7 @@ import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 import { Exit } from "effect";
 import { AsyncResult } from "effect/reactivity";
-import { grantTarget, singleResourceOrigin } from "@executor-js/mcp-auth/grants";
+import { grantTarget, singleResourceOrigin, type ApprovalMode } from "@executor-js/mcp-auth/grants";
 import {
   McpConsentActions,
   McpConsentDestination,
@@ -12,12 +12,13 @@ import {
   McpConsentSummary,
   McpConsentTargetRows,
   consentDestination,
+  preselectedApprovalMode,
 } from "@executor-js/ui/dashboard/mcp-consent";
 import { localMcpClientAtom, localMcpConsentAtom } from "../../contracts/mcp.ts";
 
 /**
- * Pairing establishes the operator. The page approves what the MCP URL names, shown as plain
- * values: the access and where approvals are answered.
+ * Pairing establishes the operator. The page approves the access the MCP URL names, and where
+ * approvals are answered, which the URL only preselects.
  */
 export function LocalMcpAuthorizePage() {
   const page = usePageUrl();
@@ -30,9 +31,16 @@ export function LocalMcpAuthorizePage() {
   const submit = useAtomSet(localMcpConsentAtom, { mode: "promiseExit" });
   const pending = useAtomValue(localMcpConsentAtom);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<ApprovalMode | undefined>(
+    target?.kind === "mcp" ? preselectedApprovalMode(target.mode) : undefined,
+  );
   const decide = async (accept: boolean) => {
     setError(null);
-    const result = await submit({ accept, query });
+    const result = await submit({
+      accept,
+      query,
+      settings: mode === undefined ? undefined : { mode },
+    });
     if (Exit.isFailure(result)) {
       setError("This connection could not be completed. Start again from your MCP client.");
       return false;
@@ -61,7 +69,12 @@ export function LocalMcpAuthorizePage() {
           destination === undefined ? undefined : <McpConsentDestination origin={destination} />
         }
       >
-        <McpConsentTargetRows target={target} />
+        <McpConsentTargetRows
+          target={target}
+          mode={mode}
+          onMode={setMode}
+          disabled={pending.waiting}
+        />
       </McpConsentSummary>
       {error && (
         <p role="alert" className="auth-error text-destructive text-[13px]">

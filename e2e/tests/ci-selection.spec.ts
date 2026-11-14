@@ -39,7 +39,6 @@ const jobs = [
   "cloud-isolate",
   "cloud-telemetry-flush",
   "cloud-connections",
-  "cloud-v1-bound",
   "cloud-rate-limit",
   "cloud-rollback",
   "cloud-oauth-proxy-preview",
@@ -484,7 +483,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               (_, index) => `cloud-product ${index + 1}/${productParts}`,
             ),
             "cloud-workers, cloud-locks, cloud-batch, cloud-autumn",
-            "cloud-domains, cloud-v1-bound, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview",
+            "cloud-domains, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview",
             "cloud-removal-recovery, cloud-export-hang, cloud-listings",
           ]);
           // Each Cloud job's pattern is on exactly one runner and empty on the others. The runner
@@ -1750,7 +1749,6 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-isolate",
         "cloud-telemetry-flush",
         "cloud-connections",
-        "cloud-v1-bound",
         "cloud-rate-limit",
         "cloud-rollback",
         "cloud-oauth-proxy-preview",
@@ -1844,6 +1842,14 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           ["true", "true"],
         ],
         [["bun.lock"], ["true", "true"]],
+        // The Rust collector, a crate inside a package both are built from, and its build script.
+        [["packages/telemetry/collector/src/http.rs"], ["true", "true"]],
+        [["packages/telemetry/collector/Cargo.lock"], ["true", "true"]],
+        [["packages/telemetry/scripts/build-collector.ts"], ["true", "true"]],
+        // The actions that build it run only in the matrix after merge until the cutover wires them
+        // into these lanes, so they start neither.
+        [[".github/actions/collector/action.yml"], ["", ""]],
+        [[".github/actions/rustup/action.yml"], ["", ""]],
         [["apps/docs/public/install.sh"], ["", "true"]],
         [["scripts/releases/config.ts"], ["true", "true"]],
         // The lanes' own definition runs both.
@@ -2052,6 +2058,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         // One line per entry of collectorInputs (e2e/collector-inputs.ts): a file the entry covers.
         const inputs: Record<string, string> = {
           "packages/telemetry/collector/": "packages/telemetry/collector/src/main.rs",
+          "packages/telemetry/scripts/build-collector.ts":
+            "packages/telemetry/scripts/build-collector.ts",
+          ".github/actions/collector/": ".github/actions/collector/action.yml",
+          ".github/actions/rustup/": ".github/actions/rustup/action.yml",
         };
         expect(Object.keys(inputs).sort()).toEqual([...collectorInputs].sort());
         for (const [input, file] of Object.entries(inputs))
@@ -2060,6 +2070,9 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "packages/telemetry/src/isolate.ts",
           "packages/telemetry/collector-notes.md",
           "e2e/tests/collector.spec.ts",
+          "packages/telemetry/scripts/build-motel.ts",
+          ".github/actions/setup/action.yml",
+          ".github/actions/collector-notes.md",
         ])
           expect(collectorChanged([file]), file).toBe(false);
       }),
@@ -2223,7 +2236,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
             return {
               exitCode,
               log,
-              run: ["local", "checks", "cli", "recovery", "docker"].filter(
+              run: ["local", "checks", "cli", "recovery", "docker", "collector"].filter(
                 (kind) => values[`run_${kind}`] === "true",
               ),
               narrowed: values.narrowed,
@@ -2231,6 +2244,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               local: names("local_matrix"),
               docker: names("docker_matrix"),
               recovery: names("recovery_matrix"),
+              collector: names("collector_matrix"),
               macosArm64: values.macos_arm64,
             };
           }).pipe(Effect.scoped);
@@ -2244,8 +2258,9 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         expect(cli.exitCode, cli.log).toBe(0);
         expect(cli).toMatchObject({
           narrowed: "true",
-          run: ["cli"],
+          run: ["cli", "collector"],
           cli: ["win32-x64", "win32-x64"],
+          collector: ["win32-x64"],
           local: [],
           docker: [],
           recovery: [],
@@ -2256,16 +2271,38 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         const arm = yield* metadata({ RELEASE_CHANNEL: "build", RELEASE_TARGETS: "linux-arm64" });
         expect(arm.exitCode, arm.log).toBe(0);
         expect(arm).toMatchObject({
-          run: ["local", "checks", "recovery", "docker"],
+          run: ["local", "checks", "recovery", "docker", "collector"],
           cli: [],
           local: ["linux-arm64"],
           docker: ["arm64"],
+          collector: ["linux-arm64"],
         });
+        // The collector is built once for each target a packaging job runs on, and for no other.
+        for (const [targets, jobs, built] of [
+          ["", "", ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"]],
+          ["darwin-x64", "local", ["darwin-x64"]],
+          ["linux-arm64", "recovery", ["linux-arm64"]],
+          ["darwin-arm64,win32-x64", "checks", ["darwin-arm64", "win32-x64"]],
+          ["linux-x64", "docker,cli", ["linux-x64"]],
+        ] as const) {
+          const selected = yield* metadata({
+            RELEASE_CHANNEL: "build",
+            RELEASE_TARGETS: targets,
+            RELEASE_JOBS: jobs,
+          });
+          expect(selected.exitCode, selected.log).toBe(0);
+          expect(selected.collector, `${targets} ${jobs}`).toEqual(built);
+          expect(selected.run.includes("collector"), `${targets} ${jobs}`).toBe(true);
+        }
+        // Only the image, which packages no CLI runtime: no collector job runs.
+        const image = yield* metadata({ RELEASE_CHANNEL: "build", RELEASE_JOBS: "docker" });
+        expect(image.exitCode, image.log).toBe(0);
+        expect(image).toMatchObject({ narrowed: "true", run: ["docker"], collector: [] });
         // An unnarrowed build runs every kind on every target.
         const full = yield* metadata({ RELEASE_CHANNEL: "build" });
         expect(full).toMatchObject({
           narrowed: "false",
-          run: ["local", "checks", "cli", "recovery", "docker"],
+          run: ["local", "checks", "cli", "recovery", "docker", "collector"],
           docker: ["amd64", "arm64"],
           macosArm64: "true",
         });
@@ -2330,7 +2367,9 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           .filter((line, index, rest) => rest.slice(0, index + 1).every((l) => /^ {10}|^$/.test(l)))
           .map((line) => line.slice(10))
           .join("\n");
-        const kinds = ["local", "checks", "recovery", "cli", "docker"] as const;
+        // The collector job is a kind here too: skipped only when a narrowed build of only the
+        // image left it out.
+        const kinds = ["local", "checks", "recovery", "cli", "docker", "collector"] as const;
         const gateWith = (narrowed: boolean, skipped: (typeof kinds)[number]) =>
           Effect.gen(function* () {
             const outputs = {
@@ -2616,6 +2655,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               // Windows and macOS only.
               "Install Chromium on desktop runners",
               "Smoke-test the installed CLI",
+              // The wait for this run's collector job and its one build, which nothing packages yet;
+              // the lane gets its own collector step when packaging starts using it.
+              "Wait for the telemetry collector",
+              "Fetch the telemetry collector",
             ],
           ],
           [
@@ -2638,6 +2681,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               "Record the packaged desktop app's digest",
               // Runs only when the job failed; the lane's own e2e evidence covers CI.
               "Gather the failed scenarios' evidence",
+              // The wait for this run's collector job and its one build, which nothing packages yet;
+              // the lane gets its own collector step when packaging starts using it.
+              "Wait for the telemetry collector",
+              "Fetch the telemetry collector",
             ],
           ],
         ] as const;
@@ -2904,6 +2951,11 @@ layer(NodeServices.layer)("Release check after a push to main", (it) => {
         ["e2e/tests/desktop-recovery.spec.ts"],
         [".github/workflows/release-artifacts.yml"],
         ["bun.lock"],
+        ["packages/telemetry/collector/src/http.rs"],
+        ["packages/telemetry/scripts/build-collector.ts"],
+        // The actions the matrix's collector jobs run.
+        [".github/actions/collector/action.yml"],
+        [".github/actions/rustup/action.yml"],
       ]) {
         const result = yield* decideCheck({ checks: [tested], changed });
         expect(result.exitCode, result.log).toBe(0);

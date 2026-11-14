@@ -9,6 +9,7 @@ import {
 import { makeExecutionMemo } from "alchemy/Runtime/ExecutionMemo";
 import { Cause, Effect, Fiber, Layer, Schema } from "effect";
 import { FetchHttpClient, HttpServerRequest } from "effect/http";
+import { SqlClient } from "effect/sql";
 import { AutumnClient, type AutumnRequestFailed } from "../contracts/autumn.ts";
 import { autumnLive, autumnReads } from "./autumn-client.ts";
 import {
@@ -18,7 +19,6 @@ import {
   seatReconcileCandidates,
 } from "./billing-seats.ts";
 import { reportCloudFailure } from "./error-reporting.ts";
-import { v1BillingHold } from "./v1-import/billing.ts";
 import { HttpApiBuilder } from "effect/http-api";
 import {
   Billing,
@@ -43,6 +43,24 @@ class OrganizationBillingOrphaned extends Schema.TaggedError<OrganizationBilling
     return `Organization ${this.organization} was removed with billing customer ${this.customerId} left live`;
   }
 }
+
+const HoldStates = Schema.Array(Schema.Struct({ state: Schema.String }));
+
+/**
+ * Whether v2's billing must leave an organization the v1 import moved alone: `held` while the
+ * import was carrying v1's subscription over, `returned` once it gave it back to v1. Null for
+ * every other organization. The import is gone; its `private_v1_import_billing` rows are kept
+ * for their retention period, so an organization left in either state stays held until they go.
+ */
+const v1BillingHold = (organization: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const rows = yield* sql`
+      select state from private_v1_import_billing where organization_id = ${organization}
+    `.pipe(Effect.flatMap(Schema.decodeUnknownEffect(HoldStates)));
+    const state = rows[0]?.state;
+    return state === "held" || state === "returned" ? state : null;
+  });
 
 type Subscriptions = {
   readonly subscriptions: ReadonlyArray<{ readonly planId: string; readonly status: string }>;
@@ -74,10 +92,9 @@ export const billingLive = Effect.gen(function* () {
   const use = <A>(call: Effect.Effect<A, AutumnRequestFailed>) =>
     call.pipe(Effect.mapError(() => new BillingUnavailable()));
   /**
-   * A paid v1 organization's billing while the v1 import carries its subscription over (`held`),
-   * or after it gave it back to v1 (`returned`); null otherwise (`notes/v1-import.md`, "Billing").
-   * Its customer is v1's own until the carry-over finishes, so v2 must not create one, offer a
-   * checkout, sync seats or cancel anything for it meanwhile.
+   * A paid v1 organization's billing the v1 import left carrying over (`held`) or gave back to v1
+   * (`returned`); null otherwise (`notes/v1-import.md`). Its customer is v1's own, so v2 must not
+   * create one, offer a checkout, sync seats or cancel anything for it.
    */
   const hold = (organization: OrganizationId) => members.use(v1BillingHold(organization));
   /** Fail any billing operation on a held organization. */

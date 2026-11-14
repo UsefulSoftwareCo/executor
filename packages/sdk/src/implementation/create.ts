@@ -4,7 +4,6 @@ import { WorkflowHost } from "../contracts/workflow-runtime.ts";
 import { RepositoryHost } from "../contracts/source.ts";
 import { StorageHost } from "../contracts/storage.ts";
 import { PrefetchHost } from "../contracts/tools.ts";
-import { OAuthGrantImport } from "../contracts/oauth.ts";
 import { gitSourceStorage } from "./git-sources.ts";
 import { makeRegistry } from "./registry.ts";
 import { remoteRegistry } from "./remote-registry.ts";
@@ -23,12 +22,7 @@ import { AppId, CredentialsError, NotImplemented, StorageError } from "../contra
 import { makeWebhooks } from "./webhooks.ts";
 import { makeAppData } from "./app-storage.ts";
 import { makeAccountConnections } from "./account-connections.ts";
-import {
-  credentialsReadable,
-  makeAccounts,
-  moveImportedAccount,
-  storedAccount,
-} from "./accounts.ts";
+import { makeAccounts, storedAccount } from "./accounts.ts";
 import { makeSavedOAuthClients } from "./saved-oauth-clients.ts";
 import { makeOwnerMoves } from "./owner-moves.ts";
 import { SavedOAuthClientsHost } from "../contracts/oauth-clients.ts";
@@ -41,7 +35,6 @@ import { makeSchedules } from "./schedules.ts";
 import { makeTools } from "./tools.ts";
 import { makeSkills } from "./skills.ts";
 import { toEffectRuntime } from "./runtime.ts";
-import { validateFields } from "./provider.ts";
 import { database } from "./database.ts";
 import { makeOAuth } from "./oauth.ts";
 import { makeDeclarationCache, makeDeclarations } from "./declarations.ts";
@@ -232,20 +225,6 @@ export const createExecutor = (
           sources,
           blobs: options.blobs,
         }),
-      },
-      [OAuthGrantImport]: {
-        importOAuthGrant: oauth.importGrant,
-        checkOAuthGrant: oauth.checkGrant,
-        checkAccountFields: (input) =>
-          validateFields(input.provider, input.definition, input.method, input.fields).pipe(
-            Effect.asVoid,
-          ),
-        firstPartyClient: oauth.firstPartyClient,
-        credentialsReadable: credentialsReadable(db, credentials),
-        moveImportedAccount: moveImportedAccount(db),
-        refreshImportedGrant: oauth.refreshImportedGrant,
-        // The same removal without the provider-side revocation `accountOperations` makes.
-        removeImportedAccount: makeAccounts(db, credentials, crypto, options.hooks).remove,
       },
       [StorageHost]: {
         transaction: (effect) =>

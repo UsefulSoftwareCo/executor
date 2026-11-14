@@ -58,7 +58,6 @@ export { OrganizationDefaults } from "./contracts/organization-defaults.ts";
 export { organizationDefaults } from "./implementation/organization-defaults.ts";
 export { executorDefaultRedeployed } from "./implementation/executor-app-upgrades.ts";
 export { hostedAppCopies } from "./implementation/profile-app-copies.ts";
-export { linkAppAccount, linkUserAccount } from "./implementation/app-accounts.ts";
 export { memberSetupProgress, type SetupProgress } from "./implementation/setup-progress.ts";
 export {
   lookupMembership,

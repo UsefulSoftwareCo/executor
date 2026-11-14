@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 
 use executor_collector::args::{self, Listen};
 use executor_collector::lifecycle::{self, Stop};
-use executor_collector::{http, log, otlp, retention, store};
+use executor_collector::{connection, http, log, otlp, readers, retention, store};
 
 /// The whole shutdown, from the stop signal until the process exits. The local host kills the
 /// collector 3 s after asking it to stop (the self-host supervisor waits 15 s); this leaves half a
@@ -54,6 +54,7 @@ fn main() -> ExitCode {
     let losses = Arc::new(Mutex::new(store::LossBook::default()));
     let release = Arc::new(store::MemoryRelease::default());
     let shared = Arc::new(store::Shared::default());
+    let gate = Arc::new(store::ReadGate::default());
     let limits = retention::Limits {
         max_bytes: args.max_store_mb * 1024 * 1024,
         retention_ms: (args.retention_hours * 3_600_000) as i64,
@@ -74,11 +75,15 @@ fn main() -> ExitCode {
     };
     let writer = match store::start(
         owned,
-        args.max_pending,
+        store::Admission {
+            pending: args.max_pending,
+            max_export_bytes: args.max_export_bytes,
+        },
         losses.clone(),
         release.clone(),
         limits,
         shared.clone(),
+        gate.clone(),
     ) {
         Ok(writer) => writer,
         Err(error) => {
@@ -98,6 +103,17 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let readers =
+        match readers::Readers::open(&store::database_path(writer.data()), gate, release.clone()) {
+            Ok(readers) => readers,
+            Err(error) => {
+                log::error(
+                    "cannot open the telemetry store for reading",
+                    &[("error", error.into())],
+                );
+                return ExitCode::FAILURE;
+            }
+        };
     let app = Arc::new(http::App {
         max_pending: args.max_pending,
         max_export_bytes: args.max_export_bytes,
@@ -107,6 +123,7 @@ fn main() -> ExitCode {
         last_refusal_log: Mutex::new(None),
         release,
         store: shared,
+        readers: readers.clone(),
     });
     let stopped_at = Arc::new(Mutex::new(None));
     let served = runtime.block_on(serve(args.listen.clone(), app, stopped_at.clone()));
@@ -117,7 +134,10 @@ fn main() -> ExitCode {
             || Instant::now() + STOP_BUDGET,
             |at: Instant| at + STOP_BUDGET,
         );
-    // Requests still open are dropped here; a dropped sender sees no acknowledgement and resends.
+    // No new query starts. Requests still open are dropped here, their responses cut off; a
+    // dropped sender sees no acknowledgement and resends. The wait does not include blocking
+    // threads still running a query: they end with the process.
+    readers.stop();
     runtime.shutdown_timeout(Duration::from_millis(100));
     if !writer.close(deadline) {
         log::warn(
@@ -169,9 +189,12 @@ async fn serve(
                 .port();
             ready(json!({ "event": "listening", "port": port }));
             lifecycle::drain(
-                axum::serve(listener, router)
-                    .with_graceful_shutdown(stop)
-                    .into_future(),
+                axum::serve(
+                    connection::Guarding(listener),
+                    router.into_make_service_with_connect_info::<connection::ResponseDeadline>(),
+                )
+                .with_graceful_shutdown(stop)
+                .into_future(),
                 &stopping,
                 DRAIN,
             )
@@ -195,9 +218,12 @@ async fn serve(
             let bound = socket_identity(&path);
             ready(json!({ "event": "listening", "path": path.display().to_string() }));
             let result = lifecycle::drain(
-                axum::serve(listener, router)
-                    .with_graceful_shutdown(stop)
-                    .into_future(),
+                axum::serve(
+                    connection::Guarding(listener),
+                    router.into_make_service_with_connect_info::<connection::ResponseDeadline>(),
+                )
+                .with_graceful_shutdown(stop)
+                .into_future(),
                 &stopping,
                 DRAIN,
             )

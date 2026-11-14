@@ -31,7 +31,6 @@ import {
   previewDatabase,
   previewShape,
 } from "./preview-database.ts";
-import { missingV1PlanetscaleDatabase } from "./v1-import-settings.ts";
 
 /**
  * Hyperdrive needs an uploaded trust root even for publicly issued certificates.
@@ -323,32 +322,6 @@ export const cloudDirectDatabaseConnection = Effect.gen(function* () {
     route: "direct" as DatabaseRoute,
   };
 });
-
-/**
- * v1's Postgres for the v1 import, on production while `CLOUD_V1_IMPORT=on`. The stack declares a role on v1's
- * PlanetScale database (`V1_PLANETSCALE_DATABASE_NAME`, branch `main`) that inherits only
- * `pg_read_all_data`, and binds its pooled URL as the `V1_DATABASE_URL` Worker secret. It never
- * declares v1's database, which v1 owns; removing the resource drops only the role. Temporary,
- * with the v1 import window. Without the name a production deploy stops and says what to set.
- */
-export const v1DatabaseConnection = Effect.gen(function* () {
-  const role = globalThis.__ALCHEMY_RUNTIME__
-    ? yield* Planetscale.PostgresRole.ref("V1ReaderRole")
-    : yield* Planetscale.PostgresRole("V1ReaderRole", {
-        database: yield* Config.String("V1_PLANETSCALE_DATABASE_NAME").pipe(
-          Config.option,
-          Effect.map(Option.filter((name) => name !== "")),
-          Effect.flatMap(
-            Option.match({
-              onNone: () => Effect.die(new Error(missingV1PlanetscaleDatabase)),
-              onSome: Effect.succeed,
-            }),
-          ),
-        ),
-        inheritedRoles: ["pg_read_all_data"],
-      });
-  return yield* Output.named(role.pooledOrigin.pipe(Output.map(postgresUrl)), "V1_DATABASE_URL");
-}).pipe(Effect.orDie);
 
 /**
  * How long one attempt to open a runtime connection may take. A connection usually opens in

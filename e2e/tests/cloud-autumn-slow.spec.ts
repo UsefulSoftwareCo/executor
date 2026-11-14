@@ -1,7 +1,6 @@
 /**
- * The v1 import retries Autumn's plan reads (`cloud-v1-import.spec.ts`). The billing overview
- * answers a person within its own deadline, so while Autumn is slow it sends one read and says
- * it is unavailable within that deadline, rather than retrying. The faults match every caller of
+ * The billing overview answers a person within its own deadline, so while Autumn is slow it sends
+ * one read and says it is unavailable within that deadline, rather than retrying. The faults match every caller of
  * an Autumn route, so this file runs on its own local Cloud.
  */
 import { expect, layer } from "@effect/vitest";

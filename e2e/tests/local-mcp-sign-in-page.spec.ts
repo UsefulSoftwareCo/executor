@@ -1,6 +1,6 @@
 /**
- * Local sign-in shows what the MCP URL names as plain rows, in the hosted pages' layout, and offers
- * no menus: approving keeps what the URL names.
+ * Local sign-in shows the access the MCP URL names as a plain row, in the hosted pages' layout, and
+ * where approvals are answered as a menu the URL preselects.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -77,7 +77,7 @@ layer(TestLive, { excludeTestServices: true })("Local MCP sign-in page", (it) =>
               .count(),
           ]),
         );
-        expect(shown).toEqual(["All apps", "In Executor", 0, ["Access", "Approvals"], 1]);
+        expect(shown).toEqual(["All apps", "In your browser", 1, ["Access", "Approvals"], 1]);
         const desktop = yield* browser.use("Capture the local page", (page) => page.screenshot());
         yield* evidence.attach("local-desktop.png", "image/png", desktop);
         const phone = yield* browser.use("Capture the local page on a phone", (page) =>

@@ -1,6 +1,6 @@
 /**
  * Executor v1's WorkOS API keys, which keep working after v1 shuts down (`notes/v1-shutdown.md`,
- * decision 3, which is v1-import.md's decision 12). The first time v2 sees a WorkOS-format key
+ * decision 3). The first time v2 sees a WorkOS-format key
  * (`sk_`) it does not hold, on any MCP or API route, it asks v1's WorkOS whether the key is valid
  * and whose it is. A valid key whose organization moved, and whose owner is a member of the v2
  * organization it moved to, is stored as a native API key of that user, pinned to that

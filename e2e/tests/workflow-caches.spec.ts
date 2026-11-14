@@ -147,11 +147,17 @@ const unread = (files: ReadonlyArray<File>) =>
 const actionKinds: Record<string, "caching" | "fetching" | "neither"> = {
   "actions/cache": "caching",
   "actions/cache/restore": "caching",
+  "actions/cache/save": "caching",
   "actions/setup-go": "caching",
   "actions/setup-node": "caching",
   "oven-sh/setup-bun": "caching",
   "./.github/actions/setup": "caching",
   "./.github/actions/e2e-tools": "caching",
+  // The telemetry collector's build, restored and saved under its identity.
+  "./.github/actions/collector": "caching",
+  // rustup-init from rustup's own site, checked against the digest pinned in the action, then the
+  // toolchain the collector crate pins; no code from another ref of this repository.
+  "./.github/actions/rustup": "fetching",
   "actions/checkout": "fetching",
   // Another run's artifacts when given a `run-id`; see `codeFetches`.
   "actions/download-artifact": "fetching",
@@ -279,6 +285,42 @@ const cacheName = (step: Step) => {
     (cache) => (cache.file === undefined || cache.file === step.file) && key.startsWith(cache.key),
   );
   return known?.name ?? `${step.file}: ${uses.split("@")[0]} ${key}`;
+};
+
+/**
+ * What is wrong with the collector action's cache steps: each must use exactly the target and the
+ * identity `build-collector.ts --key` computes in its `key` step, with no `restore-keys` prefix
+ * that could hand back another identity's build, and there must be one restore and one save.
+ */
+const collectorAction = ".github/actions/collector/action.yml";
+const collectorKey = "collector-${{ inputs.target }}-${{ steps.key.outputs.key }}";
+const collectorKeyProblems = (files: ReadonlyArray<File>) => {
+  const action = files.find(({ file }) => file === collectorAction);
+  if (action === undefined) return [`${collectorAction}: not read`];
+  const steps = stepsOf(action);
+  const cacheSteps = steps.filter((step) => /^actions\/cache(\/\w+)?@/.test(field(step, "uses")));
+  const kind = (step: Step) => /^actions\/cache(?:\/(\w+))?@/.exec(field(step, "uses"))?.[1];
+  const identity = steps.find((step) => field(step, "id") === "key");
+  return [
+    ...(identity !== undefined &&
+    /build-collector\.ts --target "\$TARGET" --key\)\n\s+.*\n\s+echo "key=\$key" >> "\$GITHUB_OUTPUT"/.test(
+      identity.text,
+    )
+      ? []
+      : ["the key step does not write build-collector.ts --key's identity as its key output"]),
+    ...cacheSteps.flatMap((step) => [
+      ...(field(step, "key") === collectorKey
+        ? []
+        : [`${field(step, "uses").split("@")[0]}: key ${field(step, "key")}, not ${collectorKey}`]),
+      ...(/^\s+restore-keys:/m.test(step.text)
+        ? [`${field(step, "uses").split("@")[0]}: has a restore-keys prefix`]
+        : []),
+    ]),
+    ...(["restore", "save"] as const)
+      .filter((each) => cacheSteps.filter((step) => kind(step) === each).length !== 1)
+      .map((each) => `not exactly one actions/cache/${each} step`),
+    ...(cacheSteps.some((step) => kind(step) === undefined) ? ["an actions/cache step"] : []),
+  ];
 };
 
 /** A composite action's file, by the `./.github/actions/<name>` a step uses. */
@@ -737,6 +779,49 @@ layer(NodeServices.layer)("Workflow caches", (it) => {
             [release],
           ),
         ).toHaveLength(1);
+      }),
+  );
+
+  it.effect(
+    "the collector's cache entry is found only by its target and its computed identity",
+    () =>
+      Effect.gen(function* () {
+        const files = yield* workflowFiles;
+        expect(collectorKeyProblems(files)).toEqual([]);
+        // The same action with one change, read in place of the real one.
+        const text = files.find(({ file }) => file === collectorAction)!.text;
+        const changed = (from: string, to: string) => {
+          expect(text, from).toContain(from);
+          return collectorKeyProblems([{ file: collectorAction, text: text.replace(from, to) }]);
+        };
+        // Without the identity, an entry of one identity would answer for every other.
+        expect(
+          collectorKeyProblems([
+            {
+              file: collectorAction,
+              text: text.replaceAll(collectorKey, "collector-${{ inputs.target }}"),
+            },
+          ]),
+        ).toEqual([
+          "actions/cache/restore: key collector-${{ inputs.target }}, not " + collectorKey,
+          "actions/cache/save: key collector-${{ inputs.target }}, not " + collectorKey,
+        ]);
+        // Without the target, one target's build would answer for another's.
+        expect(
+          changed(`key: ${collectorKey}`, "key: collector-${{ steps.key.outputs.key }}"),
+        ).toHaveLength(1);
+        // A prefix fallback restores the newest entry of any identity.
+        expect(
+          changed(
+            `key: ${collectorKey}`,
+            `key: ${collectorKey}\n        restore-keys: collector-\${{ inputs.target }}-`,
+          ),
+        ).toEqual(["actions/cache/restore: has a restore-keys prefix"]);
+        // The key output must be the script's identity, not some other value.
+        expect(changed('echo "key=$key"', 'echo "key=${{ github.sha }}"')).toEqual([
+          "the key step does not write build-collector.ts --key's identity as its key output",
+        ]);
+        expect(collectorKeyProblems([])).toEqual([`${collectorAction}: not read`]);
       }),
   );
 

@@ -12,6 +12,8 @@ interface WaterfallProps {
   logs: ReadonlyArray<{ spanId: string | null }>;
   /** False while the trace has log pages that are not loaded, so counts are lower bounds. */
   logsComplete: boolean;
+  /** True when the trace was answered in part, so child and descendant counts cover the spans shown. */
+  partial: boolean;
 }
 
 const ROW_HEIGHT = 26;
@@ -21,6 +23,9 @@ const TICK_COUNT = 5;
 const INDENT = 16;
 const MIN_BAR_WIDTH_PX = 3;
 const MIN_VIEW_SPAN = 0.0001; // max zoom: 10000x
+/** A 1px line 5px into each indent step, the colour of `border-white/5`. */
+const DEPTH_GUIDE =
+  "linear-gradient(to right, transparent 5px, rgb(255 255 255 / 0.05) 5px, rgb(255 255 255 / 0.05) 6px, transparent 6px)";
 
 function formatAxisTime(ms: number, totalMs: number): string {
   if (totalMs >= 60_000) {
@@ -43,6 +48,7 @@ export function Waterfall({
   onSelectSpan,
   logs,
   logsComplete,
+  partial,
 }: WaterfallProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const timelineRef = useRef<HTMLDivElement>(null);
@@ -64,36 +70,65 @@ export function Waterfall({
     return counts;
   }, [logs]);
 
-  const childCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const s of spans) {
-      if (s.parentSpanId) counts.set(s.parentSpanId, (counts.get(s.parentSpanId) ?? 0) + 1);
-    }
-    return counts;
-  }, [spans]);
+  const spansById = useMemo(() => new Map(spans.map((s) => [s.spanId, s])), [spans]);
 
-  // Descendant counts including self (recursive count) for collapse tooltips
-  const descendantCounts = useMemo(() => {
-    const kids = new Map<string, string[]>();
-    for (const s of spans) {
-      if (s.parentSpanId) {
-        const arr = kids.get(s.parentSpanId) ?? [];
-        arr.push(s.spanId);
-        kids.set(s.parentSpanId, arr);
+  // Each span numbered by its position, with its parent's number, built once per trace for the
+  // counts and for collapsing. Both follow these links rather than the order of `spans`. A span id
+  // that appears twice is numbered by its first position, and its later positions are chained
+  // from there in `same`.
+  const links = useMemo(() => {
+    const count = spans.length;
+    const first = new Map<string, number>();
+    const same = new Int32Array(count).fill(-1);
+    const last = new Int32Array(count);
+    for (let i = 0; i < count; i++) {
+      const s = spans[i]!;
+      const at = first.get(s.spanId);
+      if (at === undefined) {
+        first.set(s.spanId, i);
+        last[i] = i;
+      } else {
+        same[last[at]!] = i;
+        last[at] = i;
       }
     }
-    const out = new Map<string, number>();
-    const count = (id: string): number => {
-      const cached = out.get(id);
-      if (cached !== undefined) return cached;
-      let total = 0;
-      for (const child of kids.get(id) ?? []) total += 1 + count(child);
-      out.set(id, total);
-      return total;
-    };
-    for (const s of spans) count(s.spanId);
-    return out;
+    const parent = new Int32Array(count).fill(-1);
+    for (let i = 0; i < count; i++) {
+      const s = spans[i]!;
+      if (s.parentSpanId) parent[i] = first.get(s.parentSpanId) ?? -1;
+    }
+    return { first, same, parent };
   }, [spans]);
+
+  // Children and descendants of each span. A span's descendant count is final once every span
+  // naming it as parent has added its own, starting from the spans no span names: no recursion
+  // (a trace can be a chain of many thousands), and spans in a cycle of parent links are never
+  // final, so the walk ends with finite counts for them.
+  const { childCounts, descendantCounts } = useMemo(() => {
+    const { first, same, parent } = links;
+    const counts = new Map<string, number>();
+    const waiting = new Int32Array(spans.length);
+    for (let i = 0; i < spans.length; i++) {
+      const s = spans[i]!;
+      if (s.parentSpanId) counts.set(s.parentSpanId, (counts.get(s.parentSpanId) ?? 0) + 1);
+      const up = parent[i]!;
+      if (up !== -1) waiting[up]!++;
+    }
+    const totals = new Float64Array(spans.length);
+    const ready: number[] = [];
+    for (const at of first.values()) if (waiting[at] === 0) ready.push(at);
+    for (let at = ready.pop(); at !== undefined; at = ready.pop()) {
+      for (let i = at; i !== -1; i = same[i]!) {
+        const up = parent[i]!;
+        if (up === -1) continue;
+        totals[up] = totals[up]! + 1 + totals[at]!;
+        if (--waiting[up]! === 0) ready.push(up);
+      }
+    }
+    const descendants = new Map<string, number>();
+    for (const [id, at] of first) descendants.set(id, totals[at]!);
+    return { childCounts: counts, descendantCounts: descendants };
+  }, [spans, links]);
 
   // Collapsed span ids: their descendants are hidden
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
@@ -112,31 +147,40 @@ export function Waterfall({
     });
   }, []);
 
-  // Visible spans: filter out descendants of any collapsed ancestor
+  // Visible spans: leave out every span with a collapsed ancestor, found by walking parent links
+  // up and remembering the answer for every span passed, then keep the rest in their given order.
+  // A walk that reaches a span already on it stops, so a cycle ends.
   const visibleSpans = useMemo(() => {
     if (collapsed.size === 0) return spans;
-    // Build parent map for efficient ancestry walks
-    const parentMap = new Map<string, string | null>();
-    for (const s of spans) parentMap.set(s.spanId, s.parentSpanId ?? null);
-    const hiddenCache = new Map<string, boolean>();
-    const isHidden = (id: string | null): boolean => {
-      if (!id) return false;
-      const cached = hiddenCache.get(id);
-      if (cached !== undefined) return cached;
-      let cur: string | null = id;
-      while (cur) {
-        const parent: string | null = parentMap.get(cur) ?? null;
-        if (parent && collapsed.has(parent)) {
-          hiddenCache.set(id, true);
-          return true;
+    const { first, parent } = links;
+    // For each span: 0 not yet known, 1 it or an ancestor is collapsed, 2 neither, 3 on this walk.
+    const state = new Uint8Array(spans.length);
+    for (const id of collapsed) {
+      const at = first.get(id);
+      if (at !== undefined) state[at] = 1;
+    }
+    const path: number[] = [];
+    const covered = (start: number) => {
+      let answer = 2;
+      for (let at = start; at !== -1; at = parent[at]!) {
+        if (state[at] !== 0) {
+          answer = state[at] === 1 ? 1 : 2;
+          break;
         }
-        cur = parent;
+        state[at] = 3;
+        path.push(at);
       }
-      hiddenCache.set(id, false);
-      return false;
+      for (const at of path) state[at] = answer;
+      path.length = 0;
+      return answer === 1;
     };
-    return spans.filter((s) => !isHidden(s.spanId));
-  }, [spans, collapsed]);
+    return spans.filter((s, i) => {
+      if (!s.parentSpanId) return true;
+      const up = parent[i]!;
+      // A parent that is not in the trace hides its children only when it is collapsed itself.
+      return up === -1 ? !collapsed.has(s.parentSpanId) : !covered(up);
+    });
+  }, [spans, links, collapsed]);
 
   // oxlint-disable-next-line react/incompatible-library -- this build does not run the React Compiler
   const virtualizer = useVirtualizer({
@@ -420,13 +464,20 @@ export function Waterfall({
                 className="shrink-0 flex items-center gap-1.5 overflow-hidden border-r border-white/5 pr-2 relative"
                 style={{ width: LABEL_WIDTH, paddingLeft: labelIndent }}
               >
-                {Array.from({ length: span.depth }, (_, i) => (
+                {span.depth > 0 && (
+                  // One guide line per ancestor, drawn as a repeated background on one element:
+                  // a row deep in a long chain would otherwise add thousands of elements.
                   <div
-                    key={`${span.spanId}-depth-${i}`}
-                    className="absolute top-0 bottom-0 border-l border-white/5 pointer-events-none"
-                    style={{ left: 8 + i * INDENT + 5 }}
+                    className="absolute top-0 bottom-0 pointer-events-none"
+                    style={{
+                      left: 8,
+                      width: span.depth * INDENT,
+                      backgroundImage: DEPTH_GUIDE,
+                      backgroundSize: `${INDENT}px 100%`,
+                      backgroundRepeat: "repeat-x",
+                    }}
                   />
-                ))}
+                )}
                 {span.depth > 0 && (
                   <div
                     className="absolute pointer-events-none border-white/10"
@@ -445,7 +496,7 @@ export function Waterfall({
                   <button
                     type="button"
                     className="shrink-0 text-sm tabular-nums rounded px-1 border border-white/10 text-zinc-400 bg-zinc-900 relative z-10 leading-none py-0.5 cursor-pointer hover:text-zinc-200 hover:border-white/20 flex items-center gap-0.5"
-                    title={`${isCollapsed ? "Expand" : "Collapse"} ${dc} descendant${dc === 1 ? "" : "s"}`}
+                    title={`${isCollapsed ? "Expand" : "Collapse"} ${dc} descendant${dc === 1 ? "" : "s"}${partial ? " shown" : ""}`}
                     onClick={(e) => {
                       e.stopPropagation();
                       toggleCollapse(span.spanId);
@@ -473,9 +524,7 @@ export function Waterfall({
                 </p>
 
                 {(() => {
-                  const parent = span.parentSpanId
-                    ? spans.find((s) => s.spanId === span.parentSpanId)
-                    : null;
+                  const parent = span.parentSpanId ? spansById.get(span.parentSpanId) : null;
                   const differsFromParent = !parent || parent.serviceName !== span.serviceName;
                   return differsFromParent && span.depth > 0 ? (
                     <span

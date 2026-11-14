@@ -201,7 +201,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
                 .count(),
             ]),
           );
-          expect(shown).toEqual([organization, "All apps", "Through your agent", 1]);
+          expect(shown).toEqual([organization, "All apps", "Automatic", 1]);
           yield* shot("default-desktop");
           yield* browser.use("Open the Access menu", (page) => consentMenu(page, "Access").click());
           const access = yield* browser.use("The Access menu starts with every app", (page) =>
@@ -219,8 +219,9 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
               page.getByRole("option").allInnerTexts(),
             ),
           ).toEqual([
+            "Automatic\nExecutor does not ask. Your agent's own permission prompts decide.",
             "Through your agent\nYour agent shows you the request and resumes the call.",
-            "In Executor\nYou review the call in your browser.",
+            "In your browser\nYou review the call on an Executor page.",
             "In your client\nYour client prompts you, if it supports MCP prompts.",
           ]);
           yield* shot("approvals-open-desktop");
@@ -253,7 +254,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
         const grant = yield* oauth.authorizeReviewing(review);
         expect(yield* whoami(accessToken(grant))).toMatchObject({
           access: { kind: "all" },
-          mode: "model",
+          mode: "automatic",
         });
       }).pipe(Effect.provide(McpOAuth.layer)),
     ),
@@ -306,7 +307,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
         const token = accessToken(grant);
         expect(yield* whoami(token)).toMatchObject({
           access: { kind: "connection", id: connection.id, name },
-          mode: "model",
+          mode: "automatic",
         });
         const client = yield* mcp.connect(token, "chosen-connection");
         const run = (operation: string, code: string) =>
@@ -358,13 +359,13 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
             chooseConsentOrganization(page, organization),
           );
           yield* browser.use("Choose approvals in Executor", (page) =>
-            chooseConsent(page, "Approvals", "In Executor"),
+            chooseConsent(page, "Approvals", "In your browser"),
           );
           expect(
             yield* browser.use("Approvals show the choice", (page) =>
               consentValue(page, "Approvals"),
             ),
-          ).toBe("In Executor");
+          ).toBe("In your browser");
         });
         const grant = yield* oauth.authorizeReviewing(review);
         const token = accessToken(grant);
@@ -583,10 +584,10 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
             consentValue(page, "Approvals"),
           ]),
         );
-        expect(shown).toEqual([device.user_code, "All apps", "Through your agent"]);
+        expect(shown).toEqual([device.user_code, "All apps", "Automatic"]);
         yield* browser.use("Choose the connection", (page) => chooseConsent(page, "Access", name));
         yield* browser.use("Choose approvals in Executor", (page) =>
-          chooseConsent(page, "Approvals", "In Executor"),
+          chooseConsent(page, "Approvals", "In your browser"),
         );
         yield* shot("device-desktop");
         yield* phoneShot("device-mobile");
@@ -701,8 +702,8 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
         const retried = Effect.gen(function* () {
           yield* browser.use("Use a desktop window", (page) => page.setViewportSize(desktop));
           yield* heldInPlace("All apps")(failing);
-          yield* browser.use("Choose approvals in Executor while the list loads", (page) =>
-            chooseConsent(page, "Approvals", "In Executor"),
+          yield* browser.use("Choose approvals in your browser while the list loads", (page) =>
+            chooseConsent(page, "Approvals", "In your browser"),
           );
           yield* shot("connections-loading-desktop");
           yield* phoneShot("connections-loading-mobile");
@@ -716,7 +717,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
             yield* browser.use("Failed: the approval choice is kept", (page) =>
               consentRow(page, "Approvals").innerText(),
             ),
-          ).toBe("In Executor");
+          ).toBe("In your browser");
           yield* shot("connections-failed-desktop");
           yield* phoneShot("connections-failed-mobile");
           yield* openAccessShot("connections-failed-menu-desktop");
@@ -733,7 +734,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
             yield* browser.use("Retrying: the approval choice is kept", (page) =>
               consentRow(page, "Approvals").innerText(),
             ),
-          ).toBe("In Executor");
+          ).toBe("In your browser");
           yield* retry.release;
           yield* browser.use("Retried: the Access menu finishes loading", (page) =>
             consentMenu(page, "Access")
@@ -748,7 +749,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
                 consentValue(page, "Approvals"),
               ]),
             ),
-          ).toEqual([organization, "All apps", "In Executor"]);
+          ).toEqual([organization, "All apps", "In your browser"]);
         });
         const first = yield* oauth.authorizeReviewing(retried);
         expect(yield* whoami(accessToken(first))).toMatchObject({
@@ -767,7 +768,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP sign-in page", (it) => {
         expect(yield* whoami(accessToken(fallback))).toMatchObject({
           organization: { id: actors.organization.id },
           access: { kind: "connection", id: named.id, name: named.name },
-          mode: "model",
+          mode: "automatic",
         });
       }).pipe(Effect.provide(McpOAuth.layer)),
     ),

@@ -23,6 +23,7 @@ import {
 import { formatDuration, formatTimestamp, serviceColor } from "../format.ts";
 import { Waterfall } from "../components/Waterfall.tsx";
 import { SpanDetailPanel } from "../components/SpanDetail.tsx";
+import { TraceWarnings } from "../components/TraceWarnings.tsx";
 
 export function TraceDetailPage() {
   const { traceId = "" } = useParams<{ traceId: string }>();
@@ -46,6 +47,20 @@ export function TraceDetailPage() {
     restartLogs();
   };
 
+  // The collector, like Motel, adds a placeholder span for each missing parent and counts it in
+  // the trace's error count. A span is a placeholder when the trace's warnings name its id as
+  // missing (`missing span <id> (<n> child…)`); its name alone does not say so.
+  const hasMissingParents = useMemo(() => {
+    if (!AsyncResult.isSuccess(traceResult)) return false;
+    const { warnings, spans } = traceResult.value.data;
+    const missing = new Set<string>();
+    for (const warning of warnings) {
+      const match = MISSING_SPAN.exec(warning);
+      if (match) missing.add(match[1]!);
+    }
+    return missing.size > 0 && spans.some((s) => missing.has(s.spanId));
+  }, [traceResult]);
+
   if (!traceId) return <EmptyState title="No trace ID" />;
   if (!AsyncResult.isSuccess(traceResult)) {
     if (AsyncResult.isFailure(traceResult)) return <ErrorState message="Trace not found" />;
@@ -53,6 +68,9 @@ export function TraceDetailPage() {
   }
 
   const trace = traceResult.value.data;
+  // Set when the trace was too large to answer whole. The trace's duration and error count are
+  // then computed from the spans shown, so they are labelled as covering those spans.
+  const partial = trace.partial;
   const logs = logsPaging.state.rows;
   const logsComplete = logsPaging.state.end.status === "complete";
   const selectedSpan = selectedSpanId
@@ -85,18 +103,37 @@ export function TraceDetailPage() {
                 <dd className="text-zinc-300">{trace.serviceName}</dd>
               </div>
               <div className="flex items-center gap-1.5">
-                <dt className="text-zinc-600">Duration</dt>
+                <dt className="text-zinc-600">
+                  {partial ? "Duration of spans shown" : "Duration"}
+                </dt>
                 <dd className="text-zinc-300 tabular-nums">{formatDuration(trace.durationMs)}</dd>
               </div>
               <div className="flex items-center gap-1.5">
                 <dt className="text-zinc-600">Spans</dt>
-                <dd className="text-zinc-300 tabular-nums">{trace.spanCount.toLocaleString()}</dd>
+                <dd className="text-zinc-300 tabular-nums">
+                  {partial
+                    ? `${partial.returned.toLocaleString()} of ${partial.spanCount.toLocaleString()}`
+                    : trace.spanCount.toLocaleString()}
+                </dd>
               </div>
-              {trace.errorCount > 0 && (
+              {partial ? (
                 <div className="flex items-center gap-1.5">
-                  <dt className="text-zinc-600">Errors</dt>
-                  <dd className="text-red-400 tabular-nums">{trace.errorCount}</dd>
+                  <dt className="text-zinc-600">Errors in spans shown</dt>
+                  <dd
+                    className={`tabular-nums ${trace.errorCount > 0 ? "text-red-400" : "text-zinc-300"}`}
+                  >
+                    {trace.errorCount.toLocaleString()}
+                  </dd>
+                  {hasMissingParents && <MissingParentsNote />}
                 </div>
+              ) : (
+                trace.errorCount > 0 && (
+                  <div className="flex items-center gap-1.5">
+                    <dt className="text-zinc-600">Errors</dt>
+                    <dd className="text-red-400 tabular-nums">{trace.errorCount}</dd>
+                    {hasMissingParents && <MissingParentsNote />}
+                  </div>
+                )
               )}
               <div className="flex items-center gap-1.5">
                 <dt className="text-zinc-600">Started</dt>
@@ -108,6 +145,23 @@ export function TraceDetailPage() {
           <RefreshButton onRefresh={refresh} />
         </div>
       </PageContainer>
+
+      {(partial || trace.warnings.length > 0) && (
+        <PageContainer className="flex flex-col gap-2 py-2.5 border-b border-white/5">
+          {partial && (
+            <p
+              role="note"
+              className="text-sm text-amber-300 rounded-md border border-amber-400/20 bg-amber-400/5 px-3 py-2"
+            >
+              Showing the first {partial.returned.toLocaleString()} of{" "}
+              {partial.spanCount.toLocaleString()} spans, by start time. This trace was too large to
+              answer whole, so the spans after these are not shown, and the duration and error count
+              above cover only the spans shown.
+            </p>
+          )}
+          {trace.warnings.length > 0 && <TraceWarnings warnings={trace.warnings} />}
+        </PageContainer>
+      )}
 
       {/* Tabs */}
       <PageContainer className="flex gap-1 py-2 border-b border-white/5">
@@ -131,6 +185,7 @@ export function TraceDetailPage() {
               onSelectSpan={setSelectedSpanId}
               logs={logs}
               logsComplete={logsComplete}
+              partial={partial !== undefined}
             />
             {selectedSpan && (
               <SpanDetailPanel
@@ -152,6 +207,12 @@ export function TraceDetailPage() {
       </div>
     </div>
   );
+}
+
+const MISSING_SPAN = /^missing span ([0-9a-f]+) \(\d+ child/;
+
+function MissingParentsNote() {
+  return <dd className="text-zinc-600">(placeholders for missing parents count as errors)</dd>;
 }
 
 const traceLogsQuery = (traceId: string, cursor?: string) =>

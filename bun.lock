@@ -40,7 +40,7 @@
     },
     "apps/cli": {
       "name": "executor",
-      "version": "2.0.0-beta.49",
+      "version": "2.0.0-beta.50",
     },
     "apps/docs": {
       "name": "@executor-js/docs",
@@ -864,6 +864,7 @@
     "@effect/sql-pg@4.1.4": "patches/@effect%2Fsql-pg@4.1.4.patch",
     "tree-sitter@0.21.1": "patches/tree-sitter@0.21.1.patch",
     "alchemy@2.0.0-beta.80": "patches/alchemy@2.0.0-beta.80.patch",
+    "@electron/notarize@2.5.0": "patches/@electron%2Fnotarize@2.5.0.patch",
     "@cfworker/json-schema@4.1.1": "patches/@cfworker%2Fjson-schema@4.1.1.patch",
     "@distilled.cloud/aws@1.0.0-rc.13": "patches/@distilled.cloud%2Faws@1.0.0-rc.13.patch",
     "tailwindcss-iso@1.0.7": "patches/tailwindcss-iso@1.0.7.patch",

@@ -137,6 +137,12 @@ export interface RoleHosts {
    * forwarding Worker serves `edge.<slug>.<test domain>`; a local run's Worker serves it itself.
    */
   readonly edge: string;
+  /**
+   * The host v1's AuthKit served its sign-in from: `https://signin.executor.sh` in production,
+   * `signin.` under the stage's domain elsewhere. v2 answers it so that MCP clients holding
+   * AuthKit's sign-in move to v2 (`notes/v1-shutdown.md`, "AuthKit").
+   */
+  readonly authKit: string;
   /** The domain the role hosts live under, and the passkey relying party. */
   readonly domain: string;
   /** None when the hosts come from `EXECUTOR_ROLE_HOSTS_DOMAIN`, which only local runs set. */
@@ -212,6 +218,7 @@ const roleHostsAt = (deployment: string) =>
           // Production's domain is `executor.sh` itself. A test stage or local run serves its
           // deployment at the domain, so its edge takes the `edge.` label under it.
           edge: hostname === domain ? at("edge") : `${protocol}//${domain}${suffix}`,
+          authKit: at("signin"),
           domain,
           zone,
         };

@@ -115,6 +115,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "flate2",
+ "http-body",
  "http-body-util",
  "rusqlite",
  "ryu-js",

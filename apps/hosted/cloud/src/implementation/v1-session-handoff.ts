@@ -1,5 +1,5 @@
 /**
- * Sign-in handoff from v1 for members of moved workspaces (`notes/v1-import.md`, Session handoff).
+ * Sign-in handoff from v1 for members of moved workspaces (`notes/v1-shutdown.md`, Forwarding).
  *
  * v2 offers no WorkOS sign-in and never starts one. v1's dashboard sends a signed-in member of an
  * organization that has moved to `/api/v1-handoff?token=…` after it has verified its own WorkOS

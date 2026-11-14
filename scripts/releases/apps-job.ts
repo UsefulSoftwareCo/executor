@@ -41,8 +41,8 @@ NodeRuntime.runMain(
     minutes,
     ended: (conclusion, url) =>
       `The ${jobName} job ended ${conclusion}, so npm may not serve this build's apps release; not deploying.${url === undefined ? "" : ` ${url}`}`,
-    late: (reason) =>
-      `The ${jobName} job did not finish within ${minutes} minutes (${reason}); not deploying. Rerun this job once it has.`,
+    late: (reason, limit) =>
+      `The ${jobName} job did not finish within ${limit} (${reason}); not deploying. Rerun this job once it has.`,
     succeeded: `The ${jobName} job succeeded: it published this build's apps release or found it on npm unchanged.`,
   }).pipe(Effect.provide([FetchHttpClient.layer, NodeServices.layer])),
 );

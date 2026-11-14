@@ -15,6 +15,7 @@ export const mcpInstallationAtom = DashboardClient.query(
 
 import { Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest } from "effect/http";
+import { grantSettingsHeader, type GrantSettings } from "@executor-js/mcp-auth/grants";
 import { Atom } from "effect/reactivity";
 import { BrowserAtoms } from "./telemetry.ts";
 
@@ -76,17 +77,23 @@ export const localMcpClientAtom = Atom.family((id: string) =>
   ),
 );
 /** Pairing cookies authorize the selected grant; no MCP bearer key is sent from this page. */
-export const localMcpConsentAtom = BrowserAtoms.fn((input: { accept: boolean; query: string }) =>
-  HttpClientRequest.bodyJson(HttpClientRequest.post("/api/auth/oauth2/consent"), {
-    accept: input.accept,
-    oauth_query: input.query,
-  }).pipe(
-    Effect.mapError(
-      () =>
-        new McpConnectionFailed({
-          message: "This connection could not be completed. Start again from your MCP client.",
-        }),
+export const localMcpConsentAtom = BrowserAtoms.fn(
+  (input: { accept: boolean; query: string; settings?: GrantSettings | undefined }) =>
+    HttpClientRequest.bodyJson(
+      HttpClientRequest.post("/api/auth/oauth2/consent").pipe(
+        // A denial carries no settings, as on hosted.
+        input.accept && input.settings !== undefined
+          ? HttpClientRequest.setHeader(grantSettingsHeader, JSON.stringify(input.settings))
+          : (request) => request,
+      ),
+      { accept: input.accept, oauth_query: input.query },
+    ).pipe(
+      Effect.mapError(
+        () =>
+          new McpConnectionFailed({
+            message: "This connection could not be completed. Start again from your MCP client.",
+          }),
+      ),
+      Effect.flatMap((request) => json(request, Schema.Struct({ url: Schema.NonEmptyString }))),
     ),
-    Effect.flatMap((request) => json(request, Schema.Struct({ url: Schema.NonEmptyString }))),
-  ),
 );

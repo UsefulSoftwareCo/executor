@@ -106,9 +106,9 @@ const protocols = [
 /** Native approval needs form elicitation, which 2025-06-18 introduced. */
 const nativeProtocols = [McpProtocol.v2025_11_25, McpProtocol.v2025_06_18] as const;
 
-// Model and native programs belong to the authenticated caller, so a client may resume from
-// any of its MCP sessions. Browser approval links address one protocol session.
-const callerIdentity = (product: string, mode: "model" | "native") =>
+// Model, native and automatic programs belong to the authenticated caller, so a client may resume
+// from any of its MCP sessions. Browser approval links address one protocol session.
+const callerIdentity = (product: string, mode: Exclude<ElicitationMode, "browser">) =>
   JSON.stringify([product, mode]);
 /** The end of every browser identity of one protocol session, whichever product it belongs to. */
 const browserSessionSuffix = (session: string) => `,"browser",${JSON.stringify(session)}]`;
@@ -195,6 +195,9 @@ export const makeMcp = (options: McpOptions) =>
               ),
             ),
           );
+        // Automatic mode accepts policy approvals at once: the agent's own permission prompt already
+        // confirmed the call or execute that started the run. Tool input still pauses for the model.
+        const approval = mode === "automatic" ? "client" : "ask";
         // Search and describe read the catalog directly; call runs as an execution so it can pause.
         const search = (input: Parameters<typeof searchCatalog>[1]) =>
           searchCatalog(options.backend, input).pipe(withOperationSpan("mcp.search"));
@@ -294,14 +297,26 @@ export const makeMcp = (options: McpOptions) =>
                       execute: ({ code }) =>
                         caller.pipe(
                           Effect.flatMap(({ id }) =>
-                            executions.execute(id, options.backend, executeProgram(code), "result"),
+                            executions.execute(
+                              id,
+                              options.backend,
+                              executeProgram(code),
+                              "result",
+                              approval,
+                            ),
                           ),
                           observeExecution("mcp.execute"),
                         ),
                       call: (input) =>
                         caller.pipe(
                           Effect.flatMap(({ id }) =>
-                            executions.execute(id, options.backend, callTools(input), "result"),
+                            executions.execute(
+                              id,
+                              options.backend,
+                              callTools(input),
+                              "result",
+                              approval,
+                            ),
                           ),
                           observeExecution("mcp.call"),
                         ),
@@ -351,7 +366,7 @@ export const makeMcp = (options: McpOptions) =>
         ),
       );
     // Each mode's protocol server is built on its first request. A client keeps one
-    // mode, so a host does not build all three. The build replaces the request's
+    // mode, so a host does not build all four. The build replaces the request's
     // context with this construction's: the server outlives the request, so it must
     // never capture a caller's backend, identity or scope.
     const context = yield* Effect.context<Effect.Services<ReturnType<typeof handler>>>();
@@ -364,7 +379,8 @@ export const makeMcp = (options: McpOptions) =>
       ).pipe(Effect.map(Effect.flatten));
     const model = yield* onFirstUse("model"),
       native = yield* onFirstUse("native"),
-      browser = yield* onFirstUse("browser");
+      browser = yield* onFirstUse("browser"),
+      automatic = yield* onFirstUse("automatic");
     const http = Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => {
       const url = new URL(request.url, "http://mcp.internal");
       return options.mode.pipe(
@@ -373,6 +389,7 @@ export const makeMcp = (options: McpOptions) =>
             Match.when("model", () => model),
             Match.when("native", () => native),
             Match.when("browser", () => browser),
+            Match.when("automatic", () => automatic),
             Match.exhaustive,
           ),
         ),

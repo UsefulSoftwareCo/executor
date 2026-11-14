@@ -903,3 +903,213 @@ fn long_quoted_integers_keep_their_exact_value() {
         json!("7")
     );
 }
+
+/// A span keeps its first `EVENT_LIMIT` events, in order, and counts the rest without decoding
+/// them: an event past the limit with a time that is not a number does not make the export
+/// invalid. Exactly the limit drops none; one more drops one.
+#[test]
+fn a_span_keeps_its_first_events_and_counts_the_rest() {
+    use executor_collector::otlp::EVENT_LIMIT;
+    let events = |count: usize| -> Vec<Value> {
+        (0..count)
+            .map(|index| json!({ "name": format!("e{index}"), "timeUnixNano": index.to_string() }))
+            .collect()
+    };
+    let names = |span: &SpanRow| -> Vec<String> {
+        let stored: Value = serde_json::from_str(span.events_json.as_deref().expect("events"))
+            .expect("stored events are JSON");
+        stored
+            .as_array()
+            .expect("a list")
+            .iter()
+            .map(|event| event["name"].as_str().expect("name").to_owned())
+            .collect()
+    };
+    let first =
+        |count: usize| -> Vec<String> { (0..count).map(|index| format!("e{index}")).collect() };
+    let exactly =
+        one_span(json!({ "traceId": TRACE, "spanId": SPAN, "events": events(EVENT_LIMIT) }));
+    assert_eq!(names(&exactly), first(EVENT_LIMIT));
+    assert_eq!(exactly.events_dropped, 0);
+    let one_more =
+        one_span(json!({ "traceId": TRACE, "spanId": SPAN, "events": events(EVENT_LIMIT + 1) }));
+    assert_eq!(names(&one_more), first(EVENT_LIMIT));
+    assert_eq!(one_more.events_dropped, 1);
+    let mut past = events(EVENT_LIMIT);
+    past.extend(
+        (0..1_000)
+            .map(|_| json!({ "timeUnixNano": "not a number", "attributes": [{ "value": 3 }] })),
+    );
+    let body = traces(
+        json!([]),
+        json!({ "traceId": TRACE, "spanId": SPAN, "events": past }),
+    );
+    let decoded = decode_spans(&body).expect("events past the limit are not decoded");
+    assert_eq!(decoded.groups[0].1[0].events_dropped, 1_000);
+    assert_eq!(decoded.events_dropped, 1_000, "the export's total");
+}
+
+/// An export at the size limit made only of events: in one span it is decoded, keeping 128, in a
+/// few kilobytes; spread over spans of 128 empty events each it takes more than its budget to
+/// decode and is refused as too large, as are values made of empty entries. An export shaped like
+/// the product's (the memory scenario's) is decoded within its budget.
+#[test]
+fn decoding_an_export_is_held_to_its_budget() {
+    use executor_collector::otlp::{
+        DECODE_SHARE, EVENT_LIMIT, Undecodable, decode_logs_within, decode_spans_within,
+    };
+    const LIMIT: usize = 16 << 20;
+    let wrap = |spans: String| {
+        format!(r#"{{"resourceSpans":[{{"scopeSpans":[{{"scope":{{"name":"s"}},"spans":[{spans}]}}]}}]}}"#)
+            .into_bytes()
+    };
+    let span = |extra: &str| format!(r#"{{"traceId":"{TRACE}","spanId":"{SPAN}"{extra}}}"#);
+    let empties = |count: usize| vec!["{}"; count].join(",");
+    let one_span = wrap(span(&format!(r#","events":[{}]"#, empties(LIMIT / 3))));
+    let decoded = decode_spans_within(&one_span, LIMIT).expect("one span of events decodes");
+    let row = &decoded.groups[0].1[0];
+    assert_eq!(row.events_dropped as usize, LIMIT / 3 - EVENT_LIMIT);
+    assert!(row.events_json.as_ref().expect("events").len() < 128 * 64);
+    let spread = {
+        let one = span(&format!(r#","events":[{}]"#, empties(EVENT_LIMIT)));
+        wrap(vec![one.as_str(); LIMIT / (one.len() + 1)].join(","))
+    };
+    let values = wrap(span(&format!(
+        r#","attributes":[{{"key":"a","value":{{"arrayValue":{{"values":[{}]}}}}}}]"#,
+        empties(LIMIT / 3 - 100)
+    )));
+    let logs = format!(
+        r#"{{"resourceLogs":[{{"scopeLogs":[{{"logRecords":[{}]}}]}}]}}"#,
+        empties(LIMIT / 3 - 100)
+    )
+    .into_bytes();
+    for (name, body) in [("spread", &spread), ("values", &values)] {
+        assert!(body.len() <= LIMIT, "{name}: {}", body.len());
+        assert!(
+            matches!(decode_spans_within(body, LIMIT), Err(Undecodable::TooLarge)),
+            "{name} decoded within {} bytes",
+            DECODE_SHARE * LIMIT
+        );
+    }
+    assert!(logs.len() <= LIMIT);
+    assert!(matches!(
+        decode_logs_within(&logs, LIMIT),
+        Err(Undecodable::TooLarge)
+    ));
+    // Without the budget, the same exports decode.
+    assert!(decode_spans(&spread).is_ok());
+    // The memory scenario's export: 12,000 spans of two attributes, 8 MB.
+    let scenario = wrap(
+        (0..12_000)
+            .map(|index| {
+                span(&format!(
+                    r#","name":"sql.execute","kind":1,"startTimeUnixNano":"1700000000000000000","endTimeUnixNano":"1700000000000000500","attributes":[{{"key":"db.query.text","value":{{"stringValue":"SELECT * FROM notes WHERE id = ? AND owner = ? -- {}"}}}},{{"key":"app.step","value":{{"intValue":"{}"}}}}]"#,
+                    "ab".repeat(150),
+                    index % 30
+                ))
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+    );
+    assert!(decode_spans_within(&scenario, LIMIT).is_ok());
+    // And within half its budget: the product's exports have room to spare.
+    assert!(decode_spans_within(&scenario, LIMIT / 2).is_ok());
+}
+
+/// A row's text may be at most `ROW_SHARE` times the size limit, whatever the budget allows: a
+/// string of control characters is stored escaped, as long as the export spelled it, so a row
+/// past four times the limit costs well under the budget to decode and is refused for its size.
+#[test]
+fn a_row_is_held_to_its_share_of_the_size_limit() {
+    use executor_collector::otlp::{DECODE_SHARE, ROW_SHARE, Undecodable, decode_spans_within};
+    let limit = 100_000;
+    let span = |characters: usize| {
+        traces(
+            json!([]),
+            json!({ "traceId": TRACE, "spanId": SPAN, "attributes": [{ "key": "a", "value": { "stringValue": "\u{1}".repeat(characters) } }] }),
+        )
+    };
+    // Six bytes a character, stored and sent alike.
+    let under = span(ROW_SHARE * limit / 6 - 100);
+    assert!(decode_spans_within(&under, limit).is_ok());
+    let over = span(ROW_SHARE * limit / 6 + 2_000);
+    let stored = decode_spans(&over).expect("decodes").groups[0].1[0]
+        .attributes_json
+        .len();
+    assert!(
+        stored > ROW_SHARE * limit && stored < DECODE_SHARE * limit * 3 / 4,
+        "{stored}"
+    );
+    assert!(matches!(
+        decode_spans_within(&over, limit),
+        Err(Undecodable::TooLarge)
+    ));
+}
+
+/// A name may be at most `NAME_BYTES`: a span's, an event's or a scope's name, an attribute's key
+/// at any depth, the service's name and a log's severity. At the limit the export is decoded; one
+/// byte past it is refused, and the message names what was too long.
+#[test]
+fn names_past_their_limit_refuse_the_export_and_say_which() {
+    use executor_collector::otlp::NAME_BYTES;
+    let spans = |resource: Value, scope: &str, span: Value| {
+        json!({ "resourceSpans": [{ "resource": { "attributes": resource }, "scopeSpans": [{ "scope": { "name": scope }, "spans": [span] }] }] })
+            .to_string()
+    };
+    let span = |name: &str, key: &str, event: &str, list_key: &str| {
+        json!({ "traceId": TRACE, "spanId": SPAN, "name": name,
+                "attributes": [
+                    { "key": key, "value": { "stringValue": "v" } },
+                    { "key": "list", "value": { "kvlistValue": { "values": [{ "key": list_key, "value": { "stringValue": "v" } }] } } },
+                ],
+                "events": [{ "name": event }] })
+    };
+    let service = |name: &str| json!([{ "key": "service.name", "value": { "stringValue": name } }]);
+    let at = "n".repeat(NAME_BYTES);
+    let past = "n".repeat(NAME_BYTES + 1);
+    let ok = spans(service(&at), &at, span(&at, &at, &at, &at));
+    assert!(decode_spans(ok.as_bytes()).is_ok(), "names at the limit");
+    let cases = [
+        (
+            "A span's name",
+            spans(service("s"), "s", span(&past, "k", "e", "k")),
+        ),
+        (
+            "An attribute's key",
+            spans(service("s"), "s", span("n", &past, "e", "k")),
+        ),
+        (
+            "An event's name",
+            spans(service("s"), "s", span("n", "k", &past, "k")),
+        ),
+        (
+            "a key in a key-value list",
+            spans(service("s"), "s", span("n", "k", "e", &past)),
+        ),
+        (
+            "A scope's name",
+            spans(service("s"), &past, span("n", "k", "e", "k")),
+        ),
+        (
+            "A resource's service name",
+            spans(service(&past), "s", span("n", "k", "e", "k")),
+        ),
+    ];
+    for (what, body) in &cases {
+        let message = decode_spans(body.as_bytes()).expect_err(what).0;
+        assert!(message.contains(what), "{what}: {message}");
+        assert!(
+            message.contains(&format!("{}", NAME_BYTES + 1)),
+            "{what}: {message}"
+        );
+    }
+    let log = |severity: &str| {
+        json!({ "resourceLogs": [{ "scopeLogs": [{ "logRecords": [{ "severityText": severity }] }] }] })
+            .to_string()
+    };
+    assert!(decode_logs(log(&at).as_bytes()).is_ok());
+    let message = decode_logs(log(&past).as_bytes())
+        .expect_err("a long severity")
+        .0;
+    assert!(message.contains("A log's severity"), "{message}");
+}

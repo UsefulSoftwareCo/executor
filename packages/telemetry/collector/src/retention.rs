@@ -391,9 +391,14 @@ fn evict_trace(
     if deleted == wanted {
         return Ok(false);
     }
-    transaction
-        .prepare_cached("DELETE FROM traces WHERE id = ?1")?
-        .execute([trace])?;
+    let service: Option<i64> = transaction
+        .prepare_cached("DELETE FROM traces WHERE id = ?1 RETURNING service")?
+        .query_row([trace], |row| row.get(0))
+        .optional()?
+        .flatten();
+    if let Some(service) = service {
+        crate::store::forget_service(transaction, service)?;
+    }
     set_meta(transaction, EVICTING, None)?;
     Ok(true)
 }

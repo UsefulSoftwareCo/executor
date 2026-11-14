@@ -37,6 +37,19 @@ The pinned Bun installer patch keeps its selected binary architecture under
 Rosetta, matching the optional dependencies installed by the package manager.
 Windows installers are currently unsigned.
 
+Each run also builds the Rust telemetry collector (`packages/telemetry/collector`) once per
+target in its `collector (<target>)` job, on that target's `local` runner. Every job that packages
+the CLI runtime (`local`, `checks`, `cli` and the `recovery` parts) starts with the run, waits for
+its own target's collector job at "Wait for the telemetry collector"
+(`scripts/releases/collector-job.ts`), and downloads that one build as the `collector-<target>`
+artifact, so the archives the `archives` job compares hold the same bytes. A collector job that
+fails or is cancelled stops its target's packaging jobs at once, and `releases` names it. Runs
+that publish build the collector without restoring from the cache, because an entry in main's
+cache scope is not proof of what built it; the cache rules judge restores by workflow file, so the
+paced check and `build` runs build it too (`.github/actions/collector`). A narrowed build runs a
+collector job only for the targets its packaging jobs run on, and none when it runs only the image.
+Nothing packages the collector yet; Motel is still the bundled collector.
+
 A Bun runtime release built from a pull request's branch, as one that changes the
 lockdown patch needs, is the one main's publishing runs use from then on. If that
 branch's `scripts/releases/bun-runtime/` changed after the build and before merge,

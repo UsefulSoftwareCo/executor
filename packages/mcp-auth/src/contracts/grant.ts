@@ -21,8 +21,13 @@ export const GrantPolicy = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("all") }),
 ]);
 export type GrantPolicy = typeof GrantPolicy.Type;
-/** Revoked grants are absent from authentication, not converted to empty or unrestricted policies. */
-export const ApprovalMode = Schema.Literals(["model", "native", "browser"]);
+/**
+ * Where a grant's approvals are answered. `automatic` accepts policy approvals at once and leaves
+ * the decision to the agent's own permission prompt; questions a running tool asks still reach the
+ * model, as in `model` mode. Revoked grants are absent from authentication, not converted to empty
+ * or unrestricted policies.
+ */
+export const ApprovalMode = Schema.Literals(["model", "native", "browser", "automatic"]);
 export type ApprovalMode = typeof ApprovalMode.Type;
 /** A user's named MCP access boundary. URL-safe because it appears in the MCP URL and OAuth resource. */
 export const ConnectionId = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,64}$/u)).pipe(

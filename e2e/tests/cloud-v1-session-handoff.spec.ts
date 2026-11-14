@@ -1,22 +1,22 @@
 /**
  * v1 session handoff: v1's dashboard redirects a signed-in member of a workspace that has moved to
  * v2's `/api/v1-handoff` with a token it signs for that member, and v2 starts its own session for
- * the user the import mapped them to (`notes/v1-import.md`, Session handoff). The scenarios move a
- * synthetic workspace with the operator's import, then sign tokens as v1 does with the secret the
- * managed Cloud shares with its synthetic v1.
+ * the user the import mapped them to (`notes/v1-shutdown.md`, Forwarding). The scenarios record
+ * the scenario's organization and two of its members as a moved v1 workspace, as the import did,
+ * then sign tokens as v1 does with the secret the managed Cloud shares with its synthetic v1.
  */
 import { randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Schema } from "effect";
-import { TestLive, withCase } from "../support/case.ts";
+import { Effect, FileSystem, Schema } from "effect";
+import { Actors } from "../support/actors.ts";
+import { Api, body, type Session } from "../support/api.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Browser } from "../support/browser.ts";
 import { writeRows } from "../support/cloud-rows.ts";
-import { Emulators } from "../support/emulators.ts";
-import { Onboarding } from "../support/onboarding.ts";
 import { driver, Target } from "../support/platform.ts";
 import { waitForLastOrganization } from "../support/organization-entry.ts";
 import { targetHosts } from "../support/role-hosts.ts";
-import { allowV1Import, v1ImportOperator, v1RunId } from "../support/v1-import.ts";
+import { recordMovedV1Organization, v1OrganizationId, v1UserId } from "../support/v1-moved.ts";
 import {
   V1SessionHandoffSecret,
   v1HandoffId,
@@ -26,19 +26,28 @@ import {
 } from "../support/v1-session-handoff.ts";
 import { scenarios } from "../test-plan.ts";
 
-const services = Layer.mergeAll(Onboarding.layer, Emulators.layer);
-
 const Created = Schema.Struct({ id: Schema.String, slug: Schema.String });
 
 const Session = Schema.NullOr(Schema.Struct({ user: Schema.Struct({ email: Schema.String }) }));
+const Identity = Schema.Struct({
+  user: Schema.Struct({ id: Schema.String, email: Schema.String }),
+});
+
+/** The v2 user a session belongs to. */
+const userOf = (session: Session) =>
+  Effect.gen(function* () {
+    const api = yield* Api;
+    return (yield* body(Identity, yield* api.request(session, "GET", "/api/auth/get-session")))
+      .user;
+  });
 
 /**
- * A two-member v1 workspace, moved to v2 by the operator's import and cut over. Both members are
- * new to v2, so the import created their users; neither has signed in to v2.
+ * A two-member v1 workspace that moved to the scenario's organization, recorded as the import
+ * recorded it: the organization and both members, the owner and a member, mapped to their v2
+ * users. The browser is signed in as neither.
  */
 const movedWorkspace = Effect.gen(function* () {
-  const emulators = yield* Emulators,
-    operator = yield* v1ImportOperator,
+  const actors = yield* Actors,
     fs = yield* FileSystem.FileSystem,
     target = yield* Target;
   const { secret } = yield* fs
@@ -46,35 +55,23 @@ const movedWorkspace = Effect.gen(function* () {
     .pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(V1SessionHandoffSecret))),
     );
-  const ownerEmail = `handoff-owner-${randomUUID().slice(0, 8)}@example.test`;
-  const memberEmail = `handoff-member-${randomUUID().slice(0, 8)}@example.test`;
-  const workspace = yield* emulators.v1Workspace([ownerEmail, memberEmail]);
-  const member = yield* emulators.v1User(memberEmail);
-  yield* writeRows("v1-database.json", [
-    {
-      sql: "insert into organizations (id, name, slug) values ($1, 'Synthetic moved workspace', $2)",
-      params: [workspace.organization, `v1-${randomUUID().slice(0, 8)}`],
-    },
-  ]);
-  yield* allowV1Import(workspace.organization);
-  const run = v1RunId("handoff");
-  const started = yield* operator.start({
-    mode: "import",
-    runId: run,
-    organizations: [workspace.organization],
+  const [owner, member] = yield* Effect.all([userOf(actors.owner), userOf(actors.member)]);
+  const v1 = { organization: v1OrganizationId(), owner: v1UserId(), member: v1UserId() };
+  yield* recordMovedV1Organization({
+    v1Organization: v1.organization,
+    v2Organization: actors.organization.id,
+    users: [
+      { v1: v1.owner, v2: owner.id },
+      { v1: v1.member, v2: member.id },
+    ],
   });
-  expect(started.status, JSON.stringify(started.body)).toBe(200);
-  const report = yield* operator.waitForReport(run, workspace.organization);
-  expect(report.status, report.reason ?? "").toBe("imported");
-  expect(report.cutover).toBe(true);
-  const moved = report.v2Organization;
-  if (moved === undefined) return yield* Effect.die("The import named no organization");
+  const moved = actors.organization;
   /** A token as v1 signs it for one handoff, a minute long. */
   const sign = (claims: Partial<V1HandoffClaims> = {}, signedWith = secret) => {
     const now = Math.floor(Date.now() / 1000);
     return v1HandoffToken(signedWith, {
-      user: workspace.user,
-      organization: workspace.organization,
+      user: v1.owner,
+      organization: v1.organization,
       slug: moved.slug,
       iat: now,
       exp: now + 60,
@@ -86,8 +83,8 @@ const movedWorkspace = Effect.gen(function* () {
     sign,
     slug: moved.slug,
     v2Organization: moved.id,
-    owner: { user: workspace.user, email: ownerEmail },
-    member: { user: member, email: memberEmail },
+    owner: { user: v1.owner, v2: owner.id, email: owner.email },
+    member: { user: v1.member, v2: member.id, email: member.email },
   };
 });
 
@@ -139,9 +136,9 @@ const sessionEmail = (step: string) =>
     return session?.user.email ?? null;
   });
 
-layer(TestLive, { excludeTestServices: true })("Cloud v1 session handoff", (it) => {
+layer(HostedLive, { excludeTestServices: true })("Cloud v1 session handoff", (it) => {
   it.effect(scenarios.v1HandoffSignIn.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const browser = yield* Browser;
@@ -266,12 +263,12 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 session handoff", (it) 
           referrerPolicy: "no-referrer",
           cookies: 0,
         });
-      }).pipe(Effect.provide(services)),
+      }),
     ),
   );
 
   it.effect(scenarios.v1HandoffRefusals.title, (context) =>
-    withCase(
+    withHostedCase(
       context,
       Effect.gen(function* () {
         const moved = yield* movedWorkspace;
@@ -296,15 +293,6 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 session handoff", (it) 
         );
         // The endpoint that starts the session is server-only: over HTTP it does not exist, even
         // for the mapped user and their organization.
-        const ownerRows = yield* writeRows("sso-database.json", [
-          {
-            sql: `select v2_id from private_v1_import_map where v1_kind = 'user' and v1_id = $1`,
-            params: [moved.owner.user],
-          },
-        ]);
-        const owner = yield* Schema.decodeUnknownEffect(Schema.Struct({ v2_id: Schema.String }))(
-          ownerRows[0]?.[0],
-        );
         const direct = yield* Effect.gen(function* () {
           const target = yield* Target;
           const url = `${targetHosts(target).browser}/api/auth/v1-handoff/session`;
@@ -314,7 +302,10 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 session handoff", (it) 
               redirect: "manual",
               signal,
               headers: { "content-type": "application/json", origin: targetHosts(target).browser },
-              body: JSON.stringify({ userId: owner.v2_id, organizationId: moved.v2Organization }),
+              body: JSON.stringify({
+                userId: moved.owner.v2,
+                organizationId: moved.v2Organization,
+              }),
             }).then((response) =>
               response.text().then(() => ({
                 status: response.status,
@@ -340,7 +331,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud v1 session handoff", (it) 
           referrerPolicy: "no-referrer",
         });
         expect(accepted.cookies).toBeGreaterThan(0);
-      }).pipe(Effect.provide(services)),
+      }),
     ),
   );
 });

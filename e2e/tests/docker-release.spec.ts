@@ -2423,6 +2423,16 @@ it.live(
         yield* driver("sign in", () =>
           page.getByRole("button", { name: "Sign in", exact: true }).click(),
         );
+        // Signing in shows the apps page's pending skeleton, headed "Apps", on the sign-in document,
+        // then replaces that document with the apps page. Navigating before the replace commits
+        // races it, so wait for the apps page's own document first.
+        yield* reportStall(
+          driver("the apps page document loads", () =>
+            page.waitForURL(
+              (url) => url.origin === origin && url.pathname === `/org/${organization.slug}/apps`,
+            ),
+          ),
+        );
         yield* reportStall(
           driver("the apps page renders", () =>
             page.getByRole("heading", { name: /^Apps/ }).waitFor({ state: "visible" }),

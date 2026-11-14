@@ -17,8 +17,13 @@ path = "src/main.rs"
 [dependencies]
 axum = { version = "=0.8.9", default-features = false, features = ["http1", "tokio", "json"] }
 flate2 = { version = "=1.1.11", default-features = false, features = ["rust_backend"] }
+# The response body type that holds a query's reader permit until its body is sent
+# (`readers::Streamed`) and the body queue it reads (`body`); already in the tree through axum
+# and http-body-util.
+http-body = "=1.1.0"
 http-body-util = "=0.1.5"
-rusqlite = { version = "=0.41.1", features = ["bundled"] }
+# hooks: the progress handler that ends a query at its deadline.
+rusqlite = { version = "=0.41.1", features = ["bundled", "hooks"] }
 ryu-js = "=1.0.3"
 serde = { version = "=1.0.229", features = ["derive"] }
 # float_roundtrip: read a JSON number with a fraction or exponent as the nearest double, so a
@@ -45,4 +50,7 @@ tokio = { version = "=1.54.1", features = [
 strip = true
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+# Unwind, not abort: a panic in a request's handler or query then ends that request alone (the
+# HTTP server and `spawn_blocking` catch it), where abort would end ingest with it. The writer
+# thread aborts on a panic itself (`store::AbortOnPanic`). Costs about 340 KB of binary.
+panic = "unwind"

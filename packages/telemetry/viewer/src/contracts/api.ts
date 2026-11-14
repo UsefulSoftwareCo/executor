@@ -1,7 +1,9 @@
 /**
  * The collector routes the viewer reads, with the response shapes Motel returns at the revision
  * pinned in `packages/telemetry/motel/source.json` (its `src/domain.ts` and `src/httpApi.ts`).
- * The collector that replaces Motel returns the same shapes, so this schema serves both.
+ * The collector that replaces Motel returns the same shapes, so this schema serves both, with one
+ * addition Motel never sends: `partial` on a trace answered in part (the collector's README,
+ * "A trace answered in part").
  */
 import { Schema } from "effect";
 import { HttpApi, HttpApiEndpoint, HttpApiGroup, HttpApiSchema } from "effect/http-api";
@@ -36,6 +38,18 @@ export const TraceSpanItem = Schema.Struct({
 });
 export type TraceSpanItem = typeof TraceSpanItem.Type;
 
+/**
+ * On a trace too large to answer whole: `spanCount` is the trace's stored spans and `returned` how
+ * many of them the answer holds, its earliest by start time. The answer's `spans` also hold a
+ * synthetic parent for each missing parent, which `returned` does not count. Absent on a trace
+ * answered whole, and from every Motel answer.
+ */
+export const TracePartial = Schema.Struct({
+  spanCount: Schema.Number,
+  returned: Schema.Number,
+});
+export type TracePartial = typeof TracePartial.Type;
+
 export const TraceItem = Schema.Struct({
   traceId: Schema.String,
   serviceName: Schema.String,
@@ -46,6 +60,7 @@ export const TraceItem = Schema.Struct({
   spanCount: Schema.Number,
   errorCount: Schema.Number,
   warnings: Schema.Array(Schema.String),
+  partial: Schema.optionalKey(TracePartial),
   spans: Schema.Array(TraceSpanItem),
 });
 export type TraceItem = typeof TraceItem.Type;

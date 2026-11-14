@@ -9,7 +9,7 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as GitHub from "alchemy/GitHub";
 import { retain } from "alchemy/RemovalPolicy";
-import { Config, Effect, Layer, Option, Redacted, Schema } from "effect";
+import { Config, Effect, Layer, Option, Redacted } from "effect";
 import { stackState } from "./src/infrastructure/state.ts";
 import { productionSocialCallbackOrigin } from "./src/infrastructure/deploy-settings.ts";
 import { BrowserOrigin, browserOriginSetting } from "./src/infrastructure/stage.ts";
@@ -17,25 +17,11 @@ import {
   type ExecutorShOwner,
   executorShSetting,
 } from "./src/infrastructure/executor-sh-setting.ts";
+import { missingV1WorkosKey } from "./src/infrastructure/v1-api-key-settings.ts";
 import {
-  type V1ImportSwitch,
-  V1FirstPartyClients,
-  invalidV1FirstPartyClients,
-  missingV1FirstPartyClient,
-  missingV1ImportWriter,
-  missingV1McpForwardSecret,
-  missingV1PlanetscaleDatabase,
-  missingV1WorkosKey,
-  v1ImportWriterName,
   v1McpForwardSecretName,
   v1SessionHandoffSecretName,
-  v1ImportOperatorTokenMinLength,
-  missingV1ImportOperatorToken,
-  v1FirstPartyClientsName,
-  v1ImportSetting,
-  v1ImportWritesNeedImport,
-  v1ImportWritesSetting,
-} from "./src/infrastructure/v1-import-settings.ts";
+} from "./src/infrastructure/secrets.ts";
 import {
   firstPartyGitHubSettings,
   firstPartyGoogleSettings,
@@ -298,90 +284,19 @@ export default Alchemy.Stack(
     }).pipe(retain());
 
     /**
-     * The v1 import's switch (`v1-import-settings.ts`): `on` lets production import v1
-     * workspaces. `.env.ci.op` sets it; unset is `off`.
-     */
-    const v1Import: V1ImportSwitch = yield* v1ImportSetting;
-    yield* GitHub.Variable("production-CLOUD_V1_IMPORT", {
-      ...target,
-      name: "CLOUD_V1_IMPORT",
-      value: v1Import,
-      environment: production,
-    }).pipe(retain());
-    /**
-     * Imports that write v2 need their own switch, off unless `.env.ci.op` sets it. While the
-     * import is on, operators start runs with `V1_IMPORT_OPERATOR_TOKEN`, so this stack refuses
-     * to apply without it.
-     */
-    const v1ImportWrites: V1ImportSwitch = yield* v1ImportWritesSetting;
-    // The Worker refuses this pair when it starts; refuse it here, before it is stored.
-    if (v1ImportWrites === "on" && v1Import !== "on")
-      return yield* Effect.die(new Error(v1ImportWritesNeedImport));
-    yield* GitHub.Variable("production-CLOUD_V1_IMPORT_WRITES", {
-      ...target,
-      name: "CLOUD_V1_IMPORT_WRITES",
-      value: v1ImportWrites,
-      environment: production,
-    }).pipe(retain());
-    /**
-     * The URL of v1's `v1_import_writer` role (`moved-flag.ts`), which freezes and cuts over each
-     * imported organization. Imports that write need it, so this stack refuses writes without it.
-     */
-    const writer = yield* nonEmptySecret(v1ImportWriterName);
-    if (v1ImportWrites === "on" && Option.isNone(writer))
-      return yield* Effect.die(new Error(missingV1ImportWriter));
-    if (Option.isSome(writer))
-      yield* GitHub.Secret(`production-${v1ImportWriterName}`, {
-        ...target,
-        name: v1ImportWriterName,
-        value: writer.value,
-        environment: production,
-      }).pipe(retain());
-    if (v1Import === "on") {
-      const operatorToken = yield* Config.Redacted("V1_IMPORT_OPERATOR_TOKEN").pipe(
-        Config.option,
-        Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
-      );
-      if (
-        Option.isNone(operatorToken) ||
-        Redacted.value(operatorToken.value).length < v1ImportOperatorTokenMinLength
-      )
-        return yield* Effect.die(new Error(missingV1ImportOperatorToken));
-      yield* GitHub.Secret("production-V1_IMPORT_OPERATOR_TOKEN", {
-        ...target,
-        name: "V1_IMPORT_OPERATOR_TOKEN",
-        value: operatorToken.value,
-        environment: production,
-      }).pipe(retain());
-    }
-
-    /**
-     * v1's WorkOS API key, which the WorkOS API key check and the v1 import read, and the name of
-     * v1's PlanetScale database, on which the deploy creates the import's read-only role.
-     * Production requires both, so this stack refuses to apply without them and says what to
-     * set: the key's Agents vault reference and the database name, in `.env.ci.op`.
+     * v1's WorkOS API key, which the WorkOS API key check reads. Production requires it, so this
+     * stack refuses to apply without it and says what to set: the key's Agents vault reference,
+     * in `.env.ci.op`.
      */
     const v1Key = yield* Config.Redacted("V1_WORKOS_API_KEY").pipe(
       Config.option,
       Effect.map(Option.filter((value) => Redacted.value(value) !== "")),
     );
     if (Option.isNone(v1Key)) return yield* Effect.die(new Error(missingV1WorkosKey));
-    const v1Database = yield* Config.String("V1_PLANETSCALE_DATABASE_NAME").pipe(
-      Config.option,
-      Effect.map(Option.filter((value) => value !== "")),
-    );
-    if (Option.isNone(v1Database))
-      return yield* Effect.die(new Error(missingV1PlanetscaleDatabase));
     yield* GitHub.Secret("production-V1_WORKOS_API_KEY", {
       ...target,
       name: "V1_WORKOS_API_KEY",
       value: v1Key.value,
-      environment: production,
-    }).pipe(retain());
-    yield* GitHub.Variable("production-V1_PLANETSCALE_DATABASE_NAME", {
-      ...target,
-      name: "V1_PLANETSCALE_DATABASE_NAME",
-      value: v1Database.value,
       environment: production,
     }).pipe(retain());
 
@@ -428,49 +343,11 @@ export default Alchemy.Stack(
     );
 
     /**
-     * v1's first-party client IDs (`v1-import-settings.ts`), public values the import compares with
-     * each v2 client's. While the import is on, every first-party client production offers needs
-     * v1's ID, or its connections are all reported as mismatches.
-     */
-    const v1Clients = yield* Config.String(v1FirstPartyClientsName).pipe(
-      Config.option,
-      Effect.map(Option.filter((value) => value !== "")),
-    );
-    const v1ClientIds = Option.isNone(v1Clients)
-      ? {}
-      : yield* Schema.decodeUnknownEffect(Schema.fromJsonString(V1FirstPartyClients))(
-          v1Clients.value,
-        ).pipe(
-          Effect.mapError(() => new Error(invalidV1FirstPartyClients)),
-          Effect.orDie,
-        );
-    if (v1Import === "on") {
-      const offered = [
-        "github",
-        ...(Option.isSome(googleId) ? ["google"] : []),
-        ...(Option.isSome(slackId) ? ["slack"] : []),
-      ];
-      const missing = offered.find((client) => !Object.hasOwn(v1ClientIds, client));
-      if (missing !== undefined)
-        return yield* Effect.die(new Error(missingV1FirstPartyClient(missing)));
-    }
-    if (Option.isSome(v1Clients))
-      yield* GitHub.Variable(`production-${v1FirstPartyClientsName}`, {
-        ...target,
-        name: v1FirstPartyClientsName,
-        value: v1Clients.value,
-        environment: production,
-      }).pipe(retain());
-
-    /**
      * The secret v1 signs the MCP requests it forwards with (`v1-mcp-forward.ts`), the same value
      * as v1's `V2_MCP_FORWARD_SECRET`. Without it production accepts no forwarded request, which v1
-     * answers as unavailable for a moved workspace, so imports that write, which cut workspaces
-     * over, need it.
+     * answers as unavailable for a moved workspace.
      */
     const v1Forward = yield* nonEmptySecret(v1McpForwardSecretName);
-    if (v1ImportWrites === "on" && Option.isNone(v1Forward))
-      return yield* Effect.die(new Error(missingV1McpForwardSecret));
     if (Option.isSome(v1Forward))
       yield* GitHub.Secret(`production-${v1McpForwardSecretName}`, {
         ...target,

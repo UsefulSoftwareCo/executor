@@ -37,6 +37,7 @@ const connectionResources = (at: string, connection: string) =>
     `${at}/mcp?connection=${connection}`,
     `${at}/mcp?connection=${connection}&elicitation_mode=native`,
     `${at}/mcp?connection=${connection}&elicitation_mode=browser`,
+    `${at}/mcp?connection=${connection}&elicitation_mode=automatic`,
   ].toSorted();
 const Resource = Schema.Record(Schema.String, Schema.Unknown);
 

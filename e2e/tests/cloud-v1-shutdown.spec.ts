@@ -7,28 +7,26 @@
  * switch does.
  *
  * v1 organizations reach the edge only through Cloud's lookup table (`private_v1_legacy_org`),
- * which imports and the backfill write. Scenarios that need no import write its rows directly,
- * for synthetic organization ids and slugs, as the backfill would.
+ * which the import and the backfill wrote. Scenarios write its rows directly, for synthetic
+ * organization ids and slugs, as they did.
  */
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { expect, layer } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Redacted, Schema } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { Effect, Layer, Redacted, Schema } from "effect";
 import { Actors } from "../support/actors.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
-import { HostedLive, TestLive, withCase, withHostedCase } from "../support/case.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
 import { writeRows } from "../support/cloud-rows.ts";
 import { Emulators } from "../support/emulators.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { McpOAuth } from "../support/mcp-oauth.ts";
 import { Execution, consentTo } from "../support/mcp-connections.ts";
-import { Onboarding } from "../support/onboarding.ts";
 import { Target, driver } from "../support/platform.ts";
 import { rawRequest, targetHosts } from "../support/role-hosts.ts";
-import { allowV1Import, v1ImportOperator, v1RunId } from "../support/v1-import.ts";
+import { recordMovedV1Organization } from "../support/v1-moved.ts";
 import { scenarios } from "../test-plan.ts";
 
 const Identity = Schema.Struct({ user: Schema.Struct({ id: Schema.String }) });
@@ -672,91 +670,164 @@ layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown", (i
       }),
     ),
   );
+
+  it.effect(scenarios.v1ShutdownAuthKitHost.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const target = yield* Target;
+        const { authKit, browser, deployment } = targetHosts(target);
+        const shutDown = "Executor v1's sign-in has shut down. Sign in to Executor again.";
+        const expectJson = (
+          response: Effect.Success<ReturnType<typeof rawRequest>>,
+          status: number,
+          error: string,
+          label: string,
+        ) => {
+          expect(response.status, label).toBe(status);
+          expect(response.contentType, label).toContain("application/json");
+          expect(response.cacheControl, label).toBe("no-store");
+          expect(JSON.parse(response.text), label).toEqual({ error, error_description: shutDown });
+        };
+
+        // AuthKit's metadata is gone, so a client that reads it before refreshing finds no
+        // server there, and the MCP URL's 401 names v2's.
+        for (const path of [
+          "/.well-known/oauth-authorization-server",
+          "/.well-known/openid-configuration",
+          "/.well-known/oauth-authorization-server/oauth2",
+          "/.well-known/openid-configuration/oauth2",
+          "/oauth2/.well-known/openid-configuration",
+        ]) {
+          expectJson(yield* rawRequest(`${authKit}${path}`), 404, "not_found", path);
+          expect((yield* rawRequest(`${authKit}${path}`, { method: "HEAD" })).status, path).toBe(
+            404,
+          );
+        }
+
+        // A refresh at AuthKit's token endpoint is a dead grant, which clients answer by
+        // signing in again.
+        const refresh = yield* rawRequest(`${authKit}/oauth2/token`, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "refresh_token",
+            refresh_token: randomBytes(24).toString("base64url"),
+            client_id: "client_SYNTHETIC_AUTHKIT",
+          }).toString(),
+        });
+        expectJson(refresh, 400, "invalid_grant", "token");
+        expect(refresh.allowOrigin).toBe("*");
+
+        // Revoking a token AuthKit issued succeeds, as RFC 7009 answers an unknown token.
+        const revoked = yield* rawRequest(`${authKit}/oauth2/revoke`, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ token: randomBytes(24).toString("base64url") }).toString(),
+        });
+        expect(revoked.status).toBe(200);
+        expect(revoked.text).toBe("");
+
+        expectJson(yield* rawRequest(`${authKit}/oauth2/jwks`), 404, "not_found", "jwks");
+        expectJson(
+          yield* rawRequest(`${authKit}/oauth2/register`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ redirect_uris: ["http://127.0.0.1:9/callback"] }),
+          }),
+          410,
+          "gone",
+          "register",
+        );
+
+        // AuthKit's sign-in page, which a client opens in the person's browser, says how to
+        // reconnect, and shows nothing the request carried.
+        const marker = `marker${randomUUID().replaceAll("-", "")}`;
+        const authorize = yield* rawRequest(
+          `${authKit}/oauth2/authorize?${new URLSearchParams({
+            client_id: `client_${marker}`,
+            redirect_uri: `http://127.0.0.1:9/${marker}`,
+            state: `<script>${marker}</script>`,
+            response_type: "code",
+          })}`,
+          { headers: { accept: "text/html" } },
+        );
+        expect(authorize.status).toBe(410);
+        expect(authorize.contentType).toContain("text/html");
+        expect(authorize.cacheControl).toBe("no-store");
+        expect(authorize.text).toContain("Executor v1's sign-in has shut down");
+        expect(authorize.text).toContain("Clear authentication");
+        expect(authorize.text).toContain("claude mcp remove");
+        expect(authorize.text).toContain(`<a href="${browser}">Open Executor</a>`);
+        expect(authorize.text).not.toContain(marker);
+        for (const path of ["/", "/sign-in", "/api/auth/get-session"]) {
+          const page = yield* rawRequest(`${authKit}${path}`);
+          expect(page.status, path).toBe(410);
+          expect(page.text, path).toContain("Executor v1's sign-in has shut down");
+        }
+
+        // Nothing else is served there, MCP included. Claude Code, finding no metadata, refreshes
+        // at the default `/token`; a 410 there keeps "Clear authentication" in its menu, which
+        // signs in to v2, and shows this answer's description as the server's issue.
+        for (const [method, path] of [
+          ["POST", "/token"],
+          ["POST", "/mcp"],
+          ["POST", "/oauth2/authorize"],
+          ["DELETE", "/oauth2/token"],
+          ["PUT", "/.well-known/openid-configuration"],
+        ] as const) {
+          expectJson(
+            yield* rawRequest(`${authKit}${path}`, {
+              method,
+              headers: { "content-type": "application/json" },
+              body: "{}",
+            }),
+            410,
+            "gone",
+            `${method} ${path}`,
+          );
+        }
+
+        // The table is the AuthKit host's alone: the deployment still serves v2's issuer metadata.
+        const issuer = yield* rawRequest(`${deployment}/.well-known/oauth-authorization-server`);
+        expect(issuer.status).toBe(200);
+        expect(JSON.parse(issuer.text)).toHaveProperty("token_endpoint");
+      }),
+    ),
+  );
 });
-
-const importServices = Layer.mergeAll(Onboarding.layer, Emulators.layer, McpClient.layer);
-
-/** Run the v1 URL backfill against the managed Cloud's and the synthetic v1's databases. */
-const backfill = (organization: string, apply: boolean) =>
-  Effect.gen(function* () {
-    const target = yield* Target,
-      fs = yield* FileSystem.FileSystem,
-      processes = yield* ChildProcessSpawner.ChildProcessSpawner;
-    const database = (file: string) =>
-      fs.readFileString(`${target.directory}/${file}`).pipe(
-        Effect.flatMap(
-          Schema.decodeUnknownEffect(
-            Schema.fromJsonString(Schema.Struct({ database: Schema.String })),
-          ),
-        ),
-        Effect.map((found) => found.database),
-      );
-    const output = yield* processes.string(
-      ChildProcess.make(
-        "node",
-        [
-          "apps/hosted/cloud/scripts/v1-legacy-urls.ts",
-          "--organization",
-          organization,
-          ...(apply ? ["--apply"] : []),
-        ],
-        {
-          env: {
-            PATH: process.env.PATH ?? "",
-            DATABASE_URL: yield* database("sso-database.json"),
-            V1_DATABASE_URL: yield* database("v1-database.json"),
-          },
-          extendEnv: false,
-        },
-      ),
-    );
-    return yield* Schema.decodeUnknownEffect(
-      Schema.fromJsonString(
-        Schema.Struct({
-          mode: Schema.String,
-          cutOver: Schema.Number,
-          written: Schema.Number,
-          refused: Schema.Array(Schema.Unknown),
-        }),
-      ),
-    )(output);
-  });
 
 const Count = Schema.Array(Schema.Array(Schema.Struct({ count: Schema.Number })));
 
-layer(TestLive, { excludeTestServices: true })("Cloud after v1's shutdown, moved", (it) => {
+layer(HostedLive, { excludeTestServices: true })("Cloud after v1's shutdown, moved", (it) => {
   it.effect(
     scenarios.v1ShutdownApiKeyCapture.title,
     (context) =>
-      withCase(
+      withHostedCase(
         context,
         Effect.gen(function* () {
-          const emulators = yield* Emulators,
-            operator = yield* v1ImportOperator,
+          const actors = yield* Actors,
+            emulators = yield* Emulators,
             mcp = yield* McpClient,
             target = yield* Target;
           const { edge, mcp: mcpOrigin, api: apiOrigin } = targetHosts(target);
-          // A v1 workspace moved by the operator's import, which records its v1 URLs.
+          // A v1 workspace in v1's WorkOS that moved to the scenario's organization, its member
+          // mapped to the owner, recorded with its v1 URLs as the import recorded them.
           const email = `shutdown-${randomUUID().slice(0, 8)}@example.test`;
           const workspace = yield* emulators.v1Workspace([email]);
           const slug = v1Slug("moved");
-          yield* writeRows("v1-database.json", [
+          const owner = yield* userOf(actors.owner);
+          yield* writeRows("sso-database.json", [
             {
-              sql: "insert into organizations (id, name, slug) values ($1, 'Synthetic workspace', $2)",
-              params: [workspace.organization, slug],
+              sql: "insert into private_v1_legacy_org (v1_org_id, v1_slug, v2_org_id) values ($1, $2, $3)",
+              params: [workspace.organization, slug, actors.organization.id],
             },
           ]);
-          yield* allowV1Import(workspace.organization);
-          const run = v1RunId("shutdown");
-          const started = yield* operator.start({
-            mode: "import",
-            runId: run,
-            organizations: [workspace.organization],
+          yield* recordMovedV1Organization({
+            v1Organization: workspace.organization,
+            v2Organization: actors.organization.id,
+            users: [{ v1: workspace.user, v2: owner }],
           });
-          expect(started.status, JSON.stringify(started.body)).toBe(200);
-          const report = yield* operator.waitForReport(run, workspace.organization);
-          expect(report.status, report.reason ?? "").toBe("imported");
-          expect(report.cutover).toBe(true);
           yield* expectDiscovery(edge, `/${slug}/mcp`);
           yield* expectDiscovery(edge, `/${workspace.organization}/mcp`);
 
@@ -793,7 +864,7 @@ layer(TestLive, { excludeTestServices: true })("Cloud after v1's shutdown, moved
           expect(stored[0]?.[0]).toEqual({
             prefix: "sk_",
             name: "Imported from Executor v1",
-            organization: report.v2Organization?.id,
+            organization: actors.organization.id,
             lasting: true,
             enabled: true,
           });
@@ -856,30 +927,9 @@ layer(TestLive, { excludeTestServices: true })("Cloud after v1's shutdown, moved
           ]);
           expect((yield* initializeAt(`${edge}/${slug}/mcp`, key.value)).status).toBe(401);
           expect(yield* counts(keyHash(key.value), key.id)).toEqual([0, 1]);
-
-          // The backfill writes the organization's v1 URLs again from the import's records and v1.
-          yield* writeRows("sso-database.json", [
-            {
-              sql: "delete from private_v1_legacy_org where v1_org_id = $1",
-              params: [workspace.organization],
-            },
-          ]);
-          const gone = yield* rawRequest(
-            `${edge}/.well-known/oauth-protected-resource/${slug}/mcp`,
-          );
-          expect(gone.status).toBe(404);
-          const dryRun = yield* backfill(workspace.organization, false);
-          expect(dryRun).toMatchObject({ mode: "dry run", cutOver: 1, written: 1, refused: [] });
-          expect(
-            (yield* rawRequest(`${edge}/.well-known/oauth-protected-resource/${slug}/mcp`)).status,
-            "the dry run writes nothing",
-          ).toBe(404);
-          const applied = yield* backfill(workspace.organization, true);
-          expect(applied).toMatchObject({ mode: "apply", cutOver: 1, written: 1, refused: [] });
-          yield* expectDiscovery(edge, `/${slug}/mcp`);
-        }).pipe(Effect.provide(importServices)),
+        }).pipe(Effect.provide(Layer.merge(Emulators.layer, McpClient.layer))),
       ),
-    // The import, then many requests on v1's URLs and v2's.
+    // Many requests on v1's URLs and v2's.
     { timeout: 180_000 },
   );
 });

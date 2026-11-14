@@ -15,7 +15,6 @@ import { StorageHost, type Credentials } from "./storage.ts";
 import { PrefetchHost } from "./tools.ts";
 import { SavedOAuthClientsHost } from "./oauth-clients.ts";
 import { OwnerMovesHost } from "./owner.ts";
-import { OAuthGrantImport } from "./oauth.ts";
 import type { ExecutorDatabase } from "../implementation/storage.ts";
 import type { AppRuntime } from "../implementation/runtime.ts";
 import type { OAuthOptions } from "./oauth.ts";
@@ -432,7 +431,7 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
     /**
      * Host-only: compile source files as `deploy` would and return the requirements they declare,
      * writing nothing: no app, version or source is saved, and the build is neither retained nor
-     * cached. For checks that must not create anything, such as the v1 import's dry run. Fails
+     * cached. For checks that must not create anything. Fails
      * like `deploy`'s build, except that a compiler that did not answer is `BuildUnanswered`.
      */
     readonly build: (input: {
@@ -457,8 +456,6 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
   readonly [OwnerMovesHost]: import("./owner.ts").OwnerMoves;
   /** Host-only: data step 11's repair of registrations no removal can finish. */
   readonly [UnremovableWebhooksHost]: UnremovableWebhooks;
-  /** Host-only: the v1 importer's grant import (`notes/v1-import.md`). */
-  readonly [OAuthGrantImport]: OAuthGrantImport;
   readonly scheduler: import("./scheduler.ts").ScheduleDispatcher;
   /** Host-only: products authorize every event operation before calling it. */
   readonly events: import("./events.ts").ExecutorEvents;
@@ -485,7 +482,6 @@ export type PromiseExecutor = Promisify<
     | typeof SavedOAuthClientsHost
     | typeof OwnerMovesHost
     | typeof UnremovableWebhooksHost
-    | typeof OAuthGrantImport
     | "scheduler"
     | "events"
     | "managedAccounts"

@@ -18,6 +18,7 @@ import {
   McpConsentRowPending,
   McpConsentSelect,
   McpConsentTargetRows,
+  preselectedApprovalMode,
   type ConsentConnectionList,
 } from "@executor-js/ui/dashboard/mcp-consent";
 import {
@@ -65,7 +66,7 @@ export function useGrantChoices({
     named === undefined ? { kind: "all" } : { kind: "connection", id: named },
   );
   const [mode, setMode] = useState<ApprovalMode | undefined>(
-    target.kind === "mcp" ? target.mode : undefined,
+    target.kind === "mcp" ? preselectedApprovalMode(target.mode) : undefined,
   );
   const [pending, setPending] = useState<PendingConnection>();
   // A named connection fixes the organization; with several, the page looks for it first.

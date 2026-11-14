@@ -173,7 +173,7 @@ const jobs = {
     runner: 3,
 
     pattern:
-      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Cloud's database pool runs a statement whose connection|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 import (?!keeps at most the bound)|Cloud validates a v1 WorkOS API key|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization|A person deletes their own user|On Cloud a slow tool call log write",
+      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Cloud's database pool runs a statement whose connection|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 session handoff|Cloud accepts MCP requests v1 forwards|Cloud validates a v1 WorkOS API key|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization|A person deletes their own user|On Cloud a slow tool call log write",
   },
   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
   // load kept the team installation's workflow span from arriving within its 30-second wait, so
@@ -182,7 +182,7 @@ const jobs = {
     target: "cloud",
     runner: 5,
     pattern:
-      "cloud role hosts serve only|a grant is for its one resource|role host resource seed|Cloud's edge serves v1|An MCP SDK client holding AuthKit|A person approves a client for one of v1's MCP URLs|Cloud request spans name the host|Cloud sign-in explains that a passkey|Cloud connected-account sign-ins return through|Cloud serves its site for the edge|keep serving the published skills index|Apps directory on the edge reads|Cloud's API host serves the SDK|Cloud's own social sign-ins on app\\.|hosted wildcard routes trace their template|Cloud links the site's anonymous visitor",
+      "cloud role hosts serve only|a grant is for its one resource|role host resource seed|Cloud's edge serves v1|Cloud answers v1's AuthKit|An MCP SDK client holding AuthKit|A person approves a client for one of v1's MCP URLs|Cloud request spans name the host|Cloud sign-in explains that a passkey|Cloud connected-account sign-ins return through|Cloud serves its site for the edge|keep serving the published skills index|Apps directory on the edge reads|Cloud's API host serves the SDK|Cloud's own social sign-ins on app\\.|hosted wildcard routes trace their template|Cloud links the site's anonymous visitor",
   },
   "cloud-workers": {
     target: "cloud",
@@ -239,7 +239,7 @@ const jobs = {
       "Cloud keeps each JSON Schema definition a tool listing repeats once|definitions share a name and length but not their JSON|definition names are long and of one length|Cloud serves a tool listing its isolate cannot keep|Cloud writes the background refresh of a stale tool listing",
   },
   // Autumn faults match every caller of a route on a Cloud's Autumn emulator, and other jobs'
-  // scenarios read billing and v1 plans, so this slows Autumn on its own local Cloud.
+  // scenarios read billing, so this slows Autumn on its own local Cloud.
   "cloud-autumn": {
     target: "cloud",
     runner: 4,
@@ -262,13 +262,6 @@ const jobs = {
     target: "cloud",
     runner: 2,
     pattern: "Cloud MCP session objects hold their database connections",
-  },
-  // The v1 import's bound counts every run's organizations on a Cloud, so the scenario that
-  // asserts it starts its own local Cloud, where no other scenario's organizations run.
-  "cloud-v1-bound": {
-    target: "cloud",
-    runner: 5,
-    pattern: "Cloud v1 import keeps at most the bound",
   },
   // Managed Cloud turns the per-address auth limit off; this job starts one with it on. Its
   // database scenarios lock the limit's table, which every request of this Cloud uses.
@@ -369,7 +362,7 @@ const namedIn = (plan: string, title: string) => plan.includes(JSON.stringify(ti
  * pointer cage. A pull request whose changed spec files added about 110 scenarios to the job's
  * own 27 ran AppData out of heap. A larger selection is split by spec file into parts of about
  * this many, each run on a local Cloud and runner of its own; so is a full run once the job's own
- * pattern passes it, as the v1 import's scenarios take it to. Parts of about 35 peaked
+ * pattern passes it. Parts of about 35 peaked
  * at 2.3-2.7 GB in AppData under coverage; 30 keeps more of the cage free.
  */
 const localCloudScenarios = 30;
@@ -759,6 +752,8 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "ci-selection.config.ts": () => import("./ci-selection.config.ts"),
   "ci-supersede.config.ts": () => import("./ci-supersede.config.ts"),
   "ci-repeat.config.ts": () => import("./ci-repeat.config.ts"),
+  "collector-job.config.ts": () => import("./collector-job.config.ts"),
+  "macos-staple.config.ts": () => import("./macos-staple.config.ts"),
   "workflow-caches.config.ts": () => import("./workflow-caches.config.ts"),
   "telemetry-event-lifetime.config.ts": () => import("./telemetry-event-lifetime.config.ts"),
   "cli-startup-imports.config.ts": () => import("./cli-startup-imports.config.ts"),

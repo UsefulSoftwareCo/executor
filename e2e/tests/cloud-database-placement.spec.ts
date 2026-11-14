@@ -1489,6 +1489,19 @@ return listed;`;
               leaves: ["could not connect", "could not connect", "could not connect"],
             },
           });
+
+          // A connect attempt that reaches its timeout, and one whose caller gives up while it
+          // waits, close their sockets: a server that accepts and never answers sees each closed.
+          const abandoned = yield* step(
+            "Connect attempts that time out or are given up close their sockets",
+            "connect-abandoned",
+          );
+          expect(abandoned).toEqual({
+            timedOut: "timed out",
+            afterTimeout: { attempts: 2, open: 0 },
+            interrupted: "failed",
+            afterInterrupt: { attempts: 1, open: 0 },
+          });
         }),
       ),
     { timeout: 180_000 },

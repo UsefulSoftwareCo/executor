@@ -739,6 +739,38 @@ layer(NodeServices.layer)("deploy waits for the apps job", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  // Answers that say nothing about the apps job: each is waited out and stops the deploy at the
+  // deadline, never taken as success.
+  for (const [ending, answer, reason] of [
+    ["a 404", { status: 404 }, "the jobs API answered 404"],
+    ["a 401", { status: 401 }, "the jobs API answered 401"],
+    ["a 200 with an empty body", { raw: "" }, "the jobs API answered unreadably"],
+  ] as const)
+    it.effect(`${ending} on every read stops the deploy at the deadline`, () =>
+      Effect.gen(function* () {
+        const api = yield* jobsApi([answer]);
+        const result = yield* wait(api.url(), { limit: 2, attempt: 5, poll: 0.5 });
+        expect(result.exitCode, result.log).toBe(1);
+        expect(result.log).toContain(`(${reason}); not deploying.`);
+        expect(result.log).not.toContain("The apps job succeeded");
+        expect(api.requests().length).toBeGreaterThanOrEqual(2);
+        // A watchdog on the whole process.
+        expect(result.seconds).toBeLessThan(30);
+      }).pipe(Effect.scoped),
+    );
+
+  it.effect("the lateness message names the limit in force, not the default", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([inProgress]);
+      const result = yield* wait(api.url(), { limit: 2, attempt: 5, poll: 0.5 });
+      expect(result.exitCode).toBe(1);
+      expect(result.log).toContain(
+        "The apps job did not finish within 2 s (the apps job is in_progress); not deploying.",
+      );
+      expect(result.log).not.toContain("15 minutes");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("the deadline cuts off a request still waiting for its answer", () =>
     Effect.gen(function* () {
       // A 3 s wait whose one request may take 30 s and never gets an answer.

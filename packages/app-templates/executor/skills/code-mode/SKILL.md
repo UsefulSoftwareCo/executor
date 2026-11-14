@@ -124,7 +124,11 @@ The program then pauses, and `execute` returns `status: "approval-required"` or
 `"input-required"` with a `requestId` and an `elicitation` describing the
 question. How you answer depends on the connection's mode:
 
-- Model mode (the default): show the request to the user and get their answer.
+- Automatic mode: Executor approves tool calls itself, so `approval-required`
+  never appears; your own permission prompt for `execute` and `call` is the
+  check. A running tool's `input-required` question still comes back to you, and
+  you answer it as in model mode.
+- Model mode: show the request to the user and get their answer.
   Call `resume` with `{ requestId, response: { action: "accept", content } }`,
   or with `action: "decline"` or `"cancel"`. Put the user's form fields in
   `content`. Never approve on the user's behalf.

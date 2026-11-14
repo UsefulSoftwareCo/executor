@@ -1,0 +1,12 @@
+{
+  "query": "/api/traces/00000000000000000000000000000000",
+  "status": 404,
+  "shape": {
+    "types": ["object"],
+    "fields": {
+      "error": {
+        "types": ["string"]
+      }
+    }
+  }
+}

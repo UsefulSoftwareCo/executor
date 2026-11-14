@@ -18,6 +18,8 @@
  *   cancellation bound, and the pool replaces it; with the cancel delivered, the connection is kept.
  * - `sibling`: a statement of a group that finishes while another statement of the group drains
  *   returns at once.
+ * - `connect-abandoned`: a connect attempt that times out, and one interrupted while it waits, close
+ *   their sockets: a server that accepts and never answers sees each closed.
  * - `batch`: a `PgConnection.pipelined` batch with `BEGIN` runs on one held connection in one
  *   snapshot inside `PgPool.held`, and refuses to write `BEGIN` outside a hold. A batch whose
  *   pool cannot connect (both attempts closed at once, as by a restarting pooler) returns each
@@ -38,6 +40,7 @@ import {
   Cause,
   Context,
   Deferred,
+  Duration,
   Exit,
   Fiber,
   FileSystem,
@@ -60,6 +63,7 @@ const cases = [
   "drain",
   "sibling",
   "batch",
+  "connect-abandoned",
 ] as const;
 
 /** The protocol code of a `CancelRequest`, the first message on its own connection. */
@@ -428,6 +432,83 @@ const command = Command.make("database-pool-fixture", {
                   }),
                 );
               return { dropped: yield* arm("dropped"), delivered: yield* arm("delivered") };
+            }
+            case "connect-abandoned": {
+              // A server that accepts and never answers, as a path that drops everything after
+              // the TCP handshake does. It reads and discards, so it sees each client's close.
+              const silent = yield* Effect.acquireRelease(
+                Effect.callback<{
+                  readonly server: Net.Server;
+                  readonly sockets: { accepted: number; open: number };
+                  readonly held: Set<Net.Socket>;
+                }>((resume) => {
+                  const sockets = { accepted: 0, open: 0 };
+                  const held = new Set<Net.Socket>();
+                  const server = Net.createServer((socket) => {
+                    sockets.accepted++;
+                    sockets.open++;
+                    held.add(socket);
+                    socket.on("close", () => {
+                      sockets.open--;
+                      held.delete(socket);
+                    });
+                    socket.on("error", () => undefined);
+                    socket.resume();
+                  });
+                  server.listen(0, "127.0.0.1", () =>
+                    resume(Effect.succeed({ server, sockets, held })),
+                  );
+                }),
+                // Sockets a client left open would keep the server from closing.
+                ({ server, held }) =>
+                  Effect.callback<void>((resume) => {
+                    for (const socket of held) socket.destroy();
+                    server.close(() => resume(Effect.void));
+                  }),
+              );
+              const address = silent.server.address();
+              if (address === null || typeof address === "string")
+                return yield* Effect.die("The silent server has no port");
+              const url = new URL(target.toString());
+              url.hostname = "127.0.0.1";
+              url.port = String(address.port);
+              /** Sockets the server still has open once closes have had time to arrive. */
+              const leftOpen = Effect.sleep("500 millis").pipe(
+                Effect.map(() => silent.sockets.open),
+              );
+              // Each attempt reaches its connect timeout; the second is the retry.
+              const timedOut = yield* Effect.exit(
+                Effect.scoped(
+                  PgConnection.make({
+                    url: Redacted.make(url.toString()),
+                    connectTimeout: Duration.millis(300),
+                    connectRetries: 1,
+                  }),
+                ),
+              );
+              const afterTimeout = { attempts: silent.sockets.accepted, open: yield* leftOpen };
+              // The caller gives up while the attempt waits, well before its own timeout.
+              const interrupted = yield* Effect.exit(
+                Effect.scoped(
+                  PgConnection.make({
+                    url: Redacted.make(url.toString()),
+                    connectTimeout: Duration.seconds(10),
+                  }),
+                ).pipe(Effect.timeout(Duration.millis(200))),
+              );
+              return {
+                timedOut:
+                  Exit.isFailure(timedOut) &&
+                  String(timedOut.cause).includes("Connection timed out")
+                    ? "timed out"
+                    : outcome(timedOut),
+                afterTimeout,
+                interrupted: outcome(interrupted),
+                afterInterrupt: {
+                  attempts: silent.sockets.accepted - afterTimeout.attempts,
+                  open: yield* leftOpen,
+                },
+              };
             }
             case "batch": {
               // A client of the session objects' shape: its statements go through the borrower

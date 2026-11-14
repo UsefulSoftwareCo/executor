@@ -41,20 +41,38 @@ export const v1SignUp = (browser: string) =>
     }),
   );
 
-const callbackGone = (browser: string) =>
+/**
+ * A 410 page saying part of Executor v1 has shut down and linking to Executor. `paragraphs` are
+ * fixed HTML; nothing from the request goes in.
+ */
+export const v1GonePage = (page: {
+  readonly title: string;
+  readonly heading: string;
+  readonly paragraphs: ReadonlyArray<string>;
+  readonly browser: string;
+}) =>
   HttpServerResponse.text(
     `<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign-in expired · Executor</title></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${page.title} · Executor</title></head>
 <body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem; line-height: 1.5">
-<h1 style="font-size: 1.25rem">This sign-in started in Executor v1</h1>
-<p>Executor v1 has shut down, so the sign-in it started cannot finish. Open Executor and connect the account again.</p>
-<p><a href="${browser}">Open Executor</a></p>
+<h1 style="font-size: 1.25rem">${page.heading}</h1>
+${page.paragraphs.map((paragraph) => `<p>${paragraph}</p>\n`).join("")}<p><a href="${page.browser}">Open Executor</a></p>
 </body>
 </html>
 `,
     { status: 410, contentType: "text/html; charset=utf-8", headers: noStore },
   );
+
+const callbackGone = (browser: string) =>
+  v1GonePage({
+    title: "Sign-in expired",
+    heading: "This sign-in started in Executor v1",
+    paragraphs: [
+      "Executor v1 has shut down, so the sign-in it started cannot finish. Open Executor and connect the account again.",
+    ],
+    browser,
+  });
 
 /**
  * `GET /api/oauth/callback`: a connected-account sign-in v2 started (its state starts with
