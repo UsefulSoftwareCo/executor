@@ -220,11 +220,15 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
               { concurrency: 4, discard: true },
             ),
           );
-          // The blocked removal's owner row stays locked against deletion; the product's own
-          // erasure never deletes users, so it still finishes.
+          // The blocked removal's owner row stays locked against deletion and nothing else: `for
+          // key share` conflicts only with the lock a `DELETE` takes. The organization's team
+          // installation may still be setting up this owner, and its member setup reads the owner
+          // `for share` while it holds the organization row (organization-defaults.ts); a stronger
+          // lock here held that setup, and with it the erasure's delete of the organization row
+          // (CI #13622). The product's own erasure never deletes users, so it still finishes.
           const [owner] = yield* locks
             .hold({
-              sql: `select id from "user" where email = $1 for no key update`,
+              sql: `select id from "user" where email = $1 for key share`,
               params: [`agent-${blocked}-owner@example.test`],
             })
             .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Schema.Unknown))));
