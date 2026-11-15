@@ -19,7 +19,14 @@ import {
   packagedEngineVariable,
 } from "../packaged-engine.ts";
 import { closureOf } from "../save-path.ts";
-import { scenarios } from "../test-plan.ts";
+import {
+  matchesPath,
+  mcpSearchChanged,
+  mcpSearchPaths,
+  mcpSearchScenarios,
+  mcpSearchTitles,
+} from "../mcp-search-guard.ts";
+import { scenarios, scenariosForSuite } from "../test-plan.ts";
 
 const jobs = [
   "local",
@@ -1372,6 +1379,204 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           ),
         ).toBe(false);
       }),
+  );
+
+  /** #4456's changed files, and #4457's tests layer above it with its e2e block. */
+  const searchBatch = {
+    compared: [
+      "apps/hosted/server/src/implementation/access.ts",
+      "apps/hosted/server/src/implementation/mcp.ts",
+      "apps/hosted/server/src/implementation/resource-lifecycle.ts",
+      "apps/hosted/server/src/implementation/resource-policy.ts",
+      "apps/hosted/server/src/implementation/tools.ts",
+      "apps/local/server/src/implementation/app-accounts.ts",
+      "notes/cloud-latency.md",
+      "packages/sdk/src/contracts/executor.ts",
+      "packages/sdk/src/contracts/tools.ts",
+      "packages/sdk/src/implementation/create.ts",
+      "packages/sdk/src/implementation/declarations.ts",
+      "packages/sdk/src/implementation/listings.ts",
+      "packages/sdk/src/implementation/oauth.ts",
+      "packages/sdk/src/implementation/tool-search-store.ts",
+      "packages/sdk/src/implementation/tool-search.ts",
+      "packages/sdk/src/implementation/tools.ts",
+      "e2e/test-plan.ts",
+      "e2e/tests/search-statements.spec.ts",
+    ],
+    changed: ["e2e/test-plan.ts", "e2e/tests/search-statements.spec.ts"],
+    body: block(
+      "search-statements.spec.ts",
+      "kept-listings.spec.ts",
+      "mcp-catalog.spec.ts",
+      "mcp-connections.spec.ts",
+      "mcp-execute-failures.spec.ts",
+      "mcp-execute-reach.spec.ts",
+      "mcp-server.spec.ts",
+      "mcp-account-choice.spec.ts",
+      "app-routers.spec.ts",
+      "app-accounts-tab.spec.ts",
+      "bearer-auth-statements.spec.ts",
+      "tool-call-statements.spec.ts",
+      "tool-index-redeploy.spec.ts",
+    ),
+  };
+  /** Every title a run's job patterns select on `target`, read from the patterns as exact titles. */
+  const selectsTitle = (outputs: Readonly<Record<string, string>>, job: string, title: string) =>
+    (outputs[job] ?? "") !== "" && new RegExp(outputs[job]!).test(title);
+
+  it.effect(
+    "the search batch that reddened main selects the Cloud scenario it broke, from its changed files",
+    () =>
+      Effect.gen(function* () {
+        const run = yield* select(searchBatch);
+        expect(run.exitCode, run.log).toBe(0);
+        const broken = scenarios.cloudMcpDiscoveryListings.title;
+        expect(broken).toBe(
+          "Cloud MCP session objects discover the other apps of an execute while one app's listing waits on a lock",
+        );
+        expect(selectsTitle(run.outputs, "cloud-product", broken)).toBe(true);
+        expect(run.summary).toContain(
+          "(e2e/mcp-search-guard.ts), so these Cloud scenarios run too",
+        );
+      }),
+  );
+
+  /** The job each guarded scenario runs in, as e2e/ci-selection.ts's job patterns place it. */
+  const guardedJobs: Readonly<Record<string, string>> = {
+    cloudMcpDiscoveryListings: "cloud-product",
+    cloudMcpParallelCalls: "cloud-product",
+    cloudMcpAbandonedStatement: "cloud-product",
+    cloudMcpObjectPool: "cloud-product",
+    cloudMcpSessionRouting: "cloud-product",
+    cloudMcpSessionRestore: "cloud-product",
+    // Its 120-second idle wait would set the length of any other job.
+    cloudMcpObjectConnections: "cloud-connections",
+    cloudMcpObjectConnectRetry: "cloud",
+    mcpBackgroundListingCloud: "cloud",
+    mcpStoppedListingCloud: "cloud",
+    mcpStoppedRenewalCloud: "cloud",
+    cloudMcpStreamLifetime: "cloud",
+    // It counts every request in the session object isolate.
+    cloudMcpSessionTiming: "cloud-isolate",
+    // It holds a lock on the accounts table.
+    cloudMcpCallBatch: "cloud-batch",
+  };
+
+  it.effect(
+    "the MCP search guard adds its Cloud scenarios to the block, in their own jobs, once, and never to a skipped layer",
+    () =>
+      Effect.gen(function* () {
+        const guarded = "packages/sdk/src/implementation/tools.ts";
+        const runs = yield* Effect.all(
+          {
+            guarded: select({ body: block("mcp-catalog.spec.ts"), compared: [guarded] }),
+            unguarded: select({ body: block("mcp-catalog.spec.ts"), compared: ["notes/x.md"] }),
+            none: select({ body: block("none"), compared: [guarded] }),
+            named: select({
+              body: block("cloud-database-placement.spec.ts"),
+              compared: [guarded],
+            }),
+            skip: select({ body: block("skip"), stackedAbove: "7", compared: [guarded] }),
+          },
+          { concurrency: 4 },
+        );
+        for (const [name, run] of Object.entries(runs))
+          expect(run.exitCode, `${name}: ${run.log}`).toBe(0);
+        const plan = scenariosForSuite("all", "managed");
+        // Each guarded title runs in exactly one Cloud job, the one whose pattern holds it.
+        for (const title of mcpSearchTitles) {
+          const holding = cloudJobs.filter((job) => selectsTitle(runs.guarded.outputs, job, title));
+          expect(holding, title).toHaveLength(1);
+          expect(selectsTitle(runs.none.outputs, holding[0]!, title), title).toBe(true);
+          expect(selectsTitle(runs.unguarded.outputs, holding[0]!, title), title).toBe(false);
+        }
+        // Nothing the block selects is removed, and no other target gains a scenario.
+        for (const job of jobs.filter((job) => !job.startsWith("cloud")))
+          expect(runs.guarded.outputs[job], job).toBe(runs.unguarded.outputs[job]);
+        // The block's own Cloud scenarios outside the table still run beside the guarded ones.
+        const named = plan.filter(
+          (scenario) =>
+            scenario.file === "cloud-database-placement.spec.ts" &&
+            scenario.targets.cloud.status === "scheduled" &&
+            !mcpSearchTitles.has(scenario.title),
+        );
+        expect(named.length).toBeGreaterThan(2);
+        for (const scenario of named)
+          expect(
+            cloudJobs.some((job) => selectsTitle(runs.named.outputs, job, scenario.title)),
+            scenario.title,
+          ).toBe(true);
+        // Each guarded title lands in the job checks.yml's reasons give it, and no other.
+        expect(Object.keys(guardedJobs).sort()).toEqual([...mcpSearchScenarios].sort());
+        for (const [key, job] of Object.entries(guardedJobs)) {
+          const title = scenarios[key as keyof typeof scenarios].title;
+          expect(
+            cloudJobs.filter((each) => selectsTitle(runs.none.outputs, each, title)),
+            `${key} runs only in ${job}`,
+          ).toEqual([job]);
+        }
+        // A title the block already selects is in its job's pattern once.
+        const broken = scenarios.cloudMcpDiscoveryListings.title;
+        const pattern = runs.named.outputs["cloud-product"]!;
+        expect(pattern.split(broken.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).length - 1).toBe(1);
+        // A skipped layer still skips; the layer above carries the run.
+        expect(runs.skip.outputs.skip).toBe("true");
+        expect(runs.skip.outputs["cloud-runners"] ?? "").toBe("");
+      }),
+  );
+
+  it.effect("the MCP search guard's table names files that exist and scenarios Cloud runs", () =>
+    Effect.gen(function* () {
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const child = yield* processes.spawn(ChildProcess.make("git", ["ls-files"]));
+      const tracked = (yield* child.stdout.pipe(Stream.decodeText(), Stream.mkString))
+        .split("\n")
+        .filter((file) => file !== "");
+      expect(tracked.length).toBeGreaterThan(1000);
+      expect(
+        mcpSearchPaths.filter((entry) => !tracked.some((file) => matchesPath(entry, file))),
+        "paths in e2e/mcp-search-guard.ts that match no file",
+      ).toEqual([]);
+      // A path entry's forms, and #4456's files.
+      expect(matchesPath("packages/mcp/", "packages/mcp/src/server.ts")).toBe(true);
+      expect(
+        matchesPath(
+          "packages/sdk/src/implementation/tool-search*.ts",
+          "packages/sdk/src/implementation/tool-search-store.ts",
+        ),
+      ).toBe(true);
+      expect(
+        matchesPath(
+          "packages/sdk/src/implementation/tool-search*.ts",
+          "packages/sdk/src/implementation/tool-search/x.ts",
+        ),
+      ).toBe(false);
+      expect(mcpSearchChanged(["packages/sdk/src/implementation/tools.ts"])).toBe(true);
+      expect(mcpSearchChanged(["packages/sdk/src/implementation/tools-index.ts"])).toBe(false);
+
+      const cloud = scenariosForSuite("all", "managed").filter(
+        (scenario) => scenario.targets.cloud.status === "scheduled",
+      );
+      const scheduled = new Set(cloud.map((scenario) => scenario.title));
+      expect(
+        mcpSearchScenarios.filter((key) => !scheduled.has(scenarios[key].title)),
+        "scenarios in e2e/mcp-search-guard.ts that Cloud does not run",
+      ).toEqual([]);
+      // A new scenario of the family is guarded from the day it is written: every Cloud scenario
+      // in a cloud-mcp-session-* spec file, and every MCP session scenario of
+      // cloud-database-placement.spec.ts, read by the phrase its titles share.
+      const family = cloud.filter(
+        (scenario) =>
+          /^cloud-mcp-session-[\w-]+\.spec\.ts$/.test(scenario.file) ||
+          (scenario.file === "cloud-database-placement.spec.ts" &&
+            scenario.title.includes("MCP session")),
+      );
+      expect(family.length).toBeGreaterThan(8);
+      expect(
+        family.filter((scenario) => !mcpSearchTitles.has(scenario.title)).map((s) => s.title),
+        "Cloud MCP session scenarios not guarded: add each one's key to mcpSearchScenarios in e2e/mcp-search-guard.ts",
+      ).toEqual([]);
+    }),
   );
 
   it.effect("none, all and skip keep their meaning", () =>

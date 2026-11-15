@@ -59,6 +59,7 @@ import { collectorChanged, collectorScenarios } from "./collector-inputs.ts";
 import { lanesFor, releaseSources } from "./release-lanes.ts";
 import { packagedEngineDependency } from "./packaged-engine.ts";
 import { savePathFiles } from "./save-path.ts";
+import { mcpSearchChanged, mcpSearchTitles } from "./mcp-search-guard.ts";
 import { Target } from "./report-model.ts";
 import { exactly, split } from "./scenario-parts.ts";
 import { platformSignatures } from "./platform-signatures.ts";
@@ -1289,6 +1290,10 @@ NodeRuntime.runMain(
         Effect.map((files) => compared.some((file) => files.has(file))),
         Effect.mapError((error) => new SelectionFailed({ message: error.message })),
       ));
+    // The MCP search and session scenarios, from the same comparison (e2e/mcp-search-guard.ts): a
+    // floor under the block for the code they run through, in their own Cloud jobs.
+    const searchChanged =
+      compared === undefined || compared.length >= compareFileLimit || mcpSearchChanged(compared);
     // The release lanes, from the same comparison: a pull request's changes since main, so the
     // top of a stack runs them for every layer. A comparison GitHub cannot list in full runs both.
     const lanes =
@@ -1348,7 +1353,10 @@ NodeRuntime.runMain(
         .filter(
           (scenario) =>
             scenario.targets[target].status === "scheduled" &&
-            ((base.test(scenario.title) && (files === undefined || files.has(scenario.file))) ||
+            ((base.test(scenario.title) &&
+              (files === undefined ||
+                files.has(scenario.file) ||
+                (target === "cloud" && searchChanged && mcpSearchTitles.has(scenario.title)))) ||
               extra.has(scenario.title)),
         )
         .map((scenario) => scenario.title);
@@ -1491,6 +1499,12 @@ NodeRuntime.runMain(
         ? [
             "",
             `A file a save runs or reads differs from main (e2e/save-path.ts), so these run in ${saveScenarios.job}: ${saveScenarios.files.join(", ")}`,
+          ]
+        : []),
+      ...(searchChanged && files !== undefined
+        ? [
+            "",
+            `A file MCP search or sessions run through differs from main (e2e/mcp-search-guard.ts), so these Cloud scenarios run too: ${[...mcpSearchTitles].join("; ")}`,
           ]
         : []),
       ...(savePathSize === undefined
