@@ -167,6 +167,11 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
         yield* Effect.addFinalizer(() => Effect.ignore(release));
 
         yield* browser.login(actors.owner);
+        // A new app's first read of its working source creates its repository. On a deployed
+        // stage that can outlast the time the server's render waits for a read, and the page then
+        // leaves the skill to the browser after hydration, which the next step holds. Create the
+        // repository first, as for any app whose source was opened before.
+        expect(skillFile(yield* workspace())).toBe(skill);
         // The server sends the skill as the reader, and the editor replaces it once the page has
         // hydrated. Hold the page's scripts to see the server's page, then let it hydrate: the
         // skill's text, from its first heading to its last block, must stay where it was. One
@@ -195,12 +200,13 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
                 return scripts.then(() => route.fallback());
               })
               .then(() => page.goto(skillUrl, { waitUntil: "commit" }))
+              // The parser reaches the end of the server's document before any held script runs,
+              // so the page it has parsed then is all the server sent.
               .then(() =>
-                Promise.all([
-                  held,
-                  page.getByRole("cell", { name: "Full-text search", exact: true }).waitFor(),
-                ]),
+                Promise.all([held, page.waitForFunction(() => document.readyState !== "loading")]),
               )
+              .then(() => page.getByRole("cell", { name: "Full-text search", exact: true }).count())
+              .then((cells) => expect(cells, "the server's page shows the skill").toBe(1))
               // Measure with the final fonts; a late font load shifts the text by a pixel.
               .then(() => page.evaluate(() => document.fonts.ready.then(() => undefined)))
               .then(() =>
