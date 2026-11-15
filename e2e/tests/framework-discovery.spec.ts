@@ -247,8 +247,10 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
         const intro = yield* Schema.decodeUnknownEffect(Document)(entry.structuredContent);
         expect(intro.content).toContain("`code-mode`");
         expect(intro.content).toContain("`app-authoring`");
-        // The intro only points at media; the code-mode skill it names holds the detail.
-        expect(intro.content).toContain("see images and hear audio");
+        // The intro only points at media; the code-mode skill it names holds the detail. Pinned
+        // to what it must say (how to see images and hear audio a tool returns), not one wording:
+        // the list may grow, as it did with files.
+        expect(intro.content).toMatch(/see images\b[^.]*\bhear audio\b/);
         const codeMode = yield* client.use("Follow the intro to media guidance", (client, signal) =>
           client.callTool(
             { name: "skills", arguments: { app: "executor", name: "code-mode" } },
@@ -258,10 +260,10 @@ return { found, described: await tools.search.describe({ paths: found.items.map(
         );
         const media = (yield* Schema.decodeUnknownEffect(Document)(codeMode.structuredContent))
           .content;
-        expect(media).toContain("## See images and hear audio");
-        expect(media).toContain(
-          'return { type: "image", mimeType: "image/png", data: file.base64 };',
-        );
+        // A section of its own on media, and an example that returns a tool's bytes from
+        // `execute` as a block the client receives, not as base64 text.
+        expect(media).toMatch(/^## See images\b.*\bhear audio\b/m);
+        expect(media).toMatch(/return \{\s*type: "(?:image|audio|resource)"/);
         const router = yield* Schema.decodeUnknownEffect(Document)(guide.structuredContent);
         expect(router.content).toContain("[ui.md](ui.md)");
         const topic = yield* client.use("Follow the pinned UI topic", (client, signal) =>

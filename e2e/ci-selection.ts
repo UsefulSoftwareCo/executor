@@ -59,6 +59,7 @@ import { collectorChanged, collectorScenarios } from "./collector-inputs.ts";
 import { lanesFor, releaseSources } from "./release-lanes.ts";
 import { packagedEngineDependency } from "./packaged-engine.ts";
 import { savePathFiles } from "./save-path.ts";
+import { fileGuards } from "./file-guards.ts";
 import { selectionKey, workerGrowthKey } from "./ci-key.ts";
 import { mcpSearchChanged, mcpSearchTitles } from "./mcp-search-guard.ts";
 import { Target } from "./report-model.ts";
@@ -691,19 +692,6 @@ const guardedPatches = (mainManifest: string, mainPatches: string) =>
         pinned(head, dependency, (path) => headBlobs.get(path)),
     );
   });
-
-/**
- * Scenarios that assert a contract one file states in full. app-package.spec.ts reads back every
- * protocol the host supports when it rejects an unsupported framework, so a new protocol changes
- * its expected message. These run whenever the file differs from main's, so the top of a stack
- * runs them when a lower layer changes it.
- */
-const fileGuards: Readonly<Record<string, ReadonlyArray<string>>> = {
-  "packages/sdk/src/implementation/app-protocols.ts": [
-    "app-package.spec.ts",
-    "app-older-protocols.spec.ts",
-  ],
-};
 
 /**
  * Guard spec files for every guarded file whose contents differ from main's. `mainListing` reads

@@ -20,6 +20,7 @@ import { hostedExecutorOrigin } from "@executor-js/sdk/core";
 import { ToolInputInvalid, ToolsSignInRequired } from "./client-error.ts";
 import { hostFlag, namedHost, toolsTarget, type LocalServer } from "./implementation/hosts.ts";
 import { hasRegistrySession, logout, toolsLogin } from "./implementation/node-auth.ts";
+import { saveContentFiles } from "./implementation/tool-files.ts";
 
 /**
  * The MCP client and the paused-call records, loaded when a command uses them, so other commands
@@ -77,7 +78,13 @@ const fileFlag = (name: string, description: string) =>
  * recovery on stderr, and `{"error": ...}` on stdout when stdout is not a terminal.
  */
 const prints = "Prints the result as JSON";
-const pauses = `${prints}. A paused call prints its pending request, with an approvalUrl when the host gives one; continue it with executor resume`;
+const pauses = `${prints}, with the path of each image, audio or file it holds, written to a new temporary directory unless --files names one. A paused call prints its pending request, with an approvalUrl when the host gives one; continue it with executor resume`;
+
+/** Where `call`, `execute` and `resume` write the images, audio and files a result holds. */
+const filesFlag = fileFlag(
+  "files",
+  "Write images, audio and files the result holds into this directory instead of a new temporary one",
+);
 
 /**
  * The tool commands, `login`, `logout`, `whoami` and `mcp`. `localServer` resolves the local
@@ -88,24 +95,26 @@ export const toolCommands = <E, R>(
   localServer?: Effect.Effect<LocalServer, E, R>,
 ) => {
   /**
-   * Call one MCP tool on the resolved host and print its result. A call paused for browser
-   * approval is answered in the session that made it, so `resume` continues that session.
+   * Call one MCP tool on the resolved host and print its result, with the images, audio and files
+   * it holds written into `files` or a new temporary directory. A call paused for browser approval
+   * is answered in the session that made it, so `resume` continues that session.
    */
   const run = (
     host: Option.Option<string>,
     tool: string,
     input: Record<string, unknown>,
-    resumed?: string,
+    options: { readonly resumed?: string; readonly files?: Option.Option<string> } = {},
   ) =>
     Effect.gen(function* () {
       const target = yield* toolsTarget(host, localServer, { fresh: false });
       const { callTool, printJson } = yield* toolsClient;
       const { pausedSession, recordPause } = yield* pausedCalls;
+      const { resumed, files = Option.none() } = options;
       const session =
         resumed === undefined ? Option.none() : yield* pausedSession(target.host, resumed);
       const result = yield* callTool(target, tool, input, Option.getOrUndefined(session));
       yield* recordPause(target.host, result.value, result.session, resumed);
-      yield* printJson(result.value);
+      yield* printJson(yield* saveContentFiles(result.value, result.content, files));
     });
   const loginHost = Flag.String("host").pipe(
     Flag.withDescription(
@@ -255,6 +264,7 @@ export const toolCommands = <E, R>(
         "input-file",
         "Read the input JSON from this file, or from standard input with -",
       ),
+      files: filesFlag,
     }).pipe(
       Command.withDescription(
         `Call app tools directly. Use executor execute when one result feeds another, or to keep only part of a large result. ${pauses}`,
@@ -275,19 +285,22 @@ export const toolCommands = <E, R>(
           description: "Read the input from standard input",
         },
       ]),
-      Command.withHandler(({ host, path, input, inputFile }) =>
+      Command.withHandler(({ host, path, input, inputFile, files }) =>
         Effect.gen(function* () {
           const json = yield* jsonFrom(input, inputFile, "--input and --input-file", "The input");
           if (Option.isSome(path))
-            return yield* run(host, "call", {
-              calls: { path: path.value, input: Option.getOrElse(json, () => ({})) },
-            });
+            return yield* run(
+              host,
+              "call",
+              { calls: { path: path.value, input: Option.getOrElse(json, () => ({})) } },
+              { files },
+            );
           if (Option.isNone(json) || !Array.isArray(json.value))
             return yield* new ToolInputInvalid({
               message:
                 "Pass a tool path, or a JSON array of {path, input} calls with --input or --input-file.",
             });
-          return yield* run(host, "call", { calls: json.value });
+          return yield* run(host, "call", { calls: json.value }, { files });
         }),
       ),
     ),
@@ -298,6 +311,7 @@ export const toolCommands = <E, R>(
         Flag.optional,
       ),
       file: fileFlag("file", "Read the program from this file, or from standard input with -"),
+      files: filesFlag,
     }).pipe(
       Command.withDescription(
         `Run a JavaScript program over your apps, where app tools are async functions such as tools.github.issues.list(input); return only what you need. ${pauses}`,
@@ -312,14 +326,14 @@ export const toolCommands = <E, R>(
           description: "Run a program from a file and keep its result in a file",
         },
       ]),
-      Command.withHandler(({ host, code, file }) =>
+      Command.withHandler(({ host, code, file, files }) =>
         Effect.gen(function* () {
           const program = yield* textFrom(code, file, "--code and --file");
           if (Option.isNone(program))
             return yield* new ToolInputInvalid({
               message: "Pass the program with --code, or with --file (- reads standard input).",
             });
-          return yield* run(host, "execute", { code: program.value });
+          return yield* run(host, "execute", { code: program.value }, { files });
         }),
       ),
     ),
@@ -342,6 +356,7 @@ export const toolCommands = <E, R>(
         "content-file",
         "Read the form fields JSON from this file, or from standard input with -",
       ),
+      files: filesFlag,
     }).pipe(
       Command.withDescription(
         `Continue a paused call or program with the person's answer; never run it again instead. ${pauses}`,
@@ -353,7 +368,7 @@ export const toolCommands = <E, R>(
           description: "Collect an answer given on the approvalUrl page",
         },
       ]),
-      Command.withHandler(({ host, requestId, action, content, contentFile }) =>
+      Command.withHandler(({ host, requestId, action, content, contentFile, files }) =>
         Effect.gen(function* () {
           const fields = yield* jsonFrom(
             content,
@@ -364,7 +379,7 @@ export const toolCommands = <E, R>(
           if (Option.isNone(action)) {
             if (Option.isSome(fields))
               return yield* new ToolInputInvalid({ message: "Pass --action with --content." });
-            return yield* run(host, "resume", { requestId }, requestId);
+            return yield* run(host, "resume", { requestId }, { resumed: requestId, files });
           }
           return yield* run(
             host,
@@ -376,7 +391,7 @@ export const toolCommands = <E, R>(
                 ...Option.match(fields, { onNone: () => ({}), onSome: (content) => ({ content }) }),
               },
             },
-            requestId,
+            { resumed: requestId, files },
           );
         }),
       ),
