@@ -2833,38 +2833,32 @@ export const makeOAuth = (
       ),
     );
 
+  /** One account a usability check covers, with the provider definition it signs in with. */
+  type UsableCheck = {
+    readonly account: StoredAccount;
+    readonly provider: ProviderDefinition;
+  };
+  /** The distinct accounts among `checks` that sign in with something other than secrets. */
+  const grantedIds = (checks: ReadonlyArray<UsableCheck>) => [
+    ...new Set(
+      checks
+        .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets")
+        .map(({ account }) => account.id),
+    ),
+  ];
+  /** The grant rows of these accounts, in one query; none when it names none. */
+  const usableGrants = (ids: readonly AccountId[]) =>
+    (ids.length === 0
+      ? Effect.succeed([])
+      : query(() => db.findMany("oauthGrants", { where: (b) => b("id", "in", ids) }))
+    ).pipe(Effect.map((rows) => new Map(rows.map((row) => [row.id, row] as const))));
   /**
-   * Fail as `resolve` would when a stored grant can no longer release credentials, without
-   * renewing it or releasing anything. A grant that renewal would replace still passes; its
-   * outcome is known only once a live resolve renews it. A grant that needs reconnecting is
-   * recorded as the span's outcome, as `resolve` records it, and fails only after the span.
-   *
-   * Each of `checks` is checked in order, and the first that fails decides the failure. Their
-   * grants are read in one query and one span covers the whole check, so checking a selection
-   * costs the same however many accounts it names.
+   * The check of {@link usableAll} over grant rows already read: the first of `checks` whose grant
+   * can no longer release credentials decides the outcome, as one `oauth.usable` span records it.
    */
-  const usableAll = (
-    checks: ReadonlyArray<{
-      readonly account: StoredAccount;
-      readonly provider: ProviderDefinition;
-    }>,
-  ) =>
+  const usableWith = (checks: ReadonlyArray<UsableCheck>, grants: ReadonlyMap<string, GrantRow>) =>
     Effect.gen(function* () {
       yield* Effect.annotateCurrentSpan("oauth.usable.accounts", checks.length);
-      const granted = [
-        ...new Set(
-          checks
-            .filter(({ account, provider }) => provider.auth[account.method]?.type !== "secrets")
-            .map(({ account }) => account.id),
-        ),
-      ];
-      const rows =
-        granted.length === 0
-          ? []
-          : yield* query(() =>
-              db.findMany("oauthGrants", { where: (b) => b("id", "in", granted) }),
-            );
-      const grants = new Map(rows.map((row) => [row.id, row] as const));
       for (const { account, provider } of checks) {
         // The provider of the account checked last: on failure, the one that failed.
         yield* Effect.annotateCurrentSpan("oauth.provider.id", account.provider);
@@ -2893,6 +2887,27 @@ export const makeOAuth = (
       Effect.flatMap((checked) =>
         Schema.is(OAuthReconnectRequired)(checked) ? Effect.fail(checked) : Effect.void,
       ),
+    );
+  /**
+   * Fail as `resolve` would when a stored grant can no longer release credentials, without
+   * renewing it or releasing anything. A grant that renewal would replace still passes; its
+   * outcome is known only once a live resolve renews it. A grant that needs reconnecting is
+   * recorded as the span's outcome, as `resolve` records it, and fails only after the span.
+   *
+   * Each of `checks` is checked in order, and the first that fails decides the failure. Their
+   * grants are read in one query, so checking a selection costs the same however many accounts it
+   * names.
+   */
+  const usableAll = (checks: ReadonlyArray<UsableCheck>) =>
+    Effect.flatMap(usableGrants(grantedIds(checks)), (grants) => usableWith(checks, grants));
+  /**
+   * {@link usableAll} for several selections at once, such as every app a search reads: the grants
+   * of all of them are read in one query, then each selection is checked on its own and its outcome
+   * returned in order. Only that read fails the whole call.
+   */
+  const usableEach = (selections: ReadonlyArray<ReadonlyArray<UsableCheck>>) =>
+    Effect.flatMap(usableGrants(grantedIds(selections.flat())), (grants) =>
+      Effect.forEach(selections, (checks) => Effect.result(usableWith(checks, grants))),
     );
 
   /** The accounts the product still authorizes; undefined when it has no lifecycle. */
@@ -3227,6 +3242,7 @@ export const makeOAuth = (
     resolveSelected,
     renewRejected,
     usableAll,
+    usableEach,
     revokeRemoved,
   };
 };

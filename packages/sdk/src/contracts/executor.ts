@@ -6,7 +6,7 @@ import {
   type WebhookSourceDispatcher,
 } from "./webhooks.ts";
 /** The shared Executor interface and remote client options; projected from ExecutorApi. */
-import { Context, type Effect, type Redacted, type Stream, Schema } from "effect";
+import { Context, type Effect, type Redacted, type Result, type Stream, Schema } from "effect";
 import type { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import type { WebhookSetupApi } from "./webhook-setup.ts";
 import type { ExecutorApi } from "./http.ts";
@@ -133,6 +133,23 @@ export interface ResourceLifecycle {
     accounts: readonly Pick<Account, "id" | "owner">[],
     appUses: readonly AppAccountUse[],
   ) => Effect.Effect<ReadonlySet<AccountId>, StorageError>;
+  /**
+   * {@link appResolving} for several apps of one owner at once, for the `CurrentActor`, such as
+   * every app a search reads: a host reads them in one statement. Each app's entry, in order, is
+   * what `appResolving` returns for it, or its refusal. Failing the whole call, such as for
+   * storage, says nothing about any app: the SDK then checks each on its own.
+   */
+  readonly appsResolving: (
+    owner: OwnerId,
+    apps: ReadonlyArray<{
+      readonly id: AppId;
+      readonly accounts: readonly Pick<Account, "id" | "owner">[];
+      readonly appUses: readonly AppAccountUse[];
+    }>,
+  ) => Effect.Effect<
+    ReadonlyArray<Result.Result<ReadonlySet<AccountId>, StorageError>>,
+    StorageError
+  >;
   /**
    * Recheck authority to remove what an app registered upstream, such as a webhook registration,
    * with the accounts it registered with, before acquiring their credentials and again after any

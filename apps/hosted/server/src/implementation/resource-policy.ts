@@ -320,6 +320,56 @@ export const resourceAuthorityForLinks = (
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
 
+const MemberPoliciesLinks = Schema.Struct({
+  ...Membership.fields,
+  policies: Schema.fromJsonString(Schema.Array(AppPolicy)),
+  userLinks: Schema.fromJsonString(Schema.Array(LinkedAccount)),
+  appLinks: Schema.fromJsonString(Schema.Array(LinkedAccount)),
+});
+/**
+ * {@link resourceAuthorityForLinks} for many apps, such as every app a search reads: membership,
+ * each app's policy, the user's links to the apps whose accounts they may use now and the apps'
+ * usable app links, in one statement, each app's links oldest first. Apps without a policy in the
+ * organization are omitted, and callers deny them, as {@link resourceAuthorityForApps} does.
+ */
+export const resourceAuthorityForAppsWithLinks = (
+  organization: OrganizationId,
+  user: string | undefined,
+  apps: readonly [AppId, ...AppId[]],
+) =>
+  Effect.gen(function* () {
+    if (user === undefined) return yield* new OrganizationForbidden();
+    const sql = yield* policyDatabase;
+    const json = sql.literal(linkedAccountJson);
+    const rows = yield* sql`select m.id, m.role,
+    (select coalesce(json_agg(json_build_object('app', p.id, 'creator', p.creator_id,
+        'audience', p.audience, 'revision', p.revision,
+        'groups', array(select g.group_id from hosted_app_groups g where g.app_id = p.id
+          order by g.group_id),
+        'granted', exists(select 1 from hosted_app_groups g
+          join hosted_group_members gm on gm.group_id = g.group_id
+          where g.app_id = p.id and gm.member_id = m.id))), '[]'::json)::text
+      from hosted_app_access p
+      where ${sql.in("p.id", apps)} and p.organization_id = m."organizationId") as policies,
+    (select coalesce(json_agg(${json} order by l.created_at, a.id), '[]'::json)::text
+      from ${usableLinks(sql, { subject: user, apps })}) as "userLinks",
+    (select coalesce(json_agg(${json} order by l.created_at, a.id), '[]'::json)::text
+      from ${usableAppLinks(sql, apps)}) as "appLinks"
+    from member m
+    where m."organizationId" = ${organization} and m."userId" = ${user}`;
+    const found = yield* Schema.decodeUnknownEffect(Schema.Array(MemberPoliciesLinks))(rows);
+    const row = found[0];
+    if (found.length !== 1 || row === undefined) return yield* new OrganizationForbidden();
+    const actor = { organization, user, member: row.id, role: row.role };
+    return {
+      actor,
+      access: row.policies.map((policy) => appAccessOf(policy, actor)),
+      links: { user: row.userLinks, app: row.appLinks } satisfies AppAccountReads,
+    };
+  }).pipe(
+    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+  );
+
 /**
  * The accounts among `accounts` that `actor` owns, read together. Every account is personal: only
  * its owner, while still a member, may read, use or manage it; administrators have no bypass.

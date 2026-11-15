@@ -73,6 +73,9 @@ interface Allowance {
  * The allowances in a description's `worker-growth` blocks, one line for each Worker, and the
  * lines that do not read as one.
  */
+/** What the failure message prints where an allowance's reason goes. */
+const placeholder = "<why it is worth the cold-start time>";
+
 const allowancesIn = (description: string) => {
   const allowances = new Map<string, Allowance>();
   const unread: Array<string> = [];
@@ -82,7 +85,14 @@ const allowancesIn = (description: string) => {
     for (const line of block.split("\n").map((line) => line.trim())) {
       if (line === "") continue;
       const [, worker, size, reason] = /^([a-z-]+) \+?([0-9][0-9,]*): *(\S.*)$/u.exec(line) ?? [];
-      if (worker === undefined || size === undefined || reason === undefined) unread.push(line);
+      // The placeholder the failure message prints is not a reason.
+      if (
+        worker === undefined ||
+        size === undefined ||
+        reason === undefined ||
+        reason === placeholder
+      )
+        unread.push(line);
       else allowances.set(worker, { bytes: Number(size.replaceAll(",", "")), reason });
     }
   return { allowances, unread };
@@ -218,7 +228,10 @@ const report = (
       ? []
       : grown.filter(({ added, allowance }) => allowance === undefined || allowance.bytes < added);
   const unread = [
-    ...(allowed?.unread ?? []).map((line) => `\`${line}\` is not a Worker, a size and a reason`),
+    ...(allowed?.unread ?? []).map(
+      (line) =>
+        `\`${line}\` is not a Worker, a size and a reason (write the real reason in place of ${placeholder})`,
+    ),
     ...[...(allowed?.allowances.keys() ?? [])]
       .filter((worker) => !uploads.has(worker))
       .map((worker) => `\`${worker}\` is not a Worker this check builds`),
@@ -472,13 +485,25 @@ const program = Effect.gen(function* () {
         (allowance === undefined
           ? `a pull request may add ${bytes(growthLimit)}.`
           : `the description allows ${bytes(allowance.bytes)}.`) +
-        " Trim it or allow it in the pull request description. See the job summary for what grew and the lines to add.",
+        ` Trim it, or allow it: put the line \`${worker} ${signed(added)}: ${placeholder}\` in a worker-growth block of the pull request description, with your reason in place of ${placeholder}, then run this job again. See the job summary for what grew.`,
+    );
+  if (unallowed.length > 0)
+    yield* Console.log(
+      [
+        "To allow this growth, add this block to the pull request description, with a reason after each colon, then run this job again:",
+        "",
+        "```worker-growth",
+        ...unallowed.map(({ worker, added }) => `${worker} ${signed(added)}: ${placeholder}`),
+        "```",
+      ].join("\n"),
     );
   const problems = [
     ...(failures.length > 0 ? [`Worker builds failed: ${failures.join("; ")}`] : []),
     ...(over.length > 0 ? [`Over budget: ${over.map((worker) => worker.worker).join(", ")}`] : []),
     ...(unallowed.length > 0
-      ? [`Grew without an allowance: ${unallowed.map((grew) => grew.worker).join(", ")}`]
+      ? [
+          `Grew without an allowance: ${unallowed.map((grew) => grew.worker).join(", ")}. Lines to add to a worker-growth block of the description, each with its reason: ${unallowed.map(({ worker, added }) => `${worker} ${signed(added)}: <reason>`).join("; ")}`,
+        ]
       : []),
     ...(unread.length > 0 ? [`Allowances this check cannot read: ${unread.join("; ")}`] : []),
   ];

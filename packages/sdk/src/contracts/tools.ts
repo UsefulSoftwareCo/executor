@@ -108,6 +108,13 @@ export interface ToolListOptions extends CatalogReadOptions {
    * and one page reads it once. A caller that sends pages on, such as an HTTP route, omits it.
    */
   readonly unboundedPages?: true;
+  /**
+   * The apps one search reads together, this read's app among them. A host may read their state
+   * in shared statements, but never with an app outside the batch: a search waits only on the apps
+   * it reaches, so one app's slow or locked rows hold up no search that does not reach it. Without
+   * it the read takes its own state alone.
+   */
+  readonly searchBatch?: ReadonlyArray<AppId>;
 }
 export {
   ElicitationFailed,
@@ -158,9 +165,39 @@ export const InvocationPrefetch = Context.Reference<
     }
   | undefined
 >("executor/InvocationPrefetch", { defaultValue: () => undefined });
+/**
+ * Host-only: the reads `tools.searchable` would make for many targets of one owner, made ahead in
+ * a fixed number of statements ({@link PrefetchHost}'s `searchable`). `value` is opaque to the
+ * host. `tools.searchable` uses an entry only for the app, version and accounts it was made for,
+ * under the same actor, and only once; any other read, and a read made ahead that failed in
+ * storage, reads live. Never supplied by authored code.
+ */
+export const SearchablePrefetch = Context.Reference<SearchablePrefetched | undefined>(
+  "executor/SearchablePrefetch",
+  { defaultValue: () => undefined },
+);
+/** What {@link PrefetchHost}'s `searchable` read, for {@link SearchablePrefetch}. */
+export interface SearchablePrefetched {
+  readonly owner: OwnerId;
+  readonly value: unknown;
+}
 /** Host-only reads made ahead for a tool call, outside the public HTTP/Promise facade. */
 export const PrefetchHost = Symbol("executor.PrefetchHost");
 export interface PrefetchHost {
+  /**
+   * The reads `tools.searchable` makes for each target, after the host's own checks resolved its
+   * version and accounts: the apps and accounts, each target's kept search rows, the actor's app
+   * rechecks and the account grants, each kind in one statement for every target together. It
+   * never fails: a target whose reads did not answer is read live by `tools.searchable`.
+   */
+  readonly searchable: (input: {
+    readonly owner: OwnerId;
+    readonly targets: ReadonlyArray<{
+      readonly app: AppId;
+      readonly version: VersionId;
+      readonly accounts: AppAccounts;
+    }>;
+  }) => Effect.Effect<SearchablePrefetched>;
   /**
    * The reads `apps.get` and then `tools.call` make for one app, as effects of one statement each
    * that never fail, for the host to send in one batch beside its own checks. Without `known`,

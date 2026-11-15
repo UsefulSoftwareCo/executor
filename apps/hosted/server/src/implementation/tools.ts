@@ -12,6 +12,8 @@ import {
   ToolApprovalIssuer,
   ToolApprovalNotFound,
   ToolNotFound,
+  type App,
+  type AppAccounts,
   type AppId,
   type ApprovalRequestId,
   type Executor,
@@ -43,6 +45,7 @@ import {
   checkedToolCall,
   checkInvocationAccounts,
   currentOwner,
+  pinnedActiveVersion,
   selectedActiveVersion,
   usableApp,
 } from "./access.ts";
@@ -66,16 +69,24 @@ export const listTools = (
       ),
     };
   });
-/** Keep the target's current catalog as search rows after the same checks as discovery. */
-export const searchableTools = (
+/**
+ * Keep the target's current catalog as search rows after the same checks as discovery. `selected`
+ * is the caller's access to the app and its accounts when a read made for many apps at once
+ * decided them (see `selectedAppFrom`); otherwise they are read for this app alone.
+ */
+export const searchableTools = <E = never>(
   input: Parameters<Executor["tools"]["searchable"]>[0],
   options?: ToolListOptions,
+  selected?: Effect.Effect<{ readonly app: App; readonly accounts: AppAccounts }, E>,
 ) =>
   Effect.gen(function* () {
     const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    const { version, accounts } = yield* selectedActiveVersion(executor, owner, input);
+    const { version, accounts } =
+      selected === undefined
+        ? yield* selectedActiveVersion(executor, owner, input)
+        : yield* Effect.flatMap(selected, (found) => pinnedActiveVersion(found, input.version));
     const searchable = yield* executor.tools.searchable({ ...input, version, accounts }, options);
     // Failed routers list no tools, so the policy decides them without the catalog.
     return {

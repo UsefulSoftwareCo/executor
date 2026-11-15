@@ -253,12 +253,22 @@ invitation-roles.spec.ts
 ```
 ````
 
+Before the first push, commit and check the description as CI's `select` job will:
+`bun run e2e:check-description --file description.md` (or `-` for stdin, or `--pr <number>`
+once the PR is open, from a checkout at its head commit). It gives CI's verdict and prints what
+would run; a `skip` can only be checked once the layer above is open. An edit to the description
+after the push needs no re-run unless it changes the selection.
+
 Spec files the PR adds or changes are always included, as are the scenarios that
 guard a dependency patch when the PR's tree pins that dependency or its patch
 differently from main (`patchGuards` in `e2e/ci-selection.ts`): Bun skips a stale
 patch without an error. So are the scenarios that assert a contract one file states in
 full when the tree's copy differs from main's (`fileGuards`): a new host protocol in
 `app-protocols.ts` runs `app-package.spec.ts`, which reads back the supported list.
+A change to the code MCP search and sessions run through (`e2e/mcp-search-guard.ts`) also runs
+the Cloud MCP search and session scenarios. That is a floor, not a substitute for naming the spec
+files a change can affect: those Cloud scenarios live in `cloud-database-placement.spec.ts` and
+`mcp-catalog-scale.spec.ts`, whose names do not say search.
 A changed spec file's Cloud scenarios that otherwise first run in Cloud tests on main, after
 merge, run in the `cloud-product` job when managed local Cloud can run them. The ones that need a
 deployed stage (`runtime: "attached"`) get a warning with the `e2e:deployed` command that runs

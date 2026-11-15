@@ -7505,6 +7505,17 @@ export const scenarios = plan({
       local: na("Local uses its instance credential."),
     },
   },
+  searchStatements: {
+    fixtures: "actors",
+    file: "search-statements.spec.ts",
+    title:
+      "MCP search reads every app's discovery state in statements that do not grow with the apps",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("This scenario reads SQL spans from the self-host collector."),
+      local: na("Local has no hosted organization policies."),
+    },
+  },
   toolCallStatements: {
     fixtures: "actors",
     file: "tool-call-statements.spec.ts",
@@ -8238,6 +8249,15 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: scheduled,
       local: na("Local uses its instance key."),
+    },
+  },
+  runtimeHopShape: {
+    file: "runtime-hop-shape.spec.ts",
+    title: "A failed exchange with the local app runtime records how far it got, as shapes only",
+    targets: {
+      "self-host": scheduled,
+      local: na("The probe runs the runtime hops' recording against stubs; one target covers it."),
+      cloud: na("Cloud's apps do not run in a local workerd."),
     },
   },
   apiKeyStorageOutage: {

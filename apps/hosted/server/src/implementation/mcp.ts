@@ -9,13 +9,19 @@ import { authorizeApp, authorizeSavedTool, authorizeTool } from "./authorization
 import { callerLinkedAccounts, linkedAccounts } from "./app-accounts.ts";
 import { GrantForbidden, untargetedLinkRefusal } from "@executor-js/mcp-auth";
 import {
+  permitsApp,
   permittedAppIds,
   permittedToolAppIds,
   requiresToolMetadata,
 } from "@executor-js/authorization";
 import { GroupDatabase } from "../contracts/groups.ts";
 import { CurrentUserId } from "../contracts/auth.ts";
-import { policyDatabase, visibleApps, requireAppAccess } from "./resource-policy.ts";
+import {
+  policyDatabase,
+  resourceAuthorityForAppsWithLinks,
+  visibleApps,
+  requireAppAccess,
+} from "./resource-policy.ts";
 /** Hosted catalog and execution policy for the shared MCP engine; no HTTP transport or credentials. */
 import { CurrentMcpExecution, ToolCallRecorded, type McpBackend } from "@executor-js/mcp";
 import {
@@ -25,15 +31,18 @@ import {
   EventNotFound,
   InvocationSelection,
   linkedRequirements,
+  PrefetchHost,
+  SearchablePrefetch,
   type AppId,
   type ToolInvocationOptions,
 } from "@executor-js/sdk/core";
-import { Context, Effect, Option, Schema } from "effect";
+import { Array as Arr, Context, Effect, Exit, Option, Schema } from "effect";
 import {
   checkedToolCall,
   currentOwner,
   selectedActiveVersion,
   checkInvocationAccounts,
+  selectedAppFrom,
   SelectionReadAhead,
 } from "./access.ts";
 import { ConcurrentStatements, HostedBackground, HostedExecutor } from "../contracts/executor.ts";
@@ -132,6 +141,100 @@ export const hostedMcpBackend = Effect.gen(function* () {
       Effect.provideContext(context),
     ),
   );
+  /**
+   * The caller's access to every app the request lists for discovery, their links to them and
+   * the apps' links, read in one statement once per request, when discovery first needs it, so
+   * discovery does not check each app in a statement of its own. Each app is still decided on its
+   * own from it, as its own reads would decide it. Undefined when the read did not answer: each
+   * app then reads for itself.
+   */
+  const discoveryAccess = yield* Effect.cached(
+    Effect.gen(function* () {
+      const apps = (yield* discoveryApps).filter((app) => permitsApp(policy, app.id));
+      const ids = apps.map((app) => app.id);
+      if (!Arr.isReadonlyArrayNonEmpty(ids)) return undefined;
+      const read = yield* resourceAuthorityForAppsWithLinks(organization.organization, user, ids);
+      return { ...read, apps };
+    }).pipe(
+      Effect.catch(() => Effect.succeed(undefined)),
+      Effect.provideContext(context),
+    ),
+  );
+  /** This app's access as {@link discoveryAccess} read it, when it covered the app. */
+  const accessFromDiscovery = (app: AppId) =>
+    Effect.map(discoveryAccess, (read) =>
+      read === undefined || !read.apps.some((listed) => listed.id === app)
+        ? undefined
+        : { access: read.access.find((policy) => policy.app === app) },
+    );
+  /**
+   * What search needs for the apps of one search batch: each app's selection decided from
+   * {@link discoveryAccess}, then the SDK's reads for the target of every app that selected
+   * (`PrefetchHost.searchable`), a fixed number of statements however many apps the batch has.
+   * Only the batch's apps are read: a search must not wait on another app's rows, which a slow or
+   * locked listing can hold. Undefined when the access read did not answer.
+   */
+  const searchReadsFor = (batch: ReadonlySet<AppId>) =>
+    Effect.gen(function* () {
+      const read = yield* discoveryAccess;
+      if (read === undefined) return undefined;
+      const selections = new Map(
+        yield* Effect.forEach(
+          read.apps.filter((app) => batch.has(app.id)),
+          (app) =>
+            Effect.map(
+              Effect.exit(
+                selectedAppFrom(
+                  app,
+                  read.access.find((policy) => policy.app === app.id),
+                  read.links,
+                ),
+              ),
+              (selected) => [app.id, selected] as const,
+            ),
+        ),
+      );
+      const targets = [...selections.values()].flatMap((selected) =>
+        Exit.isSuccess(selected) && selected.value.app.activeVersion !== null
+          ? [
+              {
+                app: selected.value.app.id,
+                version: selected.value.app.activeVersion,
+                accounts: selected.value.accounts,
+              },
+            ]
+          : [],
+      );
+      const prefetched = yield* (yield* sdk)[PrefetchHost].searchable({
+        owner: organization.owner,
+        targets,
+      });
+      return { selections, prefetched };
+    }).pipe(
+      Effect.catch(() => Effect.succeed(undefined)),
+      Effect.provideContext(context),
+    );
+  type SearchReads = Effect.Success<ReturnType<typeof searchReadsFor>>;
+  /**
+   * Each app's search batch reads, made once per batch, when the first of its apps needs them. An
+   * app belongs to the first batch that names it; a later batch naming it again reads the rest.
+   */
+  const searchBatches = new Map<AppId, Effect.Effect<SearchReads>>();
+  const searchReads = (app: AppId, batch: ReadonlyArray<AppId> | undefined) =>
+    Effect.gen(function* () {
+      if (batch === undefined || !batch.includes(app)) return undefined;
+      const claimed = searchBatches.get(app);
+      if (claimed !== undefined) return yield* claimed;
+      const members = new Set<AppId>();
+      const reads = yield* Effect.cached(Effect.suspend(() => searchReadsFor(members)));
+      for (const member of batch)
+        if (!searchBatches.has(member)) {
+          members.add(member);
+          searchBatches.set(member, reads);
+        }
+      // Another read of the same batch may have claimed this app while the reads were made.
+      return yield* searchBatches.get(app) ?? reads;
+    });
   /**
    * An operation resolves the caller's links narrowed to the grant's targets, so a plain user
    * requirement whose links the grant does not target fails as `AccountRequired`. When the caller
@@ -273,7 +376,10 @@ export const hostedMcpBackend = Effect.gen(function* () {
     listAccounts: (input) =>
       Effect.gen(function* () {
         yield* authorizeApp(input.app);
-        yield* requireAppAccess(input.app, "use");
+        const discovered = yield* accessFromDiscovery(input.app);
+        if (discovered === undefined) yield* requireAppAccess(input.app, "use");
+        else if (discovered.access === undefined || !discovered.access.canUse)
+          return yield* new OrganizationForbidden();
         const app = (yield* discoveryApps).find((app) => app.id === input.app);
         if (app === undefined) return yield* new AppNotFound({ app: input.app });
         // A read pinned to a retained version resolves that version's requirements.
@@ -296,7 +402,15 @@ export const hostedMcpBackend = Effect.gen(function* () {
     listTools: (input, options) =>
       observe("listTools", grantRefusal(listTools(input, options)), "read"),
     searchableTools: (input, options) =>
-      observe("searchableTools", grantRefusal(searchableTools(input, options)), "read"),
+      Effect.gen(function* () {
+        const reads = yield* searchReads(input.app, options?.searchBatch);
+        const selected = reads?.selections.get(input.app);
+        return yield* reads === undefined || selected === undefined
+          ? searchableTools(input, options)
+          : searchableTools(input, options, selected).pipe(
+              Effect.provideService(SearchablePrefetch, reads.prefetched),
+            );
+      }).pipe((work) => observe("searchableTools", grantRefusal(work), "read")),
     searchTools: (input) => observe("searchTools", searchTools(input), "read"),
     callTool: (input, options?: ToolInvocationOptions) =>
       Effect.gen(function* () {

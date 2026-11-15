@@ -626,31 +626,10 @@ const passing = (
 export const localResourceLifecycle = (
   executor: Effect.Effect<Executor>,
   sql: SqlClient.SqlClient,
-): ResourceLifecycle => ({
-  userLinks: (input) =>
-    Effect.gen(function* () {
-      const sdk = yield* executor;
-      const app = yield* storage(sdk.apps.get({ app: input.app }));
-      return (yield* linkedAccountsOf(sql, sdk, app, localActor)).map((link) => ({
-        requirement: link.requirement,
-        account: link.account.id,
-      }));
-    }),
-  appLinks: (input) =>
-    Effect.gen(function* () {
-      const sdk = yield* executor;
-      const app = yield* storage(sdk.apps.get({ app: input.app }));
-      return (yield* linkedAccountsOf(sql, sdk, app, null)).map((link) => ({
-        requirement: link.requirement,
-        account: link.account.id,
-      }));
-    }),
-  // Nobody else links the account, so a source the app no longer uses stops.
-  sourceActorLost: (input) =>
-    Effect.flatMap(executor, (sdk) => unlinkSource(sdk, input.app, input.account)),
+): ResourceLifecycle => {
   // The local subject may use every account it resolves. An app requirement's account must still
   // be the app owner's and linked to the app for that requirement: unlinking refuses it at once.
-  appResolving: (app, accounts, appUses) =>
+  const appResolving: ResourceLifecycle["appResolving"] = (app, accounts, appUses) =>
     Effect.gen(function* () {
       if (appUses.length === 0) return passing(accounts, [], () => true);
       const sdk = yield* executor;
@@ -674,34 +653,63 @@ export const localResourceLifecycle = (
           use.account.owner === app.owner &&
           current.has(`${use.requirement}\u0000${use.account.id}`),
       );
-    }).pipe(Effect.catchTags(sqlFailures)),
-  // Removing what the app registered needs no current app link: unlinking is what removes its
-  // registrations. An app account passes while it is the app owner's, so the app could have linked
-  // it.
-  removalResolving: (app, accounts, appUses) =>
-    Effect.succeed(passing(accounts, appUses, (use) => use.account.owner === app.owner)),
-  accountsResolving: (accounts) => Effect.succeed(new Set(accounts.map((account) => account.id))),
-  connectionCompleting: () => Effect.void,
-  appCreated: () => Effect.void,
-  appRemoving: () => Effect.void,
-  // The owner links in both scopes. The SDK has checked, under the app's lock, that the
-  // requirement still has the scope the connection was started for.
-  appAccountConnected: (input) =>
-    Effect.gen(function* () {
-      const sdk = yield* executor;
-      const app = yield* storage(sdk.apps.get({ app: input.app }));
-      yield* addLink(sql, sdk, {
-        app,
-        requirement: input.requirement,
-        account: input.account,
-        subject: scopeSubject(input.scope),
-      }).pipe(Effect.mapError(() => new StorageError()));
-    }),
-  accountCreated: () => Effect.void,
-  // An app link is used by its app for every call; the route refuses with the apps that link it,
-  // and this refuses an app link made since. Its user links are removed with it.
-  accountRemoving: (account) =>
-    Effect.flatMap(executor, (sdk) => appLinkApps(sql, sdk, account.id)).pipe(
-      Effect.flatMap((apps) => (apps.length > 0 ? new StorageError() : Effect.void)),
-    ),
-});
+    }).pipe(Effect.catchTags(sqlFailures));
+  return {
+    userLinks: (input) =>
+      Effect.gen(function* () {
+        const sdk = yield* executor;
+        const app = yield* storage(sdk.apps.get({ app: input.app }));
+        return (yield* linkedAccountsOf(sql, sdk, app, localActor)).map((link) => ({
+          requirement: link.requirement,
+          account: link.account.id,
+        }));
+      }),
+    appLinks: (input) =>
+      Effect.gen(function* () {
+        const sdk = yield* executor;
+        const app = yield* storage(sdk.apps.get({ app: input.app }));
+        return (yield* linkedAccountsOf(sql, sdk, app, null)).map((link) => ({
+          requirement: link.requirement,
+          account: link.account.id,
+        }));
+      }),
+    // Nobody else links the account, so a source the app no longer uses stops.
+    sourceActorLost: (input) =>
+      Effect.flatMap(executor, (sdk) => unlinkSource(sdk, input.app, input.account)),
+    appResolving,
+    // Local reads in process, so each app is checked on its own at no extra round trip.
+    appsResolving: (owner, apps) =>
+      Effect.forEach(apps, (app) =>
+        Effect.result(appResolving({ id: app.id, owner }, app.accounts, app.appUses)),
+      ),
+    // Removing what the app registered needs no current app link: unlinking is what removes its
+    // registrations. An app account passes while it is the app owner's, so the app could have linked
+    // it.
+    removalResolving: (app, accounts, appUses) =>
+      Effect.succeed(passing(accounts, appUses, (use) => use.account.owner === app.owner)),
+    accountsResolving: (accounts) => Effect.succeed(new Set(accounts.map((account) => account.id))),
+    connectionCompleting: () => Effect.void,
+    appCreated: () => Effect.void,
+    appRemoving: () => Effect.void,
+    // The owner links in both scopes. The SDK has checked, under the app's lock, that the
+    // requirement still has the scope the connection was started for.
+    appAccountConnected: (input) =>
+      Effect.gen(function* () {
+        const sdk = yield* executor;
+        const app = yield* storage(sdk.apps.get({ app: input.app }));
+        yield* addLink(sql, sdk, {
+          app,
+          requirement: input.requirement,
+          account: input.account,
+          subject: scopeSubject(input.scope),
+        }).pipe(Effect.mapError(() => new StorageError()));
+      }),
+    accountCreated: () => Effect.void,
+    // An app link is used by its app for every call; the route refuses with the apps that link it,
+    // and this refuses an app link made since. Its user links are removed with it.
+    accountRemoving: (account) =>
+      Effect.flatMap(executor, (sdk) => appLinkApps(sql, sdk, account.id)).pipe(
+        Effect.flatMap((apps) => (apps.length > 0 ? new StorageError() : Effect.void)),
+      ),
+  };
+};

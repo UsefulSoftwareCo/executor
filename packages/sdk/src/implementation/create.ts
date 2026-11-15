@@ -104,6 +104,7 @@ export const createExecutor = (
       background: options.background,
       resolveAccount: oauth.resolveSelected,
       accountsUsable: oauth.usableAll,
+      accountsUsableEach: oauth.usableEach,
       crypto,
       lifecycle: options.hooks,
       hostApi: options.hostApi,
@@ -235,7 +236,10 @@ export const createExecutor = (
         read: options.database.reactivity.read,
         write: options.database.reactivity.write,
       },
-      [PrefetchHost]: { invocation: tools.prefetchInvocation },
+      [PrefetchHost]: {
+        invocation: tools.prefetchInvocation,
+        searchable: tools.prefetchSearchable,
+      },
       [SavedOAuthClientsHost]: makeSavedOAuthClients(db, credentials, crypto, options.hooks, [
         ...(options.oauth?.savedClientCallbacks ?? []),
         ...(options.oauth?.previousRedirectUris ?? []),

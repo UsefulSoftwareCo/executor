@@ -51,6 +51,7 @@ import { runtimeAdapter } from "./runtime.ts";
 import { connectedWorkerdApps, TransportClosed, workerdHostHandler } from "./workerd-client.ts";
 import { workerdHostModules } from "./workerd-bundle.ts";
 import { appWorkerIdleSeconds, appWorkerLimit } from "./app-worker-residency.ts";
+import { runtimeHops, type SocketRecord } from "./runtime-hop.ts";
 
 /** Existing stores need an explicit migration; opening a new empty store would hide retained app data. */
 export class WorkerdMigrationRequired extends Schema.TaggedError<WorkerdMigrationRequired>()(
@@ -218,11 +219,13 @@ export const workerdApps = (options: {
     // matched to one. Only the exit's code and signal are kept: its stderr can quote app output.
     const services = yield* Effect.context<never>();
     let restarts = 0;
+    let lastRestartAt: number | undefined;
     const restarted = (exit: {
       readonly exitCode: number | null;
       readonly signal: string | null;
     }) => {
       restarts += 1;
+      lastRestartAt = performance.now();
       Effect.runForkWith(services)(
         Effect.logWarning("App runtime restarted").pipe(
           Effect.annotateLogs({
@@ -277,6 +280,12 @@ export const workerdApps = (options: {
       })
       .pipe(Effect.provideContext(runtimeContext));
     const headers = { authorization: `Bearer ${secret}` };
+    // How far a failed exchange with the runtime got, with its restarts; see runtime-hop.ts. A
+    // supervisor's probe events would go in `probe`.
+    const hops = runtimeHops({
+      restarts: () => ({ count: restarts, lastAt: lastRestartAt }),
+      probe: () => ({}),
+    });
     const websocketUrl = (pathname: string) => {
       const url = new URL(pathname, origin);
       url.protocol = "ws:";
@@ -296,9 +305,12 @@ export const workerdApps = (options: {
             Effect.sync(() => new AbortController()),
             (controller) => Effect.sync(() => controller.abort()),
           );
+          let socketRecord: SocketRecord | undefined;
           const peer = yield* Effect.acquireRelease(
             Effect.sync(() => {
               const socket = connect("/rpc");
+              // Measured only, for a failed call's span: see runtime-hop.ts.
+              socketRecord = hops.track(socket);
               // Registered before Cap'n Web's own listeners, so the session knows its socket
               // closed by the time it breaks; see `TransportClosed`.
               let closed = false;
@@ -327,7 +339,7 @@ export const workerdApps = (options: {
                 }
               }).pipe(Effect.catchCause(() => Effect.void)),
           );
-          return yield* work(peer, lifetime.signal);
+          return yield* hops.rpc(() => socketRecord, work(peer, lifetime.signal));
         }),
       );
     const changes = (app: string) =>
@@ -368,21 +380,27 @@ export const workerdApps = (options: {
       );
     // workerd closes an idle keep-alive connection after 5 seconds, and reconciliation polls
     // every 5 seconds. A pooled socket can then close while a request is written to it, and
-    // the fetch fails with a transport error. Each workflow request uses its own connection.
+    // the fetch fails with a transport error. Each workflow request asks for its connection to be
+    // closed after the response. Bun can still send it on an idle pooled connection, which only a
+    // request without that header would leave; none to this origin does.
     const backend = (operation: "start" | "status" | "terminate", run: WorkflowRunId) =>
       Effect.scoped(
         Effect.gen(function* () {
           const request = yield* HttpClientRequest.post(new URL("/workflow", origin), {
             headers: { ...headers, connection: "close" },
           }).pipe(HttpClientRequest.bodyJson({ operation, run }));
-          const response = yield* http.execute(request);
-          if (response.status !== 200) return yield* engineFailure();
-          return yield* response.json.pipe(
-            Effect.flatMap(Schema.decodeUnknownEffect(WorkflowBackendState)),
+          return yield* hops.http("/workflow", http.execute(request), (response) =>
+            Effect.gen(function* () {
+              if (response.status !== 200) return yield* engineFailure();
+              return yield* response.json.pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(WorkflowBackendState)),
+              );
+            }),
           );
         }),
       ).pipe(Effect.mapError(engineFailure));
-    // Each command uses its own connection, like workflow requests above.
+    // Each command asks for its connection to be closed after the response, like workflow requests
+    // above.
     const evaluated = (app: string, command: EvaluatedCommand) =>
       Effect.scoped(
         Effect.gen(function* () {
@@ -396,10 +414,13 @@ export const workerdApps = (options: {
               "application/json",
             ),
           );
-          const response = yield* http.execute(request);
-          if (response.status !== 200) return yield* protocolFailure();
-          return yield* response.text.pipe(
-            Effect.flatMap(Schema.decodeUnknownEffect(EvaluatedReplyJson)),
+          return yield* hops.http("/evaluated", http.execute(request), (response) =>
+            Effect.gen(function* () {
+              if (response.status !== 200) return yield* protocolFailure();
+              return yield* response.text.pipe(
+                Effect.flatMap(Schema.decodeUnknownEffect(EvaluatedReplyJson)),
+              );
+            }),
           );
         }),
       ).pipe(Effect.mapError(protocolFailure));

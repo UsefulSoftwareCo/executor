@@ -4,15 +4,15 @@ import {
   AccountConnectionTargetChanged,
   AccountId,
   AccountScope,
+  AppId,
   StorageError,
   StorageHost,
   type Account,
-  type AppId,
   type Executor,
   type ResourceLifecycle,
   type OwnerId,
 } from "@executor-js/sdk/core";
-import { Context, Effect, Option, Schema } from "effect";
+import { Context, Effect, Option, Result, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { CurrentUserId } from "../contracts/auth.ts";
 import { OrganizationId } from "../contracts/organization.ts";
@@ -87,17 +87,29 @@ const organizationOf = (owner: OwnerId) =>
       )
     : Effect.fail(new StorageError());
 
-/** The rows that let a subject use an app now, as a member: exactly one when they may. */
-const appUse = (
+/**
+ * The rows that let a subject use these apps now, as a member: exactly one for each app they may
+ * use.
+ */
+const appsUse = (
   sql: SqlClient.SqlClient,
-  input: { readonly id: AppId; readonly organization: OrganizationId; readonly actor: string },
+  input: {
+    readonly ids: readonly AppId[];
+    readonly organization: OrganizationId;
+    readonly actor: string;
+  },
 ) => sql`select p.id from hosted_app_access p join member m
       on m."organizationId" = p.organization_id and m."userId" = ${input.actor}
-      where p.id = ${input.id} and p.organization_id = ${input.organization}
+      where ${sql.in("p.id", input.ids)} and p.organization_id = ${input.organization}
       and ((p.audience = 'private' and p.creator_id = m."userId") or p.audience = 'everyone'
         or (p.audience = 'groups' and exists(select 1 from hosted_app_groups g
           join hosted_group_members gm on gm.group_id = g.group_id
           where g.app_id = p.id and gm.member_id = m.id)))`;
+/** The rows that let a subject use an app now, as a member: exactly one when they may. */
+const appUse = (
+  sql: SqlClient.SqlClient,
+  input: { readonly id: AppId; readonly organization: OrganizationId; readonly actor: string },
+) => appsUse(sql, { ids: [input.id], organization: input.organization, actor: input.actor });
 
 /** Whether a subject is a member who may use the app now, as any of its operations requires. */
 export const actorUsesApp = (
@@ -137,6 +149,14 @@ const AppRecheck = Schema.Struct({
   access: Schema.Number,
   accounts: Schema.fromJsonString(Schema.Array(AllowedAccount)),
   appLinks: Schema.fromJsonString(Schema.Array(AllowedUse)),
+});
+/** {@link AppRecheck} for several apps: the row of each app the actor may use, and each app link. */
+const AppsRecheck = Schema.Struct({
+  access: Schema.fromJsonString(Schema.Array(AppId)),
+  accounts: AppRecheck.fields.accounts,
+  appLinks: Schema.fromJsonString(
+    Schema.Array(Schema.Struct({ ...AllowedUse.fields, app: AppId })),
+  ),
 });
 // Each account must still belong to the owner the invocation resolved it under.
 const allowedOf = (accounts: readonly AccountOwner[], allowed: ReadonlyArray<AllowedAccount>) => {
@@ -273,6 +293,78 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
                 .map((row) => useKey(row.requirement, row.id)),
             ),
           );
+        }).pipe(
+          Effect.catchTags({
+            SqlError: () => new StorageError(),
+            SchemaError: () => new StorageError(),
+          }),
+        ),
+      // `appResolving` for every app a search reads, in one statement: the rows that let the actor
+      // use each app, the actor's use of every user account the apps run with, and the app links
+      // of every app requirement's account. Each app passes or is refused as it would be alone.
+      appsResolving: (owner, apps) =>
+        Effect.gen(function* () {
+          if (apps.length === 0) return [];
+          const user = yield* CurrentUserId;
+          const organization = yield* organizationOf(owner);
+          const ids = [...new Set(apps.map((app) => app.id))];
+          const owned =
+            user === undefined ? [] : organizationAccounts(apps.flatMap((app) => app.accounts));
+          // An app account is the app owner's; one resolved under another owner is refused.
+          const usesOf = (app: (typeof apps)[number]) =>
+            app.appUses.filter((use) => use.account.owner === owner);
+          const used = apps.filter((app) => usesOf(app).length > 0);
+          const access =
+            user === undefined
+              ? sql`select p.id from hosted_app_access p
+                  where ${sql.in("p.id", ids)} and p.organization_id = ${organization}`
+              : appsUse(sql, { ids, organization, actor: user });
+          const users =
+            user === undefined || owned.length === 0
+              ? sql.literal(noRows)
+              : sql`(select coalesce(json_agg(allowed), '[]'::json)::text
+                  from (${accountAccess(sql, owned, user)}) allowed)`;
+          const linkRows =
+            used.length === 0
+              ? sql.literal(noRows)
+              : sql`(select coalesce(json_agg(json_build_object('app', l.app,
+                    'requirement', l.requirement, 'id', a.id)), '[]'::json)::text
+                  from ${usableAppLinks(
+                    sql,
+                    used.map((app) => app.id),
+                  )}
+                    and ${sql.in("l.account", [
+                      ...new Set(used.flatMap((app) => usesOf(app).map((use) => use.account.id))),
+                    ])})`;
+          const rows = yield* sql`select
+            (select coalesce(json_agg(access.id), '[]'::json)::text from (${access}) access)
+              as access,
+            ${users} as accounts, ${linkRows} as "appLinks"`;
+          const checked = (yield* Schema.decodeUnknownEffect(Schema.Array(AppsRecheck))(rows))[0];
+          if (checked === undefined) return yield* new StorageError();
+          return apps.map((app): Result.Result<ReadonlySet<AccountId>, StorageError> => {
+            // Exactly one row lets the actor use the app, as `appResolving` requires.
+            if (checked.access.filter((id) => id === app.id).length !== 1)
+              return Result.fail(new StorageError());
+            const uses = usesOf(app);
+            return Result.succeed(
+              passedEvery(
+                app.accounts,
+                app.appUses,
+                allowedOf(
+                  user === undefined ? [] : organizationAccounts(app.accounts),
+                  checked.accounts,
+                ),
+                new Set(
+                  checked.appLinks
+                    .filter(
+                      (row) => row.app === app.id && uses.some((use) => use.account.id === row.id),
+                    )
+                    .map((row) => useKey(row.requirement, row.id)),
+                ),
+              ),
+            );
+          });
         }).pipe(
           Effect.catchTags({
             SqlError: () => new StorageError(),
