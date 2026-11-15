@@ -984,7 +984,7 @@ export const scenarios = plan({
   mcpMediaContent: {
     fixtures: "actors",
     file: "mcp-direct-calls.spec.ts",
-    title: "MCP call and execute return app images and audio as MCP content blocks",
+    title: "MCP call and execute return app images, audio and files as MCP content blocks",
     targets: {
       "self-host": scheduled,
       cloud: na("Shared MCP path; covered on self-host"),
