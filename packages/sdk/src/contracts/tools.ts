@@ -108,6 +108,13 @@ export interface ToolListOptions extends CatalogReadOptions {
    * and one page reads it once. A caller that sends pages on, such as an HTTP route, omits it.
    */
   readonly unboundedPages?: true;
+  /**
+   * The apps one search reads together, this read's app among them. A host may read their state
+   * in shared statements, but never with an app outside the batch: a search waits only on the apps
+   * it reaches, so one app's slow or locked rows hold up no search that does not reach it. Without
+   * it the read takes its own state alone.
+   */
+  readonly searchBatch?: ReadonlyArray<AppId>;
 }
 export {
   ElicitationFailed,
