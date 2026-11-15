@@ -137,6 +137,42 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker upload growth",
     }),
   );
 
+  it.effect(
+    "the error gives the line to add, and that line passes once its reason replaces the placeholder",
+    () =>
+      Effect.gen(function* () {
+        const uploads = { ...main, api: { bytes: 5_450_001, budget: 6_000_000 } };
+        const line = "api +50,001: <why it is worth the cold-start time>";
+        const failed = yield* check({ uploads, description: "Adds a sign-in method." });
+        expect(failed.exitCode, failed.log).toBe(1);
+        expect(failed.errors).toEqual([
+          expect.stringContaining(
+            `Trim it, or allow it: put the line \`${line}\` in a worker-growth block of the pull request description, with your reason in place of <why it is worth the cold-start time>, then run this job again.`,
+          ),
+        ]);
+        expect(failed.log).toContain(`\`\`\`worker-growth\n${line}\n\`\`\``);
+        // Pasted as printed, the placeholder is not a reason.
+        const pasted = yield* check({ uploads, description: description(line) });
+        expect(pasted.exitCode, pasted.log).toBe(1);
+        expect(pasted.summary).toContain(
+          `- \`${line}\` is not a Worker, a size and a reason (write the real reason in place of <why it is worth the cold-start time>)`,
+        );
+        const reasoned = yield* check({
+          uploads,
+          description: description(
+            "api +50,001: the SAML library, which every enterprise sign-in loads",
+          ),
+        });
+        expect(reasoned.exitCode, reasoned.log).toBe(0);
+        // A real reason may itself start and end with angle brackets.
+        const bracketed = yield* check({
+          uploads,
+          description: description("api +50,001: <Suspense> around <Editor>"),
+        });
+        expect(bracketed.exitCode, bracketed.log).toBe(0);
+      }),
+  );
+
   it.effect("an allowance for at least what the Worker adds passes and shows its reason", () =>
     Effect.gen(function* () {
       const result = yield* check({

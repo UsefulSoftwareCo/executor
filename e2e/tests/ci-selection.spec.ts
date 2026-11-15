@@ -26,6 +26,7 @@ import {
   mcpSearchScenarios,
   mcpSearchTitles,
 } from "../mcp-search-guard.ts";
+import { selectionKey, workerGrowthKey } from "../ci-key.ts";
 import { scenarios, scenariosForSuite } from "../test-plan.ts";
 
 const jobs = [
@@ -110,6 +111,8 @@ const select = (input: {
   readonly stackedAbove?: string | ReadonlyArray<string>;
   readonly wait?: number;
   readonly root?: string;
+  /** More of the job's environment. */
+  readonly env?: Readonly<Record<string, string>>;
 }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -167,6 +170,7 @@ const select = (input: {
           GITHUB_RUN_ID: "123456",
           GITHUB_OUTPUT: output,
           GITHUB_STEP_SUMMARY: summary,
+          ...input.env,
         },
         extendEnv: true,
       }),
@@ -176,16 +180,20 @@ const select = (input: {
       [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
       { concurrency: "unbounded" },
     );
-    const outputs = Object.fromEntries(
+    const written = Object.fromEntries(
       (yield* fs.readFileString(output))
         .split("\n")
         .filter((line) => line.length > 0)
         .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
     );
+    // What a later run compares to tell whether it would test the same thing (e2e/ci-key.ts),
+    // apart from the outputs the jobs read.
+    const { selection, "worker-growth": workerGrowth, ...outputs } = written;
     return {
       exitCode,
       log,
       outputs,
+      keys: { selection, workerGrowth },
       summary: yield* fs.readFileString(summary),
     };
   }).pipe(Effect.scoped);
@@ -589,7 +597,9 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       });
       for (const [index, run] of runs.entries()) {
         expect(run.exitCode, names[index]).toBe(1);
-        expect(run.log, names[index]).toContain(`not spec files in e2e/tests/: "${names[index]}"`);
+        expect(run.log, names[index]).toContain(
+          `- line 1 of the e2e block, \`${names[index]}\`: no spec file has this name. The nearest names are `,
+        );
         expect(run.outputs, names[index]).toEqual({});
       }
     }),
@@ -598,21 +608,29 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
   it.effect("a spec file another config runs fails and names what runs it", () =>
     Effect.gen(function* () {
       const cases = [
-        ["billing.spec.ts", "e2e/billing.config.ts: bun run e2e:billing. No workflow runs it."],
+        [
+          "billing.spec.ts",
+          "billing.spec.ts runs only by hand, with e2e/billing.config.ts (bun run e2e:billing); no workflow runs it, so naming it here runs nothing. Remove billing.spec.ts from the e2e block.",
+        ],
+        // A release lane runs it, when the change reaches that lane: not on every pull request.
         [
           "docker-release.spec.ts",
-          "e2e/docker-release.config.ts in Checks (.github/workflows/checks.yml) and Executor releases (.github/workflows/release-artifacts.yml)",
+          "docker-release.spec.ts runs with e2e/docker-release.config.ts in Checks (.github/workflows/checks.yml) and Executor releases (.github/workflows/release-artifacts.yml), not in these jobs, so naming it here runs nothing. Remove docker-release.spec.ts from the e2e block.",
         ],
         // Planned, but its scenarios run only against the release archive.
         [
           "local-bootstrap.spec.ts",
-          "e2e/local-bootstrap.config.ts in Checks (.github/workflows/checks.yml) and Executor releases (.github/workflows/release-artifacts.yml)",
+          "local-bootstrap.spec.ts runs with e2e/local-bootstrap.config.ts in Checks (.github/workflows/checks.yml) and Executor releases (.github/workflows/release-artifacts.yml), not in these jobs, so naming it here runs nothing. Remove local-bootstrap.spec.ts from the e2e block.",
         ],
+        // The tooling job runs it on every pull request.
         [
           "ci-selection.spec.ts",
-          "e2e/ci-selection.config.ts in Checks (.github/workflows/checks.yml). Locally: bun run e2e:ci-selection.",
+          "ci-selection.spec.ts runs with e2e/ci-selection.config.ts in Checks on every pull request anyway, so the e2e block cannot select it. Remove ci-selection.spec.ts from the e2e block. Locally: bun run e2e:ci-selection.",
         ],
-        ["claude-mcp.spec.ts", "these jobs exclude all of its scenarios"],
+        [
+          "claude-mcp.spec.ts",
+          "these jobs exclude all of claude-mcp.spec.ts's scenarios (see the job patterns in e2e/ci-selection.ts), so naming it here runs nothing. Remove claude-mcp.spec.ts from the e2e block.",
+        ],
       ] as const;
       const runs = yield* Effect.forEach(
         cases,
@@ -622,9 +640,8 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       for (const [index, run] of runs.entries()) {
         const [file, where] = cases[index]!;
         expect(run.exitCode, file).toBe(1);
-        expect(run.log, file).toContain(`- ${file}`);
-        expect(run.log, file).toContain(where);
-        expect(run.log, file).toContain("Remove them from the e2e block.");
+        expect(run.log, file).toContain(`- line 2 of the e2e block, \`${file}\`: ${where}`);
+        expect(run.log, file).toContain("gh run rerun 123456.");
         expect(run.outputs, file).toEqual({});
       }
     }),
@@ -646,7 +663,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(run.outputs["self-host"]).toMatch(/^\^\(\?:/);
       expect(run.summary).toContain("Spec files: groups.spec.ts\n");
       expect(run.summary).toContain(
-        "- billing.spec.ts runs only by hand, with e2e/billing.config.ts",
+        "- billing.spec.ts: billing.spec.ts runs only by hand, with e2e/billing.config.ts (bun run e2e:billing); no workflow runs it, so these jobs do not run it.",
       );
     }),
   );
@@ -777,7 +794,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       const run = yield* select({ body: block("deployment-links.spec.ts") });
       expect(run.exitCode).toBe(1);
       expect(run.log).toContain(
-        "- deployment-links.spec.ts: only Cloud tests on main runs its scenarios, on a deployed stage after merge.",
+        "- line 1 of the e2e block, `deployment-links.spec.ts`: only the deployed stage runs deployment-links.spec.ts's scenarios, in Cloud tests on main after merge, so naming it here runs nothing. Remove deployment-links.spec.ts from the e2e block. To run its scenarios before merging, run them on a deployed stage: bun run e2e:deployed --database planetscale --test-name '^(?:Cloud product links follow the deployment origin)$'",
       );
     }),
   );
@@ -805,7 +822,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(changed.summary).toContain("Spec files: deployment-links.spec.ts\n");
       expect(other.exitCode).toBe(1);
       expect(other.log).toContain(
-        "- deployment-links.spec.ts: only Cloud tests on main runs its scenarios, on a deployed stage after merge.",
+        "- line 1 of the e2e block, `deployment-links.spec.ts`: only the deployed stage runs deployment-links.spec.ts's scenarios, in Cloud tests on main after merge, so naming it here runs nothing. Remove deployment-links.spec.ts from the e2e block. To run its scenarios before merging, run them on a deployed stage: bun run e2e:deployed --database planetscale --test-name '^(?:Cloud product links follow the deployment origin)$'",
       );
       expect(other.outputs).toEqual({});
     }),
@@ -1011,9 +1028,17 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         expect(refused.log).toContain(
           `bun run e2e:deployed --database planetscale --test-name '^(?:${title})$'`,
         );
+        // The exact line to add, which the check then accepts as written.
+        const line = `Verified on a deployed stage: bun run e2e:deployed --database planetscale --test-name '^(?:${title})$' passed`;
         expect(refused.log).toContain(
-          '"Verified on a deployed stage: <command, run or stage, and result>"',
+          `When that command passes, add this line to the description, on a line of its own, then run this workflow again:\n${line}\n`,
         );
+        const added = yield* select({
+          body: `${block("none")}\n${line}\n`,
+          changed,
+          main: main(without),
+        });
+        expect(added.exitCode, added.log).toBe(0);
         // A statement of how it was verified lets it through; a bare heading does not.
         expect(stated.exitCode, stated.log).toBe(0);
         expect(emptyStatement.exitCode).toBe(1);
@@ -1163,7 +1188,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(main.exitCode, main.log).toBe(0);
       expect(named.exitCode).toBe(1);
       expect(named.log).toContain(
-        `- ${included} runs with ${ownConfig} in Checks (.github/workflows/checks.yml).`,
+        `- line 1 of the e2e block, \`${included}\`: ${included} runs with ${ownConfig} in Checks on every pull request anyway, so the e2e block cannot select it.`,
       );
       expect(changed.exitCode).toBe(1);
       expect(changed.log).toContain(
@@ -1579,6 +1604,448 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
     }),
   );
 
+  /**
+   * The six pull request heads of 14 Nov whose second run tested again only because the description
+   * was edited between the two runs' reads: each head's e2e block before and after, as the authors
+   * wrote it, with the prose around it standing in for theirs. #4365's blocks also named a spec file
+   * the plan no longer has; it is left out of both versions.
+   */
+  const fourteenth = (() => {
+    const harness = "all: changes the e2e harness, the CI workflows and the lockfile";
+    const runtime = [
+      "local-app-runtime-restart.spec.ts",
+      "local-workflow-engine-steps.spec.ts",
+      "local-workflow-engine-memory.spec.ts",
+      "local-registry-credentials.spec.ts",
+      "tool-call-held-check.spec.ts",
+      "app-failure-details.spec.ts",
+      "app-failure-telemetry.spec.ts",
+    ];
+    const limit = [
+      "compiled-file-limit.spec.ts",
+      "local-compiled-file-limit.spec.ts",
+      "app-failure-details.spec.ts",
+      "app-source-imports.spec.ts",
+      "local-apps-cli.spec.ts",
+    ];
+    const described = (prose: string, lines: ReadonlyArray<string>) =>
+      `${prose}\n\n${block(...lines)}`;
+    return {
+      // The description gained a results table.
+      af220a946: [
+        described("Summary.", [harness]),
+        described("Summary.\n\n| Run | Result |\n| --- | --- |\n| 1 | passed |", [harness]),
+      ],
+      // A line about a step's skip flag changed.
+      b6df4276c: [
+        described("- The step fails when its outputs are missing.", [harness]),
+        described("- `--skip collector:build` neither runs the step nor touches its outputs.", [
+          harness,
+        ]),
+      ],
+      "5d4189980": [
+        described("Notes.", [...runtime, "mcp-protocol-versions.spec.ts"]),
+        described("Notes, edited.", [...runtime, "mcp-protocol-versions.spec.ts"]),
+      ],
+      // The block gained a spec file: the suites changed.
+      d2e5026fb: [
+        described("Notes.", runtime),
+        described("Notes.", [...runtime, "mcp-protocol-versions.spec.ts"]),
+      ],
+      // Rows about a deploy and skipped packages changed.
+      "7efe1d9e0": [
+        described(
+          "| Check removed | deploy 200 instead of 422 |\n| Packages skipped | fails |",
+          limit,
+        ),
+        described(
+          "| Check removed (re-run) | deploy 200 instead of 422 |\n\nThe packages skipped row no longer applies.",
+          limit,
+        ),
+      ],
+      "348c22613": [described("A first draft.", ["none"]), described("A second draft.", ["none"])],
+    } as const;
+  })();
+
+  it.effect(
+    "the repeat key is what the selection chose: an edit that leaves it keeps the key, one that changes it does not",
+    () =>
+      Effect.gen(function* () {
+        const changed = ["e2e/tests/groups.spec.ts"];
+        const growth = "```worker-growth\napi +60,000: the SAML library\n```";
+        const runs = yield* Effect.all(
+          {
+            plain: select({ body: `Summary.\n\n${block("groups.spec.ts")}`, changed }),
+            prose: select({
+              body: `Another summary.\n\n${block("groups.spec.ts")}\n\nResults.`,
+              changed,
+            }),
+            // A deployed-stage line only decides whether select passes; with no scenario new to
+            // the deployed suite, it changes nothing that runs.
+            deployedLine: select({
+              body: `${block("groups.spec.ts")}\nVerified on a deployed stage: bun run e2e:deployed passed\n`,
+              changed,
+            }),
+            spec: select({ body: block("groups.spec.ts", "invitation-roles.spec.ts"), changed }),
+            none: select({ body: block("none"), changed }),
+            growth: select({ body: `${block("groups.spec.ts")}\n\n${growth}`, changed }),
+            otherGrowth: select({
+              body: `${block("groups.spec.ts")}\n\n${growth.replace("60,000", "90,000")}`,
+              changed,
+            }),
+            skip: select({ body: block("skip"), stackedAbove: "7", changed }),
+            push: select({ changed }),
+          },
+          { concurrency: 4 },
+        );
+        for (const [name, run] of Object.entries(runs)) {
+          expect(run.exitCode, `${name}: ${run.log}`).toBe(0);
+          expect(run.keys.selection, name).toMatch(/^[0-9a-f]{64}$/);
+        }
+        const { plain } = runs;
+        // The key changes with every output the jobs are given: each line select wrote, changed
+        // alone, changes it. The lines are those select wrote, apart from the two keys.
+        for (const [name, run] of Object.entries(runs)) {
+          const lines = Object.entries(run.outputs).map(([key, value]) => `${key}=${value}`);
+          expect(lines.length, name).toBeGreaterThan(0);
+          for (const [index, line] of lines.entries())
+            expect(
+              selectionKey(lines.with(index, `${line}0`).join("\n")),
+              `${name}: ${line.slice(0, line.indexOf("="))}`,
+            ).not.toBe(run.keys.selection);
+        }
+        // Every output a job of checks.yml reads is one select writes in one of these runs, and so
+        // one the key covers.
+        const fs = yield* FileSystem.FileSystem;
+        const read = new Set(
+          [
+            ...(yield* fs.readFileString(".github/workflows/checks.yml")).matchAll(
+              /steps\.select\.outputs\.([a-z-]+)/g,
+            ),
+          ].map((match) => match[1]!),
+        );
+        const written = new Set([
+          ...Object.values(runs).flatMap((run) => Object.keys(run.outputs)),
+          "selection",
+          "worker-growth",
+        ]);
+        expect(read.size).toBeGreaterThan(10);
+        expect([...read].filter((name) => !written.has(name))).toEqual([]);
+        expect(runs.growth.keys.workerGrowth).toBe(
+          workerGrowthKey(`${block("groups.spec.ts")}\n\n${growth}`),
+        );
+        // Same selection, same blocks for the size gate: the same key. none selects what naming
+        // groups.spec.ts did, because a changed spec file runs anyway.
+        for (const name of ["prose", "deployedLine", "none"] as const)
+          expect(runs[name].keys, name).toEqual(plain.keys);
+        // Another selection: another selection key, the size gate's unchanged.
+        for (const name of ["spec", "skip"] as const) {
+          expect(runs[name].keys.selection, name).not.toBe(plain.keys.selection);
+          expect(runs[name].keys.workerGrowth, name).toBe(plain.keys.workerGrowth);
+        }
+        // Another worker-growth block: the same selection, another size-gate key.
+        expect(runs.growth.keys.selection).toBe(plain.keys.selection);
+        expect(runs.growth.keys.workerGrowth).not.toBe(plain.keys.workerGrowth);
+        expect(runs.otherGrowth.keys.workerGrowth).not.toBe(runs.growth.keys.workerGrowth);
+        // A push has no description, so no size-gate key, and records nothing.
+        expect(runs.push.keys.workerGrowth).toBeUndefined();
+      }),
+  );
+
+  it.effect(
+    "the six heads of 14 Nov that tested twice: five now match, d2e5026fb still tests again",
+    () =>
+      Effect.gen(function* () {
+        const keys = yield* Effect.forEach(
+          Object.entries(fourteenth),
+          ([head, [before, after]]) =>
+            Effect.all([select({ body: before }), select({ body: after })]).pipe(
+              Effect.map(([first, second]) => {
+                expect(first.exitCode, `${head}: ${first.log}`).toBe(0);
+                expect(second.exitCode, `${head}: ${second.log}`).toBe(0);
+                return [
+                  head,
+                  first.keys.selection === second.keys.selection &&
+                    first.keys.workerGrowth === second.keys.workerGrowth,
+                ] as const;
+              }),
+            ),
+          { concurrency: 3 },
+        );
+        expect(Object.fromEntries(keys)).toEqual({
+          af220a946: true,
+          b6df4276c: true,
+          "5d4189980": true,
+          d2e5026fb: false,
+          "7efe1d9e0": true,
+          "348c22613": true,
+        });
+      }),
+  );
+
+  /** The blocks that failed select on 13–14 Nov, each with the edit its message must name. */
+  const failedBlocks = {
+    // #4439: a file name that is not a spec file.
+    notASpec: {
+      body: block("search-statements.spec.ts", "search-rejected-accounts.spec.ts"),
+      says: "- line 2 of the e2e block, `search-rejected-accounts.spec.ts`: no spec file has this name. The nearest names are ",
+    },
+    // #4377: a spec file Checks runs on every pull request.
+    checksOnly: {
+      body: block("mcp-server.spec.ts", "effect-mcp-session-bound.spec.ts"),
+      says: "- line 2 of the e2e block, `effect-mcp-session-bound.spec.ts`: effect-mcp-session-bound.spec.ts runs with e2e/effect-mcp.config.ts in Checks on every pull request anyway, so the e2e block cannot select it. Remove effect-mcp-session-bound.spec.ts from the e2e block.",
+    },
+    // #4369: a spec file only the deployed stage runs.
+    deployedOnly: {
+      body: block("groups.spec.ts", "root-entry-loading.spec.ts"),
+      says: "- line 2 of the e2e block, `root-entry-loading.spec.ts`: only the deployed stage runs root-entry-loading.spec.ts's scenarios, in Cloud tests on main after merge, so naming it here runs nothing. Remove root-entry-loading.spec.ts from the e2e block. To run its scenarios before merging, run them on a deployed stage: bun run e2e:deployed --database planetscale --test-name '^(?:",
+    },
+    // #4393: skip before the layer above was open.
+    lateLayer: {
+      body: block("skip"),
+      says: "The e2e block says skip (line 1 of the e2e block, `skip`), which only a lower layer of a stack may say: this run waited 0 seconds for the layer above, an open pull request whose base is this branch, ",
+    },
+  } as const;
+
+  it.effect("each block that failed select on 13–14 Nov is told the line and the edit", () =>
+    Effect.gen(function* () {
+      for (const [name, { body, says }] of Object.entries(failedBlocks)) {
+        const run = yield* select({ body });
+        expect(run.exitCode, name).toBe(1);
+        expect(run.log, name).toContain(says);
+        expect(run.outputs, name).toEqual({});
+      }
+      // #4439's nearest names include the spec file its stack had added under another name.
+      const near = yield* select({ body: block("search-statement.spec.ts") });
+      expect(near.log).toContain("The nearest names are search-statements.spec.ts, ");
+    }),
+  );
+
+  it.effect(
+    "e2e:check-description gives select's verdict on a draft, failing or passing, from the checkout",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const directory = yield* fs.makeTempDirectoryScoped({
+          prefix: "executor-check-description-",
+        });
+        const branch = (yield* processes
+          .spawn(ChildProcess.make("git", ["rev-parse", "--abbrev-ref", "HEAD"]))
+          .pipe(
+            Effect.flatMap((child) => child.stdout.pipe(Stream.decodeText(), Stream.mkString)),
+            Effect.scoped,
+          )).trim();
+        // HEAD as main and as the base: nothing changed, as in select's runs below.
+        const check = (body: string) =>
+          Effect.gen(function* () {
+            const file = path.join(directory, "description.md");
+            yield* fs.writeFileString(file, body);
+            const child = yield* processes.spawn(
+              ChildProcess.make(
+                "node",
+                ["e2e/check-description.ts", "--file", file, "--main", "HEAD", "--base", "HEAD"],
+                { extendEnv: true },
+              ),
+            );
+            const [log, exitCode] = yield* Effect.all(
+              [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+              { concurrency: "unbounded" },
+            );
+            return { log, exitCode: Number(exitCode) };
+          }).pipe(Effect.scoped);
+        /** The verdict a run prints: its failure message, or the selection's job table. */
+        const verdict = (log: string) =>
+          (
+            /SelectionFailed: ([\s\S]*?)\n {4}at /.exec(log)?.[1] ??
+            log.slice(log.indexOf("| Job | Scenarios | Runners |"))
+          )
+            // Only the advice a CI run can follow differs.
+            .replaceAll(
+              "CI waited 0 seconds for the description. Once it is fixed, rerun the whole workflow: gh run rerun 123456",
+              "Edit the description and check it again",
+            )
+            .replaceAll(`base is this branch, ${branch},`, "base is this branch, layer,")
+            .replaceAll(`with base ${branch},`, "with base layer,");
+        // A skip is checked once the layer above is open (the next case), so it is left out here.
+        const drafts = {
+          ...Object.fromEntries(
+            Object.entries(failedBlocks)
+              .filter(([name]) => name !== "lateLayer")
+              .map(([name, { body }]) => [name, body]),
+          ),
+          passes: block("groups.spec.ts"),
+        };
+        for (const [name, body] of Object.entries(drafts)) {
+          const [local, ci] = [yield* check(body), yield* select({ body })];
+          expect(local.exitCode, `${name}: ${local.log}`).toBe(ci.exitCode);
+          expect(verdict(local.log), name).toBe(verdict(ci.log));
+          expect(verdict(local.log).length, name).toBeGreaterThan(40);
+        }
+      }),
+  );
+
+  it.effect(
+    "e2e:check-description passes a skip it cannot check yet, gives no CI advice, checks a pull request only at its head, and lists 300 files as GitHub does",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-check-pr-" });
+        const run = (
+          command: string,
+          args: ReadonlyArray<string>,
+          env: Record<string, string> = {},
+          cwd?: string,
+        ) =>
+          Effect.gen(function* () {
+            const child = yield* processes.spawn(
+              ChildProcess.make(command, args, {
+                env,
+                extendEnv: true,
+                ...(cwd === undefined ? {} : { cwd }),
+              }),
+            );
+            const [log, exitCode] = yield* Effect.all(
+              [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+              { concurrency: "unbounded" },
+            );
+            return { log, exitCode: Number(exitCode) };
+          }).pipe(Effect.scoped);
+        const head = (yield* run("git", ["rev-parse", "HEAD"])).log.trim();
+        const file = path.join(directory, "description.md");
+        const local = (args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
+          run("node", ["e2e/check-description.ts", ...args, "--main", "HEAD"], env);
+
+        // A skip in a draft: nothing to check it against yet, so it says so and passes.
+        yield* fs.writeFileString(file, block("skip"));
+        // Run from inside a CI job, the check clears GITHUB_ACTIONS for the selection it starts.
+        const skip = yield* local(["--file", file], { GITHUB_ACTIONS: "true" });
+        expect(skip.exitCode, skip.log).toBe(0);
+        expect(skip.log).toContain("A skip cannot be checked before both pull requests exist.");
+        // A failing draft gets the advice an author can follow locally, not a CI run's.
+        yield* fs.writeFileString(file, failedBlocks.notASpec.body);
+        const failed = yield* local(["--file", file]);
+        expect(failed.exitCode).toBe(1);
+        expect(failed.log).toContain("Edit the description and check it again.");
+        expect(failed.log).not.toContain("gh run rerun");
+
+        // --pr reads the pull request with gh: here a stand-in answering for pull request 7,
+        // whose layer above is #9, at `oid`.
+        const bin = path.join(directory, "bin");
+        yield* fs.makeDirectory(bin);
+        const pr = (oid: string) =>
+          Effect.gen(function* () {
+            yield* fs.writeFileString(
+              path.join(bin, "view.json"),
+              JSON.stringify({
+                body: block("skip"),
+                baseRefName: "main",
+                headRefName: "feature",
+                headRefOid: oid,
+              }),
+            );
+            yield* fs.writeFileString(
+              path.join(bin, "gh"),
+              // The layer above is based on the pull request's head branch, feature, not this one.
+              '#!/bin/sh\ncase "$*" in\n  "pr view"*) cat "$(dirname "$0")/view.json" ;;\n  "pr list"*"--base feature"*) echo 9 ;;\n  "pr list"*) ;;\n  *) exit 3 ;;\nesac\n',
+            );
+            yield* fs.chmod(path.join(bin, "gh"), 0o755);
+            return yield* local(["--pr", "7"], { PATH: `${bin}:${process.env.PATH ?? ""}` });
+          });
+        const elsewhere = yield* pr("0".repeat(40));
+        expect(elsewhere.exitCode).toBe(2);
+        expect(elsewhere.log).toContain(
+          `This checkout's HEAD is ${head}, but pull request 7's head is ${"0".repeat(40)}, so its changed files would not be the pull request's. Check out that commit first: git fetch origin feature && git checkout --detach ${"0".repeat(40)}`,
+        );
+        const atHead = yield* pr(head);
+        expect(atHead.exitCode, atHead.log).toBe(0);
+        expect(atHead.log).toContain("Skipped: a lower stack layer under #9.");
+
+        // The comparison lists at most 300 files, as GitHub's does, so a longer one runs all.
+        const repository = path.join(directory, "repository");
+        yield* fs.makeDirectory(repository);
+        const git = (...args: ReadonlyArray<string>) =>
+          run(
+            "git",
+            ["-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.test", ...args],
+            {},
+            repository,
+          );
+        yield* git("init", "-q");
+        yield* fs.writeFileString(path.join(repository, "README.md"), "main\n");
+        yield* git("add", "-A");
+        yield* git("commit", "-q", "-m", "main");
+        const main = (yield* git("rev-parse", "HEAD")).log.trim();
+        for (let index = 0; index < 301; index++)
+          yield* fs.writeFileString(
+            path.join(repository, `file-${String(index).padStart(3, "0")}.ts`),
+            "\n",
+          );
+        yield* git("add", "-A");
+        yield* git("commit", "-q", "-m", "head");
+        const listed = yield* run(
+          "node",
+          [
+            path.resolve("e2e/check-description-gh.ts"),
+            "api",
+            "repos/o/r/compare/main...head",
+            "--jq",
+            ".files[] | .filename",
+          ],
+          { CHECK_DESCRIPTION_MAIN: main },
+          repository,
+        );
+        expect(listed.exitCode, listed.log).toBe(0);
+        expect(listed.log.trim().split("\n")).toHaveLength(300);
+      }),
+  );
+
+  it.effect(
+    "the local check's mode cannot run in a workflow: it fails there, and no workflow sets it",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const [inActions, local, ci] = yield* Effect.all(
+          [
+            select({ body: block("skip"), env: { E2E_LOCAL_CHECK: "1", GITHUB_ACTIONS: "true" } }),
+            select({ body: block("skip"), env: { E2E_LOCAL_CHECK: "1", GITHUB_ACTIONS: "" } }),
+            select({ body: block("skip"), env: { GITHUB_ACTIONS: "true" } }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        // In a GitHub Actions run it fails at once, before reading the pull request.
+        expect(inActions.exitCode).toBe(1);
+        expect(inActions.log).toContain(
+          "E2E_LOCAL_CHECK is set in a GitHub Actions run. It is the mode of e2e/check-description.ts, which passes a skip that has no layer above; a workflow must never set it.",
+        );
+        expect(inActions.log).not.toContain("Waiting");
+        expect(inActions.outputs).toEqual({});
+        // Outside one, a lone skip is reported as not checkable yet, and passes.
+        expect(local.exitCode, local.log).toBe(0);
+        expect(local.log).toContain("A skip cannot be checked before both pull requests exist.");
+        expect(local.outputs).toEqual({});
+        // A workflow's lone skip still fails after its wait.
+        expect(ci.exitCode).toBe(1);
+        expect(ci.log).toContain("which only a lower layer of a stack may say");
+        // Nothing under .github/ sets it.
+        const mentions: Array<string> = [];
+        const walk = (directory: string): Effect.Effect<void, unknown, FileSystem.FileSystem> =>
+          Effect.gen(function* () {
+            for (const name of yield* fs.readDirectory(directory)) {
+              const file = `${directory}/${name}`;
+              if ((yield* fs.stat(file)).type === "Directory") yield* walk(file);
+              else if ((yield* fs.readFileString(file)).includes("E2E_LOCAL_CHECK"))
+                mentions.push(file);
+            }
+          });
+        yield* walk(".github");
+        expect(mentions).toEqual([]);
+      }),
+  );
+
   it.effect("none, all and skip keep their meaning", () =>
     Effect.gen(function* () {
       const [none, all, bareAll, skip, loneSkip, missing, twice] = yield* Effect.all(
@@ -1661,7 +2128,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         );
       }
       expect(upper.exitCode).toBe(1);
-      expect(upper.log).toContain('not spec files in e2e/tests/: "SKIP"');
+      expect(upper.log).toContain("- line 1 of the e2e block, `SKIP`: no spec file has this name.");
       expect(upper.log).not.toContain("Waiting");
       expect(named.exitCode, named.log).toBe(0);
       expect(named.outputs["self-host"]).toMatch(/^\^\(\?:/);
@@ -1684,8 +2151,9 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "CI waited 1 second for the description. Once it is fixed, rerun the whole workflow: gh run rerun 123456.",
       );
       expect(loneSkip.exitCode).toBe(1);
-      expect(loneSkip.log).toContain("no open pull request builds on this branch");
-      expect(loneSkip.log).toContain("gh run rerun 123456.");
+      expect(loneSkip.log).toContain(
+        "The e2e block says skip (line 1 of the e2e block, `skip`), which only a lower layer of a stack may say: this run waited 1 second for the layer above, an open pull request whose base is this branch, layer, and there is none. Open the layer above with base layer, then run this workflow again: gh run rerun 123456.",
+      );
     }),
   );
   it.effect("a full run passes when every scheduled scenario ran, passed or failed", () =>

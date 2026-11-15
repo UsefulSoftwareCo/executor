@@ -253,6 +253,12 @@ invitation-roles.spec.ts
 ```
 ````
 
+Before the first push, commit and check the description as CI's `select` job will:
+`bun run e2e:check-description --file description.md` (or `-` for stdin, or `--pr <number>`
+once the PR is open, from a checkout at its head commit). It gives CI's verdict and prints what
+would run; a `skip` can only be checked once the layer above is open. An edit to the description
+after the push needs no re-run unless it changes the selection.
+
 Spec files the PR adds or changes are always included, as are the scenarios that
 guard a dependency patch when the PR's tree pins that dependency or its patch
 differently from main (`patchGuards` in `e2e/ci-selection.ts`): Bun skips a stale
