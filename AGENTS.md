@@ -265,6 +265,8 @@ differently from main (`patchGuards` in `e2e/ci-selection.ts`): Bun skips a stal
 patch without an error. So are the scenarios that assert a contract one file states in
 full when the tree's copy differs from main's (`fileGuards`): a new host protocol in
 `app-protocols.ts` runs `app-package.spec.ts`, which reads back the supported list.
+The Executor app's skill texts and the MCP instructions generated from them are read back by
+scenarios too (`e2e/file-guards.ts`), so changing them runs those scenarios.
 A change to the code MCP search and sessions run through (`e2e/mcp-search-guard.ts`) also runs
 the Cloud MCP search and session scenarios. That is a floor, not a substitute for naming the spec
 files a change can affect: those Cloud scenarios live in `cloud-database-placement.spec.ts` and

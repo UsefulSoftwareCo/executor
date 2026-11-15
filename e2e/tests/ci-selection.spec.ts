@@ -27,6 +27,7 @@ import {
   mcpSearchTitles,
 } from "../mcp-search-guard.ts";
 import { selectionKey, workerGrowthKey } from "../ci-key.ts";
+import { fileGuards } from "../file-guards.ts";
 import { scenarios, scenariosForSuite } from "../test-plan.ts";
 
 const jobs = [
@@ -412,8 +413,8 @@ const gate = (
 /** This suite's own config, rewritten only in a fixture tree. */
 const ownConfig = "e2e/ci-selection.config.ts";
 
-/** Files `fileGuards` in e2e/ci-selection.ts watches; main lists each in its directory. */
-const guardedFiles = ["packages/sdk/src/implementation/app-protocols.ts"];
+/** Files `fileGuards` (e2e/file-guards.ts) watches; main lists each in its directory. */
+const guardedFiles = Object.keys(fileGuards);
 /**
  * Main's listings of the guarded files' directories, with each file's blob ID in this checkout
  * unless `changed` gives another.
@@ -2043,6 +2044,144 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           });
         yield* walk(".github");
         expect(mentions).toEqual([]);
+      }),
+  );
+
+  /** The skill entries of `fileGuards`, each spec file with the jobs its scenarios run in. */
+  const skillGuards: Readonly<Record<string, Readonly<Record<string, ReadonlyArray<string>>>>> = {
+    "packages/app-templates/executor/skills/executor/SKILL.md": {
+      "framework-discovery.spec.ts": ["self-host"],
+      "cli-tool-commands.spec.ts": ["local"],
+    },
+    "packages/app-templates/executor/skills/executor/feedback.md": {
+      "skill-read-telemetry.spec.ts": ["local", "self-host"],
+    },
+    "packages/app-templates/executor/skills/code-mode/SKILL.md": {
+      "framework-discovery.spec.ts": ["self-host"],
+    },
+    "packages/app-templates/executor/skills/app-authoring/SKILL.md": {
+      "framework-discovery.spec.ts": ["self-host"],
+      "cli-tool-commands.spec.ts": ["local"],
+      "mcp-server.spec.ts": ["self-host"],
+      "local-skills.spec.ts": ["local"],
+    },
+    "packages/app-templates/executor/skills/app-authoring/ui.md": {
+      "framework-discovery.spec.ts": ["self-host"],
+      "cli-tool-commands.spec.ts": ["local"],
+      "local-skills.spec.ts": ["local"],
+    },
+    "packages/app-templates/src/implementation/executor-intro.gen.ts": {
+      "cli-tool-commands.spec.ts": ["local"],
+      "mcp-server.spec.ts": ["self-host"],
+    },
+  };
+
+  /** Main as this checkout, except that each of `changed` has another blob ID there. */
+  const mainChanging = (changed: ReadonlyArray<string>) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const names = yield* fs.readDirectory("patches");
+      const hashed = (yield* processes.string(
+        ChildProcess.make("git", [
+          "hash-object",
+          ...guardedFiles,
+          ...names.map((name) => `patches/${name}`),
+        ]),
+      ))
+        .trim()
+        .split("\n");
+      return {
+        "package.json": yield* fs.readFileString("package.json"),
+        patches: names
+          .map((name, index) => `${hashed[guardedFiles.length + index]} ${name}`)
+          .join("\n"),
+        ...guardedListings(
+          hashed.slice(0, guardedFiles.length),
+          Object.fromEntries(changed.map((file) => [file, "0".repeat(40)])),
+        ),
+      };
+    });
+
+  it.effect(
+    "the skill texts #4545 reworded select framework-discovery's scenario, whatever #4546's block named",
+    () =>
+      Effect.gen(function* () {
+        const run = yield* select({
+          body: block(
+            "mcp-direct-calls.spec.ts",
+            "cli-tool-commands.spec.ts",
+            "cli-grant-choice.spec.ts",
+            "tool-call-log.spec.ts",
+          ),
+          changed: [
+            "e2e/test-plan.ts",
+            "e2e/tests/cli-tool-commands.spec.ts",
+            "e2e/tests/mcp-direct-calls.spec.ts",
+          ],
+          main: yield* mainChanging([
+            "packages/app-templates/executor/skills/code-mode/SKILL.md",
+            "packages/app-templates/executor/skills/executor/SKILL.md",
+            "packages/app-templates/src/implementation/executor-intro.gen.ts",
+          ]),
+        });
+        expect(run.exitCode, run.log).toBe(0);
+        // By the scenario's title in the plan, whatever its wording becomes.
+        expect(selectsTitle(run.outputs, "self-host", scenarios.frameworkDiscovery.title)).toBe(
+          true,
+        );
+        expect(run.summary).toContain("A guarded file differs from main, so its guards run: ");
+        // Without the skill texts changed, the block alone does not select it.
+        const unguarded = yield* select({
+          body: block(
+            "mcp-direct-calls.spec.ts",
+            "cli-tool-commands.spec.ts",
+            "cli-grant-choice.spec.ts",
+            "tool-call-log.spec.ts",
+          ),
+          main: yield* mainChanging([]),
+        });
+        expect(
+          selectsTitle(unguarded.outputs, "self-host", scenarios.frameworkDiscovery.title),
+        ).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "each skill text runs the spec files that read it back, in the jobs a pull request runs them in",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const plan = scenariosForSuite("all", "managed");
+        for (const [file, specs] of Object.entries(skillGuards)) {
+          // The table names exactly these spec files for the file.
+          expect([...(fileGuards[file] ?? [])].sort(), file).toEqual(Object.keys(specs).sort());
+          const run = yield* select({ body: block("none"), main: yield* mainChanging([file]) });
+          expect(run.exitCode, `${file}: ${run.log}`).toBe(0);
+          for (const [spec, expected] of Object.entries(specs)) {
+            const titles = plan.filter((scenario) => scenario.file === spec);
+            const ran = jobs.filter((job) =>
+              titles.some((scenario) => selectsTitle(run.outputs, job, scenario.title)),
+            );
+            expect(ran, `${file}: ${spec}`).toEqual(expected);
+          }
+        }
+        // Every guarded file exists, and every guarded spec file has scenarios a pull request runs.
+        for (const [file, specs] of Object.entries(fileGuards)) {
+          expect(yield* fs.exists(file), file).toBe(true);
+          for (const spec of specs) {
+            expect(yield* fs.exists(`e2e/tests/${spec}`), spec).toBe(true);
+            expect(
+              plan.some(
+                (scenario) =>
+                  scenario.file === spec &&
+                  (scenario.targets.local.status === "scheduled" ||
+                    scenario.targets["self-host"].status === "scheduled"),
+              ),
+              `${spec} has no scenario a pull request runs`,
+            ).toBe(true);
+          }
+        }
       }),
   );
 
