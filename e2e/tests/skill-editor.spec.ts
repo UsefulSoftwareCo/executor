@@ -205,8 +205,18 @@ layer(HostedLive, { excludeTestServices: true })("Skill editor", (it) => {
               .then(() =>
                 Promise.all([held, page.waitForFunction(() => document.readyState !== "loading")]),
               )
-              .then(() => page.getByRole("cell", { name: "Full-text search", exact: true }).count())
+              // A part that streamed late arrives in a hidden container, and an inline script in
+              // the document moves it into place up to a few hundred milliseconds later. Check what
+              // the server sent wherever it sits, then wait for it to be in place.
+              .then(() =>
+                page
+                  .getByRole("cell", { name: "Full-text search", exact: true, includeHidden: true })
+                  .count(),
+              )
               .then((cells) => expect(cells, "the server's page shows the skill").toBe(1))
+              .then(() =>
+                page.getByRole("cell", { name: "Full-text search", exact: true }).waitFor(),
+              )
               // Measure with the final fonts; a late font load shifts the text by a pixel.
               .then(() => page.evaluate(() => document.fonts.ready.then(() => undefined)))
               .then(() =>
