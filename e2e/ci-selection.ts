@@ -762,6 +762,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "collector-job.config.ts": () => import("./collector-job.config.ts"),
   "macos-staple.config.ts": () => import("./macos-staple.config.ts"),
   "npm-channel.config.ts": () => import("./npm-channel.config.ts"),
+  "publish-guard.config.ts": () => import("./publish-guard.config.ts"),
   "workflow-caches.config.ts": () => import("./workflow-caches.config.ts"),
   "telemetry-event-lifetime.config.ts": () => import("./telemetry-event-lifetime.config.ts"),
   "cli-startup-imports.config.ts": () => import("./cli-startup-imports.config.ts"),

@@ -24,7 +24,7 @@ import {
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { platformArchive, platforms, release } from "./config.ts";
-import { awaitNpmChannel, DistTags, npmRegistry } from "./npm-channel.ts";
+import { awaitNpmChannel, distTagsBeforePublishing, npmRegistry } from "./npm-channel.ts";
 
 const RegistryVersion = Schema.Struct({
   version: Schema.String,
@@ -113,11 +113,9 @@ NodeRuntime.runMain(
       }
 
       const registry = npmRegistry;
-      const tags = http.get(`${registry}/-/package/executor/dist-tags`).pipe(
-        Effect.flatMap((response) => response.json),
-        Effect.flatMap(Schema.decodeUnknownEffect(DistTags)),
-      );
-      const before = yield* tags;
+      // A status other than 200, an answer without the tags, or none within the limit stops here,
+      // before anything is published (npm-channel.ts).
+      const before = yield* distTagsBeforePublishing(registry, "executor");
       const integrity = `sha512-${(yield* digest(file, "sha512")).digest("base64")}`;
       // A retried job resumes only over a launcher npm already holds byte for byte.
       const existing = yield* http.get(`${registry}/executor/${release.version}`);

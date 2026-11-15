@@ -8251,6 +8251,15 @@ export const scenarios = plan({
       local: na("Local uses its instance key."),
     },
   },
+  runtimeHopShape: {
+    file: "runtime-hop-shape.spec.ts",
+    title: "A failed exchange with the local app runtime records how far it got, as shapes only",
+    targets: {
+      "self-host": scheduled,
+      local: na("The probe runs the runtime hops' recording against stubs; one target covers it."),
+      cloud: na("Cloud's apps do not run in a local workerd."),
+    },
+  },
   apiKeyStorageOutage: {
     fixtures: "actors",
     file: "api-key-storage-outage.spec.ts",

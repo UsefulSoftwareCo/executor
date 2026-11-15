@@ -737,6 +737,18 @@ layer(HostedLive, { excludeTestServices: true })("App failure telemetry", (it) =
           for (const { attributes } of appLogs)
             expect(Object.keys(attributes).filter((key) => !resource.includes(key))).toEqual([]);
 
+        // An app's own failure is not a transport failure: no span of the call records the runtime
+        // session's or route's shape (runtime-hop.ts), on a healthy connection to the runtime.
+        for (const { spans } of [rejected, malformed])
+          for (const { span } of spans)
+            expect(
+              Object.keys(span.tags).filter(
+                (key) =>
+                  key.startsWith("executor.runtime.rpc.") ||
+                  key.startsWith("executor.runtime.http."),
+              ),
+            ).toEqual([]);
+
         if (cloud) {
           // Cloud's runner records the kind of each failed call, not its text. A cause it does
           // not recognize is recorded by its shape: the app's Worker rejected the call with an
