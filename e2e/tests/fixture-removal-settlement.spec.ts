@@ -237,7 +237,26 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
             }),
           );
 
-          const looks: Array<{ ms: number; finished: number; checking: boolean }> = [];
+          const looks: Array<{
+            ms: number;
+            finished: number;
+            blocked: { phase: string; status: string | null; checking: boolean } | null;
+          }> = [];
+          /** The blocked removal as one look reports it: never finished while its users are locked. */
+          const blockedIn = (look: typeof SettleLook.Type) => {
+            expect(
+              look.finished.map((removal) => removal.scenario),
+              "the blocked removal is reported finished while its owner row is locked",
+            ).not.toContain(blocked);
+            const pending = look.unfinished.find((removal) => removal.scenario === blocked);
+            return pending === undefined
+              ? null
+              : { phase: pending.phase, status: pending.status, checking: pending.checking };
+          };
+          // The product finishes the erasures in no promised order: one whose purge raced its
+          // organization's team installation is retried seconds later (`purge-owner-store`). So
+          // the looks go on until the other 23 have finished and the blocked one's erasure is done
+          // too, leaving it held only by its users' deletion.
           const others = yield* evidence.step(
             "Every look answers within its limit and the others finish while one is blocked",
             Effect.gen(function* () {
@@ -247,24 +266,45 @@ layer(HostedLive, { excludeTestServices: true })("Fixture removal settlement", (
                 const look = yield* fixtureRequest(fixtures, "/settle", { ids }, "15 seconds").pipe(
                   Effect.flatMap(Schema.decodeUnknownEffect(SettleLook)),
                 );
-                const pending = look.unfinished.find((removal) => removal.scenario === blocked);
+                const state = blockedIn(look);
                 looks.push({
                   ms: (yield* Clock.currentTimeMillis) - asked,
                   finished: look.finished.length,
-                  checking: pending?.checking ?? false,
+                  blocked: state,
                 });
-                if (look.finished.length === many - 1) return look;
+                if (
+                  look.finished.length === many - 1 &&
+                  state?.phase === "remove-users" &&
+                  state.status === "done" &&
+                  state.checking
+                )
+                  return look;
                 yield* Effect.sleep("1 second");
               }
-            }).pipe(Effect.timeout("90 seconds")),
+            }).pipe(
+              Effect.timeoutOrElse({
+                duration: "90 seconds",
+                orElse: () =>
+                  Effect.die(
+                    new Error(
+                      `The other removals and the blocked one's erasure did not finish within 90 s; last looks: ${JSON.stringify(looks.slice(-3))}`,
+                    ),
+                  ),
+              }),
+            ),
           );
           yield* evidence.json("looks.json", looks);
           expect(others.finished.map((removal) => removal.scenario).sort()).toEqual(
             ids.slice(1).sort(),
           );
-          expect(others.unfinished).toMatchObject([
-            { scenario: blocked, phase: "remove-users", status: "done", checking: true },
-          ]);
+          expect(
+            others.unfinished.map(({ scenario, phase, status, checking }) => ({
+              scenario,
+              phase,
+              status,
+              checking,
+            })),
+          ).toEqual([{ scenario: blocked, phase: "remove-users", status: "done", checking: true }]);
 
           yield* locks.release;
           const files = {
