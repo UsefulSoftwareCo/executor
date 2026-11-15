@@ -791,6 +791,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "prepare-cache.config.ts": () => import("./prepare-cache.config.ts"),
   "part-results.config.ts": () => import("./part-results.config.ts"),
   "process-identity.config.ts": () => import("./process-identity.config.ts"),
+  "cloud-postgres-volumes.config.ts": () => import("./cloud-postgres-volumes.config.ts"),
   "release-archives.config.ts": () => import("./release-archives.config.ts"),
   "release-evidence.config.ts": () => import("./release-evidence.config.ts"),
   "removal-evidence.config.ts": () => import("./removal-evidence.config.ts"),
