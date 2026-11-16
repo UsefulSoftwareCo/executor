@@ -26,7 +26,7 @@ import {
   OpenapiMediaType,
   defaultOpenapiResponseLimits,
   isOpenapiFileSchema,
-  isOpenapiJsonSequence,
+  isOpenapiJsonMedia,
   isOpenapiTextMedia,
   openapiMediaKind,
   type CredentialBinding,
@@ -470,7 +470,7 @@ export function createRequest(config: {
         }
         if (!isOpenapiTextMedia(contentType)) return { base64: Base64.encode(data), contentType };
         const text = new TextDecoder().decode(data);
-        return contentType.includes("json") && !isOpenapiJsonSequence(contentType)
+        return isOpenapiJsonMedia(contentType)
           ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))(text).pipe(
               Effect.mapError(() => unreadable),
             )
