@@ -12,6 +12,7 @@ export const lostRequestDirectory = "report/lost-requests";
 export const LostRequestRecord = Schema.Struct({
   at: Schema.String,
   scenario: Schema.optional(Schema.String),
+  file: Schema.optional(Schema.String),
   method: Schema.String,
   path: Schema.String,
   code: Schema.optional(Schema.String),
@@ -24,15 +25,19 @@ export const LostRequestRecord = Schema.Struct({
   }),
   outcome: Schema.String,
   againCode: Schema.optional(Schema.String),
+  againStatus: Schema.optional(Schema.Number),
 });
 export type LostRequestRecord = typeof LostRequestRecord.Type;
 
 const decode = Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(LostRequestRecord)));
 
-/** Save one scenario's lost requests in a run directory. A scenario with none writes nothing. */
+/**
+ * Save lost requests in a run directory, under a name of the saver's: a scenario's id, a test
+ * file's records made outside any scenario, or the suite's preparation. None writes nothing.
+ */
 export const saveLostRequests = (
   run: string,
-  scenarioId: string,
+  name: string,
   records: ReadonlyArray<LostRequestRecord>,
 ) =>
   Effect.gen(function* () {
@@ -42,7 +47,7 @@ export const saveLostRequests = (
     const directory = path.join(run, lostRequestDirectory);
     yield* fs.makeDirectory(directory, { recursive: true });
     yield* fs.writeFileString(
-      path.join(directory, `${scenarioId}.json`),
+      path.join(directory, `${name}.json`),
       JSON.stringify(records, null, 2),
       { mode: 0o600 },
     );
@@ -68,19 +73,26 @@ export const readLostRequests = (directories: ReadonlyArray<string>) =>
     return records.flat().toSorted((a, b) => a.at.localeCompare(b.at));
   });
 
-/** One summary paragraph: the total, each outcome's count, and when each happened. */
+/** One summary paragraph: the total, each outcome's count, those outside any scenario, and when each happened. */
 export const lostRequestLines = (records: ReadonlyArray<LostRequestRecord>) => {
   if (records.length === 0) return "Stage requests lost before any response: 0.";
   const outcomes = new Map<string, number>();
   for (const record of records)
     outcomes.set(record.outcome, (outcomes.get(record.outcome) ?? 0) + 1);
+  const outside = records.filter((record) => record.scenario === undefined).length;
   return [
     `Stage requests lost before any response: ${records.length} (${[...outcomes]
       .map(([outcome, count]) => `${count} ${outcome}`)
-      .join(", ")}).`,
+      .join(
+        ", ",
+      )})${outside === 0 ? "" : `; ${outside} outside any scenario (preparation, set-up or teardown)`}.`,
     ...records.map(
       (record) =>
-        `- ${record.at.slice(11, 19)} ${record.method} ${record.path.replace(/[A-Za-z0-9_-]{16,}/gu, ":id")} (${record.sent.connection ?? "unwritten"}${record.sent.idleMs === undefined ? "" : `, idle ${(record.sent.idleMs / 1000).toFixed(1)} s`}; ${record.outcome})`,
+        `- ${record.at.slice(11, 19)} ${record.method} ${record.path.replace(/[A-Za-z0-9_-]{16,}/gu, ":id")} (${record.sent.connection ?? "unwritten"}${record.sent.idleMs === undefined ? "" : `, idle ${(record.sent.idleMs / 1000).toFixed(1)} s`}; ${record.outcome}${record.againStatus === undefined ? "" : ` with HTTP ${record.againStatus}`})`,
     ),
   ].join("\n");
 };
+
+/** What a job summary says when the records could not be read: never a count, never zero. */
+export const lostRequestsUncounted =
+  "Stage requests lost before any response: NOT COUNTED. The records could not be read, so this job's count is unknown, not zero.";

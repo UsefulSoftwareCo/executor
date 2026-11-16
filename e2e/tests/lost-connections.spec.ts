@@ -18,13 +18,17 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 import { createServer, type Server, type Socket } from "node:net";
+import { getCACertificates, setDefaultCACertificates, TLSSocket } from "node:tls";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { lostRequestLines, readLostRequests, saveLostRequests } from "../lost-requests.ts";
 import {
+  changesState,
   configureLostConnections,
   installLostConnections,
   lostRequestsOf,
   resendable,
 } from "../support/lost-connections.ts";
+import { resendNote } from "../support/lifecycle.ts";
 import { CallFailed, readResponse, requestFailureText } from "../support/request-failure.ts";
 
 // `main`'s client: Node's fetch before the wrapper is installed.
@@ -43,13 +47,22 @@ interface Stage {
   readonly received: Map<string, number>;
 }
 
-const stage = (mode: Mode) =>
+/** A certificate for 127.0.0.1, trusted for the case's requests only, for a stand-in over TLS. */
+interface TlsMaterial {
+  readonly key: string;
+  readonly cert: string;
+}
+
+const stage = (mode: Mode, material?: TlsMaterial) =>
   Effect.acquireRelease(
     Effect.callback<Stage & { readonly close: () => void }>((resume) => {
       const received = new Map<string, number>();
       const sockets = new Set<Socket>();
-      const server: Server = createServer((socket) => {
-        sockets.add(socket);
+      const server: Server = createServer((raw) => {
+        // Over TLS the reset is the TCP connection's, under the TLS session, as an edge's would be.
+        const socket: Socket =
+          material === undefined ? raw : new TLSSocket(raw, { isServer: true, ...material });
+        sockets.add(raw);
         let served = 0;
         let buffered = "";
         socket.on("data", (chunk) => {
@@ -67,8 +80,8 @@ const stage = (mode: Mode) =>
           served += 1;
           const reset = mode === "reset-new" ? served === 1 : served === 2;
           if (reset && mode === "partial-then-reset")
-            socket.write("HTTP/1.1 2", () => setTimeout(() => socket.resetAndDestroy(), 20));
-          else if (reset) socket.resetAndDestroy();
+            socket.write("HTTP/1.1 2", () => setTimeout(() => raw.resetAndDestroy(), 20));
+          else if (reset) raw.resetAndDestroy();
           else
             socket.write(
               "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: keep-alive\r\n\r\n{}",
@@ -80,7 +93,7 @@ const stage = (mode: Mode) =>
       server.listen(0, "127.0.0.1", () => {
         const address = server.address();
         const port = typeof address === "object" && address !== null ? address.port : 0;
-        const origin = `http://127.0.0.1:${port}`;
+        const origin = `${material === undefined ? "http" : "https"}://127.0.0.1:${port}`;
         configureLostConnections({
           origins: [origin],
           scenario: () => expect.getState().currentTestName,
@@ -198,6 +211,18 @@ layer(NodeServices.layer)("A stage request lost on a dropped connection", (it) =
     }),
   );
 
+  it.effect("does not send a GET that changes state again", () =>
+    Effect.gen(function* () {
+      const { origin, received } = yield* stage("reset-reused");
+      yield* warm(origin);
+      const line = failureOf(
+        yield* send("GET", `${origin}/api/auth/callback/google?code=c&state=s`),
+      );
+      expect(line).toContain("not sent again: GET may change state");
+      expect(received.get("GET /api/auth/callback/google?code=c&state=s")).toBe(1);
+    }),
+  );
+
   it.effect("does not send a GET again when the reset came on a new connection", () =>
     Effect.gen(function* () {
       const { origin, received } = yield* stage("reset-new");
@@ -232,14 +257,75 @@ layer(NodeServices.layer)("A stage request lost on a dropped connection", (it) =
       const records = yield* readLostRequests([run]);
       expect(records).toHaveLength(1);
       expect(lostRequestLines(records)).toMatch(
-        /^Stage requests lost before any response: 1 \(1 sent again: answered\)\.\n- \d\d:\d\d:\d\d GET \/api\/organizations\/org\/resources \(reused, idle \d+\.\d s; sent again: answered\)$/u,
+        /^Stage requests lost before any response: 1 \(1 sent again: answered\)\.\n- \d\d:\d\d:\d\d GET \/api\/organizations\/org\/resources \(reused, idle \d+\.\d s; sent again: answered with HTTP 200\)$/u,
       );
       expect(lostRequestLines([])).toBe("Stage requests lost before any response: 0.");
     }),
   );
 
+  it.effect("sends a GET again over TLS too, and leaves a written POST over TLS alone", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "lost-connections-tls-" });
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      yield* processes.string(
+        ChildProcess.make(
+          "openssl",
+          [
+            "req",
+            "-x509",
+            "-newkey",
+            "rsa:2048",
+            "-nodes",
+            "-keyout",
+            `${directory}/key.pem`,
+            "-out",
+            `${directory}/cert.pem`,
+            "-days",
+            "1",
+            "-subj",
+            "/CN=127.0.0.1",
+            "-addext",
+            "subjectAltName=IP:127.0.0.1",
+          ],
+          { stderr: "pipe" },
+        ),
+      );
+      const material = {
+        key: yield* fs.readFileString(`${directory}/key.pem`),
+        cert: yield* fs.readFileString(`${directory}/cert.pem`),
+      };
+      // Trust this certificate for the case, the resend's new connections included, then restore.
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          const trusted = getCACertificates("default");
+          setDefaultCACertificates([...trusted, material.cert]);
+          return trusted;
+        }),
+        (trusted) => Effect.sync(() => setDefaultCACertificates(trusted)),
+      );
+      const reads = yield* stage("reset-reused", material);
+      yield* warm(reads.origin);
+      expect((yield* send("GET", `${reads.origin}/api/organizations/org/resources`))._tag).toBe(
+        "Success",
+      );
+      expect(reads.received.get("GET /api/organizations/org/resources")).toBe(2);
+      expect(lostRequestsOf("leaves a written POST over TLS alone")[0]).toMatchObject({
+        outcome: "sent again: answered",
+        sent: { connection: "reused", written: "whole request", responseStarted: false },
+      });
+      const writes = yield* stage("reset-reused", material);
+      yield* warm(writes.origin);
+      const line = failureOf(
+        yield* send("POST", `${writes.origin}/api/onboarding/prepare`, { body: { name: "s" } }),
+      );
+      expect(line).toContain("not sent again: may have been processed");
+      expect(writes.received.get("POST /api/onboarding/prepare")).toBe(1);
+    }),
+  );
+
   it.effect(
-    "sends again only on a reused connection, before any response, for GET, HEAD or an unwritten request",
+    "sends again only a GET or HEAD that changes nothing, lost on a reused connection before any response",
     () =>
       Effect.sync(() => {
         const reused = {
@@ -247,20 +333,59 @@ layer(NodeServices.layer)("A stage request lost on a dropped connection", (it) =
           written: "whole request",
           responseStarted: false,
         } as const;
-        expect(resendable("GET", reused)).toBe(true);
-        expect(resendable("HEAD", reused)).toBe(true);
+        const read = new URL("http://127.0.0.1/api/organizations/org/resources");
+        expect(resendable("GET", read, reused)).toBe(true);
+        expect(resendable("HEAD", read, reused)).toBe(true);
         for (const method of ["POST", "PUT", "PATCH", "DELETE"])
-          expect(resendable(method, reused)).toBe("not sent again: may have been processed");
-        expect(resendable("POST", { ...reused, written: "nothing" })).toBe(true);
-        expect(resendable("GET", { ...reused, connection: "new" })).toBe(
+          expect(resendable(method, read, reused)).toBe("not sent again: may have been processed");
+        expect(resendable("GET", read, { ...reused, connection: "new" })).toBe(
           "not sent again: new connection",
         );
-        expect(resendable("GET", { written: "nothing", responseStarted: false })).toBe(
+        expect(resendable("GET", read, { written: "nothing", responseStarted: false })).toBe(
           "not sent again: new connection",
         );
-        expect(resendable("GET", { ...reused, responseStarted: true })).toBe(
+        expect(resendable("GET", read, { ...reused, responseStarted: true })).toBe(
           "not sent again: response had begun",
         );
+        // The stage GETs the harness sends that change state: a callback consumes its code, an
+        // authorization issues one, an unsubscribe link unsubscribes.
+        for (const url of [
+          "http://127.0.0.1/api/auth/callback/google?code=c&state=s",
+          "http://127.0.0.1/api/oauth/callback?state=s",
+          "http://127.0.0.1/api/auth/oauth2/authorize?client_id=c",
+          "http://127.0.0.1/api/email/unsubscribe?token=t",
+          "http://127.0.0.1/api/email/unsubscribe",
+          "http://127.0.0.1/api/anything?token=t",
+        ])
+          expect(resendable("GET", new URL(url), reused)).toBe(
+            "not sent again: GET may change state",
+          );
+        expect(changesState(read)).toBe(false);
       }),
+  );
+
+  it.effect("a failed scenario names the request that was sent again and its answer", () =>
+    Effect.sync(() => {
+      expect(
+        resendNote([
+          {
+            at: "2026-11-16T17:56:09.000Z",
+            method: "GET",
+            path: "/api/auth/oauth2/get-consents",
+            elapsedMs: 41,
+            sent: {
+              connection: "reused",
+              idleMs: 4100,
+              written: "whole request",
+              responseStarted: false,
+            },
+            outcome: "sent again: answered",
+            againStatus: 409,
+          },
+        ]),
+      ).toBe(
+        "A request of this scenario was sent again after its reused connection was lost before any response (e2e/support/lost-connections.ts): GET /api/auth/oauth2/get-consents at 17:56:09, sent again: answered with HTTP 409. The failure above may come from the second attempt's answer.",
+      );
+    }),
   );
 });

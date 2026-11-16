@@ -87,6 +87,10 @@ const check = Effect.gen(function* () {
             specifier === "node:diagnostics_channel"
           )
             return;
+          // The lost-connection cases stand a stage in over TLS, resetting the TCP connection under
+          // the TLS session as an edge would.
+          if (label === `tests${path.sep}lost-connections.spec.ts` && specifier === "node:tls")
+            return;
           // This external MCP fixture needs a real TLS listener, not a product implementation.
           if (label === `support${path.sep}mcp-auth-patterns.ts` && specifier === "node:https")
             return;

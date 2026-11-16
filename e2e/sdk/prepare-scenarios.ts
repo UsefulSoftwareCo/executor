@@ -22,6 +22,13 @@ import { OriginUnreachable, PreparedScenarios, ProvisioningFailure } from "./con
 import { startScenario } from "./scenario.ts";
 import { awaitCompiler } from "./compiler-readiness.ts";
 import { FixtureFailed, fixtureRequest, type FixtureControl } from "./fixtures.ts";
+import { saveLostRequests } from "../lost-requests.ts";
+import {
+  configureLostConnections,
+  installLostConnections,
+  takeAllLostRequests,
+} from "../support/lost-connections.ts";
+import { targetHosts } from "../support/role-hosts.ts";
 
 class DomainNotReady extends Schema.TaggedError<DomainNotReady>()("DomainNotReady", {
   reason: Schema.Literals(["http", "transport", "timeout"]),
@@ -262,7 +269,7 @@ const waitForDomain = (
 const infrastructureDeadline = "5 minutes";
 
 /** The suite owns provisioned actors until individual cleanup or environment teardown, including failed preparation. */
-export const prepareCloudScenarios = (input: {
+const prepareCloudScenariosUnrecorded = (input: {
   readonly target: typeof Target.Service;
   readonly scenarios: readonly { readonly title: string; readonly appOrigin?: true }[];
   readonly appUiBaseUrl: string;
@@ -431,3 +438,32 @@ export const prepareCloudScenarios = (input: {
       ]),
     );
   });
+
+/**
+ * Prepare the run's Cloud organizations with the stage's requests watched as a scenario's are
+ * (support/lost-connections.ts): the suite process sends them, `POST /api/onboarding/prepare`
+ * among them, outside any Vitest worker. Requests lost before any response are saved in the run's
+ * `report/lost-requests/` as the preparation's, whatever the preparation's outcome.
+ */
+export const prepareCloudScenarios = (
+  input: Parameters<typeof prepareCloudScenariosUnrecorded>[0],
+) =>
+  Effect.suspend(() => {
+    installLostConnections();
+    configureLostConnections({
+      origins: Object.values(targetHosts(input.target)),
+      scenario: () => undefined,
+      file: () => "preparation",
+    });
+    return prepareCloudScenariosUnrecorded(input);
+  }).pipe(
+    Effect.ensuring(
+      Effect.suspend(() =>
+        saveLostRequests(
+          input.target.directory,
+          `preparation-${Date.now()}`,
+          takeAllLostRequests(),
+        ),
+      ).pipe(Effect.ignore),
+    ),
+  );

@@ -2,11 +2,16 @@
 import "./support/connect-timeout.ts";
 import { expect } from "vitest";
 import { configureLostConnections, installLostConnections } from "./support/lost-connections.ts";
-import { installScenarioLifecycle } from "./support/lifecycle.ts";
+import { installLostRequestSaving, installScenarioLifecycle } from "./support/lifecycle.ts";
 
 // Stage requests lost on a reused connection before any response (support/lost-connections.ts).
-// Each scenario's lifecycle names its stage's origins.
-configureLostConnections({ origins: [], scenario: () => expect.getState().currentTestName });
+// Each scenario's lifecycle names its stage's origins; records name their scenario and test file.
+configureLostConnections({
+  origins: [],
+  scenario: () => expect.getState().currentTestName,
+  file: () => expect.getState().testPath?.split("/").at(-1),
+});
 installLostConnections();
+installLostRequestSaving();
 
 installScenarioLifecycle();

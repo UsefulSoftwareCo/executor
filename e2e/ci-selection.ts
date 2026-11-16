@@ -772,6 +772,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "installer.config.ts": () => import("./installer.config.ts"),
   "local-bootstrap.config.ts": () => import("./local-bootstrap.config.ts"),
   "local-disk.config.ts": () => import("./local-disk.config.ts"),
+  "lost-connections-lifecycle.config.ts": () => import("./lost-connections-lifecycle.config.ts"),
   "lost-connections.config.ts": () => import("./lost-connections.config.ts"),
   "lockfile-sync.config.ts": () => import("./lockfile-sync.config.ts"),
   "npm-launcher.config.ts": () => import("./npm-launcher.config.ts"),

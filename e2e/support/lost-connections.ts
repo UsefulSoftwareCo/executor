@@ -21,17 +21,20 @@
  * an event is matched to the call that made it. A stage request that fails in transport carries
  * what was seen (`sentFacts`) to its failure text (`support/request-failure.ts`).
  *
- * The rule for sending again (`resendable`): once, on a new connection, only when the connection
- * was reused, no byte of a response arrived, and either the method is GET or HEAD, or nothing of
- * the request was written. A request whose bytes may have reached the far end, such as a POST or
- * a DELETE, is never sent again: it may have been processed. PUT and DELETE are not included
- * because no review shows that every scenario fails visibly when one arrives twice.
+ * The rule for sending again (`resendable`): once, on a new connection, only a GET or HEAD whose
+ * reused connection was lost before any byte of a response arrived, and not one of the few GETs
+ * that change state (`changesState`: sign-in and connection callbacks, OAuth authorization, an
+ * unsubscribe link, or any GET carrying a `code`, `state` or `token`). Every other method is
+ * never sent again, whatever was written: it may have been processed.
  *
- * Every stage request lost before any response is kept, sent again or not. The scenario lifecycle
- * writes a scenario's to the run's `report/lost-requests/` (`e2e/lost-requests.ts`) and its
- * evidence to `lost-requests.json`, so a burst is a count in the job summary
- * (`e2e/lost-request-summary.ts`) with the times it happened. A request that is sent again and
- * fails again fails the scenario with both attempts described.
+ * Every stage request lost before any response is kept, sent again or not, with its test file and
+ * scenario. The scenario lifecycle saves a scenario's in the run's `report/lost-requests/`
+ * (`e2e/lost-requests.ts`) and its evidence gets `lost-requests.json`; the setup file saves those
+ * made outside any scenario (`beforeAll`, `afterAll`, a `layer`'s set-up and teardown) under the
+ * file, and the suite's preparation saves its own. The job summary
+ * (`e2e/lost-request-summary.ts`) counts them all, with the times. A request sent again and lost
+ * again fails with both attempts described; a scenario that fails after one of its requests was
+ * sent again says so in its failure.
  *
  * The test client only: the product's own clients are other processes and are unchanged.
  */
@@ -59,12 +62,15 @@ export type LostOutcome =
   | "not sent again: new connection"
   | "not sent again: response had begun"
   | "not sent again: may have been processed"
-  | "not sent again: body cannot be sent twice";
+  | "not sent again: GET may change state";
 
 /** One stage request lost before any response, as the record and the evidence keep it. */
 export interface LostRequest {
   readonly at: string;
+  /** The scenario's title as Vitest names it; absent outside any scenario. */
   readonly scenario?: string;
+  /** The test file, when a test file was running. */
+  readonly file?: string;
   readonly method: string;
   /** The path only: a query can hold identifiers. */
   readonly path: string;
@@ -74,6 +80,8 @@ export interface LostRequest {
   readonly outcome: LostOutcome;
   /** The second attempt's code when it failed. */
   readonly againCode?: string;
+  /** The status the second attempt was answered with. */
+  readonly againStatus?: number;
 }
 
 interface SocketState {
@@ -96,6 +104,7 @@ const observed = new Map<string, Observed>();
 const stageOrigins = new Set<string>();
 const kept: Array<LostRequest> = [];
 let currentScenario: () => string | undefined = () => undefined;
+let currentFile: () => string | undefined = () => undefined;
 let installed = false;
 
 /** The id header of an undici request, whose headers are a flat name, value array or a string. */
@@ -169,18 +178,29 @@ export const sentFacts = (error: unknown): (SentFacts & { again?: LostRequest })
     : undefined;
 
 /**
- * Whether a lost request may be sent again, and if not, why. Only a reused connection, and only
- * before any byte of a response; then a request that was written may have been processed, so only
- * a method whose repetition changes nothing is sent again.
+ * The GETs that change state, which a resend could repeat: a sign-in or connection callback, an
+ * OAuth authorization (it issues a code), an unsubscribe link, and any GET that carries a one-time
+ * `code`, `state` or `token`. These are the stage GETs the harness sends from Node that do.
+ */
+export const changesState = (url: URL) =>
+  /\/callback(?:\/|$)|\/oauth2\/authorize$|\/email\/unsubscribe$/u.test(url.pathname) ||
+  ["code", "state", "token"].some((name) => url.searchParams.has(name));
+
+/**
+ * Whether a lost request may be sent again, and if not, why: only a GET or HEAD that does not
+ * change state, lost on a reused connection before any byte of a response. undici marks a
+ * connection reused in the same event that writes the request's headers, so a request on a reused
+ * connection has always been written, and any other method may have been processed.
  */
 export const resendable = (
   method: string,
+  url: URL,
   facts: SentFacts,
 ): true | Exclude<LostOutcome, `sent again: ${string}`> => {
   if (facts.responseStarted) return "not sent again: response had begun";
   if (facts.connection !== "reused") return "not sent again: new connection";
-  if (facts.written === "nothing") return true;
-  return method === "GET" || method === "HEAD" ? true : "not sent again: may have been processed";
+  if (method !== "GET" && method !== "HEAD") return "not sent again: may have been processed";
+  return changesState(url) ? "not sent again: GET may change state" : true;
 };
 
 const firstCode = (error: unknown): string | undefined => {
@@ -198,16 +218,6 @@ const lostInTransport = (error: unknown) =>
   error instanceof TypeError &&
   !(error.cause instanceof DOMException) &&
   firstCode(error) !== undefined;
-
-/** A body `fetch` can be given twice. A stream, a form or a `Request`'s own body cannot. */
-const replayable = (input: RequestInfo | URL, body: unknown) =>
-  !(input instanceof Request && input.body !== null) &&
-  (body === undefined ||
-    body === null ||
-    typeof body === "string" ||
-    body instanceof Uint8Array ||
-    body instanceof ArrayBuffer ||
-    body instanceof URLSearchParams);
 
 /** A dispatcher of the same kind as Node's own, with no connections yet: the second attempt's. */
 const freshDispatcher = (): { close: () => Promise<void> } | undefined => {
@@ -262,21 +272,19 @@ export const lostConnectionFetch = (original: typeof fetch): typeof fetch =>
       if ("response" in first) return first.response;
       if (!lostInTransport(first.error)) throw first.error;
       const scenario = currentScenario();
+      const file = currentFile();
       const code = firstCode(first.error);
       const base: Omit<LostRequest, "outcome" | "againCode"> = {
         at: new Date().toISOString(),
         ...(scenario !== undefined && { scenario }),
+        ...(file !== undefined && { file }),
         method,
         path: url.pathname,
         ...(code !== undefined && { code }),
         elapsedMs: first.elapsedMs,
         sent: first.facts,
       };
-      const rule = resendable(method, first.facts);
-      const decision =
-        rule === true && !replayable(input, init?.body)
-          ? ("not sent again: body cannot be sent twice" as const)
-          : rule;
+      const decision = resendable(method, url, first.facts);
       const fail = (lost: LostRequest) => {
         kept.push(lost);
         // The failure the caller sees is the first one, carrying what happened after it.
@@ -290,7 +298,11 @@ export const lostConnectionFetch = (original: typeof fetch): typeof fetch =>
       return attempt(dispatcher).then((second) => {
         void dispatcher?.close().catch(() => undefined);
         if ("response" in second) {
-          kept.push({ ...base, outcome: "sent again: answered" });
+          kept.push({
+            ...base,
+            outcome: "sent again: answered",
+            againStatus: second.response.status,
+          });
           return second.response;
         }
         const againCode = firstCode(second.error);
@@ -303,14 +315,25 @@ export const lostConnectionFetch = (original: typeof fetch): typeof fetch =>
     });
   }) as typeof fetch;
 
-/** The stage origins this process sends to, and how a record names its scenario. */
+/**
+ * Start a scenario's stage origins afresh with the run's own, and say how a record names its
+ * scenario and test file. Each target a scenario then starts adds its origins (`addStageOrigins`)
+ * as soon as it exists, before any request is sent to it.
+ */
 export const configureLostConnections = (options: {
   readonly origins: Iterable<string>;
   readonly scenario?: () => string | undefined;
+  readonly file?: () => string | undefined;
 }) => {
   stageOrigins.clear();
-  for (const origin of options.origins) stageOrigins.add(new URL(origin).origin);
+  addStageOrigins(options.origins);
   if (options.scenario !== undefined) currentScenario = options.scenario;
+  if (options.file !== undefined) currentFile = options.file;
+};
+
+/** Add origins a scenario's own target serves. */
+export const addStageOrigins = (origins: Iterable<string>) => {
+  for (const origin of origins) stageOrigins.add(new URL(origin).origin);
 };
 
 /** Watch the channels and wrap `globalThis.fetch`, once per process. */
@@ -321,9 +344,23 @@ export const installLostConnections = () => {
   globalThis.fetch = lostConnectionFetch(globalThis.fetch);
 };
 
-/** The lost requests this process kept for one scenario, by its title. */
+/** The lost requests this process kept for one scenario, by its title, still unsaved. */
 export const lostRequestsOf = (scenario: string) =>
   kept.filter((lost) => lost.scenario !== undefined && lost.scenario.endsWith(scenario));
 
-/** Every lost request this process kept, oldest first. */
-export const lostRequests = (): ReadonlyArray<LostRequest> => [...kept];
+/**
+ * Remove and return the records a saver writes: one scenario's by its title, or, with no title,
+ * those made outside any scenario. Each record is saved once.
+ */
+export const takeLostRequests = (scenario?: string) => {
+  const taken = kept.filter((lost) =>
+    scenario === undefined
+      ? lost.scenario === undefined
+      : lost.scenario !== undefined && lost.scenario.endsWith(scenario),
+  );
+  for (const lost of taken) kept.splice(kept.indexOf(lost), 1);
+  return taken;
+};
+
+/** Remove and return every record still unsaved, for the saver at the end of a test file. */
+export const takeAllLostRequests = () => kept.splice(0, kept.length);

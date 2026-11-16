@@ -6,7 +6,7 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Config, Console, Effect, FileSystem, Option } from "effect";
-import { lostRequestLines, readLostRequests } from "./lost-requests.ts";
+import { lostRequestLines, lostRequestsUncounted, readLostRequests } from "./lost-requests.ts";
 
 NodeRuntime.runMain(
   Effect.gen(function* () {
@@ -18,7 +18,16 @@ NodeRuntime.runMain(
     // A summary never turns a job red: a record it cannot read is reported, not failed on.
     const read = yield* readLostRequests(directories).pipe(Effect.option);
     if (Option.isNone(read)) {
-      yield* Console.log("The stage requests lost before any response could not be counted.");
+      const report = `## Lost stage requests\n\n${lostRequestsUncounted}\n`;
+      yield* Console.log(report);
+      yield* Console.log(
+        `::warning title=Lost stage requests not counted::${lostRequestsUncounted}`,
+      );
+      const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
+      if (Option.isSome(summary)) {
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.writeFileString(summary.value, `${report}\n`, { flag: "a" });
+      }
       return;
     }
     const records = read.value;
