@@ -640,11 +640,22 @@ describe("OneNote page writes through the OpenAPI plugin", () => {
           "onenoteSection-id": "section-1",
           body: PAGE_HTML,
         });
-        // Create with multipart: the Presentation part is text/html.
+        // Create with multipart: the Presentation part is text/html, and an
+        // extra part carries a file that the HTML references by part name.
         yield* executor.execute(createTool, {
           "onenoteSection-id": "section-1",
           contentType: "multipart/form-data",
-          body: { Presentation: PAGE_HTML },
+          body: {
+            Presentation: PAGE_HTML,
+            image1: {
+              _tag: "ToolFile",
+              name: "image1.png",
+              mimeType: "image/png",
+              encoding: "base64",
+              data: Buffer.from("png-bytes").toString("base64"),
+              byteLength: 9,
+            },
+          },
         });
         // Update with a bare JSON array of patch commands; Graph answers 204.
         const commands = [{ target: "body", action: "append", content: "<p>More</p>" }];
@@ -664,6 +675,9 @@ describe("OneNote page writes through the OpenAPI plugin", () => {
         expect(multipartCreate!.contentType).toMatch(/^multipart\/form-data; boundary=/);
         expect(multipartCreate!.body).toMatch(
           /name="Presentation"[\s\S]*Content-Type: text\/html[\s\S]*<title>Test page<\/title>/i,
+        );
+        expect(multipartCreate!.body).toMatch(
+          /name="image1"; filename="image1.png"[\s\S]*Content-Type: image\/png[\s\S]*png-bytes/i,
         );
 
         expect(patch!.method).toBe("PATCH");

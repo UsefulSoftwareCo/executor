@@ -656,7 +656,8 @@ const oneNoteCreatePageRequestBody = (): Record<string, unknown> => ({
   description:
     "Send the page HTML as a raw text/html body (default). Use multipart/form-data to " +
     "include images or files: the required Presentation part holds the page HTML, and " +
-    "each other part holds binary data that the HTML references as name:<part-name>.",
+    "each other part is a file (pass a ToolFile value under the part name) that the HTML " +
+    "references as name:<part-name>.",
   required: true,
   content: {
     "text/html": {
