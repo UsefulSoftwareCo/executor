@@ -18,6 +18,8 @@ import {
   takeLostRequests,
 } from "./lost-connections.ts";
 import { targetHosts } from "./role-hosts.ts";
+import { machineWorkMs, referenceMachineWorkMs, timeoutLine } from "./machine-speed.ts";
+import { hookTimeoutMs } from "../timeouts.ts";
 
 /** An extra Testing SDK scenario acquired by setup. The test may close its scope early. */
 export interface SdkScenarioFixture {
@@ -58,9 +60,31 @@ export const installScenarioLifecycle = () =>
     let completedAt: number | undefined;
     let provisioningMs: number | null = null;
     let save = (_finishedAt: number): Effect.Effect<void> => Effect.void;
+    // The time-out that applied, and, when the scenario or one of its hooks timed out, how fast
+    // the machine was then (machine-speed.ts). The line is also put on the time-out's own error.
+    let timing: Record<string, unknown> = {};
     let discard: Effect.Effect<void> = Effect.void;
     // A passing scenario's server data is never read again; failures keep theirs for diagnosis.
     context.onTestFinished(({ task }) => {
+      timing = { timeoutMs: task.timeout, hookTimeoutMs };
+      const timedOut = (task.result?.errors ?? []).flatMap((error) => {
+        const bound = /^(Test|Hook) timed out in (\d+)ms/.exec(error.message ?? "");
+        return bound ? [{ error, kind: bound[1], boundMs: Number(bound[2]) }] : [];
+      });
+      if (timedOut.length > 0) {
+        const machineMs = machineWorkMs();
+        const lines = timedOut.map(({ error, kind, boundMs }) => {
+          const line = `${kind} ${timeoutLine(boundMs, boundMs, machineMs)}`;
+          // The first line of the failure, which the job log and ci-failures print, names the
+          // machine's speed; Vitest's own message follows it.
+          const original = error.message;
+          error.message = `${line}\n${original}`;
+          if (error.stack) error.stack = error.stack.replace(original, error.message);
+          return line;
+        });
+        timing = { ...timing, timedOut: lines, machineMs, referenceMachineWorkMs };
+        console.error(lines.join("\n"));
+      }
       return Effect.runPromise(
         Scope.close(scope, outcome).pipe(
           Effect.ensuring(Clock.currentTimeMillis.pipe(Effect.flatMap(save))),
@@ -107,6 +131,7 @@ export const installScenarioLifecycle = () =>
                               : completedAt - readyAt,
                           cleanupMs: completedAt === undefined ? null : finishedAt - completedAt,
                           totalMs: finishedAt - startedAt,
+                          ...timing,
                         },
                         null,
                         2,

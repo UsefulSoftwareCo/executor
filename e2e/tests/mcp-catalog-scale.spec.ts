@@ -3,7 +3,7 @@ import { expect, layer } from "@effect/vitest";
 import { Clock, Console, Effect, Fiber, Schedule, Schema } from "effect";
 import { createServer, type Socket } from "node:net";
 import { createServer as createHttpServer } from "node:http";
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { agedRowsRenewSeconds, scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
@@ -17,6 +17,7 @@ import {
   type TraceUnsettled,
 } from "../support/evidence.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { machineWork, referenceMachineWorkMs } from "../support/machine-speed.ts";
 import { McpClient } from "../support/mcp-client.ts";
 import { expireEvaluated, writeRows } from "../support/cloud-rows.ts";
 import {
@@ -136,7 +137,8 @@ const oneAppStatements = 24;
  * program at least half of the 30 s execution budget: 15 s on the reference machine below. A
  * runner's speed is not fixed: CI's 8 vCPU runners did the same work up to three times slower on
  * weekday afternoons than at night (4.5 s to 15.1 s for this search, 14-16 Nov), so the scenario
- * times a fixed piece of machine work (`machineWork`) just before and after the search and allows
+ * times a fixed piece of machine work (`machineWork`, support/machine-speed.ts) just before and
+ * after the search and allows
  * 15 s scaled by how much slower than the reference the slower of the two was. On a machine faster
  * than the reference it is still 15 s of real time. A failure after that scaling is a regression to
  * investigate, not a reason to raise the budget or the reference.
@@ -144,38 +146,6 @@ const oneAppStatements = 24;
  * The search beside stalled apps has the same budget once discovery has given up (`searchBoundMs`).
  */
 const catalogSearchBoundMs = 15_000;
-/**
- * `machineWork` on the reference machine: CI's `blacksmith-8vcpu` scale lane in its normal hours
- * (weekends, and weekdays 00-12Z), where this search took a median 5.0 s (38 runs, 9-16 Nov).
- * Derived from a host whose search took 18.0-19.9 times its `machineWork`: 5,000 ms / 18.9.
- * Re-derive it from CI itself: the median `machine` of the "Search the whole catalog, calibrated"
- * line in the scale lane's job logs, over normal-hours runs.
- */
-const referenceMachineWorkMs = 265;
-/**
- * A fixed piece of CPU work with no product code in it: an integer loop and SHA-256 over a fixed
- * 1 MiB buffer, three times, in milliseconds. It runs in the test process; the server's processes
- * slow with it (in CI's slow hours the scale lane's `bun` and workerd CPU seconds stretched 2.3x
- * and 2.7x for the same work, the test process 2.0x, so this errs strict).
- */
-const machineBuffer = Buffer.alloc(1 << 20, 7);
-const machineWork = Effect.sync(() => {
-  const started = performance.now();
-  let digest = "";
-  for (let pass = 0; pass < 3; pass++) {
-    let x = 0x9e3779b9;
-    for (let i = 0; i < 60_000_000; i++) {
-      x ^= x << 13;
-      x ^= x >>> 17;
-      x ^= x << 5;
-    }
-    digest += String(x);
-    for (let i = 0; i < 72; i++)
-      digest = createHash("sha256").update(machineBuffer).update(digest).digest("hex");
-  }
-  if (digest.length !== 64) throw new Error("machine work produced no digest");
-  return Math.round(performance.now() - started);
-});
 /**
  * A second check, on the shape of the search: the first catalog-wide search evaluates the 28 apps
  * the call before it did not, and ranks 7,000 tools, about 20 times the cold call into one app

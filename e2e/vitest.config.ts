@@ -2,6 +2,7 @@ import { defineConfig } from "vitest/config";
 import { Schema } from "effect";
 import { Target } from "./report-model.ts";
 import { filesForTarget, patternForTarget } from "./test-plan.ts";
+import { hookTimeoutMs, scenarioTimeoutMs } from "./timeouts.ts";
 
 // Vitest's process boundary receives an explicit target and output directory from run.ts.
 const directory = process.env.EXECUTOR_E2E_RUN;
@@ -23,8 +24,9 @@ export default defineConfig({
     maxWorkers: Schema.decodeUnknownSync(
       Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 32 })),
     )(Number(process.env.E2E_WORKERS)),
-    testTimeout: process.env.E2E_INTERACTIVE === "1" ? 0 : 60000,
-    hookTimeout: 60000,
+    // A hang detector sized for slow runners, not a performance bound (timeouts.ts).
+    testTimeout: process.env.E2E_INTERACTIVE === "1" ? 0 : scenarioTimeoutMs,
+    hookTimeout: hookTimeoutMs,
     teardownTimeout: 30000,
     retry: 0,
     reporters: [
