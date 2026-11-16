@@ -629,6 +629,180 @@ const normalizeMicrosoftGraphContentPathItem = (
   return changed ? next : pathItem;
 };
 
+// OneNote page writes. Graph's generated OpenAPI document models these from
+// the OData entity model, which does not match the documented REST contract:
+// - `POST .../pages` declares a JSON `onenotePage` body, but Graph accepts only
+//   raw `text/html` or `multipart/form-data` with a `Presentation` part
+//   (https://learn.microsoft.com/graph/api/section-post-pages) and rejects JSON
+//   with HTTP 415.
+// - `.../pages/{id}/content` lacks the documented `PATCH` update (a JSON array
+//   of patch commands, `204 No Content`;
+//   https://learn.microsoft.com/graph/api/page-update). It declares an
+//   octet-stream `PUT` instead, which the update docs do not describe.
+// The patterns cover `/me`, `/users/{id}`, `/groups/{id}`, and `/sites/{id}`,
+// plus every nested section form Graph generates.
+const GRAPH_ID_SEGMENT = String.raw`\{[^/}]+\}`;
+const ONENOTE_ROOT = String.raw`^(?:/(?:v1\.0|beta))?/(?:me|(?:users|groups|sites)/${GRAPH_ID_SEGMENT})/onenote/`;
+const ONENOTE_SECTION = String.raw`(?:(?:notebooks/${GRAPH_ID_SEGMENT}/)?(?:sectionGroups/${GRAPH_ID_SEGMENT}/)?sections/${GRAPH_ID_SEGMENT}/)?`;
+const ONENOTE_PAGES_PATH = new RegExp(`${ONENOTE_ROOT}${ONENOTE_SECTION}pages$`);
+const ONENOTE_PAGE_CONTENT_PATH = new RegExp(
+  `${ONENOTE_ROOT}${ONENOTE_SECTION}pages/${GRAPH_ID_SEGMENT}/content$`,
+);
+
+const ONENOTE_HTML_DESCRIPTION =
+  "Page content as a well-formed XHTML document. The title element sets the page title.";
+
+const oneNoteCreatePageRequestBody = (): Record<string, unknown> => ({
+  description:
+    "Send the page HTML as a raw text/html body (default). Use multipart/form-data to " +
+    "include images or files: the required Presentation part holds the page HTML, and " +
+    "each other part holds binary data that the HTML references as name:<part-name>.",
+  required: true,
+  content: {
+    "text/html": {
+      schema: { type: "string", description: ONENOTE_HTML_DESCRIPTION },
+    },
+    "multipart/form-data": {
+      schema: {
+        type: "object",
+        required: ["Presentation"],
+        properties: {
+          Presentation: { type: "string", description: ONENOTE_HTML_DESCRIPTION },
+        },
+        additionalProperties: { type: "string", format: "binary" },
+      },
+      encoding: { Presentation: { contentType: "text/html" } },
+    },
+  },
+});
+
+const oneNotePatchPageContentOperation = (
+  template: Record<string, unknown>,
+  writeTemplate: Record<string, unknown> | undefined,
+): Record<string, unknown> => {
+  // Permissions come from the generated write operation (the PUT), never from
+  // the read operation the operationId is derived from.
+  const writePermissions = writeTemplate
+    ? Object.fromEntries(
+        ["security", "x-ms-permissions"].flatMap((key) =>
+          writeTemplate[key] !== undefined ? [[key, writeTemplate[key]]] : [],
+        ),
+      )
+    : {};
+  // `me.onenote.GetPagesContent` -> `me.onenote.PatchPagesContent`: unique per
+  // path, and distinct from the generated PUT's `...UpdatePagesContent`.
+  const templateOperationId =
+    typeof template.operationId === "string" ? template.operationId : undefined;
+  const derivedOperationId = templateOperationId?.replace(
+    /\.(?:Get|Update)PagesContent$/,
+    ".PatchPagesContent",
+  );
+  // Never reuse the template's id: an unrecognized shape gets no operationId
+  // and the extractor names the tool from method and path instead.
+  const operationId = derivedOperationId !== templateOperationId ? derivedOperationId : undefined;
+  return {
+    ...(Array.isArray(template.tags) ? { tags: template.tags } : {}),
+    summary: "Update page",
+    description:
+      "Update the content of a OneNote page with an array of patch commands. Each command " +
+      "targets an element (#<data-id>, a generated id, body, or title) and appends, inserts, " +
+      "prepends, or replaces HTML content.",
+    externalDocs: {
+      description: "Find more info here",
+      url: "https://learn.microsoft.com/graph/api/page-update?view=graph-rest-1.0",
+    },
+    ...(operationId ? { operationId } : {}),
+    ...writePermissions,
+    requestBody: {
+      description: "Patch commands to apply to the page, in order.",
+      required: true,
+      content: {
+        "application/json": {
+          schema: {
+            type: "array",
+            items: {
+              type: "object",
+              required: ["target", "action"],
+              properties: {
+                target: {
+                  type: "string",
+                  description:
+                    "The element to update: #<data-id>, the generated id of the element, or the body or title keyword.",
+                },
+                // Inline lowercase enums: the documented wire values. The
+                // generated component enums are PascalCase.
+                action: {
+                  type: "string",
+                  enum: ["append", "insert", "prepend", "replace", "delete"],
+                  description: "The action to perform on the target element.",
+                },
+                position: {
+                  type: "string",
+                  enum: ["after", "before"],
+                  description:
+                    "Where to add the content relative to the target element. Default: after.",
+                },
+                content: {
+                  type: "string",
+                  description: "Well-formed HTML to add to the page.",
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    responses: {
+      "204": { description: "No Content" },
+      "4XX": { $ref: "#/components/responses/error" },
+      "5XX": { $ref: "#/components/responses/error" },
+    },
+    "x-ms-docs-operation-type": "operation",
+  };
+};
+
+const normalizeMicrosoftGraphOneNotePathItem = (
+  path: string,
+  pathItem: Record<string, unknown>,
+): Record<string, unknown> => {
+  if (ONENOTE_PAGES_PATH.test(path)) {
+    const post = pathItem.post;
+    if (!isRecord(post)) return pathItem;
+    return { ...pathItem, post: { ...post, requestBody: oneNoteCreatePageRequestBody() } };
+  }
+
+  if (ONENOTE_PAGE_CONTENT_PATH.test(path)) {
+    const next: Record<string, unknown> = { ...pathItem };
+    const template = isRecord(pathItem.get)
+      ? pathItem.get
+      : isRecord(pathItem.put)
+        ? pathItem.put
+        : undefined;
+    if (!isRecord(pathItem.patch) && template) {
+      next.patch = oneNotePatchPageContentOperation(
+        template,
+        isRecord(pathItem.put) ? pathItem.put : undefined,
+      );
+    }
+    // Keep the generated octet-stream PUT for existing callers, but mark it
+    // deprecated and drop its link to the PATCH-only update docs so tool
+    // selection prefers the documented update.
+    if (isRecord(pathItem.put)) {
+      const { externalDocs: _externalDocs, ...put } = pathItem.put;
+      next.put = {
+        ...put,
+        summary: "Replace page content (undocumented)",
+        description:
+          "Generated media upload that the OneNote update docs do not describe. Use the PATCH operation on this path to update a page.",
+        deprecated: true,
+      };
+    }
+    return next;
+  }
+
+  return pathItem;
+};
+
 export const fetchMicrosoftGraphOpenApiSpec = Effect.fn("Microsoft.fetchGraphOpenApiSpec")(
   function* (specUrl: string) {
     const client = yield* HttpClient.HttpClient;
@@ -726,7 +900,9 @@ export const microsoftGraphKeepPathItem = (selection: {
           tagPrefixes: selection.tagPrefixes,
           selectedScopes,
         });
-    return kept ? normalizeMicrosoftGraphContentPathItem(kept) : null;
+    return kept
+      ? normalizeMicrosoftGraphOneNotePathItem(path, normalizeMicrosoftGraphContentPathItem(kept))
+      : null;
   };
 };
 
