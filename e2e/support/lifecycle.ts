@@ -14,10 +14,8 @@ import { scenarios, type TestPlan } from "../test-plan.ts";
 import { saveLostRequests } from "../lost-requests.ts";
 import {
   configureLostConnections,
-  lostRequestsOf,
   takeAllLostRequests,
   takeLostRequests,
-  type LostRequest,
 } from "./lost-connections.ts";
 import { targetHosts } from "./role-hosts.ts";
 
@@ -48,19 +46,6 @@ export const scenarioLifetime = (context: TestContext) => {
   return context.executorScenario;
 };
 
-/**
- * The line a failed scenario gains when one of its requests was sent again after a lost reused
- * connection (lost-connections.ts): what the scenario then saw may be the second attempt's answer,
- * such as a one-time code already used, and its own failure would not say so.
- */
-export const resendNote = (resent: ReadonlyArray<LostRequest>) =>
-  `${resent.length === 1 ? "A request of this scenario was" : `${resent.length} requests of this scenario were`} sent again after its reused connection was lost before any response (e2e/support/lost-connections.ts): ${resent
-    .map(
-      (lost) =>
-        `${lost.method} ${lost.path} at ${lost.at.slice(11, 19)}, ${lost.outcome}${lost.againStatus === undefined ? "" : ` with HTTP ${lost.againStatus}`}${lost.againCode === undefined ? "" : ` (${lost.againCode})`}`,
-    )
-    .join("; ")}. The failure above may come from the second attempt's answer.`;
-
 // Vitest's beforeEach and onTestFinished hooks are Promise APIs; this acquires each scenario's runtime.
 /* oxlint-disable executor/no-manual-effect-runtime-in-tests */
 /** Register bounded native hooks without replacing Effect Vitest's test execution. */
@@ -76,15 +61,6 @@ export const installScenarioLifecycle = () =>
     let discard: Effect.Effect<void> = Effect.void;
     // A passing scenario's server data is never read again; failures keep theirs for diagnosis.
     context.onTestFinished(({ task }) => {
-      // A failure says when one of the scenario's requests was sent again.
-      const resent = lostRequestsOf(task.name).filter((lost) =>
-        lost.outcome.startsWith("sent again"),
-      );
-      if (task.result?.state === "fail" && resent.length > 0)
-        (task.result.errors ??= []).push({
-          name: "LostRequestResent",
-          message: resendNote(resent),
-        });
       return Effect.runPromise(
         Scope.close(scope, outcome).pipe(
           Effect.ensuring(Clock.currentTimeMillis.pipe(Effect.flatMap(save))),
@@ -103,8 +79,8 @@ export const installScenarioLifecycle = () =>
           const paths = yield* Path.Path;
           const directory = `${base.directory}/report/lifecycle`;
           yield* fs.makeDirectory(directory, { recursive: true });
-          // The stage this scenario sends to: its requests lost before any response are told apart
-          // and, where safe, sent again (lost-connections.ts). A target the scenario starts adds
+          // The stage this scenario sends to: its requests lost in transport are told apart
+          // and recorded, each on a connection of its own (lost-connections.ts). A target the scenario starts adds
           // its own origins as soon as it exists (sdk/scenario.ts).
           configureLostConnections({ origins: Object.values(targetHosts(base)) });
           save = (finishedAt) =>

@@ -564,7 +564,7 @@ export const scenarioEvidence = (
           const outcome = final ? report(cause) : Effect.void;
           const rows = yield* Ref.get(requests);
           yield* json("requests.json", rows);
-          // Stage requests lost before any response, sent again or not (lost-connections.ts).
+          // Stage requests lost in transport, none sent again (lost-connections.ts).
           const lost = lostRequestsOf(identity.name);
           if (lost.length > 0) yield* json("lost-requests.json", lost);
           yield* json("steps.json", steps);

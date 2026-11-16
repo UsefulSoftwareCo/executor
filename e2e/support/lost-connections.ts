@@ -1,40 +1,43 @@
 /**
- * Stage requests lost before any response, told apart and, where it is provably safe, sent again.
+ * Requests to a stage go on connections of their own, and any lost before a response is recorded.
  *
- * Deployed runs on 16 November failed in bursts: a request reset 13-68 ms after it was sent, with
- * no response and no span on any Worker, while the stage kept answering every other request. That
- * is what a client sees when the far end has dropped a connection the client kept open and the
- * client then writes a request down it. A browser sends such a request again on a new connection;
- * Node's `fetch` fails it. Node's `fetch` does not say whether the connection was reused, so this
- * module watches the diagnostics channels Node's bundled HTTP client (undici 7.30.1 on Node
- * 24.22.1) publishes:
+ * Deployed runs on 16 November lost stage requests in bursts: reset before any response, never
+ * reaching a Worker, while the stage kept answering. The recording that followed (#4688, #4695)
+ * showed run #1082 lose 16, every one on a reused connection, 12 of them written 1-5 ms after that
+ * connection's previous response, across 14 scenarios in three minutes: the far end closed
+ * connections right after a response without saying so, and the next request crossed the close.
+ * Its GETs were sent again and answered; its POSTs and DELETEs could not be, since they may have
+ * been processed.
  *
- * - `undici:client:connected` names each new connection,
- * - `undici:client:sendHeaders` carries the socket a request is written to, just before its
- *   headers are written, so a socket seen before is a reused connection,
- * - `undici:request:bodySent` says the whole request was written,
- * - the socket's own `data` event, watched from `sendHeaders` on, says any byte of a response
- *   arrived, even one too short to be a status line,
- * - `undici:request:trailers` says a response completed, which starts the connection's idle time.
+ * So no request to a stage reuses a connection: each goes on its own, through a pool of Node's own
+ * kind with keep-alive off (undici `pipelining: 0`), and the connection closes after its response,
+ * streamed or not. A request then has nothing to cross, whatever its method, and nothing is ever
+ * sent twice. HTTP/2 was not the alternative: undici 7.30.1, Node 24.22.1's bundled client, fails
+ * the streams in flight on a `GOAWAY` without reading which ones the far end did not process.
+ * Measured for #1082's 11,612 harness requests at 34-39 ms more per new TLS connection, this adds
+ * about 25 s to a deployed run's 15.5-minute test phase over 16 workers; on the local lanes the
+ * stage is a loopback server and the cost is a local connect.
  *
- * Each request to a stage carries an `x-executor-e2e-request` header with a fresh id, which is how
- * an event is matched to the call that made it. A stage request that fails in transport carries
- * what was seen (`sentFacts`) to its failure text (`support/request-failure.ts`).
+ * Requests to anything else (hosted emulators, registries, the browser's own) are unchanged.
  *
- * The rule for sending again (`resendable`): once, on a new connection, only a GET or HEAD whose
- * reused connection was lost before any byte of a response arrived, and not one of the few GETs
- * that change state (`changesState`: sign-in and connection callbacks, OAuth authorization, an
- * unsubscribe link, or any GET carrying a `code`, `state` or `token`). Every other method is
- * never sent again, whatever was written: it may have been processed.
+ * The recording stays: it is how a loss of another kind would show. It watches the diagnostics
+ * channels undici publishes (`undici:client:connected` for a new connection,
+ * `undici:client:sendHeaders` with the socket a request is written to, `undici:request:bodySent`,
+ * `undici:request:trailers`) and the socket's own `data` event for a response's first byte, matched
+ * to each stage request by an `x-executor-e2e-request` id header. A stage request that fails in
+ * transport says whether its connection was new or reused, how many requests the connection had
+ * carried and how old it was, how much of the request was written, and whether any byte of a
+ * response arrived (`support/request-failure.ts`). With connections never reused, a loss records
+ * "new connection": a different fault from the one above, such as a connection the far end refused
+ * or reset.
  *
- * Every stage request lost before any response is kept, sent again or not, with its test file and
- * scenario. The scenario lifecycle saves a scenario's in the run's `report/lost-requests/`
+ * Every stage request lost in transport (before any response, or after one began) is kept with its
+ * test file and scenario. The
+ * scenario lifecycle saves a scenario's in the run's `report/lost-requests/`
  * (`e2e/lost-requests.ts`) and its evidence gets `lost-requests.json`; the setup file saves those
  * made outside any scenario (`beforeAll`, `afterAll`, a `layer`'s set-up and teardown) under the
- * file, and the suite's preparation saves its own. The job summary
- * (`e2e/lost-request-summary.ts`) counts them all, with the times. A request sent again and lost
- * again fails with both attempts described; a scenario that fails after one of its requests was
- * sent again says so in its failure.
+ * file, and the suite's preparation saves its own. The job summary (`e2e/lost-request-summary.ts`)
+ * counts them all, with the times.
  *
  * The test client only: the product's own clients are other processes and are unchanged.
  */
@@ -47,6 +50,10 @@ export const requestIdHeader = "x-executor-e2e-request";
 export interface SentFacts {
   /** A new connection, or one an earlier request had used. Absent: the request was never written. */
   readonly connection?: "new" | "reused";
+  /** How many requests the connection had carried before this one. */
+  readonly earlierRequests?: number;
+  /** How long ago the connection was opened. */
+  readonly connectionAgeMs?: number;
   /** How long the reused connection had been idle since its last response completed. */
   readonly idleMs?: number;
   /** How much of the request was written: nothing, the headers, or the whole request. */
@@ -55,16 +62,14 @@ export interface SentFacts {
   readonly responseStarted: boolean;
 }
 
-/** Why a lost request was or was not sent again. */
+/** Where a lost request was lost. Nothing is sent again. */
 export type LostOutcome =
-  | "sent again: answered"
-  | "sent again: failed"
-  | "not sent again: new connection"
-  | "not sent again: response had begun"
-  | "not sent again: may have been processed"
-  | "not sent again: GET may change state";
+  | "lost: new connection"
+  | "lost: reused connection"
+  | "lost: response had begun"
+  | "lost: never written";
 
-/** One stage request lost before any response, as the record and the evidence keep it. */
+/** One stage request lost in transport, as the record and the evidence keep it. */
 export interface LostRequest {
   readonly at: string;
   /** The scenario's title as Vitest names it; absent outside any scenario. */
@@ -78,18 +83,17 @@ export interface LostRequest {
   readonly elapsedMs: number;
   readonly sent: SentFacts;
   readonly outcome: LostOutcome;
-  /** The second attempt's code when it failed. */
-  readonly againCode?: string;
-  /** The status the second attempt was answered with. */
-  readonly againStatus?: number;
 }
 
 interface SocketState {
+  readonly connectedAt: number;
   requests: number;
   lastCompletedAt?: number;
 }
 interface Observed {
   connection?: "new" | "reused";
+  earlierRequests?: number;
+  connectionAgeMs?: number;
   idleMs?: number;
   headersWritten: boolean;
   bodyWritten: boolean;
@@ -128,18 +132,21 @@ const entryOf = (message: unknown) => {
 
 const watch = () => {
   subscribe("undici:client:connected", (message) => {
-    sockets.set((message as { socket: object }).socket, { requests: 0 });
+    sockets.set((message as { socket: object }).socket, { connectedAt: Date.now(), requests: 0 });
   });
   subscribe("undici:client:sendHeaders", (message) => {
     const { request, socket } = message as { request: object; socket: object };
-    const state = sockets.get(socket) ?? { requests: 0 };
+    const state = sockets.get(socket) ?? { connectedAt: Date.now(), requests: 0 };
     sockets.set(socket, state);
     socketOf.set(request, socket);
     const entry = entryOf(message);
     if (entry !== undefined) {
+      const now = Date.now();
       entry.connection = state.requests > 0 ? "reused" : "new";
+      entry.earlierRequests = state.requests;
+      entry.connectionAgeMs = now - state.connectedAt;
       if (state.requests > 0 && state.lastCompletedAt !== undefined)
-        entry.idleMs = Date.now() - state.lastCompletedAt;
+        entry.idleMs = now - state.lastCompletedAt;
       entry.headersWritten = true;
       // undici reads the socket on `readable`, so a `data` listener sees each read without
       // changing how undici reads.
@@ -165,43 +172,29 @@ const watch = () => {
 
 const factsOf = (entry: Observed): SentFacts => ({
   ...(entry.connection !== undefined && { connection: entry.connection }),
+  ...(entry.earlierRequests !== undefined && { earlierRequests: entry.earlierRequests }),
+  ...(entry.connectionAgeMs !== undefined && { connectionAgeMs: entry.connectionAgeMs }),
   ...(entry.idleMs !== undefined && { idleMs: entry.idleMs }),
   written: !entry.headersWritten ? "nothing" : entry.bodyWritten ? "whole request" : "headers",
   responseStarted: entry.responseStarted,
 });
 
+/** Where a request with these facts was lost. */
+export const lostOutcome = (facts: SentFacts): LostOutcome =>
+  facts.responseStarted
+    ? "lost: response had begun"
+    : facts.connection === "reused"
+      ? "lost: reused connection"
+      : facts.connection === "new"
+        ? "lost: new connection"
+        : "lost: never written";
+
 /** The facts a failed stage request carries on its error, for `request-failure.ts` to read. */
 export const sentFactsKey = Symbol.for("executor.e2e.sentFacts");
-export const sentFacts = (error: unknown): (SentFacts & { again?: LostRequest }) | undefined =>
+export const sentFacts = (error: unknown): (SentFacts & { outcome?: LostOutcome }) | undefined =>
   typeof error === "object" && error !== null && sentFactsKey in error
-    ? (error as Record<symbol, SentFacts & { again?: LostRequest }>)[sentFactsKey]
+    ? (error as Record<symbol, SentFacts & { outcome?: LostOutcome }>)[sentFactsKey]
     : undefined;
-
-/**
- * The GETs that change state, which a resend could repeat: a sign-in or connection callback, an
- * OAuth authorization (it issues a code), an unsubscribe link, and any GET that carries a one-time
- * `code`, `state` or `token`. These are the stage GETs the harness sends from Node that do.
- */
-export const changesState = (url: URL) =>
-  /\/callback(?:\/|$)|\/oauth2\/authorize$|\/email\/unsubscribe$/u.test(url.pathname) ||
-  ["code", "state", "token"].some((name) => url.searchParams.has(name));
-
-/**
- * Whether a lost request may be sent again, and if not, why: only a GET or HEAD that does not
- * change state, lost on a reused connection before any byte of a response. undici marks a
- * connection reused in the same event that writes the request's headers, so a request on a reused
- * connection has always been written, and any other method may have been processed.
- */
-export const resendable = (
-  method: string,
-  url: URL,
-  facts: SentFacts,
-): true | Exclude<LostOutcome, `sent again: ${string}`> => {
-  if (facts.responseStarted) return "not sent again: response had begun";
-  if (facts.connection !== "reused") return "not sent again: new connection";
-  if (method !== "GET" && method !== "HEAD") return "not sent again: may have been processed";
-  return changesState(url) ? "not sent again: GET may change state" : true;
-};
 
 const firstCode = (error: unknown): string | undefined => {
   let current: unknown = error;
@@ -219,13 +212,26 @@ const lostInTransport = (error: unknown) =>
   !(error.cause instanceof DOMException) &&
   firstCode(error) !== undefined;
 
-/** A dispatcher of the same kind as Node's own, with no connections yet: the second attempt's. */
-const freshDispatcher = (): { close: () => Promise<void> } | undefined => {
-  const global = (globalThis as Record<symbol, unknown>)[Symbol.for("undici.globalDispatcher.1")];
-  const Dispatcher = (global as { constructor?: new () => { close: () => Promise<void> } })
-    ?.constructor;
-  return typeof Dispatcher === "function" ? new Dispatcher() : undefined;
-};
+type Pool = { readonly close: () => Promise<void> };
+let stagePool: Promise<Pool> | undefined;
+
+/**
+ * The stage's pool: Node's own dispatcher class with keep-alive off, so each request opens its own
+ * connection and the connection closes after the response. Node creates its global dispatcher, and
+ * so makes its class reachable, on its first `fetch`; a `data:` URL does that without a connection.
+ */
+const poolFor = (original: typeof fetch): Promise<Pool> =>
+  (stagePool ??= (
+    (globalThis as Record<symbol, unknown>)[globalDispatcher] === undefined
+      ? original("data:,").then((response) => response.arrayBuffer())
+      : Promise.resolve()
+  ).then(() => {
+    const global = (globalThis as Record<symbol, unknown>)[globalDispatcher] as {
+      constructor: new (options: { pipelining: number }) => Pool;
+    };
+    return new global.constructor({ pipelining: 0 });
+  }));
+const globalDispatcher = Symbol.for("undici.globalDispatcher.1");
 
 const tagged = (input: RequestInfo | URL, init: RequestInit | undefined, id: string) => {
   const headers = new Headers(input instanceof Request ? input.headers : undefined);
@@ -234,11 +240,7 @@ const tagged = (input: RequestInfo | URL, init: RequestInit | undefined, id: str
   return { ...init, headers };
 };
 
-type Attempt =
-  | { readonly response: Response }
-  | { readonly error: unknown; readonly facts: SentFacts; readonly elapsedMs: number };
-
-/** `fetch` with the facts and the rule above for requests to a stage origin; others pass through. */
+/** `fetch` that gives each stage request a connection of its own and records a lost one. */
 export const lostConnectionFetch = (original: typeof fetch): typeof fetch =>
   ((input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
@@ -246,72 +248,37 @@ export const lostConnectionFetch = (original: typeof fetch): typeof fetch =>
     const method = (
       init?.method ?? (input instanceof Request ? input.method : "GET")
     ).toUpperCase();
-    const attempt = (dispatcher?: object): Promise<Attempt> => {
-      const id = randomBytes(8).toString("hex");
-      const entry: Observed = { headersWritten: false, bodyWritten: false, responseStarted: false };
+    const id = randomBytes(8).toString("hex");
+    const entry: Observed = { headersWritten: false, bodyWritten: false, responseStarted: false };
+    return poolFor(original).then((dispatcher) => {
       observed.set(id, entry);
       const started = Date.now();
-      return original(input, {
-        ...tagged(input, init, id),
-        ...(dispatcher !== undefined && { dispatcher }),
-      } as RequestInit)
-        .then(
-          (response): Attempt => ({ response }),
-          (error: unknown): Attempt => ({
-            error,
-            facts: factsOf(entry),
+      return original(input, { ...tagged(input, init, id), dispatcher } as RequestInit)
+        .catch((error: unknown) => {
+          if (!lostInTransport(error)) throw error;
+          const facts = factsOf(entry);
+          const scenario = currentScenario();
+          const file = currentFile();
+          const code = firstCode(error);
+          const outcome = lostOutcome(facts);
+          kept.push({
+            at: new Date().toISOString(),
+            ...(scenario !== undefined && { scenario }),
+            ...(file !== undefined && { file }),
+            method,
+            path: url.pathname,
+            ...(code !== undefined && { code }),
             elapsedMs: Date.now() - started,
-          }),
-        )
+            sent: facts,
+            outcome,
+          });
+          Object.defineProperty(error, sentFactsKey, { value: { ...facts, outcome } });
+          throw error;
+        })
         .finally(() => {
           entry.unwatch?.();
           observed.delete(id);
         });
-    };
-    return attempt().then((first) => {
-      if ("response" in first) return first.response;
-      if (!lostInTransport(first.error)) throw first.error;
-      const scenario = currentScenario();
-      const file = currentFile();
-      const code = firstCode(first.error);
-      const base: Omit<LostRequest, "outcome" | "againCode"> = {
-        at: new Date().toISOString(),
-        ...(scenario !== undefined && { scenario }),
-        ...(file !== undefined && { file }),
-        method,
-        path: url.pathname,
-        ...(code !== undefined && { code }),
-        elapsedMs: first.elapsedMs,
-        sent: first.facts,
-      };
-      const decision = resendable(method, url, first.facts);
-      const fail = (lost: LostRequest) => {
-        kept.push(lost);
-        // The failure the caller sees is the first one, carrying what happened after it.
-        Object.defineProperty(first.error, sentFactsKey, {
-          value: { ...first.facts, again: lost },
-        });
-        throw first.error;
-      };
-      if (decision !== true) return fail({ ...base, outcome: decision });
-      const dispatcher = freshDispatcher();
-      return attempt(dispatcher).then((second) => {
-        void dispatcher?.close().catch(() => undefined);
-        if ("response" in second) {
-          kept.push({
-            ...base,
-            outcome: "sent again: answered",
-            againStatus: second.response.status,
-          });
-          return second.response;
-        }
-        const againCode = firstCode(second.error);
-        return fail({
-          ...base,
-          outcome: "sent again: failed",
-          ...(againCode !== undefined && { againCode }),
-        });
-      });
     });
   }) as typeof fetch;
 

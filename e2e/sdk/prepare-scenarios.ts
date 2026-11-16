@@ -23,11 +23,7 @@ import { startScenario } from "./scenario.ts";
 import { awaitCompiler } from "./compiler-readiness.ts";
 import { FixtureFailed, fixtureRequest, type FixtureControl } from "./fixtures.ts";
 import { saveLostRequests } from "../lost-requests.ts";
-import {
-  configureLostConnections,
-  installLostConnections,
-  takeAllLostRequests,
-} from "../support/lost-connections.ts";
+import { configureLostConnections, takeAllLostRequests } from "../support/lost-connections.ts";
 import { targetHosts } from "../support/role-hosts.ts";
 
 class DomainNotReady extends Schema.TaggedError<DomainNotReady>()("DomainNotReady", {
@@ -442,14 +438,15 @@ const prepareCloudScenariosUnrecorded = (input: {
 /**
  * Prepare the run's Cloud organizations with the stage's requests watched as a scenario's are
  * (support/lost-connections.ts): the suite process sends them, `POST /api/onboarding/prepare`
- * among them, outside any Vitest worker. Requests lost before any response are saved in the run's
+ * among them, outside any Vitest worker. Requests lost in transport are saved in the run's
  * `report/lost-requests/` as the preparation's, whatever the preparation's outcome.
  */
 export const prepareCloudScenarios = (
   input: Parameters<typeof prepareCloudScenariosUnrecorded>[0],
 ) =>
   Effect.suspend(() => {
-    installLostConnections();
+    // The wrapper itself is installed by the suite's entry point, before anything could read
+    // `fetch` (support/stage-connections.ts); this names the stage and the records' owner.
     configureLostConnections({
       origins: Object.values(targetHosts(input.target)),
       scenario: () => undefined,

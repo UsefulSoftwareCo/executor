@@ -1,7 +1,7 @@
 /**
- * Global set-up for `lost-connections-lifecycle.config.ts`: a stand-in stage that answers the
- * first request on each connection and resets the second, and a run directory whose `run.json`
- * names it as a Cloud target. The teardown fails the run unless the lifecycle saved the scenario's
+ * Global set-up for `lost-connections-lifecycle.config.ts`: a stand-in stage that resets any
+ * connection whose request is for `/lose` and answers every other, and a run directory whose
+ * `run.json` names it as a Cloud target. The teardown fails the run unless the lifecycle saved the scenario's
  * lost request and the setup file saved the one made outside any scenario.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -19,11 +19,10 @@ export default function setup() {
   const sockets = new Set<Socket>();
   const server = createServer((socket) => {
     sockets.add(socket);
-    let served = 0;
     socket.on("data", (chunk) => {
-      if (!chunk.toString("latin1").includes("\r\n\r\n")) return;
-      served += 1;
-      if (served === 2) socket.resetAndDestroy();
+      const text = chunk.toString("latin1");
+      if (!text.includes("\r\n\r\n")) return;
+      if (/^[A-Z]+ \/lose /u.test(text)) socket.resetAndDestroy();
       else
         socket.write(
           "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 2\r\nconnection: keep-alive\r\n\r\n{}",
@@ -69,7 +68,7 @@ export default function setup() {
           const inScenario = records.some(
             (record) =>
               record.scenario?.endsWith("is saved by the scenario lifecycle") === true &&
-              record.outcome === "sent again: answered",
+              record.outcome === "lost: new connection",
           );
           const outside = records.some(
             (record) =>

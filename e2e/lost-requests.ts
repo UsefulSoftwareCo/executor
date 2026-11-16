@@ -1,8 +1,9 @@
 /**
- * Stage requests lost before any response (`support/lost-connections.ts`), saved per scenario in
- * the run's `report/lost-requests/` and counted for a job's summary, zero included: how many were
- * sent again and answered, sent again and failed, or not sent again and why, with the time of
- * each. A burst then shows as a count with times, whether it reddened a scenario or not.
+ * Stage requests lost in transport (`support/lost-connections.ts`): before any response, or after
+ * one began and before it was whole. Saved per scenario in
+ * the run's `report/lost-requests/` and counted for a job's summary, zero included: where each was
+ * lost (a new connection, a reused one, after a response began), with its time. Nothing is sent
+ * again, so every one is a failed request.
  */
 import { Effect, FileSystem, Path, Schema } from "effect";
 
@@ -19,13 +20,13 @@ export const LostRequestRecord = Schema.Struct({
   elapsedMs: Schema.Number,
   sent: Schema.Struct({
     connection: Schema.optional(Schema.Literals(["new", "reused"])),
+    earlierRequests: Schema.optional(Schema.Number),
+    connectionAgeMs: Schema.optional(Schema.Number),
     idleMs: Schema.optional(Schema.Number),
     written: Schema.Literals(["nothing", "headers", "whole request"]),
     responseStarted: Schema.Boolean,
   }),
   outcome: Schema.String,
-  againCode: Schema.optional(Schema.String),
-  againStatus: Schema.optional(Schema.Number),
 });
 export type LostRequestRecord = typeof LostRequestRecord.Type;
 
@@ -75,24 +76,24 @@ export const readLostRequests = (directories: ReadonlyArray<string>) =>
 
 /** One summary paragraph: the total, each outcome's count, those outside any scenario, and when each happened. */
 export const lostRequestLines = (records: ReadonlyArray<LostRequestRecord>) => {
-  if (records.length === 0) return "Stage requests lost before any response: 0.";
+  if (records.length === 0) return "Stage requests lost in transport: 0.";
   const outcomes = new Map<string, number>();
   for (const record of records)
     outcomes.set(record.outcome, (outcomes.get(record.outcome) ?? 0) + 1);
   const outside = records.filter((record) => record.scenario === undefined).length;
   return [
-    `Stage requests lost before any response: ${records.length} (${[...outcomes]
+    `Stage requests lost in transport: ${records.length} (${[...outcomes]
       .map(([outcome, count]) => `${count} ${outcome}`)
       .join(
         ", ",
       )})${outside === 0 ? "" : `; ${outside} outside any scenario (preparation, set-up or teardown)`}.`,
     ...records.map(
       (record) =>
-        `- ${record.at.slice(11, 19)} ${record.method} ${record.path.replace(/[A-Za-z0-9_-]{16,}/gu, ":id")} (${record.sent.connection ?? "unwritten"}${record.sent.idleMs === undefined ? "" : `, idle ${(record.sent.idleMs / 1000).toFixed(1)} s`}; ${record.outcome}${record.againStatus === undefined ? "" : ` with HTTP ${record.againStatus}`})`,
+        `- ${record.at.slice(11, 19)} ${record.method} ${record.path.replace(/[A-Za-z0-9_-]{16,}/gu, ":id")} (${record.sent.connection ?? "unwritten"}${record.sent.earlierRequests === undefined || record.sent.earlierRequests === 0 ? "" : `, ${record.sent.earlierRequests} earlier requests`}${record.sent.idleMs === undefined ? "" : `, idle ${(record.sent.idleMs / 1000).toFixed(1)} s`}; ${record.outcome})`,
     ),
   ].join("\n");
 };
 
 /** What a job summary says when the records could not be read: never a count, never zero. */
 export const lostRequestsUncounted =
-  "Stage requests lost before any response: NOT COUNTED. The records could not be read, so this job's count is unknown, not zero.";
+  "Stage requests lost in transport: NOT COUNTED. The records could not be read, so this job's count is unknown, not zero.";
