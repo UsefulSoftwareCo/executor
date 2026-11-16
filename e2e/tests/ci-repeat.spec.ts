@@ -223,6 +223,8 @@ const record = (input: {
   readonly base?: string;
   readonly selection?: string;
   readonly workerGrowth?: string;
+  /** The size gate's baseline (scripts/ci/worker-baseline.ts's `id`). */
+  readonly baseline?: string;
 }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -260,6 +262,7 @@ const record = (input: {
         BASE_SHA: input.base ?? base,
         SELECTION: input.selection ?? "a".repeat(64),
         WORKER_GROWTH: input.workerGrowth ?? "b".repeat(64),
+        BASELINE: input.baseline ?? `main@${base}`,
       },
       repository,
     );
@@ -413,7 +416,7 @@ layer(NodeServices.layer)("CI repeat", (it) => {
           `ci-tested-pr1-${recordKey(first.tree, base, "a".repeat(64), "b".repeat(64))}`,
         );
         expect(first.sized).toBe(
-          `ci-sized-pr1-${recordKey(first.tree, base, "sized", "b".repeat(64))}`,
+          `ci-sized-pr1-${recordKey(first.tree, base, "sized", "b".repeat(64), `main@${base}`)}`,
         );
         expect(first.log).toContain("pull request 1");
         // The same inputs give the same record.
@@ -432,6 +435,15 @@ layer(NodeServices.layer)("CI repeat", (it) => {
         // The size gate's record follows only what it reads.
         expect(others.selection.sized).toBe(first.sized);
         expect(others.workerGrowth.sized).not.toBe(first.sized);
+        // Compared with another baseline, the size gate's record differs, so a run checked against
+        // effect-apps is never reported for one that would be checked against main.
+        const branch = yield* record({
+          pull: 1,
+          file: "one",
+          baseline: `effect-apps@${"5".repeat(40)}`,
+        });
+        expect(branch.name).toBe(first.name);
+        expect(branch.sized).not.toBe(first.sized);
       }),
   );
 
@@ -576,13 +588,14 @@ layer(NodeServices.layer)("CI repeat", (it) => {
       ].map((step) => select.indexOf(`      - name: ${step}`));
       expect(order.every((index) => index > -1)).toBe(true);
       expect(order).toEqual([...order].sort((a, b) => a - b));
-      // A repeat hands no selection on: every output select writes is empty for it.
+      // A repeat hands no selection on: every output select writes is empty for it. Skip also
+      // waits for the check of the layer above (worker-sizes.spec.ts).
       const outputs = [...select.matchAll(/^ {6}([a-z-]+): \$\{\{ (.*) \}\}$/gm)];
       expect(outputs.length).toBeGreaterThan(10);
       for (const [, name, value] of outputs)
         if (value!.includes("steps.select.outputs"))
           expect(value, name).toBe(
-            `steps.repeat.outputs.of == '' && steps.select.outputs.${name} || ''`,
+            `steps.repeat.outputs.of == ''${name === "skip" ? " && steps.above.outcome == 'success'" : ""} && steps.select.outputs.${name} || ''`,
           );
       // The site job records what its size gate read.
       expect(jobOf(text, "site")).toContain("      - name: Record what the size gate reads\n");

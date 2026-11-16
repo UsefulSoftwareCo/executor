@@ -9,9 +9,11 @@
  * `--preview` the pull request's preview stage too.
  *
  *   bun run hosted:cloud:worker-sizes [--preview <pull request number>] [--base <directory>]
- *     [--description <file>] [--uploads <directory>]
+ *     [--baseline <name>] [--description <file> | --merged <file>] [--uploads <directory>]
  *
- * With `--base`, each Worker is compared with main's uploads, and the packages and files that
+ * With `--base`, each Worker is compared with the baseline's uploads (`--baseline` names it in the
+ * report: `main`, or the branch a stack ends on at a commit; see scripts/ci/worker-baseline.ts),
+ * and the packages and files that
  * grew are named. A budget is a backstop with room under it, so the comparison is what keeps a
  * Worker from growing unnoticed: with `--description`, the pull request's description, a Worker
  * that adds more than `growthLimit` to its upload, or to the modules its entry imports statically
@@ -22,8 +24,14 @@
  *   ```
  *
  * Each line names a Worker, the most bytes it may add, and why that is worth the cold-start time.
- * Without `--description`, as on a push to main, growth is only reported. A Worker main does not
- * have yet is held to its budget alone.
+ * A Worker main does not have yet is held to its budget alone.
+ *
+ * On a push to main, `--merged` holds the descriptions of the pull requests the push merges
+ * (scripts/ci/worker-baseline.ts `merged`): growth over the push's `before` is held to the same
+ * rule, each Worker allowed the sum of what those descriptions allow it. That catches growth no
+ * pull request was compared with main for: a retargeted upper layer, a skip layer above a branch,
+ * a direct push. On main an allowance line it cannot read is a notice, not a failure. Without
+ * either, growth is only reported.
  *
  * With `--uploads`, nothing is built: the report and the checks read uploads a build already
  * wrote, such as the `worker-uploads` artifact of a CI run.
@@ -75,6 +83,26 @@ interface Allowance {
  */
 /** What the failure message prints where an allowance's reason goes. */
 const placeholder = "<why it is worth the cold-start time>";
+
+/** The allowances of each merged pull request's description, summed by Worker. */
+const mergedAllowances = (
+  merged: ReadonlyArray<{ readonly number: number; readonly body: string }>,
+) => {
+  const allowances = new Map<string, Allowance>();
+  const unread: Array<string> = [];
+  for (const pull of merged) {
+    const own = allowancesIn(pull.body);
+    unread.push(...own.unread.map((line) => `#${pull.number}: ${line}`));
+    for (const [worker, allowance] of own.allowances) {
+      const sum = allowances.get(worker);
+      allowances.set(worker, {
+        bytes: (sum?.bytes ?? 0) + allowance.bytes,
+        reason: `${sum === undefined ? "" : `${sum.reason}; `}#${pull.number}: ${allowance.reason}`,
+      });
+    }
+  }
+  return { allowances, unread };
+};
 
 const allowancesIn = (description: string) => {
   const allowances = new Map<string, Allowance>();
@@ -197,11 +225,16 @@ const report = (
   productionBuild: Build,
   previewBuild: Build | undefined,
   base: ReadonlyMap<string, WorkerUpload> | undefined,
-  description: string | undefined,
+  allowed:
+    | {
+        readonly allowances: ReadonlyMap<string, Allowance>;
+        readonly unread: ReadonlyArray<string>;
+      }
+    | undefined,
+  baseline: string,
 ) => {
   const uploads = productionBuild.uploads;
   const failures = [...(previewBuild?.failures ?? []), ...productionBuild.failures];
-  const allowed = description === undefined ? undefined : allowancesIn(description);
   const grown: Array<Growth> = [...uploads.values()].flatMap((upload) => {
     const before = base?.get(upload.worker);
     const uploaded = before === undefined ? 0 : upload.bytes - before.bytes;
@@ -260,12 +293,12 @@ const report = (
     "Built as `alchemy deploy` builds them, against the budgets in " +
       "`apps/hosted/cloud/src/infrastructure/worker-build.ts`. Headroom is for the larger build." +
       (base === undefined
-        ? " Main's sizes for this base were not available, so no change is shown and growth is not checked."
+        ? ` The sizes of ${baseline} were not available, so no change is shown and growth is not checked.`
         : ""),
     "",
     previewBuild === undefined
-      ? `| Worker | \`${productionBuild.stage}\` | Change from main | Budget | Headroom |`
-      : `| Worker | \`${productionBuild.stage}\` | \`${previewBuild.stage}\` | Change from main | Budget | Headroom |`,
+      ? `| Worker | \`${productionBuild.stage}\` | Change from ${baseline} | Budget | Headroom |`
+      : `| Worker | \`${productionBuild.stage}\` | \`${previewBuild.stage}\` | Change from ${baseline} | Budget | Headroom |`,
     previewBuild === undefined ? "|---|---:|---:|---:|---:|" : "|---|---:|---:|---:|---:|---:|",
   ];
   for (const worker of measured) {
@@ -281,7 +314,7 @@ const report = (
     const budgetOnMain =
       before === undefined || before.budget === worker.budget
         ? ""
-        : ` (main: ${bytes(before.budget)})`;
+        : ` (${baseline}: ${bytes(before.budget)})`;
     lines.push(
       `| ${worker.worker} | ${upload === undefined ? "n/a" : bytes(upload.bytes)} | ` +
         (previewBuild === undefined
@@ -309,7 +342,7 @@ const report = (
       "isolate starts. A module only a dynamic `import()` loads is uploaded but waits for the " +
       "request that needs it.",
     "",
-    "| Worker | Static imports | Change from main |",
+    `| Worker | Static imports | Change from ${baseline} |`,
     "|---|---:|---:|",
     ...[...uploads.values()].map((upload) => {
       const before = base?.get(upload.worker)?.staticBytes;
@@ -459,14 +492,32 @@ const program = Effect.gen(function* () {
       message: `No Worker uploads in ${given ?? "the build's output"}`,
     });
   const baseDirectory = flag("--base");
+  // What `--base` holds, named in the report and the failures: `main`, or a branch at a commit.
+  const baseline = flag("--baseline") ?? "main";
   const base = baseDirectory === undefined ? undefined : yield* readUploads(baseDirectory);
   const descriptionFile = flag("--description");
+  const mergedFile = flag("--merged");
+  const merged =
+    mergedFile === undefined
+      ? undefined
+      : yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(
+            Schema.Array(Schema.Struct({ number: Schema.Number, body: Schema.String })),
+          ),
+        )(yield* fs.readFileString(mergedFile));
   const { markdown, over, low, unallowed, unread, failures } = report(
     built.production,
     built.preview,
     base === undefined || base.size === 0 ? undefined : base,
-    descriptionFile === undefined ? undefined : yield* fs.readFileString(descriptionFile),
+    merged !== undefined
+      ? mergedAllowances(merged)
+      : descriptionFile === undefined
+        ? undefined
+        : allowancesIn(yield* fs.readFileString(descriptionFile)),
+    baseline,
   );
+  // The pull requests a push to main merges, as the messages name them.
+  const pulls = (merged ?? []).map((pull) => `#${pull.number}`).join(", ");
   yield* Console.log(markdown);
   const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
   if (Option.isSome(summary))
@@ -481,12 +532,26 @@ const program = Effect.gen(function* () {
     );
   for (const { worker, added, what, allowance } of unallowed)
     yield* Console.log(
-      `::error title=${worker} Worker grew without an allowance::${signed(added)} bytes${what === "upload" ? "" : ` of ${what}`} over main, about ${compileMs(added)} ms on each cold start; ` +
-        (allowance === undefined
-          ? `a pull request may add ${bytes(growthLimit)}.`
-          : `the description allows ${bytes(allowance.bytes)}.`) +
-        ` Trim it, or allow it: put the line \`${worker} ${signed(added)}: ${placeholder}\` in a worker-growth block of the pull request description, with your reason in place of ${placeholder}, then run this job again. See the job summary for what grew.`,
+      merged !== undefined
+        ? `::error title=${worker} Worker grew on main without an allowance::This push adds ${signed(added)} bytes${what === "upload" ? "" : ` of ${what}`} to ${worker} over ${baseline}, about ${compileMs(added)} ms on each cold start; ` +
+            (merged.length === 0
+              ? "it merges no pull request, so no description allows it."
+              : allowance === undefined
+                ? `the pull requests it merges (${pulls}) allow none.`
+                : `the pull requests it merges (${pulls}) allow ${bytes(allowance.bytes)}.`) +
+            ` Put the line \`${worker} ${signed(added)}: ${placeholder}\` in a worker-growth block of the merged pull request's description, with your reason, and run this failed job again, which reads the descriptions afresh; or shrink ${worker} in a new pull request. See the job summary for what grew.`
+        : `::error title=${worker} Worker grew without an allowance::${signed(added)} bytes${what === "upload" ? "" : ` of ${what}`} over ${baseline}, about ${compileMs(added)} ms on each cold start; ` +
+            (allowance === undefined
+              ? `a pull request may add ${bytes(growthLimit)}.`
+              : `the description allows ${bytes(allowance.bytes)}.`) +
+            ` Trim it, or allow it: put the line \`${worker} ${signed(added)}: ${placeholder}\` in a worker-growth block of the pull request description, with your reason in place of ${placeholder}, then run this job again. See the job summary for what grew.`,
     );
+  // On main, an allowance a merged description writes in a way this cannot read is not growth.
+  if (merged !== undefined)
+    for (const problem of unread)
+      yield* Console.log(
+        `::notice title=Worker sizes::A merged pull request's allowance: ${problem}.`,
+      );
   if (unallowed.length > 0)
     yield* Console.log(
       [
@@ -505,7 +570,9 @@ const program = Effect.gen(function* () {
           `Grew without an allowance: ${unallowed.map((grew) => grew.worker).join(", ")}. Lines to add to a worker-growth block of the description, each with its reason: ${unallowed.map(({ worker, added }) => `${worker} ${signed(added)}: <reason>`).join("; ")}`,
         ]
       : []),
-    ...(unread.length > 0 ? [`Allowances this check cannot read: ${unread.join("; ")}`] : []),
+    ...(unread.length > 0 && merged === undefined
+      ? [`Allowances this check cannot read: ${unread.join("; ")}`]
+      : []),
   ];
   if (problems.length > 0) return yield* new WorkerSizesFailed({ message: problems.join(". ") });
 });

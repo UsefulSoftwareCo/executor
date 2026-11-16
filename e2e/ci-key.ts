@@ -18,7 +18,7 @@
  * that is not one of those files.
  *
  *   node e2e/ci-key.ts worker-growth <description file>   the size gate's key for a description
- *   node e2e/ci-key.ts record <tree> <base> <selection> <worker-growth>   a record's key
+ *   node e2e/ci-key.ts record <tree> <base> <key>...   a record's key
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -104,6 +104,13 @@ export const pullRequestReads: ReadonlyArray<{
       "The site job records the blocks it read, and a run is repeated only when that record matches the blocks this run's select read (CI_SIZED in e2e/ci-repeat.ts).",
   },
   {
+    where: "scripts/ci/worker-baseline.ts: pr list --head",
+    reads:
+      "the stack below the pull request, the merge base with the branch it ends on, and recorded sizes, to choose what the size gate compares with",
+    covered:
+      "The chosen baseline (branch and commit) is in the size gate's record, which select and site each compute, so a run compared with one baseline is never reported for another.",
+  },
+  {
     where: ".github/workflows/checks.yml: Record what this run tests",
     reads: "the merge tree, the base commit and the select job's two keys",
     covered: "This is the key.",
@@ -139,11 +146,11 @@ if (process.argv[1]?.endsWith("ci-key.ts"))
       const [command, ...args] = process.argv.slice(2);
       if (command === "worker-growth" && args.length === 1)
         return yield* Console.log(workerGrowthKey(yield* fs.readFileString(args[0]!)));
-      if (command === "record" && args.length === 4 && args.every((arg) => arg !== ""))
-        return yield* Console.log(recordKey(args[0]!, args[1]!, args[2]!, args[3]!));
+      if (command === "record" && args.length >= 4 && args.every((arg) => arg !== ""))
+        return yield* Console.log(recordKey(args[0]!, args[1]!, ...args.slice(2)));
       yield* Console.error(
         "Usage: node e2e/ci-key.ts worker-growth <description file>\n" +
-          "       node e2e/ci-key.ts record <merge tree> <base commit> <selection key> <worker-growth key>",
+          "       node e2e/ci-key.ts record <merge tree> <base commit> <key>... (the selection and worker-growth keys, or sized, the worker-growth key and the baseline)",
       );
       process.exitCode = 2;
     }).pipe(Effect.provide(NodeServices.layer)),

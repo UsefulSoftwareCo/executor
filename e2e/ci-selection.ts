@@ -17,7 +17,9 @@
  * selected; the job is then skipped.
  *
  * The block may also say `skip` on the lower layer of a stack: another open pull request must
- * build on its branch. Every check then skips, and the layer above tests the combined change.
+ * build on its branch. Every check then skips, and the layer above tests the combined change. The
+ * select job then checks that the layer above's run was built on this layer's head and compared
+ * Worker sizes with the base the stack ends on (scripts/ci/worker-baseline.ts `above`).
  *
  * The description is read when the job runs. `gh stack submit` opens each pull request before
  * its author writes the description, and opens a stack's layers one at a time, so the job waits

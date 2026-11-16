@@ -316,7 +316,12 @@ checks the combined change: its static checks run against the whole tree,
 scenarios for every layer's changes. `skip` fails the `select` job unless another
 open PR targets the layer's branch, so a lone PR or the top layer cannot skip. The
 `select` job waits up to 3 minutes for that PR to open, so open the stack's layers together
-(`gh stack submit` does).
+(`gh stack submit` does). It then checks that that PR's latest run on its head was built on
+this layer's head and compared Worker sizes with the base the stack ends on
+([`e2e/ci-skip-check.ts`](e2e/ci-skip-check.ts)). For now it only logs what it would
+decide (`skip-check` in the select log and summary); once enforced, it fails and says which command
+runs the layer above again. Never write `skip` on a long-lived branch's PR into `main`: it must be
+compared with `main` itself.
 After changing a lower layer, rebase the layers above it so the top runs again.
 Merge the stack only when the top layer passes, bottom first, without pausing between
 layers: each merge deploys production.
@@ -338,8 +343,11 @@ Cloudflare compiles and evaluates the modules a Worker's entry imports staticall
 when an isolate starts, about 40 ms for each megabyte on every cold request, and
 refuses an upload whose startup takes more than a second of CPU. The `site` job
 compares each Cloud Worker's upload, and the bytes its entry imports statically,
-with `main`, and fails a pull request that adds more than 50 KB to either, about
-2 ms, unless the description allows it:
+with the base of the bottom of the pull request's stack, and fails a pull request
+that adds more than 50 KB to either, about 2 ms, unless the description allows it.
+A stack that ends on `main` is compared with `main`; one that ends on another
+branch is compared with that branch, which is charged its total against `main`
+when it merges there:
 
 ````md
 ```worker-growth
@@ -356,6 +364,17 @@ it after an edit. The budgets in
 backstops with room above each Worker's size; the deploy enforces them too.
 Change one only in a PR that does nothing else and says what the added
 cold-start time buys. Never raise one to fit a change.
+
+A push to `main` is held to the same rule against the commit before it: growth
+over 50 KB fails `site` on `main` unless the descriptions of the pull requests the
+push merges allow it (summed by Worker). That catches growth no pull request was
+compared with `main` for, such as a layer retargeted onto `main` after its run, a
+`skip` layer above a long-lived branch, or a direct push. A red `site` on `main`
+does not stop the deploy, which has already started; it is a red `CI` on `main`
+that someone must answer: add the allowance to the merged pull request's
+description and rerun the failed job, which reads the descriptions afresh, or
+shrink the Worker in a new pull request. Sizes that cannot be had, descriptions
+that cannot be read, and commits no pull request merged are notices, never failures.
 
 A ruleset on `main` requires a pull request whose `checks / check` and
 `checks / e2e` passed. When GitHub refuses a merge as blocked ("the base branch
