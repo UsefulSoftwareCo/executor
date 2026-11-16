@@ -165,14 +165,28 @@ const registry = (
  * Run the check with `flag` against `url` and return its exit code and combined output. The
  * release check passes no flag; the production deploy's flags refuse another registry.
  */
-const check = (url: string, flag: Flag, env: Readonly<Record<string, string>> = {}) =>
+const check = (
+  url: string,
+  flag: Flag,
+  env: Readonly<Record<string, string>> = {},
+  selfHost = false,
+  packageDirectory?: string,
+) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* processes.spawn(
-      ChildProcess.make("node", ["scripts/releases/apps-published.ts", ...(flag ? [flag] : [])], {
-        env: { APPS_REGISTRY: url, ...env },
-        extendEnv: true,
-      }),
+      ChildProcess.make(
+        "node",
+        [
+          selfHost ? "scripts/releases/apps-self-host.ts" : "scripts/releases/apps-published.ts",
+          ...(flag ? [flag] : []),
+          ...(packageDirectory ? ["--package", packageDirectory] : []),
+        ],
+        {
+          env: { APPS_REGISTRY: url, EXECUTOR_NPM_REGISTRY: url, ...env },
+          extendEnv: true,
+        },
+      ),
     );
     // The runtime logs a failure to stdout, so the cases read both streams together.
     const [log, exitCode] = yield* Effect.all(
@@ -183,6 +197,194 @@ const check = (url: string, flag: Flag, env: Readonly<Record<string, string>> = 
   }).pipe(Effect.scoped);
 
 layer(NodeServices.layer)("apps release check", (it) => {
+  it.effect("self-host gate requires the builder registry's exact SDK content", () =>
+    Effect.gen(function* () {
+      const { version, local, different } = yield* archives;
+      for (const [bytes, succeeds] of [
+        [local, true],
+        [different, false],
+      ] as const) {
+        const npm = yield* registry(version, integrityOf(bytes), [{ status: 200, bytes }]);
+        const run = yield* check(npm.url(), "", {}, true);
+        expect(run.exitCode, run.log).toBe(succeeds ? 0 : 1);
+        expect(run.log).toContain(
+          succeeds
+            ? `Builder registry serves matching apps@${version}`
+            : "Builder SDK content differs",
+        );
+        if (!succeeds) expect(run.log).toContain("README.md");
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("self-host gate refuses missing archives and corrupt registry integrity", () =>
+    Effect.gen(function* () {
+      const { version, local, different } = yield* archives;
+      for (const [status, bytes, message] of [
+        [404, local, "Builder SDK tarball is unavailable"],
+        [200, different, "Builder SDK tarball integrity differs"],
+      ] as const) {
+        const npm = yield* registry(version, integrityOf(local), [{ status, bytes }]);
+        const run = yield* check(npm.url(), "", {}, true);
+        expect(run.exitCode, run.log).toBe(1);
+        expect(run.log).toContain(message);
+      }
+      const missing = createServer((_request, response) => {
+        response.writeHead(404);
+        response.end();
+      });
+      yield* Effect.acquireRelease(
+        Effect.callback<void>((resume) => {
+          missing.listen(0, "127.0.0.1", () => resume(Effect.void));
+        }),
+        () =>
+          Effect.callback<void>((resume) => {
+            missing.close(() => resume(Effect.void));
+          }),
+      );
+      const run = yield* check(
+        `http://127.0.0.1:${(missing.address() as AddressInfo).port}`,
+        "",
+        {},
+        true,
+      );
+      expect(run.exitCode, run.log).toBe(1);
+      expect(run.log).toContain("Deployment refused");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("self-host private publication preserves a historical SDK and never republishes", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped();
+      const historical = path.join(directory, "historical");
+      yield* fs.copy(staged, historical);
+      yield* fs.writeFileString(
+        path.join(historical, "check-publish.mjs"),
+        'throw new Error("Historical directory publication refused");\n',
+      );
+      const { version } = yield* fs
+        .readFileString(path.join(historical, "package.json"))
+        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Manifest))));
+      let puts = 0;
+      let bytes: Uint8Array | undefined;
+      let integrity = "";
+      const server = createServer((request, response) => {
+        const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+        if (request.method === "PUT" && request.url === "/apps") {
+          puts += 1;
+          const chunks: Buffer[] = [];
+          request.on("data", (chunk: Buffer) => chunks.push(chunk));
+          request.on("end", () => {
+            const body = Buffer.concat(chunks);
+            const metadata = JSON.parse(body.toString());
+            const attachment = Object.values(metadata._attachments)[0] as { data: string };
+            bytes = Buffer.from(attachment.data, "base64");
+            integrity = integrityOf(bytes);
+            response.writeHead(201, { "content-type": "application/json" });
+            response.end("{}");
+          });
+        } else if (request.url === `/apps/${version}` && bytes) {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({ version, dist: { tarball: `${url}/archive.tgz`, integrity } }),
+          );
+        } else if (request.url === "/archive.tgz" && bytes) {
+          response.writeHead(200);
+          response.end(bytes);
+        } else {
+          response.writeHead(404);
+          response.end("{}");
+        }
+      });
+      yield* Effect.acquireRelease(
+        Effect.callback<void>((resume) => {
+          server.listen(0, "127.0.0.1", () => resume(Effect.void));
+        }),
+        () =>
+          Effect.callback<void>((resume) => {
+            server.close(() => resume(Effect.void));
+          }),
+      );
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+      const npmrc = path.join(directory, "npmrc");
+      yield* fs.writeFileString(
+        npmrc,
+        `//127.0.0.1:${(server.address() as AddressInfo).port}/:_authToken=synthetic-e2e-token\n`,
+      );
+      const env = { NPM_CONFIG_USERCONFIG: npmrc };
+      const before = yield* check(url, "", env, true, historical);
+      expect(before.exitCode).toBe(1);
+      expect(before.log).toContain("Deployment refused");
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const run = yield* check(url, "--publish", env, true, historical);
+        expect(run.exitCode, run.log).toBe(0);
+        expect(run.log).toContain(`Builder registry serves matching apps@${version}`);
+      }
+      expect(puts).toBe(1);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("private fork publish policy runs through npm and refuses public destinations", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const directory = yield* fs.makeTempDirectoryScoped();
+      const hook = yield* fs.readFileString("packages/apps/scripts/check-publish.mjs");
+      yield* fs.writeFileString(path.join(directory, "check-publish.mjs"), hook);
+      for (const [version, registry, configured, tag, succeeds] of [
+        ["0.0.1-beta.138.shuv.1", "http://127.0.0.1:4873", "http://127.0.0.1:4873/", "beta", true],
+        [
+          "0.0.1-beta.138.shuv.1",
+          "https://registry.npmjs.org",
+          "https://registry.npmjs.org",
+          "beta",
+          false,
+        ],
+        [
+          "0.0.1-beta.138.shuv.1",
+          "https://registry.npmjs.org",
+          "http://127.0.0.1:4873",
+          "beta",
+          false,
+        ],
+        ["0.0.1-beta.138.shuv.1", "http://127.0.0.1:4873", "", "beta", false],
+        ["0.0.1-beta.138.shuv.1", "http://127.0.0.1:4873", "http://127.0.0.1:4874", "beta", false],
+        ["0.0.1-beta.138", "https://registry.npmjs.org", "", "beta", true],
+        ["0.0.1", "http://127.0.0.1:4873", "http://127.0.0.1:4873", "beta", false],
+        ["0.0.1-beta.138.other.1", "http://127.0.0.1:4873", "http://127.0.0.1:4873", "beta", false],
+      ] as const) {
+        yield* fs.writeFileString(
+          path.join(directory, "package.json"),
+          JSON.stringify({
+            name: "apps",
+            version,
+            files: ["check-publish.mjs"],
+            scripts: { prepublishOnly: "node check-publish.mjs" },
+            publishConfig: { tag: "beta" },
+          }),
+        );
+        const child = yield* processes.spawn(
+          ChildProcess.make(
+            "npm",
+            ["publish", directory, "--dry-run", "--offline", "--registry", registry, "--tag", tag],
+            { env: { EXECUTOR_NPM_REGISTRY: configured }, extendEnv: true },
+          ),
+        );
+        const [log, exitCode] = yield* Effect.all(
+          [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+          { concurrency: "unbounded" },
+        );
+        expect(log).toContain("node check-publish.mjs");
+        expect(exitCode, `${version} ${registry} ${configured} ${tag}\n${log}`).toBe(
+          succeeds ? 0 : 1,
+        );
+      }
+    }).pipe(Effect.scoped),
+  );
+
   it.effect(
     "the release and pull request checks wait while npm lists a release before serving its archive",
     () =>

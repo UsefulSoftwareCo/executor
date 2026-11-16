@@ -39,11 +39,70 @@ git clone --depth 1 --branch v2 https://github.com/UsefulSoftwareCo/executor.git
 cd executor-v2
 ```
 
-For a local installation:
+Before starting or replacing a source-built host, verify that its advertised SDK
+is available from the app builder's registry. Install the checkout's pinned Node
+and Bun, then run this gate from the repository root:
+
+```sh
+bun install --frozen-lockfile
+bun run apps:build
+EXECUTOR_NPM_REGISTRY=https://registry.npmjs.org node scripts/releases/apps-self-host.ts
+```
+
+Set `EXECUTOR_NPM_REGISTRY` to the **same URL the deployed builder uses**.
+Run the gate where that URL resolves, for example inside the Docker network for
+a private registry. The builder must have anonymous read access. The gate checks
+the staged version against the host version, `runtime.json` and the framework
+reference. It downloads the listed tarball, verifies registry integrity and
+compares every packaged file with this build. Missing versions, unavailable
+archives and different content stop deployment. It never publishes by default.
+Do not continue after a failed gate. A healthy `/health` is not an SDK gate.
+
+After the gate passes, start the local installation:
 
 ```sh
 EXECUTOR_BUILD_VERSION="$(git rev-parse HEAD)" docker compose -f apps/hosted/self-host/compose.yaml up --build --detach
 ```
+
+### Fork SDK publication to a private registry
+
+Fork versions use `0.0.x-beta.N.shuv.M`. They are forbidden on public npm.
+The publish policy requires `EXECUTOR_NPM_REGISTRY` and npm's destination
+(`--registry`, or `publishConfig.registry`) to name the same explicitly
+configured private registry. The `beta` tag remains required. Public upstream
+versions retain the existing `0.0.x-beta.N` policy.
+
+Build the exact host commit, not a newer checkout. Keep its compiled `dist`
+unchanged. Publish it with the reviewed release tool and existing publisher
+credentials, then run the read-only gate again:
+
+```sh
+export EXECUTOR_NPM_REGISTRY=http://executor-registry:4873
+# NPM_CONFIG_USERCONFIG points to the existing private publisher npmrc.
+node scripts/releases/apps-self-host.ts --package /path/to/exact-host-dist --publish
+node scripts/releases/apps-self-host.ts --package /path/to/exact-host-dist
+```
+
+`--package` supports historical host artifacts and therefore does not compare
+their version with the release tool's own checkout. Verify the host commit and
+`framework.release` version/reference digest separately when using it.
+
+Publication applies the current guard explicitly before packing. It publishes
+the unchanged tarball, so old compiled packages need no edited lifecycle hook.
+**npm does not run `prepublishOnly` when publishing a tarball**; the release tool
+runs the reviewed guard against that package first. This is the supported
+historical-publication path, not an `--ignore-scripts` escape hatch.
+For newly built packages, direct `npm publish ./packages/apps/dist --registry
+"$EXECUTOR_NPM_REGISTRY" --tag beta` also runs the packaged guard.
+
+Only a registry 404 permits publication. Existing versions are compared, never
+replaced or removed; the `beta` tag may advance. After a failed or interrupted
+publish, inspect the registry before retrying. Never change credentials or registry
+configuration to force a publish. Do not expose a private registry publicly.
+For network-only Verdaccio installs, use its documented Docker network and the
+existing publisher npmrc. A typical invocation uses a disposable Node container
+on that network with the checkout, compiled artifact and npmrc mounted read-only.
+No Executor restart is needed to add a missing SDK version.
 
 The build requires `EXECUTOR_BUILD_VERSION`, which names the build in telemetry.
 The command above sets it to the checked-out commit.
