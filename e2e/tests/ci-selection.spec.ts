@@ -27,6 +27,7 @@ import {
   mcpSearchTitles,
 } from "../mcp-search-guard.ts";
 import { selectionKey, workerGrowthKey } from "../ci-key.ts";
+import { gateEnvironment, stepEnvironmentBlock } from "../support/gate-environment.ts";
 import { fileGuards } from "../file-guards.ts";
 import { scenarios, scenariosForSuite } from "../test-plan.ts";
 
@@ -377,6 +378,37 @@ const startedBy = {
 type E2eJob = keyof typeof startedBy;
 const e2eJobs = Object.keys(startedBy) as ReadonlyArray<E2eJob>;
 
+/**
+ * The cases that run the selection as many real processes at once. On an idle host they take 10 to
+ * 20 seconds; at a load of 15 on this host's 16 cores, up to 23; at the load of 22 where one failed
+ * in review, past the 30-second default. Their limit is several times their idle time, so a busy
+ * host slows them and does not fail them; every other case keeps the default.
+ */
+const heavyCaseTimeout = 120_000;
+
+/** The `select` outputs whose matrix fields the size budget measures (each entry's fields). */
+const matrixOutputs = ["local-shards", "self-host-shards", "cloud-runners"];
+
+/**
+ * Each read of a `select` output in a workflow's code (comments removed) that could put the
+ * selection's size into a process: anywhere but a job or step condition, a matrix the budget
+ * measures, a comparison (`== '…'`, `!= '…'`, a short value), or a direct read of an output in
+ * `measured`. Quoted or inside a larger expression, in an `env:` value or a `run:` body alike.
+ */
+const unmeasuredReads = (code: string, measured: ReadonlyArray<string>) =>
+  code.split("\n").flatMap((line, index) => {
+    if (/^\s*(?:- )?if: /.test(line)) return [];
+    return [...line.matchAll(/needs\.select\.outputs\.([\w-]+)(\s*[!=]=\s*'[^']*')?/g)].flatMap(
+      (match) => {
+        const name = match[1]!;
+        if (match[2] !== undefined) return [];
+        if (matrixOutputs.includes(name) && /^\s*include: \$\{\{ fromJSON\(/.test(line)) return [];
+        if (measured.includes(name)) return [];
+        return [`line ${index + 1} reads ${name}: ${line.trim()}`];
+      },
+    );
+  });
+
 /** Whether select's outputs start an E2E job. */
 const chosen = (outputs: Readonly<Record<string, string>>, job: E2eJob) =>
   startedBy[job].some((name) => (outputs[name] ?? "") !== "");
@@ -393,13 +425,21 @@ const gate = (
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const { script } = yield* workflowJob("e2e");
     expect(script).toBeDefined();
+    const fs = yield* FileSystem.FileSystem;
     const needs = {
       select,
       ...Object.fromEntries(e2eJobs.map((job) => [job, { result: results[job], outputs: {} }])),
     };
+    // What GitHub passes the step: its env block evaluated against these needs.
+    const env = gateEnvironment(
+      yield* fs.readFileString(".github/workflows/checks.yml"),
+      "e2e",
+      "Require every selected E2E job to pass",
+      needs,
+    );
     const child = yield* processes.spawn(
       ChildProcess.make("bash", ["-e", "-c", script!], {
-        env: { NEEDS: JSON.stringify(needs) },
+        env: { ...env, REPEAT_OF: "" },
         extendEnv: true,
       }),
     );
@@ -1053,6 +1093,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "Could not read main's e2e/test-plan.ts, so whether this pull request adds scenarios to the deployed suite was not checked.",
         );
       }),
+    heavyCaseTimeout,
   );
 
   it.effect(
@@ -1751,6 +1792,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         // A push has no description, so no size-gate key, and records nothing.
         expect(runs.push.keys.workerGrowth).toBeUndefined();
       }),
+    heavyCaseTimeout,
   );
 
   it.effect(
@@ -1782,6 +1824,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "348c22613": true,
         });
       }),
+    heavyCaseTimeout,
   );
 
   /** The blocks that failed select on 13–14 Nov, each with the edit its message must name. */
@@ -1885,6 +1928,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           expect(verdict(local.log).length, name).toBeGreaterThan(40);
         }
       }),
+    heavyCaseTimeout,
   );
 
   it.effect(
@@ -2183,6 +2227,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           }
         }
       }),
+    heavyCaseTimeout,
   );
 
   it.effect("none, all and skip keep their meaning", () =>
@@ -4027,5 +4072,222 @@ layer(NodeServices.layer)("Release check after a push to main", (it) => {
       expect(result.summary).toContain('`"apps/cli/\\u0060x\\u0060\\n::error::@someone.ts"`');
       expect(result.log.split("\n").some((line) => line.startsWith("::"))).toBe(false);
     }),
+  );
+
+  /**
+   * Linux refuses an environment variable or an argument longer than 131,072 bytes (E2BIG, #4583).
+   * With every scenario selected, each value the selection puts into a process's environment or
+   * arguments stays under this budget, a quarter of the limit: the largest today is a shard's
+   * pattern, 7 kB on main and 13 kB on effect-apps.
+   */
+  const selectionValueBudget = 32 * 1024;
+
+  it.effect(
+    "with every scenario selected, nothing the selection carries reaches an environment variable or argument near its limit",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const workflow = yield* fs.readFileString(".github/workflows/checks.yml");
+        const full = yield* select({});
+        expect(full.exitCode, full.log).toBe(0);
+        const outputs = full.outputs;
+        const values: Array<{ readonly what: string; readonly value: string }> = [];
+        // The two required gates, as GitHub passes them a full run's needs.
+        const jobNeeds = (job: string) =>
+          workflow
+            .slice(workflow.indexOf(`\n  ${job}:\n`))
+            .match(/^ {4}needs:\s*\[([^\]]*)\]/m)![1]!
+            .split(",")
+            .map((name) => name.trim())
+            .filter((name) => name.length > 0);
+        for (const [job, step] of [
+          ["check", "Require every static check to pass"],
+          ["e2e", "Require every selected E2E job to pass"],
+        ] as const) {
+          const needs = Object.fromEntries(
+            jobNeeds(job).map((name) => [
+              name,
+              { result: "success", outputs: name === "select" ? outputs : {} },
+            ]),
+          );
+          for (const [name, value] of Object.entries(gateEnvironment(workflow, job, step, needs)))
+            values.push({ what: `${job}'s ${name}`, value });
+        }
+        // Each matrix entry's fields reach TEST_NAME, `--test-name` and E2E_TEST_NAME.
+        for (const output of ["local-shards", "self-host-shards", "cloud-runners"])
+          for (const entry of JSON.parse(outputs[output] || "[]") as ReadonlyArray<
+            Record<string, string>
+          >)
+            for (const [field, value] of Object.entries(entry))
+              values.push({ what: `${output} ${entry.shard ?? entry.name} ${field}`, value });
+        // The select outputs a step reads into a variable directly.
+        const direct = [
+          "collector",
+          "repeat-of",
+          "full",
+          "self-host-inventory",
+          "self-host-catalog",
+        ];
+        for (const output of direct) values.push({ what: output, value: outputs[output] ?? "" });
+        const over = values
+          .map(({ what, value }) => ({ what, bytes: Buffer.byteLength(value) }))
+          .filter(({ bytes }) => bytes > selectionValueBudget)
+          .map(
+            ({ what, bytes }) =>
+              `${what} is ${bytes.toLocaleString("en-US")} bytes with every scenario selected, over its budget of ${selectionValueBudget.toLocaleString("en-US")}. Linux refuses an environment variable or argument over 131,072 bytes (spawn E2BIG): split it (more shards for its job in e2e/ci-selection.ts) or pass it through a file. Do not shorten scenario titles to fit.`,
+          );
+        expect(over).toEqual([]);
+        expect(values.length).toBeGreaterThan(20);
+        // No step gets a select output into its environment other than those measured above, or
+        // as whether it is set, and no gate gets toJSON(needs): a new path is measured first.
+        const code = workflow
+          .split("\n")
+          .filter((line) => !line.trimStart().startsWith("#"))
+          .join("\n");
+        expect(code).not.toMatch(/toJSON\(needs\b/);
+        expect(unmeasuredReads(code, direct)).toEqual([]);
+        // The run's own processes: vitest gets its title pattern from its config and the prepared
+        // Cloud organizations from a file, not from an argument or a variable.
+        const suite = yield* fs.readFileString("e2e/sdk/suite.ts");
+        expect(suite).not.toContain('"--testNamePattern"');
+        expect(suite).not.toContain("E2E_PREPARED_SCENARIOS");
+        expect(yield* fs.readFileString("e2e/vitest.config.ts")).toContain(
+          'testNamePattern: patternForTarget(target, suite, process.env.E2E_TEST_NAME ?? "", cloudMode),',
+        );
+      }),
+  );
+
+  it.effect(
+    "a gate fails when a job in its needs has no variable, or a variable names no job it needs",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const workflow = yield* fs.readFileString(".github/workflows/checks.yml");
+        for (const [job, step] of [
+          ["check", "Require every static check to pass"],
+          ["e2e", "Require every selected E2E job to pass"],
+        ] as const) {
+          const text = workflow.slice(workflow.indexOf(`\n  ${job}:\n`));
+          const needed = text
+            .match(/^ {4}needs:\s*\[([^\]]*)\]/m)![1]!
+            .split(",")
+            .map((name) => name.trim())
+            .filter((name) => name.length > 0);
+          // Statically: one NEED_ variable per needed job, each reading that job's own result.
+          const block = stepEnvironmentBlock(workflow, job, step);
+          const variables = [...block.matchAll(/^ {10}NEED_(\w+): (.*)$/gm)].map((match) => ({
+            job: match[1]!.replaceAll("_", "-"),
+            value: match[2]!,
+          }));
+          expect(variables.map((variable) => variable.job).toSorted(), job).toEqual(
+            needed.toSorted(),
+          );
+          for (const variable of variables)
+            expect(variable.value, job).toBe(`\${{ needs.${variable.job}.result }}`);
+          expect(block, job).toContain("          RESULTS: ${{ join(needs.*.result, ' ') }}\n");
+          // Each SET_ reads whether its own output is set, each OUTPUT_ its own output's value.
+          const outputs = [...block.matchAll(/^ {10}(SET|OUTPUT)_(\w+): (.*)$/gm)].map((match) => ({
+            kind: match[1]!,
+            name: match[2]!.replaceAll("_", "-"),
+            value: match[3]!,
+          }));
+          for (const output of outputs)
+            expect(output.value, `${job} ${output.kind}_${output.name}`).toBe(
+              output.kind === "SET"
+                ? `\${{ needs.select.outputs.${output.name} != '' }}`
+                : `\${{ needs.select.outputs.${output.name} }}`,
+            );
+          // Every output the rule reads has its variable: one it names without one would read as
+          // unset, so its job would count as not selected, and a wrongly skipped job would pass.
+          const ruleText = text.slice(text.indexOf(`      - name: ${step}\n`));
+          const rule = ruleText
+            .slice(ruleText.indexOf("        run: |\n") + "        run: |\n".length)
+            .split("\n")
+            .filter((line, index, lines) =>
+              lines
+                .slice(0, index + 1)
+                .every((each) => each.startsWith("          ") || each === ""),
+            )
+            .join("\n");
+          const named = new Set([
+            ...[...rule.matchAll(/chosen\(\[([^\]]*)\]\)/g)].flatMap((match) =>
+              [...match[1]!.matchAll(/"([\w-]+)"/g)].map((name) => name[1]!),
+            ),
+            ...[...rule.matchAll(/\.select\.outputs\.([\w-]+)/g)].map((match) => match[1]!),
+          ]);
+          expect(named.size, job).toBeGreaterThan(0);
+          expect(
+            [...named].filter((name) => !outputs.some((output) => output.name === name)),
+            job,
+          ).toEqual([]);
+          // At run time: the same gate, all passing, with one more job in needs than it reads,
+          // and with one NEED_ variable for a job needs does not list.
+          const script = text.slice(text.indexOf(`      - name: ${step}\n`));
+          const body = script
+            .slice(script.indexOf("        run: |\n") + "        run: |\n".length)
+            .split("\n")
+            .filter((line, index, lines) =>
+              lines
+                .slice(0, index + 1)
+                .every((each) => each.startsWith("          ") || each === ""),
+            )
+            .map((line) => line.slice(10))
+            .join("\n");
+          const passing = Object.fromEntries(
+            needed.map((name) => [
+              name,
+              {
+                result: "success",
+                outputs:
+                  name === "select"
+                    ? {
+                        collector: "true",
+                        "local-shards": "[x]",
+                        "self-host-shards": "[x]",
+                        "self-host-inventory": "x",
+                        "self-host-catalog": "x",
+                        "cloud-runners": "[x]",
+                        "release-local": "x",
+                        "release-docker": "x",
+                      }
+                    : {},
+              },
+            ]),
+          );
+          const run = (env: Readonly<Record<string, string>>) =>
+            Effect.gen(function* () {
+              const child = yield* processes.spawn(
+                ChildProcess.make("bash", ["-e", "-c", body], {
+                  env: { ...env, REPEAT_OF: "" },
+                  extendEnv: true,
+                }),
+              );
+              const [log, exitCode] = yield* Effect.all(
+                [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+                { concurrency: "unbounded" },
+              );
+              return { log, exitCode: Number(exitCode) };
+            }).pipe(Effect.scoped);
+          const all = gateEnvironment(workflow, job, step, passing);
+          expect((yield* run(all)).exitCode, job).toBe(0);
+          const added = yield* run(
+            gateEnvironment(workflow, job, step, {
+              ...passing,
+              "a-new-job": { result: "success", outputs: {} },
+            }),
+          );
+          expect(added.exitCode, job).toBe(1);
+          expect(added.log).toContain("every job in needs must have its NEED_ variable here");
+          const { [`NEED_${needed.at(-1)!.replaceAll("-", "_")}`]: _dropped, ...missing } = all;
+          const forgotten = yield* run({
+            ...missing,
+            [`NEED_${needed.at(-1)!.replaceAll("-", "_")}`]: "",
+          });
+          expect(forgotten.exitCode, job).toBe(1);
+          const stray = yield* run({ ...all, NEED_not_needed: "" });
+          expect(stray.exitCode, job).toBe(1);
+        }
+      }),
   );
 });
