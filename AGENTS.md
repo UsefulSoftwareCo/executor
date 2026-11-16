@@ -242,7 +242,11 @@ a `workflow_call` workflow, so another repository can call the same jobs.
 ### Choosing a PR's E2E scenarios
 
 A pull request runs only the E2E scenarios it selects. Pushes to `main` run the
-full suite. The static checks (`check` and the jobs it gates, `apps-version`,
+full suite. The selection reaches the jobs as title patterns; no value it puts in
+an environment variable or argument may approach Linux's 128 KiB limit, and a case in
+`e2e/tests/ci-selection.spec.ts` fails at a quarter of it, naming the value. Make room by
+splitting (more shards) or by passing it through a file: scenario titles are not a budget,
+so never shorten them to fit. The static checks (`check` and the jobs it gates, `apps-version`,
 `self-host-native`) always run, except in a skipped stack layer. Put exactly one
 fenced `e2e` block in the PR description, listing spec files from `e2e/tests/`:
 

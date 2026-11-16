@@ -11,6 +11,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { payloadFields, pullRequestReads, recordKey, workerGrowthBlock } from "../ci-key.ts";
+import { gateEnvironment } from "../support/gate-environment.ts";
 
 /**
  * A `gh` that answers from files beside it: this run (`run`), the head's runs (`runs`), each run's
@@ -279,16 +280,31 @@ const report = (input: {
       input.job === "check"
         ? "Require every static check to pass"
         : "Require every selected E2E job to pass";
-    const script = scriptOf(jobOf(yield* checks, input.job), step);
+    const text = yield* checks;
+    const job = jobOf(text, input.job);
+    const script = scriptOf(job, step);
     const { bin } = yield* stub({ "jobs-199": jobsOf(input.now) });
+    // A repeat's needs: its own select, and every other job skipped, as a repeat skips them.
+    const needed = job
+      .match(/^ {4}needs:\s*\[([^\]]*)\]/m)![1]!
+      .split(",")
+      .map((name) => name.trim())
+      .filter((name) => name.length > 0);
+    const needs = Object.fromEntries(
+      needed.map((name) => [
+        name,
+        {
+          result: name === "select" ? (input.ownSelect ?? "success") : "skipped",
+          outputs: name === "select" ? { "repeat-of": "199" } : {},
+        },
+      ]),
+    );
     return yield* spawn("bash", ["-e", "-c", script], bin, {
+      ...gateEnvironment(text, input.job, step, needs),
       GITHUB_REPOSITORY: "owner/repository",
       GITHUB_RUN_ID: String(self),
-      GH_TOKEN: "synthetic-token",
-      REPEAT_OF: "199",
       // What the select of an older version passed on: the result when select ran.
       REPEAT_RESULT: "failure",
-      NEEDS: JSON.stringify({ select: { result: input.ownSelect ?? "success", outputs: {} } }),
     });
   }).pipe(Effect.scoped);
 
@@ -608,19 +624,26 @@ layer(NodeServices.layer)("CI repeat", (it) => {
         const script = scriptOf(job, "Require every static check to pass");
         const { bin } = yield* stub({});
         const run = (results: Record<string, string>, collector: string | null = "true") =>
-          spawn("bash", ["-e", "-c", script], bin, {
-            REPEAT_OF: "",
-            NEEDS: JSON.stringify(
-              Object.fromEntries(
-                needs.map((name) => [
-                  name,
-                  {
-                    result: results[name] ?? "success",
-                    outputs: name === "select" && collector !== null ? { collector } : {},
-                  },
-                ]),
+          Effect.gen(function* () {
+            return yield* spawn(
+              "bash",
+              ["-e", "-c", script],
+              bin,
+              gateEnvironment(
+                yield* checks,
+                "check",
+                "Require every static check to pass",
+                Object.fromEntries(
+                  needs.map((name) => [
+                    name,
+                    {
+                      result: results[name] ?? "success",
+                      outputs: name === "select" && collector !== null ? { collector } : {},
+                    },
+                  ]),
+                ),
               ),
-            ),
+            );
           });
         expect((yield* run({})).exitCode).toBe(0);
         // A job that failed, was cancelled, or was skipped by mistake fails the check. Select says

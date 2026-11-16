@@ -13,12 +13,7 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomBytes } from "node:crypto";
-import {
-  patternForTarget,
-  scenariosForSuite,
-  type CloudMode,
-  type TestPlan,
-} from "../test-plan.ts";
+import { scenariosForSuite, type CloudMode, type TestPlan } from "../test-plan.ts";
 import { readEvidence, combineEvidenceReports, reportRuntimeCrashes } from "../evidence-results.ts";
 import { type EvidenceReport, type RunMetadata } from "../report-model.ts";
 import { startCloudEnvironment } from "../support/cloud-environment.ts";
@@ -347,19 +342,7 @@ export const runSuite = ({
                   const exit = yield* processes.exitCode(
                     ChildProcess.make(
                       "node",
-                      [
-                        "node_modules/vitest/vitest.mjs",
-                        "run",
-                        "--config",
-                        "e2e/vitest.config.ts",
-                        "--testNamePattern",
-                        patternForTarget(
-                          target,
-                          selected === "hosted" ? "hosted" : "all",
-                          name,
-                          cloudMode,
-                        ),
-                      ],
+                      ["node_modules/vitest/vitest.mjs", "run", "--config", "e2e/vitest.config.ts"],
                       {
                         extendEnv: false,
                         env: {
@@ -396,7 +379,6 @@ export const runSuite = ({
                           ...(process.env.E2E_COVERAGE === undefined
                             ? {}
                             : { E2E_COVERAGE: process.env.E2E_COVERAGE }),
-                          E2E_PREPARED_SCENARIOS: JSON.stringify(preparedScenarios),
                           E2E_TEST_NAME: name,
                           E2E_WORKERS: String(interactive || observeUI ? 1 : targetWorkers),
                           E2E_TARGET: target,
