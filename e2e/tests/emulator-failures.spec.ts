@@ -17,12 +17,14 @@ import {
   FileSystem,
   Layer,
   Option,
+  Stream,
   Tracer,
 } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   armedFaultHeader,
   emulatorRequest,
@@ -793,6 +795,57 @@ layer(NodeServices.layer)("Emulator retry policy", (it) => {
       ).toBe(true);
       withinDeadline(attempts, organizationClock.noted);
       expect(Exit.isFailure(organization.exit)).toBe(true);
+    }),
+  );
+
+  it.effect("every harness process that calls out waits 2.5 s per address, not Node's 250 ms", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      // Node's default on the pinned Node, which made a slow two-address connect fail in ~500 ms.
+      const read = (code: string) =>
+        Effect.gen(function* () {
+          const child = yield* processes.spawn(
+            ChildProcess.make(process.execPath, ["--input-type=module", "-e", code]),
+          );
+          const [out] = yield* Effect.all(
+            [child.stdout.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+            { concurrency: "unbounded" },
+          );
+          return Number(out.trim());
+        }).pipe(Effect.scoped);
+      const value = `import net from "node:net"; console.log(net.getDefaultAutoSelectFamilyAttemptTimeout());`;
+      expect(yield* read(value)).toBe(250);
+      expect(yield* read(`import "./e2e/support/connect-timeout.ts"; ${value}`)).toBe(2_500);
+      // Each entry point that makes outbound calls imports it before anything else, and so does
+      // every setup file of the Vitest config the targets run under, so each worker has it.
+      const first = (text: string) => text.match(/^import (?:[^;]*? from )?"([^"]+)";/m)?.[1];
+      const callers: Array<string> = [];
+      for (const name of (yield* fs.readDirectory("e2e")).toSorted()) {
+        if (!name.endsWith(".ts")) continue;
+        const text = yield* fs.readFileString(`e2e/${name}`);
+        if (
+          /NodeRuntime\.runMain/.test(text) &&
+          /FetchHttpClient|runSuite\(|runDeployedSuite|startDeployment/.test(text)
+        ) {
+          callers.push(`e2e/${name}`);
+          expect(first(text), name).toBe("./support/connect-timeout.ts");
+        }
+      }
+      expect(callers).toEqual([
+        "e2e/cleanup-deployed.ts",
+        "e2e/cli.ts",
+        "e2e/create-emulators.ts",
+        "e2e/deployed.ts",
+        "e2e/run.ts",
+      ]);
+      const config = yield* fs.readFileString("e2e/vitest.config.ts");
+      const setupFiles = [...config.matchAll(/setupFiles: \[([^\]]*)\]/g)].flatMap((match) =>
+        [...match[1]!.matchAll(/"([^"]+)"/g)].map((file) => file[1]!),
+      );
+      expect(setupFiles.length).toBeGreaterThan(0);
+      for (const file of setupFiles)
+        expect(first(yield* fs.readFileString(file)), file).toBe("./support/connect-timeout.ts");
     }),
   );
 });
