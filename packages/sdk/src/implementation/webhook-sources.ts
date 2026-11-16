@@ -86,6 +86,11 @@ export const setupCompleted = (
       }),
     );
     if (row === null || row.status === "removing") return;
+    // Joins the pending queue now, as `link` does (`queued`): `leaseUntil` of a pending source
+    // without a lease is when it joined. A failed source's is its retry time, which can be an
+    // hour ahead. A held lease is left to its holder, which finds the newer revision.
+    const joining =
+      row.lease === null ? { leaseUntil: new Date(yield* Clock.currentTimeMillis) } : {};
     yield* query(() =>
       tx.updateMany("webhookSources", {
         where: (b) => b("id", "=", row.id),
@@ -94,6 +99,7 @@ export const setupCompleted = (
           failure: null,
           retries: 0,
           revision: row.revision + 1,
+          ...joining,
         },
       }),
     );
@@ -129,6 +135,17 @@ export const makeWebhookSources = (
   },
 ) => {
   const now = Clock.currentTimeMillis;
+  /**
+   * A source joining the pending queue: `leaseUntil` of a pending source without a lease is when it
+   * joined, so `tick` serves pending sources first in, first out. A source whose lease is held
+   * keeps it; its holder finds the newer revision when it finishes and queues it at that time.
+   * Read under the app's lock, which every claim also takes, so the lease cannot change before the
+   * write that uses this.
+   */
+  const queued = (source: { readonly lease: string | null }) =>
+    Effect.map(now, (time): { readonly leaseUntil?: Date } =>
+      source.lease === null ? { leaseUntil: new Date(time) } : {},
+    );
   const keyFor = (value: Json) =>
     crypto.digest
       .digest(Digest.sha256, new TextEncoder().encode(canonical(value)))
@@ -422,6 +439,7 @@ export const makeWebhookSources = (
                   // Acquire/release owns the claim across interruption and defects too.
                   // A completed or superseded claim must never release another worker's lease.
                   yield* lockApp(tx, { app: input.app });
+                  const queuedAt = new Date(yield* now);
                   yield* query(() =>
                     tx.updateMany("webhookSources", {
                       where: (b) =>
@@ -430,7 +448,9 @@ export const makeWebhookSources = (
                           b("account", "=", input.account),
                           b("lease", "=", token),
                         ),
-                      set: { lease: null, leaseUntil: new Date(0) },
+                      // Back of the queue: a source failing this way would otherwise come first
+                      // at every sweep and keep the others waiting.
+                      set: { lease: null, leaseUntil: queuedAt },
                     }),
                   );
                 }),
@@ -523,17 +543,19 @@ export const makeWebhookSources = (
                 revision: 1,
                 reconciledDeployment: null,
                 lease: null,
-                leaseUntil: new Date(0),
+                leaseUntil: createdAt,
                 createdAt,
               }),
             );
-          } else
+          } else {
+            const joining = yield* queued(existing);
             yield* query(() =>
               tx.updateMany("webhookSources", {
                 where: (b) => b("id", "=", existing.id),
-                set: { ...fields, revision: existing.revision + 1 },
+                set: { ...fields, revision: existing.revision + 1, ...joining },
               }),
             );
+          }
           const saved = yield* find(parsed);
           if (saved === undefined) return yield* new StorageError();
           return yield* view(saved);
@@ -559,6 +581,7 @@ export const makeWebhookSources = (
             existing.revision !== parsed.expected.revision
           )
             return yield* new WebhookConflict();
+          const joining = yield* queued(existing);
           yield* query(() =>
             tx.updateMany("webhookSources", {
               where: (b) => b("id", "=", existing.id),
@@ -569,6 +592,7 @@ export const makeWebhookSources = (
                 failure: null,
                 retries: 0,
                 revision: existing.revision + 1,
+                ...joining,
               },
             }),
           );
@@ -608,7 +632,8 @@ export const makeWebhookSources = (
       Effect.gen(function* () {
         const time = new Date(yield* now);
         // New saved intent runs immediately, ahead of retries: a backlog of failed or waiting
-        // sources never delays one someone just changed.
+        // sources never delays one someone just changed. A pending source without a lease holds
+        // in `leaseUntil` when it joined the queue (`queued`), so this is first in, first out.
         const intent = yield* query(() =>
           db.findMany("webhookSources", {
             where: (b) => b.and(b("status", "=", "pending"), b("lease", "is", null)),

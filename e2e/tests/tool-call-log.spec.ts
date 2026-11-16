@@ -315,6 +315,9 @@ const mcpTool = (
     return result.structuredContent;
   });
 
+/** The bodies of a trace's delivered log records. */
+const LogBodies = Schema.Struct({ data: Schema.Array(Schema.Struct({ body: Schema.String })) });
+
 /** The fields of an error other than the reference, which must not repeat it. */
 const withoutReference = (error: object) =>
   JSON.stringify(Object.fromEntries(Object.entries(error).filter(([key]) => key !== "reference")));
@@ -331,7 +334,9 @@ const slowWrite = <E, R>(
 ) =>
   Effect.gen(function* () {
     const api = yield* Api,
-      actors = yield* Actors;
+      actors = yield* Actors,
+      evidence = yield* Evidence,
+      telemetry = yield* Telemetry;
     if (!/^[A-Za-z0-9_-]+$/.test(actors.organization.id))
       return yield* Effect.die("Expected an organization ID");
     // Every row this organization writes takes 1.5 s, three times a failed call's bound.
@@ -352,7 +357,6 @@ const slowWrite = <E, R>(
     const agent = yield* api.session();
     const call = (tool: string) =>
       Effect.gen(function* () {
-        const started = performance.now();
         const response = yield* api.request(
           agent,
           "POST",
@@ -360,8 +364,41 @@ const slowWrite = <E, R>(
           { tool, input: { text: "x" } },
           key.bearer,
         );
-        return { response, ms: performance.now() - started };
+        const request = (yield* evidence.requests).at(-1);
+        if (request === undefined)
+          return yield* Effect.die(new Error("The call request is missing"));
+        return { response, traceId: request.traceId };
       });
+    /**
+     * When the call's answer was sent and when its log row was written, both on the server's own
+     * clock and from the call's own trace: the end of its `http.server` span and of its
+     * `product.tool_call_log.write` span. Their order says whether the call waited for its row,
+     * however slow the runner or the stage; no time is read in the test.
+     */
+    const answeredAndWritten = (traceId: string, label: string) =>
+      telemetry
+        .settled(
+          traceId,
+          (spans) =>
+            spans.some((span) => span.operationName.startsWith("http.server ")) &&
+            spans.some((span) => span.operationName === "product.tool_call_log.write"),
+        )
+        .pipe(
+          Effect.tap((spans) => evidence.json(`${label}-spans.json`, spans)),
+          Effect.map((spans) => {
+            const end = (name: (operation: string) => boolean) => {
+              const span = spans.find((candidate) => name(candidate.operationName));
+              return span === undefined ? Number.NaN : Date.parse(span.startTime) + span.durationMs;
+            };
+            const answered = end((name) => name.startsWith("http.server "));
+            const written = end((name) => name === "product.tool_call_log.write");
+            return {
+              answered,
+              written,
+              order: `answered ${answered - written} ms after its row was written`,
+            };
+          }),
+        );
 
     // The app's first use starts its Worker, which can take longer than the bound on a busy
     // runner. Listing its tools, which writes no row, starts it before the calls are timed.
@@ -371,7 +408,11 @@ const slowWrite = <E, R>(
     // The call that succeeded answered before its row was written; the row follows.
     const succeeded = yield* call("echo");
     expect(succeeded.response.status).toBe(200);
-    expect(succeeded.ms, "a successful call does not wait for its log write").toBeLessThan(1000);
+    const success = yield* answeredAndWritten(succeeded.traceId, "succeeded-call");
+    expect(
+      success.answered,
+      `a successful call does not wait for its log write: it ${success.order}`,
+    ).toBeLessThan(success.written);
     const logged = yield* readLogWhen(
       actors.owner,
       { app: app.id, range: "24h" },
@@ -384,16 +425,37 @@ const slowWrite = <E, R>(
     const failed = yield* call("explode");
     const failure = yield* body(Failure, failed.response);
     expect(failure._tag).toBe("ToolCallFailed");
+    const failedOrder = yield* answeredAndWritten(failed.traceId, "failed-call");
     if (cloud) {
-      // A failed call waits for its row at most its bound, then answers without a reference.
+      // A failed call waits for its row at most its bound, then answers without a reference: it
+      // answered before the row was written, and the wait ended where the product bounds it.
       expect(failure.reference).toBeUndefined();
-      expect(failed.ms, "a failed call waits at most its bound").toBeLessThan(1500);
+      expect(
+        failedOrder.answered,
+        `a failed call waits at most its bound, not for its row: it ${failedOrder.order}`,
+      ).toBeLessThan(failedOrder.written);
+      const bounded = yield* telemetry.logs(failed.traceId).pipe(
+        Effect.map((logs) =>
+          Schema.decodeUnknownSync(Schema.fromJsonString(LogBodies))(logs).data.some(
+            (record) => record.body === "The tool call log write outlasted its caller's wait",
+          ),
+        ),
+        Effect.filterOrFail(
+          (found) => found,
+          () => new Error("The failed call's bounded wait has not reached the collector"),
+        ),
+        Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+      );
+      expect(bounded, "the failed call's wait for its row was cut off by its bound").toBe(true);
     } else {
       // Self-host's database runs each statement on the server's own thread, so nothing can
       // stop waiting for it: the failed call answers once its row is written, with a reference
       // that leads to it.
       expect(failure.reference).toMatch(reference);
-      expect(failed.ms).toBeGreaterThanOrEqual(1500);
+      expect(
+        failedOrder.answered,
+        `a failed call on self-host answers once its row is written: it ${failedOrder.order}`,
+      ).toBeGreaterThanOrEqual(failedOrder.written);
       expect(yield* findCall(actors.owner, failure.reference ?? "")).toMatchObject({
         tool: "explode",
         status: "failed",

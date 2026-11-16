@@ -56,7 +56,6 @@ export const workerGrowthKey = (description: string) =>
     ...[...description.matchAll(workerGrowthBlock)].map(([, block]) => block!),
   ]);
 
-/** A record's name: what a run tested, for this merge tree and base commit. */
 /**
  * The base commit as the key holds it. A pull request into the default branch is compared with
  * that commit (apps-version compares with it, and the size gate's baseline is main at it), so the
@@ -68,6 +67,7 @@ export const workerGrowthKey = (description: string) =>
 export const keyedBase = (baseRef: string, defaultBranch: string, baseSha: string) =>
   baseRef === defaultBranch ? baseSha : "stacked";
 
+/** A record's name: what a run tested, for this merge tree and base commit. */
 export const recordKey = (tree: string, base: string, ...keys: ReadonlyArray<string>) =>
   digest(["tree", tree, "base", base, ...keys]).slice(0, 40);
 

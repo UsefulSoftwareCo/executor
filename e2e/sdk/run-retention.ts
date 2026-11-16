@@ -4,9 +4,15 @@
  * removes older run folders in its own workspace:
  *
  * - any run started more than `keepMs` ago;
- * - passed runs past the newest `keepPassedRuns`. A run with a failed scenario, or whose outcome
- *   cannot be read (it crashed, was stopped or timed out), is kept for its failure evidence;
- * - then, while the rest exceed `defaultKeepBytes`, passed runs oldest first, then the others oldest first.
+ * - passed runs past the newest `keepPassedRuns` that ended more than `recentMs` ago. A run with a
+ *   failed scenario, or whose outcome cannot be read (it crashed, was stopped or timed out), is kept
+ *   for its failure evidence;
+ * - then, while the rest exceed `defaultKeepBytes`, passed runs oldest first, then the others oldest
+ *   first. Only this cap, which protects the disk, takes a run that ended within `recentMs`.
+ *
+ * A series of quick runs, one scenario each, read together afterwards is an ordinary way to work:
+ * on the MacBook Pro sixteen passed runs over 13 minutes, read 30-45 minutes after they ended,
+ * lost all but the last six to the count before `recentMs` existed.
  *
  * A run passed only when its `evidence.json` says `"outcome": "passed"`, which `runSuite` writes
  * from the same checks that fail the run. Runs saved before that field, and runs whose outcome
@@ -30,8 +36,9 @@
  * its `scenarios/<id>/`: the product databases, Cloud's diagnostics SQLite and the raw coverage
  * reports, most of a run's bytes. On the shared host no file in them was read more than an hour
  * after its run ended, while `server.log`, the reports, evidence files, traces, videos and
- * screenshots were; those stay. A passed run is shrunk as soon as a newer passed run exists; any
- * other run 24 hours after it ended (its `evidence.json` was written, or its folder last changed).
+ * screenshots were; those stay. A passed run is shrunk once a newer passed run exists and it ended
+ * more than `recentMs` ago; any other run 24 hours after it ended (its `evidence.json` was written,
+ * or its folder last changed). Nothing under a target's `report/` is ever bulk.
  * A shrunk run holds `shrunk.json`, naming what was removed and when; with no bulk left, a later
  * start passes it by.
  *
@@ -52,6 +59,12 @@ import { alive } from "../host-slot.ts";
 const keepPassedRuns = 5;
 const keepMs = 3 * 24 * 60 * 60_000;
 const defaultKeepBytes = 3 * 1024 ** 3;
+/**
+ * A run that ended this recently is neither removed for the count nor shrunk. Later reads of a
+ * run's files on the shared host came within an hour of its end (none of its bulk after one), and
+ * the series above was read 45 minutes after its first run ended; two hours covers both with room.
+ */
+const recentMs = 2 * 60 * 60_000;
 /** A run other than a passed one keeps its bulk this long after it ended. */
 const shrinkAfterMs = 24 * 60 * 60_000;
 /** In `.local/e2e`: keep every run whole. */
@@ -249,9 +262,9 @@ export const pruneRuns = ({
     const shrinking = new Map<Run, { bulk: Array<string>; bytes: number; reason: string }>();
     for (const run of runs) {
       const reason = run.passed
-        ? run === newestPassed
+        ? run === newestPassed || now - run.ended <= recentMs
           ? undefined
-          : "passed, and a newer passed run exists"
+          : "passed, a newer passed run exists, and it ended more than 2 hours ago"
         : now - run.ended > shrinkAfterMs
           ? "not passed, and ended more than 24 hours ago"
           : undefined;
@@ -264,7 +277,12 @@ export const pruneRuns = ({
       shrinking.set(run, { bulk, bytes, reason });
       run.size = Math.max(0, run.size - bytes);
     }
-    const removed = new Set(runs.filter((run) => run.passed).slice(keepPassedRuns));
+    const removed = new Set(
+      runs
+        .filter((run) => run.passed)
+        .slice(keepPassedRuns)
+        .filter((run) => now - run.ended > recentMs),
+    );
     let bytes = runs.filter((run) => !removed.has(run)).reduce((sum, run) => sum + run.size, 0);
     const oldestFirst = runs.filter((run) => !removed.has(run)).reverse();
     for (const run of [
@@ -331,7 +349,7 @@ export const pruneRuns = ({
       );
     if (count > 0)
       yield* Console.log(
-        `e2e: removed ${count} old ${count === 1 ? "run" : "runs"}${space} from ${root}. It keeps runs from the last 3 days: the newest ${keepPassedRuns} passed, every other one, up to ${keepBytes >= 1024 ** 3 ? `${keepBytes / 1024 ** 3} GB` : `${Math.round(keepBytes / 1024 ** 2)} MB`}.`,
+        `e2e: removed ${count} old ${count === 1 ? "run" : "runs"}${space} from ${root}. It keeps runs from the last 3 days: the newest ${keepPassedRuns} passed and any from the last 2 hours, every other one, up to ${keepBytes >= 1024 ** 3 ? `${keepBytes / 1024 ** 3} GB` : `${Math.round(keepBytes / 1024 ** 2)} MB`}.`,
       );
     if (failed.length > 0)
       yield* Console.error(

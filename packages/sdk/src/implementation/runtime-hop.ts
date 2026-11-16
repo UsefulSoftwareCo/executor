@@ -134,6 +134,9 @@ const annotate = (build: () => HopAttributes) =>
 /** Attributes of the recording's own, checked and guarded, on the current span (`runtime-connect.ts`). */
 export const annotateChecked = (attributes: Record<string, unknown>) =>
   annotate(() => checked(attributes));
+/** An error's standard class name, or `other` for any name an app or library chose. */
+export const errorClassOf = (error: unknown): string =>
+  error instanceof Error && standardErrorNames.has(error.name) ? error.name : "other";
 /** A platform error code in one of a platform's forms, otherwise `other`. */
 export const codeOf = (value: unknown): string => {
   const code = shape(value, codeForm);

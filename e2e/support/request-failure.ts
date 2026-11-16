@@ -14,6 +14,7 @@ import { Clock, Duration, Effect, Option, Redacted, Result, Schema } from "effec
 import type { HttpClientError, HttpClientResponse } from "effect/http";
 import { errorCode, nextCause } from "./failure-text.ts";
 import { platformSignatures } from "../platform-signatures.ts";
+import { sentFacts } from "./lost-connections.ts";
 
 export const RequestStage = Schema.Literals([
   // No response headers arrived: connect, DNS, TLS, a reset before the answer, or a request
@@ -60,8 +61,55 @@ export const RequestFailure = Schema.Struct({
   elapsedMs: Schema.Number,
   /** A platform failure this is exactly one of; see `platformSignatures`. */
   signature: Schema.optional(Schema.Literals(["runtime-502", "lost"])),
+  /**
+   * For a stage request that failed in transport: whether its connection was new or reused and
+   * how long it had been idle, how much of the request was written, whether a response began, and
+   * whether it was sent again (`support/lost-connections.ts`).
+   */
+  sent: Schema.optional(
+    Schema.Struct({
+      connection: Schema.optional(Schema.Literals(["new", "reused"])),
+      idleMs: Schema.optional(Schema.Number),
+      written: Schema.Literals(["nothing", "headers", "whole request"]),
+      responseStarted: Schema.Boolean,
+      again: Schema.optional(Schema.String),
+    }),
+  ),
 });
 export type RequestFailure = typeof RequestFailure.Type;
+
+/** The facts `lost-connections.ts` put on the first error along a cause chain that carries them. */
+const sentOf = (cause: unknown): RequestFailure["sent"] => {
+  let current: unknown = cause;
+  for (let level = 0; level < depth && typeof current === "object" && current !== null; level++) {
+    const facts = sentFacts(current);
+    if (facts !== undefined)
+      return {
+        ...(facts.connection !== undefined && { connection: facts.connection }),
+        ...(facts.idleMs !== undefined && { idleMs: facts.idleMs }),
+        written: facts.written,
+        responseStarted: facts.responseStarted,
+        ...(facts.again !== undefined && {
+          again: `${facts.again.outcome}${facts.again.againCode === undefined ? "" : ` (${facts.again.againCode})`}`,
+        }),
+      };
+    current = nextCause(current);
+  }
+  return undefined;
+};
+
+/** `on a reused connection idle 4.2 s, whole request written, no response; not sent again: …`. */
+const sentText = (sent: NonNullable<RequestFailure["sent"]>) =>
+  [
+    sent.connection === undefined
+      ? "never written to a connection"
+      : `on a ${sent.connection} connection${sent.idleMs === undefined ? "" : ` idle ${(sent.idleMs / 1000).toFixed(1)} s`}`,
+    sent.connection === undefined ? undefined : `${sent.written} written`,
+    sent.responseStarted ? "a response had begun" : "no response",
+    sent.again,
+  ]
+    .filter((part) => part !== undefined)
+    .join(", ");
 
 /**
  * Two ways a request to a stage fails in Cloudflare's platform rather than in our Worker, as seen
@@ -197,6 +245,7 @@ export const requestFailureText = (failure: RequestFailure) =>
     failure.ray === undefined
       ? undefined
       : `ray ${failure.ray}${failure.colo === undefined ? "" : `-${failure.colo}`}`,
+    failure.sent === undefined ? undefined : sentText(failure.sent),
   ]
     .filter((part) => part !== undefined)
     .join(", ");
@@ -237,6 +286,8 @@ export const readResponse = <R>(
               ...edge,
               ...chain,
               elapsedMs: now - started,
+              ...(stage === "before response" &&
+                sentOf(cause) !== undefined && { sent: sentOf(cause) }),
             };
             return Effect.fail(
               new CallFailed({

@@ -381,9 +381,23 @@ export const makeWorkflowRuns = (
         "execution",
       ).pipe(Effect.result);
       if (Result.isFailure(result)) {
-        if (result.failure.reason === "engine" && result.failure.retryable)
-          return yield* result.failure;
         const detail = workflowFailureDetail(result.failure);
+        if (result.failure.reason === "engine" && result.failure.retryable) {
+          // The engine retries steps, not the body, so this failure ends the run. One whose cause
+          // is known is recorded now, for its owner to read, while the engine reports the run
+          // running or waiting. A paused, terminated or other run is left to the engine, and an
+          // unreadable status to the next status read, as before.
+          if (detail !== undefined && backend !== undefined) {
+            const state = yield* backend.status(run).pipe(Effect.result);
+            if (
+              Result.isSuccess(state) &&
+              (state.success.status === "running" || state.success.status === "waiting")
+            )
+              // A failed write leaves the run to the next status read, which records the reason.
+              yield* finish(run, { ok: false, error: "engine", detail }).pipe(Effect.ignore);
+          }
+          return yield* result.failure;
+        }
         yield* finish(run, {
           ok: false,
           error: result.failure.reason,

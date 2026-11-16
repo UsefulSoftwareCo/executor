@@ -1,3 +1,4 @@
+import { engineCallFaults } from "../test-plan.ts";
 import {
   Clock,
   Console,
@@ -246,6 +247,8 @@ export const startCloudEnvironment = (input: {
       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
       CLOUD_DEV_EXTERNAL_DATABASE: "true",
       EXECUTOR_EMULATORS: JSON.stringify(reveal(fixture).services),
+      // Fails only engine calls to steps the workflow engine calls scenario's app names.
+      EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS: JSON.stringify(engineCallFaults),
       V1_MCP_FORWARD_SECRET: v1ForwardSecret,
       V1_SESSION_HANDOFF_SECRET: v1HandoffSecret,
       // Serve the role hosts as production does, at `app.`, `mcp.` and `api.` of the origin's host.
