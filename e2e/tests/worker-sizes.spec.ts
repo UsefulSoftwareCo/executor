@@ -1111,16 +1111,16 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         // site (what this run's gate read), so a run compared with one baseline is not reported for
         // another.
         expect(checks).toContain(
-          'sized=$(node e2e/ci-key.ts record "$tree" "$BASE_SHA" sized "$WORKER_GROWTH" "$BASELINE")',
+          'sized=$(node e2e/ci-key.ts record "$tree" "$base" sized "$WORKER_GROWTH" "$BASELINE")',
         );
         expect(checks).toContain(
-          'node e2e/ci-key.ts record "$tree" "$BASE_SHA" sized "$growth" "$BASELINE"',
+          'node e2e/ci-key.ts record "$tree" "$base" sized "$growth" "$BASELINE"',
         );
         expect(checks).toContain(
           "BASELINE: ${{ steps.main-baseline.outputs.id || steps.baseline.outputs.id }}",
         );
         expect(checks).toContain(
-          'key=$(node e2e/ci-key.ts record "$tree" "$BASE_SHA" "$SELECTION" "$WORKER_GROWTH")',
+          'key=$(node e2e/ci-key.ts record "$tree" "$base" "$SELECTION" "$WORKER_GROWTH")',
         );
         // A branch build that fails falls back to main's sizes; nothing skips the comparison.
         expect(checks).toContain(

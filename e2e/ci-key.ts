@@ -57,6 +57,17 @@ export const workerGrowthKey = (description: string) =>
   ]);
 
 /** A record's name: what a run tested, for this merge tree and base commit. */
+/**
+ * The base commit as the key holds it. A pull request into the default branch is compared with
+ * that commit (apps-version compares with it, and the size gate's baseline is main at it), so the
+ * key holds it. An upper stack layer's base commit decides nothing a run reads beyond the merge
+ * tree: its selection is in the key, and its size baseline (the base its stack ends on, at the
+ * merge base found from the head) is in the size gate's record. A stack push that moves the lower
+ * layer without changing the upper's tree therefore gives the upper's two runs one key.
+ */
+export const keyedBase = (baseRef: string, defaultBranch: string, baseSha: string) =>
+  baseRef === defaultBranch ? baseSha : "stacked";
+
 export const recordKey = (tree: string, base: string, ...keys: ReadonlyArray<string>) =>
   digest(["tree", tree, "base", base, ...keys]).slice(0, 40);
 
@@ -112,7 +123,7 @@ export const pullRequestReads: ReadonlyArray<{
   },
   {
     where: ".github/workflows/checks.yml: Record what this run tests",
-    reads: "the merge tree, the base commit and the select job's two keys",
+    reads: "the merge tree, the base commit (`keyedBase`) and the select job's two keys",
     covered: "This is the key.",
   },
   {
@@ -120,7 +131,7 @@ export const pullRequestReads: ReadonlyArray<{
     reads:
       "the base branch and commit: apps-version compares with main, and the size gate finds main's sizes at the merge base",
     covered:
-      "The base commit is in the key, and the head commit must be the same (e2e/ci-repeat.ts).",
+      "For a pull request into main the base commit is in the key; an upper layer's selection and size baseline are keyed instead (`keyedBase`). The head commit must be the same (e2e/ci-repeat.ts).",
   },
 ];
 
@@ -134,9 +145,10 @@ export const payloadFields: Readonly<Record<string, string>> = {
     "The branch whose open pull requests decide a skip; a skip with one is the output skip=true, in the key.",
   "head.repo.full_name":
     "Whether the pull request comes from a fork, which picks the runner: the same head, so the same repository.",
-  "base.sha": "In the key.",
+  "base.sha":
+    "In the key for a pull request into main (`keyedBase`); an upper layer's selection and size baseline, which it could change, are keyed instead.",
   "base.ref":
-    "Not in the key: it can differ between two runs on one head and base commit only after the pull request is retargeted onto a branch at that same commit, and what it decides (the apps-version base, the size gate's baseline) follows the commit.",
+    "Whether it is main decides whether the base commit is in the key (`keyedBase`); otherwise what it decides (the selection, the size gate's baseline) is keyed itself.",
 };
 
 if (process.argv[1]?.endsWith("ci-key.ts"))
@@ -148,9 +160,12 @@ if (process.argv[1]?.endsWith("ci-key.ts"))
         return yield* Console.log(workerGrowthKey(yield* fs.readFileString(args[0]!)));
       if (command === "record" && args.length >= 4 && args.every((arg) => arg !== ""))
         return yield* Console.log(recordKey(args[0]!, args[1]!, ...args.slice(2)));
+      if (command === "key-base" && args.length === 3 && args.every((arg) => arg !== ""))
+        return yield* Console.log(keyedBase(args[0]!, args[1]!, args[2]!));
       yield* Console.error(
         "Usage: node e2e/ci-key.ts worker-growth <description file>\n" +
-          "       node e2e/ci-key.ts record <merge tree> <base commit> <key>... (the selection and worker-growth keys, or sized, the worker-growth key and the baseline)",
+          "       node e2e/ci-key.ts record <merge tree> <keyed base> <key>... (the selection and worker-growth keys, or sized, the worker-growth key and the baseline)\n" +
+          "       node e2e/ci-key.ts key-base <base ref> <default branch> <base commit>",
       );
       process.exitCode = 2;
     }).pipe(Effect.provide(NodeServices.layer)),
