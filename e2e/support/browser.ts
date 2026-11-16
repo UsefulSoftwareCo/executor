@@ -5,6 +5,7 @@ import {
   type Browser as NativeBrowser,
   type BrowserType,
   type Page,
+  type Request,
 } from "playwright";
 import {
   Cause,
@@ -92,6 +93,31 @@ export class BrowserDriver extends Context.Service<BrowserDriver, NativeBrowser>
   static readonly webkitCaptureLayer = Layer.effect(BrowserDriver, captureBrowser(webkit));
 }
 /** A case-scoped browser with captured steps and a single isolated context. */
+/**
+ * One request a scenario's browser sent, in `page-requests.json`: its URL without query or fragment
+ * (they carry codes and state), when it started, when its response arrived and when it ended. A
+ * redirect's hops are separate rows; a request still open when the scenario ended has no `endedAt`.
+ */
+interface PageRequest {
+  readonly method: string;
+  readonly url: string;
+  readonly kind: string;
+  readonly startedAt: string;
+  status?: number;
+  respondedAt?: string;
+  endedAt?: string;
+  error?: string;
+}
+
+/** The most rows `page-requests.json` keeps; a scenario's pages send a few hundred. */
+const pageRequestLimit = 5000;
+
+/** A Chromium network error code, or `NETWORK_ERROR` for anything else. */
+const networkError = (request: Request) => {
+  const reason = request.failure()?.errorText;
+  return reason !== undefined && /^net::ERR_[A-Z_]+$/.test(reason) ? reason : "NETWORK_ERROR";
+};
+
 export class Browser extends Context.Service<
   Browser,
   {
@@ -149,6 +175,44 @@ export class Browser extends Context.Service<
         if (pageErrors.length < 200)
           pageErrors.push({ kind, page: safeText(from?.url() ?? "unknown"), text: safeText(text) });
       };
+      // Every request of every page, kept even when an OAuth scenario discards the network trace,
+      // so a page that waited shows which request it waited on and for how long.
+      const pageRequests: PageRequest[] = [];
+      const openRequests = new Map<Request, PageRequest>();
+      let requestsClosed = false;
+      const now = () => new Date(clock.currentTimeMillisUnsafe()).toISOString();
+      context.on("request", (request) => {
+        const url = new URL(request.url());
+        if (requestsClosed || pageRequests.length >= pageRequestLimit) return;
+        if (url.protocol !== "http:" && url.protocol !== "https:") return;
+        const row: PageRequest = {
+          method: request.method(),
+          url: `${url.origin}${url.pathname}`,
+          kind: request.resourceType(),
+          startedAt: now(),
+        };
+        pageRequests.push(row);
+        openRequests.set(request, row);
+      });
+      context.on("response", (response) => {
+        const row = openRequests.get(response.request());
+        if (requestsClosed || row === undefined) return;
+        row.status = response.status();
+        row.respondedAt = now();
+      });
+      context.on("requestfinished", (request) => {
+        const row = openRequests.get(request);
+        if (requestsClosed || row === undefined) return;
+        row.endedAt = now();
+        openRequests.delete(request);
+      });
+      context.on("requestfailed", (request) => {
+        const row = openRequests.get(request);
+        if (requestsClosed || row === undefined) return;
+        row.endedAt = now();
+        row.error = networkError(request);
+        openRequests.delete(request);
+      });
       context.on("weberror", (error) => pageError("page", error.page(), String(error.error())));
       context.on("console", (message) => {
         if (message.type() === "error") pageError("console", message.page(), message.text());
@@ -223,6 +287,8 @@ export class Browser extends Context.Service<
           const video = page?.video();
           // Coverage is evidence about the suite, not the scenario; it never fails one.
           yield* saveCoverage.pipe(Effect.ignore);
+          // Closing fails every open request; those stay open in the record.
+          requestsClosed = true;
           yield* driver("close browser context", () => context.close()).pipe(Effect.orDie);
           yield* driver("collect sanitized resource failures", () =>
             Promise.all(failureReads),
@@ -237,6 +303,7 @@ export class Browser extends Context.Service<
           }
           yield* evidence.json("navigation.json", navigations);
           yield* evidence.json("failed-resources.json", failedResources);
+          yield* evidence.json("page-requests.json", pageRequests);
           if (pageErrors.length > 0) yield* evidence.json("page-errors.json", pageErrors);
           for (const id of traceIds) yield* evidence.browserTrace(id);
         }),
@@ -312,14 +379,10 @@ export class Browser extends Context.Service<
           });
           current.on("requestfailed", (request) => {
             const url = new URL(request.url());
-            const reason = request.failure()?.errorText;
             failedResources.push({
               url: `${url.origin}${url.pathname}`,
               kind: request.resourceType(),
-              error:
-                reason !== undefined && /^net::ERR_[A-Z_]+$/.test(reason)
-                  ? reason
-                  : "NETWORK_ERROR",
+              error: networkError(request),
             });
           });
           return { page: current, focus, capture };
