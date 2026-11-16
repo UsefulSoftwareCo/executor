@@ -196,11 +196,17 @@ export const sentFacts = (error: unknown): (SentFacts & { outcome?: LostOutcome 
     ? (error as Record<symbol, SentFacts & { outcome?: LostOutcome }>)[sentFactsKey]
     : undefined;
 
+/**
+ * Node and undici codes, such as ECONNRESET. OpenSSL's are built from its reason text and can hold a
+ * slash: a TLS alert in the handshake is `ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE`.
+ */
+const codePattern = /^[A-Z][A-Z0-9_/]{1,63}$/u;
+
 const firstCode = (error: unknown): string | undefined => {
   let current: unknown = error;
   for (let level = 0; level < 6 && typeof current === "object" && current !== null; level++) {
     const code = (current as { code?: unknown }).code;
-    if (typeof code === "string" && /^[A-Z][A-Z0-9_]{1,40}$/u.test(code)) return code;
+    if (typeof code === "string" && codePattern.test(code)) return code;
     current = (current as { cause?: unknown }).cause;
   }
   return undefined;

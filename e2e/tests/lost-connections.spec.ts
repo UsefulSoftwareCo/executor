@@ -16,6 +16,8 @@
  * - A streamed response still arrives whole.
  * - A stand-in that resets brand-new connections: the request fails, and the failure and the record
  *   say "new connection", a different fault. A reset after a response began says so.
+ * - A TLS alert in the handshake (#1088's preparation): its code, `ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE`,
+ *   holds a slash. The request is recorded as never written, and its failure says TLS.
  * - The job summary counts each lost request with its time, and an unreadable count is never zero.
  */
 import { expect, layer } from "@effect/vitest";
@@ -427,6 +429,42 @@ layer(NodeServices.layer)("Stage requests on connections of their own", (it) => 
           responseStarted: false,
         },
       });
+    }),
+  );
+
+  it.effect("a TLS alert in the handshake is recorded as a request never written", () =>
+    Effect.gen(function* () {
+      // Answers the client's hello with a fatal handshake_failure alert, as an edge without a
+      // certificate for the name does: record type 21, TLS 1.2, length 2, fatal (2), alert 40.
+      const { origin } = yield* Effect.acquireRelease(
+        Effect.callback<{ readonly origin: string; readonly server: Server }>((resume) => {
+          const server = createServer((socket) => {
+            socket.on("error", () => undefined);
+            socket.once("data", () => socket.end(Buffer.from([21, 3, 3, 0, 2, 2, 40])));
+          });
+          server.listen(0, "127.0.0.1", () => {
+            const address = server.address();
+            const port = typeof address === "object" && address !== null ? address.port : 0;
+            resume(Effect.succeed({ origin: `https://127.0.0.1:${port}`, server }));
+          });
+        }),
+        ({ server }) => Effect.sync(() => server.close()),
+      );
+      configureLostConnections({
+        origins: [origin],
+        scenario: () => expect.getState().currentTestName,
+      });
+      const line = failureOf(yield* send("POST", `${origin}/api/onboarding/prepare`, { body: {} }));
+      expect(line).toContain("before response (tls)");
+      expect(lostRequestsOf("recorded as a request never written")).toEqual([
+        expect.objectContaining({
+          method: "POST",
+          path: "/api/onboarding/prepare",
+          code: "ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE",
+          outcome: "lost: never written",
+          sent: { written: "nothing", responseStarted: false },
+        }),
+      ]);
     }),
   );
 

@@ -207,7 +207,7 @@ const connectionCodes: ReadonlyArray<readonly [RequestConnection, RegExp]> = [
   ],
   [
     "tls",
-    /^(?:EPROTO|ERR_TLS_\w+|ERR_SSL_\w+|CERT_\w+|UNABLE_TO_\w+|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN)$/u,
+    /^(?:EPROTO|ERR_TLS_\w+|ERR_SSL_[\w/]+|CERT_\w+|UNABLE_TO_\w+|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN)$/u,
   ],
   ["reset", /^(?:ECONNRESET|EPIPE)$/u],
   ["closed", /^(?:UND_ERR_SOCKET|UND_ERR_CLOSED|ECONNABORTED|ERR_STREAM_PREMATURE_CLOSE)$/u],

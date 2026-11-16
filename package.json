@@ -136,6 +136,7 @@
     "e2e:database-connections": "vitest run --config e2e/database-connections.config.ts",
     "e2e:removal-evidence": "vitest run --config e2e/removal-evidence.config.ts",
     "e2e:request-failures": "vitest run --config e2e/request-failures.config.ts",
+    "e2e:edge-probe": "vitest run --config e2e/edge-probe.config.ts",
     "e2e:lost-connections": "vitest run --config e2e/lost-connections.config.ts",
     "e2e:lost-connections-lifecycle": "vitest run --config e2e/lost-connections-lifecycle.config.ts",
     "e2e:test-stage-orphans": "vitest run --config e2e/test-stage-orphans.config.ts",
