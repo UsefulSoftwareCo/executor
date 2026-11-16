@@ -603,8 +603,8 @@ if (args[0] === "pr" && args[1] === "list") {
   for (const [worker, upload] of Object.entries(uploads))
     fs.writeFileSync(path.join(value("--dir"), worker + ".json"), JSON.stringify({ worker, budget: 10000000, sources: {}, ...upload }));
   // A recorded build names the commit it was built from, unless \`builtFrom\` says otherwise.
-  const built = name.startsWith("worker-uploads-at-") ? ((answers.builtFrom || {})[name] === undefined ? name.slice("worker-uploads-at-".length) : answers.builtFrom[name]) : null;
-  if (built !== null) fs.writeFileSync(path.join(value("--dir"), "baseline-commit.txt"), built + "\\n");
+  const built = name.startsWith("worker-uploads-at-") ? ((answers.builtFrom || {})[name] === undefined ? name.slice("worker-uploads-at-".length) : answers.builtFrom[name]) : name === "worker-build" ? ((answers.builtFrom || {})[name] ?? null) : null;
+  if (built !== null) fs.writeFileSync(path.join(value("--dir"), name === "worker-build" ? "built-from.txt" : "baseline-commit.txt"), built + "\\n");
 } else fail("unexpected gh " + command);
 `;
 
@@ -1831,6 +1831,239 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           const pull = yield* run("pull_request");
           expect(pull.exitCode, step).toBe(1);
         }
+      }),
+  );
+
+  /** The run: body of a named step in a workflow's text, dedented. */
+  const stepScript = (workflow: string, step: string) => {
+    const text = workflow.slice(workflow.indexOf(`      - name: ${step}\n`));
+    return text
+      .slice(text.indexOf("        run: |\n") + "        run: |\n".length)
+      .split("\n")
+      .filter((line, index, lines) =>
+        lines.slice(0, index + 1).every((each) => each.startsWith("          ") || each === ""),
+      )
+      .map((line) => line.slice(10))
+      .join("\n");
+  };
+  const timingStep = "Time the Workers' start-up against the previous push";
+
+  it.effect("the start-up record runs only on a push, and nothing in it can fail site", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const checks = yield* fs.readFileString(".github/workflows/checks.yml");
+      const site = checks.slice(
+        checks.indexOf("\n  site:\n"),
+        checks.indexOf("\n  apps-package:\n"),
+      );
+      const from = site.indexOf("      - name: Keep this push's built Workers for the next push\n");
+      expect(from).toBeGreaterThan(-1);
+      const steps = site
+        .slice(from)
+        .split(/\n(?= {6}- )/)
+        .filter((step) => step.includes("worker-build") || step.includes("startup"));
+      expect(steps.length).toBe(5);
+      for (const step of steps) {
+        const condition = step.match(/^(?: {6}- | {8})if: (.*)$/m)?.[1] ?? "";
+        // On a pull request: skipped, by the event or by an output only a push's step sets.
+        expect(
+          condition.includes("github.event_name == 'push'") ||
+            /steps\.(build-kept|startup)\.outputs\.path != ''/.test(condition),
+          step.slice(0, 80),
+        ).toBe(true);
+        expect(condition, step.slice(0, 80)).toContain("!cancelled()");
+        expect(step, step.slice(0, 80)).toContain("        continue-on-error: true\n");
+        expect(step, step.slice(0, 80)).toMatch(/^ {8}timeout-minutes: \d+$/m);
+      }
+      // site's own limit leaves room for every step's: the build takes about a minute today.
+      const limit = Number(site.match(/^ {4}timeout-minutes: (\d+)$/m)?.[1]);
+      const steps_ = steps.map((step) => Number(step.match(/^ {8}timeout-minutes: (\d+)$/m)?.[1]));
+      expect(limit - steps_.reduce((sum, minutes) => sum + minutes, 0)).toBeGreaterThanOrEqual(0);
+      // The measurement is stopped, workerd with it, before its step's own limit.
+      expect(stepScript(site, timingStep)).toContain('timeout -s KILL "$LIMIT" node "$HARNESS"');
+      expect(site).toContain('          LIMIT: "360"\n');
+    }),
+  );
+
+  it.effect(
+    "a crash, a hang and a missing previous build each leave a notice; a record names what it compared",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const script = stepScript(
+          yield* fs.readFileString(".github/workflows/checks.yml"),
+          timingStep,
+        );
+        const head = sha("c");
+        const before = sha("b");
+        const measured = {
+          workerd: "1.20260918.1",
+          runs: 21,
+          machine: { cpus: 4, loadBefore: [1, 1, 1], loadAfter: [1, 1, 1] },
+          skipped: {},
+          workers: {
+            api: {
+              staticModules: { base: 23, head: 24 },
+              staticBytes: { base: 3_750_524, head: 3_800_524 },
+              compile: { base: { median: 80, min: 78 }, head: { median: 82, min: 80 } },
+              evaluate: { base: { median: 230, min: 226 }, head: { median: 236, min: 231 } },
+            },
+          },
+        };
+        const run = (harness: string, env: Readonly<Record<string, string>>) =>
+          Effect.gen(function* () {
+            const directory = yield* fs.makeTempDirectoryScoped({
+              prefix: "executor-startup-step-",
+            });
+            const stand = path.join(directory, "harness.mjs");
+            yield* fs.writeFileString(stand, harness);
+            yield* fs.makeDirectory(path.join(directory, "base", "bundles"), { recursive: true });
+            const output = path.join(directory, "output");
+            yield* fs.writeFileString(output, "");
+            const started = Date.now();
+            const child = yield* processes.spawn(
+              ChildProcess.make("bash", ["-e", "-o", "pipefail", "-c", script], {
+                env: {
+                  GITHUB_EVENT_NAME: "push",
+                  RUNNER_TEMP: directory,
+                  GITHUB_OUTPUT: output,
+                  GITHUB_STEP_SUMMARY: path.join(directory, "summary"),
+                  HEAD_SHA: head,
+                  BEFORE_SHA: before,
+                  BASE_COMMIT: before,
+                  BASE_BUILD: path.join(directory, "base"),
+                  HARNESS: stand,
+                  LIMIT: "2",
+                  ARGS_FILE: path.join(directory, "args"),
+                  ...env,
+                },
+                extendEnv: true,
+              }),
+            );
+            const [log, exitCode] = yield* Effect.all(
+              [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+              { concurrency: "unbounded" },
+            );
+            const record = path.join(directory, "worker-startup", "record", "worker-startup.json");
+            return {
+              log,
+              exitCode: Number(exitCode),
+              seconds: (Date.now() - started) / 1000,
+              outputs: yield* fs.readFileString(output),
+              record: (yield* fs.exists(record))
+                ? (JSON.parse(yield* fs.readFileString(record)) as Record<string, unknown>)
+                : undefined,
+              args: (yield* fs.exists(path.join(directory, "args")))
+                ? yield* fs.readFileString(path.join(directory, "args"))
+                : "",
+              base: path.join(directory, "base"),
+            };
+          }).pipe(Effect.scoped);
+        const printing = `import fs from "node:fs";\nfs.writeFileSync(process.env.ARGS_FILE, process.argv.slice(2).join(" "));\nconsole.log(${JSON.stringify(JSON.stringify(measured))});\n`;
+        // The previous build was found: the record names both commits and the difference.
+        const compared = yield* run(printing, {});
+        expect(compared.exitCode, compared.log).toBe(0);
+        expect(compared.args).toBe(`--base ${compared.base} --head apps/hosted/cloud`);
+        expect(compared.record).toMatchObject({
+          commit: head,
+          before,
+          base: before,
+          workers: {
+            api: {
+              staticBytes: { base: 3_750_524, head: 3_800_524 },
+              evaluate: {
+                base: { median: 230, min: 226 },
+                head: { median: 236, min: 231 },
+                difference: 6,
+              },
+            },
+          },
+        });
+        expect(compared.outputs).toMatch(/^path=.*\/worker-startup\/record$/m);
+        // No previous build: the head is measured against itself and recorded alone.
+        const alone = yield* run(printing, { BASE_COMMIT: "" });
+        expect(alone.exitCode, alone.log).toBe(0);
+        expect(alone.args).toBe("--base apps/hosted/cloud --head apps/hosted/cloud");
+        expect(alone.record).toMatchObject({
+          commit: head,
+          base: null,
+          workers: { api: { evaluate: { base: null, difference: null } } },
+        });
+        // A crash: a notice, no record, the step passes.
+        const crashed = yield* run("process.exit(3);\n", {});
+        expect(crashed.exitCode, crashed.log).toBe(0);
+        expect(crashed.log).toContain(
+          "::notice title=Worker start-up::The start-up measurement did not finish (exit 3, 137 when its 2-second limit stopped it",
+        );
+        expect(crashed.record).toBeUndefined();
+        expect(crashed.outputs).not.toContain("path=");
+        // A hang: stopped at its limit, with what it started, and the step passes.
+        const hung = yield* run(
+          `import { spawn } from "node:child_process";\nspawn("sleep", ["637"], { stdio: "ignore" });\nsetInterval(() => {}, 1000);\n`,
+          {},
+        );
+        expect(hung.exitCode, hung.log).toBe(0);
+        expect(hung.log).toContain("did not finish (exit 137");
+        expect(hung.seconds).toBeLessThan(15);
+        // What it started is stopped with it (timeout -s KILL signals the whole group).
+        const left = yield* processes.spawn(ChildProcess.make("pgrep", ["-f", "sleep 637"]));
+        const [found] = yield* Effect.all(
+          [left.stdout.pipe(Stream.decodeText(), Stream.mkString), left.exitCode],
+          { concurrency: "unbounded" },
+        );
+        expect(found.trim()).toBe("");
+        expect(hung.record).toBeUndefined();
+      }),
+    20_000,
+  );
+
+  it.effect(
+    "the previous push's build is used only from main's push run of the commit it names",
+    () =>
+      Effect.gen(function* () {
+        const env = { BASE_SHA: sha("a") };
+        const kept = { "worker-build": { api: { bytes: 1 } } };
+        const found = yield* baseline(["fetch-build", "<sizes>"], env, {
+          runs: { [sha("a")]: "88" },
+          downloads: kept,
+          builtFrom: { "worker-build": sha("a") },
+        });
+        expect(found.exitCode, found.log).toBe(0);
+        expect(found.outputs).toEqual({ found: "true", commit: sha("a") });
+        expect(found.calls.find((call) => call.startsWith("run list"))).toContain("--event push");
+        // An artifact that names another commit, or none, is not used.
+        for (const named of [sha("9"), null]) {
+          const other = yield* baseline(["fetch-build", "<sizes>"], env, {
+            runs: { [sha("a")]: "88" },
+            downloads: kept,
+            builtFrom: { "worker-build": named },
+          });
+          expect(other.outputs, String(named)).toEqual({ found: "false", commit: "" });
+          expect(other.sizes, String(named)).toEqual([]);
+          expect(other.log).toContain("so it is not used.");
+        }
+        // A release commit has no run: the build of the commit before it.
+        const stepped = yield* baseline(["fetch-build", "<sizes>"], env, {
+          commits: {
+            [sha("a")]: {
+              message: "Release 2.0.0-beta.56 [skip ci]",
+              author: "github-actions[bot]",
+              parents: [sha("b")],
+              files: releaseFiles("56"),
+            },
+          },
+          runs: { [sha("b")]: "87" },
+          downloads: kept,
+          builtFrom: { "worker-build": sha("b") },
+        });
+        expect(stepped.outputs).toEqual({ found: "true", commit: sha("b") });
+        // None: recorded alone, with a notice, and the step goes on.
+        const none = yield* baseline(["fetch-build", "<sizes>"], env, {});
+        expect(none.exitCode).toBe(0);
+        expect(none.outputs).toEqual({ found: "false", commit: "" });
+        expect(none.log).toContain("so this push's start-up is recorded alone.");
       }),
   );
 

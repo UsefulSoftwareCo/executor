@@ -7,6 +7,7 @@
  *   node scripts/ci/worker-baseline.ts fallback <directory>   main's baseline and its sizes
  *   node scripts/ci/worker-baseline.ts above                  checks the layer above a `skip`
  *   node scripts/ci/worker-baseline.ts merged <file>          the pull requests a push merges
+ *   node scripts/ci/worker-baseline.ts fetch-build <directory> the previous push's built Workers
  *
  * The rule: nothing reaches main without having been compared with main. A pull request whose stack
  * ends on main (its base is main, or its base is the head of an open pull request whose stack ends on
@@ -396,6 +397,83 @@ const RunSource = Schema.fromJsonString(
 /** The file a recorded baseline holds next to its sizes: the commit they were built from. */
 const builtFrom = "baseline-commit.txt";
 
+/**
+ * An artifact of main's own CI run at `commit` (a push run, which runs only main's code), in
+ * `directory`. A release commit gets no run (`[skip ci]`), so it is that of the nearest earlier
+ * main commit that has one: a release commit changes no Worker (`releaseCommit`). Only release
+ * commits are stepped over, at most `releaseSteps`. With `builtFrom`, the artifact must name the
+ * commit it was built from in that file, and it is used only when that is the commit found.
+ */
+const fromMain = (
+  directory: string,
+  commit: string,
+  name: string,
+  title: string,
+  what: string,
+  builtFrom?: string,
+) =>
+  Effect.gen(function* () {
+    const repository = yield* Config.String("GITHUB_REPOSITORY");
+    const defaultBranch = yield* Config.String("DEFAULT_BRANCH");
+    const fs = yield* FileSystem.FileSystem;
+    const runAt = (sha: string) =>
+      gh([
+        "run",
+        "list",
+        "--repo",
+        repository,
+        "--workflow",
+        "ci.yml",
+        "--branch",
+        defaultBranch,
+        // Main's own runs, which run only main's code: a pull request's run can name main too.
+        "--event",
+        "push",
+        "--commit",
+        sha,
+        "--json",
+        "databaseId",
+        "--jq",
+        ".[0].databaseId // empty",
+      ]).pipe(Effect.catchTag("BaselineFailed", () => Effect.succeed("")));
+    const download = (run: string) =>
+      gh(["run", "download", run, "--repo", repository, "--name", name, "--dir", directory]).pipe(
+        Effect.as(true),
+        Effect.catchTag("BaselineFailed", () => Effect.succeed(false)),
+      );
+    /** Whether what was downloaded names `sha` as the commit it was built from. */
+    const fromCommit = (sha: string) =>
+      Effect.gen(function* () {
+        if (builtFrom === undefined) return true;
+        const path = `${directory}/${builtFrom}`;
+        const named = (yield* fs.exists(path)) ? (yield* fs.readFileString(path)).trim() : "";
+        if (named === sha) return true;
+        yield* fs.remove(directory, { recursive: true, force: true });
+        yield* Console.log(
+          `::notice title=${title}::The ${name} artifact of ${sha}'s run names ${named === "" ? "no commit" : named} as the one it was built from, so it is not used.`,
+        );
+        return false;
+      }).pipe(Effect.catch(() => Effect.succeed(false)));
+    const stepped: Array<string> = [];
+    let at = commit;
+    for (;;) {
+      const run = yield* runAt(at);
+      if (run !== "" && (yield* download(run))) {
+        if (!(yield* fromCommit(at))) return { found: false, commit, stepped };
+        if (stepped.length > 0)
+          yield* Console.log(
+            `::notice title=${title}::${defaultBranch}'s ${what} for ${commit} are those of ${at}, the nearest earlier commit with ${what}: ${stepped.length === 1 ? `${stepped[0]} is a release commit, which changes` : `${stepped.join(", ")} are release commits, which change`} no Worker.`,
+          );
+        return { found: true, commit: at, stepped };
+      }
+      const info = stepped.length < releaseSteps ? yield* commitInfo(repository, at) : undefined;
+      if (info === undefined || !releaseCommit(info) || info.parents.length !== 1) break;
+      stepped.push(at);
+      at = info.parents[0]!;
+    }
+    return { found: false, commit, stepped };
+  });
+
 const fetch = (directory: string, branch: string, commit: string) =>
   Effect.gen(function* () {
     const repository = yield* Config.String("GITHUB_REPOSITORY");
@@ -407,49 +485,12 @@ const fetch = (directory: string, branch: string, commit: string) =>
         Effect.catchTag("BaselineFailed", () => Effect.succeed(false)),
       );
     if (branch === defaultBranch) {
-      // Main's own CI run at that commit. A release commit gets no run (`[skip ci]`), so its sizes
-      // are those of the nearest earlier main commit that has them: a release commit changes no
-      // Worker (`releaseCommit`). Only release commits are stepped over, at most `releaseSteps`.
-      const runAt = (sha: string) =>
-        gh([
-          "run",
-          "list",
-          "--repo",
-          repository,
-          "--workflow",
-          "ci.yml",
-          "--branch",
-          defaultBranch,
-          // Main's own runs, which run only main's code: a pull request's run can name main too.
-          "--event",
-          "push",
-          "--commit",
-          sha,
-          "--json",
-          "databaseId",
-          "--jq",
-          ".[0].databaseId // empty",
-        ]).pipe(Effect.catchTag("BaselineFailed", () => Effect.succeed("")));
-      const stepped: Array<string> = [];
-      let at = commit;
-      for (;;) {
-        const run = yield* runAt(at);
-        if (run !== "" && (yield* download(run, "worker-uploads"))) {
-          if (stepped.length > 0)
-            yield* Console.log(
-              `::notice title=Worker sizes::${defaultBranch}'s sizes for ${commit} are those of ${at}, the nearest earlier commit with sizes: ${stepped.length === 1 ? `${stepped[0]} is a release commit, which changes` : `${stepped.join(", ")} are release commits, which change`} no Worker.`,
-            );
-          return { found: true, build: false, commit: at };
-        }
-        const info = stepped.length < releaseSteps ? yield* commitInfo(repository, at) : undefined;
-        if (info === undefined || !releaseCommit(info) || info.parents.length !== 1) break;
-        stepped.push(at);
-        at = info.parents[0]!;
-      }
-      yield* Console.log(
-        `::notice title=Worker sizes::${defaultBranch}'s sizes for ${commit} are not available yet${stepped.length > 0 ? `, nor for the release commits before it (${stepped.join(", ")})` : ""}, so no change is shown.`,
-      );
-      return { found: false, build: false, commit };
+      const found = yield* fromMain(directory, commit, "worker-uploads", "Worker sizes", "sizes");
+      if (!found.found)
+        yield* Console.log(
+          `::notice title=Worker sizes::${defaultBranch}'s sizes for ${commit} are not available yet${found.stepped.length > 0 ? `, nor for the release commits before it (${found.stepped.join(", ")})` : ""}, so no change is shown.`,
+        );
+      return { found: found.found, build: false, commit: found.commit };
     }
     // A branch's sizes, as a CI run of this repository's own branches recorded them: a fork's run
     // runs the fork's code, which could write any sizes under any name.
@@ -853,9 +894,26 @@ NodeRuntime.runMain(
     }
     if (command === "above") return yield* above;
     if (command === "merged" && args[0] !== undefined) return yield* merged(args[0]);
+    // The previous push's built Workers, for the start-up record (worker-startup-record.ts).
+    if (command === "fetch-build" && args[0] !== undefined) {
+      const commit = yield* Config.String("BASE_SHA");
+      const found = yield* fromMain(
+        args[0],
+        commit,
+        "worker-build",
+        "Worker start-up",
+        "built Workers",
+        "built-from.txt",
+      );
+      if (!found.found)
+        yield* Console.log(
+          `::notice title=Worker start-up::No build of ${commit}${found.stepped.length > 0 ? ` or the release commits before it` : ""} is recorded, so this push's start-up is recorded alone.`,
+        );
+      return yield* write({ found: String(found.found), commit: found.found ? found.commit : "" });
+    }
     return yield* new BaselineFailed({
       message:
-        "Usage: node scripts/ci/worker-baseline.ts resolve [--main] | fetch <directory> | fallback <directory> | above | merged <file>",
+        "Usage: node scripts/ci/worker-baseline.ts resolve [--main] | fetch <directory> | fallback <directory> | above | merged <file> | fetch-build <directory>",
     });
   }).pipe(Effect.provide(NodeServices.layer)),
 );
