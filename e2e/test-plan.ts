@@ -114,6 +114,28 @@ const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof Tes
   scenarios;
 
 /** Scenario names and applicability used by both test declarations and test selection. */
+/**
+ * The engine call faults the workflow engine calls scenario's servers run with
+ * (`EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS`, `engine-faults.ts`): each sleep of `napOnce` fails once,
+ * every call of `nap-never` fails, `count-once`'s write runs before its answer fails once,
+ * `waited-out` fails only after the engine waited, four times, the three `*-once` sleeps get the
+ * engine's own answer once, and the three `*-until` sleepUntils get an answer once after their time. Each names a step only that scenario's app uses, so managed Cloud,
+ * whose one Worker serves every scenario, can carry the list for all of them.
+ */
+export const engineCallFaults = [
+  { call: "sleep", step: "nap-once", failures: 1, when: "before", answer: "internal" },
+  { call: "until", step: "wake-once", failures: 1, when: "before", answer: "internal" },
+  { call: "until", step: "nap-never", failures: 100, when: "before", answer: "internal" },
+  { call: "mutation", step: "count-once", failures: 1, when: "after", answer: "internal" },
+  { call: "sleep", step: "waited-out", failures: 4, when: "after", answer: "internal" },
+  { call: "sleep", step: "paused-once", failures: 1, when: "before", answer: "paused" },
+  { call: "sleep", step: "terminated-once", failures: 1, when: "before", answer: "terminated" },
+  { call: "sleep", step: "relayed-once", failures: 1, when: "before", answer: "relayed" },
+  { call: "until", step: "paused-until", failures: 1, when: "after", answer: "paused" },
+  { call: "until", step: "terminated-until", failures: 1, when: "after", answer: "terminated" },
+  { call: "until", step: "transient-until", failures: 1, when: "after", answer: "internal" },
+] as const;
+
 export const scenarios = plan({
   storageMigrationDiagnostics: {
     legacyStorage: true,
@@ -8356,6 +8378,18 @@ export const scenarios = plan({
         reason: "This session lifecycle scenario uses self-host password login.",
       },
       local: na("Local has no dashboard sessions or organization memberships."),
+    },
+  },
+  workflowEngineCalls: {
+    fixtures: "actors",
+    file: "workflow-engine-calls.spec.ts",
+    title:
+      "a run's sleep whose engine call failed is called again, a run whose sleep keeps failing records why for its owner, and neither an app's own failure nor a step whose answer was lost is repeated",
+    serverEnvironment: { EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS: JSON.stringify(engineCallFaults) },
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Self-host covers the Node-hosted runtime that local shares."),
     },
   },
   localWorkflows: {

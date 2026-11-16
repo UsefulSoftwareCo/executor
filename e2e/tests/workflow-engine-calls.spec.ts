@@ -1,0 +1,355 @@
+/**
+ * A run's body meets an engine whose calls fail. The server's E2E fault list
+ * (`EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS`, honoured only with `EXECUTOR_ENVIRONMENT=e2e`) fails
+ * chosen calls as the platform's engine would, so no case depends on timing or on the platform.
+ */
+import { expect, layer } from "@effect/vitest";
+import { Clock, Effect, Schedule, Schema } from "effect";
+import { randomUUID } from "node:crypto";
+import { Actors } from "../support/actors.ts";
+import { Api, body } from "../support/api.ts";
+import { Telemetry } from "../support/evidence.ts";
+import { HostedLive, withHostedCase } from "../support/case.ts";
+import { withApps } from "../support/apps-release.ts";
+import { WorkflowRun as Run } from "../support/workflow-app.ts";
+import { Target } from "../support/platform.ts";
+import { scenarios } from "../test-plan.ts";
+
+/** Each workflow meets the fault the plan configures for its step names. */
+const files = [
+  { path: "package.json", content: JSON.stringify({ dependencies: withApps() }) },
+  {
+    path: "operations.ts",
+    content: `import { query, mutation, object, string } from "apps";
+export const count = mutation({ input: object({ label: string() }) }, async (ctx, input) => {
+  ctx.sql.transaction((tx) => tx.exec("INSERT INTO calls (label) VALUES (?)", input.label));
+  return null;
+});
+export const calls = query({ input: object({ label: string() }) }, async (ctx, input) =>
+  ctx.sql.exec("SELECT COUNT(*) AS n FROM calls WHERE label = ?", input.label).one().n);
+`,
+  },
+  {
+    path: "workflows.ts",
+    content: `import { workflow, object } from "apps";
+import { count } from "./operations.ts";
+/** Each sleep's engine call fails once, before the engine sees it. */
+export const napOnce = workflow({ input: object({}) }, async (ctx) => {
+  await ctx.step.sleep("nap-once", "50 milliseconds");
+  await ctx.step.sleepUntil("wake-once", Date.now() + 2000);
+  return "awake";
+});
+/** The time this sleep waits for has passed before the call reaches the engine. */
+export const lateWake = workflow({ input: object({}) }, async (ctx) => {
+  await ctx.step.sleepUntil("late-wake", Date.now() - 1000);
+  return "awake";
+});
+/** Every engine call for this sleep fails. */
+export const napNever = workflow({ input: object({}) }, async (ctx) => {
+  await ctx.step.sleepUntil("nap-never", Date.now() + 60000);
+  return "unreachable";
+});
+/** The engine runs this step's write, then its answer fails once. */
+export const stepOnce = workflow({ input: object({}) }, async (ctx) => {
+  try {
+    await ctx.step.runMutation("count-once", count, { label: "step-once" }, { retries: { limit: 0, delay: 0 } });
+    return { failed: false };
+  } catch (error) {
+    return { failed: true, reason: error?.reason ?? null, errorName: error?.errorName ?? null, message: error?.message ?? null };
+  }
+});
+/** The engine waits this sleep and only then fails to answer, four times over. */
+export const waitedOut = workflow({ input: object({}) }, async (ctx) => {
+  await ctx.step.sleep("waited-out", "1500 milliseconds");
+  return "awake";
+});
+/**
+ * Each of these sleeps' first call gets the engine's own answer, which must reach the body. A
+ * repeat would find the fault spent, and the sleep would succeed.
+ */
+const answered = (name) => async (ctx) => {
+  try {
+    await ctx.step.sleep(name, "10 milliseconds");
+    return { slept: true };
+  } catch (error) {
+    return { slept: false, reason: error?.reason ?? null, errorName: error?.errorName ?? null, message: error?.message ?? null };
+  }
+};
+/** As \`answered\`, for a sleepUntil whose engine waited until its time and then answered. */
+const answeredUntil = (name) => async (ctx) => {
+  try {
+    await ctx.step.sleepUntil(name, Date.now() + 50);
+    return { slept: true };
+  } catch (error) {
+    return { slept: false, reason: error?.reason ?? null, errorName: error?.errorName ?? null, message: error?.message ?? null };
+  }
+};
+export const pausedOnce = workflow({ input: object({}) }, answered("paused-once"));
+export const pausedUntil = workflow({ input: object({}) }, answeredUntil("paused-until"));
+export const terminatedUntil = workflow({ input: object({}) }, answeredUntil("terminated-until"));
+export const transientUntil = workflow({ input: object({}) }, answeredUntil("transient-until"));
+export const terminatedOnce = workflow({ input: object({}) }, answered("terminated-once"));
+export const relayedOnce = workflow({ input: object({}) }, answered("relayed-once"));
+`,
+  },
+  {
+    path: "index.ts",
+    content: `import { defineApp, router } from "apps";
+import { count, calls } from "./operations.ts";
+import * as workflows from "./workflows.ts";
+export default defineApp({}, { tools: router({ count, calls }), workflows });`,
+  },
+  {
+    path: "migrations/0001_calls.sql",
+    content: "CREATE TABLE calls (label TEXT NOT NULL);\n",
+  },
+];
+const Deployed = Schema.Struct({ id: Schema.String });
+/** The four calls a sleep gets in all: the first and three repeats. */
+const sleepAttempts = 4;
+
+layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) => {
+  it.effect(scenarios.workflowEngineCalls.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          actors = yield* Actors,
+          telemetry = yield* Telemetry;
+        // Only Cloud delivers spans from inside a run; self-host's runner hands the host the
+        // run's result as data (`app-failure-telemetry.spec.ts`).
+        const cloud = (yield* Target).metadata.target === "cloud";
+        const prefix = `/api/organizations/${actors.organization.id}/apps`;
+        const runs: string[] = [];
+        const deployed = yield* api.request(actors.owner, "POST", `${prefix}/deploy`, {
+          name: `Engine calls ${randomUUID().slice(0, 8)}`,
+          files,
+        });
+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+        const app = yield* body(Deployed, deployed);
+        const path = `${prefix}/${app.id}`;
+        yield* Effect.addFinalizer(() =>
+          Effect.gen(function* () {
+            for (const run of runs)
+              yield* api.request(actors.owner, "POST", `${path}/workflow-runs/${run}/terminate`);
+            expect((yield* api.request(actors.owner, "DELETE", path)).status).toBe(200);
+          }).pipe(Effect.orDie),
+        );
+        const start = (workflow: string) =>
+          Effect.gen(function* () {
+            const response = yield* api.request(actors.owner, "POST", `${path}/workflow-runs`, {
+              workflow,
+              input: {},
+              key: randomUUID(),
+            });
+            expect(response.status, JSON.stringify(response.body)).toBe(200);
+            const run = yield* body(Run, response);
+            runs.push(run.id);
+            return run.id;
+          });
+        /** The run once it has ended, whichever way. */
+        const ended = (id: string) =>
+          Effect.gen(function* () {
+            const deadline = (yield* Clock.currentTimeMillis) + 40_000;
+            while (true) {
+              const response = yield* api.request(
+                actors.owner,
+                "GET",
+                `${path}/workflow-runs/${id}`,
+              );
+              expect(response.status).toBe(200);
+              const run = yield* body(Run, response);
+              if (["complete", "errored", "terminated"].includes(run.status)) return run;
+              expect(yield* Clock.currentTimeMillis).toBeLessThan(deadline);
+              yield* Effect.sleep("100 millis");
+            }
+          });
+        const calls = (label: string) =>
+          Effect.gen(function* () {
+            const response = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
+              tool: "calls",
+              kind: "query",
+              input: { label },
+            });
+            expect(response.status, JSON.stringify(response.body)).toBe(200);
+            return response.body;
+          });
+        /** The run's sleep spans, `count` of them once they have all been delivered. */
+        const sleeps = (run: string, count: number) =>
+          Effect.gen(function* () {
+            const read = Effect.gen(function* () {
+              const found = [
+                ...(yield* telemetry.search("workflow.sleep", { run })).data,
+                ...(yield* telemetry.search("workflow.sleepUntil", { run })).data,
+              ];
+              return found.length >= count
+                ? Effect.succeed(found.map(({ span }) => span))
+                : Effect.fail(new Error(`${found.length} of ${count} sleep spans delivered`));
+            }).pipe(Effect.flatten);
+            return yield* read.pipe(
+              Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
+            );
+          });
+
+        // A sleep whose engine call fails once is called again and the run completes.
+        const once = yield* start("napOnce");
+        const onceRun = yield* ended(once);
+        expect(onceRun, JSON.stringify(onceRun)).toMatchObject({
+          status: "complete",
+          output: "awake",
+        });
+        if (cloud) {
+          // The engine replays the body after a sleep, so a sleep can have a span per replay;
+          // each sleep's own call was repeated once and none failed.
+          const onceSpans = yield* sleeps(once, 2);
+          for (const name of ["nap-once", "wake-once"]) {
+            const named = onceSpans.filter((span) =>
+              (span.tags["executor.workflow.step"] ?? "").includes(`:${name}:`),
+            );
+            expect(named.map((span) => span.status)).not.toContain("error");
+            expect(named.map((span) => span.tags["executor.workflow.call.attempts"])).toContain(
+              "2",
+            );
+          }
+        }
+
+        // A sleepUntil a time that has passed is over without the engine, which refuses it.
+        const late = yield* start("lateWake");
+        const lateRun = yield* ended(late);
+        expect(lateRun, JSON.stringify(lateRun)).toMatchObject({
+          status: "complete",
+          output: "awake",
+        });
+        if (cloud) {
+          const [lateSpan] = yield* sleeps(late, 1);
+          expect(lateSpan?.tags).toMatchObject({
+            "executor.workflow.call.attempts": "1",
+            "executor.workflow.call.passed": "true",
+          });
+        }
+
+        // A sleep whose every call fails ends the run, its cause recorded for the owner and on
+        // the span, after the bounded calls.
+        const never = yield* start("napNever");
+        const neverRun = yield* ended(never);
+        expect(neverRun).toMatchObject({
+          status: "errored",
+          error: "engine",
+          failure: {
+            step: "nap-never",
+            errorName: "WorkflowEngineCallFailed",
+            message: `Executor called the workflow engine ${sleepAttempts} times for this sleepUntil and every call failed. The last failure: hop=platform; class=Error; code=internal.`,
+          },
+        });
+        if (cloud) {
+          const [neverSpan] = yield* sleeps(never, 1);
+          expect(neverSpan?.tags).toMatchObject({
+            "executor.workflow.call.attempts": String(sleepAttempts),
+            "executor.workflow.call.outcome": "failed",
+            "executor.workflow.call.hop": "platform",
+            "executor.workflow.call.error_class": "Error",
+            "executor.workflow.call.code": "internal",
+          });
+          // The waits the product scheduled before each repeat: 200, 400 and 800 ms, each 80-120%.
+          for (const [repeat, base] of [
+            [1, 200],
+            [2, 400],
+            [3, 800],
+          ] as const) {
+            const scheduled = Number(
+              neverSpan?.tags[`executor.workflow.call.repeat_${repeat}.wait_ms`],
+            );
+            expect(scheduled).toBeGreaterThanOrEqual(base * 0.8);
+            expect(scheduled).toBeLessThanOrEqual(base * 1.2);
+          }
+        }
+
+        // A step whose answer failed after its write ran is not called again: the write ran once.
+        const step = yield* start("stepOnce");
+        const stepRun = yield* ended(step);
+        expect(stepRun, JSON.stringify(stepRun)).toMatchObject({
+          status: "complete",
+          output: {
+            failed: true,
+            reason: "engine",
+            errorName: "WorkflowEngineCallFailed",
+            message: "hop=platform; class=Error; code=internal",
+          },
+        });
+        expect(yield* calls("step-once")).toBe(1);
+
+        // A sleep the engine waited, whose answer was then lost, is over: it is not waited again.
+        // Its four faults would end the run if each call were repeated.
+        const waited = yield* start("waitedOut");
+        const waitedRun = yield* ended(waited);
+        expect(waitedRun, JSON.stringify(waitedRun)).toMatchObject({
+          status: "complete",
+          output: "awake",
+        });
+        if (cloud) {
+          const waitedSpans = yield* sleeps(waited, 1);
+          expect(
+            waitedSpans.some(
+              (span) =>
+                span.tags["executor.workflow.call.waited"] === "true" &&
+                span.tags["executor.workflow.call.attempts"] === "1",
+            ),
+          ).toBe(true);
+        }
+
+        // The engine's own answers reach the body at once, unrepeated: a paused or terminated
+        // instance, and a failure the engine relays from the app. Each fault fails one call.
+        for (const [workflow, expected] of [
+          [
+            "pausedOnce",
+            {
+              reason: "engine",
+              errorName: "WorkflowEngineCallFailed",
+              message: "hop=platform; class=Error; code=aborted",
+            },
+          ],
+          [
+            "terminatedOnce",
+            {
+              reason: "engine",
+              errorName: "WorkflowEngineCallFailed",
+              message: "hop=platform; class=Error; code=aborted",
+            },
+          ],
+          ["relayedOnce", { reason: "execution" }],
+          // A pause or a termination that arrives after a sleepUntil's time is still the
+          // engine's answer: it reaches the body, which does not go on as if it had slept.
+          [
+            "pausedUntil",
+            {
+              reason: "engine",
+              errorName: "WorkflowEngineCallFailed",
+              message: "hop=platform; class=Error; code=aborted",
+            },
+          ],
+          [
+            "terminatedUntil",
+            {
+              reason: "engine",
+              errorName: "WorkflowEngineCallFailed",
+              message: "hop=platform; class=Error; code=aborted",
+            },
+          ],
+        ] as const) {
+          const run = yield* ended(yield* start(workflow));
+          expect(run, `${workflow}: ${JSON.stringify(run)}`).toMatchObject({
+            status: "complete",
+            output: { slept: false, ...expected },
+          });
+        }
+
+        // A transient failure after a sleepUntil's time is over: the time has passed.
+        const transient = yield* ended(yield* start("transientUntil"));
+        expect(transient, JSON.stringify(transient)).toMatchObject({
+          status: "complete",
+          output: { slept: true },
+        });
+      }),
+    ),
+  );
+});

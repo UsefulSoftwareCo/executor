@@ -18,6 +18,7 @@ import { WebSocket as NodeWebSocket } from "ws";
 import { newWebSocketRpcSession, type RpcStub } from "capnweb";
 import {
   Cause,
+  Config,
   ConfigProvider,
   Effect,
   FileSystem,
@@ -51,6 +52,19 @@ import { runtimeAdapter } from "./runtime.ts";
 import { connectedWorkerdApps, TransportClosed, workerdHostHandler } from "./workerd-client.ts";
 import { workerdHostModules } from "./workerd-bundle.ts";
 import { appWorkerIdleSeconds, appWorkerLimit } from "./app-worker-residency.ts";
+import { EngineFaults } from "../contracts/engine-faults.ts";
+
+/** E2E runs only: engine call faults for the runtime's workflows; see `engine-faults.ts`. */
+const engineFaults = Effect.gen(function* () {
+  const environment = yield* Config.option(Config.String("EXECUTOR_ENVIRONMENT"));
+  if (Option.getOrUndefined(environment) !== "e2e") return null;
+  const configured = yield* Config.option(Config.String("EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS"));
+  return Option.isNone(configured)
+    ? null
+    : yield* Schema.decodeUnknownEffect(Schema.fromJsonString(EngineFaults))(configured.value).pipe(
+        Effect.orDie,
+      );
+});
 import { runtimeHops, type SocketRecord } from "./runtime-hop.ts";
 import { repeatingAtConnect, repeatUnopened, type Opening } from "./runtime-connect.ts";
 
@@ -269,6 +283,7 @@ export const workerdApps = (options: {
             "APP_WORKER_IDLE_SECONDS",
             Option.getOrNull(yield* appWorkerIdleSeconds),
           ),
+          JsonBinding.local("WORKFLOW_ENGINE_FAULTS", yield* engineFaults),
           publicEgressBinding,
           JsonBinding.local("SELF_ORIGIN", options.selfOrigin?.origin ?? ""),
           JsonBinding.local("NPM_REGISTRY", options.npmRegistry ?? ""),
