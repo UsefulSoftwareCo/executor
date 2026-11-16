@@ -806,6 +806,44 @@ const observeFailure = (source: CallFailureSource) =>
   Effect.map(CallFailureSources, (observe) => observe?.(source));
 
 /**
+ * A call's failure as `runtimeFailure` reports it, except a runtime exchange the host's transport
+ * never connected: nothing of it was sent, and the failure says so (`notSent`).
+ */
+const toolCallFailure =
+  (
+    identity: { app: AppId; version: VersionId; tool: ToolName },
+    state: InvocationSnapshot,
+    renewal: Renewal | undefined,
+  ) =>
+  (failure: CallError) =>
+    failure._tag === "RuntimeProtocolFailed" && failure.notSent === true
+      ? new ToolCallFailed({
+          ...identity,
+          reason:
+            "Executor could not connect to the app runtime, so it did not send this tool call.",
+          notSent: true,
+        })
+      : runtimeFailure(identity, state, renewal)(failure);
+/**
+ * Whether a failure says that nothing of its exchange left the host. It holds for the call only
+ * when that exchange was the only one in the call to reach the app's code (`entries`): an earlier
+ * one, such as the catalog read for the call's kind, may have run code that wrote.
+ */
+const notSentOnly = (failure: CallFailure) =>
+  failure._tag === "ToolCallFailed" && failure.notSent === true;
+/**
+ * A call whose exchange never left the host after an earlier one of the same call reached the app:
+ * it may have partly run, and its failure says so rather than that the call was not sent.
+ */
+const partlyRun = ({ app, version, tool }: ToolCallFailed) =>
+  new ToolCallFailed({
+    app,
+    version,
+    tool,
+    reason:
+      "Executor could not reach the app runtime to finish this tool call. An earlier step of the call reached the app, so the call may have partly run.",
+  });
+/**
  * The error a failed call reports to its caller, such as an agent. A call that may write, a
  * mutation or a call that names no kind, may already have made its change once the host handed any of
  * its work to the app's code, or may still make it, whatever failed: the app's factory, account
@@ -818,14 +856,15 @@ const observeFailure = (source: CallFailureSource) =>
  * (`confirmedRead`), keep their own classification. A query only its upstream calls one, such as
  * an MCP tool with `readOnlyHint`, may write like any other call.
  */
-const callFailure =
-  (read: boolean, enteredApp: boolean) =>
+export const callFailure =
+  (read: boolean, enteredApp: boolean, entries: number) =>
   (failure: CallFailure): CallFailure =>
-    read || !enteredApp
+    read || !enteredApp || (entries === 1 && notSentOnly(failure))
       ? failure
       : Match.value(failure).pipe(
           Match.tagsExhaustive({
-            ToolCallFailed: (failure) => mayHaveWritten(ToolCallFailed, failure),
+            ToolCallFailed: (failure) =>
+              mayHaveWritten(ToolCallFailed, notSentOnly(failure) ? partlyRun(failure) : failure),
             AppProviderFailed: (failure) => mayHaveWritten(AppProviderFailed, failure),
             AppEvaluationFailed: (failure) => mayHaveWritten(AppEvaluationFailed, failure),
             ToolElicitationFailed: (failure) => mayHaveWritten(ToolElicitationFailed, failure),
@@ -839,6 +878,25 @@ const callFailure =
             CredentialsError: (failure) => mayHaveWritten(CredentialsError, failure),
           }),
         );
+
+/**
+ * One call's hand-offs to the app's code, as the host reports them through `AppCodeEntered`: the
+ * catalog read for the call's kind, the call itself, and a confirmed read's repeat after a renewal.
+ * `earlier` counts those that came before this tracker, such as the request a resume continues,
+ * whose setup and approval check ran in the app. `callFailure` judges the call's failure against
+ * how many there were, so a call whose last exchange never left the host says it was not sent only
+ * when that exchange was its only one.
+ */
+export const appEntries = (onEntered: () => void, earlier = 0) => {
+  let entries = earlier;
+  return {
+    entered: () => {
+      entries += 1;
+      onEntered();
+    },
+    callFailure: (read: boolean, enteredApp: boolean) => callFailure(read, enteredApp, entries),
+  };
+};
 
 /**
  * Report a defect that a call's failure replaces for its caller: the host's error reporter, such as
@@ -1702,11 +1760,9 @@ export const makeTools = (
         // Set by the host when it hands this call's work to the app's code: catalog reads for its
         // kind, and the call itself.
         let enteredApp = false;
-        const appCode = {
-          entered: () => {
-            enteredApp = true;
-          },
-        };
+        const appCode = appEntries(() => {
+          enteredApp = true;
+        });
         // The caller's kind, confirmed by the app for a query (`confirmedRead`), decides how a
         // failure is reported and whether a refused call is repeated. For a call that names none,
         // the catalog only names the kind it is dispatched with: reading the catalog ran the app's
@@ -1772,7 +1828,7 @@ export const makeTools = (
             );
           }
           yield* observeFailure(failureSource(result.failure));
-          return yield* Effect.fail(runtimeFailure(identity, state, renewal)(result.failure));
+          return yield* Effect.fail(toolCallFailure(identity, state, renewal)(result.failure));
         }).pipe(
           Effect.catch((failure) =>
             // Only a confirmed read's renewal fails a call itself (`executeRenewing`), and a
@@ -1783,7 +1839,9 @@ export const makeTools = (
             failure._tag === "AccountRequired" ||
             !enteredApp
               ? Effect.fail(failure)
-              : Effect.flatMap(read, (read) => Effect.fail(callFailure(read, enteredApp)(failure))),
+              : Effect.flatMap(read, (read) =>
+                  Effect.fail(appCode.callFailure(read, enteredApp)(failure)),
+                ),
           ),
           // A defect after the hand-off, such as in Executor's own code, does not establish what
           // the app's code did either. A call that may write reports it as a failure that records
@@ -1879,6 +1937,10 @@ export const makeTools = (
                   );
                   // Set by the host when it hands this call's work to the app's code, as for a call.
                   let enteredApp = false;
+                  // The saved request already reached the app: its setup and approval check ran.
+                  const appCode = appEntries(() => {
+                    enteredApp = true;
+                  }, 1);
                   // As for a call, the saved (caller's) kind counts as a read only when the app
                   // confirms it.
                   const read = yield* readOf(state, saved.tool, saved.kind);
@@ -1926,7 +1988,7 @@ export const makeTools = (
                     if (Result.isFailure(result)) {
                       yield* observeFailure(failureSource(result.failure));
                       return yield* Effect.fail(
-                        runtimeFailure(
+                        toolCallFailure(
                           { app: saved.app, version: saved.version, tool: saved.tool },
                           state,
                           renewal,
@@ -1952,14 +2014,10 @@ export const makeTools = (
                       !enteredApp
                         ? Effect.fail(failure)
                         : Effect.flatMap(read, (read) =>
-                            Effect.fail(callFailure(read, enteredApp)(failure)),
+                            Effect.fail(appCode.callFailure(read, enteredApp)(failure)),
                           ),
                     ),
-                    Effect.provideService(AppCodeEntered, {
-                      entered: () => {
-                        enteredApp = true;
-                      },
-                    }),
+                    Effect.provideService(AppCodeEntered, appCode),
                   );
                 }).pipe(
                   // The request is consumed, so its caller receives the call's own failure.

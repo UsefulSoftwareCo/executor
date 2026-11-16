@@ -14,7 +14,7 @@
  * URL beyond the route's fixed path, header or payload is recorded, so none of an app's or a
  * customer's data can reach telemetry through these attributes.
  */
-import { Cause, Effect, Predicate } from "effect";
+import { Cause, Context, Effect, Predicate } from "effect";
 
 /** Span attribute values a recording carries: shapes only. */
 export type HopAttributes = Readonly<Record<string, string | number | boolean>>;
@@ -112,8 +112,33 @@ const guarded = (build: () => HopAttributes): HopAttributes => {
     return recordingFailed;
   }
 };
+/**
+ * Where a hop's attributes go instead of the current span, while an attempt that may be repeated
+ * runs (`runtime-connect.ts`). Unset, they go on the span. Attributes about an exchange's attempt
+ * belong in `annotateChecked` (or the hops' own recording), which honours it: written to the span
+ * directly, a first attempt's attributes would stay on a span the repeat rescued.
+ */
+export const HopRecording = Context.Reference<((attributes: HopAttributes) => void) | undefined>(
+  "executor/HopRecording",
+  { defaultValue: () => undefined },
+);
 const annotate = (build: () => HopAttributes) =>
-  Effect.suspend(() => Effect.annotateCurrentSpan(guarded(build)));
+  Effect.flatMap(HopRecording, (hold) =>
+    Effect.suspend(() =>
+      hold === undefined
+        ? Effect.annotateCurrentSpan(guarded(build))
+        : Effect.sync(() => hold(guarded(build))),
+    ),
+  );
+
+/** Attributes of the recording's own, checked and guarded, on the current span (`runtime-connect.ts`). */
+export const annotateChecked = (attributes: Record<string, unknown>) =>
+  annotate(() => checked(attributes));
+/** A platform error code in one of a platform's forms, otherwise `other`. */
+export const codeOf = (value: unknown): string => {
+  const code = shape(value, codeForm);
+  return typeof code === "string" ? code : "other";
+};
 
 /** The runtime's restarts and a supervisor's probe events, each checked; a throwing probe is marked. */
 const hostAttributes = (view: RuntimeView, now: number): HopAttributes => {
@@ -144,7 +169,7 @@ const tagOf = (value: unknown) => {
  * The innermost platform error under an Effect HTTP client error: its reason's cause, followed
  * through `cause` links (an undici `TypeError: fetch failed` carries the socket's error as its cause).
  */
-const platformError = (error: unknown): unknown => {
+export const platformError = (error: unknown): unknown => {
   let current: unknown =
     Predicate.hasProperty(error, "reason") && Predicate.hasProperty(error.reason, "cause")
       ? error.reason.cause

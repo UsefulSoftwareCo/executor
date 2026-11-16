@@ -313,8 +313,13 @@ export const mayHaveWrittenPresentation = (presented: ErrorPresentation): ErrorP
 export const mayHaveWritten = <A extends { readonly mayHaveWritten?: true | undefined }, I>(
   schema: Schema.Codec<A, I>,
   failure: A,
-): A =>
-  Schema.decodeUnknownSync(schema)({ ...Schema.encodeSync(schema)(failure), mayHaveWritten: true });
+): A => {
+  // A failure that may have written never also says that nothing was sent.
+  const { notSent: _, ...encoded } = Schema.encodeSync(schema)(failure) as I & {
+    readonly notSent?: unknown;
+  };
+  return Schema.decodeUnknownSync(schema)({ ...encoded, mayHaveWritten: true });
+};
 
 /** Why a running tool could not complete its user interaction. */
 const elicitationFailures = {
@@ -942,6 +947,11 @@ export const EvaluationRuntime = Schema.Union([
     kind: Schema.Literal("worker"),
     /** The failure the runtime's error matched, absent when the runtime reported none. */
     failure: Schema.optional(RuntimeFailure),
+    /**
+     * The host's connection to the runtime never formed, so nothing was sent to it (`failure` is
+     * then `disconnected`, as older readers expect; they drop this field).
+     */
+    notSent: Schema.optional(Schema.Literal(true)),
   }),
   Schema.Struct({ kind: Schema.Literal("build") }),
   Schema.Struct({
@@ -975,6 +985,16 @@ const retryOnce = (then: string, instructions: string) => ({
 });
 const reportReference =
   "If it fails again, report the failure with the reference shown beside this error, if any, and check what the app's recent changes run while it lists its tools.";
+
+/** What a runtime that could not be reached says: nothing was sent to the app. */
+const unreachablePresentation = {
+  description: "Executor could not connect to the app runtime, so nothing was sent to the app.",
+  recovery: retryOnce(
+    "check that Executor's app runtime is running.",
+    "Executor could not open its connection to the app runtime, so nothing was sent to the app. Executor's log records when the app runtime stops or is replaced.",
+  ),
+  retryable: true,
+};
 
 /** What the app's Worker failure says and what to do about it. */
 const workerPresentation = (failure: RuntimeFailure | undefined) => {
@@ -1067,9 +1087,10 @@ const runtimePresentation = (runtime: EvaluationRuntime): CausePresentation => {
   switch (runtime.kind) {
     case "worker":
     case "build": {
-      const { description, ...rest } = workerPresentation(
-        runtime.kind === "build" ? "build" : runtime.failure,
-      );
+      const { description, ...rest } =
+        runtime.kind === "worker" && runtime.notSent === true
+          ? unreachablePresentation
+          : workerPresentation(runtime.kind === "build" ? "build" : runtime.failure);
       return { title: "Tools could not be loaded", description: loaded(description), ...rest };
     }
     case "protocol":
@@ -1116,6 +1137,7 @@ const evaluationRuntime = (error: unknown): EvaluationRuntime | undefined => {
     return {
       kind: "worker",
       ...(error.reason === undefined ? {} : { failure: error.reason }),
+      ...(error.notSent === true ? { notSent: true as const } : {}),
     };
   if (Schema.is(RuntimeBuildUnavailable)(error)) return { kind: "build" };
   if (Schema.is(RuntimeProtocolUnsupported)(error))
@@ -1741,19 +1763,41 @@ export const ToolCallFailed = UserFacingError.define({
      * Worker, which can produce it, so the match is a likely cause, never a confirmed one.
      */
     rpcLimitMatched: Schema.optional(Schema.Literal(true)),
+    /**
+     * Repeating this call is safe: the exchange that failed never left the host (its connection to
+     * the app runtime never formed), and either it was the call's only hand-off to the app's code,
+     * or the app confirms the call only reads. A confirmed read repeated after a credential renewal
+     * keeps it although its first run reached the app: that run only read. Never set together with
+     * `mayHaveWritten`.
+     */
+    notSent: Schema.optional(Schema.Literal(true)),
     mayHaveWritten: MayHaveWritten,
   },
-  recorded: ({ failure, mcp, response, rpcLimitMatched }) =>
-    rpcLimitMatched === true
-      ? "The tool's failure matched the Workers RPC size limit's message"
-      : mcp !== undefined
-        ? `The tool failed: ${recordedMcp(mcp)}`
-        : failure !== undefined
-          ? `The tool failed: ${recordedApp(failure)}`
-          : response !== undefined
-            ? "The tool failed after starting"
-            : "The tool failed without further detail",
-  presentation: callPresentation(({ reason, response, failure, mcp, rpcLimitMatched }) => {
+  recorded: ({ failure, mcp, response, rpcLimitMatched, notSent }) =>
+    notSent === true
+      ? "The tool call was not sent: the app runtime could not be reached"
+      : rpcLimitMatched === true
+        ? "The tool's failure matched the Workers RPC size limit's message"
+        : mcp !== undefined
+          ? `The tool failed: ${recordedMcp(mcp)}`
+          : failure !== undefined
+            ? `The tool failed: ${recordedApp(failure)}`
+            : response !== undefined
+              ? "The tool failed after starting"
+              : "The tool failed without further detail",
+  presentation: callPresentation(({ reason, response, failure, mcp, rpcLimitMatched, notSent }) => {
+    // The host's own fact, never the app's: the call did not leave the host.
+    if (notSent === true)
+      return {
+        title: "Tool call was not sent",
+        description: reason,
+        recovery: {
+          action: "Try the call again.",
+          instructions:
+            "Executor could not open its connection to the app runtime, so it sent nothing of this call and the tool did not run. Repeating the call is safe. If it fails the same way again, the app runtime may have stopped; Executor's log records when it stops or is replaced.",
+        },
+        retryable: true,
+      };
     if (mcp !== undefined) return mcpFailurePresentation(mcp);
     // App code can produce the runtime's text, so the match names a likely cause and keeps a read's
     // bounded retry. Executor sets no size limit of its own on a result.

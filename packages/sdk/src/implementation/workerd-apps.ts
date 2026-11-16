@@ -52,6 +52,7 @@ import { connectedWorkerdApps, TransportClosed, workerdHostHandler } from "./wor
 import { workerdHostModules } from "./workerd-bundle.ts";
 import { appWorkerIdleSeconds, appWorkerLimit } from "./app-worker-residency.ts";
 import { runtimeHops, type SocketRecord } from "./runtime-hop.ts";
+import { repeatingAtConnect, repeatUnopened, type Opening } from "./runtime-connect.ts";
 
 /** Existing stores need an explicit migration; opening a new empty store would hide retained app data. */
 export class WorkerdMigrationRequired extends Schema.TaggedError<WorkerdMigrationRequired>()(
@@ -296,7 +297,16 @@ export const workerdApps = (options: {
     // delivered to the host Worker. The session then waits forever for its result.
     const connect = (pathname: string) =>
       new NodeWebSocket(websocketUrl(pathname), { headers, perMessageDeflate: false });
+    // An RPC exchange sends nothing until its socket has opened. One whose socket never opened is
+    // run once more from `session`'s start; see runtime-connect.ts.
     const rpc = <A, E>(
+      work: (api: RpcStub<WorkerdAppApi>, signal: AbortSignal) => Effect.Effect<A, E>,
+    ) =>
+      repeatUnopened((opening) =>
+        session(opening, (api, signal) => Effect.andThen(opening.opened, () => work(api, signal))),
+      );
+    const session = <A, E>(
+      opening: Opening,
       work: (api: RpcStub<WorkerdAppApi>, signal: AbortSignal) => Effect.Effect<A, E>,
     ) =>
       Effect.scoped(
@@ -311,6 +321,7 @@ export const workerdApps = (options: {
               const socket = connect("/rpc");
               // Measured only, for a failed call's span: see runtime-hop.ts.
               socketRecord = hops.track(socket);
+              opening.watch(socket);
               // Registered before Cap'n Web's own listeners, so the session knows its socket
               // closed by the time it breaks; see `TransportClosed`.
               let closed = false;
@@ -384,7 +395,7 @@ export const workerdApps = (options: {
     // closed after the response. Bun can still send it on an idle pooled connection, which only a
     // request without that header would leave; none to this origin does.
     const backend = (operation: "start" | "status" | "terminate", run: WorkflowRunId) =>
-      Effect.scoped(
+      repeatingAtConnect(
         Effect.gen(function* () {
           const request = yield* HttpClientRequest.post(new URL("/workflow", origin), {
             headers: { ...headers, connection: "close" },
@@ -402,7 +413,7 @@ export const workerdApps = (options: {
     // Each command asks for its connection to be closed after the response, like workflow requests
     // above.
     const evaluated = (app: string, command: EvaluatedCommand) =>
-      Effect.scoped(
+      repeatingAtConnect(
         Effect.gen(function* () {
           const url = new URL("/evaluated", origin);
           url.searchParams.set("app", app);
