@@ -403,6 +403,71 @@ layer(HostedLive, { excludeTestServices: true })("Hosted Accounts tab", (it) => 
     ),
   );
 
+  it.effect(scenarios.hostedAppAccountListedBrowser.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const browser = yield* Browser,
+          evidence = yield* Evidence;
+        const fixture = yield* sharedApp("Team report", source);
+        const { actors, app } = fixture;
+        const label = `Team Datadog ${randomUUID().slice(0, 8)}`;
+        const team = yield* fixture.connect("datadog", label);
+        expect(yield* fixture.links()).toEqual([["datadog", team]]);
+        const card = (page: Page) =>
+          page.getByRole("link", { name: `Open ${app.name}`, exact: true });
+
+        // The member links no account of their own; the app's card names the owner's account
+        // linked for everyone instead of saying none is linked.
+        yield* browser.login(actors.member);
+        yield* browser.use("Open the member's apps", (page) =>
+          page.goto(`/org/${actors.organization.slug}/apps`),
+        );
+        yield* browser.use("The card names the app's account", (page) =>
+          card(page).getByText(label, { exact: true }).waitFor(),
+        );
+        expect(
+          yield* browser.use("The card says no account is missing", (page) =>
+            card(page)
+              .getByText(/^(No accounts linked|Needs account)$/)
+              .count(),
+          ),
+        ).toBe(0);
+        yield* browser.checkpoint("Member's app card with the app's account");
+        yield* evidence.attach(
+          "member-app-card.png",
+          "image/png",
+          yield* browser.use("Capture the member's apps", (page) =>
+            page.screenshot({ fullPage: true }),
+          ),
+        );
+
+        // The owner's account row lists the app it is linked to for everyone.
+        yield* browser.login(actors.owner);
+        yield* browser.use("Open the owner's accounts", (page) =>
+          page.goto(`/org/${actors.organization.slug}/accounts`),
+        );
+        const row = (page: Page) => page.locator(".inventory-row").filter({ hasText: label });
+        yield* browser.use("The account's row links to the app", (page) =>
+          row(page).getByRole("link", { name: app.name }).waitFor(),
+        );
+        expect(
+          yield* browser.use("The row does not say No apps", (page) =>
+            row(page).getByText("No apps", { exact: true }).count(),
+          ),
+        ).toBe(0);
+        yield* browser.checkpoint("Owner's account row with the app");
+        yield* evidence.attach(
+          "owner-account-row.png",
+          "image/png",
+          yield* browser.use("Capture the owner's accounts", (page) =>
+            page.screenshot({ fullPage: true }),
+          ),
+        );
+      }),
+    ),
+  );
+
   it.effect(scenarios.hostedAppSchedulesBrowser.title, (context) =>
     withHostedCase(
       context,

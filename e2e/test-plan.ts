@@ -8699,6 +8699,17 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
+  hostedAppAccountListedBrowser: {
+    fixtures: "actors",
+    file: "app-accounts-tab.spec.ts",
+    title:
+      "an account linked for everyone is named on the app's card for a member who linked none, and its owner's account row lists the app",
+    targets: {
+      local: na("Local has one subject; its overview's app links are read in its own scenario."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
   hostedAppSchedulesBrowser: {
     fixtures: "actors",
     file: "app-accounts-tab.spec.ts",
