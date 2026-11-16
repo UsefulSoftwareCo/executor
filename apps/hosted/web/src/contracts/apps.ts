@@ -178,9 +178,16 @@ const removeApp = Atom.family((key: AppKey) =>
             ...data,
             apps: data.apps.filter((app) => app.id !== key.app),
             links: data.links.filter((link) => link.app !== key.app),
+            appLinks: data.appLinks.filter((link) => link.app !== key.app),
           }));
+          const shared = Option.isSome(current)
+            ? current.value.appLinks.flatMap((link) => (link.app === key.app ? [link.account] : []))
+            : [];
           if (Option.isSome(current))
-            for (const account of linkedAccountIds(current.value.links, key.app))
+            for (const account of new Set([
+              ...linkedAccountIds(current.value.links, key.app),
+              ...shared,
+            ]))
               acknowledge(
                 get,
                 accountAtom({ organization: key.organization, account }),

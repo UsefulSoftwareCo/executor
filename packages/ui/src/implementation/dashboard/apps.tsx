@@ -6,6 +6,7 @@ import { useState, type ReactNode } from "react";
 import { QueryResult, useQuery, useDashboard } from "./context.tsx";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { AlertCircleIcon, ArrowRight02Icon, Key01Icon } from "@hugeicons/core-free-icons";
+import type { AccountId } from "@executor-js/sdk";
 import type { Inventory, QueryProps } from "../../contracts/dashboard.ts";
 import { accountNeedsSignIn } from "../../contracts/dashboard.ts";
 import {
@@ -113,23 +114,41 @@ function AppsList({
         <div className="app-cards grid grid-cols-3 [grid-auto-rows:1fr] gap-4 max-[1100px]:grid-cols-2 max-[600px]:grid-cols-1 max-[600px]:gap-2">
           {pending}
           {apps.map((app) => {
-            const ids = linkedAccountIds(data.links, app.id);
-            const selected = ids.flatMap((id) => {
-              const account = data.accounts.find((item) => item.id === id);
+            const own = (id: AccountId) => data.accounts.find((item) => item.id === id);
+            const userLinked = linkedAccountIds(data.links, app.id).flatMap((id) => {
+              const account = own(id);
               return account === undefined ? [] : [account];
             });
-            // The inventory names no requirements, so a user requirement counts any linked
-            // account of its provider; app links are not listed here.
+            const shared = data.appLinks.filter((link) => link.app === app.id);
+            // The inventory names no requirements for user links, so a user requirement counts
+            // any linked account of its provider. App links name theirs.
             const user = Object.entries(app.requirements.accounts).flatMap(([slot, requirement]) =>
               requirement.scope === "user"
-                ? selected
+                ? userLinked
                     .filter((account) => account.provider === requirement.provider)
                     .map((account) => ({ requirement: slot, account }))
                 : [],
             );
-            const missing = missingRequirements(requirementAccounts(app, { user })).length > 0;
-            const needsSignIn = selected.some((account) => accountNeedsSignIn(account));
-            const unavailable = selected.some((account) => account.signIn?.state === "unavailable");
+            const appScope = shared.map((link) => ({
+              requirement: link.requirement,
+              account: { id: link.account, provider: link.provider },
+            }));
+            const missing =
+              missingRequirements(requirementAccounts(app, { user, app: appScope })).length > 0;
+            // Each linked account once, user links first. A shared account the caller does not
+            // own shows its link's label and no sign-in state.
+            const linked: { readonly id: AccountId; readonly label: string }[] = [];
+            for (const account of [
+              ...userLinked,
+              ...shared.map((link) => own(link.account) ?? { id: link.account, label: link.label }),
+            ])
+              if (!linked.some((item) => item.id === account.id)) linked.push(account);
+            const owned = linked.flatMap((account) => {
+              const found = own(account.id);
+              return found === undefined ? [] : [found];
+            });
+            const needsSignIn = owned.some((account) => accountNeedsSignIn(account));
+            const unavailable = owned.some((account) => account.signIn?.state === "unavailable");
             const provider = Object.values(app.requirements.accounts)[0]?.definition;
             return (
               <Card asChild key={app.id} className="gap-0 rounded-lg p-4 shadow-none">
@@ -167,7 +186,7 @@ function AppsList({
                             Needs account
                           </span>
                         </span>
-                      ) : selected.length === 0 ? (
+                      ) : linked.length === 0 ? (
                         <span className="muted text-muted-foreground">
                           {provider === undefined ? "No account required" : "No accounts linked"}
                         </span>
@@ -184,9 +203,7 @@ function AppsList({
                             <HugeiconsIcon icon={Key01Icon} strokeWidth={2} aria-hidden size={12} />
                           )}
                           <span className="app-card-account-label min-w-0 overflow-hidden text-ellipsis whitespace-nowrap">
-                            {selected
-                              .map((account) => account.label || "Unnamed account")
-                              .join(", ")}
+                            {linked.map((account) => account.label || "Unnamed account").join(", ")}
                           </span>
                         </span>
                       )}

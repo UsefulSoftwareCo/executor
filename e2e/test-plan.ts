@@ -8251,6 +8251,16 @@ export const scenarios = plan({
       local: na("Local uses its instance key."),
     },
   },
+  runtimeConnectRepeat: {
+    file: "runtime-connect-repeat.spec.ts",
+    title:
+      "An exchange with the local app runtime that never connected is repeated once, and nothing that may have reached it is",
+    targets: {
+      "self-host": scheduled,
+      local: na("The probe runs the runtime's exchanges against stubs; one target covers it."),
+      cloud: na("Cloud's apps do not run in a local workerd."),
+    },
+  },
   runtimeHopShape: {
     file: "runtime-hop-shape.spec.ts",
     title: "A failed exchange with the local app runtime records how far it got, as shapes only",
@@ -8685,6 +8695,17 @@ export const scenarios = plan({
       "a member sees the App accounts greyed out and read-only with the linked account's name, and the app link routes other than the list refuse them",
     targets: {
       local: na("Local has one subject."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppAccountListedBrowser: {
+    fixtures: "actors",
+    file: "app-accounts-tab.spec.ts",
+    title:
+      "an account linked for everyone is named on the app's card for a member who linked none, and its owner's account row lists the app",
+    targets: {
+      local: na("Local has one subject; its overview's app links are read in its own scenario."),
       "self-host": scheduled,
       cloud: scheduled,
     },

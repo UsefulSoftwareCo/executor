@@ -8,6 +8,7 @@ import {
   Provider,
   AppId,
   AccountId,
+  ProviderId,
   AccountScope,
   AccountConnectionId,
   ProviderNotFound,
@@ -107,6 +108,18 @@ export const ResourceDirectory = Schema.Struct({
       access: AppAccess,
       /** The accounts the caller linked to the app and may use; empty when they cannot use it. */
       linkedAccounts: Schema.Array(AccountId),
+      /**
+       * The app's app links, shared by everyone using it, oldest first, with the label its
+       * accounts page shows; empty when the caller cannot use it.
+       */
+      appLinks: Schema.Array(
+        Schema.Struct({
+          requirement: Schema.String,
+          account: AccountId,
+          provider: ProviderId,
+          label: Schema.String,
+        }),
+      ),
     }),
   ),
   /** The caller's own accounts; every saved account is personal to its owner. */

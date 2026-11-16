@@ -278,6 +278,62 @@ export default defineApp({}, { tools: router({
           });
           expect(readSpan["executor.runtime.http.code"]).toBeDefined();
           expect(readSpan["executor.runtime.host.restarted_ms"]).toBeDefined();
+          // Refused at connect, so nothing of it was sent: the host ran it once more, from its start,
+          // and that was refused too (runtime-connect.ts).
+          expect(readSpan).toMatchObject({
+            "executor.runtime.http.connect_attempts": "2",
+            "executor.runtime.http.first_attempt.error_code": "ECONNREFUSED",
+            "executor.runtime.http.connect_outcome": "failed",
+          });
+
+          // A tool call while nothing listens: its session never opens, twice, so nothing was sent,
+          // and the call's only exchange with the app never left the host. It says so, may be
+          // repeated, and does not say it may have written.
+          const unsent = yield* local.request("POST", "/v1/tools/call", {
+            app: app.id,
+            tool: "ready",
+            input: {},
+          });
+          expect(unsent.status, unsent.text).toBe(502);
+          const unsentBody = yield* Schema.decodeUnknownEffect(
+            Schema.fromJsonString(
+              Schema.Struct({
+                _tag: Schema.String,
+                reason: Schema.String,
+                notSent: Schema.optionalKey(Schema.Boolean),
+                mayHaveWritten: Schema.optionalKey(Schema.Boolean),
+              }),
+            ),
+          )(unsent.text);
+          expect(unsentBody).toMatchObject({
+            _tag: "ToolCallFailed",
+            reason:
+              "Executor could not connect to the app runtime, so it did not send this tool call.",
+            notSent: true,
+          });
+          expect(unsentBody).not.toHaveProperty("mayHaveWritten");
+          const unsentSpan = yield* ownCollector(
+            Telemetry.pipe(
+              Effect.flatMap((telemetry) =>
+                telemetry.spans("runtime.workerd.call", { app: app.id }),
+              ),
+              Effect.flatMap((spans) => {
+                const span = spans.find(
+                  (tags) => tags["executor.runtime.failure"] === "unreachable",
+                );
+                return span === undefined
+                  ? Effect.fail(new Error("The unsent call's span has not reached the collector"))
+                  : Effect.succeed(span);
+              }),
+            ),
+          );
+          expect(unsentSpan).toMatchObject({
+            "executor.runtime.rpc.connect_attempts": "2",
+            "executor.runtime.rpc.first_attempt.error_code": "ECONNREFUSED",
+            "executor.runtime.rpc.connect_outcome": "failed",
+            "executor.runtime.rpc.opened": "false",
+            "executor.runtime.rpc.sent": "0",
+          });
         }),
       ),
     180_000,

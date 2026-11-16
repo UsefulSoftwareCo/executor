@@ -17,6 +17,7 @@ import {
   App,
   AppId,
   OwnerId,
+  ProviderId,
   HttpUrl,
   StorageError,
   publishingDomain,
@@ -187,6 +188,16 @@ export class OrganizationIcons extends Context.Service<
 export const Inventory = Schema.Struct({
   /** The accounts the caller linked to each listed app and may use. */
   links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
+  /** The app links of each listed app, shared by everyone using it, oldest first. */
+  appLinks: Schema.Array(
+    Schema.Struct({
+      app: AppId,
+      requirement: Schema.String,
+      account: AccountId,
+      provider: ProviderId,
+      label: Schema.String,
+    }),
+  ),
   apps: Schema.Array(App),
   /** Each account's checks by the apps listed here; reading them never runs a check. */
   accounts: Schema.Array(
