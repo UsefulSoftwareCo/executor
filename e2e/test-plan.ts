@@ -8251,6 +8251,20 @@ export const scenarios = plan({
       local: na("Local uses its instance key."),
     },
   },
+  webhookSourceOrder: {
+    file: "webhook-source-order.spec.ts",
+    title:
+      "Pending webhook sources are served first in, first out, and the lease lets one sweep serve a source and loses no link made meanwhile",
+    targets: {
+      "self-host": scheduled,
+      local: na(
+        "The probe runs webhook-source reconciliation on PGlite in memory; one target covers it.",
+      ),
+      cloud: na(
+        "The probe runs webhook-source reconciliation on PGlite in memory; one target covers it.",
+      ),
+    },
+  },
   runtimeConnectRepeat: {
     file: "runtime-connect-repeat.spec.ts",
     title:
