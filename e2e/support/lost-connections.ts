@@ -39,6 +39,37 @@
  * file, and the suite's preparation saves its own. The job summary (`e2e/lost-request-summary.ts`)
  * counts them all, with the times.
  *
+ * A request of which nothing was written to any connection is sent again, whatever its method: its
+ * connect or TLS handshake failed, so no byte of it left the process. Connections are never reused,
+ * so in a burst of new connections refused or reset (#1089 lost 9 requests that way, most "never
+ * written to a connection" after 80-211 ms) every request needed a new one and failed with it. It
+ * is sent again on a new connection at most 5 times, 1, 2, 4, 8 and 16 s after each failure (31 s
+ * of waiting, ending inside a scenario's 60 s), and never at or past the scenario's own bound or
+ * after its caller gave up. Only a failure of the connection itself counts (refused, reset, timed
+ * out, a failed TLS handshake); one that would fail the same way again (an invalid argument, a
+ * certificate that does not verify) is not repeated. A request whose headers were written, or whose
+ * response had begun, is never sent again. Nor is one whose body may have been read (a stream).
+ *
+ * Why "nothing written" means no byte left the process, for undici 7.30.1 (Node 24.22.1):
+ * - The connector hands undici a socket only on `secureConnect` (`connect` for plain HTTP). A
+ *   refused connect or a failed handshake fails the request before undici's `writeH1` runs.
+ * - In `writeH1`, `undici:client:sendHeaders` is published, synchronously, before the request's
+ *   first write to the socket (`writeBuffer`, `writeStream`, `writeIterable`, `writeBlob`). Nothing
+ *   before it writes to the socket. This module marks the request written in that publish.
+ * - HTTP/2 is off: the pool sets no `allowH2`, so the connector offers only `http/1.1`.
+ * - Each attempt carries its own `x-executor-e2e-request` id, and the publish carries the request
+ *   it writes. A concurrent request's write can never mark this one, and an attempt never inherits
+ *   an earlier attempt's state.
+ * So a request that never got a connection, and one whose connection opened and failed before
+ * undici wrote to it, both read `written: "nothing"`. A request undici began to write reads
+ * "headers" or "whole request" even if the write then failed: the error lies only towards not
+ * sending again.
+ *
+ * Each repeat is kept with the request (`repeats`: when each attempt failed, its code and time). A
+ * request answered after repeats is recorded as "sent again: answered", and one that stays unsent
+ * as "lost: never written" with why the repeats stopped. Both reach the scenario's evidence, the
+ * job summary and, when the scenario fails anyway, its failure text.
+ *
  * The test client only: the product's own clients are other processes and are unchanged.
  */
 import { subscribe } from "node:diagnostics_channel";
@@ -62,12 +93,34 @@ export interface SentFacts {
   readonly responseStarted: boolean;
 }
 
-/** Where a lost request was lost. Nothing is sent again. */
+/**
+ * Where a lost request was lost, or that it was answered after being sent again: only a request of
+ * which nothing was written is ever sent again.
+ */
 export type LostOutcome =
   | "lost: new connection"
   | "lost: reused connection"
   | "lost: response had begun"
-  | "lost: never written";
+  | "lost: never written"
+  | "sent again: answered";
+
+/** One attempt of a request that failed with nothing written. */
+export interface UnsentAttempt {
+  readonly at: string;
+  readonly code?: string;
+  readonly elapsedMs: number;
+}
+
+/** Why a request that stayed unsent was not sent again. */
+export type RepeatsStopped =
+  | "5 repeats used"
+  | "the scenario's bound"
+  | "the caller gave up"
+  | "its body cannot be sent twice"
+  | "its failure is not a connection's";
+
+/** The waits before each repeat of a request of which nothing was written. */
+export const unsentRepeatDelaysMs = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
 
 /** One stage request lost in transport, as the record and the evidence keep it. */
 export interface LostRequest {
@@ -80,9 +133,14 @@ export interface LostRequest {
   /** The path only: a query can hold identifiers. */
   readonly path: string;
   readonly code?: string;
+  /** From the first attempt to the last one's end, the repeats' waits included. */
   readonly elapsedMs: number;
   readonly sent: SentFacts;
   readonly outcome: LostOutcome;
+  /** The failed attempts of a request sent again, oldest first; absent when it was not. */
+  readonly repeats?: ReadonlyArray<UnsentAttempt>;
+  /** Why a request of which nothing was written was not sent again. */
+  readonly stopped?: RepeatsStopped;
 }
 
 interface SocketState {
@@ -109,7 +167,20 @@ const stageOrigins = new Set<string>();
 const kept: Array<LostRequest> = [];
 let currentScenario: () => string | undefined = () => undefined;
 let currentFile: () => string | undefined = () => undefined;
-let installed = false;
+/** When the running scenario's bound ends (epoch ms); no repeat starts at or past it. */
+let currentDeadline: () => number | undefined = () => undefined;
+/** Requests waiting to be sent again now, for a scenario that fails meanwhile. */
+const waiting = new Set<{
+  readonly scenario?: string;
+  readonly since: number;
+  readonly path: string;
+}>();
+/**
+ * Set on `globalThis` once a copy of this module has wrapped `fetch`. A second copy of the module in
+ * one process (a module graph loaded twice) must not wrap it again: its id header would replace the
+ * first wrapper's, and the first would then read a written request as never written.
+ */
+const installedKey = Symbol.for("executor.e2e.lostConnections.installed");
 
 /** The id header of an undici request, whose headers are a flat name, value array or a string. */
 const idOf = (request: { headers?: unknown }): string | undefined => {
@@ -191,9 +262,18 @@ export const lostOutcome = (facts: SentFacts): LostOutcome =>
 
 /** The facts a failed stage request carries on its error, for `request-failure.ts` to read. */
 export const sentFactsKey = Symbol.for("executor.e2e.sentFacts");
-export const sentFacts = (error: unknown): (SentFacts & { outcome?: LostOutcome }) | undefined =>
+/** What a lost request's error carries: its last attempt's facts, and its repeats when nothing was written. */
+export type SentOnError = SentFacts & {
+  readonly outcome?: LostOutcome;
+  /** How many attempts failed with nothing written, the first included. */
+  readonly repeats?: number;
+  /** From the first attempt to the last one's end. */
+  readonly waitedMs?: number;
+  readonly stopped?: RepeatsStopped;
+};
+export const sentFacts = (error: unknown): SentOnError | undefined =>
   typeof error === "object" && error !== null && sentFactsKey in error
-    ? (error as Record<symbol, SentFacts & { outcome?: LostOutcome }>)[sentFactsKey]
+    ? (error as Record<symbol, SentOnError>)[sentFactsKey]
     : undefined;
 
 /**
@@ -246,7 +326,53 @@ const tagged = (input: RequestInfo | URL, init: RequestInit | undefined, id: str
   return { ...init, headers };
 };
 
-/** `fetch` that gives each stage request a connection of its own and records a lost one. */
+/**
+ * Whether a request's body can be given to `fetch` again unchanged: none, or one `fetch` reads
+ * afresh each time (a string, bytes, a Blob, form fields). A stream, an async iterable or anything
+ * else may have been read by the first attempt.
+ */
+const replayable = (input: RequestInfo | URL, init: RequestInit | undefined) => {
+  if (input instanceof Request && input.body !== null && init?.body === undefined) return false;
+  const body = init?.body;
+  return (
+    body === null ||
+    body === undefined ||
+    typeof body === "string" ||
+    body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(body) ||
+    body instanceof Blob ||
+    body instanceof URLSearchParams ||
+    body instanceof FormData
+  );
+};
+
+/**
+ * Failures of the connection itself: refused, reset, timed out, unreachable, closed, or a TLS
+ * handshake that failed. Anything else that fails before a write (an invalid argument, a
+ * certificate that does not verify) would fail again the same way, so it is not repeated.
+ */
+const connectionFailure =
+  /^(?:ECONNREFUSED|ECONNRESET|EPIPE|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|EAI_AGAIN|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|UND_ERR_CLOSED|EPROTO|ERR_SSL_[\w/]+)$/u;
+
+/** Waits, unless the caller gives up first: then false. */
+const pause = (milliseconds: number, signal: AbortSignal | null | undefined) =>
+  new Promise<boolean>((resolve) => {
+    if (signal?.aborted === true) return resolve(false);
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", stop);
+      resolve(true);
+    }, milliseconds);
+    const stop = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    signal?.addEventListener("abort", stop, { once: true });
+  });
+
+/**
+ * `fetch` that gives each stage request a connection of its own, records a lost one, and sends again
+ * one of which nothing was written to any connection.
+ */
 export const lostConnectionFetch = (original: typeof fetch): typeof fetch =>
   ((input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(input instanceof Request ? input.url : String(input));
@@ -254,39 +380,129 @@ export const lostConnectionFetch = (original: typeof fetch): typeof fetch =>
     const method = (
       init?.method ?? (input instanceof Request ? input.method : "GET")
     ).toUpperCase();
-    const id = randomBytes(8).toString("hex");
-    const entry: Observed = { headersWritten: false, bodyWritten: false, responseStarted: false };
+    const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
+    const scenario = currentScenario();
+    const file = currentFile();
+    const record = (fields: Omit<LostRequest, "at" | "method" | "path" | "scenario" | "file">) =>
+      kept.push({
+        at: new Date().toISOString(),
+        ...(scenario !== undefined && { scenario }),
+        ...(file !== undefined && { file }),
+        method,
+        path: url.pathname,
+        ...fields,
+      });
     return poolFor(original).then((dispatcher) => {
-      observed.set(id, entry);
       const started = Date.now();
-      return original(input, { ...tagged(input, init, id), dispatcher } as RequestInit)
-        .catch((error: unknown) => {
-          if (!lostInTransport(error)) throw error;
-          const facts = factsOf(entry);
-          const scenario = currentScenario();
-          const file = currentFile();
-          const code = firstCode(error);
-          const outcome = lostOutcome(facts);
-          kept.push({
-            at: new Date().toISOString(),
-            ...(scenario !== undefined && { scenario }),
-            ...(file !== undefined && { file }),
-            method,
-            path: url.pathname,
-            ...(code !== undefined && { code }),
-            elapsedMs: Date.now() - started,
-            sent: facts,
-            outcome,
-          });
-          Object.defineProperty(error, sentFactsKey, { value: { ...facts, outcome } });
-          throw error;
-        })
-        .finally(() => {
-          entry.unwatch?.();
-          observed.delete(id);
-        });
+      const repeats: Array<UnsentAttempt> = [];
+      // Each attempt is its own request to undici, with its own id and record of what was written.
+      const attempt = (): Promise<Response> => {
+        const id = randomBytes(8).toString("hex");
+        const entry: Observed = {
+          headersWritten: false,
+          bodyWritten: false,
+          responseStarted: false,
+        };
+        observed.set(id, entry);
+        const attemptStarted = Date.now();
+        return original(input, { ...tagged(input, init, id), dispatcher } as RequestInit)
+          .finally(() => {
+            // This attempt is over: its facts stay in `entry`, read below.
+            entry.unwatch?.();
+            observed.delete(id);
+          })
+          .then(
+            (response) => {
+              if (repeats.length > 0)
+                record({
+                  ...(repeats[0]!.code !== undefined && { code: repeats[0]!.code }),
+                  elapsedMs: Date.now() - started,
+                  sent: { written: "nothing", responseStarted: false },
+                  outcome: "sent again: answered",
+                  repeats,
+                });
+              return response;
+            },
+            (error: unknown) => {
+              if (!lostInTransport(error)) throw error;
+              const facts = factsOf(entry);
+              const code = firstCode(error);
+              const lost = (stopped?: RepeatsStopped) => {
+                const outcome = lostOutcome(facts);
+                record({
+                  ...(code !== undefined && { code }),
+                  elapsedMs: Date.now() - started,
+                  sent: facts,
+                  outcome,
+                  ...(repeats.length > 0 && { repeats: [...repeats] }),
+                  ...(stopped !== undefined && { stopped }),
+                });
+                Object.defineProperty(error, sentFactsKey, {
+                  value: {
+                    ...facts,
+                    outcome,
+                    repeats: repeats.length,
+                    waitedMs: Date.now() - started,
+                    ...(stopped !== undefined && { stopped }),
+                  },
+                });
+                return error;
+              };
+              // Undici wrote some of it, or a response began: it may have been processed.
+              if (facts.written !== "nothing") throw lost();
+              repeats.push({
+                at: new Date().toISOString(),
+                ...(code !== undefined && { code }),
+                elapsedMs: Date.now() - attemptStarted,
+              });
+              if (code === undefined || !connectionFailure.test(code))
+                throw lost("its failure is not a connection's");
+              if (!replayable(input, init)) throw lost("its body cannot be sent twice");
+              const delay = unsentRepeatDelaysMs[repeats.length - 1];
+              if (delay === undefined) throw lost("5 repeats used");
+              const deadline = currentDeadline();
+              if (deadline !== undefined && Date.now() + delay >= deadline)
+                throw lost("the scenario's bound");
+              const wait = {
+                ...(scenario !== undefined && { scenario }),
+                since: started,
+                path: url.pathname,
+              };
+              waiting.add(wait);
+              return pause(delay, signal).then((waited) => {
+                waiting.delete(wait);
+                if (!waited) throw lost("the caller gave up");
+                return attempt();
+              });
+            },
+          );
+      };
+      return attempt();
     });
   }) as typeof fetch;
+
+/**
+ * A failed scenario's note on its requests that never got a connection: those that stayed unsent,
+ * and those still waiting to be sent again when it failed. Empty when there are none.
+ */
+export const unsentNote = (scenario: string, now = Date.now()) => {
+  const unsent = [
+    ...kept
+      .filter(
+        (lost) =>
+          lost.scenario?.endsWith(scenario) === true && lost.outcome === "lost: never written",
+      )
+      .map((lost) => lost.elapsedMs),
+    ...[...waiting]
+      .filter((wait) => wait.scenario?.endsWith(scenario) === true)
+      .map((wait) => now - wait.since),
+  ];
+  if (unsent.length === 0) return "";
+  const longest = (Math.max(...unsent) / 1000).toFixed(1);
+  return unsent.length === 1
+    ? `one stage request was unsent for ${longest} s: its connect or TLS handshake failed on every attempt (lost-requests.json)`
+    : `${unsent.length} stage requests were unsent, the longest for ${longest} s: their connects or TLS handshakes failed on every attempt (lost-requests.json)`;
+};
 
 /**
  * Start a scenario's stage origins afresh with the run's own, and say how a record names its
@@ -297,11 +513,14 @@ export const configureLostConnections = (options: {
   readonly origins: Iterable<string>;
   readonly scenario?: () => string | undefined;
   readonly file?: () => string | undefined;
+  /** When the running scenario's bound ends (epoch ms): no repeat starts at or past it. */
+  readonly deadline?: () => number | undefined;
 }) => {
   stageOrigins.clear();
   addStageOrigins(options.origins);
   if (options.scenario !== undefined) currentScenario = options.scenario;
   if (options.file !== undefined) currentFile = options.file;
+  if (options.deadline !== undefined) currentDeadline = options.deadline;
 };
 
 /** Add origins a scenario's own target serves. */
@@ -311,8 +530,9 @@ export const addStageOrigins = (origins: Iterable<string>) => {
 
 /** Watch the channels and wrap `globalThis.fetch`, once per process. */
 export const installLostConnections = () => {
-  if (installed) return;
-  installed = true;
+  const global = globalThis as Record<symbol, unknown>;
+  if (global[installedKey] === true) return;
+  global[installedKey] = true;
   watch();
   globalThis.fetch = lostConnectionFetch(globalThis.fetch);
 };

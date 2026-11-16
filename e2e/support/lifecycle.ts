@@ -16,6 +16,7 @@ import {
   configureLostConnections,
   takeAllLostRequests,
   takeLostRequests,
+  unsentNote,
 } from "./lost-connections.ts";
 import { targetHosts } from "./role-hosts.ts";
 import { machineWorkMs, referenceMachineWorkMs, timeoutLine } from "./machine-speed.ts";
@@ -60,12 +61,24 @@ export const installScenarioLifecycle = () =>
     let completedAt: number | undefined;
     let provisioningMs: number | null = null;
     let save = (_finishedAt: number): Effect.Effect<void> => Effect.void;
+    let finished = false;
+    // A scenario that fails while a request of it never got a connection says so in its failure,
+    // a time-out included: "one stage request was unsent for 31.0 s".
+    context.onTestFailed(({ task }) => {
+      const note = unsentNote(task.name);
+      const first = task.result?.errors?.[0];
+      if (note === "" || first === undefined) return;
+      const original = first.message;
+      first.message = `${original}; ${note}`;
+      if (first.stack) first.stack = first.stack.replace(original, first.message);
+    });
     // The time-out that applied, and, when the scenario or one of its hooks timed out, how fast
     // the machine was then (machine-speed.ts). The line is also put on the time-out's own error.
     let timing: Record<string, unknown> = {};
     let discard: Effect.Effect<void> = Effect.void;
     // A passing scenario's server data is never read again; failures keep theirs for diagnosis.
     context.onTestFinished(({ task }) => {
+      finished = true;
       timing = { timeoutMs: task.timeout, hookTimeoutMs };
       const timedOut = (task.result?.errors ?? []).flatMap((error) => {
         const bound = /^(Test|Hook) timed out in (\d+)ms/.exec(error.message ?? "");
@@ -106,7 +119,13 @@ export const installScenarioLifecycle = () =>
           // The stage this scenario sends to: its requests lost in transport are told apart
           // and recorded, each on a connection of its own (lost-connections.ts). A target the scenario starts adds
           // its own origins as soon as it exists (sdk/scenario.ts).
-          configureLostConnections({ origins: Object.values(targetHosts(base)) });
+          // A request of which nothing was written is sent again, never at or past the
+          // scenario's own bound, counted from before its set-up.
+          configureLostConnections({
+            origins: Object.values(targetHosts(base)),
+            deadline: () =>
+              finished || context.task.timeout <= 0 ? undefined : startedAt + context.task.timeout,
+          });
           save = (finishedAt) =>
             saveLostRequests(base.directory, context.task.id, takeLostRequests(context.task.name))
               .pipe(

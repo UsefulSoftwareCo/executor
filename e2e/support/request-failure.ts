@@ -64,7 +64,9 @@ export const RequestFailure = Schema.Struct({
   /**
    * For a stage request that failed in transport: whether its connection was new or reused, how
    * many requests it had carried, how old and how long idle it was, how much of the request was
-   * written, and whether a response began (`support/lost-connections.ts`). Nothing is sent again.
+   * written, and whether a response began (`support/lost-connections.ts`). Only a request of
+   * which nothing was written is sent again: how many attempts failed so, over how long, and why
+   * the repeats stopped.
    */
   sent: Schema.optional(
     Schema.Struct({
@@ -74,6 +76,9 @@ export const RequestFailure = Schema.Struct({
       idleMs: Schema.optional(Schema.Number),
       written: Schema.Literals(["nothing", "headers", "whole request"]),
       responseStarted: Schema.Boolean,
+      attempts: Schema.optional(Schema.Number),
+      waitedMs: Schema.optional(Schema.Number),
+      stopped: Schema.optional(Schema.String),
     }),
   ),
 });
@@ -92,6 +97,9 @@ const sentOf = (cause: unknown): RequestFailure["sent"] => {
         ...(facts.idleMs !== undefined && { idleMs: facts.idleMs }),
         written: facts.written,
         responseStarted: facts.responseStarted,
+        ...(facts.repeats !== undefined && facts.repeats > 0 && { attempts: facts.repeats }),
+        ...(facts.waitedMs !== undefined && { waitedMs: facts.waitedMs }),
+        ...(facts.stopped !== undefined && { stopped: facts.stopped }),
       };
     current = nextCause(current);
   }
@@ -105,7 +113,7 @@ const sentOf = (cause: unknown): RequestFailure["sent"] => {
 const sentText = (sent: NonNullable<RequestFailure["sent"]>) =>
   [
     sent.connection === undefined
-      ? "never written to a connection"
+      ? `never written to a connection${sent.attempts === undefined || sent.attempts < 2 ? "" : ` on any of ${sent.attempts} attempts over ${((sent.waitedMs ?? 0) / 1000).toFixed(1)} s`}${sent.stopped === undefined ? "" : `, not sent again: ${sent.stopped}`}`
       : `on a ${sent.connection} connection${sent.connection === "reused" && sent.earlierRequests !== undefined ? ` (${sent.earlierRequests} earlier requests${sent.connectionAgeMs === undefined ? "" : `, ${(sent.connectionAgeMs / 1000).toFixed(1)} s old`})` : sent.connectionAgeMs === undefined ? "" : ` ${sent.connectionAgeMs} ms old`}${sent.idleMs === undefined ? "" : ` idle ${(sent.idleMs / 1000).toFixed(1)} s`}`,
     sent.connection === undefined ? undefined : `${sent.written} written`,
     sent.responseStarted ? "a response had begun" : "no response",
