@@ -1,5 +1,5 @@
 /** Vitest hooks own isolated servers and cleanup; the test deadline owns scenario work. */
-import { Clock, Effect, Exit, FileSystem, Layer, Scope } from "effect";
+import { Clock, Effect, Exit, FileSystem, Layer, Path, Scope } from "effect";
 import { randomBytes } from "node:crypto";
 import { beforeEach, type TestContext } from "vitest";
 import { prepareScenario, startScenario } from "../sdk/scenario.ts";
@@ -10,6 +10,9 @@ import { prepareManagementApp } from "./management-app.ts";
 import { prepareOrganization } from "./organization-provisioning.ts";
 import { SessionClients } from "./api.ts";
 import { scenarios, type TestPlan } from "../test-plan.ts";
+import { saveLostRequests } from "../lost-requests.ts";
+import { configureLostConnections, lostRequestsOf } from "./lost-connections.ts";
+import { targetHosts } from "./role-hosts.ts";
 
 /** An extra Testing SDK scenario acquired by setup. The test may close its scope early. */
 export interface SdkScenarioFixture {
@@ -68,30 +71,45 @@ export const installScenarioLifecycle = () =>
         yield* Effect.gen(function* () {
           const base = yield* Target;
           const fs = yield* FileSystem.FileSystem;
+          const paths = yield* Path.Path;
           const directory = `${base.directory}/report/lifecycle`;
           yield* fs.makeDirectory(directory, { recursive: true });
+          // The stage this scenario sends to: its requests lost before any response are told apart
+          // and, where safe, sent again (lost-connections.ts).
+          configureLostConnections({ origins: Object.values(targetHosts(base)) });
           save = (finishedAt) =>
-            fs
-              .writeFileString(
-                `${directory}/${context.task.id}.json`,
-                JSON.stringify(
-                  {
-                    title: context.task.name,
-                    setupMs: readyAt === undefined ? finishedAt - startedAt : readyAt - startedAt,
-                    provisioningMs,
-                    scenarioMs:
-                      readyAt === undefined || completedAt === undefined
-                        ? null
-                        : completedAt - readyAt,
-                    cleanupMs: completedAt === undefined ? null : finishedAt - completedAt,
-                    totalMs: finishedAt - startedAt,
-                  },
-                  null,
-                  2,
-                ),
-                { mode: 0o600 },
+            saveLostRequests(base.directory, context.task.id, lostRequestsOf(context.task.name))
+              .pipe(
+                Effect.provideService(FileSystem.FileSystem, fs),
+                Effect.provideService(Path.Path, paths),
+                Effect.orDie,
               )
-              .pipe(Effect.orDie);
+              .pipe(
+                Effect.andThen(
+                  fs
+                    .writeFileString(
+                      `${directory}/${context.task.id}.json`,
+                      JSON.stringify(
+                        {
+                          title: context.task.name,
+                          setupMs:
+                            readyAt === undefined ? finishedAt - startedAt : readyAt - startedAt,
+                          provisioningMs,
+                          scenarioMs:
+                            readyAt === undefined || completedAt === undefined
+                              ? null
+                              : completedAt - readyAt,
+                          cleanupMs: completedAt === undefined ? null : finishedAt - completedAt,
+                          totalMs: finishedAt - startedAt,
+                        },
+                        null,
+                        2,
+                      ),
+                      { mode: 0o600 },
+                    )
+                    .pipe(Effect.orDie),
+                ),
+              );
           const plan: typeof TestPlan.Type | undefined = Object.values(scenarios).find(
             (scenario) => scenario.title === context.task.name,
           );
@@ -153,6 +171,15 @@ export const installScenarioLifecycle = () =>
             (directory) => fs.remove(directory, { recursive: true }),
             { discard: true },
           ).pipe(Effect.orDie);
+          // A scenario may run on its own isolated server: its origins are the stage too.
+          configureLostConnections({
+            origins: [
+              ...Object.values(targetHosts(base)),
+              ...[target, ...sdkScenarios.map(({ scenario }) => scenario.target)].flatMap(
+                (scenarioTarget) => Object.values(targetHosts(scenarioTarget)),
+              ),
+            ],
+          });
           readyAt = yield* Clock.currentTimeMillis;
           context.executorScenario = {
             target,

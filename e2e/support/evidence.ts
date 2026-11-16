@@ -23,6 +23,7 @@ import { RecordingFocus } from "./recording-focus.ts";
 import { axiomSpans } from "./axiom.ts";
 import { scopeOf, type Scope } from "./scope.ts";
 import { stepFailureText } from "./failure-text.ts";
+import { lostRequestsOf } from "./lost-connections.ts";
 
 /** Public request measurements contain no request bodies, cookies or credentials. */
 export interface RequestEvidence {
@@ -563,6 +564,9 @@ export const scenarioEvidence = (
           const outcome = final ? report(cause) : Effect.void;
           const rows = yield* Ref.get(requests);
           yield* json("requests.json", rows);
+          // Stage requests lost before any response, sent again or not (lost-connections.ts).
+          const lost = lostRequestsOf(identity.name);
+          if (lost.length > 0) yield* json("lost-requests.json", lost);
           yield* json("steps.json", steps);
           const timeline = yield* recording.snapshot;
           yield* json("recording-timeline.json", timeline);
