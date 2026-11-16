@@ -778,11 +778,21 @@ const normalizeMicrosoftGraphOneNotePathItem = (
       : isRecord(pathItem.put)
         ? pathItem.put
         : undefined;
-    if (!isRecord(pathItem.patch) && template) {
-      next.patch = oneNotePatchPageContentOperation(
-        template,
-        isRecord(pathItem.put) ? pathItem.put : undefined,
+    // Always apply the documented PATCH contract, even over a PATCH the source
+    // declares (it could carry a generated OData shape). A declared PATCH keeps
+    // its operationId, so its tool name stays stable; this also keeps a second
+    // pass over a corrected path item identical.
+    const existingPatch = isRecord(pathItem.patch) ? pathItem.patch : undefined;
+    const operationTemplate = template ?? existingPatch;
+    if (operationTemplate) {
+      const corrected = oneNotePatchPageContentOperation(
+        operationTemplate,
+        isRecord(pathItem.put) ? pathItem.put : existingPatch,
       );
+      next.patch =
+        typeof existingPatch?.operationId === "string"
+          ? { ...corrected, operationId: existingPatch.operationId }
+          : corrected;
     }
     // Keep the generated octet-stream PUT for existing callers, but mark it
     // deprecated and drop its link to the PATCH-only update docs so tool

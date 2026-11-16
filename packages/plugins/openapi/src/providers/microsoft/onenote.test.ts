@@ -435,15 +435,27 @@ describe("OneNote page write contract correction", () => {
     }
   });
 
-  it("keeps a PATCH operation that the source already declares", () => {
+  it("corrects a PATCH that the source declares and keeps its operationId", () => {
     const keep = onenoteKeepPathItem();
     const variant = VARIANTS[0]!;
-    const declared = { operationId: "upstream.PatchContent", responses: {} };
+    const declared = {
+      operationId: `${variant.operationPrefix}.PatchPagesContent`,
+      requestBody: {
+        content: {
+          "application/json": {
+            schema: { $ref: "#/components/schemas/microsoft.graph.onenotePage" },
+          },
+        },
+      },
+      responses: { "2XX": { description: "Success" } },
+    };
     const corrected = keep(variant.contentPath, {
       ...record(sourcePaths()[variant.contentPath]),
-      patch: declared,
+      patch: { ...declared, operationId: "upstream.PatchContent" },
     });
-    expect(corrected!.patch).toEqual(declared);
+    const patch = record(corrected!.patch);
+    expect(patch.operationId).toBe("upstream.PatchContent");
+    expectAddedPatch({ ...patch, operationId: declared.operationId }, variant.operationPrefix);
   });
 
   it("builds an onenote slice with unique operationIds and resolvable refs", () => {
