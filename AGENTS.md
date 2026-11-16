@@ -159,6 +159,9 @@ tests run the deployed suite. When a change is cross-cutting, pick one or two
 scenarios per changed path and name them in the handoff. Investigate a failure
 CI reports instead of re-running suites to look for one.
 
+A starting run prunes the workspace's `.local/e2e` (`e2e/sdk/run-retention.ts`): it removes runs older than 3 days or past the cap, and shrinks older passed runs, and failed ones a day after they ended, to their logs, reports and evidence (`shrunk.json` says what went).
+To keep every run whole while investigating, `touch .local/e2e/keep-all-runs`; remove it when done.
+
 For authenticated testing and bug reproduction, use
 [test accounts](notes/test-accounts.md). The fixture command provisions
 synthetic users, organization roles and short-lived sessions for self-host,
