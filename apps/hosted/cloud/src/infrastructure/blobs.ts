@@ -12,6 +12,7 @@ import * as Cloudflare from "alchemy/Cloudflare";
 import { Effect, Option, Stream } from "effect";
 import { testStage } from "./stage.ts";
 import { providerFailureCode } from "../implementation/provider-failure.ts";
+import { readR2Object } from "../implementation/r2-read.ts";
 import { persistR2Object } from "../implementation/r2-write.ts";
 import type { WorkspaceObjects } from "../implementation/workspace-cache.ts";
 
@@ -47,6 +48,7 @@ const listFolder = (
         names: page.objects.map((object) => object.key.slice(folder.length + 1)),
         truncated: page.truncated,
       })),
+      readR2Object,
       Effect.provide(RuntimeContext.phantom),
       Effect.tapError((error) =>
         Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
@@ -71,6 +73,7 @@ const streamObject = (bucket: ReadClient, key: BlobKey, range: BlobRange | undef
       body: object.body.pipe(Stream.mapError(() => new BlobStoreError({ operation: "get" }))),
     });
   }).pipe(
+    readR2Object,
     Effect.provide(RuntimeContext.phantom),
     Effect.tapError((error) =>
       Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
@@ -99,6 +102,7 @@ export const cloudBlobs = Effect.gen(function* () {
         if (object === null) return Option.none();
         return Option.some(new Uint8Array(yield* object.arrayBuffer()));
       }).pipe(
+        readR2Object,
         Effect.provide(RuntimeContext.phantom),
         Effect.tapError((error) =>
           Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
@@ -108,6 +112,7 @@ export const cloudBlobs = Effect.gen(function* () {
     exists: (key) =>
       bucket.head(key).pipe(
         Effect.map((object) => object !== null),
+        readR2Object,
         Effect.provide(RuntimeContext.phantom),
         Effect.tapError((error) =>
           Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
@@ -144,6 +149,7 @@ export const cloudBuildReader = Effect.gen(function* () {
     (operation: "get" | "exists") =>
     <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
+        readR2Object,
         Effect.provide(RuntimeContext.phantom),
         Effect.tapError((error) =>
           Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
@@ -189,7 +195,7 @@ export const cloudWorkspaceObjects = Effect.gen(function* () {
         const object = yield* bucket.get(key(code));
         if (object === null) return Option.none();
         return Option.some({ etag: object.etag, body: yield* object.bytes() });
-      }).pipe(Effect.provide(RuntimeContext.phantom), observe("get")),
+      }).pipe(readR2Object, Effect.provide(RuntimeContext.phantom), observe("get")),
     put: (code, body) =>
       bucket.put(key(code), body).pipe(
         // Only a failed precondition returns null, and this write has none.
