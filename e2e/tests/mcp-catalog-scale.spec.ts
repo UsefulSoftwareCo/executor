@@ -3,7 +3,7 @@ import { expect, layer } from "@effect/vitest";
 import { Clock, Console, Effect, Fiber, Schedule, Schema } from "effect";
 import { createServer, type Socket } from "node:net";
 import { createServer as createHttpServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { agedRowsRenewSeconds, scenarios } from "../test-plan.ts";
 import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
@@ -132,12 +132,60 @@ const noAppStatements = 3;
  */
 const oneAppStatements = 24;
 /**
- * The first catalog-wide search evaluates all 29 apps and ranks 7,000 tools, 3.7–10.4 s on an
- * M-series laptop depending on its load when search still rendered every signature. It must leave
- * the program at least half of the 30 s execution budget. This bound has the least headroom; a
- * failure on a slower runner is a regression to investigate, not a reason to raise it.
+ * The first catalog-wide search evaluates all 29 apps and ranks 7,000 tools. It must leave the
+ * program at least half of the 30 s execution budget: 15 s on the reference machine below. A
+ * runner's speed is not fixed: CI's 8 vCPU runners did the same work up to three times slower on
+ * weekday afternoons than at night (4.5 s to 15.1 s for this search, 14-16 Nov), so the scenario
+ * times a fixed piece of machine work (`machineWork`) just before and after the search and allows
+ * 15 s scaled by how much slower than the reference the slower of the two was. On a machine faster
+ * than the reference it is still 15 s of real time. A failure after that scaling is a regression to
+ * investigate, not a reason to raise the budget or the reference.
+ *
+ * The search beside stalled apps has the same budget once discovery has given up (`searchBoundMs`).
  */
 const catalogSearchBoundMs = 15_000;
+/**
+ * `machineWork` on the reference machine: CI's `blacksmith-8vcpu` scale lane in its normal hours
+ * (weekends, and weekdays 00-12Z), where this search took a median 5.0 s (38 runs, 9-16 Nov).
+ * Derived from a host whose search took 18.0-19.9 times its `machineWork`: 5,000 ms / 18.9.
+ * Re-derive it from CI itself: the median `machine` of the "Search the whole catalog, calibrated"
+ * line in the scale lane's job logs, over normal-hours runs.
+ */
+const referenceMachineWorkMs = 265;
+/**
+ * A fixed piece of CPU work with no product code in it: an integer loop and SHA-256 over a fixed
+ * 1 MiB buffer, three times, in milliseconds. It runs in the test process; the server's processes
+ * slow with it (in CI's slow hours the scale lane's `bun` and workerd CPU seconds stretched 2.3x
+ * and 2.7x for the same work, the test process 2.0x, so this errs strict).
+ */
+const machineBuffer = Buffer.alloc(1 << 20, 7);
+const machineWork = Effect.sync(() => {
+  const started = performance.now();
+  let digest = "";
+  for (let pass = 0; pass < 3; pass++) {
+    let x = 0x9e3779b9;
+    for (let i = 0; i < 60_000_000; i++) {
+      x ^= x << 13;
+      x ^= x >>> 17;
+      x ^= x << 5;
+    }
+    digest += String(x);
+    for (let i = 0; i < 72; i++)
+      digest = createHash("sha256").update(machineBuffer).update(digest).digest("hex");
+  }
+  if (digest.length !== 64) throw new Error("machine work produced no digest");
+  return Math.round(performance.now() - started);
+});
+/**
+ * A second check, on the shape of the search: the first catalog-wide search evaluates the 28 apps
+ * the call before it did not, and ranks 7,000 tools, about 20 times the cold call into one app
+ * ("Call one tool"). On main from 14 to 16 Nov the ratio stayed 12.7-24.0 (median 19.6, 54 runs)
+ * while the search took 4.5-15.1 s. The budget above leaves a normal machine about three times its
+ * search, so a search-only regression of two or three times passes it there; the ratio catches it.
+ * A regression in every app's evaluation slows the call too, so the ratio misses it; the budget
+ * catches that. 40 is twice the median.
+ */
+const catalogSearchPerCall = 40;
 /**
  * SQL statements a catalog-wide search that evaluates nothing runs for each app it searches: two
  * access checks of the member's role and groups (one to bind the app's accounts, one to search
@@ -672,8 +720,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP catalog scale", (it) => {
         });
         yield* check(loadsOnly("Call one tool", called.traceId, [target], oneAppStatements));
         yield* catalog.joinChecks;
-        // A catalog-wide search lists every app and finds the one matching tool.
+        // A catalog-wide search lists every app and finds the one matching tool. The machine is
+        // timed just before and just after it, as its speed moves within a job.
+        const machineBefore = yield* machineWork;
         const searchedAll = yield* execute("Search the whole catalog", needle);
+        const machineAfter = yield* machineWork;
         expect(searchedAll.completed.execution.ok).toBe(true);
         expect(
           (yield* Schema.decodeUnknownEffect(SearchValue)(searchedAll.completed.execution.value))
@@ -690,7 +741,33 @@ layer(HostedLive, { excludeTestServices: true })("MCP catalog scale", (it) => {
             expect(cold.evaluations, "listings evaluated").toBe(cold.listed.size);
           }),
         );
-        expect(searchedAll.elapsed).toBeLessThan(catalogSearchBoundMs);
+        const evidence = yield* Evidence;
+        const machine = Math.max(machineBefore, machineAfter);
+        // A slower machine than the reference gets proportionally more time; a faster one does not
+        // get less, so the bound is never below 15 s of real time.
+        const allowed = catalogSearchBoundMs * Math.max(1, machine / referenceMachineWorkMs);
+        yield* evidence.measure("Search the whole catalog", searchedAll.elapsed);
+        yield* evidence.measure("Call one tool", called.elapsed);
+        yield* evidence.measure("Machine work before the search", machineBefore);
+        yield* evidence.measure("Machine work after the search", machineAfter);
+        yield* Console.log(
+          JSON.stringify({
+            label: "Search the whole catalog, calibrated",
+            elapsed: searchedAll.elapsed,
+            machine,
+            reference: referenceMachineWorkMs,
+            calibrated: Math.round((searchedAll.elapsed * referenceMachineWorkMs) / machine),
+            allowed: Math.round(allowed),
+          }),
+        );
+        expect(
+          searchedAll.elapsed,
+          `Search the whole catalog took ${searchedAll.elapsed} ms; the machine work took ${machine} ms against the reference's ${referenceMachineWorkMs} ms, so it was allowed ${Math.round(allowed)} ms`,
+        ).toBeLessThan(allowed);
+        expect(
+          searchedAll.elapsed / called.elapsed,
+          `Search the whole catalog took ${searchedAll.elapsed} ms, Call one tool ${called.elapsed} ms`,
+        ).toBeLessThan(catalogSearchPerCall);
         // Later searches reuse the evaluated listings instead of evaluating all 29 apps again:
         // every app's search rows are kept, and no app is listed or evaluated. The three run one
         // after another; their traces are then read together.
