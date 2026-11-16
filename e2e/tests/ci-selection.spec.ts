@@ -378,6 +378,37 @@ const startedBy = {
 type E2eJob = keyof typeof startedBy;
 const e2eJobs = Object.keys(startedBy) as ReadonlyArray<E2eJob>;
 
+/**
+ * The cases that run the selection as many real processes at once. On an idle host they take 10 to
+ * 20 seconds; at a load of 15 on this host's 16 cores, up to 23; at the load of 22 where one failed
+ * in review, past the 30-second default. Their limit is several times their idle time, so a busy
+ * host slows them and does not fail them; every other case keeps the default.
+ */
+const heavyCaseTimeout = 120_000;
+
+/** The `select` outputs whose matrix fields the size budget measures (each entry's fields). */
+const matrixOutputs = ["local-shards", "self-host-shards", "cloud-runners"];
+
+/**
+ * Each read of a `select` output in a workflow's code (comments removed) that could put the
+ * selection's size into a process: anywhere but a job or step condition, a matrix the budget
+ * measures, a comparison (`== '…'`, `!= '…'`, a short value), or a direct read of an output in
+ * `measured`. Quoted or inside a larger expression, in an `env:` value or a `run:` body alike.
+ */
+const unmeasuredReads = (code: string, measured: ReadonlyArray<string>) =>
+  code.split("\n").flatMap((line, index) => {
+    if (/^\s*(?:- )?if: /.test(line)) return [];
+    return [...line.matchAll(/needs\.select\.outputs\.([\w-]+)(\s*[!=]=\s*'[^']*')?/g)].flatMap(
+      (match) => {
+        const name = match[1]!;
+        if (match[2] !== undefined) return [];
+        if (matrixOutputs.includes(name) && /^\s*include: \$\{\{ fromJSON\(/.test(line)) return [];
+        if (measured.includes(name)) return [];
+        return [`line ${index + 1} reads ${name}: ${line.trim()}`];
+      },
+    );
+  });
+
 /** Whether select's outputs start an E2E job. */
 const chosen = (outputs: Readonly<Record<string, string>>, job: E2eJob) =>
   startedBy[job].some((name) => (outputs[name] ?? "") !== "");
@@ -1062,6 +1093,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "Could not read main's e2e/test-plan.ts, so whether this pull request adds scenarios to the deployed suite was not checked.",
         );
       }),
+    heavyCaseTimeout,
   );
 
   it.effect(
@@ -1760,6 +1792,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         // A push has no description, so no size-gate key, and records nothing.
         expect(runs.push.keys.workerGrowth).toBeUndefined();
       }),
+    heavyCaseTimeout,
   );
 
   it.effect(
@@ -1791,6 +1824,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "348c22613": true,
         });
       }),
+    heavyCaseTimeout,
   );
 
   /** The blocks that failed select on 13–14 Nov, each with the edit its message must name. */
@@ -1894,6 +1928,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           expect(verdict(local.log).length, name).toBeGreaterThan(40);
         }
       }),
+    heavyCaseTimeout,
   );
 
   it.effect(
@@ -2192,6 +2227,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           }
         }
       }),
+    heavyCaseTimeout,
   );
 
   it.effect("none, all and skip keep their meaning", () =>
@@ -4109,10 +4145,7 @@ layer(NodeServices.layer)("Release check after a push to main", (it) => {
           .filter((line) => !line.trimStart().startsWith("#"))
           .join("\n");
         expect(code).not.toMatch(/toJSON\(needs\b/);
-        const read = [
-          ...code.matchAll(/^ {6,}[A-Za-z_]\w*: \$\{\{ needs\.select\.outputs\.([\w-]+) \}\}$/gm),
-        ].map((match) => match[1]!);
-        expect(read.filter((name) => !direct.includes(name))).toEqual([]);
+        expect(unmeasuredReads(code, direct)).toEqual([]);
         // The run's own processes: vitest gets its title pattern from its config and the prepared
         // Cloud organizations from a file, not from an argument or a variable.
         const suite = yield* fs.readFileString("e2e/sdk/suite.ts");
@@ -4153,6 +4186,41 @@ layer(NodeServices.layer)("Release check after a push to main", (it) => {
           for (const variable of variables)
             expect(variable.value, job).toBe(`\${{ needs.${variable.job}.result }}`);
           expect(block, job).toContain("          RESULTS: ${{ join(needs.*.result, ' ') }}\n");
+          // Each SET_ reads whether its own output is set, each OUTPUT_ its own output's value.
+          const outputs = [...block.matchAll(/^ {10}(SET|OUTPUT)_(\w+): (.*)$/gm)].map((match) => ({
+            kind: match[1]!,
+            name: match[2]!.replaceAll("_", "-"),
+            value: match[3]!,
+          }));
+          for (const output of outputs)
+            expect(output.value, `${job} ${output.kind}_${output.name}`).toBe(
+              output.kind === "SET"
+                ? `\${{ needs.select.outputs.${output.name} != '' }}`
+                : `\${{ needs.select.outputs.${output.name} }}`,
+            );
+          // Every output the rule reads has its variable: one it names without one would read as
+          // unset, so its job would count as not selected, and a wrongly skipped job would pass.
+          const ruleText = text.slice(text.indexOf(`      - name: ${step}\n`));
+          const rule = ruleText
+            .slice(ruleText.indexOf("        run: |\n") + "        run: |\n".length)
+            .split("\n")
+            .filter((line, index, lines) =>
+              lines
+                .slice(0, index + 1)
+                .every((each) => each.startsWith("          ") || each === ""),
+            )
+            .join("\n");
+          const named = new Set([
+            ...[...rule.matchAll(/chosen\(\[([^\]]*)\]\)/g)].flatMap((match) =>
+              [...match[1]!.matchAll(/"([\w-]+)"/g)].map((name) => name[1]!),
+            ),
+            ...[...rule.matchAll(/\.select\.outputs\.([\w-]+)/g)].map((match) => match[1]!),
+          ]);
+          expect(named.size, job).toBeGreaterThan(0);
+          expect(
+            [...named].filter((name) => !outputs.some((output) => output.name === name)),
+            job,
+          ).toEqual([]);
           // At run time: the same gate, all passing, with one more job in needs than it reads,
           // and with one NEED_ variable for a job needs does not list.
           const script = text.slice(text.indexOf(`      - name: ${step}\n`));

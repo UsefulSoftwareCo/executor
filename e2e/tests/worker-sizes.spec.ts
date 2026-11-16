@@ -1754,6 +1754,86 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
       }),
   );
 
+  it.effect(
+    "on a push to main, site's baseline steps cannot fail site; on a pull request they fail closed",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const checks = yield* fs.readFileString(".github/workflows/checks.yml");
+        const site = checks.slice(
+          checks.indexOf("\n  site:\n"),
+          checks.indexOf("\n  apps-package:\n"),
+        );
+        const body = (step: string) => {
+          const text = site.slice(site.indexOf(`      - name: ${step}\n`));
+          return text
+            .slice(text.indexOf("        run: |\n") + "        run: |\n".length)
+            .split("\n")
+            .filter((line, index, lines) =>
+              lines
+                .slice(0, index + 1)
+                .every((each) => each.startsWith("          ") || each === ""),
+            )
+            .map((line) => line.slice(10))
+            .join("\n");
+        };
+        for (const step of [
+          "Choose the baseline for Worker sizes",
+          "Fetch the baseline's Worker sizes",
+        ]) {
+          const script = body(step);
+          expect(script, step).toContain("node scripts/ci/worker-baseline.ts");
+          const run = (event: string) =>
+            Effect.gen(function* () {
+              const directory = yield* fs.makeTempDirectoryScoped({
+                prefix: "executor-site-step-",
+              });
+              // A node that crashes, as any defect in the script would.
+              const bin = path.join(directory, "bin");
+              yield* fs.makeDirectory(bin);
+              yield* fs.writeFileString(
+                path.join(bin, "node"),
+                "#!/bin/sh\necho crashed >&2\nexit 7\n",
+              );
+              yield* fs.chmod(path.join(bin, "node"), 0o755);
+              // What a partial download left behind.
+              yield* fs.makeDirectory(path.join(directory, ".local/worker-uploads-base"), {
+                recursive: true,
+              });
+              yield* fs.writeFileString(
+                path.join(directory, ".local/worker-uploads-base/api.json"),
+                "{",
+              );
+              const child = yield* processes.spawn(
+                ChildProcess.make("bash", ["-e", "-o", "pipefail", "-c", script], {
+                  cwd: directory,
+                  env: { PATH: `${bin}:${process.env["PATH"] ?? ""}`, GITHUB_EVENT_NAME: event },
+                  extendEnv: true,
+                }),
+              );
+              const [log, exitCode] = yield* Effect.all(
+                [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+                { concurrency: "unbounded" },
+              );
+              return {
+                log,
+                exitCode: Number(exitCode),
+                left: yield* fs.exists(path.join(directory, ".local/worker-uploads-base")),
+              };
+            }).pipe(Effect.scoped);
+          const push = yield* run("push");
+          expect(push.exitCode, `${step}: ${push.log}`).toBe(0);
+          expect(push.log, step).toContain("so this push's growth is reported and not checked.");
+          // A fetch that failed leaves no half-fetched sizes to compare with.
+          if (step === "Fetch the baseline's Worker sizes") expect(push.left).toBe(false);
+          const pull = yield* run("pull_request");
+          expect(pull.exitCode, step).toBe(1);
+        }
+      }),
+  );
+
   it.effect("one constant decides observe or enforce, and the bounds compose", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
