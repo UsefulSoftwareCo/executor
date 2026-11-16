@@ -682,7 +682,7 @@ const oneNotePatchPageContentOperation = (
   writeTemplate: Record<string, unknown> | undefined,
 ): Record<string, unknown> => {
   // Permissions come from the generated write operation (the PUT), never from
-  // the read operation the operationId is derived from.
+  // the read operation the operationId is derived from or a declared PATCH.
   const writePermissions = writeTemplate
     ? Object.fromEntries(
         ["security", "x-ms-permissions"].flatMap((key) =>
@@ -707,7 +707,7 @@ const oneNotePatchPageContentOperation = (
     description:
       "Update the content of a OneNote page with an array of patch commands. Each command " +
       "targets an element (#<data-id>, a generated id, body, or title) and appends, inserts, " +
-      "prepends, or replaces HTML content.",
+      "prepends, or replaces HTML content, or deletes the element.",
     externalDocs: {
       description: "Find more info here",
       url: "https://learn.microsoft.com/graph/api/page-update?view=graph-rest-1.0",
@@ -745,7 +745,8 @@ const oneNotePatchPageContentOperation = (
                 },
                 content: {
                   type: "string",
-                  description: "Well-formed HTML to add to the page.",
+                  description:
+                    "Well-formed HTML to add to the page. Required for every action except delete.",
                 },
               },
             },
@@ -788,7 +789,7 @@ const normalizeMicrosoftGraphOneNotePathItem = (
     if (operationTemplate) {
       const corrected = oneNotePatchPageContentOperation(
         operationTemplate,
-        isRecord(pathItem.put) ? pathItem.put : existingPatch,
+        isRecord(pathItem.put) ? pathItem.put : undefined,
       );
       next.patch =
         typeof existingPatch?.operationId === "string"

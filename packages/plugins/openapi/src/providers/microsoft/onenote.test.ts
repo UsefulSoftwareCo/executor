@@ -440,6 +440,8 @@ describe("OneNote page write contract correction", () => {
     const variant = VARIANTS[0]!;
     const declared = {
       operationId: `${variant.operationPrefix}.PatchPagesContent`,
+      // A read-only scope on a declared PATCH must not survive.
+      security: delegated("Notes.Read"),
       requestBody: {
         content: {
           "application/json": {
