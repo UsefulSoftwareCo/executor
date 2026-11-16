@@ -103,7 +103,10 @@ must ship a version that npm holds with exactly the content this checkout
 builds. Every change to the framework, including the workspace libraries
 bundled into it, bumps that version in its PR (and the host protocol when the
 host boundary changes). Merging allocates the numbers and the deploy from
-`main` publishes them. Never publish `apps` from a branch or by hand; see
+`main` publishes them. Public npm releases must not publish `apps` from a branch or by hand. Fork
+self-host releases have an explicit private-registry path in the
+[self-host procedure](apps/hosted/self-host/README.md#fork-sdk-publication-to-a-private-registry);
+its deploy gate must pass before replacing the server. For public releases, see
 [publishing apps](notes/apps-publishing.md).
 
 `scripts/releases/apps-published.ts` runs after `bun run apps:build`. It packs
