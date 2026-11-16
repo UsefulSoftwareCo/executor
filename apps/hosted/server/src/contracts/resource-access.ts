@@ -107,6 +107,8 @@ export const ResourceDirectory = Schema.Struct({
       access: AppAccess,
       /** The accounts the caller linked to the app and may use; empty when they cannot use it. */
       linkedAccounts: Schema.Array(AccountId),
+      /** Distinct app-scope accounts linked for everyone, counted without returning their details. */
+      appAccountCount: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
     }),
   ),
   /** The caller's own accounts; every saved account is personal to its owner. */

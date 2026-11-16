@@ -249,6 +249,18 @@ export const dashboard = (
     // An account's checks are those of the apps that link it, in either scope; the inventory
     // lists the user links, each app and account once.
     const all = yield* accountLinks(sql, executor);
+    const listedApps = new Set(apps.map((app) => app.id));
+    const appAccounts = new Map<string, Set<string>>();
+    for (const link of all) {
+      if (link.subject !== null || !listedApps.has(link.app)) continue;
+      const accounts = appAccounts.get(link.app) ?? new Set<string>();
+      accounts.add(link.account);
+      appAccounts.set(link.app, accounts);
+    }
+    const appAccountCounts = apps.map((app) => ({
+      app: app.id,
+      count: appAccounts.get(app.id)?.size ?? 0,
+    }));
     const pairs = (subjectScoped: boolean) => {
       const seen = new Set<string>();
       return all.flatMap((link) => {
@@ -275,7 +287,7 @@ export const dashboard = (
         ...(health === undefined ? {} : { health }),
       });
     }
-    return { apps, links, accounts: display };
+    return { apps, links, appAccountCounts, accounts: display };
   });
   const appDetail = (appId: AppId) =>
     Effect.gen(function* () {

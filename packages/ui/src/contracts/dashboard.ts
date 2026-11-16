@@ -61,6 +61,8 @@ export interface Inventory {
   readonly apps: readonly App[];
   /** The caller's linked accounts for each listed app. */
   readonly links: readonly AppAccountLink[];
+  /** The number of distinct app-scope accounts linked for everyone, when this inventory lists it. */
+  readonly appAccountCounts?: readonly { readonly app: AppId; readonly count: number }[];
   readonly accounts: readonly AccountSummary[];
 }
 /** Any Effect Atom source, including a live stream or a one-shot HTTP query. */
