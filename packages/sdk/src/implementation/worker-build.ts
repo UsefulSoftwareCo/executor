@@ -27,9 +27,13 @@ import apps from "apps/package.json" with { type: "json" };
  * framework of its own: every source declares the `apps` release it uses in `dependencies.apps`.
  * `apps` supplies the package files of one declared release, so a test deployment can build apps
  * against its own unpublished framework. Any other declared release installs from the registry.
+ * `tarballFetch` sends every install request off the registry's origin: tarball URL
+ * dependencies, and tarballs or redirects the registry's metadata sends elsewhere. Requests on the
+ * registry's origin use the global `fetch`, as everything does without `tarballFetch`.
  */
 export interface WorkerHost {
   readonly registry?: string;
+  readonly tarballFetch?: (input: string, init?: RequestInit) => Promise<Response>;
   readonly apps?: {
     readonly version: string;
     /** Package-relative paths and contents, as in the published archive. */

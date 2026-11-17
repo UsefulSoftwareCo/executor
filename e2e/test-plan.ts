@@ -3121,6 +3121,59 @@ export const scenarios = plan({
       local: na("ChatGPT app domain verification is for the hosted Cloud domain."),
     },
   },
+  appDependencyTarballPrivateRefused: {
+    fixtures: "actors",
+    file: "app-dependency-network.spec.ts",
+    title:
+      "with private fetch off, a build refuses a dependency whose tarball URL is a private address and never requests it",
+    serverEnvironment: { EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "false" },
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud Workers reach only public addresses; the tarball fixture is served on loopback.",
+      ),
+      local: na("Local lets builds reach private addresses by design."),
+    },
+  },
+  appDependencyTarballPublic: {
+    fixtures: "actors",
+    file: "app-dependency-network.spec.ts",
+    title:
+      "with private fetch off, a build installs a dependency whose tarball URL is a public address",
+    serverEnvironment: { EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "false" },
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud builds use the same installer; only self-host restricts the build network."),
+      local: na("Local lets builds reach every address by design."),
+    },
+  },
+  appDependencyRegistryOrigin: {
+    file: "app-dependency-network.spec.ts",
+    title:
+      "with private fetch off, a build installs from a private registry's own origin, refuses what it sends to other private addresses, and words failures without its text",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud Workers reach only public addresses; the registry fixture is on loopback."),
+      local: na(
+        "Local lets builds reach every address by design; only self-host starts a scenario-owned server.",
+      ),
+    },
+  },
+  appDependencyTarballPrivateAllowed: {
+    fixtures: "actors",
+    file: "app-dependency-network.spec.ts",
+    title:
+      "with private fetch on, a build installs tarball URLs on a private address, and a failed download names only the package and status",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud Workers reach only public addresses; the tarball fixture is served on loopback.",
+      ),
+      local: na(
+        "This scenario uses hosted routes; Local shares the same workerd compiler and allows private addresses.",
+      ),
+    },
+  },
   appPackage: {
     fixtures: "actors",
     file: "app-package.spec.ts",
@@ -6345,6 +6398,18 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: scheduled,
       local: na("This scenario uses hosted app domains."),
+    },
+  },
+  appUiLongSrcset: {
+    fixtures: "actors",
+    file: "app-ui-srcset.spec.ts",
+    appOrigin: true,
+    title:
+      "an app page whose srcset holds a long run of commas is served as fast as a page of its size and rewritten",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud serves app pages through the same hosted page code that self-host runs."),
+      local: na("This scenario uses hosted sign-in; Local rewrites pages with the same code."),
     },
   },
   appUi: {

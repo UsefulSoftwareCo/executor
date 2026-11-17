@@ -272,7 +272,11 @@ same server, with a matching TLS certificate. App addresses take the form
 App code can reach only public addresses. Requests to the dashboard origin go
 straight to the server, so the built-in Executor app works when that origin
 resolves to a private address. Set `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=true` to
-let app code reach other private network addresses.
+let app code reach other private network addresses. App builds follow the same
+setting for every download off the registry's origin: a dependency declared by
+tarball URL, and a tarball or redirect the registry's metadata sends elsewhere.
+Downloads from the registry's own origin, including a private
+`EXECUTOR_NPM_REGISTRY`, work either way.
 
 Host-side MCP import and OAuth requests have a separate exact-origin allowlist.
 Set `EXECUTOR_URL_ALLOW_HTTP_ORIGINS` to a JSON array of HTTP or HTTPS origins,

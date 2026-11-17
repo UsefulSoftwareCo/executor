@@ -50,7 +50,10 @@ the server and do not use the network. Thus the bundled Executor app works when
 that origin resolves to a private address, such as a Tailscale name. To let app
 code reach other private addresses, set `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=true`.
 The default is `false`. Every app in the instance shares that network position,
-so grant it deliberately.
+so grant it deliberately. App builds follow the same setting for every download
+off the registry's origin: a dependency declared by tarball URL, and a tarball or
+redirect the registry's metadata sends elsewhere. Downloads from the registry's
+own origin, including a private `EXECUTOR_NPM_REGISTRY`, work either way.
 
 Each app runs in its own Worker for each set of accounts it is called with, and
 each loaded Worker holds its own memory. The server keeps at most
