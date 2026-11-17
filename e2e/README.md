@@ -66,15 +66,20 @@ artifacts and run the focused native scenario with the same Effect/Vitest runner
 ```sh
 bun run e2e:prepare
 bun run --cwd apps/hosted/self-host package:runtime
+node packages/telemetry/scripts/build-collector.ts check
+cp packages/telemetry/dist/collector/executor-collector apps/hosted/self-host/dist/workerd/executor-collector
+cmp packages/telemetry/dist/collector/executor-collector apps/hosted/self-host/dist/workerd/executor-collector
 mkdir -p .local/native-auth
 go build -C apps/hosted/self-host/native -o ../../../../.local/native-auth/executor-host .
 bunx vitest run --config e2e/self-host-native.config.ts --testNamePattern 'Native self-host OAuth rate limits'
 ```
 
 The same artifacts run the native telemetry scenarios (`--testNamePattern 'Native self-host
-(telemetry ingest|restarts its telemetry)'`). The packaged runtime must include `motel.capnp`.
-The host rewrites that config into a temporary file and serves the collector on a private Unix
-socket, recorded at `.executor-telemetry` in the product data directory. Nothing listens on TCP
+(telemetry ingest|restarts its telemetry)'`). The native fixture needs `executor-collector`
+beside `workerd.capnp`: unlike the Dockerfile's collector stage, `package:runtime` does not
+install that executable. The copy and byte comparison above stage the verified build.
+The host supervises the collector on a private Unix socket, recorded at `.executor-telemetry`
+in the product data directory. Nothing listens on TCP
 port 4318. The scenarios check that collector ingest does not delay product health, that a crashed
 collector restarts on its retained store after the supervisor's one-second backoff, and that
 Ctrl-C stops it with a draining product without a restart.
