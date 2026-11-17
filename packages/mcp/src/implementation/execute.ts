@@ -1287,6 +1287,17 @@ function catalog(
         });
         yield* settled;
       }).pipe(Effect.withSpan("mcp.search.discovery.batch"));
+    /**
+     * The batch each app is made searchable in: the apps the first search that reached it reached
+     * and no earlier search had, so the backend reads a search's apps together and never with an
+     * app only another search reaches.
+     */
+    const searchBatches = new Map<AppId, ReadonlyArray<AppId>>();
+    const claimSearchBatch = (selected: ReadonlyArray<{ readonly app: ListedApp }>) =>
+      Effect.sync(() => {
+        const batch = selected.map(({ app }) => app.id).filter((app) => !searchBatches.has(app));
+        for (const app of batch) searchBatches.set(app, batch);
+      });
     const searchedApps = yield* Effect.forEach(apps, (app) =>
       Effect.cached(
         Effect.suspend(() => {
@@ -1297,7 +1308,11 @@ function catalog(
                 backend.searchableTools(
                   { app: app.id, accounts },
                   // Search reads every app's rows; refreshing aged ones would load each app's Worker.
-                  { reportRunningAfterMillis: discoveryWaitMs, refreshStale: false },
+                  {
+                    reportRunningAfterMillis: discoveryWaitMs,
+                    refreshStale: false,
+                    searchBatch: searchBatches.get(app.id) ?? [app.id],
+                  },
                 ),
               );
         }).pipe(
@@ -1424,6 +1439,7 @@ function catalog(
       Effect.gen(function* () {
         const selected = named(searchedApps, names);
         yield* searchAtOnce(selected.map(({ app }) => app));
+        yield* claimSearchBatch(selected);
         yield* load(selected);
         if (names !== "all") yield* revealNamed(selected);
         const targets = selected

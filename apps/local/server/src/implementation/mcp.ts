@@ -74,7 +74,6 @@ const grantedBackend = (sql: SqlClient.SqlClient, executor: Executor, principal:
       Effect.forEach(input.apps, (app) => Effect.result(linkedAccountsOf(sql, executor, { app }))),
     listTools: (input, options) => executor.tools.list(input, options),
     searchableTools: (input, options) => executor.tools.searchable(input, options),
-    // Local reads each app's rows with `searchableTools`, after resolving its accounts.
     searchableKept: (inputs) => Effect.succeed(inputs.map(() => undefined)),
     searchTools: (input) => executor.tools.search(input),
     callTool: (input, options?: ToolInvocationOptions) => executor.tools.call(input, options),

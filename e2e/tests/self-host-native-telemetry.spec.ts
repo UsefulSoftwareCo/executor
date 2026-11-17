@@ -136,7 +136,7 @@ it.live(scenarios.selfHostNativeTelemetry.title, () =>
           Effect.scoped(
             Effect.gen(function* () {
               const response = yield* collectorRequest(host.collectorSocket, "/v1/traces", body);
-              // Motel explains a refused export in its body, such as a full ingest queue.
+              // The collector explains a refused export in its body, such as a full ingest queue.
               expect(response.status, response.text.slice(0, 500)).toBe(200);
               const result = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Ingested))(
                 response.text,
@@ -177,7 +177,7 @@ it.live(scenarios.selfHostNativeTelemetryLifecycle.title, () =>
           ChildProcess.make("pgrep", [
             "-f",
             "--",
-            `--directory-path=motel-data=${host.motelDirectory.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
+            `--data=${host.motelDirectory.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`,
           ]),
         )
         .pipe(Effect.map((lines) => lines.filter((line) => line.trim() !== "").map(Number)));

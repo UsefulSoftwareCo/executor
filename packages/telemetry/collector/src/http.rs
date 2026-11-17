@@ -27,6 +27,7 @@ use crate::otlp;
 use crate::query::{self, LogFilter, Query};
 use crate::readers::Readers;
 use crate::store::{self, Export, Job, Losses, MemoryRelease, Shared, SharedLosses};
+use crate::viewer::Viewer;
 
 const REFUSAL_LOG_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -41,6 +42,8 @@ pub struct App {
     /// The writer's figures: the store's size for admission and `/api/ingest`.
     pub store: Arc<Shared>,
     pub readers: Arc<Readers>,
+    /// The trace viewer's files, when `--viewer` names them.
+    pub viewer: Option<Arc<Viewer>>,
 }
 
 /// An admitted export: its permit, held until the export is stored or refused. Dropping it, on
@@ -57,7 +60,32 @@ impl Drop for Admitted {
 }
 
 pub fn router(app: Arc<App>) -> Router {
-    Router::new()
+    let mut router = Router::new();
+    if let Some(viewer) = &app.viewer {
+        // The viewer's own routes, as its README lists them. `get` answers HEAD too; any other
+        // method is 405.
+        let index = {
+            let viewer = viewer.clone();
+            move || {
+                let viewer = viewer.clone();
+                async move { viewer.index() }
+            }
+        };
+        let asset = {
+            let viewer = viewer.clone();
+            move |Path(name): Path<String>| {
+                let viewer = viewer.clone();
+                async move { viewer.asset(&name) }
+            }
+        };
+        router = router
+            .route("/", get(index.clone()))
+            .route("/traces", get(index.clone()))
+            .route("/logs", get(index.clone()))
+            .route("/trace/{trace_id}", get(index))
+            .route("/assets/{*name}", get(asset));
+    }
+    router
         .route("/v1/traces", post(traces))
         .route("/v1/logs", post(logs))
         .route("/api/health", get(health))

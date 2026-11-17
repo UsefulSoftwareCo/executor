@@ -9,7 +9,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, FileSystem, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { collectorChanged, collectorInputs } from "../collector-inputs.ts";
+import { collectorChanged, collectorInputs, collectorScenarios } from "../collector-inputs.ts";
 import dockerReleaseConfig from "../docker-release.config.ts";
 import { lanesFor, releaseSources, releaseSuiteConfigs } from "../release-lanes.ts";
 import {
@@ -19,7 +19,17 @@ import {
   packagedEngineVariable,
 } from "../packaged-engine.ts";
 import { closureOf } from "../save-path.ts";
-import { scenarios } from "../test-plan.ts";
+import {
+  matchesPath,
+  mcpSearchChanged,
+  mcpSearchPaths,
+  mcpSearchScenarios,
+  mcpSearchTitles,
+} from "../mcp-search-guard.ts";
+import { selectionKey, workerGrowthKey } from "../ci-key.ts";
+import { gateEnvironment, stepEnvironmentBlock } from "../support/gate-environment.ts";
+import { fileGuards } from "../file-guards.ts";
+import { scenarios, scenariosForSuite } from "../test-plan.ts";
 
 const jobs = [
   "local",
@@ -103,6 +113,8 @@ const select = (input: {
   readonly stackedAbove?: string | ReadonlyArray<string>;
   readonly wait?: number;
   readonly root?: string;
+  /** More of the job's environment. */
+  readonly env?: Readonly<Record<string, string>>;
 }) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -160,6 +172,7 @@ const select = (input: {
           GITHUB_RUN_ID: "123456",
           GITHUB_OUTPUT: output,
           GITHUB_STEP_SUMMARY: summary,
+          ...input.env,
         },
         extendEnv: true,
       }),
@@ -169,16 +182,20 @@ const select = (input: {
       [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
       { concurrency: "unbounded" },
     );
-    const outputs = Object.fromEntries(
+    const written = Object.fromEntries(
       (yield* fs.readFileString(output))
         .split("\n")
         .filter((line) => line.length > 0)
         .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
     );
+    // What a later run compares to tell whether it would test the same thing (e2e/ci-key.ts),
+    // apart from the outputs the jobs read.
+    const { selection, "worker-growth": workerGrowth, ...outputs } = written;
     return {
       exitCode,
       log,
       outputs,
+      keys: { selection, workerGrowth },
       summary: yield* fs.readFileString(summary),
     };
   }).pipe(Effect.scoped);
@@ -341,6 +358,15 @@ const workflowJob = (name: string) =>
 
 /** The select outputs that start each E2E job, as its `if` in checks.yml reads them. */
 const startedBy = {
+  // The run's one collector build, for every job below that starts or packages it.
+  collector: [
+    "local-shards",
+    "self-host-shards",
+    "self-host-inventory",
+    "self-host-catalog",
+    "cloud-runners",
+    "release-local",
+  ],
   "e2e-local": ["local-shards"],
   "e2e-self-host": ["self-host-shards"],
   "e2e-self-host-scale": ["self-host-inventory", "self-host-catalog"],
@@ -351,6 +377,37 @@ const startedBy = {
 } as const;
 type E2eJob = keyof typeof startedBy;
 const e2eJobs = Object.keys(startedBy) as ReadonlyArray<E2eJob>;
+
+/**
+ * The cases that run the selection as many real processes at once. On an idle host they take 10 to
+ * 20 seconds; at a load of 15 on this host's 16 cores, up to 23; at the load of 22 where one failed
+ * in review, past the 30-second default. Their limit is several times their idle time, so a busy
+ * host slows them and does not fail them; every other case keeps the default.
+ */
+const heavyCaseTimeout = 120_000;
+
+/** The `select` outputs whose matrix fields the size budget measures (each entry's fields). */
+const matrixOutputs = ["local-shards", "self-host-shards", "cloud-runners"];
+
+/**
+ * Each read of a `select` output in a workflow's code (comments removed) that could put the
+ * selection's size into a process: anywhere but a job or step condition, a matrix the budget
+ * measures, a comparison (`== '…'`, `!= '…'`, a short value), or a direct read of an output in
+ * `measured`. Quoted or inside a larger expression, in an `env:` value or a `run:` body alike.
+ */
+const unmeasuredReads = (code: string, measured: ReadonlyArray<string>) =>
+  code.split("\n").flatMap((line, index) => {
+    if (/^\s*(?:- )?if: /.test(line)) return [];
+    return [...line.matchAll(/needs\.select\.outputs\.([\w-]+)(\s*[!=]=\s*'[^']*')?/g)].flatMap(
+      (match) => {
+        const name = match[1]!;
+        if (match[2] !== undefined) return [];
+        if (matrixOutputs.includes(name) && /^\s*include: \$\{\{ fromJSON\(/.test(line)) return [];
+        if (measured.includes(name)) return [];
+        return [`line ${index + 1} reads ${name}: ${line.trim()}`];
+      },
+    );
+  });
 
 /** Whether select's outputs start an E2E job. */
 const chosen = (outputs: Readonly<Record<string, string>>, job: E2eJob) =>
@@ -368,13 +425,21 @@ const gate = (
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const { script } = yield* workflowJob("e2e");
     expect(script).toBeDefined();
+    const fs = yield* FileSystem.FileSystem;
     const needs = {
       select,
       ...Object.fromEntries(e2eJobs.map((job) => [job, { result: results[job], outputs: {} }])),
     };
+    // What GitHub passes the step: its env block evaluated against these needs.
+    const env = gateEnvironment(
+      yield* fs.readFileString(".github/workflows/checks.yml"),
+      "e2e",
+      "Require every selected E2E job to pass",
+      needs,
+    );
     const child = yield* processes.spawn(
       ChildProcess.make("bash", ["-e", "-c", script!], {
-        env: { NEEDS: JSON.stringify(needs) },
+        env: { ...env, REPEAT_OF: "" },
         extendEnv: true,
       }),
     );
@@ -388,8 +453,8 @@ const gate = (
 /** This suite's own config, rewritten only in a fixture tree. */
 const ownConfig = "e2e/ci-selection.config.ts";
 
-/** Files `fileGuards` in e2e/ci-selection.ts watches; main lists each in its directory. */
-const guardedFiles = ["packages/sdk/src/implementation/app-protocols.ts"];
+/** Files `fileGuards` (e2e/file-guards.ts) watches; main lists each in its directory. */
+const guardedFiles = Object.keys(fileGuards);
 /**
  * Main's listings of the guarded files' directories, with each file's blob ID in this checkout
  * unless `changed` gives another.
@@ -403,7 +468,86 @@ const guardedListings = (blobs: ReadonlyArray<string>, changed: Record<string, s
   return listings;
 };
 
+/**
+ * The runner label a job's `runs-on` expression in checks.yml gives, evaluated for one run: the
+ * expression's names are replaced by this run's values and the rest is evaluated as GitHub does
+ * (`&&` and `||` return a value, an empty string is false). A name not listed here fails the case,
+ * so an expression this does not know is never guessed at.
+ */
+const runnerLabel = (
+  workflow: string,
+  job: string,
+  run: {
+    readonly mode: string;
+    readonly event: string;
+    readonly fork: boolean;
+    readonly full: "true" | "false";
+  },
+) => {
+  const start = workflow.indexOf(`\n  ${job}:\n`);
+  const line = workflow
+    .slice(start)
+    .split("\n")
+    .find((text) => text.startsWith("    runs-on: ${{ "));
+  if (start === -1 || line === undefined) throw new Error(`No runs-on for ${job}`);
+  const expression = line.slice("    runs-on: ${{ ".length, -" }}".length);
+  const values: Record<string, string> = {
+    "vars.CI_RUNNER_MODE": run.mode,
+    "github.event_name": run.event,
+    "github.event.pull_request.head.repo.full_name": run.fork
+      ? "someone/executor-next"
+      : "UsefulSoftwareCo/executor-next",
+    "github.repository": "UsefulSoftwareCo/executor-next",
+    "needs.select.outputs.full": run.full,
+  };
+  const code = expression.replace(/[a-z][\w.-]*\.[\w.-]+/giu, (name) => {
+    if (!(name in values)) throw new Error(`runs-on names ${name}, which this does not know`);
+    return JSON.stringify(values[name]);
+  });
+  if (/[^"'\w\s.()=!&|/-]/u.test(code.replaceAll(/"[^"]*"|'[^']*'/gu, "")))
+    throw new Error(`runs-on is not a plain expression: ${expression}`);
+  // oxlint-disable-next-line no-new-func -- a GitHub expression of literals and comparisons only
+  return String(new Function(`return (${code.replaceAll("'", '"')});`)());
+};
+
 layer(NodeServices.layer)("CI E2E selection", (it) => {
+  it.effect(
+    "self-host runs whole shards on 8 vCPU and every other run on 16, and the desktop mode is untouched",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const workflow = yield* fs.readFileString(".github/workflows/checks.yml");
+        const label = (run: Partial<Parameters<typeof runnerLabel>[2]>) =>
+          runnerLabel(workflow, "e2e-self-host", {
+            mode: "",
+            event: "pull_request",
+            fork: false,
+            full: "false",
+            ...run,
+          });
+        // A whole run (a push to main, an `all` block): 4 workers a shard, 8 vCPU.
+        expect(label({ event: "push", full: "true" })).toBe("blacksmith-8vcpu-ubuntu-2404");
+        expect(label({ full: "true" })).toBe("blacksmith-8vcpu-ubuntu-2404");
+        // A narrowed or partial run: 8 workers, 16 vCPU.
+        expect(label({ full: "false" })).toBe("blacksmith-16vcpu-ubuntu-2404");
+        expect(label({ event: "push", full: "false" })).toBe("blacksmith-16vcpu-ubuntu-2404");
+        // The desktop mode takes this repository's runs whatever their size, and never a fork's.
+        expect(label({ mode: "desktop", full: "true" })).toBe("executor-ci-desktop");
+        expect(label({ mode: "desktop", full: "false" })).toBe("executor-ci-desktop");
+        expect(label({ mode: "desktop", event: "push", full: "true" })).toBe("executor-ci-desktop");
+        expect(label({ mode: "desktop", fork: true, full: "true" })).toBe(
+          "blacksmith-8vcpu-ubuntu-2404",
+        );
+        expect(label({ mode: "desktop", fork: true, full: "false" })).toBe(
+          "blacksmith-16vcpu-ubuntu-2404",
+        );
+        // WORKERS reads the same output: whole runs run 4 workers a shard.
+        expect(workflow).toContain(
+          "WORKERS: ${{ needs.select.outputs.full == 'true' && '4' || '8' }}",
+        );
+      }),
+  );
+
   it.effect("a push to main runs every job's full pattern", () =>
     Effect.gen(function* () {
       const run = yield* select({});
@@ -573,7 +717,9 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       });
       for (const [index, run] of runs.entries()) {
         expect(run.exitCode, names[index]).toBe(1);
-        expect(run.log, names[index]).toContain(`not spec files in e2e/tests/: "${names[index]}"`);
+        expect(run.log, names[index]).toContain(
+          `- line 1 of the e2e block, \`${names[index]}\`: no spec file has this name. The nearest names are `,
+        );
         expect(run.outputs, names[index]).toEqual({});
       }
     }),
@@ -582,21 +728,29 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
   it.effect("a spec file another config runs fails and names what runs it", () =>
     Effect.gen(function* () {
       const cases = [
-        ["billing.spec.ts", "e2e/billing.config.ts: bun run e2e:billing. No workflow runs it."],
+        [
+          "billing.spec.ts",
+          "billing.spec.ts runs only by hand, with e2e/billing.config.ts (bun run e2e:billing); no workflow runs it, so naming it here runs nothing. Remove billing.spec.ts from the e2e block.",
+        ],
+        // A release lane runs it, when the change reaches that lane: not on every pull request.
         [
           "docker-release.spec.ts",
-          "e2e/docker-release.config.ts in Checks (.github/workflows/checks.yml) and Executor releases (.github/workflows/release-artifacts.yml)",
+          "docker-release.spec.ts runs with e2e/docker-release.config.ts in Checks (.github/workflows/checks.yml) and Executor releases (.github/workflows/release-artifacts.yml), not in these jobs, so naming it here runs nothing. Remove docker-release.spec.ts from the e2e block.",
         ],
         // Planned, but its scenarios run only against the release archive.
         [
           "local-bootstrap.spec.ts",
-          "e2e/local-bootstrap.config.ts in Checks (.github/workflows/checks.yml) and Executor releases (.github/workflows/release-artifacts.yml)",
+          "local-bootstrap.spec.ts runs with e2e/local-bootstrap.config.ts in Checks (.github/workflows/checks.yml) and Executor releases (.github/workflows/release-artifacts.yml), not in these jobs, so naming it here runs nothing. Remove local-bootstrap.spec.ts from the e2e block.",
         ],
+        // The tooling job runs it on every pull request.
         [
           "ci-selection.spec.ts",
-          "e2e/ci-selection.config.ts in Checks (.github/workflows/checks.yml). Locally: bun run e2e:ci-selection.",
+          "ci-selection.spec.ts runs with e2e/ci-selection.config.ts in Checks on every pull request anyway, so the e2e block cannot select it. Remove ci-selection.spec.ts from the e2e block. Locally: bun run e2e:ci-selection.",
         ],
-        ["claude-mcp.spec.ts", "these jobs exclude all of its scenarios"],
+        [
+          "claude-mcp.spec.ts",
+          "these jobs exclude all of claude-mcp.spec.ts's scenarios (see the job patterns in e2e/ci-selection.ts), so naming it here runs nothing. Remove claude-mcp.spec.ts from the e2e block.",
+        ],
       ] as const;
       const runs = yield* Effect.forEach(
         cases,
@@ -606,9 +760,8 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       for (const [index, run] of runs.entries()) {
         const [file, where] = cases[index]!;
         expect(run.exitCode, file).toBe(1);
-        expect(run.log, file).toContain(`- ${file}`);
-        expect(run.log, file).toContain(where);
-        expect(run.log, file).toContain("Remove them from the e2e block.");
+        expect(run.log, file).toContain(`- line 2 of the e2e block, \`${file}\`: ${where}`);
+        expect(run.log, file).toContain("gh run rerun 123456.");
         expect(run.outputs, file).toEqual({});
       }
     }),
@@ -630,7 +783,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(run.outputs["self-host"]).toMatch(/^\^\(\?:/);
       expect(run.summary).toContain("Spec files: groups.spec.ts\n");
       expect(run.summary).toContain(
-        "- billing.spec.ts runs only by hand, with e2e/billing.config.ts",
+        "- billing.spec.ts: billing.spec.ts runs only by hand, with e2e/billing.config.ts (bun run e2e:billing); no workflow runs it, so these jobs do not run it.",
       );
     }),
   );
@@ -761,7 +914,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       const run = yield* select({ body: block("deployment-links.spec.ts") });
       expect(run.exitCode).toBe(1);
       expect(run.log).toContain(
-        "- deployment-links.spec.ts: only Cloud tests on main runs its scenarios, on a deployed stage after merge.",
+        "- line 1 of the e2e block, `deployment-links.spec.ts`: only the deployed stage runs deployment-links.spec.ts's scenarios, in Cloud tests on main after merge, so naming it here runs nothing. Remove deployment-links.spec.ts from the e2e block. To run its scenarios before merging, run them on a deployed stage: bun run e2e:deployed --database planetscale --test-name '^(?:Cloud product links follow the deployment origin)$'",
       );
     }),
   );
@@ -789,7 +942,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(changed.summary).toContain("Spec files: deployment-links.spec.ts\n");
       expect(other.exitCode).toBe(1);
       expect(other.log).toContain(
-        "- deployment-links.spec.ts: only Cloud tests on main runs its scenarios, on a deployed stage after merge.",
+        "- line 1 of the e2e block, `deployment-links.spec.ts`: only the deployed stage runs deployment-links.spec.ts's scenarios, in Cloud tests on main after merge, so naming it here runs nothing. Remove deployment-links.spec.ts from the e2e block. To run its scenarios before merging, run them on a deployed stage: bun run e2e:deployed --database planetscale --test-name '^(?:Cloud product links follow the deployment origin)$'",
       );
       expect(other.outputs).toEqual({});
     }),
@@ -995,9 +1148,17 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         expect(refused.log).toContain(
           `bun run e2e:deployed --database planetscale --test-name '^(?:${title})$'`,
         );
+        // The exact line to add, which the check then accepts as written.
+        const line = `Verified on a deployed stage: bun run e2e:deployed --database planetscale --test-name '^(?:${title})$' passed`;
         expect(refused.log).toContain(
-          '"Verified on a deployed stage: <command, run or stage, and result>"',
+          `When that command passes, add this line to the description, on a line of its own, then run this workflow again:\n${line}\n`,
         );
+        const added = yield* select({
+          body: `${block("none")}\n${line}\n`,
+          changed,
+          main: main(without),
+        });
+        expect(added.exitCode, added.log).toBe(0);
         // A statement of how it was verified lets it through; a bare heading does not.
         expect(stated.exitCode, stated.log).toBe(0);
         expect(emptyStatement.exitCode).toBe(1);
@@ -1011,6 +1172,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "Could not read main's e2e/test-plan.ts, so whether this pull request adds scenarios to the deployed suite was not checked.",
         );
       }),
+    heavyCaseTimeout,
   );
 
   it.effect(
@@ -1147,7 +1309,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(main.exitCode, main.log).toBe(0);
       expect(named.exitCode).toBe(1);
       expect(named.log).toContain(
-        `- ${included} runs with ${ownConfig} in Checks (.github/workflows/checks.yml).`,
+        `- line 1 of the e2e block, \`${included}\`: ${included} runs with ${ownConfig} in Checks on every pull request anyway, so the e2e block cannot select it.`,
       );
       expect(changed.exitCode).toBe(1);
       expect(changed.log).toContain(
@@ -1365,6 +1527,788 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       }),
   );
 
+  /** #4456's changed files, and #4457's tests layer above it with its e2e block. */
+  const searchBatch = {
+    compared: [
+      "apps/hosted/server/src/implementation/access.ts",
+      "apps/hosted/server/src/implementation/mcp.ts",
+      "apps/hosted/server/src/implementation/resource-lifecycle.ts",
+      "apps/hosted/server/src/implementation/resource-policy.ts",
+      "apps/hosted/server/src/implementation/tools.ts",
+      "apps/local/server/src/implementation/app-accounts.ts",
+      "notes/cloud-latency.md",
+      "packages/sdk/src/contracts/executor.ts",
+      "packages/sdk/src/contracts/tools.ts",
+      "packages/sdk/src/implementation/create.ts",
+      "packages/sdk/src/implementation/declarations.ts",
+      "packages/sdk/src/implementation/listings.ts",
+      "packages/sdk/src/implementation/oauth.ts",
+      "packages/sdk/src/implementation/tool-search-store.ts",
+      "packages/sdk/src/implementation/tool-search.ts",
+      "packages/sdk/src/implementation/tools.ts",
+      "e2e/test-plan.ts",
+      "e2e/tests/search-statements.spec.ts",
+    ],
+    changed: ["e2e/test-plan.ts", "e2e/tests/search-statements.spec.ts"],
+    body: block(
+      "search-statements.spec.ts",
+      "kept-listings.spec.ts",
+      "mcp-catalog.spec.ts",
+      "mcp-connections.spec.ts",
+      "mcp-execute-failures.spec.ts",
+      "mcp-execute-reach.spec.ts",
+      "mcp-server.spec.ts",
+      "mcp-account-choice.spec.ts",
+      "app-routers.spec.ts",
+      "app-accounts-tab.spec.ts",
+      "bearer-auth-statements.spec.ts",
+      "tool-call-statements.spec.ts",
+      "tool-index-redeploy.spec.ts",
+    ),
+  };
+  /** Every title a run's job patterns select on `target`, read from the patterns as exact titles. */
+  const selectsTitle = (outputs: Readonly<Record<string, string>>, job: string, title: string) =>
+    (outputs[job] ?? "") !== "" && new RegExp(outputs[job]!).test(title);
+
+  it.effect(
+    "the search batch that reddened main selects the Cloud scenario it broke, from its changed files",
+    () =>
+      Effect.gen(function* () {
+        const run = yield* select(searchBatch);
+        expect(run.exitCode, run.log).toBe(0);
+        const broken = scenarios.cloudMcpDiscoveryListings.title;
+        expect(broken).toBe(
+          "Cloud MCP session objects discover the other apps of an execute while one app's listing waits on a lock",
+        );
+        expect(selectsTitle(run.outputs, "cloud-product", broken)).toBe(true);
+        expect(run.summary).toContain(
+          "(e2e/mcp-search-guard.ts), so these Cloud scenarios run too",
+        );
+      }),
+  );
+
+  /** The job each guarded scenario runs in, as e2e/ci-selection.ts's job patterns place it. */
+  const guardedJobs: Readonly<Record<string, string>> = {
+    cloudMcpDiscoveryListings: "cloud-product",
+    cloudMcpParallelCalls: "cloud-product",
+    cloudMcpAbandonedStatement: "cloud-product",
+    cloudMcpObjectPool: "cloud-product",
+    cloudMcpSessionRouting: "cloud-product",
+    cloudMcpSessionRestore: "cloud-product",
+    // Its 120-second idle wait would set the length of any other job.
+    cloudMcpObjectConnections: "cloud-connections",
+    cloudMcpObjectConnectRetry: "cloud",
+    mcpBackgroundListingCloud: "cloud",
+    mcpStoppedListingCloud: "cloud",
+    mcpStoppedRenewalCloud: "cloud",
+    cloudMcpStreamLifetime: "cloud",
+    // It counts every request in the session object isolate.
+    cloudMcpSessionTiming: "cloud-isolate",
+    // It holds a lock on the accounts table.
+    cloudMcpCallBatch: "cloud-batch",
+  };
+
+  it.effect(
+    "the MCP search guard adds its Cloud scenarios to the block, in their own jobs, once, and never to a skipped layer",
+    () =>
+      Effect.gen(function* () {
+        const guarded = "packages/sdk/src/implementation/tools.ts";
+        const runs = yield* Effect.all(
+          {
+            guarded: select({ body: block("mcp-catalog.spec.ts"), compared: [guarded] }),
+            unguarded: select({ body: block("mcp-catalog.spec.ts"), compared: ["notes/x.md"] }),
+            none: select({ body: block("none"), compared: [guarded] }),
+            named: select({
+              body: block("cloud-database-placement.spec.ts"),
+              compared: [guarded],
+            }),
+            skip: select({ body: block("skip"), stackedAbove: "7", compared: [guarded] }),
+          },
+          { concurrency: 4 },
+        );
+        for (const [name, run] of Object.entries(runs))
+          expect(run.exitCode, `${name}: ${run.log}`).toBe(0);
+        const plan = scenariosForSuite("all", "managed");
+        // Each guarded title runs in exactly one Cloud job, the one whose pattern holds it.
+        for (const title of mcpSearchTitles) {
+          const holding = cloudJobs.filter((job) => selectsTitle(runs.guarded.outputs, job, title));
+          expect(holding, title).toHaveLength(1);
+          expect(selectsTitle(runs.none.outputs, holding[0]!, title), title).toBe(true);
+          expect(selectsTitle(runs.unguarded.outputs, holding[0]!, title), title).toBe(false);
+        }
+        // Nothing the block selects is removed, and no other target gains a scenario.
+        for (const job of jobs.filter((job) => !job.startsWith("cloud")))
+          expect(runs.guarded.outputs[job], job).toBe(runs.unguarded.outputs[job]);
+        // The block's own Cloud scenarios outside the table still run beside the guarded ones.
+        const named = plan.filter(
+          (scenario) =>
+            scenario.file === "cloud-database-placement.spec.ts" &&
+            scenario.targets.cloud.status === "scheduled" &&
+            !mcpSearchTitles.has(scenario.title),
+        );
+        expect(named.length).toBeGreaterThan(2);
+        for (const scenario of named)
+          expect(
+            cloudJobs.some((job) => selectsTitle(runs.named.outputs, job, scenario.title)),
+            scenario.title,
+          ).toBe(true);
+        // Each guarded title lands in the job checks.yml's reasons give it, and no other.
+        expect(Object.keys(guardedJobs).sort()).toEqual([...mcpSearchScenarios].sort());
+        for (const [key, job] of Object.entries(guardedJobs)) {
+          const title = scenarios[key as keyof typeof scenarios].title;
+          expect(
+            cloudJobs.filter((each) => selectsTitle(runs.none.outputs, each, title)),
+            `${key} runs only in ${job}`,
+          ).toEqual([job]);
+        }
+        // A title the block already selects is in its job's pattern once.
+        const broken = scenarios.cloudMcpDiscoveryListings.title;
+        const pattern = runs.named.outputs["cloud-product"]!;
+        expect(pattern.split(broken.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).length - 1).toBe(1);
+        // A skipped layer still skips; the layer above carries the run.
+        expect(runs.skip.outputs.skip).toBe("true");
+        expect(runs.skip.outputs["cloud-runners"] ?? "").toBe("");
+      }),
+  );
+
+  it.effect("the MCP search guard's table names files that exist and scenarios Cloud runs", () =>
+    Effect.gen(function* () {
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const child = yield* processes.spawn(ChildProcess.make("git", ["ls-files"]));
+      const tracked = (yield* child.stdout.pipe(Stream.decodeText(), Stream.mkString))
+        .split("\n")
+        .filter((file) => file !== "");
+      expect(tracked.length).toBeGreaterThan(1000);
+      expect(
+        mcpSearchPaths.filter((entry) => !tracked.some((file) => matchesPath(entry, file))),
+        "paths in e2e/mcp-search-guard.ts that match no file",
+      ).toEqual([]);
+      // A path entry's forms, and #4456's files.
+      expect(matchesPath("packages/mcp/", "packages/mcp/src/server.ts")).toBe(true);
+      expect(
+        matchesPath(
+          "packages/sdk/src/implementation/tool-search*.ts",
+          "packages/sdk/src/implementation/tool-search-store.ts",
+        ),
+      ).toBe(true);
+      expect(
+        matchesPath(
+          "packages/sdk/src/implementation/tool-search*.ts",
+          "packages/sdk/src/implementation/tool-search/x.ts",
+        ),
+      ).toBe(false);
+      expect(mcpSearchChanged(["packages/sdk/src/implementation/tools.ts"])).toBe(true);
+      expect(mcpSearchChanged(["packages/sdk/src/implementation/tools-index.ts"])).toBe(false);
+
+      const cloud = scenariosForSuite("all", "managed").filter(
+        (scenario) => scenario.targets.cloud.status === "scheduled",
+      );
+      const scheduled = new Set(cloud.map((scenario) => scenario.title));
+      expect(
+        mcpSearchScenarios.filter((key) => !scheduled.has(scenarios[key].title)),
+        "scenarios in e2e/mcp-search-guard.ts that Cloud does not run",
+      ).toEqual([]);
+      // A new scenario of the family is guarded from the day it is written: every Cloud scenario
+      // in a cloud-mcp-session-* spec file, and every MCP session scenario of
+      // cloud-database-placement.spec.ts, read by the phrase its titles share.
+      const family = cloud.filter(
+        (scenario) =>
+          /^cloud-mcp-session-[\w-]+\.spec\.ts$/.test(scenario.file) ||
+          (scenario.file === "cloud-database-placement.spec.ts" &&
+            scenario.title.includes("MCP session")),
+      );
+      expect(family.length).toBeGreaterThan(8);
+      expect(
+        family.filter((scenario) => !mcpSearchTitles.has(scenario.title)).map((s) => s.title),
+        "Cloud MCP session scenarios not guarded: add each one's key to mcpSearchScenarios in e2e/mcp-search-guard.ts",
+      ).toEqual([]);
+    }),
+  );
+
+  /**
+   * The six pull request heads of 14 Nov whose second run tested again only because the description
+   * was edited between the two runs' reads: each head's e2e block before and after, as the authors
+   * wrote it, with the prose around it standing in for theirs. #4365's blocks also named a spec file
+   * the plan no longer has; it is left out of both versions.
+   */
+  const fourteenth = (() => {
+    const harness = "all: changes the e2e harness, the CI workflows and the lockfile";
+    const runtime = [
+      "local-app-runtime-restart.spec.ts",
+      "local-workflow-engine-steps.spec.ts",
+      "local-workflow-engine-memory.spec.ts",
+      "local-registry-credentials.spec.ts",
+      "tool-call-held-check.spec.ts",
+      "app-failure-details.spec.ts",
+      "app-failure-telemetry.spec.ts",
+    ];
+    const limit = [
+      "compiled-file-limit.spec.ts",
+      "local-compiled-file-limit.spec.ts",
+      "app-failure-details.spec.ts",
+      "app-source-imports.spec.ts",
+      "local-apps-cli.spec.ts",
+    ];
+    const described = (prose: string, lines: ReadonlyArray<string>) =>
+      `${prose}\n\n${block(...lines)}`;
+    return {
+      // The description gained a results table.
+      af220a946: [
+        described("Summary.", [harness]),
+        described("Summary.\n\n| Run | Result |\n| --- | --- |\n| 1 | passed |", [harness]),
+      ],
+      // A line about a step's skip flag changed.
+      b6df4276c: [
+        described("- The step fails when its outputs are missing.", [harness]),
+        described("- `--skip collector:build` neither runs the step nor touches its outputs.", [
+          harness,
+        ]),
+      ],
+      "5d4189980": [
+        described("Notes.", [...runtime, "mcp-protocol-versions.spec.ts"]),
+        described("Notes, edited.", [...runtime, "mcp-protocol-versions.spec.ts"]),
+      ],
+      // The block gained a spec file: the suites changed.
+      d2e5026fb: [
+        described("Notes.", runtime),
+        described("Notes.", [...runtime, "mcp-protocol-versions.spec.ts"]),
+      ],
+      // Rows about a deploy and skipped packages changed.
+      "7efe1d9e0": [
+        described(
+          "| Check removed | deploy 200 instead of 422 |\n| Packages skipped | fails |",
+          limit,
+        ),
+        described(
+          "| Check removed (re-run) | deploy 200 instead of 422 |\n\nThe packages skipped row no longer applies.",
+          limit,
+        ),
+      ],
+      "348c22613": [described("A first draft.", ["none"]), described("A second draft.", ["none"])],
+    } as const;
+  })();
+
+  it.effect(
+    "the repeat key is what the selection chose: an edit that leaves it keeps the key, one that changes it does not",
+    () =>
+      Effect.gen(function* () {
+        const changed = ["e2e/tests/groups.spec.ts"];
+        const growth = "```worker-growth\napi +60,000: the SAML library\n```";
+        const runs = yield* Effect.all(
+          {
+            plain: select({ body: `Summary.\n\n${block("groups.spec.ts")}`, changed }),
+            prose: select({
+              body: `Another summary.\n\n${block("groups.spec.ts")}\n\nResults.`,
+              changed,
+            }),
+            // A deployed-stage line only decides whether select passes; with no scenario new to
+            // the deployed suite, it changes nothing that runs.
+            deployedLine: select({
+              body: `${block("groups.spec.ts")}\nVerified on a deployed stage: bun run e2e:deployed passed\n`,
+              changed,
+            }),
+            spec: select({ body: block("groups.spec.ts", "invitation-roles.spec.ts"), changed }),
+            none: select({ body: block("none"), changed }),
+            growth: select({ body: `${block("groups.spec.ts")}\n\n${growth}`, changed }),
+            otherGrowth: select({
+              body: `${block("groups.spec.ts")}\n\n${growth.replace("60,000", "90,000")}`,
+              changed,
+            }),
+            skip: select({ body: block("skip"), stackedAbove: "7", changed }),
+            push: select({ changed }),
+          },
+          { concurrency: 4 },
+        );
+        for (const [name, run] of Object.entries(runs)) {
+          expect(run.exitCode, `${name}: ${run.log}`).toBe(0);
+          expect(run.keys.selection, name).toMatch(/^[0-9a-f]{64}$/);
+        }
+        const { plain } = runs;
+        // The key changes with every output the jobs are given: each line select wrote, changed
+        // alone, changes it. The lines are those select wrote, apart from the two keys.
+        for (const [name, run] of Object.entries(runs)) {
+          const lines = Object.entries(run.outputs).map(([key, value]) => `${key}=${value}`);
+          expect(lines.length, name).toBeGreaterThan(0);
+          for (const [index, line] of lines.entries())
+            expect(
+              selectionKey(lines.with(index, `${line}0`).join("\n")),
+              `${name}: ${line.slice(0, line.indexOf("="))}`,
+            ).not.toBe(run.keys.selection);
+        }
+        // Every output a job of checks.yml reads is one select writes in one of these runs, and so
+        // one the key covers.
+        const fs = yield* FileSystem.FileSystem;
+        const read = new Set(
+          [
+            ...(yield* fs.readFileString(".github/workflows/checks.yml")).matchAll(
+              /steps\.select\.outputs\.([a-z-]+)/g,
+            ),
+          ].map((match) => match[1]!),
+        );
+        const written = new Set([
+          ...Object.values(runs).flatMap((run) => Object.keys(run.outputs)),
+          "selection",
+          "worker-growth",
+        ]);
+        expect(read.size).toBeGreaterThan(10);
+        expect([...read].filter((name) => !written.has(name))).toEqual([]);
+        expect(runs.growth.keys.workerGrowth).toBe(
+          workerGrowthKey(`${block("groups.spec.ts")}\n\n${growth}`),
+        );
+        // Same selection, same blocks for the size gate: the same key. none selects what naming
+        // groups.spec.ts did, because a changed spec file runs anyway.
+        for (const name of ["prose", "deployedLine", "none"] as const)
+          expect(runs[name].keys, name).toEqual(plain.keys);
+        // Another selection: another selection key, the size gate's unchanged.
+        for (const name of ["spec", "skip"] as const) {
+          expect(runs[name].keys.selection, name).not.toBe(plain.keys.selection);
+          expect(runs[name].keys.workerGrowth, name).toBe(plain.keys.workerGrowth);
+        }
+        // Another worker-growth block: the same selection, another size-gate key.
+        expect(runs.growth.keys.selection).toBe(plain.keys.selection);
+        expect(runs.growth.keys.workerGrowth).not.toBe(plain.keys.workerGrowth);
+        expect(runs.otherGrowth.keys.workerGrowth).not.toBe(runs.growth.keys.workerGrowth);
+        // A push has no description, so no size-gate key, and records nothing.
+        expect(runs.push.keys.workerGrowth).toBeUndefined();
+      }),
+    heavyCaseTimeout,
+  );
+
+  it.effect(
+    "the six heads of 14 Nov that tested twice: five now match, d2e5026fb still tests again",
+    () =>
+      Effect.gen(function* () {
+        const keys = yield* Effect.forEach(
+          Object.entries(fourteenth),
+          ([head, [before, after]]) =>
+            Effect.all([select({ body: before }), select({ body: after })]).pipe(
+              Effect.map(([first, second]) => {
+                expect(first.exitCode, `${head}: ${first.log}`).toBe(0);
+                expect(second.exitCode, `${head}: ${second.log}`).toBe(0);
+                return [
+                  head,
+                  first.keys.selection === second.keys.selection &&
+                    first.keys.workerGrowth === second.keys.workerGrowth,
+                ] as const;
+              }),
+            ),
+          { concurrency: 3 },
+        );
+        expect(Object.fromEntries(keys)).toEqual({
+          af220a946: true,
+          b6df4276c: true,
+          "5d4189980": true,
+          d2e5026fb: false,
+          "7efe1d9e0": true,
+          "348c22613": true,
+        });
+      }),
+    heavyCaseTimeout,
+  );
+
+  /** The blocks that failed select on 13–14 Nov, each with the edit its message must name. */
+  const failedBlocks = {
+    // #4439: a file name that is not a spec file.
+    notASpec: {
+      body: block("search-statements.spec.ts", "search-rejected-accounts.spec.ts"),
+      says: "- line 2 of the e2e block, `search-rejected-accounts.spec.ts`: no spec file has this name. The nearest names are ",
+    },
+    // #4377: a spec file Checks runs on every pull request.
+    checksOnly: {
+      body: block("mcp-server.spec.ts", "effect-mcp-session-bound.spec.ts"),
+      says: "- line 2 of the e2e block, `effect-mcp-session-bound.spec.ts`: effect-mcp-session-bound.spec.ts runs with e2e/effect-mcp.config.ts in Checks on every pull request anyway, so the e2e block cannot select it. Remove effect-mcp-session-bound.spec.ts from the e2e block.",
+    },
+    // #4369: a spec file only the deployed stage runs.
+    deployedOnly: {
+      body: block("groups.spec.ts", "root-entry-loading.spec.ts"),
+      says: "- line 2 of the e2e block, `root-entry-loading.spec.ts`: only the deployed stage runs root-entry-loading.spec.ts's scenarios, in Cloud tests on main after merge, so naming it here runs nothing. Remove root-entry-loading.spec.ts from the e2e block. To run its scenarios before merging, run them on a deployed stage: bun run e2e:deployed --database planetscale --test-name '^(?:",
+    },
+    // #4393: skip before the layer above was open.
+    lateLayer: {
+      body: block("skip"),
+      says: "The e2e block says skip (line 1 of the e2e block, `skip`), which only a lower layer of a stack may say: this run waited 0 seconds for the layer above, an open pull request whose base is this branch, ",
+    },
+  } as const;
+
+  it.effect("each block that failed select on 13–14 Nov is told the line and the edit", () =>
+    Effect.gen(function* () {
+      for (const [name, { body, says }] of Object.entries(failedBlocks)) {
+        const run = yield* select({ body });
+        expect(run.exitCode, name).toBe(1);
+        expect(run.log, name).toContain(says);
+        expect(run.outputs, name).toEqual({});
+      }
+      // #4439's nearest names include the spec file its stack had added under another name.
+      const near = yield* select({ body: block("search-statement.spec.ts") });
+      expect(near.log).toContain("The nearest names are search-statements.spec.ts, ");
+    }),
+  );
+
+  it.effect(
+    "e2e:check-description gives select's verdict on a draft, failing or passing, from the checkout",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const directory = yield* fs.makeTempDirectoryScoped({
+          prefix: "executor-check-description-",
+        });
+        const branch = (yield* processes
+          .spawn(ChildProcess.make("git", ["rev-parse", "--abbrev-ref", "HEAD"]))
+          .pipe(
+            Effect.flatMap((child) => child.stdout.pipe(Stream.decodeText(), Stream.mkString)),
+            Effect.scoped,
+          )).trim();
+        // HEAD as main and as the base: nothing changed, as in select's runs below.
+        const check = (body: string) =>
+          Effect.gen(function* () {
+            const file = path.join(directory, "description.md");
+            yield* fs.writeFileString(file, body);
+            const child = yield* processes.spawn(
+              ChildProcess.make(
+                "node",
+                ["e2e/check-description.ts", "--file", file, "--main", "HEAD", "--base", "HEAD"],
+                { extendEnv: true },
+              ),
+            );
+            const [log, exitCode] = yield* Effect.all(
+              [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+              { concurrency: "unbounded" },
+            );
+            return { log, exitCode: Number(exitCode) };
+          }).pipe(Effect.scoped);
+        /** The verdict a run prints: its failure message, or the selection's job table. */
+        const verdict = (log: string) =>
+          (
+            /SelectionFailed: ([\s\S]*?)\n {4}at /.exec(log)?.[1] ??
+            log.slice(log.indexOf("| Job | Scenarios | Runners |"))
+          )
+            // Only the advice a CI run can follow differs.
+            .replaceAll(
+              "CI waited 0 seconds for the description. Once it is fixed, rerun the whole workflow: gh run rerun 123456",
+              "Edit the description and check it again",
+            )
+            .replaceAll(`base is this branch, ${branch},`, "base is this branch, layer,")
+            .replaceAll(`with base ${branch},`, "with base layer,");
+        // A skip is checked once the layer above is open (the next case), so it is left out here.
+        const drafts = {
+          ...Object.fromEntries(
+            Object.entries(failedBlocks)
+              .filter(([name]) => name !== "lateLayer")
+              .map(([name, { body }]) => [name, body]),
+          ),
+          passes: block("groups.spec.ts"),
+        };
+        for (const [name, body] of Object.entries(drafts)) {
+          const [local, ci] = [yield* check(body), yield* select({ body })];
+          expect(local.exitCode, `${name}: ${local.log}`).toBe(ci.exitCode);
+          expect(verdict(local.log), name).toBe(verdict(ci.log));
+          expect(verdict(local.log).length, name).toBeGreaterThan(40);
+        }
+      }),
+    heavyCaseTimeout,
+  );
+
+  it.effect(
+    "e2e:check-description passes a skip it cannot check yet, gives no CI advice, checks a pull request only at its head, and lists 300 files as GitHub does",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-check-pr-" });
+        const run = (
+          command: string,
+          args: ReadonlyArray<string>,
+          env: Record<string, string> = {},
+          cwd?: string,
+        ) =>
+          Effect.gen(function* () {
+            const child = yield* processes.spawn(
+              ChildProcess.make(command, args, {
+                env,
+                extendEnv: true,
+                ...(cwd === undefined ? {} : { cwd }),
+              }),
+            );
+            const [log, exitCode] = yield* Effect.all(
+              [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+              { concurrency: "unbounded" },
+            );
+            return { log, exitCode: Number(exitCode) };
+          }).pipe(Effect.scoped);
+        const head = (yield* run("git", ["rev-parse", "HEAD"])).log.trim();
+        const file = path.join(directory, "description.md");
+        const local = (args: ReadonlyArray<string>, env: Record<string, string> = {}) =>
+          run("node", ["e2e/check-description.ts", ...args, "--main", "HEAD"], env);
+
+        // A skip in a draft: nothing to check it against yet, so it says so and passes.
+        yield* fs.writeFileString(file, block("skip"));
+        // Run from inside a CI job, the check clears GITHUB_ACTIONS for the selection it starts.
+        const skip = yield* local(["--file", file], { GITHUB_ACTIONS: "true" });
+        expect(skip.exitCode, skip.log).toBe(0);
+        expect(skip.log).toContain("A skip cannot be checked before both pull requests exist.");
+        // A failing draft gets the advice an author can follow locally, not a CI run's.
+        yield* fs.writeFileString(file, failedBlocks.notASpec.body);
+        const failed = yield* local(["--file", file]);
+        expect(failed.exitCode).toBe(1);
+        expect(failed.log).toContain("Edit the description and check it again.");
+        expect(failed.log).not.toContain("gh run rerun");
+
+        // --pr reads the pull request with gh: here a stand-in answering for pull request 7,
+        // whose layer above is #9, at `oid`.
+        const bin = path.join(directory, "bin");
+        yield* fs.makeDirectory(bin);
+        const pr = (oid: string) =>
+          Effect.gen(function* () {
+            yield* fs.writeFileString(
+              path.join(bin, "view.json"),
+              JSON.stringify({
+                body: block("skip"),
+                baseRefName: "main",
+                headRefName: "feature",
+                headRefOid: oid,
+              }),
+            );
+            yield* fs.writeFileString(
+              path.join(bin, "gh"),
+              // The layer above is based on the pull request's head branch, feature, not this one.
+              '#!/bin/sh\ncase "$*" in\n  "pr view"*) cat "$(dirname "$0")/view.json" ;;\n  "pr list"*"--base feature"*) echo 9 ;;\n  "pr list"*) ;;\n  *) exit 3 ;;\nesac\n',
+            );
+            yield* fs.chmod(path.join(bin, "gh"), 0o755);
+            return yield* local(["--pr", "7"], { PATH: `${bin}:${process.env.PATH ?? ""}` });
+          });
+        const elsewhere = yield* pr("0".repeat(40));
+        expect(elsewhere.exitCode).toBe(2);
+        expect(elsewhere.log).toContain(
+          `This checkout's HEAD is ${head}, but pull request 7's head is ${"0".repeat(40)}, so its changed files would not be the pull request's. Check out that commit first: git fetch origin feature && git checkout --detach ${"0".repeat(40)}`,
+        );
+        const atHead = yield* pr(head);
+        expect(atHead.exitCode, atHead.log).toBe(0);
+        expect(atHead.log).toContain("Skipped: a lower stack layer under #9.");
+
+        // The comparison lists at most 300 files, as GitHub's does, so a longer one runs all.
+        const repository = path.join(directory, "repository");
+        yield* fs.makeDirectory(repository);
+        const git = (...args: ReadonlyArray<string>) =>
+          run(
+            "git",
+            ["-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.test", ...args],
+            {},
+            repository,
+          );
+        yield* git("init", "-q");
+        yield* fs.writeFileString(path.join(repository, "README.md"), "main\n");
+        yield* git("add", "-A");
+        yield* git("commit", "-q", "-m", "main");
+        const main = (yield* git("rev-parse", "HEAD")).log.trim();
+        for (let index = 0; index < 301; index++)
+          yield* fs.writeFileString(
+            path.join(repository, `file-${String(index).padStart(3, "0")}.ts`),
+            "\n",
+          );
+        yield* git("add", "-A");
+        yield* git("commit", "-q", "-m", "head");
+        const listed = yield* run(
+          "node",
+          [
+            path.resolve("e2e/check-description-gh.ts"),
+            "api",
+            "repos/o/r/compare/main...head",
+            "--jq",
+            ".files[] | .filename",
+          ],
+          { CHECK_DESCRIPTION_MAIN: main },
+          repository,
+        );
+        expect(listed.exitCode, listed.log).toBe(0);
+        expect(listed.log.trim().split("\n")).toHaveLength(300);
+      }),
+  );
+
+  it.effect(
+    "the local check's mode cannot run in a workflow: it fails there, and no workflow sets it",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const [inActions, local, ci] = yield* Effect.all(
+          [
+            select({ body: block("skip"), env: { E2E_LOCAL_CHECK: "1", GITHUB_ACTIONS: "true" } }),
+            select({ body: block("skip"), env: { E2E_LOCAL_CHECK: "1", GITHUB_ACTIONS: "" } }),
+            select({ body: block("skip"), env: { GITHUB_ACTIONS: "true" } }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        // In a GitHub Actions run it fails at once, before reading the pull request.
+        expect(inActions.exitCode).toBe(1);
+        expect(inActions.log).toContain(
+          "E2E_LOCAL_CHECK is set in a GitHub Actions run. It is the mode of e2e/check-description.ts, which passes a skip that has no layer above; a workflow must never set it.",
+        );
+        expect(inActions.log).not.toContain("Waiting");
+        expect(inActions.outputs).toEqual({});
+        // Outside one, a lone skip is reported as not checkable yet, and passes.
+        expect(local.exitCode, local.log).toBe(0);
+        expect(local.log).toContain("A skip cannot be checked before both pull requests exist.");
+        expect(local.outputs).toEqual({});
+        // A workflow's lone skip still fails after its wait.
+        expect(ci.exitCode).toBe(1);
+        expect(ci.log).toContain("which only a lower layer of a stack may say");
+        // Nothing under .github/ sets it.
+        const mentions: Array<string> = [];
+        const walk = (directory: string): Effect.Effect<void, unknown, FileSystem.FileSystem> =>
+          Effect.gen(function* () {
+            for (const name of yield* fs.readDirectory(directory)) {
+              const file = `${directory}/${name}`;
+              if ((yield* fs.stat(file)).type === "Directory") yield* walk(file);
+              else if ((yield* fs.readFileString(file)).includes("E2E_LOCAL_CHECK"))
+                mentions.push(file);
+            }
+          });
+        yield* walk(".github");
+        expect(mentions).toEqual([]);
+      }),
+  );
+
+  /** The skill entries of `fileGuards`, each spec file with the jobs its scenarios run in. */
+  const skillGuards: Readonly<Record<string, Readonly<Record<string, ReadonlyArray<string>>>>> = {
+    "packages/app-templates/executor/skills/executor/SKILL.md": {
+      "framework-discovery.spec.ts": ["self-host"],
+      "cli-tool-commands.spec.ts": ["local"],
+    },
+    "packages/app-templates/executor/skills/executor/feedback.md": {
+      "skill-read-telemetry.spec.ts": ["local", "self-host"],
+    },
+    "packages/app-templates/executor/skills/code-mode/SKILL.md": {
+      "framework-discovery.spec.ts": ["self-host"],
+    },
+    "packages/app-templates/executor/skills/app-authoring/SKILL.md": {
+      "framework-discovery.spec.ts": ["self-host"],
+      "cli-tool-commands.spec.ts": ["local"],
+      "mcp-server.spec.ts": ["self-host"],
+      "local-skills.spec.ts": ["local"],
+    },
+    "packages/app-templates/executor/skills/app-authoring/ui.md": {
+      "framework-discovery.spec.ts": ["self-host"],
+      "cli-tool-commands.spec.ts": ["local"],
+      "local-skills.spec.ts": ["local"],
+    },
+    "packages/app-templates/src/implementation/executor-intro.gen.ts": {
+      "cli-tool-commands.spec.ts": ["local"],
+      "mcp-server.spec.ts": ["self-host"],
+    },
+  };
+
+  /** Main as this checkout, except that each of `changed` has another blob ID there. */
+  const mainChanging = (changed: ReadonlyArray<string>) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const names = yield* fs.readDirectory("patches");
+      const hashed = (yield* processes.string(
+        ChildProcess.make("git", [
+          "hash-object",
+          ...guardedFiles,
+          ...names.map((name) => `patches/${name}`),
+        ]),
+      ))
+        .trim()
+        .split("\n");
+      return {
+        "package.json": yield* fs.readFileString("package.json"),
+        patches: names
+          .map((name, index) => `${hashed[guardedFiles.length + index]} ${name}`)
+          .join("\n"),
+        ...guardedListings(
+          hashed.slice(0, guardedFiles.length),
+          Object.fromEntries(changed.map((file) => [file, "0".repeat(40)])),
+        ),
+      };
+    });
+
+  it.effect(
+    "the skill texts #4545 reworded select framework-discovery's scenario, whatever #4546's block named",
+    () =>
+      Effect.gen(function* () {
+        const run = yield* select({
+          body: block(
+            "mcp-direct-calls.spec.ts",
+            "cli-tool-commands.spec.ts",
+            "cli-grant-choice.spec.ts",
+            "tool-call-log.spec.ts",
+          ),
+          changed: [
+            "e2e/test-plan.ts",
+            "e2e/tests/cli-tool-commands.spec.ts",
+            "e2e/tests/mcp-direct-calls.spec.ts",
+          ],
+          main: yield* mainChanging([
+            "packages/app-templates/executor/skills/code-mode/SKILL.md",
+            "packages/app-templates/executor/skills/executor/SKILL.md",
+            "packages/app-templates/src/implementation/executor-intro.gen.ts",
+          ]),
+        });
+        expect(run.exitCode, run.log).toBe(0);
+        // By the scenario's title in the plan, whatever its wording becomes.
+        expect(selectsTitle(run.outputs, "self-host", scenarios.frameworkDiscovery.title)).toBe(
+          true,
+        );
+        expect(run.summary).toContain("A guarded file differs from main, so its guards run: ");
+        // Without the skill texts changed, the block alone does not select it.
+        const unguarded = yield* select({
+          body: block(
+            "mcp-direct-calls.spec.ts",
+            "cli-tool-commands.spec.ts",
+            "cli-grant-choice.spec.ts",
+            "tool-call-log.spec.ts",
+          ),
+          main: yield* mainChanging([]),
+        });
+        expect(
+          selectsTitle(unguarded.outputs, "self-host", scenarios.frameworkDiscovery.title),
+        ).toBe(false);
+      }),
+  );
+
+  it.effect(
+    "each skill text runs the spec files that read it back, in the jobs a pull request runs them in",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const plan = scenariosForSuite("all", "managed");
+        for (const [file, specs] of Object.entries(skillGuards)) {
+          // The table names exactly these spec files for the file.
+          expect([...(fileGuards[file] ?? [])].sort(), file).toEqual(Object.keys(specs).sort());
+          const run = yield* select({ body: block("none"), main: yield* mainChanging([file]) });
+          expect(run.exitCode, `${file}: ${run.log}`).toBe(0);
+          for (const [spec, expected] of Object.entries(specs)) {
+            const titles = plan.filter((scenario) => scenario.file === spec);
+            const ran = jobs.filter((job) =>
+              titles.some((scenario) => selectsTitle(run.outputs, job, scenario.title)),
+            );
+            expect(ran, `${file}: ${spec}`).toEqual(expected);
+          }
+        }
+        // Every guarded file exists, and every guarded spec file has scenarios a pull request runs.
+        for (const [file, specs] of Object.entries(fileGuards)) {
+          expect(yield* fs.exists(file), file).toBe(true);
+          for (const spec of specs) {
+            expect(yield* fs.exists(`e2e/tests/${spec}`), spec).toBe(true);
+            expect(
+              plan.some(
+                (scenario) =>
+                  scenario.file === spec &&
+                  (scenario.targets.local.status === "scheduled" ||
+                    scenario.targets["self-host"].status === "scheduled"),
+              ),
+              `${spec} has no scenario a pull request runs`,
+            ).toBe(true);
+          }
+        }
+      }),
+    heavyCaseTimeout,
+  );
+
   it.effect("none, all and skip keep their meaning", () =>
     Effect.gen(function* () {
       const [none, all, bareAll, skip, loneSkip, missing, twice] = yield* Effect.all(
@@ -1447,7 +2391,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         );
       }
       expect(upper.exitCode).toBe(1);
-      expect(upper.log).toContain('not spec files in e2e/tests/: "SKIP"');
+      expect(upper.log).toContain("- line 1 of the e2e block, `SKIP`: no spec file has this name.");
       expect(upper.log).not.toContain("Waiting");
       expect(named.exitCode, named.log).toBe(0);
       expect(named.outputs["self-host"]).toMatch(/^\^\(\?:/);
@@ -1470,8 +2414,9 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "CI waited 1 second for the description. Once it is fixed, rerun the whole workflow: gh run rerun 123456.",
       );
       expect(loneSkip.exitCode).toBe(1);
-      expect(loneSkip.log).toContain("no open pull request builds on this branch");
-      expect(loneSkip.log).toContain("gh run rerun 123456.");
+      expect(loneSkip.log).toContain(
+        "The e2e block says skip (line 1 of the e2e block, `skip`), which only a lower layer of a stack may say: this run waited 1 second for the layer above, an open pull request whose base is this branch, layer, and there is none. Open the layer above with base layer, then run this workflow again: gh run rerun 123456.",
+      );
     }),
   );
   it.effect("a full run passes when every scheduled scenario ran, passed or failed", () =>
@@ -1846,10 +2791,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         [["packages/telemetry/collector/src/http.rs"], ["true", "true"]],
         [["packages/telemetry/collector/Cargo.lock"], ["true", "true"]],
         [["packages/telemetry/scripts/build-collector.ts"], ["true", "true"]],
-        // The actions that build it run only in the matrix after merge until the cutover wires them
-        // into these lanes, so they start neither.
-        [[".github/actions/collector/action.yml"], ["", ""]],
-        [[".github/actions/rustup/action.yml"], ["", ""]],
+        // The actions that build it: the release-local jobs build or restore the collector through
+        // them before packaging it; the image builds its own in its Dockerfile.
+        [[".github/actions/collector/action.yml"], ["", "true"]],
+        [[".github/actions/rustup/action.yml"], ["", "true"]],
         [["apps/docs/public/install.sh"], ["", "true"]],
         [["scripts/releases/config.ts"], ["true", "true"]],
         // The lanes' own definition runs both.
@@ -2070,7 +3015,8 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "packages/telemetry/src/isolate.ts",
           "packages/telemetry/collector-notes.md",
           "e2e/tests/collector.spec.ts",
-          "packages/telemetry/scripts/build-motel.ts",
+          // Another script beside the build script.
+          "packages/telemetry/scripts/check-notices.ts",
           ".github/actions/setup/action.yml",
           ".github/actions/collector-notes.md",
         ])
@@ -2105,6 +3051,19 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         expect(runs[1]!.summary).toContain(
           "collector-native: skipped, no collector input changed (e2e/collector-inputs.ts).",
         );
+        // A crate change runs the scenarios that exercise the collector, whatever the block names;
+        // another change runs none of them.
+        for (const file of collectorScenarios) {
+          expect(runs[0]!.summary, file).toContain(file);
+          expect(runs[1]!.summary, file).not.toContain(file);
+        }
+        expect(runs[0]!.summary).toContain(
+          "A collector input changed (e2e/collector-inputs.ts), so the scenarios that exercise it run",
+        );
+        expect(runs[0]!.outputs["self-host"]).toContain(
+          "The bundled collector at its size bound keeps its traces",
+        );
+        expect(runs[1]!.summary).toContain("No E2E scenarios");
       }),
   );
 
@@ -2655,10 +3614,6 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               // Windows and macOS only.
               "Install Chromium on desktop runners",
               "Smoke-test the installed CLI",
-              // The wait for this run's collector job and its one build, which nothing packages yet;
-              // the lane gets its own collector step when packaging starts using it.
-              "Wait for the telemetry collector",
-              "Fetch the telemetry collector",
             ],
           ],
           [
@@ -2681,10 +3636,6 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
               "Record the packaged desktop app's digest",
               // Runs only when the job failed; the lane's own e2e evidence covers CI.
               "Gather the failed scenarios' evidence",
-              // The wait for this run's collector job and its one build, which nothing packages yet;
-              // the lane gets its own collector step when packaging starts using it.
-              "Wait for the telemetry collector",
-              "Fetch the telemetry collector",
             ],
           ],
         ] as const;
@@ -2775,6 +3726,27 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         );
       }),
   );
+  it.effect("the e2e check names a failed collector job as the cause of the jobs that waited", () =>
+    Effect.gen(function* () {
+      const outputs = { "local-shards": "1/1", "release-local": "true" };
+      const results = Object.fromEntries(
+        e2eJobs.map((job) => [job, chosen(outputs, job) ? "failure" : "skipped"]),
+      ) as Record<E2eJob, string>;
+      const failed = yield* gate({ result: "success", outputs }, results);
+      expect(failed.exitCode).toBe(1);
+      expect(failed.log).toContain(
+        "::error::collector (linux-x64): failure. The E2E jobs that wait for its build fail with it; rerun that job first.",
+      );
+      expect(failed.log).toContain("::error::e2e-local: selected, but failure");
+      // A collector that succeeded is never named as a cause.
+      const passed = yield* gate(
+        { result: "success", outputs },
+        { ...results, collector: "success" },
+      );
+      expect(passed.exitCode).toBe(1);
+      expect(passed.log).not.toContain("The E2E jobs that wait for its build fail with it");
+    }),
+  );
   it.effect(
     "the e2e check fails when either release-local job of a selected lane fails, is cancelled or is skipped",
     () =>
@@ -2787,8 +3759,9 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
             ),
             ...change,
           }) as Record<E2eJob, string>;
-        // The lane is two jobs, and selecting it selects both.
+        // The lane is two jobs, and selecting it selects both, and the collector build they package.
         expect(e2eJobs.filter((job) => chosen(outputs, job))).toEqual([
+          "collector",
           "release-local-cli",
           "release-local-desktop",
         ]);
@@ -2805,6 +3778,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           { result: "success", outputs: {} },
           {
             ...results(),
+            collector: "skipped",
             "release-local-cli": "skipped",
             "release-local-desktop": "success",
           },
@@ -3177,5 +4151,222 @@ layer(NodeServices.layer)("Release check after a push to main", (it) => {
       expect(result.summary).toContain('`"apps/cli/\\u0060x\\u0060\\n::error::@someone.ts"`');
       expect(result.log.split("\n").some((line) => line.startsWith("::"))).toBe(false);
     }),
+  );
+
+  /**
+   * Linux refuses an environment variable or an argument longer than 131,072 bytes (E2BIG, #4583).
+   * With every scenario selected, each value the selection puts into a process's environment or
+   * arguments stays under this budget, a quarter of the limit: the largest today is a shard's
+   * pattern, 7 kB on main and 13 kB on effect-apps.
+   */
+  const selectionValueBudget = 32 * 1024;
+
+  it.effect(
+    "with every scenario selected, nothing the selection carries reaches an environment variable or argument near its limit",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const workflow = yield* fs.readFileString(".github/workflows/checks.yml");
+        const full = yield* select({});
+        expect(full.exitCode, full.log).toBe(0);
+        const outputs = full.outputs;
+        const values: Array<{ readonly what: string; readonly value: string }> = [];
+        // The two required gates, as GitHub passes them a full run's needs.
+        const jobNeeds = (job: string) =>
+          workflow
+            .slice(workflow.indexOf(`\n  ${job}:\n`))
+            .match(/^ {4}needs:\s*\[([^\]]*)\]/m)![1]!
+            .split(",")
+            .map((name) => name.trim())
+            .filter((name) => name.length > 0);
+        for (const [job, step] of [
+          ["check", "Require every static check to pass"],
+          ["e2e", "Require every selected E2E job to pass"],
+        ] as const) {
+          const needs = Object.fromEntries(
+            jobNeeds(job).map((name) => [
+              name,
+              { result: "success", outputs: name === "select" ? outputs : {} },
+            ]),
+          );
+          for (const [name, value] of Object.entries(gateEnvironment(workflow, job, step, needs)))
+            values.push({ what: `${job}'s ${name}`, value });
+        }
+        // Each matrix entry's fields reach TEST_NAME, `--test-name` and E2E_TEST_NAME.
+        for (const output of ["local-shards", "self-host-shards", "cloud-runners"])
+          for (const entry of JSON.parse(outputs[output] || "[]") as ReadonlyArray<
+            Record<string, string>
+          >)
+            for (const [field, value] of Object.entries(entry))
+              values.push({ what: `${output} ${entry.shard ?? entry.name} ${field}`, value });
+        // The select outputs a step reads into a variable directly.
+        const direct = [
+          "collector",
+          "repeat-of",
+          "full",
+          "self-host-inventory",
+          "self-host-catalog",
+        ];
+        for (const output of direct) values.push({ what: output, value: outputs[output] ?? "" });
+        const over = values
+          .map(({ what, value }) => ({ what, bytes: Buffer.byteLength(value) }))
+          .filter(({ bytes }) => bytes > selectionValueBudget)
+          .map(
+            ({ what, bytes }) =>
+              `${what} is ${bytes.toLocaleString("en-US")} bytes with every scenario selected, over its budget of ${selectionValueBudget.toLocaleString("en-US")}. Linux refuses an environment variable or argument over 131,072 bytes (spawn E2BIG): split it (more shards for its job in e2e/ci-selection.ts) or pass it through a file. Do not shorten scenario titles to fit.`,
+          );
+        expect(over).toEqual([]);
+        expect(values.length).toBeGreaterThan(20);
+        // No step gets a select output into its environment other than those measured above, or
+        // as whether it is set, and no gate gets toJSON(needs): a new path is measured first.
+        const code = workflow
+          .split("\n")
+          .filter((line) => !line.trimStart().startsWith("#"))
+          .join("\n");
+        expect(code).not.toMatch(/toJSON\(needs\b/);
+        expect(unmeasuredReads(code, direct)).toEqual([]);
+        // The run's own processes: vitest gets its title pattern from its config and the prepared
+        // Cloud organizations from a file, not from an argument or a variable.
+        const suite = yield* fs.readFileString("e2e/sdk/suite.ts");
+        expect(suite).not.toContain('"--testNamePattern"');
+        expect(suite).not.toContain("E2E_PREPARED_SCENARIOS");
+        expect(yield* fs.readFileString("e2e/vitest.config.ts")).toContain(
+          'testNamePattern: patternForTarget(target, suite, process.env.E2E_TEST_NAME ?? "", cloudMode),',
+        );
+      }),
+  );
+
+  it.effect(
+    "a gate fails when a job in its needs has no variable, or a variable names no job it needs",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const workflow = yield* fs.readFileString(".github/workflows/checks.yml");
+        for (const [job, step] of [
+          ["check", "Require every static check to pass"],
+          ["e2e", "Require every selected E2E job to pass"],
+        ] as const) {
+          const text = workflow.slice(workflow.indexOf(`\n  ${job}:\n`));
+          const needed = text
+            .match(/^ {4}needs:\s*\[([^\]]*)\]/m)![1]!
+            .split(",")
+            .map((name) => name.trim())
+            .filter((name) => name.length > 0);
+          // Statically: one NEED_ variable per needed job, each reading that job's own result.
+          const block = stepEnvironmentBlock(workflow, job, step);
+          const variables = [...block.matchAll(/^ {10}NEED_(\w+): (.*)$/gm)].map((match) => ({
+            job: match[1]!.replaceAll("_", "-"),
+            value: match[2]!,
+          }));
+          expect(variables.map((variable) => variable.job).toSorted(), job).toEqual(
+            needed.toSorted(),
+          );
+          for (const variable of variables)
+            expect(variable.value, job).toBe(`\${{ needs.${variable.job}.result }}`);
+          expect(block, job).toContain("          RESULTS: ${{ join(needs.*.result, ' ') }}\n");
+          // Each SET_ reads whether its own output is set, each OUTPUT_ its own output's value.
+          const outputs = [...block.matchAll(/^ {10}(SET|OUTPUT)_(\w+): (.*)$/gm)].map((match) => ({
+            kind: match[1]!,
+            name: match[2]!.replaceAll("_", "-"),
+            value: match[3]!,
+          }));
+          for (const output of outputs)
+            expect(output.value, `${job} ${output.kind}_${output.name}`).toBe(
+              output.kind === "SET"
+                ? `\${{ needs.select.outputs.${output.name} != '' }}`
+                : `\${{ needs.select.outputs.${output.name} }}`,
+            );
+          // Every output the rule reads has its variable: one it names without one would read as
+          // unset, so its job would count as not selected, and a wrongly skipped job would pass.
+          const ruleText = text.slice(text.indexOf(`      - name: ${step}\n`));
+          const rule = ruleText
+            .slice(ruleText.indexOf("        run: |\n") + "        run: |\n".length)
+            .split("\n")
+            .filter((line, index, lines) =>
+              lines
+                .slice(0, index + 1)
+                .every((each) => each.startsWith("          ") || each === ""),
+            )
+            .join("\n");
+          const named = new Set([
+            ...[...rule.matchAll(/chosen\(\[([^\]]*)\]\)/g)].flatMap((match) =>
+              [...match[1]!.matchAll(/"([\w-]+)"/g)].map((name) => name[1]!),
+            ),
+            ...[...rule.matchAll(/\.select\.outputs\.([\w-]+)/g)].map((match) => match[1]!),
+          ]);
+          expect(named.size, job).toBeGreaterThan(0);
+          expect(
+            [...named].filter((name) => !outputs.some((output) => output.name === name)),
+            job,
+          ).toEqual([]);
+          // At run time: the same gate, all passing, with one more job in needs than it reads,
+          // and with one NEED_ variable for a job needs does not list.
+          const script = text.slice(text.indexOf(`      - name: ${step}\n`));
+          const body = script
+            .slice(script.indexOf("        run: |\n") + "        run: |\n".length)
+            .split("\n")
+            .filter((line, index, lines) =>
+              lines
+                .slice(0, index + 1)
+                .every((each) => each.startsWith("          ") || each === ""),
+            )
+            .map((line) => line.slice(10))
+            .join("\n");
+          const passing = Object.fromEntries(
+            needed.map((name) => [
+              name,
+              {
+                result: "success",
+                outputs:
+                  name === "select"
+                    ? {
+                        collector: "true",
+                        "local-shards": "[x]",
+                        "self-host-shards": "[x]",
+                        "self-host-inventory": "x",
+                        "self-host-catalog": "x",
+                        "cloud-runners": "[x]",
+                        "release-local": "x",
+                        "release-docker": "x",
+                      }
+                    : {},
+              },
+            ]),
+          );
+          const run = (env: Readonly<Record<string, string>>) =>
+            Effect.gen(function* () {
+              const child = yield* processes.spawn(
+                ChildProcess.make("bash", ["-e", "-c", body], {
+                  env: { ...env, REPEAT_OF: "" },
+                  extendEnv: true,
+                }),
+              );
+              const [log, exitCode] = yield* Effect.all(
+                [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+                { concurrency: "unbounded" },
+              );
+              return { log, exitCode: Number(exitCode) };
+            }).pipe(Effect.scoped);
+          const all = gateEnvironment(workflow, job, step, passing);
+          expect((yield* run(all)).exitCode, job).toBe(0);
+          const added = yield* run(
+            gateEnvironment(workflow, job, step, {
+              ...passing,
+              "a-new-job": { result: "success", outputs: {} },
+            }),
+          );
+          expect(added.exitCode, job).toBe(1);
+          expect(added.log).toContain("every job in needs must have its NEED_ variable here");
+          const { [`NEED_${needed.at(-1)!.replaceAll("-", "_")}`]: _dropped, ...missing } = all;
+          const forgotten = yield* run({
+            ...missing,
+            [`NEED_${needed.at(-1)!.replaceAll("-", "_")}`]: "",
+          });
+          expect(forgotten.exitCode, job).toBe(1);
+          const stray = yield* run({ ...all, NEED_not_needed: "" });
+          expect(stray.exitCode, job).toBe(1);
+        }
+      }),
   );
 });

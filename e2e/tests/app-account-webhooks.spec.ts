@@ -18,6 +18,7 @@ import {
 } from "../support/app-accounts.ts";
 import { appLinksFixture, keyProvider, ok, okBody, refused } from "../support/app-links.ts";
 import {
+  settleOnSweep,
   settleWebhookSources,
   settleWebhookSubscriptions,
   type WebhookSubscriptionRow,
@@ -165,27 +166,23 @@ const carriedWebhook = (fixture: Effect.Success<ReturnType<typeof appLinksFixtur
   /**
    * The app's subscriptions that are not stopped, once one is `status` (or any status) on `version`
    * and every one still delivering is pinned to it: reconciliation creates or moves a version's
-   * subscription before it disables the ones that version replaced.
+   * subscription before it disables the ones that version replaced. The app's sources' sweep does
+   * that, so this waits on the sweep (`settleOnSweep`) for as long as the scenario may run, not for
+   * a time of its own: one read of a busy stage can take longer than such a time.
    */
   const pinnedTo = (version: string, status?: string) =>
-    Effect.gen(function* () {
-      for (;;) {
-        const rows = yield* subscriptions;
-        if (
+    settleOnSweep(
+      actors.owner,
+      path,
+      `Subscriptions ${status ?? "pinned"} on ${version}`,
+      Effect.map(subscriptions, (rows) => ({
+        done:
           rows.some(
             (row) => row.version === version && (status === undefined || row.status === status),
-          ) &&
-          rows.every((row) => row.status === "disabled" || row.version === version)
-        )
-          return rows;
-        yield* Effect.sleep("100 millis");
-      }
-    }).pipe(
-      Effect.timeoutOrElse({
-        duration: "30 seconds",
-        orElse: () =>
-          Effect.die(new Error(`No subscription is ${status ?? "pinned"} on ${version}`)),
-      }),
+          ) && rows.every((row) => row.status === "disabled" || row.version === version),
+        value: rows,
+        shown: JSON.stringify(rows),
+      })),
     );
   /** A provider's delivery to a callback URL, signed with `secret`. */
   const post = (callbackUrl: string, secret: string) =>

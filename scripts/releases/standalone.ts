@@ -1,15 +1,17 @@
 /**
  * Turn the packaged runtime into the release install: one `executor` executable that carries the
  * runtime's code, and beside it the files it runs or reads from disk. Those are workerd, Git, the
- * native bindings, PGlite, TypeScript, the dashboard and Motel. npm pack archives this directory as
- * the platform's release asset: the download the `executor` npm launcher, the install scripts and
- * Homebrew use.
+ * native bindings, PGlite, TypeScript, the dashboard and the telemetry collector with its viewer.
+ * npm pack archives this directory as the platform's release asset: the download the `executor`
+ * npm launcher, the install scripts and Homebrew use.
  *
  * Layout, relative to the executable:
  * - `runtime/node_modules/`: packages loaded from disk (see `installedPackages`) and resources
  *   read through package resolution, such as the Executor app template.
  * - `runtime/git/`: the bundled Git.
- * - `apps/local/web/dist/client/`, `packages/telemetry/dist/motel/`: static resources.
+ * - `apps/local/web/dist/client/`, `packages/telemetry/dist/viewer/`: static resources.
+ * - `packages/telemetry/dist/collector/`: the `executor-collector` executable, executable before
+ *   the install is signed.
  * - `licenses/`, `runtime-packages.txt`: notices for everything bundled or copied.
  */
 import { Config, Console, Effect, FileSystem, Option, Path } from "effect";
@@ -59,6 +61,50 @@ const bunRuntime = Effect.gen(function* () {
  * Build the release install from `stage`, the packaged runtime, into `<output>/standalone`, and
  * pack it as the platform's release archive in `output`. Returns the install directory.
  */
+/**
+ * Starts every `executor-collector` under `directory` (a package as it ships, signed where it is
+ * signed) with `build-collector.ts smoke`: a packaged collector that cannot start fails the job
+ * that packaged it, on every target. A collector that fails to start only logs a warning in the
+ * product, so nothing else would turn a job red. Signing rewrites a Mach-O file, so a signed copy is
+ * not compared with the build's digest; `package.ts` checks the build before it is packaged.
+ */
+export const smokePackagedCollector = (root: string, target: Platform, directory: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const name = target.platform === "win32" ? "executor-collector.exe" : "executor-collector";
+    const found: Array<string> = [];
+    for (const file of yield* fs.readDirectory(directory, { recursive: true }))
+      if (
+        path.basename(file) === name &&
+        (yield* fs.stat(path.join(directory, file))).type === "File"
+      )
+        found.push(path.join(directory, file));
+    if (found.length === 0) return yield* Effect.die(new Error(`${directory} holds no ${name}`));
+    for (const file of found)
+      for (const step of [["smoke"]]) {
+        const code = yield* processes.exitCode(
+          ChildProcess.make(
+            process.execPath,
+            [
+              path.join(root, "packages/telemetry/scripts/build-collector.ts"),
+              "--target",
+              `${target.platform}-${target.arch}`,
+              "--executable",
+              file,
+              ...step,
+            ],
+            { cwd: root, stdout: "inherit", stderr: "inherit" },
+          ),
+        );
+        if (code !== 0)
+          return yield* Effect.die(
+            new Error(`The packaged collector ${file} failed ${step.join(" ")} (exit ${code})`),
+          );
+      }
+  });
+
 /** The file beside a platform's archive that holds the digest of its install before signing. */
 export const payloadDigestFile = "payload.sha256";
 
@@ -188,6 +234,8 @@ export const buildStandalone = (
         notarize: signing === "notarize",
         ...(submission === undefined ? {} : { submission }),
       });
+    // The collector as the install carries it, signed where it is signed, starts and stores telemetry.
+    yield* smokePackagedCollector(root, target, install);
 
     yield* fs.writeFileString(
       path.join(install, "package.json"),

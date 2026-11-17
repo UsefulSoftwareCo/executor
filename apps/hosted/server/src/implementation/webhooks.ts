@@ -1,7 +1,6 @@
-import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
+import { OrganizationForbidden } from "../contracts/organization.ts";
 /** Shared product policy; local does not acquire organizations to reuse webhook execution. */
 import { SessionAuthentication, BearerAuthentication, CurrentUserId } from "../contracts/auth.ts";
-import { HttpServerRequest } from "effect/http";
 import { HttpServerResponse } from "effect/http";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -26,6 +25,7 @@ import {
   actorManagerOwner,
   appReaderOwner,
   checkAccounts,
+  currentOrganizationSlug,
   currentOwner,
   selectedApp,
   usableApp,
@@ -158,12 +158,7 @@ export const hostedWebhookHandlers = HttpApiBuilder.group(HostedApi, "webhooks",
             const executor = yield* Effect.flatten(HostedExecutor);
             yield* managedSubscription(executor, params);
             yield* executor.webhookSetup.read(params);
-            const request = yield* HttpServerRequest.HttpServerRequest;
-            const headers = new Headers(request.headers);
-            const slug = headers.has("authorization")
-              ? (yield* api.authenticate(headers, (yield* CurrentOrganization).organization))
-                  .organizationSlug
-              : yield* auth.organizationSlug(headers, (yield* CurrentOrganization).organization);
+            const slug = yield* currentOrganizationSlug(auth, api);
             return {
               url: `${auth.origin}/org/${encodeURIComponent(slug)}/webhooks/${encodeURIComponent(params.app)}/${encodeURIComponent(params.subscription)}`,
             };

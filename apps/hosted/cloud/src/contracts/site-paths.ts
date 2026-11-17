@@ -39,6 +39,12 @@ export const sitePages: ReadonlyArray<SitePattern> = [
 export const v1SitePages: ReadonlyArray<SitePattern> = ["/google-oauth", "/privacy", "/terms"];
 
 /**
+ * How to report a security problem (RFC 9116), from the site's assets. Listed in `siteFiles`
+ * for the edge; the browser and MCP hosts serve it too, as the file's `Canonical` lines say.
+ */
+export const securityTxt: SitePattern = "/.well-known/security.txt";
+
+/**
  * Static files the site's pages load, which every host serves from its assets, and the logo the
  * OAuth client metadata document names: the document is on the edge, so its logo must be too.
  */
@@ -50,6 +56,7 @@ export const siteFiles: ReadonlyArray<SitePattern> = [
   "/apple-touch-icon.png",
   "/og-image.png",
   "/pattern-graph-paper.svg",
+  securityTxt,
   // v1's dashboard has no `/favicon.png`, so v1 forwards it to v2 like the document.
   clientMetadataLogoPath,
 ];

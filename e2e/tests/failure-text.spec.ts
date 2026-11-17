@@ -43,6 +43,19 @@ const PageErrors = Schema.Array(
   Schema.Struct({ kind: Schema.String, page: Schema.String, text: Schema.String }),
 );
 
+const PageRequests = Schema.Array(
+  Schema.Struct({
+    method: Schema.String,
+    url: Schema.String,
+    kind: Schema.String,
+    startedAt: Schema.String,
+    status: Schema.optionalKey(Schema.Number),
+    respondedAt: Schema.optionalKey(Schema.String),
+    endedAt: Schema.optionalKey(Schema.String),
+    error: Schema.optionalKey(Schema.String),
+  }),
+);
+
 /** The evidence files a case writes as text; screenshots, videos and the trace are binary. */
 const textFile = /\.(?:json|ndjson|txt|log|md)$/u;
 
@@ -217,6 +230,30 @@ layer(TestLive, { excludeTestServices: true })("Failure text", (it) => {
               text: "Console saw <secret>",
             },
           ]);
+          // Every request a page sent, as method, origin and path, status and times: never the query
+          // or fragment that held the planted token, never a header or cookie. The scan above
+          // checks this file for every planted value too; a missing or empty record fails here.
+          const requests = yield* read(
+            PageRequests,
+            path.join(consoleErrors, "page-requests.json"),
+          );
+          expect(requests).toEqual([
+            {
+              method: "GET",
+              url: "http://failure-text.test/console",
+              kind: "document",
+              startedAt: expect.any(String),
+              status: 200,
+              respondedAt: expect.any(String),
+              endedAt: expect.any(String),
+            },
+          ]);
+          const [document] = requests;
+          const times = [document?.startedAt, document?.respondedAt, document?.endedAt].map((at) =>
+            Date.parse(at ?? ""),
+          );
+          expect(times.every(Number.isFinite), JSON.stringify(document)).toBe(true);
+          expect(times.toSorted((a, b) => a - b)).toEqual(times);
           yield* reports(failureTextCases.filled, "Fill a disabled field", [
             "TimeoutError: locator.fill: Timeout 500ms exceeded.",
             "- waiting for getByLabel('Key')",

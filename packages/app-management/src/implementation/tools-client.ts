@@ -99,7 +99,9 @@ export type McpSession = typeof McpSession.Type;
 
 /**
  * Call one of the host's MCP tools and return its result as JSON: its structured content, or the
- * JSON its first text block holds. A result the tool marks as an error fails with its text. With
+ * JSON its first text block holds, with every content block the result carries, such as the
+ * images and files the JSON refers to by `contentIndex`. A result the tool marks as an error fails
+ * with its text. With
  * `session`, the call continues that MCP session instead of opening one; either way the result
  * names the session it used.
  */
@@ -147,8 +149,9 @@ export const callTool = <E>(
     );
     if (result.isError === true)
       return yield* new ToolCallRefused({ tool, reason: "tool", message: texts.join("\n") });
+    const content: ReadonlyArray<unknown> = Array.isArray(result.content) ? result.content : [];
     if (result.structuredContent !== undefined)
-      return { value: result.structuredContent, session: used };
+      return { value: result.structuredContent, content, session: used };
     const first = texts[0];
     const json = first === undefined ? Option.none() : decodeJson(first);
     if (Option.isNone(json))
@@ -157,7 +160,7 @@ export const callTool = <E>(
         method: "POST",
         path: URL.parse(target.url)?.pathname ?? "/mcp",
       });
-    return { value: json.value, session: used };
+    return { value: json.value, content, session: used };
   }).pipe(Effect.scoped);
 
 /** Print a tool's result as tool commands print every success: indented JSON on stdout. */

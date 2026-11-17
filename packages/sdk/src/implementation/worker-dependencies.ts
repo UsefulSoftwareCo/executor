@@ -19,12 +19,17 @@ const Package = Schema.Struct({
  * registry URL can carry credentials or a token, and the deployer reading a failed build is not
  * always the operator, so a failure loses each URL's userinfo, query and fragment. A token the
  * registry takes as a path segment is kept and reaches the deployer: it cannot be told from a path.
+ * Requests off the registry's origin, including where its redirects land, use the host's
+ * `tarballFetch`. The installer words every failure itself: it names the declared package, an
+ * HTTP status or a fixed reason, never a dependency's name, a URL a server chose, or anything a
+ * server or an archive sent.
  */
 export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerHost) =>
   Effect.gen(function* () {
     // The installer appends `/<name>` to the registry; a configured trailing slash would request
     // `//<name>`, which registries such as Verdaccio answer with 404.
     const registry = host.registry?.replace(/\/+$/u, "");
+    const { tarballFetch } = host;
     const manifest = filesystem.read("package.json");
     const dependencies =
       manifest === null
@@ -51,7 +56,11 @@ export const workerDependencies = (filesystem: InMemoryFileSystem, host: WorkerH
                   list: (prefix) => filesystem.list(prefix),
                   flush: () => filesystem.flush(),
                 },
-                { transitive, ...(registry === undefined ? {} : { registry }) },
+                {
+                  transitive,
+                  ...(registry === undefined ? {} : { registry }),
+                  ...(tarballFetch === undefined ? {} : { tarballFetch }),
+                },
               ),
             catch: (cause) =>
               new RuntimeBuildFailed({

@@ -11,6 +11,18 @@ export interface AppAccountLink {
   readonly account: AccountId;
 }
 
+/**
+ * An account linked to one of an app's app requirements, shared by everyone using the app. The
+ * caller may not own it, so its label and provider come with the link.
+ */
+export interface SharedAppLink {
+  readonly app: AppId;
+  readonly requirement: string;
+  readonly account: AccountId;
+  readonly provider: ProviderId;
+  readonly label: string;
+}
+
 /** The ids of the accounts linked to one app, in link order. */
 export const linkedAccountIds = (links: readonly AppAccountLink[], app: AppId) =>
   links.flatMap((link) => (link.app === app ? [link.account] : []));

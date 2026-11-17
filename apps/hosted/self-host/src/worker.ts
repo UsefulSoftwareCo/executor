@@ -70,7 +70,7 @@ interface Environment {
   readonly PUBLIC_FETCH: HttpBinding;
   readonly PRIVATE_FETCH: HttpBinding;
   /** The bundled collector's private Unix socket, which the host connects. */
-  readonly MOTEL: HttpBinding;
+  readonly COLLECTOR: HttpBinding;
   /** This product's own `SelfOrigin` entrypoint, for requests to the dashboard origin. */
   readonly SELF: HttpBinding;
   readonly APPS: Fetcher;
@@ -141,7 +141,7 @@ const prepare = (state: DurableObjectState, env: Environment) =>
               logs: { url: `${collectorOrigin}/v1/logs` },
             }).pipe(
               Layer.provideMerge(
-                Layer.effect(CurrentTelemetryClient, bindingTelemetryClient(env.MOTEL)),
+                Layer.effect(CurrentTelemetryClient, bindingTelemetryClient(env.COLLECTOR)),
               ),
             )
           : telemetryLayer(telemetry),

@@ -34,12 +34,18 @@ export const startLocalProduct = (environment: Readonly<Record<string, string>> 
       "product",
       environment,
     );
-    const request = (method: "GET" | "POST", route: string, data?: unknown) =>
+    const request = (
+      method: "GET" | "POST",
+      route: string,
+      data?: unknown,
+      headers: Readonly<Record<string, string>> = {},
+    ) =>
       driver(`${method} ${route}`, (signal) =>
         fetch(`${server.origin}${route}`, {
           method,
           signal,
           headers: {
+            ...headers,
             authorization: `Bearer ${reveal(target.apiKey)}`,
             "content-type": "application/json",
           },

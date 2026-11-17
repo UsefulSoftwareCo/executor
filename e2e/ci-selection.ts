@@ -17,7 +17,9 @@
  * selected; the job is then skipped.
  *
  * The block may also say `skip` on the lower layer of a stack: another open pull request must
- * build on its branch. Every check then skips, and the layer above tests the combined change.
+ * build on its branch. Every check then skips, and the layer above tests the combined change. The
+ * select job then checks that the layer above's run was built on this layer's head and compared
+ * Worker sizes with the base the stack ends on (scripts/ci/worker-baseline.ts `above`).
  *
  * The description is read when the job runs. `gh stack submit` opens each pull request before
  * its author writes the description, and opens a stack's layers one at a time, so the job waits
@@ -55,10 +57,13 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { createHash } from "node:crypto";
-import { collectorChanged } from "./collector-inputs.ts";
+import { collectorChanged, collectorScenarios } from "./collector-inputs.ts";
 import { lanesFor, releaseSources } from "./release-lanes.ts";
 import { packagedEngineDependency } from "./packaged-engine.ts";
 import { savePathFiles } from "./save-path.ts";
+import { fileGuards } from "./file-guards.ts";
+import { selectionKey, workerGrowthKey } from "./ci-key.ts";
+import { mcpSearchChanged, mcpSearchTitles } from "./mcp-search-guard.ts";
 import { Target } from "./report-model.ts";
 import { exactly, split } from "./scenario-parts.ts";
 import { platformSignatures } from "./platform-signatures.ts";
@@ -173,7 +178,7 @@ const jobs = {
     runner: 3,
 
     pattern:
-      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Cloud's database pool runs a statement whose connection|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 session handoff|Cloud accepts MCP requests v1 forwards|Cloud validates a v1 WorkOS API key|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization|A person deletes their own user|On Cloud a slow tool call log write|A Cloud scenario's clean-up returns once its organization's removal is accepted|The end-of-run removal check answers each look within its request limit|The end-of-run removal check asks again after a dropped request|The end-of-run removal check keeps waiting for a removal recorded done",
+      "Cloud SSO SAML accepts|Cloud's operator OAuth client signs in|Cloud's own Executor for Google registration refuses|Safari reports only the page's own failures|Cloud cron triggers run their jobs|Cloud cron jobs record their outcome|Cloud support dialog lists every channel|Hosted feedback enforces its API contract|Executor's catalog calls an app's own cache methods|Executor app is installed with nothing left pending|Cloud MCP routes a request inside a session|Cloud MCP sessions continue after their session object is evicted|Request and workflow attempts at one team|remote skill catalog|a skill read without a revision|abandons a GitHub skills load|reads its catalog and the tool in one cache command|a cold call's wake is reported by that call alone|another organization's admin cannot read the link|account connections cannot cross organizations|Deploys wake webhook source setup|Cloud's schedule coordinator keeps nine slow scheduled runs|a webhook source reconciling for an activation that another supersedes|A skill catalog refreshed in the background after a dashboard batch read|Cloud MCP session objects run parallel tool calls|Cloud MCP session objects cancel a statement|Cloud MCP session objects discover the other apps|Cloud MCP session objects' database pool|Cloud's database pool runs a statement whose connection|Hosted MCP resume reports an approved call's own failure|Cloud refuses to remove an organization while one of its app workflows runs|Cloud v1 session handoff|Cloud accepts MCP requests v1 forwards|Cloud validates a v1 WorkOS API key|Hosted MCP operation and bearer-check spans name|Hosted management API request spans name only|Hosted request spans record the client, the credential|Cloud's gateway names an authenticated MCP request's organization|A person deletes their own user|On Cloud a slow tool call log write|A Cloud scenario's clean-up returns once its organization's removal is accepted|The end-of-run removal check answers each look within its request limit|The end-of-run removal check asks again after a dropped request|The end-of-run removal check keeps waiting for a removal recorded done|a run's sleep whose engine call failed is called again",
   },
   // Cloud's hosts: role hosts, the edge and sign-in on `app.`. Run in `cloud-product`, their
   // load kept the team installation's workflow span from arriving within its 30-second wait, so
@@ -691,19 +696,6 @@ const guardedPatches = (mainManifest: string, mainPatches: string) =>
   });
 
 /**
- * Scenarios that assert a contract one file states in full. app-package.spec.ts reads back every
- * protocol the host supports when it rejects an unsupported framework, so a new protocol changes
- * its expected message. These run whenever the file differs from main's, so the top of a stack
- * runs them when a lower layer changes it.
- */
-const fileGuards: Readonly<Record<string, ReadonlyArray<string>>> = {
-  "packages/sdk/src/implementation/app-protocols.ts": [
-    "app-package.spec.ts",
-    "app-older-protocols.spec.ts",
-  ],
-};
-
-/**
  * Guard spec files for every guarded file whose contents differ from main's. `mainListing` reads
  * one of main's directories as `<blob ID> <path>` lines; a file missing from it counts as changed.
  */
@@ -732,7 +724,12 @@ interface Suite {
   readonly config: string;
   readonly commands: ReadonlyArray<string>;
   readonly workflows: ReadonlyArray<string>;
+  /** Whether a job of checks.yml that every pull request runs (`everyRunJobs`) runs it. */
+  readonly everyPullRequest: boolean;
 }
+
+/** The jobs of checks.yml that run on every pull request whose layer does not skip. */
+const everyRunJobs = ["static", "site", "apps-package", "tooling", "tooling-cloud"];
 
 const PackageScripts = Schema.Struct({ scripts: Schema.Record(Schema.String, Schema.String) });
 /**
@@ -753,7 +750,10 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "ci-supersede.config.ts": () => import("./ci-supersede.config.ts"),
   "ci-repeat.config.ts": () => import("./ci-repeat.config.ts"),
   "collector-job.config.ts": () => import("./collector-job.config.ts"),
+  "conflict-markers.config.ts": () => import("./conflict-markers.config.ts"),
   "macos-staple.config.ts": () => import("./macos-staple.config.ts"),
+  "npm-channel.config.ts": () => import("./npm-channel.config.ts"),
+  "publish-guard.config.ts": () => import("./publish-guard.config.ts"),
   "workflow-caches.config.ts": () => import("./workflow-caches.config.ts"),
   "telemetry-event-lifetime.config.ts": () => import("./telemetry-event-lifetime.config.ts"),
   "cli-startup-imports.config.ts": () => import("./cli-startup-imports.config.ts"),
@@ -774,6 +774,8 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "installer.config.ts": () => import("./installer.config.ts"),
   "local-bootstrap.config.ts": () => import("./local-bootstrap.config.ts"),
   "local-disk.config.ts": () => import("./local-disk.config.ts"),
+  "lost-connections-lifecycle.config.ts": () => import("./lost-connections-lifecycle.config.ts"),
+  "lost-connections.config.ts": () => import("./lost-connections.config.ts"),
   "lockfile-sync.config.ts": () => import("./lockfile-sync.config.ts"),
   "npm-launcher.config.ts": () => import("./npm-launcher.config.ts"),
   "pglite.config.ts": () => import("./pglite.config.ts"),
@@ -784,6 +786,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "prepare-cache.config.ts": () => import("./prepare-cache.config.ts"),
   "part-results.config.ts": () => import("./part-results.config.ts"),
   "process-identity.config.ts": () => import("./process-identity.config.ts"),
+  "cloud-postgres-volumes.config.ts": () => import("./cloud-postgres-volumes.config.ts"),
   "release-archives.config.ts": () => import("./release-archives.config.ts"),
   "release-evidence.config.ts": () => import("./release-evidence.config.ts"),
   "removal-evidence.config.ts": () => import("./removal-evidence.config.ts"),
@@ -791,9 +794,11 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "run-retention.config.ts": () => import("./run-retention.config.ts"),
   "standalone-lockdown.config.ts": () => import("./standalone-lockdown.config.ts"),
   "subrequest-depth.config.ts": () => import("./subrequest-depth.config.ts"),
+  "test-stage-branch.config.ts": () => import("./test-stage-branch.config.ts"),
   "test-stage-orphans.config.ts": () => import("./test-stage-orphans.config.ts"),
   "test-stage-unreadable.config.ts": () => import("./test-stage-unreadable.config.ts"),
   "typecheck-runner.config.ts": () => import("./typecheck-runner.config.ts"),
+  "webhook-sweep-waits.config.ts": () => import("./webhook-sweep-waits.config.ts"),
   "welcome-email.config.ts": () => import("./welcome-email.config.ts"),
   "worker-sizes.config.ts": () => import("./worker-sizes.config.ts"),
 };
@@ -828,6 +833,16 @@ const separateSuites = Effect.gen(function* () {
       ),
   );
   const suites = new Map<string, Suite>();
+  const checksText =
+    workflows.find(({ label }) => label.endsWith("(.github/workflows/checks.yml)"))?.text ?? "";
+  /** The text of one job of checks.yml, up to the next job. */
+  const checksJob = (job: string) => {
+    const start = checksText.indexOf(`\n  ${job}:\n`);
+    if (start === -1) return "";
+    const rest = checksText.slice(start + 1);
+    const end = rest.slice(1).search(/\n {2}[a-z0-9-]+:\n/);
+    return end === -1 ? rest : rest.slice(0, end + 1);
+  };
   const configs = (yield* fs.readDirectory(e2e))
     .filter((name) => name.endsWith(".config.ts") && name !== "vitest.config.ts")
     .sort();
@@ -868,22 +883,86 @@ const separateSuites = Effect.gen(function* () {
         config,
         commands,
         workflows: workflows.filter(({ text }) => runs(text)).map(({ label }) => label),
+        everyPullRequest: everyRunJobs.some((job) => runs(checksJob(job))),
       });
   }
   return suites;
 });
 
-/** Where a spec file these jobs never run does run, for the failure message. */
-const runsElsewhere = (file: string, suite: Suite | undefined) => {
-  if (suite === undefined)
-    return [...deployedRuns].some((title) => fileOf.get(title) === file)
-      ? `- ${file}: only Cloud tests on main runs its scenarios, on a deployed stage after merge. A pull request that changes the file runs those managed local Cloud can run in the ${deployedOnlyJob} job.`
-      : `- ${file}: these jobs exclude all of its scenarios (see the job patterns in e2e/ci-selection.ts).`;
+/**
+ * What to do about a spec file these jobs never run, for the failure message: where it does run,
+ * and the edit to make. `where` names the block line it is written on.
+ */
+const runsElsewhere = (file: string, suite: Suite | undefined, where?: string) => {
+  const at = where ?? file;
+  // Named in the block, the file is an edit to make; changed but unnamed, it is only reported.
+  const nothing =
+    where === undefined
+      ? "so these jobs do not run it."
+      : `so naming it here runs nothing. Remove ${file} from the e2e block.`;
+  if (suite === undefined) {
+    const deployed = [...deployedRuns].filter((title) => fileOf.get(title) === file);
+    return deployed.length > 0
+      ? `- ${at}: only the deployed stage runs ${file}'s scenarios, in Cloud tests on main after merge, ${nothing} To run its scenarios before merging, run them on a deployed stage: ${verifyCommand(deployed)}`
+      : `- ${at}: these jobs exclude all of ${file}'s scenarios (see the job patterns in e2e/ci-selection.ts), ${nothing}`;
+  }
   const command = suite.commands[0] ?? `bunx vitest run --config ${suite.config}`;
-  return suite.workflows.length === 0
-    ? `- ${file} runs only by hand, with ${suite.config}: ${command}. No workflow runs it.`
-    : `- ${file} runs with ${suite.config} in ${suite.workflows.join(" and ")}. Locally: ${command}.`;
+  if (suite.workflows.length === 0)
+    return `- ${at}: ${file} runs only by hand, with ${suite.config} (${command}); no workflow runs it, ${nothing}`;
+  return suite.everyPullRequest
+    ? `- ${at}: ${file} runs with ${suite.config} in Checks on every pull request anyway, ${where === undefined ? "so these jobs do not run it." : `so the e2e block cannot select it. Remove ${file} from the e2e block.`} Locally: ${command}.`
+    : `- ${at}: ${file} runs with ${suite.config} in ${suite.workflows.join(" and ")}, not in these jobs, ${nothing} Locally: ${command}.`;
 };
+
+/** Where `token` is written in the e2e block, for a message: its line number and that line. */
+const blockLine = (block: string, token: string) => {
+  const lines = block.split("\n");
+  const index = lines.findIndex((line) => line.split(/[\s,]+/).includes(token));
+  return index === -1
+    ? `\`${token}\` in the e2e block`
+    : `line ${index + 1} of the e2e block, \`${lines[index]!.trim()}\``;
+};
+
+/** The command that runs these deployed scenarios on a deployed stage. */
+const verifyCommand = (titles: ReadonlyArray<string>) =>
+  `bun run e2e:deployed --database planetscale --test-name '^(?:${titles.map(escape).join("|")})$'`;
+
+/** How many single-character edits turn `a` into `b`. */
+const editDistance = (a: string, b: string) => {
+  let previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    for (let j = 1; j <= b.length; j++)
+      current[j] = Math.min(
+        previous[j]! + 1,
+        current[j - 1]! + 1,
+        previous[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1),
+      );
+    previous = current;
+  }
+  return previous[b.length]!;
+};
+
+/** The three names in `names` nearest to `name`, nearest first. */
+const nearest = (name: string, names: Iterable<string>) =>
+  [...names]
+    .map((candidate) => ({ candidate, distance: editDistance(name, candidate) }))
+    .toSorted((a, b) => a.distance - b.distance || a.candidate.localeCompare(b.candidate))
+    .slice(0, 3)
+    .map(({ candidate }) => candidate);
+
+/**
+ * The outputs, followed by what a later run on the same head compares to tell whether it would
+ * test the same thing (e2e/ci-key.ts): `selection`, a key of exactly these outputs, and for a pull
+ * request `worker-growth`, a key of the size gate's blocks in the description this run read.
+ */
+const keyed = (lines: string, description: string | undefined) =>
+  [
+    lines,
+    `selection=${selectionKey(lines)}`,
+    ...(description === undefined ? [] : [`worker-growth=${workerGrowthKey(description)}`]),
+    "",
+  ].join("\n");
 
 /** The trimmed text of each `e2e` block in a description. */
 const blocksIn = (body: string) =>
@@ -1045,8 +1124,10 @@ const requested = (parsed: Requested, retry: string) =>
  */
 const checkNamed = (
   tokens: ReadonlyArray<string>,
+  block: string,
   suites: ReadonlyMap<string, Suite>,
   changedDeployedOnly: ReadonlySet<string>,
+  retry: string,
 ) =>
   Effect.gen(function* () {
     const named = tokens.map((token) => token.replace(/^e2e\/tests\//, ""));
@@ -1055,15 +1136,24 @@ const checkNamed = (
     );
     if (unknown.length > 0)
       return yield* new SelectionFailed({
-        message: `The e2e block names files that are not spec files in e2e/tests/: ${unknown.map((token) => `"${token}"`).join(", ")}. Write each name as it appears in e2e/tests/, such as groups.spec.ts. A new spec file needs its scenarios in e2e/test-plan.ts.`,
+        message: [
+          "The e2e block names files that are not spec files in e2e/tests/:",
+          ...unknown.map(
+            (token) =>
+              `- ${blockLine(block, token)}: no spec file has this name. The nearest names are ${nearest(token.replace(/^e2e\/tests\//, ""), [...specFiles, ...suites.keys()]).join(", ")}. Write the name exactly as it appears in e2e/tests/; a new spec file needs its scenarios in e2e/test-plan.ts first.`,
+          ),
+          `Correct each of these lines in the description's e2e block. ${retry}`,
+        ].join("\n"),
       });
     const elsewhere = named.filter((file) => !jobFiles.has(file) && !changedDeployedOnly.has(file));
     if (elsewhere.length > 0)
       return yield* new SelectionFailed({
         message: [
           "The e2e block names spec files that CI's E2E jobs do not run, so naming them here tests nothing:",
-          ...elsewhere.map((file) => runsElsewhere(file, suites.get(file))),
-          "Remove them from the e2e block. Name the spec files these jobs run that exercise the change, or write none.",
+          ...elsewhere.map((file) =>
+            runsElsewhere(file, suites.get(file), blockLine(block, tokens[named.indexOf(file)]!)),
+          ),
+          `Name the spec files these jobs run that exercise the change, or write none. ${retry}`,
         ].join("\n"),
       });
     return named;
@@ -1091,7 +1181,19 @@ NodeRuntime.runMain(
     const output = yield* Config.String("GITHUB_OUTPUT").pipe(Config.option);
     const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
 
-    const retry = `CI waited ${spoken(wait)} for the description. Once it is fixed, rerun the whole workflow: gh run rerun ${runId}`;
+    // e2e/check-description.ts runs this program on a draft before anything is pushed: the same
+    // checks and messages, without the advice that only a CI run can follow.
+    const local = (yield* Config.String("E2E_LOCAL_CHECK").pipe(Config.withDefault(""))) !== "";
+    // Local mode passes a skip with no layer above, which a workflow must never do: GitHub Actions
+    // sets GITHUB_ACTIONS on every run, and e2e/check-description.ts clears it for this program.
+    if (local && (yield* Config.String("GITHUB_ACTIONS").pipe(Config.withDefault(""))) === "true")
+      return yield* new SelectionFailed({
+        message:
+          "E2E_LOCAL_CHECK is set in a GitHub Actions run. It is the mode of e2e/check-description.ts, which passes a skip that has no layer above; a workflow must never set it. Remove it from the workflow, runner or repository variables that set it.",
+      });
+    const retry = local
+      ? "Edit the description and check it again"
+      : `CI waited ${spoken(wait)} for the description. Once it is fixed, rerun the whole workflow: gh run rerun ${runId}`;
     const read =
       pullRequest === ""
         ? undefined
@@ -1101,9 +1203,17 @@ NodeRuntime.runMain(
     // A skipped layer runs nothing, so it decides before the suites are read: the layer above
     // reads them for the combined change.
     if (block === "skip") {
+      // Before the pull request and the layer above are open, there is nothing a skip can be
+      // checked against: say so, and check the layer above, which runs for both.
+      if (above.length === 0 && local) {
+        yield* Console.log(
+          `The e2e block says skip (${blockLine(blocksIn(read!.body)[0]!, "skip")}): this layer runs nothing, and the layer above, an open pull request whose base is ${headRef}, checks the combined change. A skip cannot be checked before both pull requests exist. Check the layer above's description now; once both are open, check this one with --pr.`,
+        );
+        return;
+      }
       if (above.length === 0)
         return yield* new SelectionFailed({
-          message: `The e2e block says skip, but no open pull request builds on this branch. Only the lower layers of a stack may skip: open the layer above, or select scenarios instead. ${retry}.`,
+          message: `The e2e block says skip (${blockLine(blocksIn(read!.body)[0]!, "skip")}), which only a lower layer of a stack may say: this run waited ${spoken(wait)} for the layer above, an open pull request whose base is this branch, ${headRef}, and there is none. Open the layer above with base ${headRef}, then run this workflow again: gh run rerun ${runId}. If this pull request is not a lower layer of a stack, replace skip with the spec files that exercise the change.`,
         });
       const report = [
         "## E2E selection",
@@ -1113,7 +1223,7 @@ NodeRuntime.runMain(
       ].join("\n");
       yield* Console.log(report);
       if (Option.isSome(output))
-        yield* fs.writeFileString(output.value, "skip=true\n", { flag: "a" });
+        yield* fs.writeFileString(output.value, keyed("skip=true", read?.body), { flag: "a" });
       if (Option.isSome(summary))
         yield* fs.writeFileString(summary.value, `${report}\n`, { flag: "a" });
       return;
@@ -1218,9 +1328,11 @@ NodeRuntime.runMain(
             message: [
               "These scenarios are new to the deployed suite. Cloud tests on main runs them on a deployed stage after merge, and no job here can run them there:",
               ...added.toSorted().map((title) => `- ${fileOf.get(title)}: ${title}`),
-              "Run them on a deployed stage before merging, for example:",
-              `    bun run e2e:deployed --database planetscale --test-name '^(?:${added.map(escape).join("|")})$'`,
-              'Then add a line to the description saying what ran and its result: "Verified on a deployed stage: <command, run or stage, and result>".',
+              "Run them on a deployed stage before merging:",
+              `    ${verifyCommand(added)}`,
+              `When that command passes, add this line to the description, on a line of its own, then ${local ? "check it again" : "run this workflow again"}:`,
+              `Verified on a deployed stage: ${verifyCommand(added)} passed`,
+              `${retry}.`,
             ].join("\n"),
           });
       }
@@ -1228,8 +1340,10 @@ NodeRuntime.runMain(
     const named = Array.isArray(block)
       ? yield* checkNamed(
           block,
+          blocksIn(read!.body)[0]!,
           suites,
           new Set([...deployedOnlyRun].map((title) => fileOf.get(title)!)),
+          `${retry}.`,
         )
       : block;
     const changedElsewhere = changedSpecs.filter(
@@ -1290,6 +1404,10 @@ NodeRuntime.runMain(
         Effect.map((files) => compared.some((file) => files.has(file))),
         Effect.mapError((error) => new SelectionFailed({ message: error.message })),
       ));
+    // The MCP search and session scenarios, from the same comparison (e2e/mcp-search-guard.ts): a
+    // floor under the block for the code they run through, in their own Cloud jobs.
+    const searchChanged =
+      compared === undefined || compared.length >= compareFileLimit || mcpSearchChanged(compared);
     // The release lanes, from the same comparison: a pull request's changes since main, so the
     // top of a stack runs them for every layer. A comparison GitHub cannot list in full runs both.
     const lanes =
@@ -1327,6 +1445,8 @@ NodeRuntime.runMain(
             ...named,
             ...guarded,
             ...guardedByFile,
+            // A collector input changed: the scenarios that exercise it run too.
+            ...(collector ? collectorScenarios : []),
             ...changedSpecs.filter((file) => jobFiles.has(file)),
             ...[...deployedOnlyRun].map((title) => fileOf.get(title)!),
           ]);
@@ -1347,7 +1467,10 @@ NodeRuntime.runMain(
         .filter(
           (scenario) =>
             scenario.targets[target].status === "scheduled" &&
-            ((base.test(scenario.title) && (files === undefined || files.has(scenario.file))) ||
+            ((base.test(scenario.title) &&
+              (files === undefined ||
+                files.has(scenario.file) ||
+                (target === "cloud" && searchChanged && mcpSearchTitles.has(scenario.title)))) ||
               extra.has(scenario.title)),
         )
         .map((scenario) => scenario.title);
@@ -1480,10 +1603,22 @@ NodeRuntime.runMain(
       ...(guardedByFile.length === 0
         ? []
         : ["", `A guarded file differs from main, so its guards run: ${guardedByFile.join(", ")}`]),
+      ...(!collector || files === undefined
+        ? []
+        : [
+            "",
+            `A collector input changed (e2e/collector-inputs.ts), so the scenarios that exercise it run: ${collectorScenarios.join(", ")}`,
+          ]),
       ...(saveChanged && files !== undefined
         ? [
             "",
             `A file a save runs or reads differs from main (e2e/save-path.ts), so these run in ${saveScenarios.job}: ${saveScenarios.files.join(", ")}`,
+          ]
+        : []),
+      ...(searchChanged && files !== undefined
+        ? [
+            "",
+            `A file MCP search or sessions run through differs from main (e2e/mcp-search-guard.ts), so these Cloud scenarios run too: ${[...mcpSearchTitles].join("; ")}`,
           ]
         : []),
       ...(savePathSize === undefined
@@ -1529,7 +1664,8 @@ NodeRuntime.runMain(
       "",
     ].join("\n");
     yield* Console.log(report);
-    if (Option.isSome(output)) yield* fs.writeFileString(output.value, `${lines}\n`, { flag: "a" });
+    if (Option.isSome(output))
+      yield* fs.writeFileString(output.value, keyed(lines, read?.body), { flag: "a" });
     if (Option.isSome(summary))
       yield* fs.writeFileString(summary.value, `${report}\n`, { flag: "a" });
   }).pipe(Effect.provide(NodeServices.layer)),

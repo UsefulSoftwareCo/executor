@@ -58,7 +58,7 @@ export const nativeClientProxy = (upstream: string) =>
 
 /**
  * One request to the collector's private Unix socket. The packaged host does not publish a TCP
- * port for Motel.
+ * port for the collector.
  */
 export const collectorRequest = (socketPath: string, requestPath: string, body?: string) =>
   Effect.tryPromise({
@@ -107,7 +107,7 @@ export const nativeSelfHost = (environment: Readonly<Record<string, string>>) =>
       Config.withDefault(path.resolve(".local/native-auth/executor-host")),
     );
     const runtime = path.resolve("apps/hosted/self-host/dist/workerd");
-    for (const artifact of [binary, `${runtime}/workerd.capnp`, `${runtime}/motel.capnp`])
+    for (const artifact of [binary, `${runtime}/workerd.capnp`, `${runtime}/executor-collector`])
       if (!(yield* fs.exists(artifact)))
         return yield* Effect.die(
           `Missing ${artifact}. Prepare the native self-host artifacts as described in e2e/README.md; rebuild them after source changes.`,
@@ -137,7 +137,7 @@ export const nativeSelfHost = (environment: Readonly<Record<string, string>>) =>
           EXECUTOR_DATA_DIR: dataDirectory,
           EXECUTOR_MOTEL_DATA_DIR: motelDirectory,
           EXECUTOR_RUNTIME_DIR: runtime,
-          // Leave OTEL_EXPORTER_OTLP_* unset so the product uses its MOTEL binding. Setting an
+          // Leave OTEL_EXPORTER_OTLP_* unset so the product uses its COLLECTOR binding. Setting an
           // endpoint would export to that URL instead of the private Unix socket.
           ...fullTracing,
           ...environment,

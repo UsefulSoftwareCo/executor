@@ -57,6 +57,13 @@ export {
   type WorkflowDriver,
 } from "./contracts/workflow-runtime.ts";
 export { decodeWorkflowFailure, workflowFailureMessage } from "./contracts/workflow-errors.ts";
+export { nativeEngineFailure } from "./implementation/native-engine-failure.ts";
+export {
+  EngineFaults,
+  engineFaultError,
+  engineFaultFor,
+  type EngineFault,
+} from "./contracts/engine-faults.ts";
 
 export { AppRepositoryRecovery } from "./implementation/initial-source.ts";
 export { asciiJson } from "./implementation/ascii-json.ts";

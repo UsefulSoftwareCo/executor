@@ -80,6 +80,17 @@ const check = Effect.gen(function* () {
           // This adapter observes the real OS store, never an application implementation.
           if (label === `support${path.sep}os-credential.ts` && specifier === "@napi-rs/keyring")
             return;
+          // Node's fetch says whether a request's connection was reused only through the
+          // diagnostics channels its bundled HTTP client publishes (lost-connections.ts).
+          if (
+            label === `support${path.sep}lost-connections.ts` &&
+            specifier === "node:diagnostics_channel"
+          )
+            return;
+          // The lost-connection cases stand a stage in over TLS, resetting the TCP connection under
+          // the TLS session as an edge would.
+          if (label === `tests${path.sep}lost-connections.spec.ts` && specifier === "node:tls")
+            return;
           // This external MCP fixture needs a real TLS listener, not a product implementation.
           if (label === `support${path.sep}mcp-auth-patterns.ts` && specifier === "node:https")
             return;

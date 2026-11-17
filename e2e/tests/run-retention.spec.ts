@@ -6,10 +6,10 @@
  */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, FileSystem, Path, Schedule, Stream } from "effect";
+import { Effect, FileSystem, Option, Path, Schedule, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomBytes } from "node:crypto";
-import { pruneRuns } from "../sdk/run-retention.ts";
+import { keepAllMarker, pruneRuns, shrunkMarker } from "../sdk/run-retention.ts";
 
 const hour = 60 * 60_000;
 const day = 24 * hour;
@@ -120,6 +120,14 @@ const writeRun = (
     }
     for (const [file, text] of Object.entries(files))
       yield* fs.writeFileString(path.join(directory, file), text);
+    // The run ended a minute after its name says it started.
+    const [, day, hours, minutes, seconds] =
+      /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2}\.\d{3})Z/.exec(name) ?? [];
+    const started = Date.parse(`${day}T${hours}:${minutes}:${seconds}Z`);
+    if (Number.isFinite(started) && outcome !== "none" && outcome !== "unreadable") {
+      const ended = new Date(Math.min(started + 60_000, Date.now()));
+      yield* fs.utimes(path.join(directory, "evidence.json"), ended, ended);
+    }
     return name;
   });
 
@@ -421,6 +429,214 @@ layer(NodeServices.layer, { excludeTestServices: true })("e2e run folder retenti
       yield* unblock;
       expect(yield* render.exitCode.pipe(Effect.timeout("20 seconds"))).not.toBe(0);
       expect(yield* markers).toEqual([]);
+    }).pipe(Effect.scoped),
+  );
+});
+
+/** A run folder's bulk and the files that must outlive a shrink. */
+const bulky = {
+  "local/coverage/0123456789abcdef/lcov.info": "TN:\n",
+  "local/data/diagnostics/motel.sqlite": "db",
+  "local/scenarios/0123456789abcdef0123456789abcdef/data/executor.pglite/base": "db",
+  "local/scenarios/0123456789abcdef0123456789abcdef/engines-abc/data/state": "db",
+  "cloud/data/diagnostics/motel-1/motel/data.sqlite": "db",
+};
+const lasting = {
+  "local/scenarios/0123456789abcdef0123456789abcdef/server.log": "log\n",
+  "local/scenarios/0123456789abcdef0123456789abcdef/scenario.json": "{}",
+  "local/scenarios/0123456789abcdef0123456789abcdef/engines-abc/server.log": "log\n",
+  "local/report/evidence/abc/result.json": "{}",
+  "local/report/evidence/abc/trace.zip": "zip",
+  "local/report/evidence/abc/raw.webm": "webm",
+  "local/report/evidence/abc/checkpoint-1.png": "png",
+  "cloud/cloud.log": "log\n",
+};
+
+/** A finished run, `ago` old by its name and by when its `evidence.json` was written. */
+const shrinkable = (runs: string, ago: number, outcome: "passed" | "failed", suffix: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const name = runName(ago, "local", suffix);
+    const directory = path.join(runs, name);
+    for (const [file, text] of Object.entries({ ...bulky, ...lasting })) {
+      yield* fs.makeDirectory(path.dirname(path.join(directory, file)), { recursive: true });
+      yield* fs.writeFileString(path.join(directory, file), text);
+    }
+    yield* writeRun(runs, name, outcome);
+    const ended = new Date(Date.now() - ago + 60_000);
+    yield* fs.utimes(path.join(directory, "evidence.json"), ended, ended);
+    return name;
+  });
+
+/** Which of the bulk and lasting files a run folder still holds. */
+const holds = (runs: string, name: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const has = (file: string) => fs.exists(path.join(runs, name, file));
+    const bulk: Array<string> = [];
+    for (const file of Object.keys(bulky)) if (yield* has(file)) bulk.push(file);
+    const kept: Array<string> = [];
+    for (const file of Object.keys(lasting)) if (yield* has(file)) kept.push(file);
+    return {
+      bulk,
+      lasting: kept.length === Object.keys(lasting).length,
+      marker: yield* has(shrunkMarker),
+    };
+  });
+const whole = { bulk: Object.keys(bulky), lasting: true, marker: false };
+const shrunk = { bulk: [], lasting: true, marker: true };
+
+layer(NodeServices.layer, { excludeTestServices: true })("e2e run folder shrinking", (it) => {
+  it.effect(
+    "the newest passed run stays whole, older passed runs and day-old failed runs lose only their bulk and say so",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { repo, runs } = yield* workspace;
+        yield* fs.makeDirectory(runs, { recursive: true });
+        const newestPassed = yield* shrinkable(runs, 2 * hour, "passed", "a00001");
+        const olderPassed = yield* shrinkable(runs, 3 * hour, "passed", "a00002");
+        const freshFailed = yield* shrinkable(runs, 23 * hour, "failed", "a00003");
+        const dayOldFailed = yield* shrinkable(runs, 26 * hour, "failed", "a00004");
+        const start = Date.now();
+        yield* pruneRuns({ workspace: repo, current: "" });
+        expect(yield* holds(runs, newestPassed)).toEqual(whole);
+        expect(yield* holds(runs, freshFailed)).toEqual(whole);
+        expect(yield* holds(runs, olderPassed)).toEqual(shrunk);
+        expect(yield* holds(runs, dayOldFailed)).toEqual(shrunk);
+        const record = JSON.parse(
+          yield* fs.readFileString(path.join(runs, dayOldFailed, shrunkMarker)),
+        ) as { shrunkAt: string; reason: string; removed: Array<string> };
+        expect(record.removed.sort()).toEqual([
+          "cloud/data",
+          "local/coverage",
+          "local/data",
+          "local/scenarios/0123456789abcdef0123456789abcdef/data",
+          "local/scenarios/0123456789abcdef0123456789abcdef/engines-abc/data",
+        ]);
+        expect(record.reason).toMatch(/24 hours/);
+        expect(Date.parse(record.shrunkAt)).toBeGreaterThanOrEqual(start - 1000);
+        // Shrunk once: a second start leaves its record as it was.
+        const before = yield* fs.readFileString(path.join(runs, olderPassed, shrunkMarker));
+        yield* pruneRuns({ workspace: repo, current: "" });
+        expect(yield* fs.readFileString(path.join(runs, olderPassed, shrunkMarker))).toBe(before);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("keep-all-runs stops removal and shrinking", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { repo, runs } = yield* workspace;
+      yield* fs.makeDirectory(runs, { recursive: true });
+      yield* shrinkable(runs, 2 * hour, "passed", "b00001");
+      const older = yield* shrinkable(runs, 3 * hour, "passed", "b00002");
+      const aged = yield* shrinkable(runs, 5 * day, "failed", "b00003");
+      yield* fs.writeFileString(path.join(runs, keepAllMarker), "");
+      yield* pruneRuns({ workspace: repo, current: "" });
+      expect(yield* holds(runs, older)).toEqual(whole);
+      expect(yield* holds(runs, aged)).toEqual(whole);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a run in progress is not shrunk, and a bulk folder that is a link is not followed",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { repo, runs, outside } = yield* workspace;
+        yield* fs.makeDirectory(runs, { recursive: true });
+        yield* shrinkable(runs, 1 * hour, "passed", "c00001");
+        const writing = yield* shrinkable(runs, 30 * hour, "failed", "c00002");
+        yield* fs.writeFileString(
+          path.join(runs, writing, `in-progress-${process.pid}-abcdef.json`),
+          JSON.stringify({ pid: process.pid }),
+        );
+        const linked = yield* shrinkable(runs, 3 * hour, "passed", "c00003");
+        // A scenario whose `data` is a link to a directory outside the workspace.
+        yield* fs.makeDirectory(path.join(outside, "data"));
+        yield* fs.writeFileString(path.join(outside, "data/keep.txt"), "outside\n");
+        const scenario = path.join(
+          runs,
+          linked,
+          "local/scenarios/fedcba9876543210fedcba9876543210",
+        );
+        yield* fs.makeDirectory(scenario, { recursive: true });
+        yield* fs.symlink(path.join(outside, "data"), path.join(scenario, "data"));
+        yield* pruneRuns({ workspace: repo, current: "" });
+        expect(yield* holds(runs, writing)).toEqual(whole);
+        expect(yield* holds(runs, linked)).toEqual(shrunk);
+        expect(yield* fs.exists(path.join(outside, "data/keep.txt"))).toBe(true);
+        // The link itself stays too: only real directories are bulk.
+        expect(Option.isSome(yield* Effect.option(fs.readLink(path.join(scenario, "data"))))).toBe(
+          true,
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  /** Seven passed runs, one scenario each, two minutes apart, the newest ending `newestAgo` ago. */
+  const series = (runs: string, newestAgo: number) =>
+    Effect.forEach([6, 5, 4, 3, 2, 1, 0], (step) =>
+      shrinkable(runs, newestAgo + step * 2 * 60_000 + 60_000, "passed", `5e0${step}00`),
+    );
+  const evidence = "local/report/evidence/abc/lookups.json";
+
+  it.effect(
+    "a series of quick passed runs read together keeps every run whole while it is recent",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const { repo, runs } = yield* workspace;
+        yield* fs.makeDirectory(runs, { recursive: true });
+        const names = yield* series(runs, 15 * 60_000);
+        for (const name of names) yield* fs.writeFileString(path.join(runs, name, evidence), "{}");
+        // An eighth run in the series starts.
+        yield* pruneRuns({ workspace: repo, current: "" });
+        for (const name of names) {
+          expect(yield* holds(runs, name), name).toEqual(whole);
+          expect(yield* fs.exists(path.join(runs, name, evidence)), name).toBe(true);
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "once the series is two hours old, the count takes passed runs past the newest five and the rest shrink",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const { repo, runs } = yield* workspace;
+        yield* fs.makeDirectory(runs, { recursive: true });
+        const names = yield* series(runs, 3 * hour);
+        yield* pruneRuns({ workspace: repo, current: "" });
+        const left = (yield* fs.readDirectory(runs)).sort();
+        // `names` runs oldest first.
+        expect(left).toEqual(names.slice(2).sort());
+        expect(yield* holds(runs, names[6]!)).toEqual(whole);
+        for (const name of names.slice(2, 6))
+          expect(yield* holds(runs, name), name).toEqual(shrunk);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("past the byte cap even recent runs go, oldest first, to protect the disk", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { repo, runs } = yield* workspace;
+      yield* fs.makeDirectory(runs, { recursive: true });
+      const names = yield* Effect.forEach([4, 3, 2, 1], (step) =>
+        writeRun(runs, runName(step * 5 * 60_000, "local", `ca0${step}00`), "passed", {
+          "big.bin": "x".repeat(2 * mebibyte),
+        }),
+      );
+      // Four recent runs of about 2 MiB against a 5 MiB cap: the two oldest go.
+      yield* pruneRuns({ workspace: repo, current: "", keepBytes: 5 * mebibyte });
+      expect((yield* fs.readDirectory(runs)).sort()).toEqual(names.slice(2).sort());
+      expect(yield* fs.exists(path.join(runs, names[3]!, "big.bin"))).toBe(true);
     }).pipe(Effect.scoped),
   );
 });

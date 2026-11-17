@@ -39,8 +39,8 @@ const submitStatements = 36;
 /**
  * The first saves, made one at a time and read before the others start, so each finds exactly as
  * many accounts already linked as saves before it. Their spans are complete only while the server
- * exports at its own pace: the four writers send spans faster than the server's single Motel
- * stores them, and the exporter the self-host server has always shipped drops what it holds, and
+ * exports at its own pace: the four writers sent spans faster than Motel, the server's collector
+ * before the Rust one, stored them (not measured since), and the exporter the self-host server has always shipped drops what it holds, and
  * every span for 60 seconds, once an export fails after its retries. A trace read during or just
  * after the other saves may never arrive. That a later save does the same work is checked in
  * webhook-source-lookup.spec.ts, by the query plans of a save beside 100,000 accounts.
@@ -332,7 +332,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
                 entry.span.tags["http.response.status_code"] === "200",
             )
               ? Effect.succeed(value)
-              : Effect.fail(new Error("The actual HTTP server span must reach Motel")),
+              : Effect.fail(new Error("The actual HTTP server span must reach the collector")),
           ),
         );
         const result = yield* delivered.pipe(
@@ -342,7 +342,7 @@ layer(HostedLive, { excludeTestServices: true })("Self-host", (it) => {
         );
         expect(
           Result.isSuccess(result),
-          "The actual HTTP server span must reach Motel within 20 seconds",
+          "The actual HTTP server span must reach the collector within 20 seconds",
         ).toBe(true);
         if (Result.isFailure(result)) return yield* Effect.fail(result.failure);
         const queries = result.success.data.filter(

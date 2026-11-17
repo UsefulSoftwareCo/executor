@@ -57,7 +57,7 @@ const ancestry = (spans: Spans, spanId: string) => {
 
 /**
  * A trace, once the span `select` finds and its whole ancestry up to the trace's root have reached
- * Motel. A parent ends after its children, so it leaves in the same export or a later one, and a
+ * the collector. A parent ends after its children, so it leaves in the same export or a later one, and a
  * refused export is sent again after later ones.
  */
 const deliveredAncestry = (traceId: string, select: (span: Spans[number]["span"]) => boolean) =>
@@ -66,11 +66,11 @@ const deliveredAncestry = (traceId: string, select: (span: Spans[number]["span"]
     Effect.flatMap((trace) => {
       const found = trace.data.find(({ span }) => select(span));
       const chain = found === undefined ? [] : ancestry(trace.data, found.span.spanId);
-      // Motel answers a span whose parent has not arrived with a placeholder root in its place.
+      // The collector answers a span whose parent has not arrived with a placeholder root in its place.
       return chain.at(-1)?.parentSpanId === null &&
         !chain.some((span) => span.operationName.startsWith("[missing parent"))
         ? Effect.succeed({ trace: trace.data, chain })
-        : Effect.fail(new Error("The span or its ancestors have not all reached Motel"));
+        : Effect.fail(new Error("The span or its ancestors have not all reached the collector"));
     }),
     Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
   );
@@ -223,7 +223,7 @@ const toolCallStatements = Effect.gen(function* () {
         .filter(({ runtime }) => !runtime);
       return found.some(({ text }) => text.includes("from apikey where key"))
         ? Effect.succeed(found)
-        : Effect.fail(new Error("The tool call's statements have not reached Motel"));
+        : Effect.fail(new Error("The tool call's statements have not reached the collector"));
     }),
     Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
   );
@@ -232,7 +232,7 @@ const toolCallStatements = Effect.gen(function* () {
 const objectConnections = (owner: string, options: Parameters<typeof objectDatabase>[1] = {}) =>
   Effect.map(objectDatabase(owner, options), ({ connections }) => connections);
 
-/** The session object behind the last MCP request, once its spans have reached Motel. */
+/** The session object behind the last MCP request, once its spans have reached the collector. */
 const lastSessionObject = Effect.gen(function* () {
   const evidence = yield* Evidence,
     telemetry = yield* Telemetry;
@@ -244,7 +244,7 @@ const lastSessionObject = Effect.gen(function* () {
         .map(({ span }) => span.tags["executor.mcp.object_id"])
         .find((id) => id !== undefined);
       return id === undefined
-        ? Effect.fail(new Error("The session object's spans have not reached Motel"))
+        ? Effect.fail(new Error("The session object's spans have not reached the collector"))
         : Effect.succeed(`mcp ${String(id)}`);
     }),
     Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
@@ -376,7 +376,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud database placement", (it
           ),
           Effect.flatMap((found) =>
             found[0] === undefined
-              ? Effect.fail(new Error("No dispatched provisioning job has reached Motel"))
+              ? Effect.fail(new Error("No dispatched provisioning job has reached the collector"))
               : Effect.succeed(found[0]),
           ),
           Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
@@ -475,7 +475,7 @@ return out;`,
               expect(completed.execution.value).toEqual(["0", "1", "2", "3", "4", "5"]);
               return (yield* evidence.requests).slice(seen).map((request) => request.traceId);
             });
-          // The session object's own spans, once each one a check reads has reached Motel. A
+          // The session object's own spans, once each one a check reads has reached the collector. A
           // request's spans leave the object in several exports, one each second while it runs and
           // one when it ends, and a refused export is sent again later, so they arrive in any order.
           type Counts = Record<"operations" | "databases" | "connects" | "windows", number>;
@@ -515,7 +515,7 @@ return out;`,
                     })
                   : Effect.fail(
                       new Error(
-                        `The session's spans have not reached Motel: ${JSON.stringify(counts)}`,
+                        `The session's spans have not reached the collector: ${JSON.stringify(counts)}`,
                       ),
                     );
               }),
@@ -617,7 +617,7 @@ return out;`,
             .request(actors.owner, "POST", "/api/auth/api-key/delete", { keyId: key.id })
             .pipe(Effect.orDie),
         );
-        // The session object's own spans for some requests, once `ready` finds them in Motel.
+        // The session object's own spans for some requests, once `ready` finds them in the collector.
         const objectSpans = (
           traces: ReadonlyArray<string>,
           ready: (spans: ReadonlyArray<Spans[number]["span"]>) => boolean,
@@ -633,7 +633,7 @@ return out;`,
             Effect.flatMap((spans) =>
               ready(spans)
                 ? Effect.succeed(spans)
-                : Effect.fail(new Error("The session's spans have not reached Motel")),
+                : Effect.fail(new Error("The session's spans have not reached the collector")),
             ),
             Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
           );
@@ -780,7 +780,9 @@ return out;`,
             ),
             Effect.flatMap((found) =>
               found[0] === undefined
-                ? Effect.fail(new Error("No cron wake of the coordinator has reached Motel"))
+                ? Effect.fail(
+                    new Error("No cron wake of the coordinator has reached the collector"),
+                  )
                 : Effect.succeed(found[0]),
             ),
             Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
@@ -825,7 +827,7 @@ return out;`,
           yield* evidence.json("scheduled-runs.json", runs);
           expect(runs.map((run) => run.status)).toEqual(["succeeded", "succeeded", "succeeded"]);
 
-          // Motel matches operation names by prefix, so `schedule.retire` would also find
+          // The collector matches operation names by the start of their words, so `schedule.retire` would also find
           // `schedule.retired`.
           const exactly = (operation: string, found: typeof SpanQuery.Type) =>
             found.data.filter(({ span }) => span.operationName === operation);
@@ -863,7 +865,7 @@ return out;`,
               found.retirements.length === 0 ||
               found.runs.length < 3 ||
               found.dispatches.length === 0
-                ? Effect.fail(new Error("The coordinator's spans have not reached Motel"))
+                ? Effect.fail(new Error("The coordinator's spans have not reached the collector"))
                 : Effect.succeed(found),
             ),
             Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
@@ -919,7 +921,9 @@ return out;`,
             Effect.map((found) => found.filter((beat) => !known.has(beat.trace))),
             Effect.flatMap((found) =>
               found.length < 2
-                ? Effect.fail(new Error(`${found.length} of 2 heartbeats have reached Motel`))
+                ? Effect.fail(
+                    new Error(`${found.length} of 2 heartbeats have reached the collector`),
+                  )
                 : Effect.succeed(found),
             ),
             Effect.retry({ schedule: Schedule.spaced("1 second"), times: 150 }),
@@ -1488,6 +1492,26 @@ return listed;`;
               batch: "returned",
               leaves: ["could not connect", "could not connect", "could not connect"],
             },
+          });
+
+          // A leaf that reads again once its first statement answers, as a bearer recheck whose key
+          // was contended does, writes nothing while its batch's `COMMIT` is unanswered: through
+          // Hyperdrive such a statement is never answered, and the call waits until its deadline.
+          // The read goes out, and answers, once the `COMMIT` has: also when a statement inside the
+          // batch failed, so its `COMMIT` is answered as a rollback.
+          const later = yield* step(
+            "A batch leaf's later statement waits for its batch's COMMIT to answer before it is written",
+            "commit-unanswered",
+          );
+          expect(later).toEqual({ leaves: ["ok", "ok", "ok"], behindCommit: 0, later: "answered" });
+          const rolledBack = yield* step(
+            "A batch leaf's later statement waits for a COMMIT answered as a rollback, then is written",
+            "commit-rollback",
+          );
+          expect(rolledBack).toEqual({
+            leaves: ["ok", "failed", "failed"],
+            behindCommit: 0,
+            later: "answered",
           });
 
           // A connect attempt that reaches its timeout, and one whose caller gives up while it

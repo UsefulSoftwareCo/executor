@@ -127,9 +127,12 @@ Its `cargo test` suite in `tests/` is limited to seven files, which share
   export limit emptying the store and a raised one keeping it, every
   transition of the
   read gate, a gate opening when checkpoints fail, readers held at the gate so
-  exports are not refused, reads during eviction, and resident memory returned
-  after a burst.
-  These would be E2E scenarios, but nothing in `e2e/` builds the binary yet.
+  exports are not refused, reads during eviction, resident memory returned
+  after a burst, and the viewer's files: served only from what was read at start,
+  never a path a request names, only GET and HEAD, and every viewer directory it
+  cannot serve ending the start before the store is touched.
+  These run the binary alone, with stores, clocks and resource limits a scenario
+  through the product cannot set up.
 
 CI runs it in the `collector-native` job when the crate, its build script
 (`packages/telemetry/scripts/build-collector.ts`) or the `collector` and `rustup` actions in
@@ -155,6 +158,9 @@ suite (`e2e:self-host`, `e2e:local`, `e2e:cloud` or `e2e:deployed` without
 tests run the deployed suite. When a change is cross-cutting, pick one or two
 scenarios per changed path and name them in the handoff. Investigate a failure
 CI reports instead of re-running suites to look for one.
+
+A starting run prunes the workspace's `.local/e2e` (`e2e/sdk/run-retention.ts`): it removes runs older than 3 days or past the cap, and shrinks older passed runs, and failed ones a day after they ended, to their logs, reports and evidence (`shrunk.json` says what went). A run that ended in the last 2 hours stays whole unless the 3 GiB cap needs the space.
+To keep every run whole while investigating, `touch .local/e2e/keep-all-runs`; remove it when done.
 
 For authenticated testing and bug reproduction, use
 [test accounts](notes/test-accounts.md). The fixture command provisions
@@ -239,7 +245,11 @@ a `workflow_call` workflow, so another repository can call the same jobs.
 ### Choosing a PR's E2E scenarios
 
 A pull request runs only the E2E scenarios it selects. Pushes to `main` run the
-full suite. The static checks (`check` and the jobs it gates, `apps-version`,
+full suite. The selection reaches the jobs as title patterns; no value it puts in
+an environment variable or argument may approach Linux's 128 KiB limit, and a case in
+`e2e/tests/ci-selection.spec.ts` fails at a quarter of it, naming the value. Make room by
+splitting (more shards) or by passing it through a file: scenario titles are not a budget,
+so never shorten them to fit. The static checks (`check` and the jobs it gates, `apps-version`,
 `self-host-native`) always run, except in a skipped stack layer. Put exactly one
 fenced `e2e` block in the PR description, listing spec files from `e2e/tests/`:
 
@@ -250,12 +260,24 @@ invitation-roles.spec.ts
 ```
 ````
 
+Before the first push, commit and check the description as CI's `select` job will:
+`bun run e2e:check-description --file description.md` (or `-` for stdin, or `--pr <number>`
+once the PR is open, from a checkout at its head commit). It gives CI's verdict and prints what
+would run; a `skip` can only be checked once the layer above is open. An edit to the description
+after the push needs no re-run unless it changes the selection.
+
 Spec files the PR adds or changes are always included, as are the scenarios that
 guard a dependency patch when the PR's tree pins that dependency or its patch
 differently from main (`patchGuards` in `e2e/ci-selection.ts`): Bun skips a stale
 patch without an error. So are the scenarios that assert a contract one file states in
 full when the tree's copy differs from main's (`fileGuards`): a new host protocol in
 `app-protocols.ts` runs `app-package.spec.ts`, which reads back the supported list.
+The Executor app's skill texts and the MCP instructions generated from them are read back by
+scenarios too (`e2e/file-guards.ts`), so changing them runs those scenarios.
+A change to the code MCP search and sessions run through (`e2e/mcp-search-guard.ts`) also runs
+the Cloud MCP search and session scenarios. That is a floor, not a substitute for naming the spec
+files a change can affect: those Cloud scenarios live in `cloud-database-placement.spec.ts` and
+`mcp-catalog-scale.spec.ts`, whose names do not say search.
 A changed spec file's Cloud scenarios that otherwise first run in Cloud tests on main, after
 merge, run in the `cloud-product` job when managed local Cloud can run them. The ones that need a
 deployed stage (`runtime: "attached"`) get a warning with the `e2e:deployed` command that runs
@@ -297,7 +319,12 @@ checks the combined change: its static checks run against the whole tree,
 scenarios for every layer's changes. `skip` fails the `select` job unless another
 open PR targets the layer's branch, so a lone PR or the top layer cannot skip. The
 `select` job waits up to 3 minutes for that PR to open, so open the stack's layers together
-(`gh stack submit` does).
+(`gh stack submit` does). It then checks that that PR's latest run on its head was built on
+this layer's head and compared Worker sizes with the base the stack ends on
+([`e2e/ci-skip-check.ts`](e2e/ci-skip-check.ts)). For now it only logs what it would
+decide (`skip-check` in the select log and summary); once enforced, it fails and says which command
+runs the layer above again. Never write `skip` on a long-lived branch's PR into `main`: it must be
+compared with `main` itself.
 After changing a lower layer, rebase the layers above it so the top runs again.
 Merge the stack only when the top layer passes, bottom first, without pausing between
 layers: each merge deploys production.
@@ -319,8 +346,11 @@ Cloudflare compiles and evaluates the modules a Worker's entry imports staticall
 when an isolate starts, about 40 ms for each megabyte on every cold request, and
 refuses an upload whose startup takes more than a second of CPU. The `site` job
 compares each Cloud Worker's upload, and the bytes its entry imports statically,
-with `main`, and fails a pull request that adds more than 50 KB to either, about
-2 ms, unless the description allows it:
+with the base of the bottom of the pull request's stack, and fails a pull request
+that adds more than 50 KB to either, about 2 ms, unless the description allows it.
+A stack that ends on `main` is compared with `main`; one that ends on another
+branch is compared with that branch, which is charged its total against `main`
+when it merges there:
 
 ````md
 ```worker-growth
@@ -337,6 +367,17 @@ it after an edit. The budgets in
 backstops with room above each Worker's size; the deploy enforces them too.
 Change one only in a PR that does nothing else and says what the added
 cold-start time buys. Never raise one to fit a change.
+
+A push to `main` is held to the same rule against the commit before it: growth
+over 50 KB fails `site` on `main` unless the descriptions of the pull requests the
+push merges allow it (summed by Worker). That catches growth no pull request was
+compared with `main` for, such as a layer retargeted onto `main` after its run, a
+`skip` layer above a long-lived branch, or a direct push. A red `site` on `main`
+does not stop the deploy, which has already started; it is a red `CI` on `main`
+that someone must answer: add the allowance to the merged pull request's
+description and rerun the failed job, which reads the descriptions afresh, or
+shrink the Worker in a new pull request. Sizes that cannot be had, descriptions
+that cannot be read, and commits no pull request merged are notices, never failures.
 
 A ruleset on `main` requires a pull request whose `checks / check` and
 `checks / e2e` passed. When GitHub refuses a merge as blocked ("the base branch
@@ -449,9 +490,9 @@ scenarios on Linux instead of moving them to a Mac.
   site and dashboard, with its own origins, into the one `apps/hosted/cloud/.generated/site`
   that both serve. On a full run `cloud-product` passes what one local Cloud holds, and each of
   its local Clouds has a runner of its own; the longest, about five and a half minutes, waits out
-  the MCP session restore scenario's 270-second idle. Each runner builds the apps package and
-  Motel once before its runs; runs only serve that Motel bundle, because every target in a run
-  shares it.
+  the MCP session restore scenario's 270-second idle. Each runner builds the apps package and the
+  telemetry collector and its viewer once before its runs; runs only start that build, because
+  every target in a run shares it.
 - `e2e` passes when `select` succeeded, every E2E job it chose passed and every other one was
   skipped; it runs even after a cancellation, which fails it. The matrix runners' check
   names change with the selection, so this is the one E2E check to require.

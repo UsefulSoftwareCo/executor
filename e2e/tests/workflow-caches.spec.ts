@@ -414,19 +414,18 @@ const untrustedRestores = (
       .map((cache) => `${file}: ${cache}`);
   });
 
-/** Commands that bring a ref's code, or a file from another run or release, onto the runner. */
+/**
+ * Commands that bring a ref's code, or a file from another run or release, onto the runner: in a
+ * shell, and in a TypeScript script as the arguments it passes to `gh` or `git`.
+ */
 const fetching =
-  /\bgit(?: -[cC] \S+)* (fetch|checkout|clone|worktree)\b|\bgh (pr checkout|repo clone|run download|release download)\b/g;
+  /\bgit(?: -[cC] \S+)* (fetch|checkout|clone|worktree)\b|\bgh (pr checkout|repo clone|run download|release download)\b|\bgh\(\[\s*"(?:pr",\s*"checkout|repo",\s*"clone|run",\s*"download|release",\s*"download)"|"git",\s*\[\s*(?:"-[cC]",\s*[^,\]]+,\s*)*"(?:fetch|checkout|clone|worktree)"/g;
 
 /**
  * Each fetch in a `run:` step, or in a script under `scripts/` that one runs, that can run for an
  * event other than a pull request's own, with why what it fetches is not code from another ref.
  */
 const fetchesAllowed: ReadonlyArray<{ readonly at: string; readonly why: string }> = [
-  {
-    at: ".github/workflows/checks.yml gh run download",
-    why: "main's Worker sizes, a JSON file read as numbers to show a change",
-  },
   {
     at: ".github/workflows/release-artifacts.yml git clone",
     why: "the Homebrew tap, whose formula file is rewritten and pushed; nothing in it runs",
@@ -444,6 +443,10 @@ const fetchesAllowed: ReadonlyArray<{ readonly at: string; readonly why: string 
     why: "a ported contributor head, as a parent commit only: its files are never written or run",
   },
   {
+    at: 'scripts/ci/worker-baseline.ts gh(["run", "download"',
+    why: "Worker sizes, JSON the size gate reads and never runs: main's only from main's own push runs, a branch's only from CI runs of this repository's own pull requests whose sizes name the commit asked for; and, for a skip layer, the record of the run above, text read for two fields",
+  },
+  {
     at: "scripts/releases/bun-runtime/fetch.sh gh release download",
     why: "the Bun runtime, which runs, but only once it matches the digest pinned on main",
   },
@@ -454,7 +457,10 @@ const fetchesAllowed: ReadonlyArray<{ readonly at: string; readonly why: string 
  * `scripts/releases/background.sh start <name>` starts in the background.
  */
 const invoked =
-  /^\s*(?:- run: |run: )?(?:(?:\.\/)?scripts\/releases\/background\.sh start \S+ )?(?:bash )?(?:\.\/)?(scripts\/[\w./-]+\.sh)\b/gm;
+  /^\s*(?:- run: |run: )?(?:(?:\.\/)?scripts\/releases\/background\.sh start \S+ )?(?:bash )?(?:\.\/)?(scripts\/[\w./-]+\.sh)\b|\bnode (?:\.\/)?(scripts\/[\w./-]+\.ts)\b/gm;
+
+/** The script a match of `invoked` names, shell or TypeScript. */
+const scriptOf = (match: RegExpMatchArray) => (match[1] ?? match[2])!;
 
 /** A shell text with its continued lines joined, so `git \` and `fetch` on the next line match. */
 const joined = (text: string) => text.replace(/[ \t]*\\\n\s*/g, " ");
@@ -472,10 +478,12 @@ const codeFetches = (files: ReadonlyArray<File>, scripts: ReadonlyArray<File>) =
     if (start === -1) return [];
     const run = step.text.slice(start);
     const called = [...run.matchAll(invoked)].flatMap((match) =>
-      scripts.filter((script) => script.file === match[1]),
+      scripts.filter((script) => script.file === scriptOf(match)),
     );
     return [{ file: step.file, text: run }, ...called].flatMap(({ file, text }) =>
-      [...joined(text).matchAll(fetching)].map((match) => `${file} ${match[0]}`),
+      [...joined(text).matchAll(fetching)].map(
+        (match) => `${file} ${match[0].replace(/\[\s+/g, "[").replace(/\s+/g, " ")}`,
+      ),
     );
   });
 
@@ -505,14 +513,17 @@ const calledScripts = (files: ReadonlyArray<File>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const names = [
-      ...new Set(
-        files.flatMap(({ text }) => [...text.matchAll(invoked)].map((match) => match[1]!)),
-      ),
+      ...new Set(files.flatMap(({ text }) => [...text.matchAll(invoked)].map(scriptOf))),
     ];
     return yield* Effect.forEach(names, (file) =>
-      fs.readFileString(file).pipe(Effect.map((text): File => ({ file, text }))),
+      fs.readFileString(runFrom[file] ?? file).pipe(Effect.map((text): File => ({ file, text }))),
     );
   });
+
+/** Scripts a step runs from another working directory, by the path the step names. */
+const runFrom: Readonly<Record<string, string>> = {
+  "scripts/pr-preview.ts": "apps/hosted/cloud/scripts/pr-preview.ts",
+};
 
 /** A one-job workflow for a case, its steps given as written under `steps:`. */
 const workflow = (steps: string, job = "") => [
@@ -867,6 +878,18 @@ layer(NodeServices.layer)("Workflow caches", (it) => {
       ).toEqual(["scripts/x.sh git clone"]);
       expect((yield* calledScripts(files)).map(({ file }) => file)).toContain(
         "scripts/releases/background.sh",
+      );
+      // A TypeScript script a step runs with node, and the commands it passes to gh or git.
+      expect(
+        codeFetches(workflow("      - run: node scripts/x.ts fetch\n"), [
+          {
+            file: "scripts/x.ts",
+            text: 'yield* gh([\n  "run",\n  "download", run]);\nChildProcess.make("git", ["-C", dir, "fetch", "origin"]);\n',
+          },
+        ]),
+      ).toEqual(['scripts/x.ts gh(["run", "download"', 'scripts/x.ts "git", ["-C", dir, "fetch"']);
+      expect((yield* calledScripts(files)).map(({ file }) => file)).toContain(
+        "scripts/ci/worker-baseline.ts",
       );
     }),
   );

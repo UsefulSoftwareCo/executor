@@ -7,10 +7,13 @@ import {
   WorkflowControlCommand,
   WorkflowRun,
   WorkflowRunPage,
+  workflowDurationMillis,
   type WorkflowExecution,
   type WorkflowHostControls,
   type WorkflowRpc,
 } from "apps/contracts";
+import { repeatedSleep } from "./workflow-engine-calls.ts";
+import { untilTime } from "./sleep-until.ts";
 
 const reply = <A>(effect: Effect.Effect<A, unknown>) =>
   effect.pipe(
@@ -59,14 +62,27 @@ export const invocationWorkflow = (
                   ),
                 );
               }
+              // A sleep is repeated when the call to the engine failed in transit; see
+              // `workflow-engine-calls.ts`. `signal` interrupts it, its calls and its waits.
               case "sleep":
-                return yield* execution.driver
-                  .sleep(command.name, command.duration)
-                  .pipe(Effect.as(null));
+                return yield* repeatedSleep(
+                  execution.runId,
+                  "sleep",
+                  command.name,
+                  () => execution.driver.sleep(command.name, command.duration),
+                  workflowDurationMillis(command.duration),
+                );
               case "until":
-                return yield* execution.driver
-                  .sleepUntil(command.name, command.timestamp)
-                  .pipe(Effect.as(null));
+                return yield* repeatedSleep(
+                  execution.runId,
+                  "until",
+                  command.name,
+                  () =>
+                    untilTime(command.timestamp, () =>
+                      execution.driver.sleepUntil(command.name, command.timestamp),
+                    ),
+                  undefined,
+                );
               case "context": {
                 const context = yield* execution.resolve();
                 return Redacted.value(context.accounts);

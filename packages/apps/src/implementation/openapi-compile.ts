@@ -7,7 +7,7 @@ import {
   OpenapiOperation,
   openapiMediaKind,
   isOpenapiFileSchema,
-  isOpenapiJsonSequence,
+  isOpenapiJsonMedia,
   isOpenapiTextMedia,
   openapiBinaryResultSchema,
 } from "../contracts/openapi.ts";
@@ -175,7 +175,7 @@ function responseSchema(
     const media = Object.entries(record(content));
     if (media.length === 0) return undefined;
     for (const [type, body] of media) {
-      if (!type.includes("json") || isOpenapiJsonSequence(type)) {
+      if (!isOpenapiJsonMedia(type)) {
         shapes.push(() =>
           isOpenapiTextMedia(type) ? { type: "string" } : openapiBinaryResultSchema,
         );

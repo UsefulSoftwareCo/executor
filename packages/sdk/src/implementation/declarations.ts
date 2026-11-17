@@ -20,7 +20,7 @@ import {
 import type { HostApi, ResourceLifecycle } from "../contracts/executor.ts";
 import type { AppRequirements } from "../contracts/apps.ts";
 import { appCacheNamespace, type HostApiCheck } from "../contracts/host-api.ts";
-import { type AccountId, StorageError } from "../contracts/shared.ts";
+import { type AccountId, type OwnerId, StorageError } from "../contracts/shared.ts";
 import type { makeOAuth } from "./oauth.ts";
 import { makeHandoff } from "./handoff.ts";
 import { resolve, type InvocationSnapshot } from "./tools.ts";
@@ -122,6 +122,7 @@ export const makeDeclarations = (options: {
   readonly background: BackgroundWork | undefined;
   readonly resolveAccount: ReturnType<typeof makeOAuth>["resolveSelected"];
   readonly accountsUsable: ReturnType<typeof makeOAuth>["usableAll"];
+  readonly accountsUsableEach: ReturnType<typeof makeOAuth>["usableEach"];
   readonly crypto: HostCrypto;
   readonly lifecycle: ResourceLifecycle | undefined;
   readonly hostApi: HostApi | undefined;
@@ -159,80 +160,79 @@ export const makeDeclarations = (options: {
    * would stop it: a kept result is never served for an account a live read would refuse, such
    * as an OAuth grant that needs reconnecting.
    */
+  /** What {@link authorize} checks for a state: its accounts, by how each use is authorized. */
   const checksOf = (state: InvocationSnapshot) => {
     const selected = state.selections.flatMap(({ required, accounts }) =>
       accounts.map((account) => ({ account, provider: required.definition })),
     );
-    const accounts = selected.map(({ account }) => account);
     // Each use is authorized on its own: by the actor's use where a user requirement uses the
     // account, and by the app link for each app requirement it fills.
     const { user: linked, app: appUses } = accountAuthority(state.selections);
     return {
+      selected,
       linked,
       appUses,
+      /** Whether the recheck allowed every account the state runs with. */
       permitted: (allowed: ReadonlySet<AccountId>) =>
-        accounts.every((account) => allowed.has(account.id))
-          ? Effect.void
-          : Effect.fail(new StorageError()),
-      usable: options.accountsUsable(selected),
+        selected.every(({ account }) => allowed.has(account.id)),
     };
   };
   const authorize = (state: InvocationSnapshot) =>
     Effect.gen(function* () {
       const lifecycle = options.lifecycle;
-      const { linked, appUses, permitted, usable } = checksOf(state);
+      const checks = checksOf(state);
       // The actor's use of the app and of every account is one read, alongside the grant checks.
       yield* Effect.all(
         [
           lifecycle === undefined
             ? Effect.void
-            : lifecycle.appResolving(state.app, linked, appUses).pipe(Effect.flatMap(permitted)),
-          usable,
+            : lifecycle
+                .appResolving(state.app, checks.linked, checks.appUses)
+                .pipe(
+                  Effect.flatMap((allowed) =>
+                    checks.permitted(allowed) ? Effect.void : Effect.fail(new StorageError()),
+                  ),
+                ),
+          options.accountsUsable(checks.selected),
         ],
         { concurrency: "unbounded", discard: true },
       );
     });
   /**
-   * `authorize` for many states, with each state's outcome. A product that offers
-   * `appsResolving` rechecks the actor's use of every app and account in one call; the same checks
-   * decide each state.
+   * {@link authorize} for several states of one owner, each outcome in order: the actor's rechecks
+   * of every app in one call (`appsResolving`) beside one read of every account's grant. A state
+   * the recheck refuses fails as `authorize` fails for it, before its grants are considered.
+   * Failing the whole call, such as for storage, says nothing about any state.
    */
-  const authorizeEach = (states: ReadonlyArray<InvocationSnapshot>) =>
+  const authorizeAll = (owner: OwnerId, states: ReadonlyArray<InvocationSnapshot>) =>
     Effect.gen(function* () {
-      const many = options.lifecycle?.appsResolving;
-      if (many === undefined || states.length < 2)
-        return yield* Effect.forEach(states, (state) => Effect.result(authorize(state)), {
-          concurrency: "unbounded",
-        });
+      const lifecycle = options.lifecycle;
       const checks = states.map(checksOf);
-      const allowed = yield* Effect.result(
-        many(
-          states.map((state, index) => ({
-            app: state.app,
-            accounts: checks[index]?.linked ?? [],
-            appUses: checks[index]?.appUses ?? [],
-          })),
-        ),
-      );
-      return yield* Effect.forEach(
-        checks,
-        (check, index) =>
-          Effect.result(
-            Effect.all(
-              [
-                Effect.suspend(() => {
-                  if (Result.isFailure(allowed)) return Effect.fail(allowed.failure);
-                  const passed = allowed.success[index];
-                  return passed === undefined
-                    ? Effect.fail(new StorageError())
-                    : check.permitted(passed);
-                }),
-                check.usable,
-              ],
-              { concurrency: "unbounded", discard: true },
-            ),
-          ),
+      const [rechecked, usable] = yield* Effect.all(
+        [
+          lifecycle === undefined || states.length === 0
+            ? Effect.succeed(undefined)
+            : lifecycle.appsResolving(
+                owner,
+                states.map((state, index) => ({
+                  id: state.app.id,
+                  accounts: checks[index]?.linked ?? [],
+                  appUses: checks[index]?.appUses ?? [],
+                })),
+              ),
+          options.accountsUsableEach(checks.map(({ selected }) => selected)),
+        ],
         { concurrency: "unbounded" },
+      );
+      return checks.map(
+        (check, index): Result.Result<void, Effect.Error<ReturnType<typeof authorize>>> => {
+          const recheck = rechecked?.[index];
+          if (recheck !== undefined) {
+            if (Result.isFailure(recheck)) return Result.fail(recheck.failure);
+            if (!check.permitted(recheck.success)) return Result.fail(new StorageError());
+          }
+          return usable[index] ?? Result.fail(new StorageError());
+        },
       );
     });
   /** A result another process or isolate kept, if the host keeps results beyond this one. */
@@ -303,7 +303,7 @@ export const makeDeclarations = (options: {
     hostApi: (version: Parameters<typeof versionHostApi>[1]) =>
       versionHostApi(options.hostApi, version),
     authorize,
-    authorizeEach,
+    authorizeAll,
     recall,
     persist,
     /**

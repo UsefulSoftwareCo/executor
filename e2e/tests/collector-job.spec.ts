@@ -96,6 +96,7 @@ const wait = (
   target: string,
   attempt = 1,
   limits?: { readonly limit: number; readonly attempt: number; readonly poll: number },
+  caller?: string,
 ) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -107,6 +108,8 @@ const wait = (
           GITHUB_RUN_ID: run,
           GH_TOKEN: "synthetic-token",
           TARGET: target,
+          COLLECTOR_USE: "packaging",
+          ...(caller === undefined ? {} : { CALLER: caller }),
           GITHUB_RUN_ATTEMPT: String(attempt),
           ...(limits === undefined
             ? {}
@@ -160,7 +163,7 @@ layer(NodeServices.layer)("packaging waits for its target's collector job", (it)
         const result = yield* wait(api.url(), "win32-x64");
         expect(result.exitCode).toBe(1);
         expect(result.log).toContain(
-          `The collector (win32-x64) job ended ${conclusion}, so this run has no win32-x64 collector to package.`,
+          `The collector (win32-x64) job ended ${conclusion}, so this job has no win32-x64 collector for its packaging; this failure follows from that one. Rerun the collector (win32-x64) job, then this one.`,
         );
         expect(api.requests()).toHaveLength(1);
         expect(result.seconds).toBeLessThan(10);
@@ -199,6 +202,77 @@ layer(NodeServices.layer)("packaging waits for its target's collector job", (it)
         `/repos/${repository}/actions/runs/${run}/attempts/1/jobs?per_page=100`,
         `/repos/${repository}/actions/runs/${run}/attempts/1/jobs?per_page=100&page=2`,
       ]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a called workflow's collector job is found under its caller's job name", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([
+        {
+          jobs: [
+            { name: "checks / e2e-local (1/1)", ...inProgress },
+            { name: "checks / collector (linux-x64)", ...inProgress },
+          ],
+        },
+        { jobs: [{ name: "checks / collector (linux-x64)", ...succeeded }] },
+      ]);
+      const result = yield* wait(
+        api.url(),
+        "linux-x64",
+        1,
+        { limit: 10, attempt: 2, poll: 1 },
+        "checks",
+      );
+      expect(result.exitCode, result.log).toBe(0);
+      expect(api.requests()).toHaveLength(2);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a job named like the collector's under a caller and on its own stops packaging", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([
+        {
+          jobs: [
+            { name: "collector (linux-x64)", ...succeeded },
+            { name: "checks / collector (linux-x64)", ...succeeded },
+          ],
+        },
+      ]);
+      const result = yield* wait(api.url(), "linux-x64", 1, undefined, "checks");
+      expect(result.exitCode).toBe(1);
+      expect(result.log).toContain("cannot tell which to wait for");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "another caller's collector job is not this run's, nor one without a named caller",
+    () =>
+      Effect.gen(function* () {
+        for (const caller of ["checks", undefined]) {
+          const api = yield* jobsApi([
+            { jobs: [{ name: "other-caller / collector (linux-x64)", ...succeeded }] },
+          ]);
+          const result = yield* wait(
+            api.url(),
+            "linux-x64",
+            1,
+            { limit: 2, attempt: 1, poll: 1 },
+            caller,
+          );
+          expect(result.exitCode, String(caller)).toBe(1);
+          expect(result.log).toContain("lists no collector (linux-x64) job yet");
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("a job whose name only ends like the collector's is not it", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([
+        { jobs: [{ name: "checks /collector (linux-x64)", ...succeeded }] },
+      ]);
+      const result = yield* wait(api.url(), "linux-x64", 1, { limit: 2, attempt: 1, poll: 1 });
+      expect(result.exitCode).toBe(1);
+      expect(result.log).toContain("lists no collector (linux-x64) job yet");
     }).pipe(Effect.scoped),
   );
 

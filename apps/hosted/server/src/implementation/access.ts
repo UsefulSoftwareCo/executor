@@ -13,9 +13,10 @@ import {
   policyDatabase,
   resourceAuthorityForApp,
   resourceAuthorityForLinks,
-  resourceAuthorityForLinksOfApps,
+  type AppAccountReads,
   type ResourceAuthority,
 } from "./resource-policy.ts";
+import type { AppAccess } from "../contracts/resource-access.ts";
 import type {
   App,
   AppAccounts,
@@ -30,15 +31,18 @@ import type { ToolIdentity } from "@executor-js/authorization";
 import type { ToolAuthorization } from "./authorization.ts";
 import { Context, Effect, type Exit, Result } from "effect";
 import { HttpServerRequest } from "effect/http";
-import type { AppAccess } from "../contracts/resource-access.ts";
-import { CurrentUserId, Forbidden } from "../contracts/auth.ts";
+import {
+  BearerAuthentication,
+  CurrentUserId,
+  Forbidden,
+  SessionAuthentication,
+} from "../contracts/auth.ts";
 import { refuse } from "./auth-telemetry.ts";
 import {
   appAccountReads,
   appLinkedAccounts,
   callerAccounts,
   versionAccounts,
-  type CallerLinks,
 } from "./app-accounts.ts";
 import {
   CurrentOrganization,
@@ -53,6 +57,19 @@ export const browserOnly = Effect.gen(function* () {
   if (request.headers.authorization !== undefined)
     return yield* refuse("bearer_not_allowed", new Forbidden());
 });
+/** The current organization's slug, from the presented grant or else the browser session. */
+export const currentOrganizationSlug = (
+  auth: SessionAuthentication["Service"],
+  api: BearerAuthentication["Service"],
+) =>
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const headers = new Headers(request.headers);
+    const { organization } = yield* CurrentOrganization;
+    return headers.has("authorization")
+      ? (yield* api.authenticate(headers, organization)).organizationSlug
+      : yield* auth.organizationSlug(headers, organization);
+  });
 /** Membership was checked by middleware; administrative actions require the current role. */
 export const requireOrganizationAdmin = Effect.gen(function* () {
   const organization = yield* CurrentOrganization;
@@ -270,6 +287,23 @@ export const selectedVersion = (
       linked,
     );
   });
+/**
+ * The app's active version for an operation that names `version`, or none, with the accounts it
+ * runs with: a version other than the active one is not found, and an app without one is not
+ * deployed.
+ */
+export const pinnedActiveVersion = (
+  selected: { readonly app: App; readonly accounts: AppAccounts },
+  version: VersionId | undefined,
+) =>
+  Effect.gen(function* () {
+    const { app, accounts } = selected;
+    if (version !== undefined && version !== app.activeVersion)
+      return yield* new VersionNotFound({ app: app.id, version });
+    if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
+    // Pin the authorized version so a concurrent promotion cannot silently change the call.
+    return { version: app.activeVersion, accounts };
+  });
 /** New tool discovery and calls use the active build; retained execution is reserved for saved invocations. */
 export const selectedActiveVersion = (
   executor: Executor,
@@ -277,72 +311,24 @@ export const selectedActiveVersion = (
   input: { readonly app: AppId; readonly version?: VersionId | undefined },
   checked?: CheckedApp,
 ) =>
-  Effect.gen(function* () {
-    const { app, accounts } = yield* selectedApp(executor, owner, input.app, undefined, checked);
-    if (input.version !== undefined && input.version !== app.activeVersion)
-      return yield* new VersionNotFound({ app: app.id, version: input.version });
-    if (app.activeVersion === null) return yield* new AppNotDeployed({ app: app.id });
-    // Pin the authorized version so a concurrent promotion cannot silently change the call.
-    return { version: app.activeVersion, accounts };
-  });
-
+  Effect.flatMap(selectedApp(executor, owner, input.app, undefined, checked), (selected) =>
+    pinnedActiveVersion(selected, input.version),
+  );
 /**
- * {@link selectedActiveVersion} for apps this request checked, such as the apps one catalog search
- * reads: the links of every app with accounts are read with the caller's access in one statement,
- * and each app decides as {@link selectedActiveVersion} would with them. An app it cannot decide
- * that way, or that one of the checks refuses, is `None`: its own read reports why.
+ * {@link selectedApp} for an app decided from reads made for many apps at once, such as every app
+ * a search reads: the app as the request's app list read it, the caller's access to it, and the
+ * caller's and the app's links (see `resourceAuthorityForAppsWithLinks`). An app the caller may
+ * not use, or without a policy, is refused as `selectedApp` refuses it; otherwise its accounts are
+ * resolved from those links by the same rules.
  */
-export const selectedActiveVersions = (
-  owner: OwnerId,
-  inputs: ReadonlyArray<{ readonly app: AppId; readonly version?: VersionId | undefined }>,
-  checked: ReadonlyArray<CheckedApp>,
+export const selectedAppFrom = (
+  app: App,
+  access: typeof AppAccess.Type | undefined,
+  links: AppAccountReads,
 ) =>
   Effect.gen(function* () {
-    const organization = (yield* CurrentOrganization).organization;
-    const user = yield* CurrentUserId;
-    const known = new Map(
-      checked.filter((entry) => entry.app.owner === owner).map((entry) => [entry.app.id, entry]),
-    );
-    const accountless = (app: App) => Object.keys(app.requirements.accounts).length === 0;
-    const withAccounts = [
-      ...new Set(
-        inputs.flatMap((input) => {
-          const app = known.get(input.app)?.app;
-          return app === undefined || accountless(app) ? [] : [app.id];
-        }),
-      ),
-    ];
-    const none: ReadonlyMap<
-      AppId,
-      { readonly access: typeof AppAccess.Type; readonly accounts: CallerLinks }
-    > = new Map();
-    const links =
-      withAccounts.length === 0
-        ? none
-        : yield* resourceAuthorityForLinksOfApps(organization, user, withAccounts).pipe(
-            Effect.orElseSucceed(() => none),
-          );
-    const sql = yield* policyDatabase;
-    return yield* Effect.forEach(inputs, (input) =>
-      Effect.gen(function* () {
-        const found = known.get(input.app);
-        if (found === undefined || user === undefined) return yield* Effect.fail(undefined);
-        const { access, accounts } = accountless(found.app)
-          ? // As for one app: the caller's access was read with the app, and a version that
-            // declares no account reads no links.
-            {
-              access: found.access,
-              accounts: appAccountReads(sql, { subject: user, app: found.app.id }),
-            }
-          : (links.get(found.app.id) ?? (yield* Effect.fail(undefined)));
-        if (!access.canUse) return yield* Effect.fail(undefined);
-        const resolved = yield* callerAccounts(found.app, accounts);
-        if (input.version !== undefined && input.version !== found.app.activeVersion)
-          return yield* Effect.fail(undefined);
-        if (found.app.activeVersion === null) return yield* Effect.fail(undefined);
-        return { version: found.app.activeVersion, accounts: resolved };
-      }).pipe(Effect.option),
-    );
+    if (access === undefined || !access.canUse) return yield* new OrganizationForbidden();
+    return { app, accounts: yield* callerAccounts(app, Effect.succeed(links)) };
   });
 
 /**

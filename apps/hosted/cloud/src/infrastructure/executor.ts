@@ -62,7 +62,11 @@ export const cloudEgress = Effect.gen(function* () {
  */
 const cloudFirstPartyOAuthClients = Effect.gen(function* () {
   const emulated = Option.isSome(yield* cloudEmulators);
-  const clients = yield* firstPartyOAuthClients({ testDefinitions: emulated });
+  // Cloud's credentials are Executor's own registrations, limited to what services approved.
+  const clients = yield* firstPartyOAuthClients({
+    testDefinitions: emulated,
+    registrations: "executor",
+  });
   const production = Option.getOrUndefined(yield* stageName) === productionStage;
   if (production && !clients.some((client) => client.id === "github"))
     return yield* Effect.die(new Error(missingFirstPartyGitHubClient));

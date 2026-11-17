@@ -166,21 +166,20 @@ still fail now and then; only three failures in a row count. Give your own probe
 
 The Docker build produces a standalone server bundle. It prepares the trusted
 Worker host and framework once; authored apps still compile inside workerd.
-The image retains PGlite, one native workerd binary, the dashboard, and a small native host for Git, keys, locks, and HTTP. Executor,
-authored apps, workflows, and Motel share one workerd executable. Motel runs as
-its own workerd process, so its indexing no longer blocks the product's JavaScript
-thread; the two still share the container's CPU, memory and disk. Neither Bun nor
-Node ships in the runtime image. Build tools
-and the workspace dependency tree stay in the build stage.
+The image retains PGlite, one native workerd binary, the dashboard, a small native host for Git, keys, locks, and HTTP, and the
+telemetry collector. Executor, authored apps and workflows share one workerd executable. The
+collector is `executor-collector` (`packages/telemetry/collector`), a separate Rust process the
+native host supervises on a private Unix socket; it shares the container's CPU, memory and disk with
+the product. Its `collector` build stage builds it from the crate with the toolchain the crate pins,
+and its notices are under `/usr/share/doc/executor-collector/`. The image does not serve the
+trace viewer: the collector has no address a browser can reach. Neither Bun, Node nor Rust ships in
+the runtime image. Build tools and the workspace dependency tree stay in the build stages.
 
 The image runs Executor's build of workerd from
 [UsefulSoftwareCo/workerd](https://github.com/UsefulSoftwareCo/workerd), pinned by
 release and SHA-256 in `workerd.json`; packaging downloads it and fails on any other
 digest. It adds idle-isolate and memory-pressure garbage collection and TCMalloc
-memory release, set by `memory` in the generated `workerd.capnp`, and for Motel's
-process in `motel.capnp`: Motel collects its isolate after 2 seconds idle and
-returns the freed memory. With 30 apps on per-minute schedules that held it near
-90 MB, where it had risen to about 430 MB. Cloud and local development keep
+memory release, set by `memory` in the generated `workerd.capnp`. Cloud and local development keep
 upstream workerd.
 
 The runtime uses Debian 12 distroless with Git's native commands and HTTP backend,
@@ -252,15 +251,15 @@ wildcard DNS as described below.
 The named `pglite-data` volume stores the database, app source, builds, app data,
 and generated `auth-secret.key` and `encryption.key` files under `/app/data`. Keep one server instance per data volume.
 
-Motel uses a separate store at `/app/motel-data`. The Compose configuration mounts
-the named `motel-data` volume there, retaining traces when its container is replaced.
-Standalone image runs need their own separate mount to retain telemetry.
-Adding a volume does not copy telemetry from an existing container into it. If
-those traces are needed, export them or stop the container and copy its complete
-Motel directory into the new volume before replacement. Keep the product and
-Motel volumes separate; the entrypoint prepares their ownership for the non-root
-server user. Do not remove either volume during updates.
-Product upgrades do not import old Motel data.
+The Rust telemetry collector keeps its store in `EXECUTOR_MOTEL_DATA_DIR`, by default
+`/app/motel-data` (the setting retains its historical name). The fork Compose configuration
+mounts the separate named `motel-data` volume there, retaining traces on replacement.
+Standalone image runs need their own separate mount to retain telemetry. Adding a volume
+does not copy an existing container's telemetry: preserve and verify those bytes before replacement.
+Keep product and telemetry volumes separate; do not remove either during updates.
+The collector neither reads nor removes the old nested `motel/` directory. Preserve it
+and the exact old image to read pre-cutover history; new Rust traces are separate, not an
+import, and cannot be read by Motel. Never reset or restore product data to repair telemetry.
 
 The database records the organization setup created as the instance's root.
 An upgrade from an older release records it when the database has exactly one
@@ -460,7 +459,11 @@ sessions on the old addresses end.
 App code can reach only public addresses. Requests to the dashboard origin go
 straight to the server, so the built-in Executor app works when that origin
 resolves to a private address. Set `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=true` to
-let app code reach other private network addresses.
+let app code reach other private network addresses. App builds follow the same
+setting for every download off the registry's origin: a dependency declared by
+tarball URL, and a tarball or redirect the registry's metadata sends elsewhere.
+Downloads from the registry's own origin, including a private
+`EXECUTOR_NPM_REGISTRY`, work either way.
 
 Host-side MCP import and OAuth requests have a separate exact-origin allowlist.
 Set `EXECUTOR_URL_ALLOW_HTTP_ORIGINS` to a JSON array of HTTP or HTTPS origins,

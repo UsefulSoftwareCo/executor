@@ -211,7 +211,9 @@ export const makeToolSearch = (options: {
     /** The kept rows of the state's listing, if any. */
     listing: (state: InvocationSnapshot, listing: ToolSearchListing) =>
       Effect.flatMap(stateTarget(state), (target) => store.listing(listing, target)),
-    /** `listing` for many states in one read, by listing. */
+    /**
+     * The kept rows of each state's listing, in order, read in one statement; see `listing`.
+     */
     listings: (
       wanted: ReadonlyArray<{
         readonly state: InvocationSnapshot;

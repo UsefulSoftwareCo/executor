@@ -21,7 +21,7 @@ import { RecordedMessage } from "@executor-js/utils/recorded-message";
 import { BuildStage, SourceLocation, type BuildMemoryExceeded } from "./version.ts";
 import type { CodeFiles } from "./source.ts";
 import { BuildId, Json } from "./shared.ts";
-import type { BlobKey, BlobRange } from "./blobs.ts";
+import type { BlobKey, BlobRange, BlobStoreError } from "./blobs.ts";
 import type { HostApiCheck } from "./host-api.ts";
 
 /**
@@ -348,7 +348,17 @@ export const runtimeFailures: Record<RuntimeFailure, string> = {
  */
 export class RuntimeProtocolFailed extends Schema.TaggedError<RuntimeProtocolFailed>()(
   "RuntimeProtocolFailed",
-  { reason: Schema.optional(RuntimeFailure), message: Schema.optional(BuildMessage) },
+  {
+    reason: Schema.optional(RuntimeFailure),
+    message: Schema.optional(BuildMessage),
+    /**
+     * Nothing of the failed exchange left the host: its connection never formed, so the runtime
+     * received no work. Only the host's own transport sets it, from its socket's state, never from
+     * an error's text, so an app cannot produce it. Its `reason` stays `disconnected`, the value
+     * older readers know; they drop this field.
+     */
+    notSent: Schema.optional(Schema.Literal(true)),
+  },
 ) {
   get [RecordedMessage]() {
     return this.reason === undefined && !this.message
@@ -418,7 +428,9 @@ export interface Runtime<Requirements = never> {
     | RuntimeBuildFailed
     | RuntimeProtocolUnsupported
     | RuntimeAppsDependencyMissing
-    | BuildMemoryExceeded,
+    | BuildMemoryExceeded
+    // Keeping the build failed in storage: nothing about the app, and building again may succeed.
+    | BlobStoreError,
     Requirements
   >;
   readonly asset?: (input: {

@@ -114,6 +114,28 @@ const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof Tes
   scenarios;
 
 /** Scenario names and applicability used by both test declarations and test selection. */
+/**
+ * The engine call faults the workflow engine calls scenario's servers run with
+ * (`EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS`, `engine-faults.ts`): each sleep of `napOnce` fails once,
+ * every call of `nap-never` fails, `count-once`'s write runs before its answer fails once,
+ * `waited-out` fails only after the engine waited, four times, the three `*-once` sleeps get the
+ * engine's own answer once, and the three `*-until` sleepUntils get an answer once after their time. Each names a step only that scenario's app uses, so managed Cloud,
+ * whose one Worker serves every scenario, can carry the list for all of them.
+ */
+export const engineCallFaults = [
+  { call: "sleep", step: "nap-once", failures: 1, when: "before", answer: "internal" },
+  { call: "until", step: "wake-once", failures: 1, when: "before", answer: "internal" },
+  { call: "until", step: "nap-never", failures: 100, when: "before", answer: "internal" },
+  { call: "mutation", step: "count-once", failures: 1, when: "after", answer: "internal" },
+  { call: "sleep", step: "waited-out", failures: 4, when: "after", answer: "internal" },
+  { call: "sleep", step: "paused-once", failures: 1, when: "before", answer: "paused" },
+  { call: "sleep", step: "terminated-once", failures: 1, when: "before", answer: "terminated" },
+  { call: "sleep", step: "relayed-once", failures: 1, when: "before", answer: "relayed" },
+  { call: "until", step: "paused-until", failures: 1, when: "after", answer: "paused" },
+  { call: "until", step: "terminated-until", failures: 1, when: "after", answer: "terminated" },
+  { call: "until", step: "transient-until", failures: 1, when: "after", answer: "internal" },
+] as const;
+
 export const scenarios = plan({
   syncroRest: {
     fixtures: "actors",
@@ -1273,7 +1295,7 @@ export const scenarios = plan({
   mcpMediaContent: {
     fixtures: "actors",
     file: "mcp-direct-calls.spec.ts",
-    title: "MCP call and execute return app images and audio as MCP content blocks",
+    title: "MCP call and execute return app images, audio and files as MCP content blocks",
     targets: {
       "self-host": scheduled,
       cloud: na("Shared MCP path; covered on self-host"),
@@ -1395,6 +1417,17 @@ export const scenarios = plan({
       local: na("Hosted version API scenario"),
     },
   },
+  liveOpenapiHujson: {
+    fixtures: "actors",
+    file: "live-openapi-import.spec.ts",
+    title:
+      "Live OpenAPI sends and returns HuJSON as written text, while JSON, every +json type and AWS JSON stay JSON",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback upstream fixture"),
+      local: na("Hosted version API scenario"),
+    },
+  },
   liveOpenapiNaming: {
     fixtures: "actors",
     file: "live-openapi-import.spec.ts",
@@ -1483,7 +1516,9 @@ export const scenarios = plan({
     title: "App cache failures during evaluation keep their safe reason in responses and traces",
     targets: {
       "self-host": scheduled,
-      cloud: na("Uses the shared runtime contract; self-host delivers its traces to Motel."),
+      cloud: na(
+        "Uses the shared runtime contract; self-host delivers its traces to its bundled collector.",
+      ),
       local: na("Hosted API fixture; the runtime and collector are shared with Local."),
     },
   },
@@ -2827,7 +2862,7 @@ export const scenarios = plan({
     title: "SDK batches invocation accounts and finished workflow history",
     targets: {
       "self-host": scheduled,
-      cloud: na("This query budget reads the self-host Motel collector."),
+      cloud: na("This query budget reads the self-host collector."),
       local: na("This scenario uses hosted organization routes."),
     },
   },
@@ -2838,7 +2873,7 @@ export const scenarios = plan({
       "Tool invocations resolve one committed set of linked accounts without holding a transaction",
     targets: {
       "self-host": scheduled,
-      cloud: na("This scenario reads SQL spans from the self-host Motel collector."),
+      cloud: na("This scenario reads SQL spans from the self-host collector."),
       local: na("This scenario uses hosted organization routes."),
     },
   },
@@ -3372,6 +3407,59 @@ export const scenarios = plan({
       cloud: scheduled,
       "self-host": na("ChatGPT app domain verification is for the hosted Cloud domain."),
       local: na("ChatGPT app domain verification is for the hosted Cloud domain."),
+    },
+  },
+  appDependencyTarballPrivateRefused: {
+    fixtures: "actors",
+    file: "app-dependency-network.spec.ts",
+    title:
+      "with private fetch off, a build refuses a dependency whose tarball URL is a private address and never requests it",
+    serverEnvironment: { EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "false" },
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud Workers reach only public addresses; the tarball fixture is served on loopback.",
+      ),
+      local: na("Local lets builds reach private addresses by design."),
+    },
+  },
+  appDependencyTarballPublic: {
+    fixtures: "actors",
+    file: "app-dependency-network.spec.ts",
+    title:
+      "with private fetch off, a build installs a dependency whose tarball URL is a public address",
+    serverEnvironment: { EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "false" },
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud builds use the same installer; only self-host restricts the build network."),
+      local: na("Local lets builds reach every address by design."),
+    },
+  },
+  appDependencyRegistryOrigin: {
+    file: "app-dependency-network.spec.ts",
+    title:
+      "with private fetch off, a build installs from a private registry's own origin, refuses what it sends to other private addresses, and words failures without its text",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud Workers reach only public addresses; the registry fixture is on loopback."),
+      local: na(
+        "Local lets builds reach every address by design; only self-host starts a scenario-owned server.",
+      ),
+    },
+  },
+  appDependencyTarballPrivateAllowed: {
+    fixtures: "actors",
+    file: "app-dependency-network.spec.ts",
+    title:
+      "with private fetch on, a build installs tarball URLs on a private address, and a failed download names only the package and status",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud Workers reach only public addresses; the tarball fixture is served on loopback.",
+      ),
+      local: na(
+        "This scenario uses hosted routes; Local shares the same workerd compiler and allows private addresses.",
+      ),
     },
   },
   appPackage: {
@@ -4209,7 +4297,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "credential-placement.spec.ts",
     title:
-      "Executor for Google is offered to providers on Google's endpoints whose scopes it allows, once its credentials are set",
+      "Executor for Google is offered to providers on Google's endpoints whose scopes it allows, once its credentials are set, and a self-host operator's own Google client still signs in gmail.modify",
     targets: {
       "self-host": scheduled,
       cloud: na(
@@ -4308,6 +4396,19 @@ export const scenarios = plan({
       local: na("Local products have no operator OAuth clients."),
     },
   },
+  credentialManagedHeld: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "the operator's OAuth client keeps renewing grants that hold a scope it may no longer ask for, refuses sign-ins and reconnects that ask for it before the service, and a reconnect on the user's own client keeps that client",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
   credentialManagedScopes: {
     fixtures: "actors",
     file: "credential-placement.spec.ts",
@@ -4331,6 +4432,19 @@ export const scenarios = plan({
       cloud: na(
         "Cloud reads the same settings with the same code; a deploy fails on them before any request.",
       ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedGoogleCloud: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "Cloud's own Executor for Google registration refuses before Google a sign-in asking for a scope Google has not approved for it, such as gmail.modify, leading with the user's own client, and still signs in approved scopes",
+    targets: {
+      "self-host": na(
+        "Self-host's operator registers its own Google client, which keeps gmail.modify; the self-host Google scenario covers that.",
+      ),
+      cloud: managedCloud,
       local: na("Local products have no operator OAuth clients."),
     },
   },
@@ -4725,6 +4839,57 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: scheduled,
       local: na("Hosted deploy routes; local shares the workerd build path."),
+    },
+  },
+  compiledFileLimit: {
+    fixtures: "actors",
+    file: "compiled-file-limit.spec.ts",
+    title:
+      "Builds refuse an app's own JavaScript or TypeScript file over 2 MB and create no app; a file just under it, a larger JSON import and a package with a larger file build",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud's compiler Worker runs the same compileWorkerApp, and Cloudflare's CPU limit already bounds its compile; self-host covers the shared build.",
+      ),
+      local: na("Hosted deploy routes; localCompiledFileLimit covers local through the CLI."),
+    },
+  },
+  localCompiledFileLimitImports: {
+    file: "local-compiled-file-limit.spec.ts",
+    title: "local refuses a file over the compile limit before resolving any import in it",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "Needs a product started against a registry that holds requests; the shared build is the same.",
+      ),
+      cloud: na(
+        "Needs a product started against a registry that holds requests; the shared build is the same.",
+      ),
+    },
+  },
+  compiledFileLimitResponsive: {
+    fixtures: "actors",
+    file: "compiled-file-limit.spec.ts",
+    title:
+      "Apps keep answering while a build refuses a 15 MB file: no longer than they wait for one file just under the limit to compile",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud's compiler Worker runs the same compileWorkerApp in its own isolate, so it never holds an app's thread.",
+      ),
+      local: na(
+        "Self-host covers the shared build; local runs it in the same kind of app runtime.",
+      ),
+    },
+  },
+  localCompiledFileLimit: {
+    file: "local-compiled-file-limit.spec.ts",
+    title:
+      "apps CLI deploy reports a file over the compile limit with its path, size and the limit",
+    targets: {
+      local: scheduled,
+      "self-host": na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
+      cloud: na("The CLI's hosted path needs a browser OAuth login; local uses an API key."),
     },
   },
   appOperationFailureDetails: {
@@ -6567,6 +6732,18 @@ export const scenarios = plan({
       local: na("This scenario uses hosted app domains."),
     },
   },
+  appUiLongSrcset: {
+    fixtures: "actors",
+    file: "app-ui-srcset.spec.ts",
+    appOrigin: true,
+    title:
+      "an app page whose srcset holds a long run of commas is served as fast as a page of its size and rewritten",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud serves app pages through the same hosted page code that self-host runs."),
+      local: na("This scenario uses hosted sign-in; Local rewrites pages with the same code."),
+    },
+  },
   appUi: {
     fixtures: "actors",
     file: "app-ui.spec.ts",
@@ -6863,6 +7040,19 @@ export const scenarios = plan({
       "self-host": scheduled,
       // The attached run checks that a deployed Worker holds the catalog within Cloudflare's
       // memory limit, as it must Stripe's.
+      cloud: { status: "scheduled", runtime: "attached" },
+      local: na("Local builds and runs apps through the same workerd compiler as self-host."),
+    },
+  },
+  largeOpenapiAccountsApp: {
+    fixtures: "actors",
+    file: "large-openapi-app.spec.ts",
+    title:
+      "an OpenAPI app whose resources expand into one another, linked through several accounts, lists each tool once with one branch for every account and its schemas complete",
+    targets: {
+      "self-host": scheduled,
+      // Each target bounds the JSON a cold listing writes, which merging every tool's definitions
+      // exceeded; the attached run also lists cold within a deployed app Worker's CPU time.
       cloud: { status: "scheduled", runtime: "attached" },
       local: na("Local builds and runs apps through the same workerd compiler as self-host."),
     },
@@ -7909,8 +8099,19 @@ export const scenarios = plan({
     title: "MCP and API bearer authentication reads its grant in one SQL statement",
     targets: {
       "self-host": scheduled,
-      cloud: na("This scenario reads SQL spans from the self-host Motel collector."),
+      cloud: na("This scenario reads SQL spans from the self-host collector."),
       local: na("Local uses its instance credential."),
+    },
+  },
+  searchStatements: {
+    fixtures: "actors",
+    file: "search-statements.spec.ts",
+    title:
+      "MCP search reads every app's discovery state in statements that do not grow with the apps",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("This scenario reads SQL spans from the self-host collector."),
+      local: na("Local has no hosted organization policies."),
     },
   },
   toolCallStatements: {
@@ -7920,7 +8121,7 @@ export const scenarios = plan({
       "An MCP tool call checks its access and links in one statement and its caller in one more",
     targets: {
       "self-host": scheduled,
-      cloud: na("This scenario reads SQL spans from the self-host Motel collector."),
+      cloud: na("This scenario reads SQL spans from the self-host collector."),
       local: na("Local has no hosted organization policies."),
     },
   },
@@ -8078,9 +8279,26 @@ export const scenarios = plan({
     targets: {
       "self-host": scheduled,
       cloud: na(
-        "Reads SQL spans from the self-host Motel collector; cloud-tool-call-batch.spec.ts covers Cloud's batch.",
+        "Reads SQL spans from the self-host collector; cloud-tool-call-batch.spec.ts covers Cloud's batch.",
       ),
       local: na("Local has no hosted organization policies."),
+    },
+  },
+  cloudMcpConcurrentRecheck: {
+    fixtures: "actors",
+    file: "cloud-concurrent-recheck.spec.ts",
+    title:
+      "Cloud MCP tool calls made at once with a key whose last use is stale all answer, also the calls that read the key again",
+    targets: {
+      // Not run until its contention is certain on a shared database: its round releases the key
+      // row's lock once two key checks wait on it, and other scenarios' sessions queued on the
+      // `apikey` table behind the hold were counted as waiters (#4420). The production hang
+      // count and the `commit-unanswered` and `commit-rollback` pool probe cases cover the fix.
+      cloud: na(
+        "Its round's contention is not yet certain on a database other scenarios share; see #4420.",
+      ),
+      "self-host": na("Self-host runs a batch under PGlite's lock, not on a multiplexed pool."),
+      local: na("Local MCP sessions use the local database."),
     },
   },
   cloudExportHang: {
@@ -8640,6 +8858,49 @@ export const scenarios = plan({
       local: na("Local uses its instance key."),
     },
   },
+  webhookSourceOrder: {
+    file: "webhook-source-order.spec.ts",
+    title:
+      "Pending webhook sources are served first in, first out, and the lease lets one sweep serve a source and loses no link made meanwhile",
+    targets: {
+      "self-host": scheduled,
+      local: na(
+        "The probe runs webhook-source reconciliation on PGlite in memory; one target covers it.",
+      ),
+      cloud: na(
+        "The probe runs webhook-source reconciliation on PGlite in memory; one target covers it.",
+      ),
+    },
+  },
+  runtimeConnectRepeat: {
+    file: "runtime-connect-repeat.spec.ts",
+    title:
+      "An exchange with the local app runtime that never connected is repeated once, and nothing that may have reached it is",
+    targets: {
+      "self-host": scheduled,
+      local: na("The probe runs the runtime's exchanges against stubs; one target covers it."),
+      cloud: na("Cloud's apps do not run in a local workerd."),
+    },
+  },
+  buildRetainStorage: {
+    file: "build-retain-storage.spec.ts",
+    title:
+      "A build whose framework write storage refused answers try again, concurrent builds share one write, and an app that does not compile still fails",
+    targets: {
+      "self-host": scheduled,
+      local: na("The probe runs the deploy path against a stand-in store; one target covers it."),
+      cloud: na("The probe runs the SDK's deploy path and Cloud's write retry in one process."),
+    },
+  },
+  runtimeHopShape: {
+    file: "runtime-hop-shape.spec.ts",
+    title: "A failed exchange with the local app runtime records how far it got, as shapes only",
+    targets: {
+      "self-host": scheduled,
+      local: na("The probe runs the runtime hops' recording against stubs; one target covers it."),
+      cloud: na("Cloud's apps do not run in a local workerd."),
+    },
+  },
   apiKeyStorageOutage: {
     fixtures: "actors",
     file: "api-key-storage-outage.spec.ts",
@@ -8712,6 +8973,18 @@ export const scenarios = plan({
         reason: "This session lifecycle scenario uses self-host password login.",
       },
       local: na("Local has no dashboard sessions or organization memberships."),
+    },
+  },
+  workflowEngineCalls: {
+    fixtures: "actors",
+    file: "workflow-engine-calls.spec.ts",
+    title:
+      "a run's sleep whose engine call failed is called again, a run whose sleep keeps failing records why for its owner, and neither an app's own failure nor a step whose answer was lost is repeated",
+    serverEnvironment: { EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS: JSON.stringify(engineCallFaults) },
+    targets: {
+      "self-host": scheduled,
+      cloud: managedCloud,
+      local: na("Self-host covers the Node-hosted runtime that local shares."),
     },
   },
   localWorkflows: {
@@ -9065,6 +9338,17 @@ export const scenarios = plan({
       "a member sees the App accounts greyed out and read-only with the linked account's name, and the app link routes other than the list refuse them",
     targets: {
       local: na("Local has one subject."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppAccountListedBrowser: {
+    fixtures: "actors",
+    file: "app-accounts-tab.spec.ts",
+    title:
+      "an account linked for everyone is named on the app's card for a member who linked none, and its owner's account row lists the app",
+    targets: {
+      local: na("Local has one subject; its overview's app links are read in its own scenario."),
       "self-host": scheduled,
       cloud: scheduled,
     },
@@ -10170,6 +10454,30 @@ export const scenarios = plan({
       local: na(
         "Local runs the same scheduler and event loops; only self-host starts a scenario-owned server.",
       ),
+    },
+  },
+  telemetryViewer: {
+    file: "telemetry-viewer.spec.ts",
+    title:
+      "The local collector serves the trace viewer: its trace list, a trace, a reload, an unknown trace and the logs filters",
+    targets: {
+      local: scheduled,
+      "self-host": na(
+        "The image's collector has no address a browser can reach, so it serves no viewer.",
+      ),
+      cloud: na("Cloud exports to its own collector, not the bundled one."),
+    },
+  },
+  telemetryPartialTrace: {
+    file: "telemetry-partial-trace.spec.ts",
+    title:
+      "A trace the collector answers in part fails a check that reads it and stays marked in evidence",
+    targets: {
+      "self-host": scheduled,
+      local: na(
+        "The suite's span reader is the same on every target; the self-host run covers it.",
+      ),
+      cloud: na("Attached Cloud reads Axiom, which answers no trace in part."),
     },
   },
   telemetryStoreIdleAtBound: {
@@ -11622,10 +11930,10 @@ export const scenarios = plan({
   telemetry: {
     fixtures: "actors",
     file: "hosted.spec.ts",
-    title: "real requests reach Motel with correlated server spans",
+    title: "real requests reach the collector with correlated server spans",
     targets: {
       "self-host": scheduled,
-      cloud: na("Cloud exports to Axiom; this test checks the self-host Motel collector."),
+      cloud: na("Cloud exports to Axiom; this test checks the self-host collector."),
       local: na("This test checks hosted organization routes and self-host service spans."),
     },
   },

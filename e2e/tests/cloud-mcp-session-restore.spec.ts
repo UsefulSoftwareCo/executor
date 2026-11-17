@@ -230,7 +230,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud MCP session restore", (i
                     span.tags["http.response.status_code"] !== undefined,
                 )
                   ? Effect.succeed(all)
-                  : Effect.fail(new Error("The request's spans have not reached Motel")),
+                  : Effect.fail(new Error("The request's spans have not reached the collector")),
               ),
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
               Effect.tap((all) => evidence.json(`trace-${traceId}.json`, all)),

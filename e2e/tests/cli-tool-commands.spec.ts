@@ -19,7 +19,15 @@ import { Target } from "../support/platform.ts";
 import { serverControl } from "../support/server-control.ts";
 import { stdioMcp } from "../support/stdio-mcp.ts";
 
-/** An account-free app whose `review` waits for approval and whose `echo` answers at once. */
+// A 1x1 PNG, and the head and tail of a PDF, as tools return them.
+const png =
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQWPX/PwAFgALJpImt0wAAAABJRU5ErkJggg==";
+const pdf = Buffer.from("%PDF-1.4\n%\u00e2\u00e3\u00cf\u00d3\n%%EOF\n", "latin1");
+
+/**
+ * An account-free app whose `review` waits for approval, whose `echo` answers at once and whose
+ * `report` returns an image and a PDF as MCP content blocks.
+ */
 const reviewApp = (receipt: string) => [
   {
     path: "index.ts",
@@ -30,6 +38,10 @@ export default defineApp({}, async () => ({
   tools: router({
     review: mutation({ description: "Review after approval", input: object({}), approval: always() }, async () => ({ reviewed: ${JSON.stringify(receipt)} })),
     echo: query({ description: "Echo a word", input: object({ word: string() }) }, async (_, { word }) => ({ echoed: word })),
+    report: query({ description: "Return a chart and a report", input: object({}) }, async () => ({
+      chart: { type: "image", mimeType: "image/png", data: ${JSON.stringify(png)} },
+      report: { type: "resource", resource: { uri: "file:///reports/Q3%20summary.pdf", mimeType: "application/pdf", blob: ${JSON.stringify(pdf.toString("base64"))} } },
+    })),
   }),
 }));
 `,
@@ -273,6 +285,46 @@ layer(TestLive, { excludeTestServices: true })("CLI tool commands", (it) => {
         expect(
           json(Completed, yield* cli.ok(["execute", "--code", "return 'inline'"])).execution.value,
         ).toBe("inline");
+
+        // The host sends a result's images and files as MCP content blocks, outside its JSON.
+        // The CLI writes each to a file, in a new temporary directory unless --files names one,
+        // and prints its path beside its contentIndex.
+        const report = pathOf("report");
+        const Saved = Schema.Struct({ contentIndex: Schema.Number, path: Schema.String });
+        const saved = (stdout: string) => {
+          const value = json(
+            Outcome,
+            JSON.stringify(json(Completed, stdout).execution.value),
+          ).value;
+          return Schema.decodeUnknownSync(Schema.Struct({ chart: Saved, report: Saved }))(value);
+        };
+        const temporary = saved(yield* cli.ok(["call", report]));
+        expect(cli.path.dirname(temporary.chart.path)).toBe(
+          cli.path.dirname(temporary.report.path),
+        );
+        expect(cli.path.basename(temporary.chart.path)).toBe(
+          `${temporary.chart.contentIndex}-content.png`,
+        );
+        expect(cli.path.basename(temporary.report.path)).toBe(
+          `${temporary.report.contentIndex}-Q3-summary.pdf`,
+        );
+        expect(Buffer.from(yield* cli.fs.readFile(temporary.chart.path)).toString("base64")).toBe(
+          png,
+        );
+        expect(Buffer.from(yield* cli.fs.readFile(temporary.report.path))).toEqual(pdf);
+        yield* cli.fs.remove(cli.path.dirname(temporary.report.path), { recursive: true });
+        const directory = cli.path.join(cli.home, "attachments");
+        const chosen = saved(
+          yield* cli.ok([
+            "execute",
+            "--files",
+            directory,
+            "--code",
+            `return { path: "report", ok: true, value: await ${report}({}) };`,
+          ]),
+        );
+        expect(cli.path.dirname(chosen.report.path)).toBe(directory);
+        expect(Buffer.from(yield* cli.fs.readFile(chosen.report.path))).toEqual(pdf);
       }),
     ),
   );

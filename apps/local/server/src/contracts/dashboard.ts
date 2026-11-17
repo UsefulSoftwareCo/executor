@@ -425,6 +425,16 @@ export const DashboardOverview = Schema.Struct({
   apps: Schema.Array(App),
   /** The accounts linked to each app, oldest first. */
   links: Schema.Array(Schema.Struct({ app: AppId, account: AccountId })),
+  /** The app links of each app, oldest first. */
+  appLinks: Schema.Array(
+    Schema.Struct({
+      app: AppId,
+      requirement: Schema.String,
+      account: AccountId,
+      provider: ProviderId,
+      label: Schema.String,
+    }),
+  ),
   accounts: Schema.Array(DashboardAccount),
 });
 export type DashboardOverview = typeof DashboardOverview.Type;

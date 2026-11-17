@@ -57,6 +57,18 @@ const keyedProvider = (name: string) =>
 const serviceProvider = keyedProvider("App service fixture");
 const mailProvider = keyedProvider("Linked mail fixture");
 
+/** The links in the dashboard's overview; the provider is left out. */
+const Overview = Schema.Struct({
+  links: Schema.Array(Schema.Struct({ app: Schema.String, account: Schema.String })),
+  appLinks: Schema.Array(
+    Schema.Struct({
+      app: Schema.String,
+      requirement: Schema.String,
+      account: Schema.String,
+      label: Schema.String,
+    }),
+  ),
+});
 const Completed = Schema.Struct({ status: Schema.Literal("completed"), value: Schema.Unknown });
 const AccountRequired = Schema.Struct({
   _tag: Schema.Literal("AccountRequired"),
@@ -296,6 +308,17 @@ layer(TestLive, { excludeTestServices: true })("Local app account app links", (i
         yield* linkLocal(agent, app.id, "svc", first, "app");
         expect(yield* localAccountLinks(agent, app.id, "app")).toEqual([["svc", first]]);
         expect(yield* who).toEqual({ app: first, user: mine });
+        // The dashboard's overview, which the Apps cards and the Accounts list read, lists the app
+        // link apart from the user's own links.
+        const overview = yield* api.request(agent, "GET", "/dashboard/api/overview");
+        expect(overview.status, JSON.stringify(overview.body)).toBe(200);
+        const listed = yield* body(Overview, overview);
+        expect(listed.appLinks.filter((link) => link.app === app.id)).toEqual([
+          { app: app.id, requirement: "svc", account: first, label: "synthetic-first" },
+        ]);
+        expect(listed.links.filter((link) => link.app === app.id)).toEqual([
+          { app: app.id, account: mine },
+        ]);
         // The requirement lists its linked account first, then the owner's other accounts of its
         // provider, which could be linked; the user requirement's account of another provider is
         // never offered.

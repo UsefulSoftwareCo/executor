@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 pub const USAGE: &str = "usage: executor-collector serve --data <dir> [--listen <127.0.0.1:port | unix:path>]
     [--max-pending <n>] [--max-export-bytes <n>] [--retention-hours <n>] [--max-store-mb <n>]
+    [--viewer <dir>]
 
   --data              directory holding telemetry.sqlite (created if missing)
   --listen            address to listen on (default 127.0.0.1:0); port 0 picks a free port
@@ -12,6 +13,7 @@ pub const USAGE: &str = "usage: executor-collector serve --data <dir> [--listen 
                       ones are refused with 413. A store started with a larger one is emptied
   --retention-hours   how long traces and logs are kept after they were last written (default 168)
   --max-store-mb      the most data the store keeps, in MiB; the oldest is evicted first (default 1024)
+  --viewer            directory of the trace viewer's build, served at / (default: none)
 
 Once listening, prints one line on stdout: {\"event\":\"listening\",\"port\":N} for TCP or
 {\"event\":\"listening\",\"path\":P} for a Unix socket.";
@@ -30,6 +32,7 @@ pub struct Args {
     pub max_export_bytes: usize,
     pub retention_hours: u64,
     pub max_store_mb: u64,
+    pub viewer: Option<PathBuf>,
 }
 
 pub fn parse(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
@@ -44,6 +47,7 @@ pub fn parse(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut max_export_bytes = 16 * 1024 * 1024;
     let mut retention_hours = 168;
     let mut max_store_mb = 1024;
+    let mut viewer = None;
     while let Some(flag) = args.next() {
         let (name, inline) = match flag.split_once('=') {
             Some((name, value)) => (name.to_owned(), Some(value.to_owned())),
@@ -58,6 +62,8 @@ pub fn parse(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
         };
         match name.as_str() {
             "--data" => data = Some(PathBuf::from(value)),
+            "--viewer" if value.is_empty() => return Err("--viewer needs a directory".to_owned()),
+            "--viewer" => viewer = Some(PathBuf::from(value)),
             "--listen" => {
                 listen = match value.strip_prefix("unix:") {
                     Some(path) if !path.is_empty() => Listen::Unix(PathBuf::from(path)),
@@ -90,6 +96,7 @@ pub fn parse(mut args: impl Iterator<Item = String>) -> Result<Args, String> {
         max_export_bytes,
         retention_hours,
         max_store_mb,
+        viewer,
     })
 }
 

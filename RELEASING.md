@@ -48,7 +48,9 @@ that publish build the collector without restoring from the cache, because an en
 cache scope is not proof of what built it; the cache rules judge restores by workflow file, so the
 paced check and `build` runs build it too (`.github/actions/collector`). A narrowed build runs a
 collector job only for the targets its packaging jobs run on, and none when it runs only the image.
-Nothing packages the collector yet; Motel is still the bundled collector.
+Every packaging job packages the collector it fetched, executable before anything is signed, and
+builds the viewer the CLI and desktop serve from it; the image builds its own collector in its
+Dockerfile's `collector` stage.
 
 A Bun runtime release built from a pull request's branch, as one that changes the
 lockdown patch needs, is the one main's publishing runs use from then on. If that
@@ -246,6 +248,20 @@ existing release or npm version stops publication for inspection. Never
 republish an accepted immutable npm version merely because its registry entry is
 still propagating.
 
+No publish step moves a channel backwards. The job's first step after setup
+reads every channel (npm's tag, the image's channel tag, the published formula,
+the desktop feed) and refuses a release older than any of them, and each step
+that moves a channel checks its own again just before it moves it
+(`scripts/releases/channel-guard.ts`). After a failure the job summary says what
+the release made public and what it did not, read from the public surfaces, and
+whether re-running the failed jobs would finish it
+(`scripts/releases/publication-report.ts`).
+
+A re-run uses the workflow file of the run's own commit, so runs started before
+those checks were added carry none. Never re-run the publish job of an older
+release once a newer one exists: beta.51's run (43640118286) and beta.52's,
+re-run after a newer beta, would point the image's `beta` tag back at it.
+
 The homepage resolves desktop downloads in the browser from GitHub's public
 release list, choosing the newest published release with this major version's
 tag prefix. A merged version bump keeps linking to the previous release until
@@ -260,7 +276,12 @@ A successful upload alone does not establish public availability.
 ## Stable cutover
 
 Get explicit approval for the v2 stable release. Change the version to `2.0.0`
-and dispatch the same workflow with **latest**. The version, tags, filenames
+and dispatch the same workflow with **latest**. npm already serves `executor@2.0.0`:
+it was published on 2026-03-16 from a stale historical tag and is deprecated.
+npm never accepts a version twice, so a release numbered `2.0.0` cannot be
+published, and the publish job's preflight refuses it before anything moves. The
+first stable release needs a number above the betas that npm does not hold; the
+choice is the owner's. The version, tags, filenames
 and links change together. The fixed desktop identity `com.usefulsoftware.executor.v2`,
 product name **Executor 2**, profile **Executor v2**, and CLI data directory
 `~/.executor/v2/cli` remain unchanged. Stable publication writes the desktop

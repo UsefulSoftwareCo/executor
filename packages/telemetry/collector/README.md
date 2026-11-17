@@ -1,8 +1,8 @@
 # executor-collector
 
 The telemetry collector bundled with Executor, in Rust. It takes OTLP/HTTP JSON traces and logs
-and keeps them in one SQLite file. It is not wired into the product yet: Motel
-(`packages/telemetry/motel`) is still the collector every host runs.
+and keeps them in one SQLite file. The local server, the desktop app, the self-host image and the
+e2e harness all run it; it replaced Motel, the TypeScript collector they ran before.
 
 ## Build
 
@@ -31,8 +31,31 @@ change; that job also builds, checks and smoke-tests the linux-x64 release execu
 
 `packages/telemetry/scripts/build-collector.ts` builds the executable that ships, for one release
 target, and is the only way it should be built for packaging (`bun run collector:build` builds for
-this machine). It needs rustup, which installs the pinned toolchain and the target's standard
-library itself.
+this machine). It needs rustup and the pinned toolchain, and never installs either itself: without
+them it stops and prints the one command that installs them (`rustup toolchain install 1.100.0
+--profile minimal`, or rustup's installer with that toolchain). `--install-toolchain` installs the
+toolchain and the target's standard library, alone or before the steps; CI's `collector` action
+runs it.
+
+A checkout keeps only `packages/telemetry/dist/collector/` (about 7 MB). Cargo's intermediate
+files go to a shared cache outside every checkout: `$EXECUTOR_COLLECTOR_CACHE` (absolute), or
+`executor-collector` in the platform's cache directory (`$XDG_CACHE_HOME` or `~/.cache` on Linux,
+`~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows). There `target/<hash of the crate's
+path>/` holds one checkout's cargo output (about 160 MB); those not used for 14 days are removed,
+and past 3 GiB in all the least recently used go first, never one used in the last hour. Outside CI,
+`store/<target>/<identity>/` keeps each finished build, at most 32 a target and none unused for 30
+days: a checkout whose crate has an identity already stored copies that build in a fraction of a
+second instead of compiling. Entries are written beside the store and renamed into it, and handed
+out by copying, never by linking, so nothing in a checkout can write through to the store. Each
+build records its executable's SHA-256 and size in `executable.sha256`; a checkout's build or a
+stored one whose executable does not match is not used, and a damaged stored entry is removed. A
+partial copy whose writer has exited, or older than an hour, is removed, and partial copies count
+against the bound. CI never
+reads or writes the store; it builds once a run (`collector` in `checks.yml`, `collector` in the
+release workflow) and every job fetches that build.
+
+Measured on minisforum (16 cores): a cold build 44 s; after one change in the crate 16.6 s; with
+the crate unchanged 0.15 s; a new checkout of a crate already stored 0.30 s.
 
 ```sh
 node packages/telemetry/scripts/build-collector.ts [--target <target>] build check smoke
@@ -100,6 +123,7 @@ error.
 ```sh
 executor-collector serve --data <dir> [--listen 127.0.0.1:0 | --listen unix:<path>]
     [--max-pending 4] [--max-export-bytes 16777216] [--retention-hours 168] [--max-store-mb 1024]
+    [--viewer <dir>]
 ```
 
 Once it is listening it prints one line on stdout, `{"event":"listening","port":N}` for TCP or
@@ -138,19 +162,19 @@ replacement made earlier. The check and the removal are two steps, so this holds
 else replaces files in that directory. The supervisor's private directory, with one collector at a
 time, guarantees that.
 
-It exits with code 1, before printing the listening line, when it cannot open or create the store
-or cannot listen.
+It exits with code 1, before printing the listening line, when it cannot open or create the store,
+cannot listen, or cannot serve the viewer `--viewer` names (see The viewer).
 
 ## Routes
 
-| Route             | Answer                                                                                                                                                                                  |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /v1/traces` | `{insertedSpans}`: every span of the export, including resent spans that were already stored                                                                                            |
-| `POST /v1/logs`   | `{insertedLogs}`                                                                                                                                                                        |
-| `GET /api/health` | `{ok, service, version}`                                                                                                                                                                |
-| `GET /api/ingest` | `{pending, maxPending, maxBytes, refused: {queueFull, tooLarge, invalid, storeFailed, overBound}, refusedBytes, lastRefusedAt, evictions: {passes, traces, spans, logs}, store: {...}}` |
+| Route             | Answer                                                                                                                                                                                               |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /v1/traces` | `{insertedSpans}`: every span of the export, including resent spans that were already stored                                                                                                         |
+| `POST /v1/logs`   | `{insertedLogs}`                                                                                                                                                                                     |
+| `GET /api/health` | `{ok, service, version}`                                                                                                                                                                             |
+| `GET /api/ingest` | `{pending, maxPending, maxBytes, refused: {queueFull, tooLarge, invalid, storeFailed, overBound, tooMuchDisk}, refusedBytes, lastRefusedAt, evictions: {passes, traces, spans, logs}, store: {...}}` |
 
-Anything else answers 404 `{error}`. The viewer's files are served by a later change.
+With `--viewer`, the viewer's routes too (see The viewer). Anything else answers 404 `{error}`.
 
 `/api/ingest` also has `droppedEvents`: span events not stored because their span had more than
 128 (see Field mapping), in exports that were stored, kept with the refusal counts. And
@@ -183,6 +207,48 @@ store is and whether retention has finished:
 `evictions.passes` counts periods of eviction that removed at least one trace, `traces`, `spans`
 and `logs` what they removed, all since the collector started. A pass is counted when its first
 trace is gone, so a trace the caller sees missing means `passes` already counts its pass.
+
+### The viewer
+
+`--viewer <dir>` serves the trace viewer's build (`packages/telemetry/viewer`, built into
+`packages/telemetry/dist/viewer`) at the origin root, beside the API it reads:
+
+| Route                                            | Answer                                                                                 |
+| ------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `GET /`, `/traces`, `/logs`, `/trace/<one name>` | `index.html`, `text/html; charset=utf-8`, `Cache-Control: no-cache`                    |
+| `GET /assets/<path>`                             | the file, typed by its extension, `Cache-Control: public, max-age=31536000, immutable` |
+
+- **Read once, at start.** Before the store is opened, the collector reads `index.html` and every
+  regular file under `assets/` (at most four directories deep) into memory. A request is looked up
+  by its path in that table and answered from memory, shared by every answer, so nothing a request
+  carries ever becomes a path on disk: `..`, encoded separators (`%2F`, `%5C`, `%2e`), absolute
+  paths and links in a request reach nothing, no directory is listed, and a request holds no memory
+  of its own beyond its response's head. A file added or changed after the start is not served
+  until the collector restarts. Only the routes above are served, `/index.html` included as not
+  found.
+- **The directory is trusted.** It is part of the installation, named by whatever starts the
+  collector, and whoever can write to it already decides what the viewer serves. Reading it guards
+  against a directory assembled by mistake, not against someone changing it while the collector
+  starts. Refused, ending the start: a symbolic link anywhere inside the directory (each file is
+  opened without following a final link, `O_NOFOLLOW` on Unix, the link itself on Windows, so no
+  check stands apart from the open), and anything that is not a regular file or a directory (the
+  opened file's own kind decides; a FIFO does not block the open). Not refused: a hard link, which
+  is a regular file (package stores and deduplicating file systems install files that way), and
+  the directory itself being reached through a link.
+- **Bounded before it is allocated.** At most `VIEWER_ENTRIES` (4,096) files and directories,
+  `index.html` and `assets` included, and at most `VIEWER_BYTES` (16 MiB) in all, counting each
+  file's contents, each entry's stored path (its whole path under `assets/`) and 256 bytes for each
+  entry; the build is about 0.6 MB in three files. Reading a file stops at what is left of the
+  bound, so a larger file is not read past it. Past either bound, or with a missing directory or
+  `index.html` or a file it cannot read, the start ends with exit 1 and `cannot serve the viewer`
+  in the log, before the data directory is touched. An empty `--viewer` is a usage error (exit 2).
+- **Methods.** `GET`, and `HEAD`, which answers the same head without the body. Any other method
+  on these routes answers 405.
+- **Caching.** `index.html` is `no-cache`, so a browser asks again each time and finds the new
+  asset names after an upgrade. Vite names every asset by a hash of its content, so a name always
+  holds the same bytes and the browser may keep it for a year. Every file is sent with
+  `X-Content-Type-Options: nosniff`.
+- Without `--viewer` these routes answer 404, as any unknown route.
 
 ### Admission
 
@@ -532,7 +598,7 @@ the directory at most 105.9 MB.
 
 The routes the product's tests, the e2e harness and the viewer call, with Motel's response shapes,
 limits, clamping and lookback rules (Motel's `domain.ts`, `httpApi.ts`, `httpListPolicy.ts` and
-`TelemetryStore.ts` at the revision `packages/telemetry/motel/source.json` pins):
+`TelemetryStore.ts` in [`UsefulSoftwareCo/motel`](https://github.com/UsefulSoftwareCo/motel) at `b1783f4d344fd2e0fa584ef00b3e71838a8a1e03`):
 
 | Route                                   | Parameters                                                                                                 | Answer                                      |
 | --------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
@@ -727,8 +793,9 @@ deliberate or does not reach any caller:
   and `groupBy=attr.*` counts every trace as `unknown`. A malformed stats request answers 400 with
   an `{error}` body; Motel's had none.
 - **Dropped routes and parameters.** `/api/traces/search`, `/api/spans/:spanId`,
-  `/api/spans/:spanId/logs`, `/api/logs/stats`, `/api/facets`, `/api/docs`, `/api/ai/*`,
-  `/trace/:traceId`, `/openapi.json` and `/` answer 404. `attrContains.*`, `parentOperation`,
+  `/api/spans/:spanId/logs`, `/api/logs/stats`, `/api/facets`, `/api/docs`, `/api/ai/*` and
+  `/openapi.json` answer 404; `/` and `/trace/:traceId` serve the viewer's page with `--viewer`
+  and answer 404 without it. `attrContains.*`, `parentOperation`,
   `status` on searches, `minDurationMs` and `aiText` are ignored (a repeated or malformed `status`
   or `minDurationMs` answers 400, as in Motel).
 - **Ids.** A trace or span id in a path or filter must be lowercase hex, as Motel stored and

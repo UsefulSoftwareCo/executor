@@ -497,15 +497,28 @@ else process.exitCode = result.status ?? 1;
       path.join(root, "apps/local/web/dist/client"),
       path.join(stage, "apps/local/web/dist/client"),
     );
-    yield* fs.copy(
-      path.join(root, "packages/telemetry/dist/motel"),
-      path.join(stage, "packages/telemetry/dist/motel"),
-    );
+    // The telemetry collector and the viewer it serves, where packages/telemetry/src/local.ts finds
+    // them. The collector's build for this target is in dist/collector (`collector:build`, or the
+    // release run's collector job, whose download drops the executable bit). It is made executable
+    // here, so the packages can run it; the macOS signer signs every Mach-O file and gives those
+    // with an execute bit the executable entitlements. Their notices join the install's own below.
+    const telemetry = path.join(root, "packages/telemetry/dist");
+    const collectorName =
+      process.platform === "win32" ? "executor-collector.exe" : "executor-collector";
+    const stagedCollector = path.join(stage, "packages/telemetry/dist/collector", collectorName);
+    yield* fs.makeDirectory(path.dirname(stagedCollector), { recursive: true });
+    yield* fs.copyFile(path.join(telemetry, "collector", collectorName), stagedCollector);
+    if (process.platform !== "win32") yield* fs.chmod(stagedCollector, 0o755);
+    for (const file of ["index.html", "assets"])
+      yield* fs.copy(
+        path.join(telemetry, "viewer", file),
+        path.join(stage, "packages/telemetry/dist/viewer", file),
+      );
     // Keep build diagnostics beside the artifact, without making every npm user
     // download external source maps. These files are not executable runtime assets.
     for (const [directory, name] of [
       [output, "runtime"],
-      [path.join(stage, "packages/telemetry/dist/motel"), "motel"],
+      [path.join(stage, "packages/telemetry/dist/viewer"), "viewer"],
     ] as const) {
       for (const file of yield* fs.readDirectory(directory, { recursive: true })) {
         if (!file.endsWith(".map")) continue;
@@ -584,6 +597,28 @@ else process.exitCode = result.status ?? 1;
             overwrite: true,
           });
     }
+    // The collector's notices: Motel's licence, whose behaviour it follows, the licence files of
+    // every crate linked into it and the Rust standard library's; its crates as `cargo:name@version`.
+    yield* fs.copy(
+      path.join(telemetry, "collector/NOTICE"),
+      path.join(stage, "licenses/executor-collector/NOTICE"),
+    );
+    yield* fs.copy(path.join(telemetry, "collector/licenses"), path.join(stage, "licenses"), {
+      overwrite: true,
+    });
+    inventory.push("executor-collector");
+    for (const line of (yield* fs.readFileString(
+      path.join(telemetry, "collector/cargo-packages.txt"),
+    )).split("\n"))
+      if (line !== "") inventory.push(`cargo:${line}`);
+    // The viewer's: the packages its build bundled, in this same layout.
+    yield* fs.copy(path.join(telemetry, "viewer/licenses"), path.join(stage, "licenses"), {
+      overwrite: true,
+    });
+    for (const line of (yield* fs.readFileString(
+      path.join(telemetry, "viewer/runtime-packages.txt"),
+    )).split("\n"))
+      if (line !== "") inventory.push(line);
     yield* fs.writeFileString(
       path.join(stage, "runtime-packages.txt"),
       [...new Set(inventory)].sort().join("\n") + "\n",

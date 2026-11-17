@@ -2,6 +2,7 @@
 import {
   Cause,
   Config,
+  ConfigProvider,
   Console,
   Effect,
   Exit,
@@ -13,12 +14,7 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { randomBytes } from "node:crypto";
-import {
-  patternForTarget,
-  scenariosForSuite,
-  type CloudMode,
-  type TestPlan,
-} from "../test-plan.ts";
+import { scenariosForSuite, type CloudMode, type TestPlan } from "../test-plan.ts";
 import { readEvidence, combineEvidenceReports, reportRuntimeCrashes } from "../evidence-results.ts";
 import { type EvidenceReport, type RunMetadata } from "../report-model.ts";
 import { startCloudEnvironment } from "../support/cloud-environment.ts";
@@ -28,6 +24,8 @@ import { type FixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
 import { RecordingPaceMs, Target } from "../support/platform.ts";
 import { roleHost } from "../support/role-hosts.ts";
 import { prepareCloudScenarios } from "./prepare-scenarios.ts";
+import { attachedStage, axiomSpans } from "../support/axiom.ts";
+import { sweepSpan } from "../support/webhook-sweep.ts";
 import { removalSettlementFile, settleRemovals } from "./removal-settlement.ts";
 import { removalStallsFile } from "./removal-evidence.ts";
 import { holdRun, pruneRuns } from "./run-retention.ts";
@@ -312,6 +310,9 @@ export const runSuite = ({
                         }),
                       })
                     : undefined;
+                  // Spans of an attached stage are read from Axiom by its stage name; an origin
+                  // that does not name it fails here, once.
+                  const stage = attachment === undefined ? undefined : yield* attachedStage(origin);
                   const preparedScenarios =
                     attachment?.appUiBaseUrl === undefined
                       ? {}
@@ -328,6 +329,25 @@ export const runSuite = ({
                           appUiBaseUrl: attachment.appUiBaseUrl,
                           fixtures: attachment.fixtures,
                           workers: targetWorkers,
+                          sweepPasses: (since) =>
+                            axiomSpans(stage).pipe(
+                              Effect.flatMap((spans) =>
+                                spans.search(sweepSpan, {}, undefined, since),
+                              ),
+                              Effect.provide(
+                                ConfigProvider.layer(
+                                  ConfigProvider.fromUnknown(
+                                    attachment.axiom === undefined
+                                      ? {}
+                                      : {
+                                          E2E_AXIOM_TOKEN: reveal(attachment.axiom.token),
+                                          E2E_AXIOM_DATASET: attachment.axiom.dataset,
+                                          E2E_AXIOM_ORG_ID: attachment.axiom.organization,
+                                        },
+                                  ),
+                                ),
+                              ),
+                            ),
                           scenarios: plan
                             .filter(
                               (scenario: typeof TestPlan.Type) =>
@@ -347,19 +367,7 @@ export const runSuite = ({
                   const exit = yield* processes.exitCode(
                     ChildProcess.make(
                       "node",
-                      [
-                        "node_modules/vitest/vitest.mjs",
-                        "run",
-                        "--config",
-                        "e2e/vitest.config.ts",
-                        "--testNamePattern",
-                        patternForTarget(
-                          target,
-                          selected === "hosted" ? "hosted" : "all",
-                          name,
-                          cloudMode,
-                        ),
-                      ],
+                      ["node_modules/vitest/vitest.mjs", "run", "--config", "e2e/vitest.config.ts"],
                       {
                         extendEnv: false,
                         env: {
@@ -396,7 +404,6 @@ export const runSuite = ({
                           ...(process.env.E2E_COVERAGE === undefined
                             ? {}
                             : { E2E_COVERAGE: process.env.E2E_COVERAGE }),
-                          E2E_PREPARED_SCENARIOS: JSON.stringify(preparedScenarios),
                           E2E_TEST_NAME: name,
                           E2E_WORKERS: String(interactive || observeUI ? 1 : targetWorkers),
                           E2E_TARGET: target,

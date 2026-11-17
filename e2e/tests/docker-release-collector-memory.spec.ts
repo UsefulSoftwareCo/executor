@@ -1,14 +1,13 @@
 /**
- * The telemetry collector runs in its own workerd process and shares the container's memory limit.
- * Every export it stores leaves garbage in its isolate. Without memory settings, workerd does not
- * collect an idle isolate or return freed memory to the system, so under a steady stream of
- * scheduled apps' spans the collector grew by about 100 MB an hour to about 430 MB. Its process
- * now collects the isolate once it has been idle for 2 seconds and returns what that frees. In
- * seven runs of the 4 exports below it gave back about three quarters to nine tenths of what they
- * took, in readings taken about 3 to 5 seconds after the last export. Six runs on beta.40 were
- * read for up to a minute: one reached about 53% back, at 59 seconds, and the other five had
- * given back about a fifth or less when the minute ended. Six more, read for the 20 seconds
- * allowed here, gave back none in five runs and about a fifth in one.
+ * The telemetry collector runs in its own process and shares the container's memory limit. glibc's
+ * allocator keeps what a burst of exports freed resident unless it is asked to return it, so the
+ * collector asks once it has been idle (its README, "Memory"). Under Motel, the collector earlier
+ * images ran, a steady stream of scheduled apps' spans grew it by about 100 MB an hour to about
+ * 430 MB until its workerd process was set to collect an idle isolate.
+ *
+ * On the Rust collector the 4 exports below raise it from about 7 MB to about 32 MB (25.5 MiB in
+ * three runs) and it is back at 7 MB within a second of the last answer. A build that never
+ * returns freed memory still held 26 of the 26 MB they used 20 seconds later, in two runs.
  */
 import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -37,12 +36,12 @@ const crypto = require("node:crypto");
 (async () => {
   // The name is joined here so this script's own command line does not hold it.
   const collectors = fs.readdirSync("/proc").filter((p) => Number.isInteger(Number(p))).filter((p) => {
-    try { return fs.readFileSync("/proc/" + p + "/cmdline", "utf8").includes(["motel", "capnp"].join(".")); } catch { return false; }
+    try { return fs.readFileSync("/proc/" + p + "/cmdline", "utf8").split("\\0")[0] === "/app/" + ["executor", "collector"].join("-"); } catch { return false; }
   });
   if (collectors.length !== 1) throw new Error("expected one collector process, found " + collectors.length);
   const pid = collectors[0];
   const tmp = "/proc/" + pid + "/root/tmp";
-  const socketPath = fs.readdirSync(tmp).filter((name) => name.startsWith("executor-host-")).map((name) => tmp + "/" + name + "/motel.sock").find((path) => fs.existsSync(path));
+  const socketPath = fs.readdirSync(tmp).filter((name) => name.startsWith("executor-host-")).map((name) => tmp + "/" + name + "/collector.sock").find((path) => fs.existsSync(path));
   // A process's start time is field 22 of its stat line. Another process that takes the id has another.
   const startTime = () => {
     const stat = fs.readFileSync("/proc/" + pid + "/stat", "utf8");
@@ -205,13 +204,14 @@ it.live(
         );
         expect(burstOutput.inserted).toBe(exportCount * spansPerExport);
         const used = burstOutput.peak - burstOutput.before;
+        // For half of it coming back to mean anything, the burst must raise the collector well
+        // above its own resting size, about 7 MB: 16 MiB, where it measures 25.5. Motel's bound
+        // here was 64 MiB, which the Rust collector does not reach with these exports.
         expect(used, "the exports raised the collector's resident memory").toBeGreaterThan(
-          64 * 1024,
+          16 * 1024,
         );
-        // With the collection after 2 seconds idle, the collector returned about three quarters of
-        // it or more in readings taken about 3 to 5 seconds after the last export. Without it, one
-        // run reached just over half at 59 seconds and five had returned about a fifth or less
-        // when a minute ended.
+        // The collector returned all of it within about a second of the last export. A build that
+        // does not return freed memory held all of it for the 20 seconds allowed.
         expect(
           burstOutput.after,
           `${Math.round(burstOutput.waitedMs / 1000)} s after the exports the collector still held ${megabytes(burstOutput.after - burstOutput.before)} of the ${megabytes(used)} MB they used`,
