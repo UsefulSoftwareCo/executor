@@ -591,6 +591,37 @@ const RunJobs = Schema.fromJsonString(
 const checkStep = "Check that the layer above was computed on this layer";
 
 /**
+ * Whether `lower.head` is an ancestor of `tested`, the merge commit an upper run tested: GitHub's
+ * compare of the two, which says `ahead` or `identical` exactly when it is (the equivalent of `git
+ * merge-base --is-ancestor`, without the history a shallow checkout lacks). Asked once per tested
+ * commit and remembered; an answer that could not be read is undefined, so the check keeps waiting.
+ */
+const containsLower = (
+  lower: Lower,
+  tested: string,
+  limit: Duration.Duration,
+  contained: Map<string, boolean>,
+) =>
+  Effect.gen(function* () {
+    const known = contained.get(tested);
+    if (known !== undefined) return known;
+    const status = (yield* gh(
+      [
+        "api",
+        `repos/${lower.repository}/compare/${lower.head}...${tested}?per_page=1`,
+        "--jq",
+        ".status",
+      ],
+      limit,
+    )).trim();
+    if (!["ahead", "identical", "behind", "diverged"].includes(status))
+      return yield* new BaselineFailed({ message: `the compare answered ${status}` });
+    const answer = status === "ahead" || status === "identical";
+    contained.set(tested, answer);
+    return answer;
+  }).pipe(Effect.catchCause(() => Effect.succeed<boolean | undefined>(undefined)));
+
+/**
  * One look at the pull requests above `lower`: this repository's open pull requests based on its
  * branch, and their CI runs on their current heads. A record is downloaded once per artifact.
  */
@@ -599,6 +630,7 @@ const look = (
   scratch: string,
   records: Map<number, RecordFields>,
   limits: { readonly read: Duration.Duration; readonly look: Duration.Duration },
+  contained: Map<string, boolean>,
 ) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -672,6 +704,10 @@ const look = (
               record,
               selectDone: true,
               waitingAbove: false,
+              contains:
+                record.tested === undefined || record.base === lower.head
+                  ? undefined
+                  : yield* containsLower(lower, record.tested, limits.read, contained),
             });
             continue;
           }
@@ -740,11 +776,12 @@ const decide = Effect.gen(function* () {
     look: Duration.millis(Math.max(2000, 60_000 * scale)),
   };
   const records = new Map<number, RecordFields>();
+  const contained = new Map<string, boolean>();
   const start = yield* Clock.currentTimeMillis;
   let previous: Verdict | undefined;
   let waited = 0;
   for (let polls = 0; ; polls += 1) {
-    const verdict = judge(yield* look(lower, scratch, records, limits), lower, previous);
+    const verdict = judge(yield* look(lower, scratch, records, limits, contained), lower, previous);
     if (verdict._tag === "Wait" && verdict.why !== (previous?._tag === "Wait" ? previous.why : ""))
       yield* Console.log(`Waiting: ${verdict.why}.`);
     previous = verdict;

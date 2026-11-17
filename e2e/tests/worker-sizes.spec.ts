@@ -474,6 +474,11 @@ interface GitHubAnswers {
   readonly selectJobs?: Readonly<Record<string, { status: string; waitingAbove?: boolean }>>;
   readonly failPullRequests?: boolean;
   readonly failCompare?: ReadonlyArray<string>;
+  /**
+   * The skip check's ancestry compare, by \`<lower head>...<tested>\`: GitHub's status, or \`fail\`.
+   * Unlisted pairs answer 404, as a commit GitHub does not know would.
+   */
+  readonly contains?: Readonly<Record<string, string>>;
   readonly flaky?: Readonly<Record<string, number>>;
   /** A push to main: the commits it adds, each one's merged pull requests, and their bodies. */
   readonly pushCommits?: ReadonlyArray<string>;
@@ -559,6 +564,12 @@ if (args[0] === "pr" && args[1] === "list") {
   const run = pathArg.replace(/^.*\\/runs\\//, "").replace(/\\/.*$/, "");
   const select = (answers.selectJobs || {})[run] || { status: "in_progress" };
   reply({ jobs: [{ name: "checks / select", status: select.status, steps: [{ name: "Check that the layer above was computed on this layer", status: select.waitingAbove ? "in_progress" : "pending" }] }] });
+} else if (args[0] === "api" && /\\/compare\\//.test(args[1]) && value("--jq") === ".status") {
+  const pair = args[1].replace(/^.*\\/compare\\//, "").replace(/\\?.*$/, "");
+  const status = (answers.contains || {})[pair];
+  if (status === undefined) fail("gh: Not Found (HTTP 404)");
+  if (status === "fail") fail("gh: Server Error (HTTP 502)");
+  process.stdout.write(status + "\\n");
 } else if (args[0] === "api" && /\\/compare\\//.test(args[1]) && value("--jq") === "[.commits[].sha]") {
   if (answers.failPush) fail("gh: Server Error (HTTP 502)");
   process.stdout.write(JSON.stringify(answers.pushCommits || []));
@@ -1262,8 +1273,8 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
     SKIP_ABOVE_TIME_SCALE: "0.001",
   });
   const upperHead = sha("d");
-  const record = (base: string, baseline: string, format = "2") =>
-    `${format === "" ? "" : `format ${format}\n`}pull request 11\nmerge tree ${sha("e")}\nbase ${base}\nselection x\nworker-growth y\nbaseline ${baseline}\nabove none\n`;
+  const record = (base: string, baseline: string, format = "2", tested?: string) =>
+    `${format === "" ? "" : `format ${format}\n`}pull request 11\nmerge tree ${sha("e")}\nbase ${base}\n${tested === undefined ? "" : `tested ${tested}\n`}selection x\nworker-growth y\nbaseline ${baseline}\nabove none\n`;
   const good = record(lowerHead, `main@${sha("6")}`);
   const laundered = record(lowerHead, `effect-apps@${sha("5")}`);
   const upper = (text: string, more: GitHubAnswers = {}): GitHubAnswers => ({
@@ -1278,6 +1289,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
       mode: string;
       decision: string;
       oldFormat: boolean;
+      rule: string;
       waited: number;
       reason: string;
       message: string;
@@ -1326,7 +1338,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         // A record in this format without a baseline proves nothing; a later format is not read.
         for (const [text, why] of [
           [good.replace(/baseline .*\n/, ""), "a baseline it did not record"],
-          [record(lowerHead, `main@${sha("6")}`, "3"), "wrote a record in format 3"],
+          [record(lowerHead, `main@${sha("6")}`, "4"), "wrote a record in format 4"],
           [good.replace("above none", "above fail"), "its own check of the layer above it fails"],
           [good.replace("above none", "above error"), "its own check of the layer above it fails"],
         ] as const)
@@ -1506,6 +1518,193 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect((yield* verdict({ upperRuns: { [sha("9")]: [{ id: 600 }] } })).reason).toBe(
           "#11 has no CI run on its head ddddddddd",
         );
+      }),
+  );
+
+  it.effect(
+    "a run passes when the merge commit it tested contains this layer's head, whatever its event's base",
+    () =>
+      Effect.gen(function* () {
+        const run = (text: string, more: GitHubAnswers = {}) =>
+          Effect.map(baseline(["above"], skipLayer(), upper(text, more)), (result) => ({
+            ...decided(result.log)!,
+            exitCode: result.exitCode,
+            calls: result.calls,
+          }));
+        const tested = sha("f");
+        const pair = `${lowerHead}...${tested}`;
+        // A duplicate event of a stack push: its base is this layer's previous head, and the merge
+        // commit GitHub built already holds this layer's head. It passes at once, by what it tested.
+        const stale = yield* run(record(sha("b"), `main@${sha("6")}`, "3", tested), {
+          contains: { [pair]: "ahead" },
+        });
+        expect(stale).toMatchObject({ decision: "would pass", rule: "tested", waited: 0 });
+        expect(stale.reason).toBe(
+          `#11's run https://github.com/owner/repository/actions/runs/600 tested a merge commit that contains ccccccccc, and compared its Worker sizes with main`,
+        );
+        expect(stale.calls.filter((call) => call.includes("/compare/"))).toEqual([
+          `api repos/owner/repository/compare/${pair}?per_page=1 --jq .status`,
+        ]);
+        expect(
+          (yield* run(record(sha("b"), `main@${sha("6")}`, "3", tested), {
+            contains: { [pair]: "identical" },
+          })).rule,
+        ).toBe("tested");
+        // A merge commit that does not contain this layer's head is not built on it.
+        for (const status of ["behind", "diverged"]) {
+          const not = yield* run(record(sha("b"), `main@${sha("6")}`, "3", tested), {
+            contains: { [pair]: status },
+          });
+          expect(not).toMatchObject({ decision: "would fail", rule: "none" });
+          expect(not.waited).toBeGreaterThanOrEqual(240);
+          expect(not.reason).toBe(
+            "#11's latest run on its head, https://github.com/owner/repository/actions/runs/600, was built on bbbbbbbbb and tested fffffffff, which does not contain this layer's head ccccccccc",
+          );
+          expect(not.exitCode).toBe(0);
+          // Asked once, and remembered while the check waits.
+          expect(not.calls.filter((call) => call.includes("/compare/"))).toHaveLength(1);
+        }
+        // A compare that cannot be read is no answer: the check waits, asks again each look, and
+        // at its bound says it could not tell. Observing, the step still passes.
+        const unread = yield* run(record(sha("b"), `main@${sha("6")}`, "3", tested), {
+          contains: { [pair]: "fail" },
+        });
+        expect(unread).toMatchObject({ decision: "would fail", exitCode: 0 });
+        expect(unread.reason).toContain(
+          "tested fffffffff, and whether that contains this layer's head ccccccccc could not be read",
+        );
+        expect(unread.calls.filter((call) => call.includes("/compare/")).length).toBeGreaterThan(1);
+        // Its event's base naming this layer's head is enough, as in format 2, with no compare.
+        const based = yield* run(record(lowerHead, `main@${sha("6")}`, "3", tested));
+        expect(based).toMatchObject({ decision: "would pass", rule: "base" });
+        expect(based.calls.filter((call) => call.includes("/compare/"))).toEqual([]);
+        // A format 2 record names no tested commit: judged by its base alone, as before.
+        expect(yield* run(record(lowerHead, `main@${sha("6")}`, "2"))).toMatchObject({
+          decision: "would pass",
+          rule: "base",
+        });
+        expect(
+          (yield* run(record(sha("b"), `main@${sha("6")}`, "2"), {
+            contains: { [`${lowerHead}...${sha("b")}`]: "ahead" },
+          })).reason,
+        ).toContain("was built on bbbbbbbbb, not this layer's head ccccccccc");
+        // Containing this layer's head is not enough: the Worker sizes must have been compared with
+        // the base this stack ends on.
+        expect(
+          (yield* run(record(sha("b"), `effect-apps@${sha("5")}`, "3", tested), {
+            contains: { [pair]: "ahead" },
+          })).reason,
+        ).toContain("compared its Worker sizes with effect-apps, not main");
+        // The upper's re-run: its first record compared sizes with the wrong base; the re-run,
+        // which keeps the event's stale base, records again later and passes by what it tested.
+        const rerun = yield* run(record(sha("b"), `main@${sha("6")}`, "3", tested), {
+          records: {
+            "600": [
+              {
+                id: 6001,
+                name: "ci-tested-pr11-first",
+                text: record(sha("b"), `effect-apps@${sha("5")}`, "3", tested),
+              },
+              {
+                id: 6002,
+                name: "ci-tested-pr11-rerun",
+                text: record(sha("b"), `main@${sha("6")}`, "3", tested),
+                after: 3,
+              },
+            ],
+          },
+          contains: { [pair]: "ahead" },
+        });
+        expect(rerun).toMatchObject({ decision: "would pass", rule: "tested" });
+        expect(rerun.waited).toBeGreaterThan(0);
+      }),
+  );
+
+  it.effect(
+    "the five would-fail decisions of 16 Nov, replayed through the rule that reads what was tested",
+    () =>
+      Effect.gen(function* () {
+        // The heads and bases of the live runs; the merge commits the uppers checked out were not
+        // recorded then, so each upper's head stands for it (a merge commit contains its head).
+        const layer = (head: string, bottom = "effect-apps") => ({
+          ...skipLayer(bottom),
+          HEAD_SHA: head,
+        });
+        const upperOf = (head: string, text: string, more: GitHubAnswers = {}): GitHubAnswers => ({
+          uppers: [{ number: 11, headRefOid: head }],
+          upperRuns: { [head]: [{ id: 600 }] },
+          records: { "600": { name: "ci-tested-pr11-key", text } },
+          ...more,
+        });
+        const at = (base: string, tested: string, bottom: string) =>
+          `format 3\npull request 11\nmerge tree ${sha("e")}\nbase ${base}\ntested ${tested}\nselection x\nworker-growth y\nbaseline ${bottom}@${sha("6")}\nabove none\n`;
+        const verdict = (env: Record<string, string>, answers: GitHubAnswers) =>
+          Effect.map(baseline(["above"], env, answers), (result) => decided(result.log)!);
+        // #4717 under #4718: the upper's first run recorded the lower's previous head 1b8f78414 as
+        // its base; its head 66f85fc61 contains the lower's head 4ad0afbc3 (git, offline).
+        const gatewayLower = "4ad0afbc33d43392c0bc2f42b2b9ba94b5e8cc46";
+        const gatewayUpper = "66f85fc61cf5b4954e43441a7951f782f249efc6";
+        expect(
+          yield* verdict(
+            layer(gatewayLower),
+            upperOf(
+              gatewayUpper,
+              at("1b8f78414ff4a924ff47bf329e5f2bda654a215a", gatewayUpper, "effect-apps"),
+              { contains: { [`${gatewayLower}...${gatewayUpper}`]: "ahead" } },
+            ),
+          ),
+        ).toMatchObject({ decision: "would pass", rule: "tested" });
+        // #4692 under #4652: the upper's run recorded effect-apps' head 958abd22a as its base; its
+        // head 4565abc0d contains the lower's head d2a3db73d (git, offline).
+        const scaleLower = "d2a3db73d8d8f4d2eb4e9bc069afe0a5dc4ad51c";
+        const searchUpper = "4565abc0d02794b172a53b6eda419e3a2be5c999";
+        expect(
+          yield* verdict(
+            layer(scaleLower),
+            upperOf(
+              searchUpper,
+              at("958abd22a4b73542c8260c28d3f14c3e1ed5232f", searchUpper, "effect-apps"),
+              { contains: { [`${scaleLower}...${searchUpper}`]: "ahead" } },
+            ),
+          ),
+        ).toMatchObject({ decision: "would pass", rule: "tested" });
+        // #4691 under #4692: #4692 is itself a skip layer; with its check passing it records
+        // `above pass`, and its base is #4691's head 6fcd6f179.
+        const grantLower = "6fcd6f179a7f94ce4754075d8183a33af14ddca8";
+        expect(
+          yield* verdict(
+            layer(grantLower),
+            upperOf(
+              scaleLower,
+              at(grantLower, scaleLower, "effect-apps").replace("above none", "above pass"),
+            ),
+          ),
+        ).toMatchObject({ decision: "would pass", rule: "base" });
+        // ... and with #4692's check failing, as it did, #4691 still fails: the cascade is kept.
+        expect(
+          (yield* verdict(
+            layer(grantLower),
+            upperOf(
+              scaleLower,
+              at(grantLower, scaleLower, "effect-apps").replace("above none", "above fail"),
+            ),
+          )).decision,
+        ).toBe("would fail");
+        // #4592 under #4593: both of the upper's runs on its head failed in select and recorded
+        // nothing; the re-runs came later. That was right, and stays right.
+        const sqlLower = "7d64b6538eab858e3b9cd58f2826dbf3599a1a46";
+        const sqlUpper = sha("9");
+        const sql = yield* verdict(layer(sqlLower), {
+          uppers: [{ number: 11, headRefOid: sqlUpper }],
+          upperRuns: {
+            [sqlUpper]: [
+              { id: 43928367877, conclusion: "failure" },
+              { id: 43928367036, conclusion: "failure" },
+            ],
+          },
+        });
+        expect(sql).toMatchObject({ decision: "would fail", rule: "none" });
+        expect(sql.reason).toContain("recorded nothing (its select failed)");
       }),
   );
 
@@ -2173,8 +2372,10 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect(tested).toContain(
           "          ABOVE: ${{ steps.above.outputs.decision || 'none' }}\n",
         );
+        // What the run tested, for the layer below: the merge commit this checkout holds.
+        expect(tested).toContain("          tested=$(git rev-parse HEAD)\n");
         expect(select).toContain(
-          `printf 'format %s\\npull request %s\\nmerge tree %s\\nbase %s\\nselection %s\\nworker-growth %s\\nbaseline %s\\nabove %s\\n' "$RECORD_FORMAT" "$PULL" "$tree" "$BASE_SHA" "$SELECTION" "$WORKER_GROWTH" "$BASELINE" "$ABOVE"`,
+          `printf 'format %s\\npull request %s\\nmerge tree %s\\nbase %s\\ntested %s\\nselection %s\\nworker-growth %s\\nbaseline %s\\nabove %s\\n' "$RECORD_FORMAT" "$PULL" "$tree" "$BASE_SHA" "$tested" "$SELECTION" "$WORKER_GROWTH" "$BASELINE" "$ABOVE"`,
         );
         // A recorded build names its commit.
         expect(checks).toContain(
