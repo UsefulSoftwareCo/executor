@@ -414,13 +414,11 @@ const ownDefinition = (reference: unknown) => {
   return segments.length === 2 ? segments[1] : undefined;
 };
 /**
- * The root `$defs` of a schema whose every reference names one of them, so the schema reads the
- * same beside them at any root. A schema referring to its root, a nested pointer or an identifier
- * has none. Only schema positions are read, as the validator evaluates them.
+ * The `$defs` names a schema's references name, read at schema positions only, as the validator
+ * evaluates them; undefined when one refers to anything else or the schema uses an identifier.
  */
-const rootDefinitions = (schema: JsonObject): JsonObject | undefined => {
-  const definitions = schema.$defs ?? {};
-  if (!isJsonRecord(definitions)) return undefined;
+const definitionReferences = (schema: unknown): ReadonlySet<string> | undefined => {
+  const names = new Set<string>();
   const pending: unknown[] = [schema];
   for (let value = pending.pop(); value !== undefined; value = pending.pop()) {
     if (!isSchemaObject(value)) continue;
@@ -428,7 +426,8 @@ const rootDefinitions = (schema: JsonObject): JsonObject | undefined => {
       if (identifiers.has(key)) return undefined;
       if (key === "$ref") {
         const name = ownDefinition(item);
-        if (name === undefined || !Object.hasOwn(definitions, name)) return undefined;
+        if (name === undefined) return undefined;
+        names.add(name);
       } else if (Array.isArray(item)) {
         if (schemaArrays.has(key) || key === "items") pending.push(...item);
       } else if (schemaMaps.has(key) || key === "dependencies") {
@@ -436,34 +435,113 @@ const rootDefinitions = (schema: JsonObject): JsonObject | undefined => {
       } else if (schemaNodes.has(key)) pending.push(item);
     }
   }
+  return names;
+};
+
+/**
+ * What one listing learns about the definitions its tools' schemas hold. Routers such as the
+ * OpenAPI importer give every tool that reaches a definition the same object, and a densely
+ * connected API reaches most of its definitions from every tool: Stripe's 610 tools name about
+ * 330,000 `$defs` entries but only a few thousand distinct definitions. Combining schemas reads
+ * each definition object once per listing, rather than once for every tool that reaches it, so a
+ * listing's cost follows its distinct definitions instead of its tools times its definitions.
+ * Values are only read, never changed: the memo is valid while the listing's objects are, so
+ * make one for each listing or description and drop it with them.
+ */
+export interface SchemaMemo {
+  /** Equal numbers for definitions whose JSON text is equal. */
+  readonly textId: (definition: JsonValue) => number;
+  /** The `$defs` names the definition refers to, or undefined, as `definitionReferences`. */
+  readonly references: (definition: JsonValue) => ReadonlySet<string> | undefined;
+}
+export const schemaMemo = (): SchemaMemo => {
+  const ids = new Map<string, number>();
+  const objectIds = new WeakMap<object, number>();
+  const textId = (definition: JsonValue) => {
+    const known =
+      typeof definition === "object" && definition !== null ? objectIds.get(definition) : undefined;
+    if (known !== undefined) return known;
+    const text = JSON.stringify(definition);
+    let id = ids.get(text);
+    if (id === undefined) ids.set(text, (id = ids.size));
+    if (typeof definition === "object" && definition !== null) objectIds.set(definition, id);
+    return id;
+  };
+  const referenced = new WeakMap<object, ReadonlySet<string> | undefined>();
+  const references = (definition: JsonValue) => {
+    if (typeof definition !== "object" || definition === null)
+      return definitionReferences(definition);
+    if (referenced.has(definition)) return referenced.get(definition);
+    const names = definitionReferences(definition);
+    referenced.set(definition, names);
+    return names;
+  };
+  return { textId, references };
+};
+
+/**
+ * The root `$defs` of a schema whose every reference names one of them, so the schema reads the
+ * same beside them at any root. A schema referring to its root, a nested pointer or an identifier
+ * has none. Each definition's references come from the memo, so a definition many tools share is
+ * walked once.
+ */
+const rootDefinitions = (schema: JsonObject, memo: SchemaMemo): JsonObject | undefined => {
+  const definitions = schema.$defs ?? {};
+  if (!isJsonRecord(definitions)) return undefined;
+  const { $defs: _, ...root } = schema;
+  for (const names of [
+    definitionReferences(root),
+    ...Object.values(definitions).map(memo.references),
+  ]) {
+    if (names === undefined) return undefined;
+    for (const name of names) if (!Object.hasOwn(definitions, name)) return undefined;
+  }
   return definitions;
 };
+
+/**
+ * A key equal for schemas whose JSON text is equal, without writing the definitions in their
+ * `$defs`: each definition stands for its memo number.
+ */
+export const schemaIdentity = (schema: JsonObject, memo: SchemaMemo) =>
+  JSON.stringify(
+    Object.entries(schema).map(([key, value]) =>
+      key === "$defs" && isJsonRecord(value)
+        ? [key, Object.entries(value).map(([name, definition]) => [name, memo.textId(definition)])]
+        : [key, value],
+    ),
+  );
 
 /**
  * Self-contained schemas placed side by side in one document, such as the branches of a union.
  * A schema whose references all name its root `$defs` gives those entries to the document's root
  * `$defs` when no entry of the same name differs, so definitions stay where listings share them
  * among tools. Any other schema is relocated with `nestJsonSchema` under `pointer(index)`.
+ * Definitions are compared by object first and by text only when two objects share a name.
  */
 export const combineJsonSchemas = (
   schemas: readonly JsonObject[],
   pointer: (index: number) => string,
+  memo: SchemaMemo = schemaMemo(),
 ): { readonly $defs?: JsonObject; readonly schemas: readonly JsonObject[] } => {
   const shared: Record<string, EffectSchema.Json> = {};
-  const texts = new Map<string, string>();
+  const kept = new Map<string, JsonValue>();
+  const differs = (name: string, definition: JsonValue) => {
+    if (!kept.has(name)) return false;
+    const first = kept.get(name) ?? null;
+    return first !== definition && memo.textId(first) !== memo.textId(definition);
+  };
   const combined = schemas.map((schema, index) => {
-    const definitions = rootDefinitions(schema);
-    const entries = Object.entries(definitions ?? {}).map(
-      ([name, definition]) => [name, definition, JSON.stringify(definition)] as const,
-    );
+    const definitions = rootDefinitions(schema, memo);
+    const entries = Object.entries(definitions ?? {});
     if (
       definitions === undefined ||
-      entries.some(([name, , text]) => texts.has(name) && texts.get(name) !== text)
+      entries.some(([name, definition]) => differs(name, definition))
     )
       return nestJsonSchema(schema, pointer(index));
-    for (const [name, definition, text] of entries) {
-      if (texts.has(name)) continue;
-      texts.set(name, text);
+    for (const [name, definition] of entries) {
+      if (kept.has(name)) continue;
+      kept.set(name, definition);
       // Defined as an own entry: assignment would set the prototype of an entry named `__proto__`.
       Object.defineProperty(shared, name, {
         value: definition,
@@ -475,7 +553,7 @@ export const combineJsonSchemas = (
     const { $defs: _, ...rest } = schema;
     return rest;
   });
-  return texts.size === 0 ? { schemas: combined } : { $defs: shared, schemas: combined };
+  return kept.size === 0 ? { schemas: combined } : { $defs: shared, schemas: combined };
 };
 
 // Walk schema positions only. A property named "format" or "default" is still ordinary user data.

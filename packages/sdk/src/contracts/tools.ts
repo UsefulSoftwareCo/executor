@@ -1014,9 +1014,14 @@ const workerPresentation = (failure: RuntimeFailure | undefined) => {
     case "too-large":
       return {
         description,
+        // One retry can help: a first load can do work the next reuses, such as compiling a large
+        // API definition into the app's cache. The limit is matched from text, and a later attempt
+        // can still pass, so a repeat proves nothing about the cause: the copy stops unchanged
+        // retries and says what to check. The host does not know the app's apps version here, so
+        // rebuilding is advised only for an app on an older one.
         recovery: retryOnce(
-          "reduce the work the app does to list its tools.",
-          "A resource limit matches this failure. Find what the app's factory and tool loaders do while listing, such as fetching or parsing a large API definition or building many tools, and reduce it: expose fewer tools, or keep a large definition in the app's cache.",
+          "stop retrying it unchanged and investigate. If the app was built on an older apps version than this host’s, rebuild it on this host’s version and deploy it again; if it already runs this host’s version, or still fails, reduce the work the app does to list its tools.",
+          "A resource limit matches this failure. A first load can do work the next one reuses, such as compiling a large API definition into the app's cache, so one retry may succeed. If it fails the same way, stop retrying the unchanged request, even though a later attempt might succeed, and investigate what listing the app's tools costs. Compare the apps version in the app's package.json with framework.release, the version this host runs. If the app's version is older, for example a catalog app installed before a framework fix, pin this host's version and deploy the app again: an older apps version can spend far more work listing a large API. If the versions are the same, or the rebuilt app still fails, find what the app's factory and tool loaders do while listing, such as fetching or parsing a large API definition or building many tools, and reduce it: expose fewer tools, or keep a large definition in the app's cache.",
         ),
         retryable: true,
       };

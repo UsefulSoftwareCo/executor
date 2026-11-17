@@ -6611,6 +6611,19 @@ export const scenarios = plan({
       local: na("Local builds and runs apps through the same workerd compiler as self-host."),
     },
   },
+  largeOpenapiAccountsApp: {
+    fixtures: "actors",
+    file: "large-openapi-app.spec.ts",
+    title:
+      "an OpenAPI app whose resources expand into one another, linked through several accounts, lists each tool once with one branch for every account and its schemas complete",
+    targets: {
+      "self-host": scheduled,
+      // Each target bounds the JSON a cold listing writes, which merging every tool's definitions
+      // exceeded; the attached run also lists cold within a deployed app Worker's CPU time.
+      cloud: { status: "scheduled", runtime: "attached" },
+      local: na("Local builds and runs apps through the same workerd compiler as self-host."),
+    },
+  },
   localExpandableOpenapiTools: {
     file: "local-openapi-tools.spec.ts",
     title:
