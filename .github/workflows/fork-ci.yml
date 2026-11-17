@@ -44,8 +44,9 @@ jobs:
           done
 
   # Self-host scenarios for scoped-connection widening, OAuth registration and held
-  # scopes, app User-Agent, private-registry build egress, load-failure containment
-  # and the apps SDK release gate, plus local MCP search. Both jobs use Bun 1.4.4:
+  # scopes, app User-Agent, private-registry build egress, load-failure containment,
+  # the apps SDK release gate, parked MCP program retention and loss reporting, plus
+  # local MCP search. Both jobs use Bun 1.4.4:
   # the collector build and upstream's new-file patches need the newer Bun.
   # No extra secrets: the runner mints its own API key. CI disables the prepare cache.
   security-e2e:
@@ -74,6 +75,11 @@ jobs:
       - name: Security scenarios
         run: |
           bun run e2e:self-host -- --test-name 'application_type|fetch without a User-Agent names Executor|cannot create an all-apps connection|cannot widen a connection or mint|fails to load fails only its own reads|with private fetch off, a build|App dependency registry|keeps renewing grants that hold a scope|own Google client still signs in gmail.modify'
+      # A parked program outlives the request that started it: the entry must hold through idle
+      # deadlines until its batch finishes, and a crash must report the program lost, not missing.
+      - name: Parked MCP program scenarios
+        run: |
+          bun run e2e:self-host --test-name 'Self-host MCP (resumes all three|reports a crashed parked)|PAT MCP approvals bind|PAT MCP model-mode resume' --workers 1
       # The apps SDK release gate is its own suite, not a self-host scenario.
       - name: SDK release gate scenarios
         run: |

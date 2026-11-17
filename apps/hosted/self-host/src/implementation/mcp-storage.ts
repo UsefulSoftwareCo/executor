@@ -11,9 +11,13 @@ export const nativeMcpStorage = Layer.effect(
     const path = yield* Path.Path;
     const directory = path.resolve(yield* dataDirectory);
     yield* fs.makeDirectory(directory, { recursive: true, mode: 0o700 });
+    const file = path.join(directory, "mcp.sqlite");
+    // Create the file with its final 0600 mode before SQLite opens it: SQLite would otherwise
+    // create it at umask permissions, and the chmod below only follows that.
+    yield* Effect.scoped(fs.open(file, { flag: "a", mode: 0o600 }).pipe(Effect.asVoid));
     const database = yield* Effect.acquireRelease(
       Effect.sync(() => {
-        const database = new DatabaseSync(path.join(directory, "mcp.sqlite"));
+        const database = new DatabaseSync(file);
         database.exec(
           "CREATE TABLE IF NOT EXISTS mcp_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
         );
@@ -21,7 +25,8 @@ export const nativeMcpStorage = Layer.effect(
       }),
       (database) => Effect.sync(() => database.close()),
     );
-    yield* fs.chmod(path.join(directory, "mcp.sqlite"), 0o600);
+    // Tightens a file an earlier release created at umask permissions; a new file is already 0600.
+    yield* fs.chmod(file, 0o600);
     const read = database.prepare("SELECT value FROM mcp_metadata WHERE key = ?");
     const write = database.prepare(
       "INSERT OR REPLACE INTO mcp_metadata (key, value) VALUES (?, ?)",
