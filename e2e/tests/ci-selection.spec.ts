@@ -468,7 +468,86 @@ const guardedListings = (blobs: ReadonlyArray<string>, changed: Record<string, s
   return listings;
 };
 
+/**
+ * The runner label a job's `runs-on` expression in checks.yml gives, evaluated for one run: the
+ * expression's names are replaced by this run's values and the rest is evaluated as GitHub does
+ * (`&&` and `||` return a value, an empty string is false). A name not listed here fails the case,
+ * so an expression this does not know is never guessed at.
+ */
+const runnerLabel = (
+  workflow: string,
+  job: string,
+  run: {
+    readonly mode: string;
+    readonly event: string;
+    readonly fork: boolean;
+    readonly full: "true" | "false";
+  },
+) => {
+  const start = workflow.indexOf(`\n  ${job}:\n`);
+  const line = workflow
+    .slice(start)
+    .split("\n")
+    .find((text) => text.startsWith("    runs-on: ${{ "));
+  if (start === -1 || line === undefined) throw new Error(`No runs-on for ${job}`);
+  const expression = line.slice("    runs-on: ${{ ".length, -" }}".length);
+  const values: Record<string, string> = {
+    "vars.CI_RUNNER_MODE": run.mode,
+    "github.event_name": run.event,
+    "github.event.pull_request.head.repo.full_name": run.fork
+      ? "someone/executor-next"
+      : "UsefulSoftwareCo/executor-next",
+    "github.repository": "UsefulSoftwareCo/executor-next",
+    "needs.select.outputs.full": run.full,
+  };
+  const code = expression.replace(/[a-z][\w.-]*\.[\w.-]+/giu, (name) => {
+    if (!(name in values)) throw new Error(`runs-on names ${name}, which this does not know`);
+    return JSON.stringify(values[name]);
+  });
+  if (/[^"'\w\s.()=!&|/-]/u.test(code.replaceAll(/"[^"]*"|'[^']*'/gu, "")))
+    throw new Error(`runs-on is not a plain expression: ${expression}`);
+  // oxlint-disable-next-line no-new-func -- a GitHub expression of literals and comparisons only
+  return String(new Function(`return (${code.replaceAll("'", '"')});`)());
+};
+
 layer(NodeServices.layer)("CI E2E selection", (it) => {
+  it.effect(
+    "self-host runs whole shards on 8 vCPU and every other run on 16, and the desktop mode is untouched",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const workflow = yield* fs.readFileString(".github/workflows/checks.yml");
+        const label = (run: Partial<Parameters<typeof runnerLabel>[2]>) =>
+          runnerLabel(workflow, "e2e-self-host", {
+            mode: "",
+            event: "pull_request",
+            fork: false,
+            full: "false",
+            ...run,
+          });
+        // A whole run (a push to main, an `all` block): 4 workers a shard, 8 vCPU.
+        expect(label({ event: "push", full: "true" })).toBe("blacksmith-8vcpu-ubuntu-2404");
+        expect(label({ full: "true" })).toBe("blacksmith-8vcpu-ubuntu-2404");
+        // A narrowed or partial run: 8 workers, 16 vCPU.
+        expect(label({ full: "false" })).toBe("blacksmith-16vcpu-ubuntu-2404");
+        expect(label({ event: "push", full: "false" })).toBe("blacksmith-16vcpu-ubuntu-2404");
+        // The desktop mode takes this repository's runs whatever their size, and never a fork's.
+        expect(label({ mode: "desktop", full: "true" })).toBe("executor-ci-desktop");
+        expect(label({ mode: "desktop", full: "false" })).toBe("executor-ci-desktop");
+        expect(label({ mode: "desktop", event: "push", full: "true" })).toBe("executor-ci-desktop");
+        expect(label({ mode: "desktop", fork: true, full: "true" })).toBe(
+          "blacksmith-8vcpu-ubuntu-2404",
+        );
+        expect(label({ mode: "desktop", fork: true, full: "false" })).toBe(
+          "blacksmith-16vcpu-ubuntu-2404",
+        );
+        // WORKERS reads the same output: whole runs run 4 workers a shard.
+        expect(workflow).toContain(
+          "WORKERS: ${{ needs.select.outputs.full == 'true' && '4' || '8' }}",
+        );
+      }),
+  );
+
   it.effect("a push to main runs every job's full pattern", () =>
     Effect.gen(function* () {
       const run = yield* select({});
