@@ -10466,6 +10466,18 @@ export const scenarios = plan({
       ),
     },
   },
+  selfHostProvisioningFailure: {
+    file: "self-host-provisioning-failure.spec.ts",
+    title:
+      "Self-host provisioning names the tagged cause of a failed dependency install and never the registry's credentials or path",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs provisioning in its own workflow, not on the self-host polling worker.",
+      ),
+      local: na("Local deploys apps directly and never runs the provisioning queue."),
+    },
+  },
   idlePollTraces: {
     file: "idle-poll-traces.spec.ts",
     title:
