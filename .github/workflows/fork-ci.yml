@@ -80,6 +80,10 @@ jobs:
       - name: Parked MCP program scenarios
         run: |
           bun run e2e:self-host --test-name 'Self-host MCP (resumes all three|reports a crashed parked)|PAT MCP approvals bind|PAT MCP model-mode resume' --workers 1
+      # A failed default-app install names its tagged cause in the log, never the registry's URL.
+      - name: Provisioning failure scenarios
+        run: |
+          bun run e2e:self-host --test-name 'Self-host provisioning names the tagged cause' --workers 1
       # The apps SDK release gate is its own suite, not a self-host scenario.
       - name: SDK release gate scenarios
         run: |
