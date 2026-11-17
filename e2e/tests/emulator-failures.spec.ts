@@ -7,11 +7,24 @@
  */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Cause, Clock, Duration, Effect, Exit, Fiber, FileSystem, Option, Tracer } from "effect";
+import {
+  Cause,
+  Clock,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  FileSystem,
+  Layer,
+  Option,
+  Stream,
+  Tracer,
+} from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import {
   armedFaultHeader,
   emulatorRequest,
@@ -293,6 +306,123 @@ const onTestClock = <A, E>(call: Effect.Effect<A, E>) =>
     }
     return { exit: yield* Effect.exit(Fiber.join(fiber)), elapsed };
   });
+
+/** One request a call sent, when it started on the call's clock, and how it ended. */
+interface TimedAttempt {
+  readonly route: string;
+  readonly start: number;
+  ended?: "answered" | "failed" | "cut off";
+}
+/**
+ * An HTTP client that notes when each request starts on the call's clock and how it ends. A
+ * request starts in the same synchronous step in which the policy decided to send it, so its start
+ * is the time of that decision.
+ */
+const timedClient = (attempts: Array<TimedAttempt>) =>
+  Layer.effect(
+    HttpClient.HttpClient,
+    Effect.map(HttpClient.HttpClient, (client) =>
+      HttpClient.transform(client, (response, request) =>
+        Effect.gen(function* () {
+          const attempt: TimedAttempt = {
+            route: `${request.method} ${new URL(request.url).pathname}`,
+            start: yield* Clock.currentTimeMillis,
+          };
+          attempts.push(attempt);
+          return yield* response.pipe(
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                attempt.ended = Exit.isSuccess(exit)
+                  ? "answered"
+                  : Cause.hasInterrupts(exit.cause)
+                    ? "cut off"
+                    : "failed";
+              }),
+            ),
+          );
+        }),
+      ),
+    ),
+  ).pipe(Layer.provide(FetchHttpClient.layer));
+
+/**
+ * The clock a call runs on, noting the call's first reading of the time and every sleep it
+ * schedules, with when and for how long. The policy reads the time first as it starts (its 30 s
+ * runs from there), and each attempt's time-out is a sleep scheduled as the attempt starts, for
+ * the time-out the policy chose. So both are read where the policy decides them, not after any
+ * work that takes real time while the test clock moves on.
+ */
+const notingClock = (clock: Clock.Clock) => {
+  const noted = {
+    first: undefined as number | undefined,
+    sleeps: [] as Array<{ at: number; ms: number }>,
+  };
+  const millis = () => {
+    const now = clock.currentTimeMillisUnsafe();
+    noted.first ??= now;
+    return now;
+  };
+  const noting: Clock.Clock = {
+    currentTimeMillisUnsafe: millis,
+    currentTimeMillis: Effect.sync(millis),
+    currentTimeNanosUnsafe: () => clock.currentTimeNanosUnsafe(),
+    currentTimeNanos: clock.currentTimeNanos,
+    monotonicTimeNanosUnsafe: () => clock.monotonicTimeNanosUnsafe(),
+    monotonicTimeNanos: clock.monotonicTimeNanos,
+    sleep: (duration) =>
+      Effect.suspend(() => {
+        noted.sleeps.push({ at: clock.currentTimeMillisUnsafe(), ms: Duration.toMillis(duration) });
+        return clock.sleep(duration);
+      }),
+  };
+  return {
+    noted,
+    run: <A, E, R>(call: Effect.Effect<A, E, R>) =>
+      Effect.provideService(call, Clock.Clock, noting),
+  };
+};
+
+/**
+ * The deadline as facts the policy decided: it runs from the call's own start, every attempt
+ * started before it, and as each attempt started a time-out of exactly the smaller of 10 s and
+ * what was left was scheduled for it. Every attempt was then cut off by it. And every sleep the
+ * call scheduled, time-outs and the spacing between attempts alike, ends by the deadline, so the
+ * call itself does: nothing the policy waits for runs past it.
+ */
+const withinDeadline = (
+  attempts: ReadonlyArray<TimedAttempt>,
+  noted: {
+    readonly first: number | undefined;
+    readonly sleeps: ReadonlyArray<{ at: number; ms: number }>;
+  },
+) => {
+  const started = noted.first ?? 0;
+  const deadline = started + 30_000;
+  const listed = JSON.stringify({
+    attempts: attempts.map(({ route, start, ended }) => ({ route, start: start - started, ended })),
+    sleeps: noted.sleeps.map(({ at, ms }) => ({ at: at - started, ms })),
+  });
+  for (const sleep of noted.sleeps)
+    expect(
+      sleep.at + sleep.ms,
+      `a sleep of ${sleep.ms} ms scheduled at ${sleep.at - started} ms ends after the deadline: ${listed}`,
+    ).toBeLessThanOrEqual(deadline);
+  for (const attempt of attempts) {
+    const timeOuts = noted.sleeps.filter(({ at }) => at === attempt.start).map(({ ms }) => ms);
+    const left = deadline - attempt.start;
+    expect(attempt.start, `an attempt started at or after the deadline: ${listed}`).toBeLessThan(
+      deadline,
+    );
+    expect(timeOuts, `an attempt's time-out was not cut to what was left: ${listed}`).toContain(
+      Math.min(10_000, left),
+    );
+    expect(
+      timeOuts.every((ms) => ms <= left),
+      `a time-out reached past the deadline: ${listed}`,
+    ).toBe(true);
+    expect(attempt.ended, `an attempt was not cut off by its time-out: ${listed}`).toBe("cut off");
+  }
+};
 
 // The retry cases run on the real clock: the spacing between attempts is real time.
 layer(NodeServices.layer, { excludeTestServices: true })("Emulator failures", (it) => {
@@ -614,6 +744,9 @@ layer(NodeServices.layer)("Emulator retry policy", (it) => {
     Effect.gen(function* () {
       const { origin, hits } = yield* stalling;
       const directory = yield* recordsDirectory;
+      const attempts: Array<TimedAttempt> = [];
+      const client = timedClient(attempts);
+      const clock = yield* Clock.Clock;
       const shipped = (base: string, payload: unknown, applied?: Effect.Effect<boolean, never>) =>
         emulatorRequest(
           `${origin}${base}`,
@@ -622,37 +755,97 @@ layer(NodeServices.layer)("Emulator retry policy", (it) => {
           token,
           undefined,
           applied === undefined ? undefined : { applied },
-        ).pipe(
-          Effect.provideService(EmulatorRetryRecords, { directory }),
-          Effect.provide(FetchHttpClient.layer),
-        );
+        ).pipe(Effect.provideService(EmulatorRetryRecords, { directory }), Effect.provide(client));
 
       // Three attempts of 10, 10 and the 6 s left, 1 s then 3 s apart: 30 s in all.
       const google = `/google/stalled-${suffix}`;
-      const plain = yield* onTestClock(shipped(google, { users: [{ email }] }));
+      const plainClock = notingClock(clock);
+      const plain = yield* onTestClock(plainClock.run(shipped(google, { users: [{ email }] })));
       expect(hits.get(`POST ${google}/_emulate/seed`)).toBe(3);
-      expect(plain.elapsed).toBeLessThanOrEqual(30_000);
+      expect(attempts.map(({ route }) => route)).toEqual(
+        Array.from({ length: 3 }, () => `POST ${google}/_emulate/seed`),
+      );
+      withinDeadline(attempts, plainClock.noted);
       const error = Option.getOrThrow(Exit.findErrorOption(plain.exit));
       expect(error.message).toContain("after 3 attempts");
       expect(error.reason).toBe("timeout");
 
       // The read back has only the 19 s left after the first attempt and its spacing; it stalls
       // too, so whether the seed applied stays unknown and it is not sent again.
+      attempts.length = 0;
       const workos = `/workos/stalled-${suffix}`;
       const readBack = emulatorRequest(`${origin}${workos}`, "/user_management/users").pipe(
         Effect.as(true),
         Effect.orElseSucceed(() => false),
-        Effect.provide(FetchHttpClient.layer),
+        Effect.provide(client),
       );
       const seed = {
         users: [{ email }],
         organizations: [{ name: "V1 stalled", members: [email] }],
       };
-      const organization = yield* onTestClock(shipped(workos, seed, readBack));
+      const organizationClock = notingClock(clock);
+      const organization = yield* onTestClock(
+        organizationClock.run(shipped(workos, seed, readBack)),
+      );
       expect(hits.get(`POST ${workos}/_emulate/seed`)).toBe(1);
       expect(hits.get(`GET ${workos}/user_management/users`)).toBeGreaterThanOrEqual(1);
-      expect(organization.elapsed).toBeLessThanOrEqual(30_000);
+      expect(attempts[0]?.route).toBe(`POST ${workos}/_emulate/seed`);
+      expect(
+        attempts.slice(1).every(({ route }) => route === `GET ${workos}/user_management/users`),
+      ).toBe(true);
+      withinDeadline(attempts, organizationClock.noted);
       expect(Exit.isFailure(organization.exit)).toBe(true);
+    }),
+  );
+
+  it.effect("every harness process that calls out waits 2.5 s per address, not Node's 250 ms", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+      // Node's default on the pinned Node, which made a slow two-address connect fail in ~500 ms.
+      const read = (code: string) =>
+        Effect.gen(function* () {
+          const child = yield* processes.spawn(
+            ChildProcess.make(process.execPath, ["--input-type=module", "-e", code]),
+          );
+          const [out] = yield* Effect.all(
+            [child.stdout.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
+            { concurrency: "unbounded" },
+          );
+          return Number(out.trim());
+        }).pipe(Effect.scoped);
+      const value = `import net from "node:net"; console.log(net.getDefaultAutoSelectFamilyAttemptTimeout());`;
+      expect(yield* read(value)).toBe(250);
+      expect(yield* read(`import "./e2e/support/connect-timeout.ts"; ${value}`)).toBe(2_500);
+      // Each entry point that makes outbound calls imports it before anything else, and so does
+      // every setup file of the Vitest config the targets run under, so each worker has it.
+      const first = (text: string) => text.match(/^import (?:[^;]*? from )?"([^"]+)";/m)?.[1];
+      const callers: Array<string> = [];
+      for (const name of (yield* fs.readDirectory("e2e")).toSorted()) {
+        if (!name.endsWith(".ts")) continue;
+        const text = yield* fs.readFileString(`e2e/${name}`);
+        if (
+          /NodeRuntime\.runMain/.test(text) &&
+          /FetchHttpClient|runSuite\(|runDeployedSuite|startDeployment/.test(text)
+        ) {
+          callers.push(`e2e/${name}`);
+          expect(first(text), name).toBe("./support/connect-timeout.ts");
+        }
+      }
+      expect(callers).toEqual([
+        "e2e/cleanup-deployed.ts",
+        "e2e/cli.ts",
+        "e2e/create-emulators.ts",
+        "e2e/deployed.ts",
+        "e2e/run.ts",
+      ]);
+      const config = yield* fs.readFileString("e2e/vitest.config.ts");
+      const setupFiles = [...config.matchAll(/setupFiles: \[([^\]]*)\]/g)].flatMap((match) =>
+        [...match[1]!.matchAll(/"([^"]+)"/g)].map((file) => file[1]!),
+      );
+      expect(setupFiles.length).toBeGreaterThan(0);
+      for (const file of setupFiles)
+        expect(first(yield* fs.readFileString(file)), file).toBe("./support/connect-timeout.ts");
     }),
   );
 });

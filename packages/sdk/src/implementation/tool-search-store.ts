@@ -59,6 +59,16 @@ const Kept = Schema.Struct({
   routers: Schema.Array(ToolRouter),
   superseded: Schema.NullOr(Schema.Number),
 });
+/**
+ * {@link Kept} with the listing and target it belongs to, for a read of several listings. Rows
+ * written before targets were recorded have none; they match no wanted target, as `listing`'s
+ * `target =` filter skips them.
+ */
+const KeptOf = Schema.Struct({
+  ...Kept.fields,
+  listing: Schema.String,
+  target: Schema.NullOr(Schema.String),
+});
 const Listed = Schema.Struct({ listing: Schema.String });
 /** A ranked page as one row: every part of it read in the same statement. */
 const Ranked = Schema.Struct({
@@ -217,35 +227,35 @@ export const makeToolSearchStore = (sql: SqlClient.SqlClient) => {
         failed,
       ),
     /**
-     * `listing` for many targets in one statement: the kept rows of each listing whose row is for
-     * its target, by listing.
+     * The kept rows of each of these listings of its target, in order, read in one statement;
+     * undefined where none is kept. Each answers as `listing` would for it alone.
      */
     listings: (
       wanted: ReadonlyArray<{ readonly listing: ToolSearchListing; readonly target: string }>,
-    ): Effect.Effect<ReadonlyMap<string, typeof Kept.Type>, StorageError> =>
+    ) =>
       wanted.length === 0
-        ? Effect.succeed(new Map())
+        ? Effect.succeed([])
         : sql`select listing, target, at::float8 as at, digest, routers,
             superseded::float8 as superseded
           from executor_tool_search_listings
           where listing in ${sql.in([...new Set(wanted.map((entry) => entry.listing))])}`.pipe(
-            Effect.flatMap(
-              Schema.decodeUnknownEffect(
-                Schema.Array(
-                  Schema.Struct({ ...Kept.fields, listing: Schema.String, target: Schema.String }),
-                ),
-              ),
+            Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(KeptOf))),
+            Effect.map((rows) =>
+              wanted.map((entry) => {
+                const row = rows.find(
+                  (candidate) =>
+                    candidate.listing === entry.listing && candidate.target === entry.target,
+                );
+                return row === undefined
+                  ? undefined
+                  : {
+                      at: row.at,
+                      digest: row.digest,
+                      routers: row.routers,
+                      superseded: row.superseded,
+                    };
+              }),
             ),
-            Effect.map((rows) => {
-              const targets = new Map(wanted.map((entry) => [entry.listing, entry.target]));
-              return new Map(
-                rows.flatMap(({ listing, target, ...kept }) =>
-                  targets.get(ToolSearchListing.make(listing)) === target
-                    ? [[listing, kept] as const]
-                    : [],
-                ),
-              );
-            }),
             failed,
           ),
     /**

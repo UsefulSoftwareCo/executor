@@ -1,7 +1,8 @@
 /** Vitest hooks own isolated servers and cleanup; the test deadline owns scenario work. */
-import { Clock, Effect, Exit, FileSystem, Layer, Scope } from "effect";
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { Clock, Config, Effect, Exit, FileSystem, Layer, Option, Path, Scope } from "effect";
 import { randomBytes } from "node:crypto";
-import { beforeEach, type TestContext } from "vitest";
+import { afterAll, beforeEach, type TestContext } from "vitest";
 import { prepareScenario, startScenario } from "../sdk/scenario.ts";
 import { createScenario } from "../sdk/session.ts";
 import { RuntimeLive, Target } from "./platform.ts";
@@ -10,6 +11,17 @@ import { prepareManagementApp } from "./management-app.ts";
 import { prepareOrganization } from "./organization-provisioning.ts";
 import { SessionClients } from "./api.ts";
 import { scenarios, type TestPlan } from "../test-plan.ts";
+import { saveLostRequests } from "../lost-requests.ts";
+import {
+  configureLostConnections,
+  takeAllLostRequests,
+  forgetStageRequests,
+  takeLostRequests,
+  unsentNote,
+} from "./lost-connections.ts";
+import { targetHosts } from "./role-hosts.ts";
+import { machineWorkMs, referenceMachineWorkMs, timeoutLine } from "./machine-speed.ts";
+import { hookTimeoutMs } from "../timeouts.ts";
 
 /** An extra Testing SDK scenario acquired by setup. The test may close its scope early. */
 export interface SdkScenarioFixture {
@@ -50,48 +62,107 @@ export const installScenarioLifecycle = () =>
     let completedAt: number | undefined;
     let provisioningMs: number | null = null;
     let save = (_finishedAt: number): Effect.Effect<void> => Effect.void;
+    let finished = false;
+    // A scenario that fails while a request of it never got a connection says so in its failure,
+    // a time-out included: "one stage request was unsent for 31.0 s".
+    context.onTestFailed(({ task }) => {
+      const note = unsentNote(task.name);
+      const first = task.result?.errors?.[0];
+      if (note === "" || first === undefined) return;
+      const original = first.message;
+      first.message = `${original}; ${note}`;
+      if (first.stack) first.stack = first.stack.replace(original, first.message);
+    });
+    // The time-out that applied, and, when the scenario or one of its hooks timed out, how fast
+    // the machine was then (machine-speed.ts). The line is also put on the time-out's own error.
+    let timing: Record<string, unknown> = {};
     let discard: Effect.Effect<void> = Effect.void;
     // A passing scenario's server data is never read again; failures keep theirs for diagnosis.
-    context.onTestFinished(({ task }) =>
-      Effect.runPromise(
+    context.onTestFinished(({ task }) => {
+      finished = true;
+      timing = { timeoutMs: task.timeout, hookTimeoutMs };
+      const timedOut = (task.result?.errors ?? []).flatMap((error) => {
+        const bound = /^(Test|Hook) timed out in (\d+)ms/.exec(error.message ?? "");
+        return bound ? [{ error, kind: bound[1], boundMs: Number(bound[2]) }] : [];
+      });
+      if (timedOut.length > 0) {
+        const machineMs = machineWorkMs();
+        const lines = timedOut.map(({ error, kind, boundMs }) => {
+          const line = `${kind} ${timeoutLine(boundMs, boundMs, machineMs)}`;
+          // The first line of the failure, which the job log and ci-failures print, names the
+          // machine's speed; Vitest's own message follows it.
+          const original = error.message;
+          error.message = `${line}\n${original}`;
+          if (error.stack) error.stack = error.stack.replace(original, error.message);
+          return line;
+        });
+        timing = { ...timing, timedOut: lines, machineMs, referenceMachineWorkMs };
+        console.error(lines.join("\n"));
+      }
+      return Effect.runPromise(
         Scope.close(scope, outcome).pipe(
           Effect.ensuring(Clock.currentTimeMillis.pipe(Effect.flatMap(save))),
+          // Closing the scope wrote the scenario's evidence, its stage requests included.
+          Effect.ensuring(Effect.sync(() => forgetStageRequests(task.name))),
           Effect.andThen(
             Effect.suspend(() => (task.result?.state === "pass" ? discard : Effect.void)),
           ),
         ),
-      ),
-    );
+      );
+    });
     return Effect.runPromise(
       Effect.gen(function* () {
         const runtime = yield* Layer.buildWithScope(RuntimeLive, scope);
         yield* Effect.gen(function* () {
           const base = yield* Target;
           const fs = yield* FileSystem.FileSystem;
+          const paths = yield* Path.Path;
           const directory = `${base.directory}/report/lifecycle`;
           yield* fs.makeDirectory(directory, { recursive: true });
+          // The stage this scenario sends to: its requests lost in transport are told apart
+          // and recorded, each on a connection of its own (lost-connections.ts). A target the scenario starts adds
+          // its own origins as soon as it exists (sdk/scenario.ts).
+          // A request of which nothing was written is sent again, never at or past the
+          // scenario's own bound, counted from before its set-up.
+          configureLostConnections({
+            origins: Object.values(targetHosts(base)),
+            deadline: () =>
+              finished || context.task.timeout <= 0 ? undefined : startedAt + context.task.timeout,
+          });
           save = (finishedAt) =>
-            fs
-              .writeFileString(
-                `${directory}/${context.task.id}.json`,
-                JSON.stringify(
-                  {
-                    title: context.task.name,
-                    setupMs: readyAt === undefined ? finishedAt - startedAt : readyAt - startedAt,
-                    provisioningMs,
-                    scenarioMs:
-                      readyAt === undefined || completedAt === undefined
-                        ? null
-                        : completedAt - readyAt,
-                    cleanupMs: completedAt === undefined ? null : finishedAt - completedAt,
-                    totalMs: finishedAt - startedAt,
-                  },
-                  null,
-                  2,
-                ),
-                { mode: 0o600 },
+            saveLostRequests(base.directory, context.task.id, takeLostRequests(context.task.name))
+              .pipe(
+                Effect.provideService(FileSystem.FileSystem, fs),
+                Effect.provideService(Path.Path, paths),
+                Effect.orDie,
               )
-              .pipe(Effect.orDie);
+              .pipe(
+                Effect.andThen(
+                  fs
+                    .writeFileString(
+                      `${directory}/${context.task.id}.json`,
+                      JSON.stringify(
+                        {
+                          title: context.task.name,
+                          setupMs:
+                            readyAt === undefined ? finishedAt - startedAt : readyAt - startedAt,
+                          provisioningMs,
+                          scenarioMs:
+                            readyAt === undefined || completedAt === undefined
+                              ? null
+                              : completedAt - readyAt,
+                          cleanupMs: completedAt === undefined ? null : finishedAt - completedAt,
+                          totalMs: finishedAt - startedAt,
+                          ...timing,
+                        },
+                        null,
+                        2,
+                      ),
+                      { mode: 0o600 },
+                    )
+                    .pipe(Effect.orDie),
+                ),
+              );
           const plan: typeof TestPlan.Type | undefined = Object.values(scenarios).find(
             (scenario) => scenario.title === context.task.name,
           );
@@ -175,4 +246,26 @@ export const installScenarioLifecycle = () =>
       { signal: context.signal },
     );
   });
+
+/**
+ * At the end of each test file, save the lost requests no scenario saved: those made outside any
+ * scenario (`beforeAll`, `afterAll`, a `layer`'s set-up and teardown) and a scenario's whose start
+ * failed before its lifecycle could save them, so a burst in set-up still shows in the summary.
+ */
+export const installLostRequestSaving = () =>
+  afterAll(() =>
+    Effect.runPromise(
+      Effect.gen(function* () {
+        const run = yield* Config.String("EXECUTOR_E2E_RUN").pipe(Config.option);
+        const records = takeAllLostRequests();
+        if (Option.isNone(run) || records.length === 0) return;
+        const file = records.find((lost) => lost.file !== undefined)?.file ?? "file";
+        yield* saveLostRequests(
+          run.value,
+          `outside-scenarios-${file.replace(/[^A-Za-z0-9.-]/gu, "-")}-${process.pid}-${Date.now()}`,
+          records,
+        );
+      }).pipe(Effect.provide(NodeServices.layer), Effect.orDie),
+    ),
+  );
 /* oxlint-enable executor/no-manual-effect-runtime-in-tests */

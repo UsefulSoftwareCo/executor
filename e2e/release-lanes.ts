@@ -54,18 +54,14 @@ const packagingPaths = [
   "apps/docs/public/install.*",
   ".github/workflows/bun-runtime.yml",
   "scripts/pack-test-apps.ts",
-] as const;
-
-/**
- * Only the matrix after merge reads its own workflow, and the actions its collector jobs build the
- * Rust telemetry collector with. The pull request lanes start running those actions at the cutover,
- * when packaging starts using the collector; until then a change to them starts only the check.
- */
-const matrixOnlyPaths = [
-  ".github/workflows/release-artifacts.yml",
+  // The run's collector job builds or restores the Rust telemetry collector through these; the
+  // release-local jobs wait for it and fetch its build before they package it.
   ".github/actions/collector/**",
   ".github/actions/rustup/**",
 ] as const;
+
+/** Only the matrix after merge reads its own workflow. */
+const matrixOnlyPaths = [".github/workflows/release-artifacts.yml"] as const;
 
 /**
  * Workspace packages the suites start at run time rather than import: e2e/sdk/fixtures.ts runs

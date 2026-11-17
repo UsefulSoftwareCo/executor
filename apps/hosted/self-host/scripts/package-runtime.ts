@@ -208,20 +208,6 @@ const packageRuntime = Effect.gen(function* () {
   yield* fs.writeFile(path.join(output, "workerd"), workerd.binary);
   yield* fs.chmod(path.join(output, "workerd"), 0o755);
   yield* fs.copy(web, path.join(output, "web"), { overwrite: true });
-  yield* fs.copy(path.join(root, "packages/telemetry/dist/motel"), path.join(output, "motel"), {
-    overwrite: true,
-  });
-  // The collector shares the container's memory limit. Bound what it holds for exports in
-  // flight (4 x 16 MiB) and what it stores; beyond either it refuses and counts.
-  const motelBounds = Object.entries({
-    MOTEL_OTEL_MAX_PENDING_INGEST: 4,
-    MOTEL_OTEL_MAX_INGEST_BYTES: 16 * 1024 * 1024,
-    MOTEL_OTEL_MAX_SPANS: 1_000_000,
-    MOTEL_OTEL_MAX_DB_SIZE_MB: 1024,
-    MOTEL_OTEL_RETENTION_HOURS: 168,
-  })
-    .map(([name, value]) => `(name=${JSON.stringify(name)},text=${JSON.stringify(String(value))})`)
-    .join(",");
   // Every workflow run is its own Engine durable object, and pinning engines kept every finished
   // run resident. workerd unloads an engine about 70 s after its last call once no caller holds
   // it, even with a step in flight; only a run started by create() has a caller holding it. The
@@ -273,7 +259,7 @@ const packageRuntime = Effect.gen(function* () {
   const productWorker = (bindings: { readonly apps: string }) => `(name="product",worker=(
    compatibilityDate="2026-09-01",compatibilityFlags=["nodejs_compat","no_brotli_content_encoding","enable_request_signal"],
    modules=[(name="product.mjs",esModule=embed "@@RUNTIME@@/product.mjs"),(name="executor:pglite.wasm",wasm=embed "@@RUNTIME@@/pglite.wasm"),(name="executor:initdb.wasm",wasm=embed "@@RUNTIME@@/initdb.wasm"),(name="executor:pglite.data",data=embed "@@RUNTIME@@/pglite.data")],
-   bindings=[(name="PRODUCT",durableObjectNamespace="ExecutorProduct"),(name="NATIVE",service="native"),(name="LEGACY_DATABASE",service="legacy-data"),(name="BLOBS",service="builds"),(name="DASHBOARD",service="dashboard"),(name="PUBLIC_FETCH",service="public"),(name="PRIVATE_FETCH",service="internet"),(name="MOTEL",service="motel"),(name="SELF",service=(name="product",entrypoint="SelfOrigin")),(name="APPS",service=${bindings.apps}),(name="UNSAFE_EVAL",unsafeEval=void)],
+   bindings=[(name="PRODUCT",durableObjectNamespace="ExecutorProduct"),(name="NATIVE",service="native"),(name="LEGACY_DATABASE",service="legacy-data"),(name="BLOBS",service="builds"),(name="DASHBOARD",service="dashboard"),(name="PUBLIC_FETCH",service="public"),(name="PRIVATE_FETCH",service="internet"),(name="COLLECTOR",service="collector"),(name="SELF",service=(name="product",entrypoint="SelfOrigin")),(name="APPS",service=${bindings.apps}),(name="UNSAFE_EVAL",unsafeEval=void)],
    durableObjectNamespaces=[(className="ExecutorProduct",uniqueKey="executor-product",enableSql=true,preventEviction=true)],durableObjectStorage=(localDisk="product-data")
   ))`;
   const appsWorker = (bindings: {
@@ -292,7 +278,7 @@ const packageRuntime = Effect.gen(function* () {
   const networks = `(name="public",network=(allow=["public"],tlsOptions=(trustBrowserCas=true,trustedCertificates=[@@EXTRA_CA_CERTIFICATES@@]))),
   (name="internet",network=(allow=["public","private","local"],tlsOptions=(trustBrowserCas=true,trustedCertificates=[@@EXTRA_CA_CERTIFICATES@@])))`;
   const productStores = `(name="native",external=(address="unix:/tmp/executor-native.sock",http=())),
-  (name="motel",external=(address="unix:/tmp/executor-motel.sock",http=())),
+  (name="collector",external=(address="unix:/tmp/executor-collector.sock",http=())),
   (name="dashboard",disk=(path="@@RUNTIME@@/web")),
   (name="product-data",disk=(path="/app/data/product",writable=true,allowDotfiles=true)),
   (name="legacy-data",disk=(path="/app/data/hosted.pglite",allowDotfiles=true)),
@@ -341,41 +327,6 @@ const config :Workerd.Config = (
   ${appStores}
  ],
  sockets=[(name="apps",address="unix:/tmp/executor-apps.sock",http=(),service="apps")]
-);
-`;
-  // workerd runs a process's JavaScript on one thread. The collector indexes every span it stores,
-  // about a thousand per catalog-wide search, so in the product's process that work delayed MCP
-  // requests by seconds. It runs in its own workerd process and listens only on a private Unix
-  // socket, which the host passes to it and to the product's MOTEL binding. With no TCP listener,
-  // an app's fetch cannot reach its ingest or query routes even when private fetch is allowed.
-  // The collector's process needs its own memory settings. Every export it stores leaves garbage in
-  // its isolate, and without these settings workerd does not collect an idle isolate or return
-  // freed memory to the system: with 30 apps' per-minute schedules the collector grew by about
-  // 100 MB an hour to about 430 MB, of which its heap held about 14 MB of live objects. The product's 10 s idle delay would never fire here,
-  // because the collector's retention alarm runs every 10 s. After 2 s without JavaScript activity
-  // the isolate runs a full collection, and TCMalloc returns the memory it frees. The same load then
-  // held the collector at about 90 MB, for about a fifth more of its CPU time. A collection stops
-  // the collector's thread while it runs, so an export that arrives during one waits for it.
-  const motelMemory = [
-    "maintenanceIntervalMs=1000",
-    "idleIsolateGcDelayMs=2000",
-    "idleIsolateGcMode=full",
-    `tcmallocBackgroundReleaseBytesPerSecond=${8 * 1024 * 1024}`,
-    "releaseMemoryAfterGc=true",
-  ].join(",");
-  const motelConfig = `using Workerd = import "/workerd/workerd.capnp";
-const config :Workerd.Config = (
- memory=(${motelMemory}),
- services=[
-  (name="motel",worker=(
-   compatibilityDate="2026-09-01",compatibilityFlags=["nodejs_compat"],modules=[(name="motel.mjs",esModule=embed "@@RUNTIME@@/motel/motel.mjs")],
-   bindings=[(name="STORE",durableObjectNamespace="MotelCollector"),(name="ASSETS",service="motel-assets"),${motelBounds}],
-   durableObjectNamespaces=[(className="MotelCollector",uniqueKey="motel",enableSql=true)],durableObjectStorage=(localDisk="motel-data")
-  )),
-  (name="motel-assets",disk=(path="@@RUNTIME@@/motel/web/dist")),
-  (name="motel-data",disk=(path="/app/motel-data",writable=true,allowDotfiles=true))
- ],
- sockets=[(name="motel",address="unix:/tmp/executor-motel.sock",http=(),service="motel")]
 );
 `;
   // Retain dependency notices with the executable image, including the embedded engines.
@@ -432,7 +383,6 @@ const config :Workerd.Config = (
   yield* fs.writeFileString(path.join(output, "workerd.capnp"), config);
   yield* fs.writeFileString(path.join(output, "product.capnp"), productConfig);
   yield* fs.writeFileString(path.join(output, "apps.capnp"), appsConfig);
-  yield* fs.writeFileString(path.join(output, "motel.capnp"), motelConfig);
   // Count real files once, including native assets, and reject any link back to
   // the build tree. This budget covers both supported Linux architectures.
   const runtimeRoot = yield* fs.realPath(output);

@@ -43,9 +43,10 @@ jobs:
             echo "::endgroup::"
           done
 
-  # Self-host scenarios for scoped-connection widening, OAuth registration, app
-  # User-Agent, and load-failure containment, plus local MCP search. Both jobs use
-  # Bun 1.4.4: the collector build and upstream's new-file patches need the newer Bun.
+  # Self-host scenarios for scoped-connection widening, OAuth registration and held
+  # scopes, app User-Agent, private-registry build egress, load-failure containment
+  # and the apps SDK release gate, plus local MCP search. Both jobs use Bun 1.4.4:
+  # the collector build and upstream's new-file patches need the newer Bun.
   # No extra secrets: the runner mints its own API key. CI disables the prepare cache.
   security-e2e:
     runs-on: ubuntu-latest
@@ -63,10 +64,21 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Install Playwright Chromium
         run: bunx playwright install --with-deps chromium
+      # Upstream CI downloads a separately built collector after prepare; this fork
+      # has no such artifact job. Build and qualify the exact pinned crate here.
+      - name: Build and verify the Linux x64 telemetry collector
+        run: node packages/telemetry/scripts/build-collector.ts --target linux-x64 --install-toolchain build check smoke
       - run: bun run e2e:prepare
+      # Filters match scheduled scenario titles from e2e/test-plan.ts, not suite names; the
+      # "App dependency registry" suite's only scenario is selected by the private-fetch prefix.
       - name: Security scenarios
         run: |
-          bun run e2e:self-host -- --test-name 'application_type|fetch without a User-Agent names Executor|cannot create an all-apps connection|cannot widen a connection or mint|fails to load fails only its own reads'
+          bun run e2e:self-host -- --test-name 'application_type|fetch without a User-Agent names Executor|cannot create an all-apps connection|cannot widen a connection or mint|fails to load fails only its own reads|with private fetch off, a build|App dependency registry|keeps renewing grants that hold a scope|own Google client still signs in gmail.modify'
+      # The apps SDK release gate is its own suite, not a self-host scenario.
+      - name: SDK release gate scenarios
+        run: |
+          bun run apps:build
+          bun run e2e:apps-published -- --testNamePattern 'self-host gate'
       - name: Tool error contract scenarios
         run: bun run e2e:self-host --test-name 'Every error tools/call and tools/run declare|Every error a write reports after its app code received the call'
       - name: Operator feedback scenarios

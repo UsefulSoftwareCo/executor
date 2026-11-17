@@ -1,7 +1,7 @@
 /** Local fixture control process. Database credentials stay in memory and never enter the Worker. */
 import { createServer } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
@@ -328,6 +328,38 @@ const main = Effect.gen(function* () {
    * The app domain status the product's location read reports for this scenario's team: the row
    * the coordinator wrote for its current slug, or `absent` before a pass has written one.
    */
+  /**
+   * The stage's webhook source queue: how many sources wait, pending and unleased, for the sweep;
+   * how many team and member provisioning jobs, which link the default app's accounts and so queue
+   * sources, are still to finish; and the database's clock when it counted. Counts of the test
+   * stage's own rows, never which.
+   */
+  const webhookQueue = Effect.gen(function* () {
+    const database = pool;
+    if (auth === undefined || database === undefined)
+      return yield* new TestAccountFailed({ stage: "configuration" });
+    const result = yield* Effect.tryPromise({
+      try: () =>
+        database.query(
+          `select (select count(*)::int from executor_webhook_sources
+                where status = 'pending' and lease is null) as pending,
+              (select count(*)::int from hosted_provisioning
+                where kind in ('team', 'member') and status in ('queued', 'running')) as provisioning,
+              (extract(epoch from now()) * 1000)::bigint::text as at`,
+        ),
+      catch: () => new TestAccountFailed({ stage: "database" }),
+    });
+    const [row] = yield* Schema.decodeUnknownEffect(
+      Schema.Tuple([
+        Schema.Struct({
+          pending: Schema.Int,
+          provisioning: Schema.Int,
+          at: Schema.NumberFromString,
+        }),
+      ]),
+    )(result.rows);
+    return row;
+  });
   const domain = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const { id } = yield* request.json.pipe(
@@ -711,6 +743,120 @@ const main = Effect.gen(function* () {
       deletionMs,
     };
   });
+  /**
+   * A scenario's hold on the row of one of its own users' API keys, so its MCP calls' key checks
+   * contend as behind another request's use: `age` makes the key's last use the given number of
+   * seconds old, `hold` updates it to now in a transaction left open, which the calls' checks wait
+   * for, and `release` commits that. One hold per scenario; the fixture rolls back what it still
+   * holds when it ends.
+   */
+  const KeyUse = Schema.Struct({
+    id: Id,
+    key: Schema.NonEmptyString,
+    action: Schema.Literals(["age", "hold", "release", "blocked"]),
+    seconds: Schema.optional(Schema.Number.check(Schema.isBetween({ minimum: 0, maximum: 3600 }))),
+  });
+  /** Each scenario's open hold: its connection and that connection's backend, which others wait on. */
+  const holds = new Map<string, { readonly client: PoolClient; readonly pid: number }>();
+  yield* Effect.addFinalizer(() =>
+    Effect.promise(async () => {
+      for (const { client } of holds.values()) {
+        await client.query("rollback").catch(() => undefined);
+        client.release();
+      }
+      holds.clear();
+    }),
+  );
+  const keyUse = Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const input = yield* request.json.pipe(Effect.flatMap(Schema.decodeUnknownEffect(KeyUse)));
+    const scenario = owned.get(input.id);
+    const database = pool;
+    if (scenario === undefined || database === undefined)
+      return yield* new TestAccountFailed({ stage: "fixture" });
+    const users = [...scenario.users];
+    const run = (text: string, params: ReadonlyArray<unknown>) =>
+      Effect.tryPromise({
+        try: () => database.query(text, [...params]),
+        catch: () => new TestAccountFailed({ stage: "database" }),
+      });
+    // Only a key of the scenario's own users.
+    const mine = `id = $1 and "referenceId" = any($2::text[])`;
+    switch (input.action) {
+      case "age": {
+        const updated = yield* run(
+          `update apikey set "lastRequest" = now() - make_interval(secs => $3) where ${mine}`,
+          [input.key, users, input.seconds ?? 0],
+        );
+        return { updated: updated.rowCount ?? 0 };
+      }
+      case "hold": {
+        if (holds.has(input.id)) return yield* new TestAccountFailed({ stage: "fixture" });
+        const client = yield* Effect.tryPromise({
+          try: () => database.connect(),
+          catch: () => new TestAccountFailed({ stage: "database" }),
+        });
+        const held = yield* Effect.tryPromise({
+          try: async () => {
+            await client.query("begin");
+            const updated = await client.query(
+              `update apikey set "lastRequest" = now() where ${mine}`,
+              [input.key, users],
+            );
+            const backend = await client.query<{ pid: number }>("select pg_backend_pid() as pid");
+            return { rowCount: updated.rowCount, pid: Number(backend.rows[0]?.pid) };
+          },
+          catch: () => new TestAccountFailed({ stage: "database" }),
+        }).pipe(
+          Effect.tapError(() =>
+            Effect.promise(async () => {
+              await client.query("rollback").catch(() => undefined);
+              client.release();
+            }),
+          ),
+        );
+        holds.set(input.id, { client, pid: held.pid });
+        return { updated: held.rowCount ?? 0 };
+      }
+      case "release": {
+        const hold = holds.get(input.id);
+        if (hold === undefined) return { released: false };
+        const client = hold.client;
+        holds.delete(input.id);
+        yield* Effect.tryPromise({
+          try: () => client.query("commit"),
+          catch: () => new TestAccountFailed({ stage: "database" }),
+        }).pipe(Effect.ensuring(Effect.sync(() => client.release())));
+        return { released: true };
+      }
+      case "blocked": {
+        // Sessions waiting on the scenario's hold: those whose blockers include its backend.
+        // Postgres queues later lockers behind the first waiter, so a session counts when the hold
+        // blocks it or blocks a session that blocks it. Only the bearer key check's statement
+        // (`loadPat`) counts as a key check; any other waiter is listed by how its statement
+        // begins (this database is a test stage's or local Cloud's).
+        const hold = holds.get(input.id);
+        if (hold === undefined) return { keyChecks: 0, others: [] };
+        const rows = yield* run(
+          `with recursive waiting(pid) as (
+              select pid from pg_stat_activity where $1::int = any(pg_blocking_pids(pid))
+              union
+              select a.pid from pg_stat_activity a join waiting w on w.pid = any(pg_blocking_pids(a.pid))
+            )
+            select a.query like '%from apikey where key =%' as key_check,
+              left(regexp_replace(a.query, '\\s+', ' ', 'g'), 40) as statement
+              from waiting w join pg_stat_activity a on a.pid = w.pid`,
+          [hold.pid],
+        );
+        return {
+          keyChecks: rows.rows.filter((row) => row.key_check === true).length,
+          others: rows.rows
+            .filter((row) => row.key_check !== true)
+            .map((row) => String(row.statement ?? "")),
+        };
+      }
+    }
+  });
   const routes = Layer.mergeAll(
     HttpRouter.add("POST", "/configure", endpoint(configure)),
     HttpRouter.add("POST", "/actors", endpoint(provision)),
@@ -719,6 +865,8 @@ const main = Effect.gen(function* () {
     HttpRouter.add("POST", "/remove", endpoint(remove)),
     HttpRouter.add("POST", "/settle", endpoint(settle)),
     HttpRouter.add("POST", "/domain", endpoint(domain)),
+    HttpRouter.add("POST", "/webhook-queue", endpoint(webhookQueue)),
+    HttpRouter.add("POST", "/api-key-use", endpoint(keyUse)),
     HttpRouter.add(
       "GET",
       "/health",

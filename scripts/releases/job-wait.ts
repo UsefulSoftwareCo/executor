@@ -127,6 +127,11 @@ const spoken = (seconds: number) =>
 export type JobWait = {
   /** The job's name as the jobs API lists it, such as `apps` or `collector (linux-x64)`. */
   readonly job: string;
+  /**
+   * The calling workflow's job, when the waited job is in a called workflow: it is then also found
+   * as `<caller> / <job>`, and only so. Unset, the name must match exactly.
+   */
+  readonly caller?: string | undefined;
   /** How long to wait in all, in minutes of elapsed time. */
   readonly minutes: number;
   /** The failure for a job that ended `conclusion`; `url` is its page, when the API gave one. */
@@ -238,7 +243,14 @@ export const waitForJob = (options: JobWait) =>
       )
         return yield* changed;
       // A consistent read. Only this attempt's records count; another attempt's is never the answer.
-      const named = jobs.filter((candidate) => candidate.name === options.job);
+      // A job of a called workflow is listed under its caller's job, as `checks / collector
+      // (linux-x64)` in CI, which calls checks.yml as `checks`. Only a waiter that names that
+      // caller (`caller`) takes that one name too; every other waiter matches the name exactly.
+      const named = jobs.filter(
+        (candidate) =>
+          candidate.name === options.job ||
+          (options.caller !== undefined && candidate.name === `${options.caller} / ${options.job}`),
+      );
       const matches = named.filter((candidate) => candidate.run_attempt === runAttempt);
       const others = named.filter((candidate) => candidate.run_attempt !== runAttempt);
       const duplicated = matches.length > 1;

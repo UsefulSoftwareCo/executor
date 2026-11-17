@@ -18,6 +18,7 @@ import {
   missingRequirements,
   usedAccounts,
   type AppAccountLink,
+  type SharedAppLink,
   type RequirementAccounts,
 } from "./app-accounts.ts";
 import type {
@@ -61,6 +62,8 @@ export interface Inventory {
   readonly apps: readonly App[];
   /** The caller's linked accounts for each listed app. */
   readonly links: readonly AppAccountLink[];
+  /** The app links of each listed app, oldest first. */
+  readonly appLinks: readonly SharedAppLink[];
   readonly accounts: readonly AccountSummary[];
 }
 /** Any Effect Atom source, including a live stream or a one-shot HTTP query. */

@@ -28,9 +28,14 @@ export const deleteAppAtom = Atom.family((app: AppId) =>
           acknowledge(get, overviewAtom, (data) => ({
             ...data,
             apps: data.apps.filter((current) => current.id !== app),
+            links: data.links.filter((link) => link.app !== app),
+            appLinks: data.appLinks.filter((link) => link.app !== app),
           }));
           if (Option.isSome(current))
-            for (const account of linkedAccountIds(current.value.links, app))
+            for (const account of new Set([
+              ...linkedAccountIds(current.value.links, app),
+              ...current.value.appLinks.flatMap((link) => (link.app === app ? [link.account] : [])),
+            ]))
               acknowledge(get, accountAtom(account), (data) => ({
                 ...data,
                 apps: data.apps.filter((current) => current.id !== app),

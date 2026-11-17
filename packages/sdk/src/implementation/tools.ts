@@ -103,6 +103,7 @@ import {
   ToolCallKindObserved,
   type PrefetchedInvocation,
   type PrefetchHost,
+  SearchablePrefetch,
   type SearchableTools,
 } from "../contracts/tools.ts";
 import type { ExecutorDatabase } from "./storage.ts";
@@ -129,7 +130,7 @@ import {
   selectionAccountIds,
   type SelectionAccountsRead,
 } from "./selection.ts";
-import type { Listings, ToolListing } from "./listings.ts";
+import type { Listings, SearchableAhead, ToolListing } from "./listings.ts";
 import { pageStart, pageTools } from "./tool-pages.ts";
 import { ownsDatabase, sharesRuntime } from "../contracts/apps.ts";
 
@@ -141,6 +142,17 @@ const readApp = (db: Query, app: AppId) =>
       where: (b) => b("id", "=", app),
     }),
   );
+
+/** {@link readApp} for several apps, in one statement; an app without a row is not returned. */
+const readApps = (db: Query, apps: readonly AppId[]) =>
+  apps.length === 0
+    ? Effect.succeed([])
+    : query(() =>
+        db.findMany("apps", {
+          join: (b) => b.deployment(),
+          where: (b) => b("id", "in", apps),
+        }),
+      );
 
 /**
  * The reads {@link snapshot} makes, made ahead and at once. The account read stands in only when it
@@ -489,6 +501,13 @@ const appAccountReconnect =
           appRequirement: requirement,
         });
   };
+
+/**
+ * The reconnect a failed access check reports for this state, named as resolving the state's
+ * accounts would name it: an account the app uses as its own carries its app requirement.
+ */
+export const reconnectReported = (state: Effect.Success<ReturnType<typeof snapshot>>) =>
+  appAccountReconnect(distinctSelection(state));
 
 /**
  * Resolve current credentials, to run the app, without holding a database transaction open. It
@@ -854,6 +873,44 @@ const observeFailure = (source: CallFailureSource) =>
   Effect.map(CallFailureSources, (observe) => observe?.(source));
 
 /**
+ * A call's failure as `runtimeFailure` reports it, except a runtime exchange the host's transport
+ * never connected: nothing of it was sent, and the failure says so (`notSent`).
+ */
+const toolCallFailure =
+  (
+    identity: { app: AppId; version: VersionId; tool: ToolName },
+    state: InvocationSnapshot,
+    renewal: Renewal | undefined,
+  ) =>
+  (failure: CallError) =>
+    failure._tag === "RuntimeProtocolFailed" && failure.notSent === true
+      ? new ToolCallFailed({
+          ...identity,
+          reason:
+            "Executor could not connect to the app runtime, so it did not send this tool call.",
+          notSent: true,
+        })
+      : runtimeFailure(identity, state, renewal)(failure);
+/**
+ * Whether a failure says that nothing of its exchange left the host. It holds for the call only
+ * when that exchange was the only one in the call to reach the app's code (`entries`): an earlier
+ * one, such as the catalog read for the call's kind, may have run code that wrote.
+ */
+const notSentOnly = (failure: CallFailure) =>
+  failure._tag === "ToolCallFailed" && failure.notSent === true;
+/**
+ * A call whose exchange never left the host after an earlier one of the same call reached the app:
+ * it may have partly run, and its failure says so rather than that the call was not sent.
+ */
+const partlyRun = ({ app, version, tool }: ToolCallFailed) =>
+  new ToolCallFailed({
+    app,
+    version,
+    tool,
+    reason:
+      "Executor could not reach the app runtime to finish this tool call. An earlier step of the call reached the app, so the call may have partly run.",
+  });
+/**
  * The error a failed call reports to its caller, such as an agent. A call that may write, a
  * mutation or a call that names no kind, may already have made its change once the host handed any of
  * its work to the app's code, or may still make it, whatever failed: the app's factory, account
@@ -866,14 +923,15 @@ const observeFailure = (source: CallFailureSource) =>
  * (`confirmedRead`), keep their own classification. A query only its upstream calls one, such as
  * an MCP tool with `readOnlyHint`, may write like any other call.
  */
-const callFailure =
-  (read: boolean, enteredApp: boolean) =>
+export const callFailure =
+  (read: boolean, enteredApp: boolean, entries: number) =>
   (failure: CallFailure): CallFailure =>
-    read || !enteredApp
+    read || !enteredApp || (entries === 1 && notSentOnly(failure))
       ? failure
       : Match.value(failure).pipe(
           Match.tagsExhaustive({
-            ToolCallFailed: (failure) => mayHaveWritten(ToolCallFailed, failure),
+            ToolCallFailed: (failure) =>
+              mayHaveWritten(ToolCallFailed, notSentOnly(failure) ? partlyRun(failure) : failure),
             AppProviderFailed: (failure) => mayHaveWritten(AppProviderFailed, failure),
             AppEvaluationFailed: (failure) => mayHaveWritten(AppEvaluationFailed, failure),
             ToolElicitationFailed: (failure) => mayHaveWritten(ToolElicitationFailed, failure),
@@ -887,6 +945,25 @@ const callFailure =
             CredentialsError: (failure) => mayHaveWritten(CredentialsError, failure),
           }),
         );
+
+/**
+ * One call's hand-offs to the app's code, as the host reports them through `AppCodeEntered`: the
+ * catalog read for the call's kind, the call itself, and a confirmed read's repeat after a renewal.
+ * `earlier` counts those that came before this tracker, such as the request a resume continues,
+ * whose setup and approval check ran in the app. `callFailure` judges the call's failure against
+ * how many there were, so a call whose last exchange never left the host says it was not sent only
+ * when that exchange was its only one.
+ */
+export const appEntries = (onEntered: () => void, earlier = 0) => {
+  let entries = earlier;
+  return {
+    entered: () => {
+      entries += 1;
+      onEntered();
+    },
+    callFailure: (read: boolean, enteredApp: boolean) => callFailure(read, enteredApp, entries),
+  };
+};
 
 /**
  * Report a defect that a call's failure replaces for its caller: the host's error reporter, such as
@@ -1288,6 +1365,123 @@ export const makeTools = (
     });
     return { leaves, take };
   };
+  /**
+   * One target's reads made ahead for `tools.searchable` by {@link prefetchSearchable}: the target
+   * they were made for, the actor they ran as, the invocation state its snapshot read, and what
+   * the listing store read for it. Taken at most once.
+   */
+  interface SearchableEntry {
+    readonly target: {
+      readonly app: AppId;
+      readonly version: VersionId;
+      readonly accounts: AppAccounts;
+    };
+    readonly actor: string | undefined;
+    readonly state: InvocationSnapshot;
+    readonly ahead: SearchableAhead;
+  }
+  /** The opaque value of a {@link SearchablePrefetch}: its entries by app, each taken once. */
+  class SearchableReads {
+    readonly entries: Map<AppId, SearchableEntry>;
+    constructor(entries: Map<AppId, SearchableEntry>) {
+      this.entries = entries;
+    }
+    /** The entry made for exactly this app, version and accounts, removed as it is taken. */
+    take(input: {
+      readonly app: AppId;
+      readonly version?: VersionId | undefined;
+      readonly accounts?: AppAccounts | undefined;
+    }) {
+      const entry = this.entries.get(input.app);
+      if (
+        entry === undefined ||
+        input.version !== entry.target.version ||
+        input.accounts === undefined ||
+        !sameAccounts(entry.target.accounts, input.accounts)
+      )
+        return undefined;
+      this.entries.delete(input.app);
+      return entry;
+    }
+  }
+  /**
+   * {@link PrefetchHost}'s `searchable`: what `tools.searchable` reads for each target, for all of
+   * them at once. The apps and the accounts the targets name are read in one statement each, and
+   * each target's snapshot is made from them as it would make it from its own reads; then every
+   * target's kept rows, the actor's app rechecks and the grants are read in one statement each
+   * (`searchablePrefetch`). The host's checks have finished, so each read still follows them. A
+   * target whose snapshot fails, or whose app is another owner's, has no entry and is read live,
+   * as is every target when any of these statements fails.
+   */
+  const prefetchSearchable: PrefetchHost["searchable"] = ({ owner, targets }) =>
+    Effect.gen(function* () {
+      const actor = yield* CurrentActor;
+      const [apps, accounts] = yield* Effect.all(
+        [
+          readApps(db, [...new Set(targets.map((target) => target.app))]),
+          readSelectionAccounts(db, [
+            ...new Set(targets.flatMap((target) => namedAccounts(target.accounts))),
+          ]),
+        ],
+        { concurrency: "unbounded" },
+      );
+      const states = yield* Effect.forEach(targets, (target) => {
+        const ids = new Set(namedAccounts(target.accounts));
+        const reads: SnapshotReads = {
+          app: Result.succeed(apps.find((row) => row.id === target.app) ?? null),
+          accounts: {
+            ids: [...ids],
+            rows: Result.succeed(accounts.filter((row) => ids.has(row.id))),
+          },
+        };
+        return snapshot(db, target, reads).pipe(
+          Effect.withSpan("sdk.invocation.snapshot"),
+          Effect.option,
+          Effect.map(Option.filter((state) => state.app.owner === owner)),
+          Effect.map(Option.map((state) => ({ target, state }))),
+        );
+      }).pipe(Effect.map((found) => found.flatMap(Option.toArray)));
+      const aheads = yield* listings.searchablePrefetch(
+        owner,
+        states.map(({ state }) => state),
+      );
+      const entries = new Map<AppId, SearchableEntry>();
+      states.forEach(({ target, state }, index) => {
+        const ahead = aheads[index];
+        // One entry per app: the first target keeps it and a later one of the same app reads live.
+        // `take` still matches the exact version and accounts, so no target gets another's entry.
+        if (ahead === undefined || entries.has(target.app)) return;
+        entries.set(target.app, { target, actor, state, ahead });
+      });
+      return { owner, value: new SearchableReads(entries) };
+    }).pipe(
+      Effect.catchCause(() => Effect.succeed({ owner, value: undefined })),
+      Effect.withSpan("sdk.tools.searchable.prefetch", {
+        attributes: { "executor.prefetch.targets": targets.length },
+      }),
+    );
+  /**
+   * The entry the host's {@link SearchablePrefetch} holds for this input, under the same owner and
+   * actor, taken so no later read reuses it.
+   */
+  const searchableAhead = (input: {
+    readonly app: AppId;
+    readonly version?: VersionId | undefined;
+    readonly accounts?: AppAccounts | undefined;
+  }) =>
+    Effect.gen(function* () {
+      const prefetched = yield* SearchablePrefetch;
+      if (prefetched === undefined || !(prefetched.value instanceof SearchableReads))
+        return undefined;
+      const entry = prefetched.value.take(input);
+      if (
+        entry === undefined ||
+        entry.state.app.owner !== prefetched.owner ||
+        entry.actor !== (yield* CurrentActor)
+      )
+        return undefined;
+      return entry;
+    });
   // A prefetch answers one call: it is provided around the whole host call, so a later call in
   // that scope (none today) must read live rather than reuse reads that may be seconds old.
   const consumedPrefetches = new WeakSet<object>();
@@ -1428,6 +1622,7 @@ export const makeTools = (
     );
   return {
     prefetchInvocation,
+    prefetchSearchable,
     /**
      * The first of these accounts whose saved sign-in must reconnect before the app's tools can
      * run with them; undefined when every account can supply credentials. Reads stored state only:
@@ -1500,8 +1695,19 @@ export const makeTools = (
       options?: ToolListOptions,
     ) =>
       Effect.gen(function* () {
-        const state = yield* listed(input);
-        const found = yield* listings.searchable(state, listingOf(state), options);
+        const ahead = yield* searchableAhead(input);
+        const state =
+          ahead === undefined
+            ? yield* listed(input)
+            : yield* Effect.as(
+                Effect.annotateCurrentSpan({
+                  "executor.app.id": ahead.state.app.id,
+                  "executor.deployment.id": ahead.state.version.id,
+                  "executor.build.id": ahead.state.version.build,
+                }),
+                ahead.state,
+              );
+        const found = yield* listings.searchable(state, listingOf(state), options, ahead?.ahead);
         return {
           listing: found.listing,
           version: state.version.id,
@@ -1525,6 +1731,48 @@ export const makeTools = (
     ) =>
       Effect.gen(function* () {
         if (inputs.length === 0) return [];
+        // The kept-row fast path and live fallback consume the same request-owned upstream
+        // prefetch. A miss or refusal leaves its entry for the live path to explain.
+        const prefetched = yield* SearchablePrefetch;
+        if (prefetched !== undefined && prefetched.value instanceof SearchableReads) {
+          const actor = yield* CurrentActor;
+          const entries = inputs.map((input) => {
+            const entry =
+              prefetched.value instanceof SearchableReads
+                ? prefetched.value.entries.get(input.app)
+                : undefined;
+            return entry !== undefined &&
+              entry.actor === actor &&
+              entry.state.app.owner === prefetched.owner &&
+              input.version === entry.target.version &&
+              input.accounts !== undefined &&
+              sameAccounts(input.accounts, entry.target.accounts)
+              ? entry
+              : undefined;
+          });
+          const current = entries.flatMap((entry) => (entry === undefined ? [] : [entry]));
+          const found = yield* listings.searchableKept(
+            current.map((entry) => entry.state),
+            current.map((entry) => entry.ahead),
+          );
+          let position = 0;
+          return entries.map((entry): SearchableTools | undefined => {
+            if (entry === undefined) return undefined;
+            const served = found[position++];
+            if (served === undefined) return undefined;
+            if (prefetched.value instanceof SearchableReads) prefetched.value.take(entry.target);
+            return {
+              listing: served.listing,
+              version: entry.state.version.id,
+              accounts: scopedSelection(
+                entry.state.version.requirements.accounts,
+                entry.state.accounts,
+                entry.state.scope,
+              ),
+              routers: served.routers.filter((router) => router.error !== undefined),
+            };
+          });
+        }
         const apps = [...new Set(inputs.map((input) => input.app))];
         const rows = yield* query(() =>
           db.findMany("apps", {
@@ -1687,11 +1935,9 @@ export const makeTools = (
         // Set by the host when it hands this call's work to the app's code: catalog reads for its
         // kind, and the call itself.
         let enteredApp = false;
-        const appCode = {
-          entered: () => {
-            enteredApp = true;
-          },
-        };
+        const appCode = appEntries(() => {
+          enteredApp = true;
+        });
         // The caller's kind, confirmed by the app for a query (`confirmedRead`), decides how a
         // failure is reported and whether a refused call is repeated. For a call that names none,
         // the catalog only names the kind it is dispatched with: reading the catalog ran the app's
@@ -1764,7 +2010,7 @@ export const makeTools = (
             );
           }
           yield* observeFailure(failureSource(result.failure));
-          return yield* Effect.fail(runtimeFailure(identity, state, renewal)(result.failure));
+          return yield* Effect.fail(toolCallFailure(identity, state, renewal)(result.failure));
         }).pipe(
           Effect.catch((failure) =>
             // Only a confirmed read's renewal fails a call itself (`executeRenewing`), and a
@@ -1775,7 +2021,9 @@ export const makeTools = (
             failure._tag === "AccountRequired" ||
             !enteredApp
               ? Effect.fail(failure)
-              : Effect.flatMap(read, (read) => Effect.fail(callFailure(read, enteredApp)(failure))),
+              : Effect.flatMap(read, (read) =>
+                  Effect.fail(appCode.callFailure(read, enteredApp)(failure)),
+                ),
           ),
           // A defect after the hand-off, such as in Executor's own code, does not establish what
           // the app's code did either. A call that may write reports it as a failure that records
@@ -1893,6 +2141,10 @@ export const makeTools = (
                     );
                     // Set by the host when it hands this call's work to the app's code, as for a call.
                     let enteredApp = false;
+                    // Approval setup already entered app code, even if this resumed exchange never connects.
+                    const appCode = appEntries(() => {
+                      enteredApp = true;
+                    }, 1);
                     // As for a call, the saved (caller's) kind counts as a read only when the app
                     // confirms it.
                     const read = yield* readOf(state, saved.tool, saved.kind);
@@ -1943,7 +2195,7 @@ export const makeTools = (
                       if (Result.isFailure(result)) {
                         yield* observeFailure(failureSource(result.failure));
                         return yield* Effect.fail(
-                          runtimeFailure(
+                          toolCallFailure(
                             { app: saved.app, version: saved.version, tool: saved.tool },
                             state,
                             renewal,
@@ -1969,14 +2221,10 @@ export const makeTools = (
                         !enteredApp
                           ? Effect.fail(failure)
                           : Effect.flatMap(read, (read) =>
-                              Effect.fail(callFailure(read, enteredApp)(failure)),
+                              Effect.fail(appCode.callFailure(read, enteredApp)(failure)),
                             ),
                       ),
-                      Effect.provideService(AppCodeEntered, {
-                        entered: () => {
-                          enteredApp = true;
-                        },
-                      }),
+                      Effect.provideService(AppCodeEntered, appCode),
                     );
                   }).pipe(
                     // The request is consumed, so its caller receives the call's own failure.

@@ -1,6 +1,7 @@
 /** Cloud's app runtime: the shared runner in the AppData Worker, with R2 and the Cache API as build store. */
 import { traceHeaders } from "@executor-js/telemetry";
 import {
+  BlobStoreError,
   BuildId,
   RuntimeBuildFailed,
   BuildMemoryExceeded,
@@ -219,13 +220,15 @@ export const cloudRuntime = Effect.fn(function* (
           }).pipe(
             Effect.tapError((error) =>
               Effect.annotateCurrentSpan({
-                "build.stage": Schema.is(BuildMemoryExceeded)(error)
-                  ? "compile"
-                  : Schema.is(RuntimeProtocolUnsupported)(error)
-                    ? "protocol"
-                    : Schema.is(RuntimeAppsDependencyMissing)(error)
-                      ? "dependencies"
-                      : error.stage,
+                "build.stage": Schema.is(BlobStoreError)(error)
+                  ? "retain"
+                  : Schema.is(BuildMemoryExceeded)(error)
+                    ? "compile"
+                    : Schema.is(RuntimeProtocolUnsupported)(error)
+                      ? "protocol"
+                      : Schema.is(RuntimeAppsDependencyMissing)(error)
+                        ? "dependencies"
+                        : error.stage,
                 // The message quotes the deployer's source and its compiler errors, which only the
                 // deployer receives; the span records which failure it was.
                 "build.error": error._tag,

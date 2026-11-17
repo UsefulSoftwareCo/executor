@@ -583,7 +583,7 @@ const cloudReport = (surface: Surface) =>
       Effect.flatMap((found) => {
         const fresh = found.data.filter(({ traceId }) => !dispatched.has(traceId));
         return fresh.length === 0
-          ? Effect.fail(new Error("No dispatch with failed items has reached Motel"))
+          ? Effect.fail(new Error("No dispatch with failed items has reached the collector"))
           : Effect.succeed(fresh);
       }),
       Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),

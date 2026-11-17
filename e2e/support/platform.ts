@@ -53,9 +53,15 @@ export class Target extends Context.Service<
       return {
         metadata,
         directory,
-        preparedScenarios: yield* Config.String("E2E_PREPARED_SCENARIOS").pipe(
-          Config.withDefault("{}"),
-          Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(PreparedScenarios))),
+        // The suite writes the Cloud organizations it prepared to the run's directory; a file,
+        // not an environment variable, since the list grows with the suite past the 128 KiB a
+        // variable may hold. A run with nothing prepared has none.
+        preparedScenarios: yield* Schema.decodeUnknownEffect(
+          Schema.fromJsonString(PreparedScenarios),
+        )(
+          (yield* fs.exists(`${directory}/prepared-scenarios.json`))
+            ? yield* fs.readFileString(`${directory}/prepared-scenarios.json`)
+            : "{}",
         ),
         apiKey,
         rows,

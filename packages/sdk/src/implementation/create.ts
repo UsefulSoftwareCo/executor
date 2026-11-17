@@ -34,7 +34,7 @@ import { makeOwners } from "./owners.ts";
 import { makeSchedules } from "./schedules.ts";
 import { makeTools } from "./tools.ts";
 import { makeSkills } from "./skills.ts";
-import { toEffectRuntime } from "./runtime.ts";
+import { toEffectRuntime, withTracedPuts } from "./runtime.ts";
 import { database } from "./database.ts";
 import { makeOAuth } from "./oauth.ts";
 import { makeDeclarationCache, makeDeclarations } from "./declarations.ts";
@@ -52,6 +52,8 @@ export const createExecutor = (
     const credentials =
       options.credentials ?? (yield* aesGcmCredentials(options.secret, globalThis.crypto));
     const db = database(options.database);
+    // Each write of the executor's own (sources, public files) has a span with its kind and size.
+    const blobs = withTracedPuts(options.blobs);
     const sources = gitSourceStorage(options.git);
     const origin = options.origin ?? hostedExecutorOrigin;
     const catalog = makeRegistry(
@@ -59,7 +61,7 @@ export const createExecutor = (
       origin,
       db,
       sources,
-      options.blobs,
+      blobs,
     );
     const toolListings = { ...defaultToolListingPolicy, ...options.cache?.toolListings };
     const cache = options.cache?.memory ?? makeDeclarationCache();
@@ -79,6 +81,7 @@ export const createExecutor = (
             Effect.mapError(() => new RuntimeProtocolFailed({ reason: "data" })),
           ),
     };
+    // The runtime traces its own store's writes (toEffectRuntime); it gets the store as given.
     const base = toEffectRuntime(options.runtime, options.blobs, cache);
     const runtime: Runtime = {
       ...base,
@@ -104,6 +107,7 @@ export const createExecutor = (
       background: options.background,
       resolveAccount: oauth.resolveSelected,
       accountsUsable: oauth.usableAll,
+      accountsUsableEach: oauth.usableEach,
       crypto,
       lifecycle: options.hooks,
       hostApi: options.hostApi,
@@ -136,7 +140,7 @@ export const createExecutor = (
         sources,
         options.git,
         catalog.reads,
-        options.blobs,
+        blobs,
         options.markdown,
         options.hooks,
       ),
@@ -217,13 +221,13 @@ export const createExecutor = (
         request: (input, request) =>
           Effect.gen(function* () {
             const app = yield* storedApp(db, input);
-            yield* initializeAppRepository(db, sources, options.blobs, app);
+            yield* initializeAppRepository(db, sources, blobs, app);
             return yield* options.git.request(app.code, request);
           }),
         recover: recoverAppRepositories({
           database: options.database,
           sources,
-          blobs: options.blobs,
+          blobs,
         }),
       },
       [StorageHost]: {
@@ -235,7 +239,10 @@ export const createExecutor = (
         read: options.database.reactivity.read,
         write: options.database.reactivity.write,
       },
-      [PrefetchHost]: { invocation: tools.prefetchInvocation },
+      [PrefetchHost]: {
+        invocation: tools.prefetchInvocation,
+        searchable: tools.prefetchSearchable,
+      },
       [SavedOAuthClientsHost]: makeSavedOAuthClients(db, credentials, crypto, options.hooks, [
         ...(options.oauth?.savedClientCallbacks ?? []),
         ...(options.oauth?.previousRedirectUris ?? []),
@@ -281,7 +288,7 @@ export const createExecutor = (
       owners: makeOwners(db),
       publications: catalog.publications,
       registry: catalog.registry,
-      skills: makeSkills(db, runtime, crypto, declarations, options.blobs),
+      skills: makeSkills(db, runtime, crypto, declarations, blobs),
       webhooks: {
         ...webhooks.webhooks,
         sources: webhookSources.sources,

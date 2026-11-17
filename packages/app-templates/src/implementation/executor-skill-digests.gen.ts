@@ -4,7 +4,7 @@
 export const executorSkillDigests: Readonly<Record<string, string>> = {
   "app-authoring/SKILL.md": "460e14bb77686cde90c21558281739df5d52fb8f5f683a218c481ce714ca0942",
   "app-authoring/accounts.md": "573fe7e7645d2c281598122972c068104215c0bafba5e6d04c96020ab1c3ca19",
-  "app-authoring/deploy.md": "823259311d78f579ddd6d10c05e87b926fd82ea9d8ea1713d366c1495b42eb1f",
+  "app-authoring/deploy.md": "1eca49c4cb62c27e8eb7cb798d326fe553fc5f66e434ae51898bbc26eec7d2dd",
   "app-authoring/events.md": "421c322f147a6da7a0bdc5513367e25b96667cf34f74b71918c84fdbe91727d1",
   "app-authoring/integrations.md": "1788ddee892c69a9d895a2d8c7bec63f1d41963ed5b00ed3e6f0b5c4a671d867",
   "app-authoring/starter.md": "382bd769d7b10e9c09eaa2367755f23153a31a484aaca9c449ab4aac7d61e224",
@@ -15,7 +15,7 @@ export const executorSkillDigests: Readonly<Record<string, string>> = {
   "app-authoring/upgrades/0.0.1-beta.90.md": "38c727888b2773efa1d83795e8704f7c38ad9ec27c62fcdd89b5177ec5e338c3",
   "app-authoring/webhooks.md": "8b6e4fa3fbc1641bfa741bc449d8ff1b1db7c7923c2ddec0a134be7a2f7de5d8",
   "app-authoring/workflows.md": "1496edbdb85e138715efa138c63068a11674e6188179f6ee0a92b81e6d9d63e2",
-  "code-mode/SKILL.md": "ff91dd2c510765840d0ab03ef5ccfc1819b5d13cbcdcacdfc8335aa59a47a406",
-  "executor/SKILL.md": "afd7eeb8e66effd46173a22da3bde6aa820110a4122b32f6715b76245c6de227",
+  "code-mode/SKILL.md": "475e60fbf70654c439ceb13aa8ff73c22d79ee26dcf2ceb7898025d8b5740a02",
+  "executor/SKILL.md": "3e3d4b7b620f67f88c7f8d4ead095af8f0f56f29dbdcd9beab6fb53d27866f95",
   "executor/feedback.md": "29e684fc80cef9f9fae46e8fe183c310a64f12d2737dbe0bcb855a4450dfd95b"
 };

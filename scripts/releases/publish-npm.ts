@@ -4,7 +4,8 @@
  * package.json records. So this refuses a launcher that does not record every platform's archive
  * in the artifact directory, or whose archives the public release does not list in its
  * SHA256SUMS. An accepted upload is polled, never uploaded again; a retried job skips a launcher
- * whose registry integrity matches byte for byte.
+ * whose registry integrity matches byte for byte. npm moves the channel's dist-tag after it serves
+ * the version, so the tag is then awaited for a bounded time (npm-channel.ts).
  */
 import { createHash } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -23,12 +24,12 @@ import {
 import { FetchHttpClient, HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { platformArchive, platforms, release } from "./config.ts";
+import { awaitNpmChannel, distTagsBeforePublishing, npmRegistry } from "./npm-channel.ts";
 
 const RegistryVersion = Schema.Struct({
   version: Schema.String,
   dist: Schema.Struct({ integrity: Schema.String }),
 });
-const Tags = Schema.Record(Schema.String, Schema.String);
 const Launcher = Schema.fromJsonString(
   Schema.Struct({
     version: Schema.String,
@@ -111,12 +112,10 @@ NodeRuntime.runMain(
           );
       }
 
-      const registry = "https://registry.npmjs.org";
-      const tags = http.get(`${registry}/-/package/executor/dist-tags`).pipe(
-        Effect.flatMap((response) => response.json),
-        Effect.flatMap(Schema.decodeUnknownEffect(Tags)),
-      );
-      const before = yield* tags;
+      const registry = npmRegistry;
+      // A status other than 200, an answer without the tags, or none within the limit stops here,
+      // before anything is published (npm-channel.ts).
+      const before = yield* distTagsBeforePublishing(registry, "executor");
       const integrity = `sha512-${(yield* digest(file, "sha512")).digest("base64")}`;
       // A retried job resumes only over a launcher npm already holds byte for byte.
       const existing = yield* http.get(`${registry}/executor/${release.version}`);
@@ -172,12 +171,14 @@ NodeRuntime.runMain(
         Effect.retry({ schedule: Schedule.spaced(15_000), times: 160 }),
       );
       yield* Console.log(`Verified public npm archive ${release.version}`);
-      const after = yield* tags;
-      if (
-        after[release.channel] !== release.version ||
-        (release.channel === "beta" && after.latest !== before.latest)
-      )
-        return yield* Effect.die(new Error("The npm channel check failed."));
+      // npm moves the dist-tag some time after it serves the version (npm-channel.ts).
+      const after = yield* awaitNpmChannel({
+        registry,
+        packageName: "executor",
+        channel: release.channel,
+        version: release.version,
+        before,
+      });
       yield* Console.log(
         `Published executor@${release.channel}: ${release.version}; latest=${after.latest}`,
       );

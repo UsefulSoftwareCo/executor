@@ -251,7 +251,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
             const trace = yield* traceOf(request.traceId);
             return { execution, trace };
           });
-        /** The last MCP tool call of a trace, once its whole trace has reached Motel. */
+        /** The last MCP tool call of a trace, once its whole trace has reached the collector. */
         const traceOf = (traceId: string) =>
           telemetry.query(traceId).pipe(
             Effect.flatMap((result) => {
@@ -263,7 +263,9 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
                 (entry) => entry.span.tags["http.response.status_code"] === "200",
               );
               if (root === undefined || !complete)
-                return Effect.fail(new Error("The completed server trace must reach Motel"));
+                return Effect.fail(
+                  new Error("The completed server trace must reach the collector"),
+                );
               const byId = new Map(result.data.map(({ span }) => [span.spanId, span]));
               /** The span names between a span and the tool call, or undefined outside it. */
               const path = (spanId: string | null) => {
@@ -296,7 +298,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call batch", (it) => {
               // later than the call's own statements.
               return statements.length === 0 || executed.length === statements.length
                 ? Effect.fail(
-                    new Error("The tool call's statements and log write must reach Motel"),
+                    new Error("The tool call's statements and log write must reach the collector"),
                   )
                 : Effect.succeed({
                     batches: inside.filter(({ span }) => span.operationName === "sql.pipeline")

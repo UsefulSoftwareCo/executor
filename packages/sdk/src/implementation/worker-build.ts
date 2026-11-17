@@ -17,6 +17,7 @@ import { sourceImports } from "./worker-source-imports.ts";
 import { serverSourceMap, sourceLocation } from "./worker-source-map.ts";
 import { wasmBuild } from "./worker-wasm-build.ts";
 import { jsonModules } from "./worker-json-modules.ts";
+import { compiledFiles } from "./worker-compiled-files.ts";
 import { serverFilesModule, serverFilesSource } from "./worker-bridge.ts";
 import { workerDependencies } from "./worker-dependencies.ts";
 import apps from "apps/package.json" with { type: "json" };
@@ -26,9 +27,13 @@ import apps from "apps/package.json" with { type: "json" };
  * framework of its own: every source declares the `apps` release it uses in `dependencies.apps`.
  * `apps` supplies the package files of one declared release, so a test deployment can build apps
  * against its own unpublished framework. Any other declared release installs from the registry.
+ * `tarballFetch` sends every install request off the registry's origin: tarball URL
+ * dependencies, and tarballs or redirects the registry's metadata sends elsewhere. Requests on the
+ * registry's origin use the global `fetch`, as everything does without `tarballFetch`.
  */
 export interface WorkerHost {
   readonly registry?: string;
+  readonly tarballFetch?: (input: string, init?: RequestInit) => Promise<Response>;
   readonly apps?: {
     readonly version: string;
     /** Package-relative paths and contents, as in the published archive. */
@@ -178,6 +183,7 @@ export const compileWorkerApp = (
     const wasm = wasmBuild(filesystem, path);
     const json = jsonModules(files, entry);
     const sourceMap = serverSourceMap(entry);
+    const sizes = compiledFiles(filesystem);
     const compiled = yield* Effect.tryPromise({
       try: () =>
         createApp({
@@ -199,9 +205,11 @@ export const compileWorkerApp = (
             // own lookup of the asset file then reaches the source resolver.
             ...(browser === undefined ? [] : [browser.plugin]),
             sourceImports(filesystem, path),
+            // Last: it sees only the files the bundler itself loads and compiles.
+            sizes.plugin,
           ],
         }),
-      catch: (cause) => json.failure() ?? compileFailure(cause),
+      catch: (cause) => sizes.failure() ?? json.failure() ?? compileFailure(cause),
     });
     const map = sourceMap.map();
     if (map === undefined)

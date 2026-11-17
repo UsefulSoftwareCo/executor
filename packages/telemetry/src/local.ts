@@ -1,5 +1,5 @@
 /** Local composition owns persistent files and its optional bundled collector. */
-import { Config, Deferred, Effect, Layer, Logger, Path, Scope } from "effect";
+import { Deferred, Effect, Layer, Logger, Path, Scope } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientError, HttpClientRequest } from "effect/http";
 import { CurrentTelemetryClient } from "./transport.ts";
 import { telemetryConfig } from "./config.ts";
@@ -21,7 +21,7 @@ export interface LocalTelemetryOptions {
   readonly collectorScope?: Effect.Effect<Scope.Scope> | undefined;
 }
 
-/** Local hosts keep JSONL logs; absent explicit exporters, they own a loopback Motel workerd. */
+/** Local hosts keep JSONL logs; absent explicit exporters, they own a loopback collector. */
 export const localTelemetry = (
   directory: string,
   service: string,
@@ -42,12 +42,18 @@ export const localTelemetry = (
         const config = yield* telemetryConfig(service);
         if (config.traces !== undefined || config.logs !== undefined)
           return telemetryLayer(config, "process", logger);
-        const defaultBundle = yield* path.fromFileUrl(new URL("../dist/motel", import.meta.url));
-        const bundle = yield* Config.String("EXECUTOR_MOTEL_BUNDLE").pipe(
-          Config.withDefault(defaultBundle),
-        );
+        // The collector's build (`collector:build`) and the viewer's, beside this package's source.
+        const files = {
+          executable: yield* path.fromFileUrl(
+            new URL(
+              `../dist/collector/executor-collector${process.platform === "win32" ? ".exe" : ""}`,
+              import.meta.url,
+            ),
+          ),
+          viewer: yield* path.fromFileUrl(new URL("../dist/viewer", import.meta.url)),
+        };
         const ready = yield* Deferred.make<string>();
-        const start = startCollector(diagnostics, bundle).pipe(
+        const start = startCollector(diagnostics, files).pipe(
           Effect.flatMap((address) => Deferred.completeWith(ready, address)),
         );
         if (options.collectorScope === undefined) yield* start;
@@ -62,7 +68,7 @@ export const localTelemetry = (
         const client = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
         // This internal address never reaches the network. Resolve only telemetry
         // requests after readiness; native exporter buffers/timeouts own delivery.
-        const origin = "http://motel.internal";
+        const origin = "http://collector.internal";
         const transport = client.pipe(
           HttpClient.mapRequestEffect((request) => {
             if (new URL(request.url).origin !== origin) return Effect.succeed(request);

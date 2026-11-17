@@ -326,6 +326,24 @@ layer(NodeServices.layer)("deploy waits for the apps job", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("a job of a called workflow named like apps is not the deploy's apps job", () =>
+    Effect.gen(function* () {
+      const api = yield* jobsApi([
+        {
+          pages: [
+            {
+              total: 1,
+              jobs: [{ id: 1, name: "x / apps", status: "completed", conclusion: "success" }],
+            },
+          ],
+        },
+      ]);
+      const result = yield* wait(api.url(), { limit: 2, attempt: 5, poll: 0.5 });
+      expect(result.exitCode).toBe(1);
+      expect(result.log).toContain(`(run ${run} lists no apps job yet); not deploying.`);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("an apps job listed on the second page is found there", () =>
     Effect.gen(function* () {
       const others = Array.from({ length: 100 }, (_, index) => ({

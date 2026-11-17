@@ -4,11 +4,13 @@
  * in flight loses its connection. The product log records each replacement, a lost call says its
  * connection was lost, and a lost build tells its deployer the same instead of a class name.
  */
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { expect, layer } from "@effect/vitest";
 import { Effect, Fiber, FileSystem, Queue, Schedule, Schema } from "effect";
 import { appsManifest, withApps } from "../support/apps-release.ts";
 import { TestLive, withCase } from "../support/case.ts";
+import { Evidence, Telemetry } from "../support/evidence.ts";
+import { Target } from "../support/platform.ts";
 import { startLocalProduct, workerdProcess } from "../support/local-workflow-engines.ts";
 import { holdingRegistry } from "../support/holding-registry.ts";
 import { stalledPackage } from "../support/npm-registry.ts";
@@ -78,8 +80,14 @@ layer(TestLive, { excludeTestServices: true })("Local app runtime restart", (it)
             files: [
               {
                 path: "index.ts",
-                content: `import { defineApp, query, object, string, router } from "apps";
+                content: `import { defineApp, query, object, string, router, workflow } from "apps";
 export default defineApp({}, {
+  workflows: {
+    hold: workflow({ input: object({}) }, async (ctx) => {
+      await ctx.step.sleep("hold", "1 day");
+      return null;
+    }),
+  },
   tools: router({
     held: query({ input: object({}), output: string() }, async () => (await fetch(${JSON.stringify(`${holding.origin}/held`)})).text()),
     ready: query({ input: object({}), output: string() }, async () => "ready"),
@@ -107,6 +115,48 @@ export default defineApp({}, {
           });
           const [first] = yield* restarts(1);
           expect(first).toMatchObject({ level: "WARN", annotations: { restarts: 1, ...killed } });
+          // The lost call's span says how far its session got (runtime-hop.ts): it opened, the
+          // call went out, and the socket closed under it before the runtime was replaced. The
+          // span is read from this scenario's own product's collector.
+          const target = yield* Target;
+          /** Read this scenario's own product's collector. */
+          const ownCollector = <A, E>(read: Effect.Effect<A, E, Telemetry>) =>
+            read.pipe(
+              Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
+              Effect.provide(Telemetry.layer),
+              Effect.provideService(Target, { ...target, directory: local.directory }),
+            );
+          const lostSpan = yield* ownCollector(
+            Telemetry.pipe(
+              Effect.flatMap((telemetry) =>
+                telemetry.spans("runtime.workerd.call", { app: app.id }),
+              ),
+              Effect.flatMap((spans) => {
+                const span = spans.find(
+                  (tags) => tags["executor.runtime.rpc.opened"] !== undefined,
+                );
+                return span === undefined
+                  ? Effect.fail(new Error("The lost call's span has not reached the collector"))
+                  : Effect.succeed(span);
+              }),
+            ),
+          );
+          expect(lostSpan).toMatchObject({
+            "executor.runtime.failure": "disconnected",
+            "executor.runtime.rpc.opened": "true",
+          });
+          // The call fails as its socket closes and the replacement comes at least 250 ms later,
+          // but a stalled host may record the failure after it: the count and the time since the
+          // replacement go together either way.
+          expect(
+            lostSpan["executor.runtime.host.restarts"] === "0"
+              ? lostSpan["executor.runtime.host.restarted_ms"] === undefined
+              : lostSpan["executor.runtime.host.restarts"] === "1" &&
+                  lostSpan["executor.runtime.host.restarted_ms"] !== undefined,
+            JSON.stringify(lostSpan),
+          ).toBe(true);
+          expect(Number(lostSpan["executor.runtime.rpc.sent"])).toBeGreaterThan(0);
+          expect(lostSpan["executor.runtime.rpc.closed_ms"]).toBeDefined();
           // The replacement serves the next call.
           expect(
             yield* local.json(Schema.Unknown, "POST", "/v1/tools/call", {
@@ -154,6 +204,136 @@ export default defineApp({}, { tools: router({
           });
           const [, second] = yield* restarts(2);
           expect(second).toMatchObject({ level: "WARN", annotations: { restarts: 2, ...killed } });
+
+          // A workflow run's status read while workerd's port is closed. The runtime stops replacing
+          // workerd once it has exited three times within 60 seconds and logs that it stopped
+          // (`Runtime.ts` in @alchemy.run/cloudflare-runtime); its port then stays closed. Kill each
+          // replacement as soon as the log records it, until the log says the runtime stopped, and
+          // only then read: the read's request to the runtime finds nothing listening however long
+          // the runner takes, and the restart count it records is final. Its span says how far it
+          // got and how recently the runtime was replaced (runtime-hop.ts).
+          const run = yield* local.json(
+            Schema.Struct({ id: Schema.String }),
+            "POST",
+            `/v1/apps/${app.id}/workflow-runs`,
+            { workflow: "hold", input: {}, key: randomUUID() },
+          );
+          /** The log's runtime replacements, once it has more than `seen` or says it stopped. */
+          const afterKill = (seen: number) =>
+            fs.readFileString(log).pipe(
+              Effect.map((text) => ({
+                stopped: text.includes("stopped after 3 restarts within 60 seconds"),
+                restarts: text
+                  .split("\n")
+                  .filter((line) => line.includes('"App runtime restarted"')).length,
+              })),
+              Effect.flatMap((state) =>
+                state.stopped || state.restarts > seen
+                  ? Effect.succeed(state)
+                  : Effect.fail(new Error(`${state.restarts} restarts logged, not stopped`)),
+              ),
+              Effect.retry({ schedule: Schedule.spaced("200 millis"), times: 150 }),
+            );
+          let state = { stopped: false, restarts: 2 };
+          // Each kill in a minute counts toward the limit, so a few kills reach it.
+          for (let kill = 0; kill < 8 && !state.stopped; kill++) {
+            yield* killRuntime;
+            state = yield* afterKill(state.restarts);
+          }
+          expect(state.stopped, "the runtime stopped replacing workerd").toBe(true);
+          const traceId = randomBytes(16).toString("hex");
+          const read = yield* local.request(
+            "GET",
+            `/v1/apps/${app.id}/workflow-runs/${run.id}`,
+            undefined,
+            { traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01` },
+          );
+          yield* (yield* Evidence).json("status-read.json", {
+            status: read.status,
+            body: read.text,
+            logged: state,
+          });
+          expect(read.status, read.text).toBe(500);
+          expect(
+            yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Failure))(read.text),
+          ).toMatchObject({ _tag: "WorkflowFailure", reason: "engine" });
+          const readSpan = yield* ownCollector(
+            Telemetry.pipe(
+              Effect.flatMap((telemetry) => telemetry.query(traceId)),
+              Effect.flatMap((trace) => {
+                const span = trace.data.find(
+                  ({ span }) => span.tags["executor.runtime.http.route"] === "/workflow",
+                );
+                return span === undefined
+                  ? Effect.fail(new Error("The status read's span has not reached the collector"))
+                  : Effect.succeed(span.span.tags);
+              }),
+            ),
+          );
+          expect(readSpan).toMatchObject({
+            "executor.runtime.http.method": "POST",
+            "executor.runtime.http.stage": "request",
+            "executor.runtime.http.reason": "TransportError",
+            "executor.runtime.host.restarts": String(state.restarts),
+          });
+          expect(readSpan["executor.runtime.http.code"]).toBeDefined();
+          expect(readSpan["executor.runtime.host.restarted_ms"]).toBeDefined();
+          // Refused at connect, so nothing of it was sent: the host ran it once more, from its start,
+          // and that was refused too (runtime-connect.ts).
+          expect(readSpan).toMatchObject({
+            "executor.runtime.http.connect_attempts": "2",
+            "executor.runtime.http.first_attempt.error_code": "ECONNREFUSED",
+            "executor.runtime.http.connect_outcome": "failed",
+          });
+
+          // A tool call while nothing listens: its session never opens, twice, so nothing was sent,
+          // and the call's only exchange with the app never left the host. It says so, may be
+          // repeated, and does not say it may have written.
+          const unsent = yield* local.request("POST", "/v1/tools/call", {
+            app: app.id,
+            tool: "ready",
+            input: {},
+          });
+          expect(unsent.status, unsent.text).toBe(502);
+          const unsentBody = yield* Schema.decodeUnknownEffect(
+            Schema.fromJsonString(
+              Schema.Struct({
+                _tag: Schema.String,
+                reason: Schema.String,
+                notSent: Schema.optionalKey(Schema.Boolean),
+                mayHaveWritten: Schema.optionalKey(Schema.Boolean),
+              }),
+            ),
+          )(unsent.text);
+          expect(unsentBody).toMatchObject({
+            _tag: "ToolCallFailed",
+            reason:
+              "Executor could not connect to the app runtime, so it did not send this tool call.",
+            notSent: true,
+          });
+          expect(unsentBody).not.toHaveProperty("mayHaveWritten");
+          const unsentSpan = yield* ownCollector(
+            Telemetry.pipe(
+              Effect.flatMap((telemetry) =>
+                telemetry.spans("runtime.workerd.call", { app: app.id }),
+              ),
+              Effect.flatMap((spans) => {
+                const span = spans.find(
+                  (tags) => tags["executor.runtime.failure"] === "unreachable",
+                );
+                return span === undefined
+                  ? Effect.fail(new Error("The unsent call's span has not reached the collector"))
+                  : Effect.succeed(span);
+              }),
+            ),
+          );
+          expect(unsentSpan).toMatchObject({
+            "executor.runtime.rpc.connect_attempts": "2",
+            "executor.runtime.rpc.first_attempt.error_code": "ECONNREFUSED",
+            "executor.runtime.rpc.connect_outcome": "failed",
+            "executor.runtime.rpc.opened": "false",
+            "executor.runtime.rpc.sent": "0",
+          });
         }),
       ),
     180_000,

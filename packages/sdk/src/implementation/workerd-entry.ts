@@ -42,6 +42,7 @@ import {
   makeAppWorkerResidency,
   type AppWorkerResidency,
 } from "./app-worker-residency.ts";
+import { isPrivateHostname } from "@executor-js/utils/url-policy";
 import { compileWorkerApp } from "../workerd-build.ts";
 import { assembleWorkerBundle } from "./worker-build-storage.ts";
 import { declarationFailed } from "./worker-source-map.ts";
@@ -66,6 +67,13 @@ import {
   workflowFailureDetail,
   workflowFailureMessage,
 } from "../contracts/workflow-errors.ts";
+import {
+  engineFaultCall,
+  engineFaultError,
+  engineFaultFor,
+  type EngineFault,
+} from "../contracts/engine-faults.ts";
+import { nativeEngineFailure } from "./native-engine-failure.ts";
 
 declare const WebSocketPair: { new (): { 0: NativeWebSocket; 1: NativeWebSocket } };
 
@@ -139,7 +147,13 @@ interface Environment {
   };
   readonly RUNS: Workflow<{ run: string }>;
   readonly HOST: Fetcher;
+  /** E2E runs only: engine call faults (`engine-faults.ts`); otherwise null. */
+  readonly WORKFLOW_ENGINE_FAULTS?: ReadonlyArray<EngineFault> | null;
 }
+
+/** A native sleep: a failure without our marker is the platform's, recorded by class only. */
+const nativeSleep = (work: () => Promise<unknown>) =>
+  Effect.tryPromise({ try: work, catch: nativeEngineFailure }).pipe(Effect.asVoid);
 const failure = () => new WorkflowFailure({ reason: "engine", retryable: true });
 /** The deployer sees the underlying failure; builds bind no accounts. */
 const buildFailed = (stage: RuntimeBuildFailed["stage"], cause: unknown) =>
@@ -184,6 +198,28 @@ export class AppOutbound extends WorkerEntrypoint<Environment> {
     });
   }
 }
+/** The installer's name for a destination the host's network policy refuses. */
+class TarballDestinationRefused extends Error {
+  override readonly name = "NetworkRefused";
+}
+/**
+ * How a build reaches anything off its registry's origin when the operator has not allowed
+ * private fetch: tarball URL dependencies, and tarballs or redirects registry metadata sends
+ * elsewhere. They go through the public-only network, as app code's own requests do. This
+ * Worker's global `fetch` uses the `internet` service, which reaches private addresses, and stays
+ * the path to the registry's own origin, so an operator's private registry keeps working. The
+ * installer follows each redirect itself and sends every hop here or to the registry. A private
+ * address named in the URL is refused before sending; one a public name resolves to is refused by
+ * the network, which workerd reports with an error reference only.
+ */
+const publicTarballFetch =
+  (network: HttpService) =>
+  (input: string, init?: RequestInit): Promise<Response> => {
+    const url = URL.parse(input);
+    if (url === null || isPrivateHostname(url.hostname))
+      return Promise.reject(new TarballDestinationRefused());
+    return network.fetch(new Request(url, init));
+  };
 type OutboundLoopback = (options: { readonly props: OutboundProps }) => Fetcher;
 const OutboundExports = Schema.Struct({
   AppOutbound: Schema.declare((value): value is OutboundLoopback => typeof value === "function"),
@@ -305,7 +341,12 @@ class AppApi extends RpcTarget {
         ).pipe(Effect.mapError((cause) => buildFailed("source", cause)));
         const compiled = yield* compileWorkerApp(
           request.files,
-          this.#env.NPM_REGISTRY === "" ? {} : { registry: this.#env.NPM_REGISTRY },
+          {
+            ...(this.#env.NPM_REGISTRY === "" ? {} : { registry: this.#env.NPM_REGISTRY }),
+            ...(this.#env.APPS_PRIVATE_FETCH
+              ? {}
+              : { tarballFetch: publicTarballFetch(this.#env.PUBLIC_FETCH) }),
+          },
           request.public ?? [],
         );
         const { bundle, framework, ui, sourceMap } = compiled;
@@ -484,16 +525,23 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
           const progress = hostRequest(this.env, { operation: "progress", run: seed.runId }).pipe(
             Effect.ignore,
           );
+          const faults = this.env.WORKFLOW_ENGINE_FAULTS;
+          const sleepCall = (name: string, work: () => Promise<unknown>) => {
+            const fault = engineFaultFor(faults, seed.runId, name);
+            return Effect.andThen(
+              progress,
+              nativeSleep(fault === undefined ? work : () => engineFaultCall(fault, work)),
+            );
+          };
           const execution: WorkflowExecution = {
             runId: seed.runId,
             driver: {
-              do: (name, options, work) =>
-                native(() =>
+              do: (name, options, work) => {
+                const fault = engineFaultFor(faults, seed.runId, name);
+                if (fault?.when === "before")
+                  return Effect.fail(nativeEngineFailure(engineFaultError(fault)));
+                const call = native(() =>
                   nativeStep.do(name, options, (context) => {
-                    // The engine counts an attempt before running it, and after its process is
-                    // killed it marks that attempt failed and runs the step again without checking
-                    // the step's retry limit. A step that keeps killing the process would then
-                    // loop forever, so an attempt past the limit fails the run instead.
                     const attempt = Schema.decodeUnknownOption(EngineStepContext)(context);
                     if (
                       Option.isSome(attempt) &&
@@ -519,17 +567,18 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
                 ).pipe(
                   Effect.flatMap(Schema.decodeUnknownEffect(WorkflowValue)),
                   Effect.mapError(decodeWorkflowFailure),
-                ),
-              sleep: (name, duration) =>
-                Effect.andThen(
-                  progress,
-                  native(() => nativeStep.sleep(name, duration)),
-                ),
+                );
+                return fault === undefined
+                  ? call
+                  : call.pipe(
+                      Effect.flatMap(() =>
+                        Effect.fail(nativeEngineFailure(engineFaultError(fault))),
+                      ),
+                    );
+              },
+              sleep: (name, duration) => sleepCall(name, () => nativeStep.sleep(name, duration)),
               sleepUntil: (name, timestamp) =>
-                Effect.andThen(
-                  progress,
-                  native(() => nativeStep.sleepUntil(name, timestamp)),
-                ),
+                sleepCall(name, () => nativeStep.sleepUntil(name, timestamp)),
             },
             resolve: () =>
               hostRequest(this.env, { operation: "context", run: seed.runId }).pipe(
@@ -593,7 +642,20 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
             );
           if (!result.ok) {
             const detail = workflowFailureDetail(result.error);
-            if (result.error.reason !== "engine" || !result.error.retryable)
+            // The engine retries steps, not the body. A retryable engine failure whose cause is
+            // known is recorded now, while the engine reports the run running or waiting; see
+            // `execute`.
+            const recorded =
+              result.error.reason !== "engine" ||
+              !result.error.retryable ||
+              (detail !== undefined &&
+                (yield* Effect.tryPromise(async () =>
+                  (await this.env.RUNS.get(seed.runId)).status(),
+                ).pipe(
+                  Effect.map((state) => state.status === "running" || state.status === "waiting"),
+                  Effect.orElseSucceed(() => false),
+                )));
+            if (recorded)
               yield* hostRequest(this.env, {
                 operation: "finish",
                 run: seed.runId,

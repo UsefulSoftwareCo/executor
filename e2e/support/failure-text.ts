@@ -256,8 +256,9 @@ const bounded = (message: string, lineLength = maxLine) => {
 /** One free text, such as a page error or a console message: masked in full, then bounded. */
 export const safeText = (text: string): string => bounded(mask(text));
 
-// Node and undici codes are short constants, such as ERR_INVALID_PROTOCOL or ECONNREFUSED.
-const codePattern = /^[A-Z][A-Z0-9_]{1,63}$/u;
+// Node and undici codes are short constants, such as ERR_INVALID_PROTOCOL or ECONNREFUSED. OpenSSL's
+// are built from its reason text and can hold a slash: ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE.
+const codePattern = /^[A-Z][A-Z0-9_/]{1,63}$/u;
 const codeDepth = 8;
 
 /** The next level of a cause chain: an Effect `HttpClientError`'s `reason`, else `cause`. */

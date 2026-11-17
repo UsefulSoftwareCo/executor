@@ -7,8 +7,8 @@
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Config, Effect, FileSystem, Path, Schema } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/http";
+import { Config, Effect, FileSystem, Path, Result, Schema } from "effect";
+import { FetchHttpClient, HttpClient, Url } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import apps from "../../packages/apps/package.json" with { type: "json" };
 import {
@@ -32,6 +32,44 @@ const args = process.argv.slice(2);
 const publish = args.includes("--publish");
 const packageIndex = args.indexOf("--package");
 const packageDirectory = packageIndex < 0 ? staged : args[packageIndex + 1];
+const redirectLimit = 5;
+
+/** The origin of an absolute URL, or `undefined` when the text is not one. */
+const originOf = (url: string) => {
+  const parsed = Url.fromString(url);
+  return Result.isSuccess(parsed) ? parsed.success.origin : undefined;
+};
+
+/**
+ * GET the SDK tarball without reaching an origin the builder refuses. `fetch` follows redirects
+ * by default, so a same-origin URL could land anywhere; each hop is requested with manual
+ * redirects and refused unless it stays on `origin`, the builder registry's own.
+ */
+const downloadFromRegistry = (url: string, origin: string) =>
+  Effect.gen(function* () {
+    const http = yield* HttpClient.HttpClient;
+    let target = url;
+    for (let hop = 0; ; hop += 1) {
+      const response = yield* http
+        .get(target)
+        .pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
+      const location = response.headers.location;
+      if (response.status < 300 || response.status >= 400 || location === undefined)
+        return response;
+      yield* response.text;
+      const parsed = Url.fromString(location, target);
+      const next = Result.isSuccess(parsed) ? parsed.success : undefined;
+      if (next === undefined || next.origin !== origin)
+        return yield* new AppsReleaseMismatch({
+          message: `Builder SDK tarball on ${origin} redirects to ${next?.origin ?? location}, outside the builder registry's origin. The builder refuses that tarball, so deployment is refused.`,
+        });
+      if (hop >= redirectLimit)
+        return yield* new AppsReleaseMismatch({
+          message: `Builder SDK tarball redirects more than ${redirectLimit} times. Deployment refused.`,
+        });
+      target = next.href;
+    }
+  });
 
 NodeRuntime.runMain(
   Effect.gen(function* () {
@@ -124,7 +162,13 @@ NodeRuntime.runMain(
       return yield* new AppsReleaseMismatch({
         message: "Builder registry returned another SDK version.",
       });
-    const archive = yield* http.get(published.dist.tarball);
+    const registryOrigin = originOf(registry);
+    const tarballOrigin = originOf(published.dist.tarball);
+    if (registryOrigin === undefined || tarballOrigin !== registryOrigin)
+      return yield* new AppsReleaseMismatch({
+        message: `Builder registry metadata at ${registryOrigin ?? registry} serves its SDK tarball at ${published.dist.tarball} (${tarballOrigin ?? "not an absolute URL"}), outside the builder registry's origin. The builder refuses that tarball, so deployment is refused.`,
+      });
+    const archive = yield* downloadFromRegistry(published.dist.tarball, registryOrigin);
     if (archive.status !== 200) {
       yield* archive.text;
       return yield* new AppsReleaseMismatch({

@@ -5324,3 +5324,453 @@ fn an_export_that_writes_too_much_to_disk_is_refused_and_leaves_the_store_as_it_
     assert_eq!(after[2], before[2] + 10);
     assert_eq!((after[4], after[5]), (before[4], before[5]));
 }
+
+/// A viewer build in `directory`: `index.html` and two hashed assets, one of them nested.
+fn viewer_build(directory: &Path) {
+    std::fs::create_dir_all(directory.join("assets/fonts")).expect("assets");
+    std::fs::write(
+        directory.join("index.html"),
+        "<!doctype html><title>viewer</title>",
+    )
+    .expect("index");
+    std::fs::write(directory.join("assets/index-abc123.js"), "console.log(1)").expect("js");
+    std::fs::write(directory.join("assets/index-def456.css"), "body{}").expect("css");
+    std::fs::write(directory.join("assets/fonts/inter-0a1b.woff2"), [0u8, 1, 2]).expect("font");
+}
+
+/// One request on its own connection, read raw: the status, the head lowercased and the body.
+fn raw_request(address: &Address, raw: &str) -> (u16, String, Vec<u8>) {
+    let Address::Tcp(port) = address else {
+        panic!("TCP only")
+    };
+    let mut stream = TcpStream::connect(("127.0.0.1", *port)).expect("connect");
+    stream.set_read_timeout(Some(IO_LIMIT)).expect("timeout");
+    stream.write_all(raw.as_bytes()).expect("send");
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).expect("receive");
+    let (status, head, body) = split_response(&response);
+    (status, head, body.to_vec())
+}
+
+fn raw_get(address: &Address, method: &str, target: &str) -> (u16, String, Vec<u8>) {
+    raw_request(
+        address,
+        &format!(
+            "{method} {target} HTTP/1.1\r\nHost: collector\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+        ),
+    )
+}
+
+#[test]
+fn the_viewer_is_served_from_what_was_read_at_start_and_nothing_outside_it() {
+    let scratch = Scratch::new("viewer-routes");
+    let viewer = scratch.0.join("viewer");
+    viewer_build(&viewer);
+    // Files beside and above the viewer that no request may reach.
+    std::fs::write(scratch.0.join("secret.txt"), "outside").expect("secret");
+    // A hard link is a regular file: the directory is trusted, and package stores install files
+    // this way, so it is served.
+    std::fs::write(scratch.0.join("shared.js"), "hard-linked").expect("shared");
+    std::fs::hard_link(
+        scratch.0.join("shared.js"),
+        viewer.join("assets/shared-0000.js"),
+    )
+    .expect("hard link");
+    // Four directories deep is the deepest served.
+    std::fs::create_dir_all(viewer.join("assets/1/2/3/4")).expect("deep");
+    std::fs::write(viewer.join("assets/1/2/3/4/deep-0000.js"), "deep").expect("deep file");
+    let collector = Collector::start(
+        &scratch.data(),
+        &["--viewer", viewer.to_str().expect("utf-8")],
+    );
+    let address = collector.address.clone();
+    for route in [
+        "/",
+        "/traces",
+        "/logs",
+        "/trace/0123456789abcdef0123456789abcdef",
+    ] {
+        let (status, head, body) = raw_get(&address, "GET", route);
+        assert_eq!(status, 200, "{route}");
+        assert!(
+            head.contains("content-type: text/html; charset=utf-8"),
+            "{route}: {head}"
+        );
+        assert!(head.contains("cache-control: no-cache"), "{route}: {head}");
+        assert!(
+            head.contains("x-content-type-options: nosniff"),
+            "{route}: {head}"
+        );
+        assert_eq!(body, b"<!doctype html><title>viewer</title>", "{route}");
+    }
+    for (asset, content_type, bytes) in [
+        (
+            "/assets/index-abc123.js",
+            "text/javascript; charset=utf-8",
+            &b"console.log(1)"[..],
+        ),
+        (
+            "/assets/index-def456.css",
+            "text/css; charset=utf-8",
+            b"body{}",
+        ),
+        ("/assets/fonts/inter-0a1b.woff2", "font/woff2", &[0, 1, 2]),
+        (
+            "/assets/shared-0000.js",
+            "text/javascript; charset=utf-8",
+            b"hard-linked",
+        ),
+        (
+            "/assets/1/2/3/4/deep-0000.js",
+            "text/javascript; charset=utf-8",
+            b"deep",
+        ),
+    ] {
+        let (status, head, body) = raw_get(&address, "GET", asset);
+        assert_eq!(status, 200, "{asset}");
+        assert!(
+            head.contains(&format!("content-type: {content_type}")),
+            "{asset}: {head}"
+        );
+        assert!(
+            head.contains("cache-control: public, max-age=31536000, immutable"),
+            "{asset}: {head}"
+        );
+        assert!(
+            head.contains("x-content-type-options: nosniff"),
+            "{asset}: {head}"
+        );
+        assert_eq!(body, bytes, "{asset}");
+    }
+    // HEAD answers the head alone; every other method is refused.
+    let (status, head, body) = raw_get(&address, "HEAD", "/assets/index-abc123.js");
+    assert_eq!(status, 200);
+    assert!(head.contains("content-length: 14"), "{head}");
+    assert!(body.is_empty());
+    for method in ["POST", "PUT", "DELETE", "PATCH", "OPTIONS"] {
+        for route in ["/", "/assets/index-abc123.js"] {
+            let (status, _, _) = raw_get(&address, method, route);
+            assert_eq!(status, 405, "{method} {route}");
+        }
+    }
+    // Nothing a request names becomes a path: none of these reaches a file, in the viewer's
+    // directory or out of it, and none lists a directory.
+    for target in [
+        "/assets/../index.html",
+        "/assets/..%2Findex.html",
+        "/assets/%2e%2e/index.html",
+        "/assets/..%2F..%2Fsecret.txt",
+        "/assets/%2E%2E%2F%2E%2E%2Fsecret.txt",
+        "/assets/..%5C..%5Csecret.txt",
+        "/assets//etc/passwd",
+        "/assets/%2Fetc%2Fpasswd",
+        "/assets/fonts/../../index.html",
+        "/assets/fonts",
+        "/assets/fonts/",
+        "/assets/",
+        "/assets",
+        "/index.html",
+        "/secret.txt",
+        "/viewer/index.html",
+        "/trace/",
+        "/trace/a/b",
+    ] {
+        let (status, _, body) = raw_get(&address, "GET", target);
+        assert_eq!(status, 404, "{target}: {}", String::from_utf8_lossy(&body));
+        assert!(!body.windows(7).any(|w| w == b"outside"), "{target}");
+        assert!(!body.windows(8).any(|w| w == b"doctype "), "{target}");
+    }
+    // Files are read once, at start: a file added, changed or linked in since is not served.
+    std::fs::write(viewer.join("assets/late-0000.js"), "late").expect("late");
+    std::os::unix::fs::symlink(
+        scratch.0.join("secret.txt"),
+        viewer.join("assets/link-0000.txt"),
+    )
+    .expect("link");
+    std::fs::write(viewer.join("index.html"), "changed").expect("change");
+    assert_eq!(raw_get(&address, "GET", "/assets/late-0000.js").0, 404);
+    assert_eq!(raw_get(&address, "GET", "/assets/link-0000.txt").0, 404);
+    assert_eq!(
+        raw_get(&address, "GET", "/").2,
+        b"<!doctype html><title>viewer</title>"
+    );
+    // The API is unchanged beside it.
+    assert_eq!(collector.get("/api/health").0, 200);
+    let (status, _, _) = collector.stop();
+    assert!(status.success());
+}
+
+#[test]
+fn without_a_viewer_its_routes_are_not_found() {
+    let scratch = Scratch::new("viewer-absent");
+    let collector = Collector::start(&scratch.data(), &[]);
+    for route in ["/", "/traces", "/logs", "/trace/abc", "/assets/index.js"] {
+        assert_eq!(raw_get(&collector.address, "GET", route).0, 404, "{route}");
+    }
+    let (status, _, _) = collector.stop();
+    assert!(status.success());
+}
+
+#[test]
+fn a_viewer_that_cannot_be_served_ends_the_start_before_the_store_is_touched() {
+    let scratch = Scratch::new("viewer-refused");
+    std::fs::write(scratch.0.join("outside.js"), "outside").expect("outside");
+    type Make = Box<dyn Fn(&Path)>;
+    let cases: Vec<(&str, Make, &str)> = vec![
+        ("missing", Box::new(|_: &Path| {}), "index.html"),
+        (
+            "no index",
+            Box::new(|dir: &Path| {
+                viewer_build(dir);
+                std::fs::remove_file(dir.join("index.html")).expect("rm");
+            }),
+            "index.html",
+        ),
+        (
+            "index a directory",
+            Box::new(|dir: &Path| {
+                viewer_build(dir);
+                std::fs::remove_file(dir.join("index.html")).expect("rm");
+                std::fs::create_dir(dir.join("index.html")).expect("dir");
+            }),
+            "not a regular file",
+        ),
+        (
+            "index a link",
+            Box::new(|dir: &Path| {
+                viewer_build(dir);
+                std::fs::remove_file(dir.join("index.html")).expect("rm");
+                std::os::unix::fs::symlink(
+                    dir.join("assets/index-abc123.js"),
+                    dir.join("index.html"),
+                )
+                .expect("link");
+            }),
+            // Refused by the open itself, which does not follow a final symbolic link.
+            "is a symbolic link",
+        ),
+        (
+            "an asset links out",
+            Box::new(|dir: &Path| {
+                viewer_build(dir);
+                std::os::unix::fs::symlink(
+                    dir.parent().expect("parent").join("outside.js"),
+                    dir.join("assets/out-0000.js"),
+                )
+                .expect("link");
+            }),
+            "not a regular file or directory",
+        ),
+        (
+            "assets a link to a directory",
+            Box::new(|dir: &Path| {
+                std::fs::create_dir_all(dir).expect("dir");
+                std::fs::write(dir.join("index.html"), "x").expect("index");
+                std::os::unix::fs::symlink(dir.parent().expect("parent"), dir.join("assets"))
+                    .expect("link");
+            }),
+            "is not a directory",
+        ),
+        (
+            "a nested link to a directory",
+            Box::new(|dir: &Path| {
+                viewer_build(dir);
+                std::os::unix::fs::symlink(dir.parent().expect("parent"), dir.join("assets/up"))
+                    .expect("link");
+            }),
+            "not a regular file or directory",
+        ),
+        (
+            // The open does not block on it, and the opened file's own kind refuses it.
+            "index a FIFO",
+            Box::new(|dir: &Path| {
+                viewer_build(dir);
+                std::fs::remove_file(dir.join("index.html")).expect("rm");
+                let made = Command::new("mkfifo")
+                    .arg(dir.join("index.html"))
+                    .status()
+                    .expect("mkfifo");
+                assert!(made.success());
+            }),
+            "not a regular file",
+        ),
+        (
+            "five deep",
+            Box::new(|dir: &Path| {
+                viewer_build(dir);
+                std::fs::create_dir_all(dir.join("assets/1/2/3/4/5")).expect("deep");
+                std::fs::write(dir.join("assets/1/2/3/4/5/deep.js"), "x").expect("deep file");
+            }),
+            "nests too deep",
+        ),
+        (
+            "too many entries",
+            Box::new(|dir: &Path| {
+                viewer_build(dir);
+                for index in 0..executor_collector::viewer::VIEWER_ENTRIES {
+                    std::fs::write(dir.join(format!("assets/empty-{index:05}.js")), "")
+                        .expect("empty");
+                }
+            }),
+            "more than 4096 files and directories",
+        ),
+        (
+            "a FIFO",
+            Box::new(|dir: &Path| {
+                viewer_build(dir);
+                let made = Command::new("mkfifo")
+                    .arg(dir.join("assets/pipe-0000.js"))
+                    .status()
+                    .expect("mkfifo");
+                assert!(made.success());
+            }),
+            "not a regular file or directory",
+        ),
+        (
+            "over the size bound",
+            Box::new(|dir: &Path| {
+                viewer_build(dir);
+                // Sparse: it takes no disk.
+                std::fs::File::create(dir.join("assets/huge-0000.js"))
+                    .expect("create")
+                    .set_len(executor_collector::viewer::VIEWER_BYTES)
+                    .expect("set_len");
+            }),
+            "more than",
+        ),
+    ];
+    for (name, make, reason) in cases {
+        let viewer = scratch.0.join(name.replace(' ', "-"));
+        make(&viewer);
+        let data = scratch.0.join(format!("data-{}", name.replace(' ', "-")));
+        let (status, stderr) =
+            match Collector::try_start(&data, &["--viewer", viewer.to_str().expect("utf-8")]) {
+                Ok(_) => panic!("{name}: the collector started"),
+                Err(failed) => failed,
+            };
+        assert_eq!(status.code(), Some(1), "{name}: {stderr}");
+        assert!(
+            stderr.contains("cannot serve the viewer"),
+            "{name}: {stderr}"
+        );
+        assert!(stderr.contains(reason), "{name}: {stderr}");
+        assert!(!data.exists(), "{name}: the data directory was created");
+    }
+    // A file far past the bound is read no further than the bound. The collector starts in about
+    // 16 MiB of address space; under a 160 MiB limit a 200 MiB file read whole fails to allocate and
+    // aborts, where the bound refuses it. 200 MiB stays under the 256 MiB file-size limit this suite
+    // runs under on shared hosts (`ulimit -f 262144`); the file is sparse and takes no disk.
+    let viewer = scratch.0.join("vast");
+    viewer_build(&viewer);
+    std::fs::File::create(viewer.join("assets/vast-0000.js"))
+        .expect("create")
+        .set_len(200 << 20)
+        .expect("set_len");
+    let data = scratch.0.join("data-vast");
+    let mut command = Command::new("bash");
+    command.args([
+        "-c",
+        "ulimit -v 163840; exec \"$0\" \"$@\"",
+        BINARY,
+        "serve",
+        "--data",
+    ]);
+    command
+        .arg(&data)
+        .args(["--listen", "127.0.0.1:0", "--viewer"])
+        .arg(&viewer);
+    let (status, stderr) = match Collector::spawn(&mut command) {
+        Ok(_) => panic!("a 200 MiB viewer started"),
+        Err(failed) => failed,
+    };
+    assert_eq!(status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("more than"), "{stderr}");
+    assert!(!data.exists());
+    // An empty value is a usage error.
+    let (status, _) = match Collector::try_start(&scratch.data(), &["--viewer", ""]) {
+        Ok(_) => panic!("an empty --viewer started"),
+        Err(failed) => failed,
+    };
+    assert_eq!(status.code(), Some(2));
+}
+
+/// Starts the collector on `viewer`; whether it started, and its log when it did not.
+fn viewer_starts(scratch: &Scratch, name: &str, viewer: &Path) -> Result<(), String> {
+    let data = scratch.0.join(format!("data-{name}"));
+    let started = Collector::try_start(&data, &["--viewer", viewer.to_str().expect("utf-8")]);
+    let _ = std::fs::remove_dir_all(&data);
+    match started {
+        Ok(collector) => {
+            let (status, _, _) = collector.stop();
+            assert!(status.success(), "{name}");
+            Ok(())
+        }
+        Err((status, stderr)) => {
+            assert_eq!(status.code(), Some(1), "{name}: {stderr}");
+            Err(stderr)
+        }
+    }
+}
+
+#[test]
+fn the_viewer_bound_counts_every_entry_its_stored_path_and_its_contents() {
+    use executor_collector::viewer::{VIEWER_BYTES, VIEWER_ENTRIES};
+    let scratch = Scratch::new("viewer-bound");
+    // Entries: `index.html` and `assets` count like the files under it.
+    let entries = |name: &str, files: usize| {
+        let viewer = scratch.0.join(name);
+        std::fs::create_dir_all(viewer.join("assets")).expect("assets");
+        std::fs::write(viewer.join("index.html"), "x").expect("index");
+        for index in 0..files {
+            std::fs::write(viewer.join(format!("assets/f{index:05}.js")), "").expect("file");
+        }
+        viewer
+    };
+    let at = entries("entries-at", VIEWER_ENTRIES - 2);
+    assert_eq!(viewer_starts(&scratch, "entries-at", &at), Ok(()));
+    let over = entries("entries-over", VIEWER_ENTRIES - 1);
+    let refused = viewer_starts(&scratch, "entries-over", &over).expect_err("one entry too many");
+    assert!(
+        refused.contains("more than 4096 files and directories"),
+        "{refused}"
+    );
+
+    // `index.html` alone: its name and its entry count with its contents.
+    let index = |name: &str, bytes: u64| {
+        let viewer = scratch.0.join(name);
+        std::fs::create_dir_all(&viewer).expect("viewer");
+        std::fs::File::create(viewer.join("index.html"))
+            .expect("index")
+            .set_len(bytes)
+            .expect("set_len");
+        viewer
+    };
+    let fits = VIEWER_BYTES - (256 + "index.html".len() as u64);
+    let at = index("index-at", fits);
+    assert_eq!(viewer_starts(&scratch, "index-at", &at), Ok(()));
+    let over = index("index-over", fits + 1);
+    let refused = viewer_starts(&scratch, "index-over", &over).expect_err("one byte too many");
+    assert!(refused.contains("more than 16777216 bytes"), "{refused}");
+
+    // An asset two directories down is stored under its whole path, which is charged, not only its
+    // own name: index (256 + 10 + 1), assets (256 + 6), the directory (256 + 255) and the file
+    // (256 + 255 + 1 + 255) and its contents.
+    let directory = "d".repeat(255);
+    let file = "f".repeat(255);
+    let deep = |name: &str, bytes: u64| {
+        let viewer = scratch.0.join(name);
+        std::fs::create_dir_all(viewer.join("assets").join(&directory)).expect("dirs");
+        std::fs::write(viewer.join("index.html"), "x").expect("index");
+        std::fs::File::create(viewer.join("assets").join(&directory).join(&file))
+            .expect("file")
+            .set_len(bytes)
+            .expect("set_len");
+        viewer
+    };
+    let charged = (256 + 10 + 1) + (256 + 6) + (256 + 255) + (256 + 255 + 1 + 255);
+    let at = deep("deep-at", VIEWER_BYTES - charged);
+    assert_eq!(viewer_starts(&scratch, "deep-at", &at), Ok(()));
+    let over = deep("deep-over", VIEWER_BYTES - charged + 1);
+    let refused = viewer_starts(&scratch, "deep-over", &over).expect_err("one byte too many");
+    assert!(refused.contains("more than 16777216 bytes"), "{refused}");
+}

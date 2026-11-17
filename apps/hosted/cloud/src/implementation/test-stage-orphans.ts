@@ -63,7 +63,7 @@ const maxPages = 50;
  * PlanetScale's API, or a stand-in on this machine (`test-stage-orphans.spec.ts`). The override
  * accepts only a loopback origin, so the job's PlanetScale credentials cannot be sent elsewhere.
  */
-const planetScaleApi = Effect.gen(function* () {
+export const planetScaleApi = Effect.gen(function* () {
   const configured = yield* Config.option(Config.NonEmptyString("TEST_STAGE_PLANETSCALE_API"));
   if (Option.isNone(configured)) return "https://api.planetscale.com";
   const url = yield* Effect.try({

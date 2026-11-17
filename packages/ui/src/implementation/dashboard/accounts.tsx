@@ -118,7 +118,9 @@ function AccountsList({
           </div>
           {accounts.map((account) => {
             const apps = data.apps.filter((app) =>
-              data.links.some((link) => link.app === app.id && link.account === account.id),
+              [...data.links, ...data.appLinks].some(
+                (link) => link.app === app.id && link.account === account.id,
+              ),
             );
             return (
               <div

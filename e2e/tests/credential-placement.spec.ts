@@ -11,6 +11,7 @@ import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomUUID } from "node:crypto";
 import { Actors } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
+import { Browser } from "../support/browser.ts";
 import { publishedRelease } from "../support/app-package.ts";
 import { appsManifest, unscopedAccounts } from "../support/apps-release.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
@@ -18,7 +19,11 @@ import { Resource } from "../support/contracts.ts";
 import { credentialUpstream, type ReceivedRequest } from "../support/credential-upstream.ts";
 import { Evidence, Telemetry } from "../support/evidence.ts";
 import type { OperatorSettings } from "../support/managed-server.ts";
-import { OperatorOAuthFixture, operatorOAuthFile } from "../support/operator-oauth.ts";
+import {
+  OperatorOAuthFixture,
+  operatorOAuthFile,
+  syntheticCloudGoogle,
+} from "../support/operator-oauth.ts";
 import {
   oauthSetupIssuer,
   oauthSetupIssuerOn,
@@ -52,6 +57,22 @@ const Setup = Schema.Struct({
   scopes: Schema.Array(Schema.String),
   firstParty: Schema.optional(Schema.Struct({ label: Schema.String })),
   userScopes: Schema.optional(Schema.Array(Schema.String)),
+  operatorScopeRefusal: Schema.optional(
+    Schema.Struct({
+      client: Schema.String,
+      scopes: Schema.Array(Schema.String),
+      instead: Schema.Array(
+        Schema.Struct({ scope: Schema.String, scopes: Schema.Array(Schema.String) }),
+      ),
+    }),
+  ),
+});
+/** A sign-in refused before the service because the operator's client may not ask for its scopes. */
+const ScopeRefused = Schema.Struct({
+  _tag: Schema.Literal("OAuthSetupFailed"),
+  reason: Schema.Literal("operator_scope_refused"),
+  message: Schema.String,
+  recovery: Schema.Struct({ action: Schema.String, instructions: Schema.String }),
 });
 const Health = Schema.Struct({
   apps: Schema.Array(
@@ -306,6 +327,11 @@ const operatorDefinition = (
     readonly defaultScopes?: readonly string[];
     /** What a sign-in may ask for and a grant may hold; `mail.read` and `mail.compose` by default. */
     readonly allowedScopes?: readonly string[];
+    /** What a grant may hold that no sign-in asks for, and the allowed scopes to ask for instead. */
+    readonly heldScopes?: ReadonlyArray<{
+      readonly scope: string;
+      readonly instead: readonly string[];
+    }>;
     /** How the server separates the scopes it reports granting, such as GitHub's `,`. */
     readonly grantedScopeSeparator?: string;
     /** Extra sign-in parameters the operator sends, such as Slack's `user_scope`. */
@@ -342,6 +368,7 @@ const operatorDefinition = (
   tokenEndpointAuthMethod: "client_secret_basic",
   defaultScopes: options.defaultScopes ?? ["mail.read"],
   allowedScopes: options.allowedScopes ?? ["mail.read", "mail.compose"],
+  ...(options.heldScopes === undefined ? {} : { heldScopes: options.heldScopes }),
   placement: {
     hosts,
     ...(options.header === undefined ? {} : { header: options.header }),
@@ -1037,40 +1064,46 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
     ),
   );
 
+  const google = {
+    authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
+    tokenUrl: "https://oauth2.googleapis.com/token",
+  };
+  const calendar = "https://www.googleapis.com/auth/calendar";
+  const gmail = "https://mail.google.com/";
+  const gmailModify = "https://www.googleapis.com/auth/gmail.modify";
+  const drive = "https://www.googleapis.com/auth/drive";
+  const cloudPlatform = "https://www.googleapis.com/auth/cloud-platform";
+  /** Deploy a service on Google's endpoints asking for `scopes`, start signing in and read setup. */
+  const signInGoogle = (key: string, scopes: readonly string[]) =>
+    Effect.gen(function* () {
+      const { api, actors, prefix, deploy, connection } = yield* harness;
+      const name = `Google ${key} ${randomUUID().slice(0, 8)}`;
+      const { path, app } = yield* deploy(
+        name,
+        endpointsApp(name, ["www.googleapis.com"], google, scopes),
+      );
+      const id = yield* connection(path, "mail");
+      const started = yield* api.request(
+        actors.owner,
+        "POST",
+        `${prefix}/connections/${id}/oauth/start`,
+        { method: "oauth", label: "Google" },
+      );
+      const provider = app.requirements.accounts.mail!.provider;
+      const answered = yield* api.request(
+        actors.owner,
+        "GET",
+        `${prefix}/providers/${provider}/oauth/oauth/setup`,
+      );
+      return { started, setup: yield* body(Setup, answered) };
+    });
+
   it.effect(scenarios.credentialManagedGoogle.title, (context) =>
     withHostedCase(
       context,
       Effect.gen(function* () {
-        const { api, actors, prefix, deploy, connection } = yield* harness;
         const clientId = "synthetic-google-client.apps.googleusercontent.com";
-        const google = {
-          authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth",
-          tokenUrl: "https://oauth2.googleapis.com/token",
-        };
-        const calendar = "https://www.googleapis.com/auth/calendar";
-        /** Deploy a Google service asking for `scopes`, then start signing in and read setup. */
-        const signIn = (key: string, scopes: readonly string[]) =>
-          Effect.gen(function* () {
-            const name = `Google ${key} ${randomUUID().slice(0, 8)}`;
-            const { path, app } = yield* deploy(
-              name,
-              endpointsApp(name, ["www.googleapis.com"], google, scopes),
-            );
-            const id = yield* connection(path, "mail");
-            const started = yield* api.request(
-              actors.owner,
-              "POST",
-              `${prefix}/connections/${id}/oauth/start`,
-              { method: "oauth", label: "Google" },
-            );
-            const provider = app.requirements.accounts.mail!.provider;
-            const answered = yield* api.request(
-              actors.owner,
-              "GET",
-              `${prefix}/providers/${provider}/oauth/oauth/setup`,
-            );
-            return { started, setup: yield* body(Setup, answered) };
-          });
+        const signIn = signInGoogle;
         const cleared = {
           EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: "",
           EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "",
@@ -1087,13 +1120,20 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: clientId,
           EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: "synthetic-google-secret",
         });
-        const [allowed, defaults, wider] = yield* Effect.all(
+        const [allowed, defaults, wider, modify, fullGmail, mixed] = yield* Effect.all(
           [
             signIn("calendar", [calendar]),
             // A provider that asks for no scopes gets the client's defaults.
             signIn("defaults", []),
             // A scope outside the client's allowed scopes.
-            signIn("wider", [calendar, "https://www.googleapis.com/auth/cloud-platform"]),
+            signIn("wider", [calendar, cloudPlatform]),
+            // Google has not approved `gmail.modify` for Executor's own registration, but a
+            // self-host operator's client is its own registration, which that does not limit.
+            signIn("modify", [gmailModify, drive, calendar]),
+            // The approved full Gmail scope, with the same others.
+            signIn("gmail", [gmail, drive, calendar]),
+            // `gmail.modify` beside a scope the client was never allowed.
+            signIn("mixed", [gmailModify, cloudPlatform]),
           ],
           { concurrency: "unbounded" },
         );
@@ -1132,7 +1172,38 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           expect(url.searchParams.get("client_id"), key).toBe(clientId);
           expect(url.searchParams.get("scope")?.split(" "), key).toEqual(requested);
         }
+        // The approved Gmail scope signs in with the client.
+        expect(fullGmail.setup.firstParty).toEqual({ label: "Executor for Google" });
+        expect(fullGmail.started.status, JSON.stringify(fullGmail.started.body)).toBe(200);
+        const approved = new URL((yield* body(Redirect, fullGmail.started)).authorizationUrl);
+        expect(approved.searchParams.get("client_id")).toBe(clientId);
+        expect(approved.searchParams.get("scope")?.split(" ")).toEqual([gmail, drive, calendar]);
+
+        // The self-host operator's own Google client still signs in `gmail.modify`, as it did
+        // before Executor's own registration held it.
+        expect(modify.setup.operatorScopeRefusal).toBeUndefined();
+        expect(modify.setup).toMatchObject({
+          mode: "automatic",
+          firstParty: { label: "Executor for Google" },
+          scopes: [gmailModify, drive, calendar],
+        });
+        expect(modify.started.status, JSON.stringify(modify.started.body)).toBe(200);
+        const modifySent = new URL((yield* body(Redirect, modify.started)).authorizationUrl);
+        expect(`${modifySent.origin}${modifySent.pathname}`).toBe(google.authorizationUrl);
+        expect(modifySent.searchParams.get("client_id")).toBe(clientId);
+        expect(modifySent.searchParams.get("scope")?.split(" ")).toEqual([
+          gmailModify,
+          drive,
+          calendar,
+        ]);
+        // Beside a scope the client was never allowed, it is simply not offered.
+        expect(mixed.setup.firstParty).toBeUndefined();
+        expect(mixed.setup.operatorScopeRefusal).toBeUndefined();
+        expect(mixed.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
+
+        // A scope outside the client's menu that it never asked for leaves it simply not offered.
         expect(wider.setup.firstParty).toBeUndefined();
+        expect(wider.setup.operatorScopeRefusal).toBeUndefined();
         expect(wider.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
       }),
     ),
@@ -1708,6 +1779,218 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
     ),
   );
 
+  it.effect(scenarios.credentialManagedHeld.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { api, actors, prefix, deploy, list, connection, consent } = yield* harness;
+        const { issuer, store, issuerHost, storeHost } = yield* operatorWith({
+          allowedScopes: ["mail.read", "mail.compose", "mail.full"],
+        });
+        const hosts = [issuerHost, storeHost];
+        // Token responses report the scopes each grant holds, at sign-in and on renewal, as
+        // Google's do.
+        yield* issuer.configure({ scopeGrant: { defaults: [] }, expiresIn: 3600 });
+        const base = {
+          name: "Synthetic Mail",
+          discover: `${issuer.origin}/mcp`,
+          hosts,
+          resource: `${issuer.origin}/resource`,
+          store: store.origin,
+          undeclared: store.undeclaredOrigin,
+        };
+        const asking = mailApp({ ...base, scopes: ["mail.read", "mail.compose"] });
+        const [operatorApp, ownApp, approvedApp] = yield* Effect.all(
+          [
+            deploy(`Mail operator ${randomUUID().slice(0, 8)}`, asking),
+            deploy(`Mail own ${randomUUID().slice(0, 8)}`, asking),
+            deploy(
+              `Mail approved ${randomUUID().slice(0, 8)}`,
+              mailApp({ ...base, scopes: ["mail.read", "mail.full"] }),
+            ),
+          ],
+          { concurrency: "unbounded" },
+        );
+        const removed = (account: string) =>
+          Effect.addFinalizer(() =>
+            api
+              .request(actors.owner, "DELETE", `${prefix}/accounts/${account}`)
+              .pipe(Effect.ignore),
+          );
+        /** Start signing in again for `account` through `path`, with the client chosen for it. */
+        const reconnect = (path: string, account: string) =>
+          Effect.gen(function* () {
+            const replacing = yield* body(
+              Resource,
+              yield* api.request(actors.owner, "POST", connectionsPath(path, "user", "mail"), {
+                account,
+              }),
+            );
+            return yield* api.request(
+              actors.owner,
+              "POST",
+              `${prefix}/connections/${replacing.id}/oauth/start`,
+              { method: "oauth", label: "Mail" },
+            );
+          });
+        const Read = Schema.Struct({ token: Schema.String, status: Schema.Number });
+        /** Call `resource` after the service refused every token so far, so the call renews. */
+        const renewedRead = (path: string) =>
+          Effect.gen(function* () {
+            const before = (yield* issuer.metrics).refreshes;
+            yield* issuer.expireAccessTokens;
+            const read = yield* api.request(actors.owner, "POST", `${path}/tools/call`, {
+              tool: "resource",
+              kind: "query",
+              input: {},
+            });
+            expect(read.status, JSON.stringify(read.body)).toBe(200);
+            expect((yield* body(Read, read)).status).toBe(200);
+            expect((yield* issuer.metrics).refreshes).toBeGreaterThan(before);
+          });
+
+        // An account the operator's client signed in while it could ask for `mail.compose`.
+        const first = yield* startSignIn(operatorApp.path);
+        expect(first.started.status, JSON.stringify(first.started.body)).toBe(200);
+        const firstRedirect = yield* body(Redirect, first.started);
+        expect(new URL(firstRedirect.authorizationUrl).searchParams.get("client_id")).toBe(
+          "first-party-client",
+        );
+        const firstCompleted = yield* finishSignIn(issuer, first.connection, firstRedirect);
+        expect(firstCompleted.status, JSON.stringify(firstCompleted.body)).toBe(200);
+        const operatorAccount = (yield* body(Resource, firstCompleted)).id;
+        yield* removed(operatorAccount);
+
+        // And one signed in with the user's own client for the same service.
+        const own = { clientId: "own-mail-client", clientSecret: "own-mail-secret" };
+        const ownConnection = yield* connection(ownApp.path, "mail");
+        const ownStarted = yield* api.request(
+          actors.owner,
+          "POST",
+          `${prefix}/connections/${ownConnection}/oauth/start`,
+          { method: "oauth", label: "Mail", client: own },
+        );
+        expect(ownStarted.status, JSON.stringify(ownStarted.body)).toBe(200);
+        const ownRedirect = yield* body(Redirect, ownStarted);
+        expect(new URL(ownRedirect.authorizationUrl).searchParams.get("client_id")).toBe(
+          own.clientId,
+        );
+        yield* issuer.allowClient({ ...own, redirect: ownRedirect.redirectUri });
+        const ownCompleted = yield* api.request(
+          actors.owner,
+          "POST",
+          `${prefix}/connections/${ownConnection}/oauth/complete`,
+          { callbackUrl: yield* consent(ownRedirect.authorizationUrl) },
+        );
+        expect(ownCompleted.status, JSON.stringify(ownCompleted.body)).toBe(200);
+        const ownAccount = (yield* body(Resource, ownCompleted)).id;
+        yield* removed(ownAccount);
+
+        // The service stops letting the operator's client ask for `mail.compose`, so the operator
+        // holds it, naming `mail.full` instead.
+        yield* restartWith(
+          operatorClients(issuer.origin, hosts, {
+            allowedScopes: ["mail.read", "mail.full"],
+            heldScopes: [{ scope: "mail.compose", instead: ["mail.full"] }],
+          }),
+        );
+
+        // The account whose grant holds it keeps renewing: the renewal reports the held scope.
+        // The listing confirms `resource` only reads, so a refused call renews and repeats.
+        yield* list(operatorApp.path);
+        yield* renewedRead(operatorApp.path);
+
+        // A new sign-in asking for it is refused before the browser goes to the service.
+        const provider = operatorApp.app.requirements.accounts.mail!.provider;
+        const setup = yield* body(
+          Setup,
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `${prefix}/providers/${provider}/oauth/oauth/setup`,
+          ),
+        );
+        expect(setup.firstParty).toBeUndefined();
+        expect(setup).toMatchObject({
+          mode: "client-required",
+          operatorScopeRefusal: {
+            client: "Executor for Synthetic Mail",
+            scopes: ["mail.compose"],
+            instead: [{ scope: "mail.compose", scopes: ["mail.full"] }],
+          },
+        });
+        const fresh = yield* startSignIn(operatorApp.path);
+        expect(fresh.started.status, JSON.stringify(fresh.started.body)).toBe(422);
+        expect(fresh.started.body).not.toHaveProperty("authorizationUrl");
+        const refused = yield* body(ScopeRefused, fresh.started);
+        expect(refused.message).toContain("mail.compose");
+        // The user's own client comes first; the replacement second, saying it grants more.
+        expect(refused.recovery.action).toBe(
+          "Enter your own OAuth client for this service. Or, if broader access is acceptable, change the app to ask for mail.full instead, which grants more than mail.compose.",
+        );
+        // The connection page says so where it asks for the user's own client, before any attempt.
+        const browser = yield* Browser;
+        yield* browser.login(actors.owner);
+        yield* browser.use("Open the new connection", (page) =>
+          page.goto(`/org/${actors.organization.slug}/connections/${fresh.connection}`),
+        );
+        yield* browser.use("The form explains why Executor's client is not offered", (page) =>
+          page
+            .getByRole("heading", {
+              name: "Executor for Synthetic Mail can’t ask for this permission",
+            })
+            .waitFor({ state: "visible" })
+            .then(() =>
+              page
+                .getByText("This app asks for mail.compose", { exact: false })
+                .waitFor({ state: "visible" }),
+            )
+            .then(() =>
+              page
+                .getByText(
+                  "Enter your own OAuth client for this service. Or, if broader access is acceptable, change the app to ask for mail.full instead, which grants more than mail.compose.",
+                  { exact: false },
+                )
+                .waitFor({ state: "visible" }),
+            ),
+        );
+        yield* browser.checkpoint("Operator client refused for a held scope");
+
+        // So is reconnecting the operator's account, and the refusal leaves the account as it
+        // was: it still renews and reads.
+        const operatorReconnect = yield* reconnect(operatorApp.path, operatorAccount);
+        expect(operatorReconnect.status, JSON.stringify(operatorReconnect.body)).toBe(422);
+        expect(operatorReconnect.body).not.toHaveProperty("authorizationUrl");
+        expect((yield* body(ScopeRefused, operatorReconnect)).message).toContain("mail.compose");
+        yield* renewedRead(operatorApp.path);
+
+        // Reconnecting the account on the user's own client keeps that client.
+        const ownReconnect = yield* reconnect(ownApp.path, ownAccount);
+        expect(ownReconnect.status, JSON.stringify(ownReconnect.body)).toBe(200);
+        expect(
+          new URL((yield* body(Redirect, ownReconnect)).authorizationUrl).searchParams.get(
+            "client_id",
+          ),
+        ).toBe(own.clientId);
+
+        // An app asking only for scopes the client may ask for still signs in with it.
+        const approved = yield* startSignIn(approvedApp.path);
+        expect(approved.started.status, JSON.stringify(approved.started.body)).toBe(200);
+        const approvedRedirect = yield* body(Redirect, approved.started);
+        const approvedUrl = new URL(approvedRedirect.authorizationUrl);
+        expect(approvedUrl.searchParams.get("client_id")).toBe("first-party-client");
+        expect(approvedUrl.searchParams.get("scope")).toBe("mail.read mail.full");
+        const approvedCompleted = yield* finishSignIn(
+          issuer,
+          approved.connection,
+          approvedRedirect,
+        );
+        expect(approvedCompleted.status, JSON.stringify(approvedCompleted.body)).toBe(200);
+        yield* removed((yield* body(Resource, approvedCompleted)).id);
+      }),
+    ),
+  );
+
   it.effect(scenarios.credentialManagedSettingsInvalid.title, (context) =>
     withHostedCase(
       context,
@@ -1786,6 +2069,86 @@ layer(HostedLive, { excludeTestServices: true })("Credential placement", (it) =>
           ]),
         });
         expect(replaced).toContain("Two clients have the ID google");
+      }),
+    ),
+  );
+
+  it.effect(scenarios.credentialManagedGoogleCloud.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        // Every managed local Cloud turns on the reviewed Executor for Google client with
+        // synthetic credentials, as Cloud's own registration.
+        const { clientId } = syntheticCloudGoogle;
+        const [fullGmail, modify, mixed, wider] = yield* Effect.all(
+          [
+            signInGoogle("gmail", [gmail, drive, calendar]),
+            // Google has not approved `gmail.modify` for Executor's own registration: asked for,
+            // Google shows "This app is blocked" instead of its consent screen.
+            signInGoogle("modify", [gmailModify, drive, calendar]),
+            // `gmail.modify` beside a scope the client was never allowed.
+            signInGoogle("mixed", [gmailModify, cloudPlatform]),
+            // A scope the client was never allowed.
+            signInGoogle("wider", [calendar, cloudPlatform]),
+          ],
+          { concurrency: "unbounded" },
+        );
+
+        // The approved full Gmail scope signs in with the client.
+        expect(fullGmail.setup.firstParty).toEqual({ label: "Executor for Google" });
+        expect(fullGmail.started.status, JSON.stringify(fullGmail.started.body)).toBe(200);
+        const approved = new URL((yield* body(Redirect, fullGmail.started)).authorizationUrl);
+        expect(`${approved.origin}${approved.pathname}`).toBe(google.authorizationUrl);
+        expect(approved.searchParams.get("client_id")).toBe(clientId);
+        expect(approved.searchParams.get("scope")?.split(" ")).toEqual([gmail, drive, calendar]);
+
+        // `gmail.modify` is refused before Google: no authorization URL with the client. The
+        // refusal leads with the user's own client, and names the full Gmail scope second, saying
+        // it grants more.
+        expect(modify.setup).toMatchObject({
+          mode: "client-required",
+          operatorScopeRefusal: {
+            client: "Executor for Google",
+            scopes: [gmailModify],
+            instead: [{ scope: gmailModify, scopes: [gmail] }],
+          },
+        });
+        expect(modify.setup.firstParty).toBeUndefined();
+        expect(modify.started.status, JSON.stringify(modify.started.body)).toBe(422);
+        expect(modify.started.body).not.toHaveProperty("authorizationUrl");
+        const refused = yield* body(ScopeRefused, modify.started);
+        expect(refused.message).toContain(gmailModify);
+        expect(refused.message).toContain("Executor for Google");
+        expect(refused.recovery.action).toMatch(/^Enter your own OAuth client for this service\./u);
+        expect(refused.recovery.action).toContain(
+          `if broader access is acceptable, change the app to ask for ${gmail} instead, which grants more than ${gmailModify}.`,
+        );
+        expect(refused.recovery.instructions).toMatch(/First choice: Create an OAuth client/u);
+        expect(refused.recovery.instructions).toContain(
+          `Second choice, only if the person accepts broader access: change the provider's declared scopes to ask for ${gmail} instead of ${gmailModify}.`,
+        );
+        expect(refused.recovery.instructions.indexOf("First choice")).toBeLessThan(
+          refused.recovery.instructions.indexOf(gmail),
+        );
+        expect(JSON.stringify(modify.started.body)).not.toContain(clientId);
+
+        // Beside a scope the client was never allowed, the refusal names both and offers only
+        // the user's own client, since no replacement covers them all.
+        expect(mixed.setup.operatorScopeRefusal).toEqual({
+          client: "Executor for Google",
+          scopes: [gmailModify, cloudPlatform],
+          instead: [{ scope: gmailModify, scopes: [gmail] }],
+        });
+        expect(mixed.started.status, JSON.stringify(mixed.started.body)).toBe(422);
+        const unreplaced = yield* body(ScopeRefused, mixed.started);
+        expect(unreplaced.message).toContain(cloudPlatform);
+        expect(unreplaced.recovery.action).toMatch(/^Enter your own OAuth client/u);
+        expect(unreplaced.recovery.action).not.toContain(gmail);
+
+        // A scope outside the client's menu that it never asked for leaves it simply not offered.
+        expect(wider.setup.firstParty).toBeUndefined();
+        expect(wider.setup.operatorScopeRefusal).toBeUndefined();
+        expect(wider.started.body).toMatchObject({ _tag: "OAuthClientUnavailable" });
       }),
     ),
   );

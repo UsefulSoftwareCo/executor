@@ -144,7 +144,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Database connections",
           Effect.provide(withPlanetscale),
         ),
       );
-      expect(message).toContain(`PlanetScale branch test-${slug} was not confirmed deleted`);
+      expect(message).toContain(`PlanetScale branch test-${slug} is not confirmed gone`);
       expect(message).toContain("PlanetScale still answers 200");
       expect(seen).toHaveLength(quickly.attempts + 1);
     }),

@@ -120,6 +120,13 @@ export interface ToolListOptions extends CatalogReadOptions {
    * and one page reads it once. A caller that sends pages on, such as an HTTP route, omits it.
    */
   readonly unboundedPages?: true;
+  /**
+   * The apps one search reads together, this read's app among them. A host may read their state
+   * in shared statements, but never with an app outside the batch: a search waits only on the apps
+   * it reaches, so one app's slow or locked rows hold up no search that does not reach it. Without
+   * it the read takes its own state alone.
+   */
+  readonly searchBatch?: ReadonlyArray<AppId>;
 }
 export {
   ElicitationFailed,
@@ -170,9 +177,39 @@ export const InvocationPrefetch = Context.Reference<
     }
   | undefined
 >("executor/InvocationPrefetch", { defaultValue: () => undefined });
+/**
+ * Host-only: the reads `tools.searchable` would make for many targets of one owner, made ahead in
+ * a fixed number of statements ({@link PrefetchHost}'s `searchable`). `value` is opaque to the
+ * host. `tools.searchable` uses an entry only for the app, version and accounts it was made for,
+ * under the same actor, and only once; any other read, and a read made ahead that failed in
+ * storage, reads live. Never supplied by authored code.
+ */
+export const SearchablePrefetch = Context.Reference<SearchablePrefetched | undefined>(
+  "executor/SearchablePrefetch",
+  { defaultValue: () => undefined },
+);
+/** What {@link PrefetchHost}'s `searchable` read, for {@link SearchablePrefetch}. */
+export interface SearchablePrefetched {
+  readonly owner: OwnerId;
+  readonly value: unknown;
+}
 /** Host-only reads made ahead for a tool call, outside the public HTTP/Promise facade. */
 export const PrefetchHost = Symbol("executor.PrefetchHost");
 export interface PrefetchHost {
+  /**
+   * The reads `tools.searchable` makes for each target, after the host's own checks resolved its
+   * version and accounts: the apps and accounts, each target's kept search rows, the actor's app
+   * rechecks and the account grants, each kind in one statement for every target together. It
+   * never fails: a target whose reads did not answer is read live by `tools.searchable`.
+   */
+  readonly searchable: (input: {
+    readonly owner: OwnerId;
+    readonly targets: ReadonlyArray<{
+      readonly app: AppId;
+      readonly version: VersionId;
+      readonly accounts: AppAccounts;
+    }>;
+  }) => Effect.Effect<SearchablePrefetched>;
   /**
    * The reads `apps.get` and then `tools.call` make for one app, as effects of one statement each
    * that never fail, for the host to send in one batch beside its own checks. Without `known`,
@@ -288,8 +325,13 @@ export const mayHaveWrittenPresentation = (presented: ErrorPresentation): ErrorP
 export const mayHaveWritten = <A extends { readonly mayHaveWritten?: true | undefined }, I>(
   schema: Schema.Codec<A, I>,
   failure: A,
-): A =>
-  Schema.decodeUnknownSync(schema)({ ...Schema.encodeSync(schema)(failure), mayHaveWritten: true });
+): A => {
+  // A failure that may have written never also says that nothing was sent.
+  const { notSent: _, ...encoded } = Schema.encodeSync(schema)(failure) as I & {
+    readonly notSent?: unknown;
+  };
+  return Schema.decodeUnknownSync(schema)({ ...encoded, mayHaveWritten: true });
+};
 
 /** Why a running tool could not complete its user interaction. */
 const elicitationFailures = {
@@ -917,6 +959,11 @@ export const EvaluationRuntime = Schema.Union([
     kind: Schema.Literal("worker"),
     /** The failure the runtime's error matched, absent when the runtime reported none. */
     failure: Schema.optional(RuntimeFailure),
+    /**
+     * The host's connection to the runtime never formed, so nothing was sent to it (`failure` is
+     * then `disconnected`, as older readers expect; they drop this field).
+     */
+    notSent: Schema.optional(Schema.Literal(true)),
   }),
   Schema.Struct({ kind: Schema.Literal("build") }),
   Schema.Struct({
@@ -951,6 +998,16 @@ const retryOnce = (then: string, instructions: string) => ({
 const reportReference =
   "If it fails again, report the failure with the reference shown beside this error, if any, and check what the app's recent changes run while it lists its tools.";
 
+/** What a runtime that could not be reached says: nothing was sent to the app. */
+const unreachablePresentation = {
+  description: "Executor could not connect to the app runtime, so nothing was sent to the app.",
+  recovery: retryOnce(
+    "check that Executor's app runtime is running.",
+    "Executor could not open its connection to the app runtime, so nothing was sent to the app. Executor's log records when the app runtime stops or is replaced.",
+  ),
+  retryable: true,
+};
+
 /** What the app's Worker failure says and what to do about it. */
 const workerPresentation = (failure: RuntimeFailure | undefined) => {
   const stopped = "The app’s Worker stopped without an answer from the app’s code";
@@ -969,9 +1026,14 @@ const workerPresentation = (failure: RuntimeFailure | undefined) => {
     case "too-large":
       return {
         description,
+        // One retry can help: a first load can do work the next reuses, such as compiling a large
+        // API definition into the app's cache. The limit is matched from text, and a later attempt
+        // can still pass, so a repeat proves nothing about the cause: the copy stops unchanged
+        // retries and says what to check. The host does not know the app's apps version here, so
+        // rebuilding is advised only for an app on an older one.
         recovery: retryOnce(
-          "reduce the work the app does to list its tools.",
-          "A resource limit matches this failure. Find what the app's factory and tool loaders do while listing, such as fetching or parsing a large API definition or building many tools, and reduce it: expose fewer tools, or keep a large definition in the app's cache.",
+          "stop retrying it unchanged and investigate. If the app was built on an older apps version than this host’s, rebuild it on this host’s version and deploy it again; if it already runs this host’s version, or still fails, reduce the work the app does to list its tools.",
+          "A resource limit matches this failure. A first load can do work the next one reuses, such as compiling a large API definition into the app's cache, so one retry may succeed. If it fails the same way, stop retrying the unchanged request, even though a later attempt might succeed, and investigate what listing the app's tools costs. Compare the apps version in the app's package.json with framework.release, the version this host runs. If the app's version is older, for example a catalog app installed before a framework fix, pin this host's version and deploy the app again: an older apps version can spend far more work listing a large API. If the versions are the same, or the rebuilt app still fails, find what the app's factory and tool loaders do while listing, such as fetching or parsing a large API definition or building many tools, and reduce it: expose fewer tools, or keep a large definition in the app's cache.",
         ),
         retryable: true,
       };
@@ -1042,9 +1104,10 @@ const runtimePresentation = (runtime: EvaluationRuntime): CausePresentation => {
   switch (runtime.kind) {
     case "worker":
     case "build": {
-      const { description, ...rest } = workerPresentation(
-        runtime.kind === "build" ? "build" : runtime.failure,
-      );
+      const { description, ...rest } =
+        runtime.kind === "worker" && runtime.notSent === true
+          ? unreachablePresentation
+          : workerPresentation(runtime.kind === "build" ? "build" : runtime.failure);
       return { title: "Tools could not be loaded", description: loaded(description), ...rest };
     }
     case "protocol":
@@ -1091,6 +1154,7 @@ const evaluationRuntime = (error: unknown): EvaluationRuntime | undefined => {
     return {
       kind: "worker",
       ...(error.reason === undefined ? {} : { failure: error.reason }),
+      ...(error.notSent === true ? { notSent: true as const } : {}),
     };
   if (Schema.is(RuntimeBuildUnavailable)(error)) return { kind: "build" };
   if (Schema.is(RuntimeProtocolUnsupported)(error))
@@ -1716,19 +1780,41 @@ export const ToolCallFailed = UserFacingError.define({
      * Worker, which can produce it, so the match is a likely cause, never a confirmed one.
      */
     rpcLimitMatched: Schema.optional(Schema.Literal(true)),
+    /**
+     * Repeating this call is safe: the exchange that failed never left the host (its connection to
+     * the app runtime never formed), and either it was the call's only hand-off to the app's code,
+     * or the app confirms the call only reads. A confirmed read repeated after a credential renewal
+     * keeps it although its first run reached the app: that run only read. Never set together with
+     * `mayHaveWritten`.
+     */
+    notSent: Schema.optional(Schema.Literal(true)),
     mayHaveWritten: MayHaveWritten,
   },
-  recorded: ({ failure, mcp, response, rpcLimitMatched }) =>
-    rpcLimitMatched === true
-      ? "The tool's failure matched the Workers RPC size limit's message"
-      : mcp !== undefined
-        ? `The tool failed: ${recordedMcp(mcp)}`
-        : failure !== undefined
-          ? `The tool failed: ${recordedApp(failure)}`
-          : response !== undefined
-            ? "The tool failed after starting"
-            : "The tool failed without further detail",
-  presentation: callPresentation(({ reason, response, failure, mcp, rpcLimitMatched }) => {
+  recorded: ({ failure, mcp, response, rpcLimitMatched, notSent }) =>
+    notSent === true
+      ? "The tool call was not sent: the app runtime could not be reached"
+      : rpcLimitMatched === true
+        ? "The tool's failure matched the Workers RPC size limit's message"
+        : mcp !== undefined
+          ? `The tool failed: ${recordedMcp(mcp)}`
+          : failure !== undefined
+            ? `The tool failed: ${recordedApp(failure)}`
+            : response !== undefined
+              ? "The tool failed after starting"
+              : "The tool failed without further detail",
+  presentation: callPresentation(({ reason, response, failure, mcp, rpcLimitMatched, notSent }) => {
+    // The host's own fact, never the app's: the call did not leave the host.
+    if (notSent === true)
+      return {
+        title: "Tool call was not sent",
+        description: reason,
+        recovery: {
+          action: "Try the call again.",
+          instructions:
+            "Executor could not open its connection to the app runtime, so it sent nothing of this call and the tool did not run. Repeating the call is safe. If it fails the same way again, the app runtime may have stopped; Executor's log records when it stops or is replaced.",
+        },
+        retryable: true,
+      };
     if (mcp !== undefined) return mcpFailurePresentation(mcp);
     // App code can produce the runtime's text, so the match names a likely cause and keeps a read's
     // bounded retry. Executor sets no size limit of its own on a result.

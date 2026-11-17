@@ -6,6 +6,8 @@ import { Target } from "../support/platform.ts";
 import { startManagedServer } from "../support/managed-server.ts";
 import { OriginUnreachable, ProvisioningFailure, ScenarioId } from "./contracts.ts";
 import { platformSignatures } from "../platform-signatures.ts";
+import { addStageOrigins } from "../support/lost-connections.ts";
+import { targetHosts } from "../support/role-hosts.ts";
 
 /** A prerequisite failed within its own deadline, before scenario work could start. */
 export class ScenarioPreparationFailed extends Schema.TaggedError<ScenarioPreparationFailed>()(
@@ -96,9 +98,12 @@ export const startScenario = (
     const target = yield* prepareScenario(base, label, id);
     if (base.metadata.target === "cloud") return target;
     const server = yield* startManagedServer(target, "product", environment);
-    return Target.of({
+    const started = Target.of({
       ...target,
       controlOrigin: server.controlOrigin,
       metadata: { ...target.metadata, origin: server.origin },
     });
+    // Its own server is the stage from its first request on, provisioning included.
+    addStageOrigins(Object.values(targetHosts(started)));
+    return started;
   });

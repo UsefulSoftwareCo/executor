@@ -32,6 +32,7 @@
     "/authors/*",
     "/og-image.png",
     "/pattern-graph-paper.svg",
+    "/.well-known/security.txt",
     "/favicon.png",
     "/.well-known/agent-skills/*",
     "/api/00e2e1f082a6ef17/*",
@@ -196,6 +197,11 @@
     {
       "method": "GET",
       "target": "/.well-known/agent-skills/index.json",
+      "forwards": true
+    },
+    {
+      "method": "GET",
+      "target": "/.well-known/security.txt",
       "forwards": true
     },
     {

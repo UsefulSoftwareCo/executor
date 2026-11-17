@@ -15,3 +15,4 @@ pub mod retention;
 pub mod store;
 pub mod text;
 mod unicode61;
+pub mod viewer;

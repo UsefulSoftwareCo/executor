@@ -270,7 +270,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
             yield* telemetry.query(trace).pipe(
               Effect.filterOrFail(
                 (found) => found.data.some(({ span }) => span.operationName === "mcp.tool.call"),
-                () => new Error("The program's spans have not reached Motel"),
+                () => new Error("The program's spans have not reached the collector"),
               ),
               Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
             );
@@ -286,8 +286,8 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
           // An export's retries, the waits Retry-After asks for included, end within the time the
           // runtime keeps an event's work after its response (`exportBudget` in the telemetry
           // package): the spans of a program whose exports could not get out at its close still
-          // arrive within it, measured from the program's answer, when its event's export starts. Motel
-          // is read every 500 ms, so a span is seen up to that late.
+          // arrive within it, measured from the program's answer, when its event's export starts. The
+          // collector is read every 500 ms, so a span is seen up to that late.
           const exportBudgetMs = 27_000;
           const arrives = <R>(label: string, trouble: Effect.Effect<void, never, R>) =>
             Effect.gen(function* () {
@@ -301,7 +301,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
               yield* telemetry.query(run.trace).pipe(
                 Effect.filterOrFail(
                   (found) => found.data.some(({ span }) => span.operationName === "mcp.tool.call"),
-                  () => new Error("The program's spans have not reached Motel"),
+                  () => new Error("The program's spans have not reached the collector"),
                 ),
                 Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 80 }),
               );
@@ -374,7 +374,7 @@ layer(HostedLive, { excludeTestServices: true })("Cloud export hang", (it) => {
             ),
             Effect.filterOrFail(
               (records) => records.length >= held.length,
-              () => new Error("The held calls' close reports have not reached Motel"),
+              () => new Error("The held calls' close reports have not reached the collector"),
             ),
             Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 60 }),
           );

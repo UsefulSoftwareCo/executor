@@ -22,11 +22,22 @@ from the app. `--files` also accepts a JSON file holding an array of
 `{ "path", "content" }` objects.
 
 Code, every file outside `ui/public/`, is UTF-8 text: at most 4,096 files and
-16 MiB of file contents, on every host. Files under `ui/public/` are served as
+16 MiB of file contents, on every host. Each of the app's own JavaScript or
+TypeScript files is at most 2,000,000 bytes (2 MB). JSON files are outside this
+limit, so keep a large document such as an OpenAPI description in a `.json`
+file. The host checks this limit while it builds, not the CLI before uploading:
+a build that reaches a larger file of the app's own fails with
+`VersionBuildFailed` at the `source` stage, naming the file, its size and the
+limit; no app or version is created. Files inside npm packages the app imports
+are not limited and are still compiled. On self-host and the local server a
+build compiles on the thread that runs apps, so a large package file delays
+every app call, and any other request served from that thread, while it
+compiles: a 3,000,000-byte module of dense code took about 1.2 seconds in our
+tests. Files under `ui/public/` are served as
 they are and may be binary, such as images, fonts, audio, WebAssembly or a
 prebuilt bundle: at most 10,000 files, each at most 32 MB and 1 GB in total.
 Builds never load them; each deploy copies them to the host's own storage.
-The CLI checks these limits before it uploads anything. A source over them
+The CLI checks the other limits before it uploads anything. A source over them
 fails with `SourceRejected`, which states the count or size and names the
 largest files; a binary file outside `ui/public/` fails the same way and is
 named. The host rejects a larger source with `SourceError` and HTTP 413.

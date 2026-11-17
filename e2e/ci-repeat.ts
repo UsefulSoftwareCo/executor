@@ -11,14 +11,19 @@
  *
  * A run repeats another when that run of the same workflow finished on the same head, for a
  * `pull_request` event, and tested the same thing: its `select` job uploaded the record this run's
- * did (`CI_TESTED`, an artifact named for the pull request and a hash of the merge tree and the
- * description, which picks the suites). Its `checks / select` must have succeeded, so a failure
+ * did (`CI_TESTED`, an artifact named for the pull request and a key of the merge tree, the base
+ * commit for a pull request into main, the select job's outputs and the description's
+ * worker-growth blocks it read; see e2e/ci-key.ts). When that run's size gate decided (`checks / site` passed or failed), the gate
+ * must have read the same worker-growth blocks this run's select read: the site job uploads its
+ * own record (`CI_SIZED`). The run must be on its first attempt: a re-run's jobs may have read a
+ * later description than its select did. Its `checks / select` must have succeeded, so a failure
  * there (a missing e2e block, a missing deployed-stage line) is decided again on today's
- * description. Its `checks / check` and `checks / e2e` must each have passed or failed, and a run
- * that failed overall must have failed in one of them: a repeat skips the other jobs, and a
- * skipped job of the newer run would cover the older run's failure of it in the pull request's
- * checks. Anything else, including a re-run of this run, no record and any failure to read, tests
- * in full. It writes `of`, `check` and `e2e` to `GITHUB_OUTPUT` only for a repeat; `check` and `e2e`
+ * description. Its `checks / check` and `checks / e2e` must both have passed, and so must the run:
+ * only a pass is handed on. A failure is tested again, since its cause may be a dependency rather
+ * than the code (the hosted emulator timing out failed one of two runs on one head, 16 Nov), and a
+ * repeat of it would be a red that only testing can clear. A cancelled run, or one that has not
+ * finished, is not repeated either. Anything else, including a re-run of this run, no record and
+ * any failure to read, tests in full. It writes `of`, `check` and `e2e` to `GITHUB_OUTPUT` only for a repeat; `check` and `e2e`
  * read the repeated run's results again when they run.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -34,6 +39,8 @@ class RepeatUnknown extends Schema.TaggedError<RepeatUnknown>()("RepeatUnknown",
 const requiredChecks = { check: "checks / check", e2e: "checks / e2e" } as const;
 /** The job that records what a run tests and chooses its suites. */
 const selectJob = "checks / select";
+/** The job whose size gate reads the description's worker-growth blocks for itself. */
+const siteJob = "checks / site";
 
 const Run = Schema.Struct({
   id: Schema.Number,
@@ -43,6 +50,7 @@ const Run = Schema.Struct({
   event: Schema.String,
   head_sha: Schema.String,
   workflow_id: Schema.Number,
+  run_attempt: Schema.Number,
 });
 const Runs = Schema.fromJsonString(Schema.Struct({ workflow_runs: Schema.Array(Run) }));
 const Artifacts = Schema.fromJsonString(
@@ -91,11 +99,12 @@ const repeated = Effect.gen(function* () {
   const attempt = Number(yield* Config.String("GITHUB_RUN_ATTEMPT"));
   const headSha = yield* Config.String("CI_HEAD_SHA");
   const tested = yield* Config.String("CI_TESTED").pipe(Config.withDefault(""));
+  const sized = yield* Config.String("CI_SIZED").pipe(Config.withDefault(""));
   if (attempt !== 1) {
     yield* Console.log(`This is attempt ${attempt} of the run: a re-run tests in full.`);
     return Option.none();
   }
-  if (tested === "") {
+  if (tested === "" || sized === "") {
     yield* Console.log("This run recorded nothing to compare: it tests in full.");
     return Option.none();
   }
@@ -130,24 +139,31 @@ const repeated = Effect.gen(function* () {
     const e2e = conclusion(requiredChecks.e2e);
     const select = conclusion(selectJob);
     const decided = (result: string) => result === "success" || result === "failure";
+    const site = conclusion(siteJob);
     const why =
-      select !== "success"
-        ? `its select was ${select}`
-        : !decided(check) || !decided(e2e)
-          ? `its checks did not decide (check: ${check}, e2e: ${e2e})`
-          : run.conclusion === "failure" && check === "success" && e2e === "success"
-            ? "it failed in a job outside its required checks, which a repeat would skip"
-            : undefined;
+      run.run_attempt !== 1
+        ? `it was run again (attempt ${run.run_attempt}), so its jobs may have read a later description than its select did`
+        : select !== "success"
+          ? `its select was ${select}`
+          : decided(site) && !artifacts.some((artifact) => artifact.name === sized)
+            ? "its size gate read other worker-growth blocks than this run's select did"
+            : !decided(check) || !decided(e2e)
+              ? `its checks did not decide (check: ${check}, e2e: ${e2e})`
+              : check !== "success" || e2e !== "success"
+                ? `its checks failed (check: ${check}, e2e: ${e2e}), and only a pass is handed on: a failure is tested again`
+                : run.conclusion !== "success"
+                  ? "it failed in a job outside its required checks, which a repeat would skip"
+                  : undefined;
     if (why !== undefined) {
       yield* Console.log(
-        `${run.html_url} tested the same pull request, merge tree and description, but ${why}; this run tests in full.`,
+        `${run.html_url} tested the same pull request, merge tree, base and selection (e2e/ci-key.ts), but ${why}; this run tests in full.`,
       );
       return Option.none();
     }
     return Option.some({ run, check, e2e });
   }
   yield* Console.log(
-    "No finished run tested the same pull request, merge tree and description; this run tests in full.",
+    "No finished run tested the same pull request, merge tree, base and selection; this run tests in full.",
   );
   return Option.none();
 });
@@ -166,7 +182,7 @@ NodeRuntime.runMain(
     if (Option.isNone(found)) return;
     const { run, check, e2e } = found.value;
     yield* Console.log(
-      `This run repeats ${run.html_url}, which tested the same pull request, merge tree and description: check ${check}, e2e ${e2e}. Its check and e2e report that run's results instead of testing again.`,
+      `This run repeats ${run.html_url}, which tested the same pull request, merge tree, base and selection: check ${check}, e2e ${e2e}. Its check and e2e report that run's results instead of testing again.`,
     );
     const output = yield* Config.String("GITHUB_OUTPUT").pipe(Config.option);
     if (Option.isSome(output))

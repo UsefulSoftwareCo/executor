@@ -113,18 +113,31 @@ layer(HostedLive, { excludeTestServices: true })("Scoped MCP connections", (it) 
           "Authorize the full-access URL for comparison",
           oauth.authorize,
         );
-        const fullBearer = {
-          authorization: `Bearer ${Redacted.value(full.tokens).access_token}`,
-        };
+        const fullRun = executor(
+          yield* mcp.connect(Redacted.make(Redacted.value(full.tokens).access_token), "full"),
+        );
+        const agentListed = yield* fullRun(
+          "The agent lists the member's connections",
+          `return await tools.executor.mcpConnections.list(${JSON.stringify({ path: { organization: actors.organization.id } })});`,
+        );
+        expect(agentListed.execution.ok, JSON.stringify(agentListed)).toBe(true);
         expect(
-          (yield* api.request(
-            yield* api.session(),
-            "GET",
-            `${prefix}/mcp-connections`,
-            undefined,
-            fullBearer,
-          )).status,
-        ).toBe(401);
+          (yield* Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: Schema.String })))(
+            agentListed.execution.value,
+          )).map((listedConnection) => listedConnection.id),
+        ).toContain(connection.id);
+        const changeTools = ["create", "update", "revoke", "agents", "revokeAgent"].map(
+          (operation) => `tools.executor.mcpConnections.${operation}`,
+        );
+        const described = yield* fullRun(
+          "The agent has no tool that changes a connection",
+          `return await tools.search.describe({ paths: ${JSON.stringify(changeTools)} });`,
+        );
+        expect(
+          (yield* Schema.decodeUnknownEffect(
+            Schema.Struct({ missing: Schema.Array(Schema.Struct({ path: Schema.String })) }),
+          )(described.execution.value)).missing.map((item) => item.path),
+        ).toEqual(changeTools);
         const grant = yield* evidence.step(
           "Authorize the connection's own URL through browser consent",
           oauth.authorizeConnection(connection.id),

@@ -41,13 +41,9 @@ import {
   SessionAuthentication,
   CurrentPrincipal,
 } from "../contracts/auth.ts";
-import {
-  CurrentOrganization,
-  OrganizationSlug,
-  organizationOwner,
-} from "../contracts/organization.ts";
+import { OrganizationSlug, organizationOwner } from "../contracts/organization.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { currentOwner, ownedConnection } from "./access.ts";
+import { currentOrganizationSlug, currentOwner, ownedConnection } from "./access.ts";
 import { appLinkApps, appLinkedAccounts, callerLinkedAccounts } from "./app-accounts.ts";
 import { AccountLinkedToApp } from "../contracts/accounts.ts";
 import { visibleAccountRefusal } from "./webhooks.ts";
@@ -252,12 +248,7 @@ export const connectionUrl = (
   connection: AccountConnectionId,
 ) =>
   Effect.gen(function* () {
-    const request = yield* HttpServerRequest.HttpServerRequest;
-    const headers = new Headers(request.headers);
-    const organization = yield* CurrentOrganization;
-    const slug = headers.has("authorization")
-      ? (yield* api.authenticate(headers, organization.organization)).organizationSlug
-      : yield* auth.organizationSlug(headers, organization.organization);
+    const slug = yield* currentOrganizationSlug(auth, api);
     return `${auth.origin}/org/${encodeURIComponent(slug)}/connections/${encodeURIComponent(connection)}`;
   });
 /** Connection metadata never grants access to another organization's request or app. */

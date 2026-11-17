@@ -53,7 +53,7 @@ services:
       EXECUTOR_APP_UI_HOST_FORMAT:
       # Optional organization whose apps use <app>.<base>.
       EXECUTOR_APP_UI_DEFAULT_ORGANIZATION:
-      # Unset passthrough entries stay absent; the default is bundled Motel.
+      # Unset passthrough entries stay absent; the default is the bundled Rust collector.
       OTEL_EXPORTER_OTLP_ENDPOINT:
       OTEL_EXPORTER_OTLP_HEADERS:
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:

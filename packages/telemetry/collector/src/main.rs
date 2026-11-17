@@ -13,7 +13,7 @@ use tokio::sync::Semaphore;
 
 use executor_collector::args::{self, Listen};
 use executor_collector::lifecycle::{self, Stop};
-use executor_collector::{connection, http, log, otlp, readers, retention, store};
+use executor_collector::{connection, http, log, otlp, readers, retention, store, viewer};
 
 /// The whole shutdown, from the stop signal until the process exits. The local host kills the
 /// collector 3 s after asking it to stop (the self-host supervisor waits 15 s); this leaves half a
@@ -48,6 +48,14 @@ fn main() -> ExitCode {
                 "cannot start the runtime",
                 &[("error", error.to_string().into())],
             );
+            return ExitCode::FAILURE;
+        }
+    };
+    // Before the store: a viewer that cannot be served ends the start, changing nothing.
+    let viewer = match args.viewer.as_deref().map(viewer::Viewer::load).transpose() {
+        Ok(viewer) => viewer.map(Arc::new),
+        Err(error) => {
+            log::error("cannot serve the viewer", &[("error", error.into())]);
             return ExitCode::FAILURE;
         }
     };
@@ -124,6 +132,7 @@ fn main() -> ExitCode {
         release,
         store: shared,
         readers: readers.clone(),
+        viewer,
     });
     let stopped_at = Arc::new(Mutex::new(None));
     let served = runtime.block_on(serve(args.listen.clone(), app, stopped_at.clone()));

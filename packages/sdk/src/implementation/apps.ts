@@ -60,7 +60,7 @@ import {
 import type { Registry } from "../contracts/registry.ts";
 import { resolvePublication } from "./registry.ts";
 
-import type { BlobStorage } from "../contracts/blobs.ts";
+import { BlobStoreError, type BlobStorage } from "../contracts/blobs.ts";
 import { readVersionSource, writeVersionSource } from "./version-source.ts";
 import { readInitialSource, writeInitialSource } from "./initial-source.ts";
 import {
@@ -236,15 +236,28 @@ const appWriteFailure = (app: Pick<StoredApp, "owner" | "name" | "slug">) => (er
 /** Insert app identity while preserving name and derived-slug uniqueness errors. */
 /**
  * A new active version re-registers the app's managed webhooks; removed sources keep removing. It is
- * new intent, so each source runs again with no failures counted.
+ * new intent, so each source runs again with no failures counted. A source without a lease joins
+ * the pending queue now (its `leaseUntil`, which `tick` orders pending sources by); one whose lease
+ * is held keeps it, and its holder queues it again when it finishes.
  */
 const webhookSourcesPending = (db: Query, app: AppId) =>
-  query(() =>
-    db.updateMany("webhookSources", {
-      where: (b) => b.and(b("app", "=", app), b("status", "!=", "removing")),
-      set: { status: "pending", failure: null, retries: 0 },
-    }),
-  );
+  Effect.gen(function* () {
+    const joined = new Date(yield* Clock.currentTimeMillis);
+    yield* query(() =>
+      db.updateMany("webhookSources", {
+        where: (b) =>
+          b.and(b("app", "=", app), b("status", "!=", "removing"), b("lease", "is", null)),
+        set: { status: "pending", failure: null, retries: 0, leaseUntil: joined },
+      }),
+    );
+    yield* query(() =>
+      db.updateMany("webhookSources", {
+        where: (b) =>
+          b.and(b("app", "=", app), b("status", "!=", "removing"), b("lease", "is not", null)),
+        set: { status: "pending", failure: null, retries: 0 },
+      }),
+    );
+  });
 
 export const createApp = (db: Query, app: StoredApp) => {
   // Storage keeps the column's former name.
@@ -333,7 +346,11 @@ export const makeApps = (
                         reason: error.message,
                         message: error.message,
                       })
-                    : versionBuildFailed(owner, name, error),
+                    : // Storage failed while keeping the build: nothing about the app, and
+                      // deploying again may succeed.
+                      Schema.is(BlobStoreError)(error)
+                      ? new StorageError()
+                      : versionBuildFailed(owner, name, error),
           ),
         );
       // Each requirement records its scope; a name is used in one scope only.

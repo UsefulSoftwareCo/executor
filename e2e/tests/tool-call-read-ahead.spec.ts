@@ -265,13 +265,15 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
                   span.operationName.startsWith("http.server") && span.tags["url.path"] === "/mcp",
               );
               if (!served)
-                return Effect.fail(new Error("The MCP request's server span must reach Motel"));
+                return Effect.fail(
+                  new Error("The MCP request's server span must reach the collector"),
+                );
               const root = result.data
                 .filter(({ span }) => span.operationName === "mcp.tool.call")
                 .toSorted((a, b) => Date.parse(a.span.startTime) - Date.parse(b.span.startTime))
                 .at(-1);
               if (root === undefined)
-                return Effect.fail(new Error("The tool call must reach Motel"));
+                return Effect.fail(new Error("The tool call must reach the collector"));
               const found: Statement[] = [];
               for (const { span } of result.data) {
                 if (span.operationName !== "sql.execute" && span.operationName !== "sql.pipeline")
@@ -307,7 +309,7 @@ layer(HostedLive, { excludeTestServices: true })("Tool call read ahead", (it) =>
               }
               return found.some(isPatCheck)
                 ? Effect.succeed(found.toSorted((a, b) => a.start - b.start))
-                : Effect.fail(new Error("The tool call's statements must reach Motel"));
+                : Effect.fail(new Error("The tool call's statements must reach the collector"));
             }),
             Effect.retry({ schedule: Schedule.spaced("250 millis"), times: 80 }),
           );

@@ -1,6 +1,6 @@
 /** Serve real npm archives through a scoped local registry boundary; no npm publication is needed. */
-import { createServer } from "node:http";
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { createServer, request as httpRequest } from "node:http";
+import { Config, Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { lockedArchive } from "./npm-registry.ts";
 
@@ -33,6 +33,9 @@ class PackageFixtureFailed extends Schema.TaggedError<PackageFixtureFailed>()(
 /** A published archive as `e2e:prepare` downloaded it, refused unless it matches its integrity. */
 const publishedArchive = (version: Release = "0.0.1-beta.0") => lockedArchive("apps", version);
 
+/** The reason phrase of a missing archive's 404, which a build failure must not repeat. */
+export const missingArchiveReason = "Archive withheld by its host";
+
 /** Serve archives on loopback for the scope, counting each request path. */
 const loopbackArchives = Effect.gen(function* () {
   const archives = new Map<string, Uint8Array>();
@@ -45,9 +48,12 @@ const loopbackArchives = Effect.gen(function* () {
             const route = request.url ?? "";
             requests.set(route, (requests.get(route) ?? 0) + 1);
             const bytes = archives.get(route);
-            response.writeHead(bytes === undefined ? 404 : 200, {
-              "Content-Type": "application/octet-stream",
-            });
+            if (bytes === undefined) {
+              response.writeHead(404, missingArchiveReason, { "Content-Type": "text/plain" });
+              response.end(`${route} is not served here`);
+              return;
+            }
+            response.writeHead(200, { "Content-Type": "application/octet-stream" });
             response.end(bytes);
           });
           server.once("error", reject);
@@ -162,3 +168,156 @@ export const publishedRelease = (version: Release) =>
     archives.set(route, yield* publishedArchive(version));
     return { url: `${base}${route}`, route, requests };
   });
+
+/** Text a registry sends that no build failure may repeat. */
+export const upstreamMarker = "UPSTREAM-REGISTRY-TEXT";
+
+/**
+ * A private registry on loopback, standing in for an operator's own, beside archives on a second
+ * loopback origin. Packages:
+ *
+ * - `registry-fixture`: its tarball is on the registry's origin.
+ * - `offsite-fixture`: its metadata names a tarball on the other origin.
+ * - `redirected-fixture`: its tarball URL is on the registry's origin and redirects to the other.
+ * - `nested-fixture`: on the registry's origin, depending on a tarball URL on the other origin.
+ * - `malformed-fixture`, `versionless-fixture` and `manifest-fixture`: metadata that is not JSON,
+ *   that names no tarball, and that lists a dependency by a name and range of the registry's own.
+ *
+ * Every other request goes to the suite's registry, addressed as this registry, so its archive
+ * links (`apps` among them) point back here.
+ */
+export const privateRegistryFixture = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const suite = new URL(yield* Config.String("E2E_NPM_REGISTRY"));
+  const directory = yield* fs.makeTempDirectoryScoped();
+  const offsite = yield* loopbackArchives;
+  const pack = (name: string, content: string, dependencies: Record<string, string> = {}) =>
+    Effect.gen(function* () {
+      const source = yield* fs.makeTempDirectoryScoped();
+      yield* fs.writeFileString(
+        path.join(source, "package.json"),
+        JSON.stringify({ name, version: "1.0.0", type: "module", main: "index.js", dependencies }),
+      );
+      yield* fs.writeFileString(path.join(source, "index.js"), content);
+      return yield* packDirectory(source, directory);
+    });
+  const offsiteUrl = `${offsite.base}/offsite-fixture.tgz`;
+  offsite.archives.set(
+    "/offsite-fixture.tgz",
+    yield* pack("offsite-fixture", 'export const value = "offsite-package";'),
+  );
+  const archives = new Map<string, Uint8Array>([
+    [
+      "/registry-fixture/-/registry-fixture-1.0.0.tgz",
+      yield* pack("registry-fixture", 'export const value = "registry-package";'),
+    ],
+    [
+      "/nested-fixture/-/nested-fixture-1.0.0.tgz",
+      yield* pack("nested-fixture", 'export { value } from "offsite-fixture";', {
+        "offsite-fixture": offsiteUrl,
+      }),
+    ],
+    [
+      "/manifest-fixture/-/manifest-fixture-1.0.0.tgz",
+      yield* pack("manifest-fixture", 'export const value = "manifest-package";'),
+    ],
+  ]);
+  const version = (
+    name: string,
+    tarball: string | undefined,
+    dependencies?: Record<string, string>,
+  ) => ({
+    name,
+    "dist-tags": { latest: "1.0.0" },
+    versions: {
+      "1.0.0": {
+        name,
+        version: tarball === undefined ? upstreamMarker : "1.0.0",
+        ...(dependencies === undefined ? {} : { dependencies }),
+        ...(tarball === undefined ? {} : { dist: { tarball } }),
+      },
+    },
+  });
+  const requests = new Map<string, number>();
+  const server = yield* Effect.acquireRelease(
+    Effect.tryPromise({
+      try: () =>
+        new Promise<ReturnType<typeof createServer>>((resolve, reject) => {
+          const server = createServer((request, response) => {
+            const route = request.url ?? "/";
+            requests.set(route, (requests.get(route) ?? 0) + 1);
+            const base = `http://${request.headers.host ?? ""}`;
+            const metadata: Record<string, unknown> = {
+              "/registry-fixture": version(
+                "registry-fixture",
+                `${base}/registry-fixture/-/registry-fixture-1.0.0.tgz`,
+              ),
+              "/offsite-fixture": version("offsite-fixture", offsiteUrl),
+              "/redirected-fixture": version(
+                "redirected-fixture",
+                `${base}/redirected-fixture.tgz`,
+              ),
+              "/nested-fixture": version(
+                "nested-fixture",
+                `${base}/nested-fixture/-/nested-fixture-1.0.0.tgz`,
+                { "offsite-fixture": offsiteUrl },
+              ),
+              "/versionless-fixture": version("versionless-fixture", undefined),
+              "/manifest-fixture": version(
+                "manifest-fixture",
+                `${base}/manifest-fixture/-/manifest-fixture-1.0.0.tgz`,
+                { [`${upstreamMarker.toLowerCase()}-name`]: `${upstreamMarker}-range` },
+              ),
+            };
+            const archive = archives.get(route);
+            if (archive !== undefined) {
+              response.writeHead(200, { "Content-Type": "application/octet-stream" });
+              response.end(archive);
+            } else if (route === "/redirected-fixture.tgz") {
+              response.writeHead(302, { Location: offsiteUrl });
+              response.end();
+            } else if (route === "/malformed-fixture") {
+              response.writeHead(200, { "Content-Type": "application/json" });
+              response.end(`{"versions": ${upstreamMarker}`);
+            } else if (metadata[route] !== undefined) {
+              response.writeHead(200, { "Content-Type": "application/json" });
+              response.end(JSON.stringify(metadata[route]));
+            } else {
+              const forwarded = httpRequest(
+                {
+                  host: suite.hostname,
+                  port: suite.port,
+                  path: route,
+                  headers: { host: request.headers.host ?? "", accept: "application/json" },
+                },
+                (incoming) => {
+                  response.writeHead(incoming.statusCode ?? 502, incoming.headers);
+                  incoming.pipe(response);
+                },
+              );
+              forwarded.once("error", () => {
+                response.writeHead(502);
+                response.end();
+              });
+              forwarded.end();
+            }
+          });
+          server.once("error", reject);
+          server.listen(0, "127.0.0.1", () => resolve(server));
+        }),
+      catch: () => new PackageFixtureFailed({ reason: "private registry listener" }),
+    }),
+    (server) => Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
+  );
+  const address = server.address();
+  if (address === null || typeof address === "string")
+    return yield* new PackageFixtureFailed({ reason: "private registry address" });
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    /** Requests to the registry's origin, by path. */
+    requests: Effect.sync(() => Object.fromEntries(requests)),
+    /** Requests to the other origin, by path. */
+    offsite: offsite.requests,
+  };
+});

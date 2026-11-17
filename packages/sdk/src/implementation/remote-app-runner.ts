@@ -36,6 +36,8 @@ import {
 } from "./app-runner.ts";
 import { invocationBuildLoader } from "./app-runtime.ts";
 import { asciiJson } from "./ascii-json.ts";
+import { engineCallFailure } from "../contracts/workflow-errors.ts";
+import { errorClassOf } from "./runtime-hop.ts";
 
 type Callback = (input: unknown) => Promise<unknown>;
 
@@ -150,6 +152,25 @@ const settle = (call: () => Promise<unknown>) =>
     ),
   );
 
+/**
+ * A sleep sent to the host that runs the engine. The host's own answer passes through; a call the
+ * host never answered, or answered unreadably, is an engine call failure at the host hop.
+ */
+const settleSleep = (call: () => Promise<unknown>) =>
+  Effect.tryPromise({
+    try: async () => await call(),
+    catch: (error) => engineCallFailure("host", errorClassOf(error), "unanswered"),
+  }).pipe(
+    Effect.flatMap((reply) =>
+      Schema.decodeUnknownEffect(WorkflowRpcResult)(reply).pipe(
+        Effect.mapError(() => engineCallFailure("host", "other", "unreadable")),
+      ),
+    ),
+    Effect.flatMap((result) =>
+      result.ok ? Effect.succeed(result.value) : Effect.fail(result.error),
+    ),
+  );
+
 /** The caller's side: callbacks over this invocation's capabilities, released with `signal`. */
 export const remoteCapabilities = (capabilities: AppCapabilities, signal: AbortSignal) =>
   Effect.gen(function* () {
@@ -223,11 +244,11 @@ const localCapabilities = (remote: RemoteCapabilities, load: () => Promise<Loade
                   ),
                 ),
               sleep: (name, duration) =>
-                settle(() =>
+                settleSleep(() =>
                   workflow.sleep(name, Schema.encodeSync(WorkflowDuration)(duration)),
                 ).pipe(Effect.asVoid),
               sleepUntil: (name, timestamp) =>
-                settle(() => workflow.sleepUntil(name, timestamp)).pipe(Effect.asVoid),
+                settleSleep(() => workflow.sleepUntil(name, timestamp)).pipe(Effect.asVoid),
             },
             resolve: () =>
               settle(() => workflow.context()).pipe(

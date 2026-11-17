@@ -150,7 +150,7 @@ const sameLink = (row: AppAccountLink, key: LinkKey) =>
 /**
  * Publish a confirmed link or unlink to the scope's list and the requirement's choices, which
  * reads both again for a plain requirement's replaced account, then read what else it changed: the
- * inventory's user links, the account's apps, and the app's discovery.
+ * inventory's links, the account's apps, and the app's discovery.
  */
 const linkChanged = (get: Atom.FnContext, key: LinkKey, saved: AppAccountLink | undefined) => {
   const app = new AppKey({ organization: key.organization, app: key.app });
@@ -174,7 +174,7 @@ const linkChanged = (get: Atom.FnContext, key: LinkKey, saved: AppAccountLink | 
     const others = rows.filter((row) => !sameLink(row, key));
     return saved === undefined ? others : [...others, saved];
   });
-  if (key.scope === "user") refreshResourceDirectory(get, key.organization);
+  refreshResourceDirectory(get, key.organization);
   get.refresh(accountAtom({ organization: key.organization, account: key.account }));
   refreshAppDiscovery(get, key);
 };

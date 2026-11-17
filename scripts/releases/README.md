@@ -20,7 +20,7 @@ no `executor service`, so run `executor serve` there instead.
 
 Executor is one executable, built with Bun, with the files it runs or reads
 beside it: the dashboard, the app framework and compiler references, workerd,
-Git, the native credential-store binding and the Motel collector. It needs no
+Git, the native credential-store binding and the telemetry collector with its viewer. It needs no
 source checkout, Node, Bun or 1Password on the user machine. The `executor` npm
 package is a launcher. The first time a version starts, it downloads that
 release's archive for the platform, for macOS (Apple Silicon and Intel), Linux

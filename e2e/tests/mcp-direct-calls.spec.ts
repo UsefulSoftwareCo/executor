@@ -57,6 +57,11 @@ const syntheticApprovalId = "apr_00000000-0000-4000-8000-000000000001";
 const png =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNQWPX/PwAFgALJpImt0wAAAABJRU5ErkJggg==";
 const wav = "UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YQAAAAA=";
+// The head and tail of a PDF, as a file API returns an attachment.
+const pdf = Buffer.from("%PDF-1.4\n%\u00e2\u00e3\u00cf\u00d3\n%%EOF\n", "latin1").toString(
+  "base64",
+);
+const pdfUri = "file:///reports/Q3%20summary.pdf";
 const mediaSource = `import { defineApp, query, object, router } from "apps";
 export default defineApp({}, async () => ({ tools: router({
   screenshot: query({ input: object({}), description: "Return a screenshot" },
@@ -67,6 +72,11 @@ export default defineApp({}, async () => ({ tools: router({
     async () => ({ contentBase64url: ${JSON.stringify(png.replaceAll("/", "_").replaceAll("+", "-").replace(/=+$/u, ""))} })),
   lookalike: query({ input: object({}), description: "Return image-shaped data that is not base64" },
     async () => ({ type: "image", mimeType: "image/png", data: "not base64!" })),
+  report: query({ input: object({}), description: "Return a PDF as unpadded base64url, and a text note, as embedded resources" },
+    async () => ({
+      file: { type: "resource", resource: { uri: ${JSON.stringify(pdfUri)}, mimeType: "application/pdf", blob: ${JSON.stringify(pdf.replaceAll("/", "_").replaceAll("+", "-").replace(/=+$/u, ""))} } },
+      note: { type: "resource", resource: { uri: "file:///note.txt", mimeType: "text/plain", text: "read me" } },
+    })),
 }) }));`;
 
 /** A personal access token and the app above, deployed for one scenario. */
@@ -280,6 +290,7 @@ layer(HostedLive, { excludeTestServices: true })("MCP direct calls", (it) => {
             expect(JSON.parse(String(text?.text))).toEqual(result.structuredContent);
             expect(String(text?.text)).not.toContain(png);
             expect(String(text?.text)).not.toContain(wav);
+            expect(String(text?.text)).not.toContain(pdf.slice(0, 16));
             return { completed, media };
           });
 
@@ -321,6 +332,37 @@ return { first: shot.content[0], audio: audio.content[0], again: shot,
             again: { content: [{ type: "image", mimeType: "image/png", contentIndex: 1 }] },
             wrapped: { type: "image", mimeType: "image/png", contentIndex: 1 },
             lookalike: { type: "image", mimeType: "image/png", data: "not base64!" },
+          },
+        });
+
+        // A file reaches the client as an embedded resource block, its blob in the standard form,
+        // so a client can save it and the model can read it. The result keeps its URI and type.
+        // A text resource is already readable and stays in the result.
+        const reported = yield* run("Call a tool that returns a PDF", "call", {
+          calls: { path: tool("report"), input: {} },
+        });
+        expect(reported.media).toEqual([
+          {
+            type: "resource",
+            resource: { uri: pdfUri, mimeType: "application/pdf", blob: pdf },
+          },
+        ]);
+        expect(reported.completed.execution).toMatchObject({
+          ok: true,
+          value: {
+            path: tool("report"),
+            ok: true,
+            value: {
+              file: {
+                type: "resource",
+                resource: { uri: pdfUri, mimeType: "application/pdf" },
+                contentIndex: 1,
+              },
+              note: {
+                type: "resource",
+                resource: { uri: "file:///note.txt", mimeType: "text/plain", text: "read me" },
+              },
+            },
           },
         });
       }).pipe(Effect.provide(McpClient.layer)),

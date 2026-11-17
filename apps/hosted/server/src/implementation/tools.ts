@@ -12,6 +12,8 @@ import {
   ToolApprovalIssuer,
   ToolApprovalNotFound,
   ToolNotFound,
+  type App,
+  type AppAccounts,
   type AppId,
   type ApprovalRequestId,
   type Executor,
@@ -24,7 +26,7 @@ import {
   type BrowserApprovalView,
   type BrowserToolRun,
 } from "@executor-js/mcp/browser";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 import { HostedApi } from "../contracts/api.ts";
 import { CallFailures, RunFailures } from "../contracts/tools.ts";
@@ -45,8 +47,8 @@ import {
   checkedToolCall,
   checkInvocationAccounts,
   currentOwner,
+  pinnedActiveVersion,
   selectedActiveVersion,
-  selectedActiveVersions,
   usableApp,
   type CheckedApp,
 } from "./access.ts";
@@ -74,17 +76,24 @@ export const listTools = (
       ),
     };
   });
-/** Keep the target's current catalog as search rows after the same checks as discovery. */
-export const searchableTools = (
+/**
+ * Keep the target's current catalog as search rows after the same checks as discovery. `selected`
+ * is the caller's access to the app and its accounts when a read made for many apps at once
+ * decided them (see `selectedAppFrom`); otherwise they are read for this app alone.
+ */
+export const searchableTools = <E = never>(
   input: Parameters<Executor["tools"]["searchable"]>[0],
   options?: ToolListOptions,
-  checked?: CheckedApp,
+  selected?: Effect.Effect<{ readonly app: App; readonly accounts: AppAccounts }, E>,
 ) =>
   Effect.gen(function* () {
     const policy = yield* authorizeApp(input.app);
     const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    const { version, accounts } = yield* selectedActiveVersion(executor, owner, input, checked);
+    const { version, accounts } =
+      selected === undefined
+        ? yield* selectedActiveVersion(executor, owner, input)
+        : yield* Effect.flatMap(selected, (found) => pinnedActiveVersion(found, input.version));
     const searchable = yield* executor.tools.searchable({ ...input, version, accounts }, options);
     // Failed routers list no tools, so the policy decides them without the catalog.
     return {
@@ -101,19 +110,21 @@ export const searchableTools = (
  */
 export const searchableKept = (
   inputs: ReadonlyArray<Parameters<Executor["tools"]["searchable"]>[0]>,
-  checked: ReadonlyArray<CheckedApp>,
+  selections: ReadonlyMap<AppId, { readonly app: App; readonly accounts: AppAccounts }>,
 ) =>
   Effect.gen(function* () {
     const policy = yield* CurrentPolicy;
-    const owner = yield* currentOwner;
     const executor = yield* Effect.flatten(HostedExecutor);
-    const permitted = inputs.filter((input) => permitsApp(policy, input.app));
-    const selected = yield* selectedActiveVersions(owner, permitted, checked);
-    const targets = permitted.flatMap((input, index) => {
-      const found = selected[index];
-      return found === undefined || Option.isNone(found)
+    const targets = inputs.flatMap((input) => {
+      if (!permitsApp(policy, input.app)) return [];
+      const found = selections.get(input.app);
+      const version = found?.app.activeVersion;
+      return found === undefined ||
+        version === null ||
+        version === undefined ||
+        (input.version !== undefined && input.version !== version)
         ? []
-        : [{ input, read: { ...input, ...found.value } }];
+        : [{ input, read: { ...input, version, accounts: found.accounts } }];
     });
     const kept = yield* executor.tools.searchableKept(targets.map(({ read }) => read));
     const served = new Map(

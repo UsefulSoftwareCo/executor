@@ -99,16 +99,23 @@ may still have made changes. `call` lists it the same way. An outcome of
 `success` only means no tool error was reported; check the result before
 treating its action as done.
 
-Images and audio reach the agent as media. Wherever the value `execute`, `call`
-or `resume` returns holds `{ type: "image", mimeType, data }` or
-`{ type: "audio", mimeType, data }`, with `data` in standard or URL-safe base64,
-the response carries that block as its own MCP content after the JSON text, once
-even if the value repeats it. The JSON keeps `{ type, mimeType, contentIndex }`
-in its place, the block's index in the response's `content`. MCP image and audio
-results, such as screenshots, already have that shape. A program can show bytes
-a tool returns another way, such as an email attachment's base64, by returning
-them in it. Inside a program the block is whole, so its data can be passed on to
-another tool.
+Images, audio and files reach the agent as MCP content, not base64 text.
+Wherever the value `execute`, `call` or `resume` returns holds
+`{ type: "image", mimeType, data }`, `{ type: "audio", mimeType, data }` or an
+embedded resource with binary contents,
+`{ type: "resource", resource: { uri, mimeType, blob } }`, with its bytes in
+standard or URL-safe base64, the response carries that block as its own MCP
+content after the JSON text, once even if the value repeats it. The JSON keeps
+the block without its bytes, plus `contentIndex`, the block's index in the
+response's `content`. MCP image and audio results, such as screenshots, already
+have that shape. Each client decides how to present a resource; Claude Code, for
+example, saves it as a file the model can open, so a PDF attachment can be read.
+A text resource stays in the JSON. A program can show bytes a tool returns
+another way, such as `{ base64 }`, by returning them in one of these shapes.
+Inside a program the block is whole, so its data can be passed on to another
+tool. The `executor call`, `execute` and `resume` commands write each block to a
+file, in a new temporary directory or the one `--files` names, and print its
+`path` beside its `contentIndex`.
 
 The interpreter has no `fetch`, no `process`, no filesystem, no timers and no
 imports. Its only way out is a tool call, which enters the trusted runtime where your
@@ -168,6 +175,10 @@ grant follows the connection: edits apply to connected agents at once, and
 revoking the connection revokes every grant issued through it. Personal access
 tokens and the local server key are not limited by a connection; they keep full
 access at the plain URL and are refused at a connection's URL.
+
+An agent can list your scoped connections with the Executor app, but creating,
+editing and revoking them happens on the dashboard, so an agent never widens its
+own access.
 
 On hosted and self-host, **Connected agents** on the same page lists each
 client you approved, with the apps it can reach, and revokes its grant.
