@@ -32,6 +32,10 @@ services:
       EXECUTOR_APP_WORKERS:
       # Seconds a Worker stays loaded without a call (default 300); 0 keeps idle ones until the limit.
       EXECUTOR_APP_WORKER_IDLE_SECONDS:
+      # Most MCP clients (API keys or OAuth grants in use) kept at once (default 512), and most
+      # per member (default 256). Past either, the least recently used idle one is forgotten.
+      EXECUTOR_MCP_CLIENTS:
+      EXECUTOR_MCP_CLIENTS_PER_USER:
       EXECUTOR_OAUTH_CALLBACK_URL:
       # Off by default. <BETTER_AUTH_URL>/oauth/client-metadata.json serves a client metadata
       # document there, which authorization servers must be able to fetch over public HTTPS.

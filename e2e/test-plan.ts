@@ -90,6 +90,11 @@ export const appWorkerBudgetLimit = 2;
  * stalled app reached during the program is told apart from one discovery gave up on.
  */
 export const lazyStallTimeoutMs = 15_000;
+/** The MCP client bound the client bound scenarios run with: three clients, two per member. */
+const mcpClientBoundEnvironment = {
+  EXECUTOR_MCP_CLIENTS: "3",
+  EXECUTOR_MCP_CLIENTS_PER_USER: "2",
+};
 /**
  * Seconds after which the aged search rows scenarios' server renews the rows a search serves
  * (`EXECUTOR_TOOL_LISTING_RENEW_SECONDS`), in place of the default day: MCP readers never renew
@@ -8319,6 +8324,48 @@ export const scenarios = plan({
       "self-host": scheduled,
       cloud: na("Cloud sets no session bound; its session objects keep their own stored sessions."),
       local: na("Local keeps one protocol server for the process and sets no session bound."),
+    },
+  },
+  mcpClientsIdleForgotten: {
+    fixtures: "actors",
+    file: "mcp-client-bound.spec.ts",
+    title:
+      "Self-host MCP admits a new client past its client bound by forgetting the least recently used idle one, whose session is told to initialize again",
+    serverEnvironment: mcpClientBoundEnvironment,
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Each Cloud MCP client is its own session object; there is no shared list to bound.",
+      ),
+      local: na("Local keeps one protocol server for the process and sets no client bound."),
+    },
+  },
+  mcpClientsPerUser: {
+    fixtures: "actors",
+    file: "mcp-client-bound.spec.ts",
+    title:
+      "Self-host MCP admits a member's client past their share by forgetting that member's own oldest idle client, not another member's",
+    serverEnvironment: mcpClientBoundEnvironment,
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Each Cloud MCP client is its own session object; there is no shared list to bound.",
+      ),
+      local: na("Local keeps one protocol server for the process and sets no client bound."),
+    },
+  },
+  mcpClientsOwningWork: {
+    fixtures: "actors",
+    file: "mcp-client-bound.spec.ts",
+    title:
+      "Self-host MCP never forgets a client whose approval prompt waits or whose program is paused, and refuses a new client with 503 when none can be",
+    serverEnvironment: mcpClientBoundEnvironment,
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Each Cloud MCP client is its own session object; there is no shared list to bound.",
+      ),
+      local: na("Local keeps one protocol server for the process and sets no client bound."),
     },
   },
   mcpSessionBound: {
