@@ -796,6 +796,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "test-stage-orphans.config.ts": () => import("./test-stage-orphans.config.ts"),
   "test-stage-unreadable.config.ts": () => import("./test-stage-unreadable.config.ts"),
   "typecheck-runner.config.ts": () => import("./typecheck-runner.config.ts"),
+  "webhook-sweep-waits.config.ts": () => import("./webhook-sweep-waits.config.ts"),
   "welcome-email.config.ts": () => import("./welcome-email.config.ts"),
   "worker-sizes.config.ts": () => import("./worker-sizes.config.ts"),
 };

@@ -20,7 +20,7 @@ import { EvidenceEntries } from "../report-model.ts";
 import { Target } from "./platform.ts";
 import { Collector, SpanQuery } from "./contracts.ts";
 import { RecordingFocus } from "./recording-focus.ts";
-import { axiomSpans } from "./axiom.ts";
+import { axiomSpans, stageEnvironment } from "./axiom.ts";
 import { scopeOf, type Scope } from "./scope.ts";
 import { stepFailureText } from "./failure-text.ts";
 import { lostRequestsOf } from "./lost-connections.ts";
@@ -153,6 +153,9 @@ const LogPage = Schema.Struct({
 const logPages = 40;
 
 /** Collector queries read delivered spans through HTTP. No in-process instrumentation assertions. */
+/** The longest one read of the local collector may take. */
+export const collectorReadMs = 5_000;
+
 export class Telemetry extends Context.Service<
   Telemetry,
   {
@@ -193,6 +196,16 @@ export class Telemetry extends Context.Service<
       attributes?: Readonly<Record<string, string>>,
     ) => Effect.Effect<typeof SpanQuery.Type, TelemetryUnavailable>;
     /**
+     * Delivered spans of one operation from this environment in the last `minutes` (whole minutes,
+     * at least one), whose attributes match exactly. For a check whose subject is environment-wide
+     * work, such as the webhook source sweep, that must stay under a search's match limit.
+     */
+    readonly searchRecent: (
+      operation: string,
+      attributes: Readonly<Record<string, string>>,
+      minutes: number,
+    ) => Effect.Effect<typeof SpanQuery.Type, TelemetryUnavailable>;
+    /**
      * Delivered spans of one operation from every scenario that shares this environment's
      * collector: on Cloud, every scenario of the job. Only for a check whose subject is the whole
      * environment, such as a global job or a privacy property no scenario may break.
@@ -220,7 +233,7 @@ export class Telemetry extends Context.Service<
       const target = yield* Target;
       const fs = yield* FileSystem.FileSystem;
       const http = yield* HttpClient.HttpClient;
-      const cloud = yield* axiomSpans;
+      const cloud = yield* axiomSpans(stageEnvironment(target.metadata.origin));
       const attached = target.metadata.target === "cloud" && target.metadata.mode === "attached";
       const origin = fs.readFileString(`${target.directory}/data/diagnostics/collector.json`).pipe(
         Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Collector))),
@@ -228,7 +241,7 @@ export class Telemetry extends Context.Service<
       );
       const safe = <A, E>(program: Effect.Effect<A, E>) =>
         program.pipe(
-          Effect.timeout("5 seconds"),
+          Effect.timeout(collectorReadMs),
           Effect.mapError(() => new TelemetryUnavailable()),
         );
       const read = (url: URL) =>
@@ -242,17 +255,26 @@ export class Telemetry extends Context.Service<
         operation: string,
         attributes: Readonly<Record<string, string>>,
         traceId: string | undefined,
+        lookback?: { readonly minutes: number },
       ) =>
         attached
           ? cloud
-              .search(operation, attributes, traceId)
+              .search(
+                operation,
+                attributes,
+                traceId,
+                lookback === undefined ? undefined : Date.now() - lookback.minutes * 60_000,
+              )
               .pipe(Effect.mapError(() => new TelemetryUnavailable()))
           : safe(
               Effect.scoped(
                 Effect.gen(function* () {
                   const url = new URL("/api/spans/search", yield* origin);
                   url.searchParams.set("operation", operation);
-                  url.searchParams.set("lookback", "1d");
+                  url.searchParams.set(
+                    "lookback",
+                    lookback === undefined ? "1d" : `${Math.max(1, Math.ceil(lookback.minutes))}m`,
+                  );
                   url.searchParams.set("limit", String(searchLimit));
                   if (traceId !== undefined) url.searchParams.set("traceId", traceId);
                   for (const [key, value] of Object.entries(attributes))
@@ -378,6 +400,8 @@ export class Telemetry extends Context.Service<
             Effect.map((found) => found.data.map(({ span }) => span.tags)),
           ),
         search,
+        searchRecent: (operation, attributes, minutes) =>
+          searchIn(operation, attributes, undefined, { minutes }),
         searchWholeEnvironment: (operation, attributes) =>
           searchIn(operation, attributes, undefined),
         logs: (traceId) => logs((base) => new URL(`/api/traces/${traceId}/logs`, base)),
