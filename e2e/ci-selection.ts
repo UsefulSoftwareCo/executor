@@ -774,7 +774,6 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "local-disk.config.ts": () => import("./local-disk.config.ts"),
   "lost-connections-lifecycle.config.ts": () => import("./lost-connections-lifecycle.config.ts"),
   "lost-connections.config.ts": () => import("./lost-connections.config.ts"),
-  "edge-probe.config.ts": () => import("./edge-probe.config.ts"),
   "lockfile-sync.config.ts": () => import("./lockfile-sync.config.ts"),
   "npm-launcher.config.ts": () => import("./npm-launcher.config.ts"),
   "pglite.config.ts": () => import("./pglite.config.ts"),
