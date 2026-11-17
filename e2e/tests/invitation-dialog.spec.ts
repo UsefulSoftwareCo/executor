@@ -4,8 +4,10 @@ import { Effect } from "effect";
 import { randomUUID } from "node:crypto";
 import type { Page } from "playwright";
 import { Actors } from "../support/actors.ts";
+import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { Resource } from "../support/contracts.ts";
 import { freeSeat } from "../support/seats.ts";
 import { scenarios } from "../test-plan.ts";
 
@@ -17,7 +19,7 @@ layer(HostedLive, { excludeTestServices: true })("Invitation dialog", (it) => {
         const actors = yield* Actors;
         const browser = yield* Browser;
         const email = `invite-${randomUUID().slice(0, 8)}@example.test`;
-        yield* freeSeat;
+        const seat = yield* freeSeat;
         yield* browser.login(actors.owner);
         yield* browser.use("Open organization settings", (page) =>
           page.goto(`/org/${actors.organization.slug}/organization`),
@@ -115,6 +117,45 @@ layer(HostedLive, { excludeTestServices: true })("Invitation dialog", (it) => {
         yield* browser.use("The invitation row is removed", (page) =>
           row(page).waitFor({ state: "detached" }),
         );
+        // The member is invited back and accepts while the list still shows the invitation.
+        const api = yield* Api;
+        const sent = yield* api.request(
+          actors.owner,
+          "POST",
+          "/api/auth/organization/invite-member",
+          {
+            organizationId: actors.organization.id,
+            email: seat.email,
+            role: "member",
+          },
+        );
+        expect(sent.status).toBe(200);
+        const returning = yield* body(Resource, sent);
+        const revoke = (page: Page) =>
+          page.getByRole("button", { name: `Revoke invitation to ${seat.email}`, exact: true });
+        yield* browser.use("Reload the members list", (page) =>
+          page.reload().then(() => revoke(page).waitFor({ state: "visible" })),
+        );
+        expect(
+          (yield* api.request(actors.member, "POST", "/api/auth/organization/accept-invitation", {
+            invitationId: returning.id,
+          })).status,
+        ).toBe(200);
+        yield* browser.use("Revoke the accepted invitation", (page) => revoke(page).click());
+        yield* browser.use("Confirm revoking it", (page) =>
+          page.getByRole("button", { name: "Revoke invitation", exact: true }).click(),
+        );
+        expect(
+          yield* browser.use("The dialog says the person has joined", (page) =>
+            dialog(page)
+              .getByRole("alert")
+              .waitFor({ state: "visible" })
+              .then(() => dialog(page).getByRole("alert").textContent()),
+          ),
+        ).toBe(
+          "This person has already accepted the invitation and joined. Change their role or remove them in the members list.",
+        );
+        yield* browser.checkpoint("Revoking an accepted invitation");
       }),
     ),
   );

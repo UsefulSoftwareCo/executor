@@ -9786,8 +9786,64 @@ export const scenarios = plan({
   invitationRedemption: {
     fixtures: "actors",
     file: "invitation-redemption.spec.ts",
+    title: "self-host invitation links admit the intended role exactly once",
+    targets: {
+      local: na("Self-host invitation signup."),
+      "self-host": scheduled,
+      cloud: na("Cloud requires a verified recipient instead of password registration."),
+    },
+  },
+  invitationInviterAuthority: {
+    fixtures: "actors",
+    file: "invitation-inviter-authority.spec.ts",
+    legacyStorage: true,
     title:
-      "self-host invitation links admit the intended role exactly once without replacing accounts",
+      "self-host invitations left pending after their inviter lost the role to invite are neither accepted nor registered",
+    targets: {
+      local: na("Hosted organization invitations."),
+      "self-host": scheduled,
+      cloud: na("cloud-invitation-inviter-authority.spec.ts writes Cloud's own database."),
+    },
+  },
+  invitationInviterResend: {
+    fixtures: "actors",
+    file: "invitation-inviter-authority.spec.ts",
+    legacyStorage: true,
+    title:
+      "self-host invitations left pending after their inviter lost the role to invite are accepted once an owner resends them",
+    targets: {
+      local: na("Hosted organization invitations."),
+      "self-host": scheduled,
+      cloud: na("cloud-invitation-inviter-authority.spec.ts writes Cloud's own database."),
+    },
+  },
+  cloudInvitationInviterResend: {
+    fixtures: "actors",
+    file: "cloud-invitation-inviter-authority.spec.ts",
+    title:
+      "Cloud invitations left pending after their inviter lost the role to invite are accepted once an owner resends them",
+    targets: {
+      local: na("Hosted organization invitations."),
+      "self-host": na("invitation-inviter-authority.spec.ts writes self-host's own database."),
+      cloud: managedCloud,
+    },
+  },
+  cloudInvitationInviterAuthority: {
+    fixtures: "actors",
+    file: "cloud-invitation-inviter-authority.spec.ts",
+    title:
+      "Cloud invitations left pending after their inviter lost the role to invite are neither accepted nor offered at entry",
+    targets: {
+      local: na("Hosted organization invitations."),
+      "self-host": na("invitation-inviter-authority.spec.ts writes self-host's own database."),
+      cloud: managedCloud,
+    },
+  },
+  invitationReadmission: {
+    fixtures: "actors",
+    file: "invitation-redemption.spec.ts",
+    title:
+      "self-host invitations readmit a former admin as a member only with their password and die with their inviter's membership",
     targets: {
       local: na("Self-host invitation signup."),
       "self-host": scheduled,

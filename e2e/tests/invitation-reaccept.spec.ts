@@ -82,6 +82,12 @@ layer(HostedLive, { excludeTestServices: true })("Invitation reaccept", (it) => 
         );
         expect(access.status).toBe(200);
         yield* browser.checkpoint("Joined the organization");
+        // Cancelling an invitation that was already accepted is refused; it stays accepted.
+        expect(
+          (yield* api.request(actors.owner, "POST", "/api/auth/organization/cancel-invitation", {
+            invitationId: invitation,
+          })).status,
+        ).toBe(400);
 
         // The recipient opens the same link again, as from the email or the back button.
         const reopened = yield* accept("Second visit", invitation);

@@ -3,6 +3,7 @@ import type { AuthContext, BetterAuthPlugin, GenericEndpointContext } from "bett
 import { getCurrentAdapter } from "better-auth";
 import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { symmetricDecrypt, symmetricEncrypt } from "better-auth/crypto";
+import { inviterMayInvite } from "@executor-js/hosted-server";
 import { Option, Schema } from "effect";
 import type { CloudBillingHooks } from "./auth-options.ts";
 
@@ -148,19 +149,18 @@ export const cloudSso = (billing?: CloudBillingHooks) => {
           })
         )
           return;
-        // An explicit invitation owns its role and must still be accepted.
-        if (
-          await database.findOne({
-            model: "invitation",
-            where: [
-              { field: "organizationId", value: provider.organizationId },
-              { field: "email", value: user.email.toLowerCase() },
-              { field: "status", value: "pending" },
-              { field: "expiresAt", value: new Date(), operator: "gt" },
-            ],
-          })
-        )
-          return;
+        // An explicit invitation owns its role and must still be accepted, if it still can be.
+        const invitations = await database.findMany<{ organizationId: string; inviterId: string }>({
+          model: "invitation",
+          where: [
+            { field: "organizationId", value: provider.organizationId },
+            { field: "email", value: user.email.toLowerCase() },
+            { field: "status", value: "pending" },
+            { field: "expiresAt", value: new Date(), operator: "gt" },
+          ],
+        });
+        for (const invitation of invitations)
+          if (await inviterMayInvite(database, invitation)) return;
         const count = await database.count({
           model: "member",
           where: [{ field: "organizationId", value: provider.organizationId }],
