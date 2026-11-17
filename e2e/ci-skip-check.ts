@@ -19,8 +19,14 @@ import { Cause, Effect } from "effect";
  */
 export const enforce = false;
 
-/** The format of the record this workflow writes (RECORD_FORMAT in checks.yml). */
-export const recordFormat = "2";
+/**
+ * The format of the record this workflow writes (RECORD_FORMAT in checks.yml). Format 3 adds
+ * `tested`, the merge commit the run checked out; format 2 records are still read, by the rule that
+ * fits them (`judgeRecord`).
+ */
+export const recordFormat = "3";
+/** The formats this check reads. Any other is never passed: it waits, and then fails. */
+const readFormats = new Set(["2", "3"]);
 
 /**
  * How long to wait for a better answer, in seconds from the start of the step, by what was seen:
@@ -50,6 +56,8 @@ export interface RecordFields {
   readonly baseline?: string | undefined;
   /** A skip layer's own check: `pass` or `fail`; `none` for a layer that does not skip. */
   readonly above?: string | undefined;
+  /** Format 3: the merge commit the run checked out and tested (`git rev-parse HEAD`). */
+  readonly tested?: string | undefined;
 }
 
 export const parseRecord = (text: string): RecordFields => {
@@ -59,6 +67,7 @@ export const parseRecord = (text: string): RecordFields => {
     base: field("base"),
     baseline: field("baseline"),
     above: field("above"),
+    tested: field("tested"),
   };
 };
 
@@ -72,6 +81,12 @@ export interface RunSeen {
   readonly selectDone: boolean;
   /** Its select job is in its own skip check, waiting on the layer above it. */
   readonly waitingAbove: boolean;
+  /**
+   * Format 3: whether the lower layer's head is an ancestor of the commit the run tested (the
+   * reader asks GitHub's compare API); undefined when the record names no tested commit or the
+   * answer could not be read.
+   */
+  readonly contains?: boolean | undefined;
 }
 
 /** One open pull request of this repository whose base is this layer's branch. */
@@ -96,6 +111,13 @@ export interface Lower {
   readonly runId: string;
 }
 
+/**
+ * The rule that passed a run: `old`, a record from before this check (a pull request above
+ * exists); `base`, the run's event named this layer's head as its base (format 2 and 3); `tested`,
+ * the merge commit the run tested contains this layer's head (format 3).
+ */
+export type Rule = "old" | "base" | "tested";
+
 /** What one look says. */
 export type Verdict =
   | {
@@ -104,6 +126,7 @@ export type Verdict =
       readonly run: string;
       /** The record above is in the format from before this check: judged by the old rule. */
       readonly oldFormat: boolean;
+      readonly rule: Rule;
     }
   | {
       readonly _tag: "Wait";
@@ -133,8 +156,8 @@ const judgeRecord = (
   // pull request, that is, no open upper above a skip layer would still write main's old format:
   //   R=UsefulSoftwareCo/executor-next; gh pr list -R $R --state open -L 1000 --json number,baseRefName,headRefName,isCrossRepository,body -q '[.[]|select(.isCrossRepository|not)] as $p | ($p|map(select(.body|test("```e2e\\s+skip\\s+```"))|.headRefName)) as $s | $p[]|select(.baseRefName as $b|$s|index($b))|.number' | while read n; do gh api "repos/$R/contents/.github/workflows/checks.yml?ref=refs/pull/$n/merge" -q .content | base64 -d | grep -q RECORD_FORMAT || echo "#$n"; done
   if (record.format === undefined && record.baseline === undefined)
-    return { _tag: "Pass", pull: upper.pull, run: run.url, oldFormat: true };
-  if ((record.format ?? recordFormat) !== recordFormat)
+    return { _tag: "Pass", pull: upper.pull, run: run.url, oldFormat: true, rule: "old" };
+  if (!readFormats.has(record.format ?? "2"))
     return {
       _tag: "Wait",
       bound: "stale",
@@ -149,12 +172,28 @@ const judgeRecord = (
       why: `#${upper.pull} is itself a skip layer, and its own check of the layer above it fails (${run.url})`,
       remedy: `fix #${upper.pull} as its run says`,
     };
-  // A re-run reads the stack afresh but keeps its event, so the base commit it was built on.
-  if (record.base !== lower.head)
+  // Built on this layer's head: its event named it as the base, or (format 3) the commit the run
+  // tested contains it. The event's base alone is not enough: a stack push can send an upper's
+  // `synchronize` event twice, one carrying the lower layer's previous head as its base, while the
+  // merge commit GitHub built for it already holds this layer's head (#4718, 16 Nov). A re-run
+  // keeps its event's base, but tests the same merge commit.
+  const builtOn: Rule | undefined =
+    record.base === lower.head
+      ? "base"
+      : record.tested !== undefined && run.contains === true
+        ? "tested"
+        : undefined;
+  if (builtOn === undefined && record.tested !== undefined && run.contains === undefined)
     return {
       _tag: "Wait",
       bound: "stale",
-      why: `#${upper.pull}'s latest run on its head, ${run.url}, was built on ${record.base === undefined ? "a base it did not record" : short(record.base)}, not this layer's head ${short(lower.head)}`,
+      why: `#${upper.pull}'s latest run on its head, ${run.url}, tested ${short(record.tested)}, and whether that contains this layer's head ${short(lower.head)} could not be read`,
+    };
+  if (builtOn === undefined)
+    return {
+      _tag: "Wait",
+      bound: "stale",
+      why: `#${upper.pull}'s latest run on its head, ${run.url}, was built on ${record.base === undefined ? "a base it did not record" : short(record.base)}${record.tested === undefined ? "" : ` and tested ${short(record.tested)}, which does not contain`}${record.tested === undefined ? ", not" : ""} this layer's head ${short(lower.head)}`,
       remedy: `bring #${upper.pull} up to date with this layer and push it (gh stack rebase, then gh stack push), which runs it on this layer's head`,
     };
   const baseline = record.baseline?.replace(/@[^@]*$/, "");
@@ -165,7 +204,7 @@ const judgeRecord = (
       why: `#${upper.pull}'s latest run on its head, ${run.url}, compared its Worker sizes with ${baseline ?? "a baseline it did not record"}, not ${lower.bottom}, the base this stack now ends on`,
       remedy: `${rerun} (a re-run reads the stack afresh)`,
     };
-  return { _tag: "Pass", pull: upper.pull, run: run.url, oldFormat: false };
+  return { _tag: "Pass", pull: upper.pull, run: run.url, oldFormat: false, rule: builtOn };
 };
 
 /** What one pull request above says, from its runs on its current head. */
@@ -251,6 +290,8 @@ export const judge = (observation: Observation, lower: Lower, previous?: Verdict
 export interface Decision {
   readonly decision: "pass" | "fail";
   readonly oldFormat: boolean;
+  /** The rule that decided a pass; `none` for a fail. */
+  readonly rule: Rule | "none";
   readonly reason: string;
   /** What the author is told. */
   readonly message: string;
@@ -273,10 +314,13 @@ export const next = (
       decision: {
         decision: "pass",
         oldFormat: verdict.oldFormat,
+        rule: verdict.rule,
         waited,
         reason: verdict.oldFormat
           ? `#${verdict.pull}'s run ${verdict.run} wrote its record in the format from before this check, so the old rule applies: a pull request above exists`
-          : `#${verdict.pull}'s run ${verdict.run} was built on ${short(lower.head)} and compared its Worker sizes with ${lower.bottom}`,
+          : verdict.rule === "tested"
+            ? `#${verdict.pull}'s run ${verdict.run} tested a merge commit that contains ${short(lower.head)}, and compared its Worker sizes with ${lower.bottom}`
+            : `#${verdict.pull}'s run ${verdict.run} was built on ${short(lower.head)} and compared its Worker sizes with ${lower.bottom}`,
         message: verdict.oldFormat
           ? `The layer above runs a workflow from before the skip check. Rebasing the stack onto main turns the check on.`
           : `The layer above was computed with this layer in its chain.`,
@@ -290,6 +334,7 @@ export const next = (
     decision: {
       decision: "fail",
       oldFormat: false,
+      rule: "none",
       waited,
       reason: verdict.why,
       message: `The e2e block says skip: this layer passes only when the layer above has a run on its current head computed with this layer in its chain, built on ${short(lower.head)} and comparing Worker sizes with ${lower.bottom}. After ${waited} s, ${verdict.why}. ${verdict.remedy === undefined ? "Once it has" : `To fix it, ${verdict.remedy}; once that run has started`}, run this one again: ${own}`,
@@ -333,6 +378,7 @@ export const decisionLine = (outcome: Outcome, enforcing = enforce) =>
           mode: enforcing ? "enforce" : "observe",
           decision: `${enforcing ? "" : "would "}${outcome.decision.decision}`,
           oldFormat: outcome.decision.oldFormat,
+          rule: outcome.decision.rule,
           waited: outcome.decision.waited,
           reason: outcome.decision.reason,
           message: outcome.decision.message,

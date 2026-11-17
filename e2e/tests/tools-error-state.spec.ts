@@ -187,6 +187,60 @@ export default defineApp({}, async () => ({
           page.getByRole("alert").waitFor({ state: "hidden" }),
         );
         yield* browser.checkpoint("Tools-error-recovered");
+
+        // A Worker failure whose text matches a resource limit, written by the app's own code: one
+        // retry, then stop retrying unchanged and investigate, rebuilding only an app on an older
+        // apps version. Executor has not confirmed the limit, so nothing says a repeat proves it.
+        const limited = yield* api.request(actors.owner, "POST", `${prefix}/apps/deploy`, {
+          name: "Sample limited tools",
+          files: [
+            {
+              path: "index.ts",
+              content: `import { defineApp, query, object, router } from "apps";
+const json = Response.prototype.json;
+export default defineApp({}, async () => {
+  Response.prototype.json = function () {
+    Response.prototype.json = json;
+    return Promise.reject(new Error("Worker exceeded CPU time limit."));
+  };
+  return { tools: router({ ping: query({ input: object({}) }, async () => "pong") }) };
+});`,
+            },
+            appsManifest,
+          ],
+        });
+        expect(limited.status).toBe(200);
+        const limitedApp = yield* body(App, limited);
+        yield* Effect.addFinalizer(() =>
+          api.request(actors.owner, "DELETE", `${prefix}/apps/${limitedApp.id}`).pipe(Effect.orDie),
+        );
+        yield* openThroughBrowser(
+          "Open the Tools page of an app stopped at a matched limit",
+          `/org/${actors.organization.slug}/apps/${limitedApp.id}?view=tools`,
+        );
+        yield* browser.use("The limit's recovery is shown", (page) =>
+          page.getByRole("alert", { name: title, exact: true }).waitFor(),
+        );
+        const limitCopy = yield* browser.use("Read the limit's error state", (page) =>
+          page.getByRole("alert", { name: title, exact: true }).innerText(),
+        );
+        expect(limitCopy).toContain(
+          "Its error matches this cause, which Executor has not confirmed",
+        );
+        expect(limitCopy).toContain(
+          "Try again once. If it fails the same way, stop retrying it unchanged and investigate. If the app was built on an older apps version than this host’s, rebuild it on this host’s version and deploy it again",
+        );
+        expect(limitCopy).not.toContain("will not help");
+        yield* browser.checkpoint("Tools-error-matched-limit");
+        const limitPrompt = yield* browser.use("Copy the limit's fix prompt", (page) =>
+          page
+            .getByRole("button", { name: "Copy fix prompt", exact: true })
+            .click()
+            .then(() => page.evaluate(() => navigator.clipboard.readText())),
+        );
+        expect(limitPrompt).toContain("Retry the unchanged request at most once.");
+        expect(limitPrompt).toContain("If the app's version is older");
+        expect(limitPrompt).not.toContain("not transient");
       }),
     ),
   );

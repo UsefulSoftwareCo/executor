@@ -12,7 +12,7 @@
  * exchanges. `local-app-runtime-restart.spec.ts` checks the same repeat through the product itself.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Clock, Duration, Effect, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { scenarios } from "../test-plan.ts";
 import { TestLive, withCase } from "../support/case.ts";
@@ -53,21 +53,102 @@ const Probe = Schema.Struct({
   attributes: Attributes,
 });
 
+/**
+ * Each probe's own bound, so a hung probe fails as itself and not as the scenario's time-out.
+ * Measured on CI (17 Nov 2026, CI run 44037352539, `e2e-self-host (1/1)` on
+ * blacksmith-16vcpu-ubuntu-2404 at 07:17Z): 30 probes, median 0.31 s, longest 1.28 s (the call-path
+ * probes); the scenario took 13.1 s. On minisforum the longest was 1.8 s. Whole self-host shards
+ * run on 8 vCPU, and weekday afternoons are up to about 1.5× slower (AS1's runner-speed report,
+ * 16 Nov), so 20 s is about 15× the longest measured probe. It is below the fixture's own 30 s, and
+ * a hung probe plus the rest stays well inside the scenario's time-out.
+ */
+const probeBound = Duration.seconds(20);
+/** How much of a probe's output a time-out reports. */
+const lastOutputChars = 2_000;
+
+class ProbeTimedOut extends Schema.TaggedError<ProbeTimedOut>()("ProbeTimedOut", {
+  probe: Schema.String,
+  ranMs: Schema.Number,
+  boundMs: Schema.Number,
+  lastOutput: Schema.String,
+}) {
+  get message() {
+    const output = this.lastOutput.trim();
+    return `Probe ${this.probe} ran for ${this.ranMs} ms without finishing (its bound is ${this.boundMs} ms); its last output: ${output === "" ? "(none)" : output}`;
+  }
+}
+
+/**
+ * Run one probe process under its own bound and return its stdout. Its duration is recorded as a
+ * measurement; past the bound it is stopped and fails with its name, how long it ran and the end
+ * of its stdout and stderr.
+ */
+const runProbe = (label: string, command: string, args: ReadonlyArray<string>) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const processes = yield* ChildProcessSpawner.ChildProcessSpawner,
+        evidence = yield* Evidence;
+      const started = yield* Clock.currentTimeMillis;
+      let stdout = "";
+      let last = "";
+      const keep = (text: string) => {
+        last = (last + text).slice(-lastOutputChars);
+      };
+      const child = yield* processes.spawn(
+        ChildProcess.make(command, [...args], {
+          env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
+          extendEnv: false,
+          stdin: "ignore",
+          stdout: "pipe",
+          stderr: "pipe",
+        }),
+      );
+      yield* Effect.all(
+        [
+          child.stdout.pipe(
+            Stream.decodeText(),
+            Stream.runForEach((text) =>
+              Effect.sync(() => {
+                stdout += text;
+                keep(text);
+              }),
+            ),
+          ),
+          child.stderr.pipe(
+            Stream.decodeText(),
+            Stream.runForEach((text) => Effect.sync(() => keep(text))),
+          ),
+        ],
+        { concurrency: "unbounded", discard: true },
+      ).pipe(
+        Effect.timeoutOrElse({
+          duration: probeBound,
+          orElse: () =>
+            Effect.gen(function* () {
+              const ranMs = (yield* Clock.currentTimeMillis) - started;
+              return yield* new ProbeTimedOut({
+                probe: label,
+                ranMs,
+                boundMs: Duration.toMillis(probeBound),
+                lastOutput: last,
+              });
+            }),
+        }),
+      );
+      yield* evidence.measure(`Probe ${label}`, (yield* Clock.currentTimeMillis) - started);
+      return stdout;
+    }),
+  );
+
 /** One case of the probe under `runtime` (`node` or `bun`). */
 const probe = (runtime: "node" | "bun", name: string) =>
   Effect.gen(function* () {
-    const processes = yield* ChildProcessSpawner.ChildProcessSpawner,
-      evidence = yield* Evidence;
-    const output = yield* processes.string(
-      ChildProcess.make(
-        runtime,
-        ["packages/sdk/scripts/runtime-connect-fixture.ts", "--case", name],
-        {
-          env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
-          extendEnv: false,
-        },
-      ),
-    );
+    const evidence = yield* Evidence;
+    const output = yield* runProbe(`${runtime} ${name}`, runtime, [
+      "packages/sdk/scripts/runtime-connect-fixture.ts",
+      "--case",
+      name,
+    ]);
     const result = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Probe))(
       output.trim().split("\n").at(-1) ?? "",
     );
@@ -88,14 +169,12 @@ const CallPath = Schema.Struct({
 });
 const callPath = (name: string) =>
   Effect.gen(function* () {
-    const processes = yield* ChildProcessSpawner.ChildProcessSpawner,
-      evidence = yield* Evidence;
-    const output = yield* processes.string(
-      ChildProcess.make("node", ["packages/sdk/scripts/call-path-fixture.ts", "--case", name], {
-        env: { PATH: process.env.PATH ?? "", HOME: process.env.HOME ?? "" },
-        extendEnv: false,
-      }),
-    );
+    const evidence = yield* Evidence;
+    const output = yield* runProbe(`node call-path ${name}`, "node", [
+      "packages/sdk/scripts/call-path-fixture.ts",
+      "--case",
+      name,
+    ]);
     const result = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(CallPath))(
       output.trim().split("\n").at(-1) ?? "",
     );

@@ -1128,6 +1128,17 @@ export const scenarios = plan({
       local: na("Hosted version API scenario"),
     },
   },
+  liveOpenapiHujson: {
+    fixtures: "actors",
+    file: "live-openapi-import.spec.ts",
+    title:
+      "Live OpenAPI sends and returns HuJSON as written text, while JSON, every +json type and AWS JSON stay JSON",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback upstream fixture"),
+      local: na("Hosted version API scenario"),
+    },
+  },
   liveOpenapiNaming: {
     fixtures: "actors",
     file: "live-openapi-import.spec.ts",
@@ -6596,6 +6607,19 @@ export const scenarios = plan({
       "self-host": scheduled,
       // The attached run checks that a deployed Worker holds the catalog within Cloudflare's
       // memory limit, as it must Stripe's.
+      cloud: { status: "scheduled", runtime: "attached" },
+      local: na("Local builds and runs apps through the same workerd compiler as self-host."),
+    },
+  },
+  largeOpenapiAccountsApp: {
+    fixtures: "actors",
+    file: "large-openapi-app.spec.ts",
+    title:
+      "an OpenAPI app whose resources expand into one another, linked through several accounts, lists each tool once with one branch for every account and its schemas complete",
+    targets: {
+      "self-host": scheduled,
+      // Each target bounds the JSON a cold listing writes, which merging every tool's definitions
+      // exceeded; the attached run also lists cold within a deployed app Worker's CPU time.
       cloud: { status: "scheduled", runtime: "attached" },
       local: na("Local builds and runs apps through the same workerd compiler as self-host."),
     },

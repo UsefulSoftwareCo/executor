@@ -26,7 +26,7 @@ import {
   OpenapiMediaType,
   defaultOpenapiResponseLimits,
   isOpenapiFileSchema,
-  isOpenapiJsonSequence,
+  isOpenapiJsonMedia,
   isOpenapiTextMedia,
   openapiMediaKind,
   type CredentialBinding,
@@ -468,13 +468,14 @@ export function createRequest(config: {
           data.set(chunk, offset);
           offset += chunk.length;
         }
+        // JSON first: a JSON type the text gate does not name, such as AWS's, still has a JSON
+        // result schema.
+        if (isOpenapiJsonMedia(contentType))
+          return yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))(
+            new TextDecoder().decode(data),
+          ).pipe(Effect.mapError(() => unreadable));
         if (!isOpenapiTextMedia(contentType)) return { base64: Base64.encode(data), contentType };
-        const text = new TextDecoder().decode(data);
-        return contentType.includes("json") && !isOpenapiJsonSequence(contentType)
-          ? yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Json))(text).pipe(
-              Effect.mapError(() => unreadable),
-            )
-          : text;
+        return new TextDecoder().decode(data);
       }),
     ).pipe(
       owned("upstream", "provider.openapi.call", {

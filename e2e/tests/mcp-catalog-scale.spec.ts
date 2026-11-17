@@ -117,6 +117,25 @@ const Completed = Schema.Struct({
   }),
   unavailableApps: Schema.Array(Schema.Struct({ app: Schema.String, reason: Schema.String })),
 });
+/**
+ * A search answers in part when an app's tools did not load in time, and names each such app in
+ * `unavailableApps`. This is checked before the tools the search found, so a partial answer fails
+ * as the product reporting apps unavailable and not as a missing tool.
+ */
+const expectNoneUnavailable = (
+  step: string,
+  completed: typeof Completed.Type,
+  apps: ReadonlyArray<{ readonly id: string; readonly slug: string }>,
+) => {
+  const reported = completed.unavailableApps;
+  const named = reported.map(
+    (entry) => `${apps.find((app) => app.id === entry.app)?.slug ?? entry.app} (${entry.reason})`,
+  );
+  expect(
+    reported,
+    `${step}: the product reported ${reported.length} apps unavailable: ${named.join("; ")}`,
+  ).toEqual([]);
+};
 const SearchValue = Schema.Struct({
   items: Schema.Array(Schema.Struct({ path: Schema.String, input: Schema.String })),
 });
@@ -696,11 +715,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP catalog scale", (it) => {
         const searchedAll = yield* execute("Search the whole catalog", needle);
         const machineAfter = yield* machineWork;
         expect(searchedAll.completed.execution.ok).toBe(true);
+        expectNoneUnavailable("Search the whole catalog", searchedAll.completed, apps);
         expect(
           (yield* Schema.decodeUnknownEffect(SearchValue)(searchedAll.completed.execution.value))
             .items,
         ).toMatchObject(found.map((path) => ({ path })));
-        expect(searchedAll.completed.unavailableApps).toEqual([]);
         // It lists every app but the one called, whose search rows the call kept, and evaluates
         // each listing once.
         yield* check(
@@ -746,11 +765,11 @@ layer(HostedLive, { excludeTestServices: true })("MCP catalog scale", (it) => {
             const label = `Search the whole catalog again (${attempt})`;
             const searched = yield* execute(label, needle);
             expect(searched.completed.execution.ok).toBe(true);
+            expectNoneUnavailable(label, searched.completed, apps);
             expect(
               (yield* Schema.decodeUnknownEffect(SearchValue)(searched.completed.execution.value))
                 .items,
             ).toMatchObject(found.map((path) => ({ path })));
-            expect(searched.completed.unavailableApps).toEqual([]);
             expect(searched.elapsed).toBeLessThan(repeatedSearchBoundMs);
             return { label, traceId: searched.traceId };
           }),

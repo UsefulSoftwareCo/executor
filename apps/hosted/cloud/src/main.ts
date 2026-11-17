@@ -101,7 +101,7 @@ import { cloudEntryApi, cloudEntryDocument, resolveCloudEntry } from "./implemen
 import { browserReturnTo } from "@executor-js/hosted-server/browser/contracts";
 import { HttpServerRequest } from "effect/http";
 import { homepage, staticDocument } from "./implementation/homepage.ts";
-import { sitePageRoutes } from "./contracts/site-paths.ts";
+import { securityTxt, sitePageRoutes } from "./contracts/site-paths.ts";
 import {
   accountCallback,
   apiGoneOnEdge,
@@ -597,6 +597,8 @@ export default Api.make(
     const siteRoutes = HttpRouter.addAll(
       sitePageRoutes.map((page) => HttpRouter.route("GET", page, sitePage)),
     );
+    // `/.well-known/*` runs through the Worker, so the hosts that serve it read it from the assets.
+    const securityTxtRoute = HttpRouter.add("GET", securityTxt, staticDocument());
     // The site's first-party analytics proxy and error tunnel.
     const siteTelemetryRoutes = Layer.mergeAll(
       HttpRouter.add("*", "/api/:channel/*", analytics.proxy),
@@ -634,6 +636,7 @@ export default Api.make(
       ),
       publishedSkillRoutes(authoring),
       siteRoutes,
+      securityTxtRoute,
       siteTelemetryRoutes,
       browserTelemetry.pipe(HttpRouter.provideRequest(auth.identity)),
       HttpRouter.add("GET", "/", homepage(auth.cookiePrefix, dashboard(null))),
@@ -691,6 +694,7 @@ export default Api.make(
       authorizationServerRoutes,
       // ChatGPT verifies the domain of the app's MCP URL, now `mcp.`, at this path.
       HttpRouter.add("GET", "/.well-known/openai-apps-challenge", openAiAppsChallenge),
+      securityTxtRoute,
     ).pipe(
       Layer.provide(HttpServer.layerServices),
       toRequestHttpEffect,
