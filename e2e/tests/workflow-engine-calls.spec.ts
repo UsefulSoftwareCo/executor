@@ -15,6 +15,9 @@ import { WorkflowRun as Run } from "../support/workflow-app.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
+/** How long `napOnce`'s first sleep waits; the case reads it to judge how that sleep ended. */
+const napOnceMillis = 50;
+
 /** Each workflow meets the fault the plan configures for its step names. */
 const files = [
   { path: "package.json", content: JSON.stringify({ dependencies: withApps() }) },
@@ -35,7 +38,7 @@ export const calls = query({ input: object({ label: string() }) }, async (ctx, i
 import { count } from "./operations.ts";
 /** Each sleep's engine call fails once, before the engine sees it. */
 export const napOnce = workflow({ input: object({}) }, async (ctx) => {
-  await ctx.step.sleep("nap-once", "50 milliseconds");
+  await ctx.step.sleep("nap-once", ${napOnceMillis});
   await ctx.step.sleepUntil("wake-once", Date.now() + 2000);
   return "awake";
 });
@@ -219,9 +222,14 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
                 attempts: span.tags["executor.workflow.call.attempts"],
                 passed: span.tags["executor.workflow.call.passed"],
                 repeated: span.tags["executor.workflow.call.repeat_1.code"],
+                waited: span.tags["executor.workflow.call.waited"],
+                waitedMs: span.tags["executor.workflow.call.waited_ms"],
               })),
             );
-          // nap-once is a sleep: its fault fails the first call, and only a repeat completes it.
+          // nap-once is a sleep. Its fault fails the first call before the engine sees it, and the
+          // product then repeats it, unless that failed call itself lasted the sleep's duration:
+          // then the sleep's time has passed and the product ends it (a slow failure can outlast
+          // a 50 ms sleep on a busy host). Either is a correct end; any other is not.
           const nap = named(onceSpans, "nap-once");
           expect(
             nap.map((span) => span.status),
@@ -230,10 +238,15 @@ layer(HostedLive, { excludeTestServices: true })("Workflow engine calls", (it) =
           expect(
             nap.some(
               (span) =>
-                span.tags["executor.workflow.call.attempts"] === "2" &&
-                span.tags["executor.workflow.call.repeat_1.code"] === "internal",
+                (span.tags["executor.workflow.call.attempts"] === "2" &&
+                  span.tags["executor.workflow.call.repeat_1.code"] === "internal") ||
+                // The product's own record of how long the failed call lasted, not this
+                // scenario's clock: a product that skipped the repeat would record less.
+                (span.tags["executor.workflow.call.attempts"] === "1" &&
+                  span.tags["executor.workflow.call.waited"] === "true" &&
+                  Number(span.tags["executor.workflow.call.waited_ms"]) >= napOnceMillis),
             ),
-            `nap-once was repeated after its fault: ${facts(nap)}`,
+            `nap-once was repeated after its fault, or its failed call outlasted it: ${facts(nap)}`,
           ).toBe(true);
           // wake-once is a sleepUntil, which ends without the engine once its time has passed.
           // The body computes that time with the app's clock, which advances only with its I/O,

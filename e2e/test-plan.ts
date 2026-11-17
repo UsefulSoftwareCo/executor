@@ -8398,15 +8398,7 @@ export const scenarios = plan({
     serverEnvironment: { EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS: JSON.stringify(engineCallFaults) },
     targets: {
       "self-host": scheduled,
-      // Temporary, from 16 Nov 2026: this scenario failed main's Cloud lane twice in three runs
-      // (CI #14419 on 9d08fe6a4, CI #14429 on c024b3bfc, `cloud-product 1/2`), each time on the
-      // sleep spans it reads; the cause is being found. Self-host keeps running it. The change that
-      // fixes the case schedules it again.
-      cloud: {
-        status: "not-run",
-        reason:
-          "Temporarily not run on Cloud since 16 Nov 2026: the case failed main twice (CI #14419, #14429) on the run's sleep spans; self-host runs it until its fix lands.",
-      },
+      cloud: managedCloud,
       local: na("Self-host covers the Node-hosted runtime that local shares."),
     },
   },
