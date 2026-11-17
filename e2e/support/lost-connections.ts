@@ -74,6 +74,7 @@
  */
 import { subscribe } from "node:diagnostics_channel";
 import { randomBytes } from "node:crypto";
+import { shortPath } from "../lost-requests.ts";
 
 export const requestIdHeader = "x-executor-e2e-request";
 
@@ -142,6 +143,84 @@ export interface LostRequest {
   /** Why a request of which nothing was written was not sent again. */
   readonly stopped?: RepeatsStopped;
 }
+
+/**
+ * One stage request a scenario sent, in its `stage-requests.json`: the method, the path with ids
+ * shortened, when it started and when its response's headers arrived or it failed, the status or
+ * the failure's code, the trace id it carried, and whether its connection was new. A request lost
+ * in transport also says where (`outcome`), and one sent again how many attempts it took. Never a
+ * query, a body, a header value other than the trace id, a token or a cookie. A request still open
+ * when the scenario ended has no `endedAt`.
+ */
+export interface StageRequest {
+  readonly method: string;
+  readonly path: string;
+  readonly startedAt: string;
+  endedAt?: string;
+  durationMs?: number;
+  status?: number;
+  /** A transport code (`ECONNRESET`), `aborted` when the caller gave up, or the error's class. */
+  failure?: string;
+  traceId?: string;
+  connection?: "new" | "reused";
+  attempts?: number;
+  outcome?: LostOutcome;
+  stopped?: RepeatsStopped;
+}
+
+/** The most rows one scenario's record keeps; the oldest are dropped first, and counted. */
+export const stageRequestLimit = 2000;
+
+/** Each scenario's stage requests, by its name as `currentScenario` gives it. */
+const stageRequests = new Map<string, { rows: Array<StageRequest>; dropped: number }>();
+
+const startStageRequest = (scenario: string, row: StageRequest) => {
+  let record = stageRequests.get(scenario);
+  if (record === undefined) stageRequests.set(scenario, (record = { rows: [], dropped: 0 }));
+  record.rows.push(row);
+  if (record.rows.length > stageRequestLimit) {
+    record.rows.shift();
+    record.dropped += 1;
+  }
+};
+
+const endStageRequest = (row: StageRequest | undefined, started: number) => {
+  if (row === undefined) return;
+  const now = Date.now();
+  row.endedAt = new Date(now).toISOString();
+  row.durationMs = now - started;
+};
+
+/** The trace id a request carries in its `traceparent`, when it is one. */
+const traceIdOf = (input: RequestInfo | URL, init: RequestInit | undefined) => {
+  const header =
+    new Headers(init?.headers).get("traceparent") ??
+    (input instanceof Request ? input.headers.get("traceparent") : null);
+  const id = header?.split("-")[1];
+  return id !== undefined && /^[0-9a-f]{32}$/u.test(id) ? id : undefined;
+};
+
+/** What a failed request's record says of it: its code, `aborted`, or the error's class. */
+const failureOf = (error: unknown) =>
+  firstCode(error) ??
+  (error instanceof Error && error.name === "AbortError"
+    ? "aborted"
+    : error instanceof Error
+      ? error.name
+      : "other");
+
+/** One scenario's record of its stage requests, still unsaved, matched as `lostRequestsOf` is. */
+export const stageRequestsOf = (scenario: string) => {
+  for (const [name, record] of stageRequests)
+    if (name.endsWith(scenario))
+      return { limit: stageRequestLimit, dropped: record.dropped, rows: [...record.rows] };
+  return { limit: stageRequestLimit, dropped: 0, rows: [] as Array<StageRequest> };
+};
+
+/** Forget one scenario's record once its evidence is written. */
+export const forgetStageRequests = (scenario: string) => {
+  for (const name of stageRequests.keys()) if (name.endsWith(scenario)) stageRequests.delete(name);
+};
 
 interface SocketState {
   readonly connectedAt: number;
@@ -383,6 +462,17 @@ export const lostConnectionFetch = (original: typeof fetch): typeof fetch =>
     const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
     const scenario = currentScenario();
     const file = currentFile();
+    const traceId = scenario === undefined ? undefined : traceIdOf(input, init);
+    const row: StageRequest | undefined =
+      scenario === undefined
+        ? undefined
+        : {
+            method,
+            path: shortPath(url.pathname),
+            startedAt: new Date().toISOString(),
+            ...(traceId !== undefined && { traceId }),
+          };
+    if (row !== undefined) startStageRequest(scenario!, row);
     const record = (fields: Omit<LostRequest, "at" | "method" | "path" | "scenario" | "file">) =>
       kept.push({
         at: new Date().toISOString(),
@@ -392,6 +482,7 @@ export const lostConnectionFetch = (original: typeof fetch): typeof fetch =>
         path: url.pathname,
         ...fields,
       });
+    const sent = Date.now();
     return poolFor(original).then((dispatcher) => {
       const started = Date.now();
       const repeats: Array<UnsentAttempt> = [];
@@ -413,6 +504,12 @@ export const lostConnectionFetch = (original: typeof fetch): typeof fetch =>
           })
           .then(
             (response) => {
+              if (row !== undefined) {
+                row.status = response.status;
+                if (entry.connection !== undefined) row.connection = entry.connection;
+                if (repeats.length > 0) row.attempts = repeats.length + 1;
+                endStageRequest(row, sent);
+              }
               if (repeats.length > 0)
                 record({
                   ...(repeats[0]!.code !== undefined && { code: repeats[0]!.code }),
@@ -424,11 +521,25 @@ export const lostConnectionFetch = (original: typeof fetch): typeof fetch =>
               return response;
             },
             (error: unknown) => {
-              if (!lostInTransport(error)) throw error;
+              if (!lostInTransport(error)) {
+                if (row !== undefined && row.endedAt === undefined) {
+                  row.failure = failureOf(error);
+                  endStageRequest(row, sent);
+                }
+                throw error;
+              }
               const facts = factsOf(entry);
               const code = firstCode(error);
               const lost = (stopped?: RepeatsStopped) => {
                 const outcome = lostOutcome(facts);
+                if (row !== undefined) {
+                  row.failure = code ?? "other";
+                  row.outcome = outcome;
+                  if (facts.connection !== undefined) row.connection = facts.connection;
+                  if (repeats.length > 1) row.attempts = repeats.length;
+                  if (stopped !== undefined) row.stopped = stopped;
+                  endStageRequest(row, sent);
+                }
                 record({
                   ...(code !== undefined && { code }),
                   elapsedMs: Date.now() - started,

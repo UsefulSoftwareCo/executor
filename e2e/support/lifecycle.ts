@@ -15,6 +15,7 @@ import { saveLostRequests } from "../lost-requests.ts";
 import {
   configureLostConnections,
   takeAllLostRequests,
+  forgetStageRequests,
   takeLostRequests,
   unsentNote,
 } from "./lost-connections.ts";
@@ -101,6 +102,8 @@ export const installScenarioLifecycle = () =>
       return Effect.runPromise(
         Scope.close(scope, outcome).pipe(
           Effect.ensuring(Clock.currentTimeMillis.pipe(Effect.flatMap(save))),
+          // Closing the scope wrote the scenario's evidence, its stage requests included.
+          Effect.ensuring(Effect.sync(() => forgetStageRequests(task.name))),
           Effect.andThen(
             Effect.suspend(() => (task.result?.state === "pass" ? discard : Effect.void)),
           ),

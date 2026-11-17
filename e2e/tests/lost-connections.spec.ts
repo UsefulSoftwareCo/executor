@@ -30,6 +30,9 @@
  *   unsent. A failure that is not the connection's (a certificate for another name) is not repeated.
  * - A second copy of the module in one process does not wrap `fetch` again, so no wrapper can read a
  *   written request as never written.
+ * - Each stage request a scenario sends is kept for its `stage-requests.json`: method, path with ids
+ *   shortened, status or failure, times, trace id and connection, never its query, headers or
+ *   cookies; at most `stageRequestLimit` rows, the oldest dropped and counted.
  * - The job summary counts each lost request with its time, and an unreadable count is never zero.
  */
 import { expect, layer } from "@effect/vitest";
@@ -51,6 +54,8 @@ import {
   lostOutcome,
   lostRequestsOf,
   requestIdHeader,
+  stageRequestLimit,
+  stageRequestsOf,
   unsentNote,
 } from "../support/lost-connections.ts";
 import { CallFailed, readResponse, requestFailureText } from "../support/request-failure.ts";
@@ -812,6 +817,78 @@ layer(NodeServices.layer)("Stage requests of which nothing was written", (it) =>
       );
       expect(summary).toContain("::warning title=Stage requests sent again::");
       expect(summary).not.toContain("title=Lost stage requests::");
+    }),
+  );
+});
+
+layer(NodeServices.layer)("Each scenario's stage requests", (it) => {
+  it.effect(
+    "records method, short path, status, trace and connection, and never a query, header or cookie",
+    () =>
+      Effect.gen(function* () {
+        const name = expect.getState().currentTestName!;
+        // Effect's client puts each request in a trace of its own: the id the stage receives.
+        const traceId = expect.stringMatching(/^[0-9a-f]{32}$/u);
+        const answered = yield* stage("reset-on-reuse");
+        const http = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
+        const response = yield* http.execute(
+          HttpClientRequest.get(
+            `${answered.origin}/api/organizations/0123456789abcdefABCDEF/inventory?token=synthetic-token`,
+          ).pipe(
+            HttpClientRequest.setHeaders({
+              cookie: "session=synthetic-cookie",
+              authorization: "Bearer synthetic-bearer",
+            }),
+          ),
+        );
+        expect(response.status).toBe(200);
+        const reset = yield* stage("reset-new");
+        failureOf(yield* send("POST", `${reset.origin}/api/onboarding/prepare`, { body: {} }));
+        const { rows, dropped, limit } = stageRequestsOf(name);
+        expect({ dropped, limit }).toEqual({ dropped: 0, limit: stageRequestLimit });
+        expect(rows).toEqual([
+          {
+            method: "GET",
+            path: "/api/organizations/:id/inventory",
+            startedAt: expect.any(String),
+            endedAt: expect.any(String),
+            durationMs: expect.any(Number),
+            status: 200,
+            traceId,
+            connection: "new",
+          },
+          {
+            method: "POST",
+            path: "/api/onboarding/prepare",
+            startedAt: expect.any(String),
+            endedAt: expect.any(String),
+            durationMs: expect.any(Number),
+            traceId,
+            failure: "ECONNRESET",
+            outcome: "lost: new connection",
+            connection: "new",
+          },
+        ]);
+        const text = JSON.stringify(rows);
+        for (const secret of ["synthetic-token", "synthetic-cookie", "synthetic-bearer", "?"])
+          expect(text).not.toContain(secret);
+      }),
+  );
+
+  it.effect("keeps at most its limit of rows, dropping the oldest and counting them", () =>
+    Effect.gen(function* () {
+      const name = expect.getState().currentTestName!;
+      const { origin } = yield* stage("reset-on-reuse");
+      const http = yield* HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer));
+      const extra = 3;
+      // One after another, so the oldest rows are the first paths.
+      for (let index = 0; index < stageRequestLimit + extra; index++)
+        expect((yield* http.get(`${origin}/n${index}`)).status).toBe(200);
+      const { rows, dropped } = stageRequestsOf(name);
+      expect(rows).toHaveLength(stageRequestLimit);
+      expect(dropped).toBe(extra);
+      expect(rows[0]!.path).toBe(`/n${extra}`);
+      expect(rows.at(-1)!.path).toBe(`/n${stageRequestLimit + extra - 1}`);
     }),
   );
 });

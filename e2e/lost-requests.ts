@@ -8,6 +8,9 @@
  */
 import { Effect, FileSystem, Path, Schema } from "effect";
 
+/** A path with its ids shortened to `:id`: a run of 16 or more id characters. */
+export const shortPath = (path: string) => path.replace(/[A-Za-z0-9_-]{16,}/gu, ":id");
+
 /** Where a run keeps its records, under the run's directory. */
 export const lostRequestDirectory = "report/lost-requests";
 
@@ -138,7 +141,7 @@ export const lostRequestLines = (records: ReadonlyArray<LostRequestRecord>) => {
     ...repeated,
     ...records.map(
       (record) =>
-        `- ${record.at.slice(11, 19)} ${record.method} ${record.path.replace(/[A-Za-z0-9_-]{16,}/gu, ":id")} (${record.sent.connection ?? "unwritten"}${record.sent.earlierRequests === undefined || record.sent.earlierRequests === 0 ? "" : `, ${record.sent.earlierRequests} earlier requests`}${record.sent.idleMs === undefined ? "" : `, idle ${(record.sent.idleMs / 1000).toFixed(1)} s`}; ${record.outcome}${repeatText(record)})`,
+        `- ${record.at.slice(11, 19)} ${record.method} ${shortPath(record.path)} (${record.sent.connection ?? "unwritten"}${record.sent.earlierRequests === undefined || record.sent.earlierRequests === 0 ? "" : `, ${record.sent.earlierRequests} earlier requests`}${record.sent.idleMs === undefined ? "" : `, idle ${(record.sent.idleMs / 1000).toFixed(1)} s`}; ${record.outcome}${repeatText(record)})`,
     ),
   ].join("\n");
 };
