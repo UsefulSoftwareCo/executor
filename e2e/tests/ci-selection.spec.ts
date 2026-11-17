@@ -52,6 +52,7 @@ const jobs = [
   "cloud-rate-limit",
   "cloud-rollback",
   "cloud-oauth-proxy-preview",
+  "cloud-revocation-budget",
 ];
 /** The outputs that start the E2E runners: each sharded job's parts and the Cloud runners. */
 const runnerOutputs = ["local-shards", "self-host-shards", "cloud-runners"];
@@ -628,7 +629,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
             ),
             "cloud-workers, cloud-locks, cloud-batch, cloud-autumn",
             "cloud-domains, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview",
-            "cloud-removal-recovery, cloud-export-hang, cloud-listings",
+            "cloud-removal-recovery, cloud-export-hang, cloud-listings, cloud-revocation-budget",
           ]);
           // Each Cloud job's pattern is on exactly one runner and empty on the others. The runner
           // runs it unchanged, except cloud-product past what one local Cloud holds: each of its
@@ -2697,6 +2698,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-rate-limit",
         "cloud-rollback",
         "cloud-oauth-proxy-preview",
+        "cloud-revocation-budget",
       ])
         expect(noCloud.log).toMatch(
           new RegExp(`- the ${job} job on cloud: (\\d+) of \\1 scenarios did not run`),

@@ -117,7 +117,16 @@ export const makeLocalMcpOAuth = <E>(
         cookiePrefix: "executor-local-oauth",
         ipAddress: { ipAddressHeaders: ["x-executor-client-ip"] },
       },
-      rateLimit: { enabled: true, storage: "database" as const },
+      rateLimit: {
+        enabled: true,
+        storage: "database" as const,
+        // The limiter counts each address and path, and every caller of this loopback server has
+        // the same address, so a per-address token limit would be one limit for every local MCP
+        // client: one busy or broken client would stop every other client renewing its token.
+        // Nothing here can tell callers apart before the token request is read (client IDs are
+        // public and registered freely), and codes, verifiers and refresh tokens cannot be guessed.
+        customRules: { "/oauth2/token": false as const },
+      },
     };
     yield* Effect.tryPromise({
       try: async () => {

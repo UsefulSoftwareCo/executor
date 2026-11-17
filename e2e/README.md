@@ -1029,7 +1029,11 @@ only the scenarios declaring `runtime: "rolled-back"`. Managed local Cloud runs
 with Better Auth's OAuth proxy on, as the proxy's production (its edge), as
 production does. `bun run e2e:cloud --oauth-proxy-preview` also starts a second
 local Cloud as that production and tests a stage that signs in through it,
-running only the scenarios declaring `runtime: "oauth-proxy-preview"`. Production (`v2`),
+running only the scenarios declaring `runtime: "oauth-proxy-preview"`.
+`bun run e2e:cloud --removal-revocation-budget` starts it with organization
+removal's revocation budget shortened to five seconds and runs only the
+scenarios declaring `runtime: "revocation-budget"`; every other local Cloud
+keeps the deployed five minutes. Production (`v2`),
 ordinary previews and every other deployed stage always retain rate limits,
 whatever their configuration; `bun run auth:rate-limit` (part of `check`)
 proves it. Local and

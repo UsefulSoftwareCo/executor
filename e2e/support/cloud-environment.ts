@@ -105,6 +105,12 @@ export const startCloudEnvironment = (input: {
    */
   readonly authRateLimit: boolean;
   /**
+   * Organization removal's revocation budget, 5 minutes deployed. Only the Cloud of the scenarios
+   * that run it out sets it (`e2e:cloud --removal-revocation-budget`), so every other scenario's
+   * removals revoke under the deployed budget. Only `alchemy dev` honours it.
+   */
+  readonly removalRevocationBudgetMs?: number;
+  /**
    * Which host serves the dashboard and sign-in: `app.` of the origin, or, with the rollback
    * switch (`CLOUD_BROWSER_ORIGIN=deployment`), the origin itself.
    */
@@ -229,6 +235,9 @@ export const startCloudEnvironment = (input: {
       OTEL_EXPORTER_OTLP_LOGS_ENDPOINT: `${collector}/v1/logs`,
       EXECUTOR_ENVIRONMENT: "test-local",
       TEST_STAGE_AUTH_RATE_LIMIT: String(input.authRateLimit),
+      ...(input.removalRevocationBudgetMs === undefined
+        ? {}
+        : { TEST_STAGE_REMOVAL_REVOCATION_BUDGET_MS: String(input.removalRevocationBudgetMs) }),
       VITE_POSTHOG_KEY: "synthetic-ingestion-key",
       VITE_POSTHOG_PATH: "/api/0123456789abcdef",
       VITE_POSTHOG_HOST: `http://127.0.0.1:${analyticsPort}`,

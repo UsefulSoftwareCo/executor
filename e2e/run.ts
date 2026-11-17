@@ -62,6 +62,11 @@ const command = Command.make(
     // Start a second managed Cloud as the OAuth proxy's production, run against a test stage that
     // signs in through it, and run only the scenarios that prove the proxy.
     oauthProxyPreview: Flag.Boolean("oauth-proxy-preview").pipe(Flag.withDefault(false)),
+    // Start managed Cloud with organization removal's revocation budget shortened, and run only the
+    // scenarios that run it out.
+    removalRevocationBudget: Flag.Boolean("removal-revocation-budget").pipe(
+      Flag.withDefault(false),
+    ),
     // Run one part of a local or self-host run; see `partPattern`.
     part: Flag.String("part").pipe(Flag.optional),
   },

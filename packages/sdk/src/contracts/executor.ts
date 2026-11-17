@@ -6,7 +6,15 @@ import {
   type WebhookSourceDispatcher,
 } from "./webhooks.ts";
 /** The shared Executor interface and remote client options; projected from ExecutorApi. */
-import { Context, type Effect, type Redacted, type Result, type Stream, Schema } from "effect";
+import {
+  Context,
+  type Duration,
+  type Effect,
+  type Redacted,
+  type Result,
+  type Stream,
+  Schema,
+} from "effect";
 import type { HttpApi, HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 import type { WebhookSetupApi } from "./webhook-setup.ts";
 import type { ExecutorApi } from "./http.ts";
@@ -308,6 +316,11 @@ export interface ExecutorInputs {
    * Without it, stale declarations revalidate first and revocation runs inline.
    */
   readonly background?: import("./declarations.ts").BackgroundWork;
+  /**
+   * How long `owners.remove` spends asking providers to revoke the OAuth grants it deleted, all
+   * of them together; 5 minutes by default. Only a test host shortens it.
+   */
+  readonly ownerRevocationBudget?: Duration.Input;
 }
 
 /** A hex-encoded 256-bit key encrypts saved credentials with AES-GCM; a custom store replaces that. */

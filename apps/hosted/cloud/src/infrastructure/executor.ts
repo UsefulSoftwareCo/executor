@@ -37,7 +37,13 @@ import { InvocationDatabase } from "./invocation-database.ts";
 import { backgroundWait, CurrentRequest, ownTelemetryScope } from "./served-request.ts";
 import { TelemetryDrainScope, TelemetryWaitReport } from "@executor-js/telemetry";
 import { cloudSecrets } from "./secrets.ts";
-import { cloudOrigin, cloudResourceOrigins, productionStage, stageName } from "./stage.ts";
+import {
+  cloudOrigin,
+  cloudOwnerRevocationBudget,
+  cloudResourceOrigins,
+  productionStage,
+  stageName,
+} from "./stage.ts";
 import { cloudEmulators } from "./emulators.ts";
 import { missingFirstPartyGitHubClient } from "./first-party-oauth-settings.ts";
 import { cloudAccountSignIns } from "../implementation/oauth-proxy-settings.ts";
@@ -113,6 +119,10 @@ export const cloudExecutor = Effect.fn(function* (
   // The same tool listing settings as the other hosts; a stage deployed without them keeps the
   // defaults. Memory limits are not read: every executor shares the isolate's store.
   const { toolListings } = yield* declarationConfig.pipe(Effect.orDie);
+  // Only `alchemy dev` binds the switch; see `cloudOwnerRevocationBudget`.
+  const ownerRevocationBudget = yield* cloudOwnerRevocationBudget(
+    (yield* Cloudflare.WorkerEnvironment).REMOVAL_REVOCATION_BUDGET_SWITCH === true,
+  ).pipe(Effect.orDie);
   const makeRuntime = yield* cloudRuntime(origin, databases);
   const workflows = yield* cloudWorkflows;
   const blobs = yield* cloudBlobs;
@@ -235,6 +245,7 @@ export const cloudExecutor = Effect.fn(function* (
         // A tool listing nobody waits for runs until the event's background work ends, and is
         // remembered as timed out if it has not finished by then.
         background,
+        ...(ownerRevocationBudget === undefined ? {} : { ownerRevocationBudget }),
         events: {
           sender: httpEventSender(egress),
           // The same event's client, which hosted permission checks already share.

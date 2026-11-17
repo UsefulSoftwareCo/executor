@@ -178,13 +178,22 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   let refreshSubject = "synthetic-subject";
   /** Lifetime of renewed tokens; unset, they last `expiresIn` like the first ones. */
   let refreshedExpiresIn: number | undefined;
-  /** An RFC 7009 endpoint that records calls, or one that always fails. */
-  let revocation: "none" | "recorded" | "failing" = "none";
+  /**
+   * An RFC 7009 endpoint that records calls, one that always fails, or one that records each call
+   * and never answers it until the issuer closes.
+   */
+  let revocation: "none" | "recorded" | "failing" | "stalled" = "none";
   const revocations: Array<{
     readonly token: "refresh" | "access" | "unknown";
     readonly hint: string | null;
     readonly clientAuthenticated: boolean;
   }> = [];
+  /**
+   * Revocation requests that reached the service, counted by the arrival gate below as each one's
+   * headers arrive, and the waits for a number of them.
+   */
+  let revocationArrivals = 0;
+  const arrivalWaits = new Set<() => void>();
   const keyPair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   let rsaKey: KeyObject | undefined;
   /** Refresh tokens issued for each client; unless rotation is configured, refreshes keep them. */
@@ -847,6 +856,11 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             client.secret !== null &&
             presented.secret === client.secret,
         });
+        if (revocation === "stalled") {
+          const released = yield* Deferred.make<void>();
+          releases.push(released);
+          yield* Deferred.await(released);
+        }
         return revocation === "failing"
           ? HttpServerResponse.empty({ status: 503 })
           : HttpServerResponse.empty({ status: 200 });
@@ -949,6 +963,14 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     ),
   );
   const listener = yield* Effect.sync(() => createServer());
+  // The arrival gate counts a revocation request when Node reads its headers, before the router's
+  // handler runs. A caller that gives up on the request closes it, which interrupts that handler,
+  // so a count kept there would depend on how soon this process ran it; this one does not.
+  listener.prependListener("request", (request) => {
+    if (request.method !== "POST" || request.url?.split("?")[0] !== "/revoke") return;
+    revocationArrivals++;
+    for (const wait of arrivalWaits) wait();
+  });
   const services = yield* Layer.build(
     HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
       Layer.provideMerge(NodeHttpServer.layer(() => listener, { host: "127.0.0.1", port })),
@@ -1038,7 +1060,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly refreshSubject?: string;
       /** Lifetime of renewed tokens; null makes them last `expiresIn`. */
       readonly refreshedExpiresIn?: number | null;
-      /** Advertise an RFC 7009 endpoint that records calls, or one that always fails. */
+      /** Advertise an RFC 7009 endpoint that records calls, always fails, or never answers. */
       readonly revocation?: typeof revocation;
       /** How the token and revocation endpoints read HTTP Basic client credentials. */
       readonly basicCredentials?: typeof basicCredentials;
@@ -1167,6 +1189,18 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     expireAccessTokens: Effect.sync(() => {
       for (const token of issuedAccessTokens) expiredAccessTokens.add(token);
     }),
+    /** Wait until `count` revocation requests have reached the service (see the arrival gate). */
+    revocationArrivals: (count: number) =>
+      Effect.callback<void>((resume) => {
+        const wait = () => {
+          if (revocationArrivals < count) return;
+          arrivalWaits.delete(wait);
+          resume(Effect.void);
+        };
+        arrivalWaits.add(wait);
+        wait();
+        return Effect.sync(() => arrivalWaits.delete(wait));
+      }),
     /** Answer every held request; one held before processing stays unprocessed. */
     release: Effect.suspend(() => {
       const pending = releases;
@@ -1198,6 +1232,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       lastExchangeAuth,
       nonceRequested,
       revocations: [...revocations],
+      revocationArrivals,
       revokedRefreshTokens: [...revokedRefreshTokens],
       resourceRequests: { ...resourceRequests },
       resourceAuthorizations: [...resourceAuthorizations],

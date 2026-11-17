@@ -285,7 +285,8 @@ export const createExecutor = (
         activate: (input) => apps.activate(input).pipe(Effect.tap((app) => activated(app.id))),
         checkCredentials,
       },
-      owners: makeOwners(db),
+      // The purge's caller waits for its revocations, so they never join background work.
+      owners: makeOwners(db, oauth.revokeGrant, options.ownerRevocationBudget),
       publications: catalog.publications,
       registry: catalog.registry,
       skills: makeSkills(db, runtime, crypto, declarations, blobs),

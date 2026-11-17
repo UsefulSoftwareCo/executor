@@ -6,6 +6,7 @@ import {
   Array as Arr,
   Clock,
   Context,
+  type Duration,
   Effect,
   Exit,
   Fiber,
@@ -3219,27 +3220,33 @@ export const makeOAuth = (
 
   /**
    * Best-effort revocation of a grant whose account was already deleted. Nothing here can fail or
-   * undo the deletion.
+   * undo the deletion. `deadline` bounds this one revocation below the protocol's own request
+   * timeout; one that runs out is recorded as failed.
    */
-  const revokeGrant = (removed: {
-    readonly account: AccountId;
-    readonly provider: string;
-    readonly encrypted: Uint8Array;
-  }) =>
-    settledRevocation(
-      Effect.gen(function* () {
-        yield* Effect.annotateCurrentSpan("oauth.provider.id", removed.provider);
-        const stored = yield* decrypt(removed.account, removed.encrypted, OAuthGrant);
-        // A grant to the operator's client is revoked at the client's configured endpoint.
-        const grant = yield* operatingGrant(stored);
-        if (grant === undefined) return "unsupported" as const;
-        return yield* revokeTokens(grant, grantClientKind(stored), {
-          refreshToken: grant.grant === "client_credentials" ? undefined : grant.refreshToken,
-          accessToken: grant.fields["access_token"],
-        });
-      }),
+  const revokeGrant = (
+    removed: {
+      readonly account: AccountId;
+      readonly provider: string;
+      readonly encrypted: Uint8Array;
+    },
+    deadline?: Duration.Input,
+  ) => {
+    const revocation = Effect.gen(function* () {
+      yield* Effect.annotateCurrentSpan("oauth.provider.id", removed.provider);
+      const stored = yield* decrypt(removed.account, removed.encrypted, OAuthGrant);
+      // A grant to the operator's client is revoked at the client's configured endpoint.
+      const grant = yield* operatingGrant(stored);
+      if (grant === undefined) return "unsupported" as const;
+      return yield* revokeTokens(grant, grantClientKind(stored), {
+        refreshToken: grant.grant === "client_credentials" ? undefined : grant.refreshToken,
+        accessToken: grant.fields["access_token"],
+      });
+    });
+    return settledRevocation(
+      deadline === undefined ? revocation : Effect.timeout(revocation, deadline),
       "oauth.revokeGrant",
     );
+  };
   /** Revoke after the deletion commits; see `revokeLater`. */
   const revokeRemoved = (removed: Parameters<typeof revokeGrant>[0]) =>
     revokeLater(revokeGrant(removed));
@@ -3297,5 +3304,6 @@ export const makeOAuth = (
     usableAll,
     usableEach,
     revokeRemoved,
+    revokeGrant,
   };
 };

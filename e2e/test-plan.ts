@@ -13,6 +13,7 @@ export const TargetPlan = Schema.Union([
         "rate-limited",
         "rolled-back",
         "oauth-proxy-preview",
+        "revocation-budget",
       ]),
     ),
   }),
@@ -74,6 +75,11 @@ const rateLimitedCloud = { status: "scheduled", runtime: "rate-limited" } as con
 const rolledBackCloud = { status: "scheduled", runtime: "rolled-back" } as const;
 /** Runs on a managed test stage that signs in through a second local Cloud's OAuth proxy. */
 const oauthProxyPreviewCloud = { status: "scheduled", runtime: "oauth-proxy-preview" } as const;
+/**
+ * Runs alone on a managed local Cloud whose organization removal revocation budget is shortened to
+ * `removalRevocationBudgetMs`; every other local Cloud keeps the deployed budget.
+ */
+const revocationBudgetCloud = { status: "scheduled", runtime: "revocation-budget" } as const;
 const na = (reason: string) => ({ status: "not-applicable", reason }) as const;
 const cloudOnboarding = {
   cloud: scheduled,
@@ -7616,6 +7622,16 @@ export const scenarios = plan({
       ),
     },
   },
+  localOAuthTokenLimit: {
+    file: "local-oauth-token-limit.spec.ts",
+    title:
+      "A local MCP client whose token requests keep failing does not stop another local client getting its tokens",
+    targets: {
+      local: scheduled,
+      "self-host": na("Self-host limits token requests by each caller's own address."),
+      cloud: na("Cloud limits token requests by each caller's own address."),
+    },
+  },
   localMcpOAuthWithoutResource: {
     file: "local-mcp-connections.spec.ts",
     title: "Local MCP OAuth without a resource parameter grants the plain /mcp URL",
@@ -11341,6 +11357,30 @@ export const scenarios = plan({
       local: na("Local has no hosted organizations and serves no owner removal."),
     },
   },
+  organizationRemovalRevocation: {
+    fixtures: "actors",
+    file: "organization-removal-revocation.spec.ts",
+    title:
+      "Removing an organization revokes the refresh token of each of its OAuth accounts at the service once",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host has a single instance organization and no organization removal."),
+      local: na("Local has no hosted organizations."),
+    },
+  },
+  organizationRemovalRevocationBudget: {
+    fixtures: "actors",
+    file: "organization-removal-revocation.spec.ts",
+    title:
+      "Removing an organization whose service never answers revocations finishes within its revocation budget and records how many OAuth grants it did not revoke",
+    targets: {
+      // Only a local Cloud of its own shortens the budget to fit a scenario; every other local
+      // Cloud and every deployed stage keep 5 minutes.
+      cloud: revocationBudgetCloud,
+      "self-host": na("Self-host has a single instance organization and no organization removal."),
+      local: na("Local has no hosted organizations."),
+    },
+  },
   organizationRemovalRecovery: {
     fixtures: "actors",
     file: "organization-removal-recovery.spec.ts",
@@ -11509,14 +11549,17 @@ export const scenarios = plan({
  * How the run reaches Cloud. Managed Cloud is local and turns the per-address auth limit off, as
  * deployed test stages do; a rate-limited run starts it with the limit on for the scenarios that
  * prove it, and runs only those. A rolled-back run starts it with its rollback switch on, sign-in
- * on the deployment origin, and runs only the scenarios that prove the switch.
+ * on the deployment origin, and runs only the scenarios that prove the switch. A revocation-budget
+ * run starts it with organization removal's revocation budget shortened, and runs only the
+ * scenarios that run that budget out.
  */
 export type CloudMode =
   | "managed"
   | "attached"
   | "rate-limited"
   | "rolled-back"
-  | "oauth-proxy-preview";
+  | "oauth-proxy-preview"
+  | "revocation-budget";
 
 const cloudRuntimeReasons = {
   managed: "Requires the managed local Cloud target and its local collectors.",
@@ -11527,6 +11570,8 @@ const cloudRuntimeReasons = {
     "Requires a managed local Cloud with its rollback switch on: e2e:cloud --rollback.",
   "oauth-proxy-preview":
     "Requires a managed test stage signing in through a second local Cloud's OAuth proxy: e2e:cloud --oauth-proxy-preview.",
+  "revocation-budget":
+    "Requires a managed local Cloud with organization removal's revocation budget shortened: e2e:cloud --removal-revocation-budget.",
 } as const;
 
 /**
@@ -11559,7 +11604,8 @@ export const scenariosForSuite = (
         cloud.runtime === undefined
           ? cloudMode !== "rate-limited" &&
             cloudMode !== "rolled-back" &&
-            cloudMode !== "oauth-proxy-preview"
+            cloudMode !== "oauth-proxy-preview" &&
+            cloudMode !== "revocation-budget"
           : cloud.runtime === cloudMode;
       return runs
         ? scenario
@@ -11573,7 +11619,9 @@ export const scenariosForSuite = (
                     ? "Runs on Cloud with sign-in on app., without the rollback switch."
                     : cloudMode === "oauth-proxy-preview"
                       ? "Runs on Cloud as the OAuth proxy's production, not on a stage signing in through it."
-                      : "Runs on Cloud without the per-address auth limit."
+                      : cloudMode === "revocation-budget"
+                        ? "Runs on Cloud with organization removal's deployed revocation budget."
+                        : "Runs on Cloud without the per-address auth limit."
                   : cloudRuntimeReasons[cloud.runtime],
               ),
             },
