@@ -87,6 +87,10 @@ const registry = (
     readonly ownMissing?: number;
     /** The archive's own URL serves these bytes instead of the origin's. */
     readonly ownBytes?: Uint8Array;
+    /** The tarball URL the version's metadata advertises, instead of the registry's own. */
+    readonly tarball?: string;
+    /** The archive's own URL answers this redirect instead of an archive. */
+    readonly redirect?: string;
   } = {},
 ) => {
   let requests = 0;
@@ -113,12 +117,20 @@ const registry = (
       response.end(
         JSON.stringify({
           version,
-          dist: { tarball: `http://127.0.0.1:${port}${tarball}`, integrity },
+          dist: {
+            tarball: options.tarball ?? `http://127.0.0.1:${port}${tarball}`,
+            integrity,
+          },
         }),
       );
       return;
     }
     if (url.pathname === tarball) {
+      if (options.redirect !== undefined) {
+        response.writeHead(302, { location: options.redirect });
+        response.end();
+        return;
+      }
       firstArchiveRequest ??= Date.now();
       const own = url.search === "";
       if (own) ownRequests += 1;
@@ -157,6 +169,33 @@ const registry = (
       probes: () => probes,
       ownRequests: () => ownRequests,
       own404: () => own404,
+    }),
+  );
+};
+
+/**
+ * A second origin that serves `bytes` at every path and counts requests. The gate must never
+ * ask it for an SDK the builder registry advertises elsewhere.
+ */
+const otherOrigin = (bytes: Uint8Array) => {
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests += 1;
+    response.writeHead(200, { "content-type": "application/octet-stream" });
+    response.end(bytes);
+  });
+  return Effect.acquireRelease(
+    Effect.callback<void>((resume) => {
+      server.listen(0, "127.0.0.1", () => resume(Effect.void));
+    }),
+    () =>
+      Effect.callback<void>((resume) => {
+        server.close(() => resume(Effect.void));
+      }),
+  ).pipe(
+    Effect.as({
+      url: () => `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
+      requests: () => requests,
     }),
   );
 };
@@ -214,6 +253,31 @@ layer(NodeServices.layer)("apps release check", (it) => {
         );
         if (!succeeds) expect(run.log).toContain("README.md");
       }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("self-host gate refuses an SDK tarball or redirect on another origin", () =>
+    Effect.gen(function* () {
+      const { version, local } = yield* archives;
+      const integrity = integrityOf(local);
+      const outside = yield* otherOrigin(local);
+      for (const options of [
+        { tarball: `${outside.url()}/apps-${version}.tgz` },
+        { redirect: `${outside.url()}/apps-${version}.tgz` },
+      ] as const) {
+        const npm = yield* registry(version, integrity, [{ status: 200, bytes: local }], options);
+        const run = yield* check(npm.url(), "", {}, true);
+        expect(run.exitCode, run.log).toBe(1);
+        expect(run.log).toContain("outside the builder registry's origin");
+        expect(run.log).toContain(npm.url());
+        expect(run.log).toContain(outside.url());
+      }
+      // The gate refuses before it asks the other origin for the archive.
+      expect(outside.requests()).toBe(0);
+      const same = yield* registry(version, integrity, [{ status: 200, bytes: local }]);
+      const pass = yield* check(same.url(), "", {}, true);
+      expect(pass.exitCode, pass.log).toBe(0);
+      expect(pass.log).toContain(`Builder registry serves matching apps@${version}`);
     }).pipe(Effect.scoped),
   );
 
