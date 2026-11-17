@@ -13,7 +13,7 @@ import { Effect, Option, Stream } from "effect";
 import { testStage } from "./stage.ts";
 import { providerFailureCode } from "../implementation/provider-failure.ts";
 import { readR2Object } from "../implementation/r2-read.ts";
-import { persistR2Object } from "../implementation/r2-write.ts";
+import { writeR2Object } from "../implementation/r2-write.ts";
 import type { WorkspaceObjects } from "../implementation/workspace-cache.ts";
 
 /** Configured stages keep retained builds; a destroyed test stage leaves nothing behind. */
@@ -123,13 +123,8 @@ export const cloudBlobs = Effect.gen(function* () {
       bucket.put(key, body).pipe(
         // Builds own UUID keys; onboarding icons use content hashes. Rejected
         // writes can repeat the same complete bytes without replaying app work.
-        persistR2Object,
-        Effect.asVoid,
         Effect.provide(RuntimeContext.phantom),
-        Effect.tapError((error) =>
-          Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),
-        ),
-        Effect.mapError(() => new BlobStoreError({ operation: "put" })),
+        writeR2Object,
       ),
     remove: (key) => removeObjects(bucket, key),
     // One R2 request deletes up to 1,000 objects; `removeAllKeys` keeps callers within it.
