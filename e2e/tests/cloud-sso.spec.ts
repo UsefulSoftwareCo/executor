@@ -6,6 +6,7 @@ import { Actors, freshOwnerSession } from "../support/actors.ts";
 import { Api, body } from "../support/api.ts";
 import { Browser } from "../support/browser.ts";
 import { Target } from "../support/platform.ts";
+import { writeRows } from "../support/cloud-rows.ts";
 import { ssoFixture } from "../support/sso.ts";
 import { scenarios } from "../test-plan.ts";
 import { holdQuery } from "../support/query-transition.ts";
@@ -793,6 +794,19 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
         yield* browser.checkpoint("Verified SAML setup");
         yield* signOut;
         const email = `saml-${randomUUID().slice(0, 8)}@sso.example.test`;
+        // An invitation from someone who cannot invite to this team does not hold back joining.
+        const { userId: outsider } = yield* body(
+          Schema.Struct({ userId: Schema.String }),
+          yield* api.request(actors.member, "GET", "/api/viewer"),
+        );
+        yield* writeRows("sso-database.json", [
+          {
+            sql: `insert into invitation
+              (id, "organizationId", email, role, status, "expiresAt", "createdAt", "inviterId")
+              values ($1, $2, $3, 'admin', 'pending', now() + interval '1 day', now(), $4)`,
+            params: [`stale-${randomUUID()}`, team.id, email, outsider],
+          },
+        ]);
         yield* fixture.configure(email);
         const destination = `/org/${team.slug}/organization`;
         yield* startFromEmail(email, destination);
@@ -803,6 +817,19 @@ layer(HostedLive, { excludeTestServices: true })("Cloud customer SSO", (it) => {
         const identity = yield* browserSession;
         expect(identity.user.email).toBe(email);
         expect(identity.user.emailVerified).toBe(true);
+        const roster = yield* body(
+          Schema.Struct({
+            members: Schema.Array(Schema.Struct({ userId: Schema.String, role: Schema.String })),
+          }),
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `/api/auth/organization/list-members?organizationId=${team.id}`,
+          ),
+        );
+        expect(
+          roster.members.filter((row) => row.userId === identity.user.id).map((row) => row.role),
+        ).toEqual(["member"]);
         yield* browser.checkpoint("SAML member opens their team");
         yield* signOut;
         yield* browser.use("Replay the already consumed assertion", (page) =>

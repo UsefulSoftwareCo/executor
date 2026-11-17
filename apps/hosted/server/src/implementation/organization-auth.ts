@@ -1,3 +1,4 @@
+import type { AuthContext } from "@better-auth/core";
 import type { BetterAuthPlugin } from "better-auth";
 import { APIError, createAuthMiddleware, getSessionFromCtx } from "better-auth/api";
 import { Option, Schema } from "effect";
@@ -34,13 +35,54 @@ const StoredInvitation = Schema.Struct({
   role: InviteMember.fields.role,
   status: Schema.String,
   organizationId: Schema.NonEmptyString,
+  inviterId: Schema.NonEmptyString,
 });
+/** A membership as the remove and role-change routes return it. */
+const ChangedMember = Schema.Struct({
+  userId: Schema.NonEmptyString,
+  organizationId: Schema.NonEmptyString,
+  role: OrganizationRole,
+});
+const RemovedMember = Schema.Struct({ member: ChangedMember });
+
+/**
+ * The roles that may send invitations, at either the admin or the member role. Executor checks
+ * the role, not its rank: an admin's invitation as admin is as valid as an owner's. An invitation
+ * keeps its authority only while its inviter still holds one of these roles in its organization.
+ */
+export const invitingRoles = ["owner", "admin"] as const;
+const mayInvite = (role: typeof OrganizationRole.Type) =>
+  (invitingRoles as ReadonlyArray<string>).includes(role);
+
+/**
+ * Whether the invitation's inviter is still a member who may invite. Acceptance and self-host
+ * registration copy the stored role into a new membership, so they check this first, and Cloud's
+ * entry and SSO sign-in pass over invitations that fail it. SQL readers state the same rule with
+ * `invitingRoles`.
+ */
+export const inviterMayInvite = async (
+  adapter: Pick<AuthContext["adapter"], "findOne">,
+  invitation: { readonly organizationId: string; readonly inviterId: string },
+) => {
+  const inviter = Schema.decodeUnknownOption(Membership)(
+    await adapter.findOne({
+      model: "member",
+      where: [
+        { field: "userId", value: invitation.inviterId },
+        { field: "organizationId", value: invitation.organizationId },
+      ],
+      select: ["role"],
+    }),
+  );
+  return Option.isSome(inviter) && mayInvite(inviter.value.role);
+};
 const JoinedMember = Schema.Struct({ organizationId: Schema.NonEmptyString });
 const JoinedOrganization = Schema.Struct({ name: Schema.String });
 const SentInvitation = Schema.Struct({
   id: Schema.NonEmptyString,
   email: Schema.NonEmptyString,
   organizationId: Schema.NonEmptyString,
+  inviterId: Schema.NonEmptyString,
 });
 
 /**
@@ -167,6 +209,14 @@ export const explicitOrganizationAuth = {
                     alreadyMember: { name: organization.value.name },
                   });
               }
+              // Known limit: this check and Better Auth's acceptance are separate statements with no
+              // lock between them, so an inviter removed or demoted in that instant does not stop this
+              // acceptance, just as one a moment earlier would have gone through.
+              if (!(await inviterMayInvite(context.context.adapter, stored.value)))
+                throw new APIError("BAD_REQUEST", {
+                  message:
+                    "The person who sent this invitation can no longer invite members. Ask an administrator for a new invitation.",
+                });
               return { context: { body: invitation.value } };
             }
             // The invitation identifies the organization; Better Auth checks its current membership and cancel permission.
@@ -195,6 +245,45 @@ export const explicitOrganizationAuth = {
               { field: "email", value: sent.value.email.toLowerCase() },
               { field: "status", value: "pending" },
               { field: "id", operator: "ne", value: sent.value.id },
+            ],
+            update: { status: "canceled" },
+          });
+          // Native resend keeps the invitation's inviter and only renews its expiry. The member
+          // resending it has just passed Better Auth's invite permission check, so the invitation
+          // now carries their authority; otherwise an inviter who has since lost the role would
+          // leave the resent invitation unredeemable.
+          const session = await getSessionFromCtx(context);
+          if (session === null || sent.value.inviterId === session.user.id) return;
+          const resent = await context.context.adapter.update<Record<string, unknown>>({
+            model: "invitation",
+            where: [
+              { field: "id", value: sent.value.id },
+              { field: "status", value: "pending" },
+            ],
+            update: { inviterId: session.user.id },
+          });
+          if (resent !== null) return context.json(resent);
+        }),
+      },
+      {
+        matcher: (context) =>
+          context.path === "/organization/remove-member" ||
+          context.path === "/organization/update-member-role",
+        // A member who leaves, or loses the role that let them invite, takes back the
+        // invitations they sent that are still pending.
+        handler: createAuthMiddleware(async (context) => {
+          const returned = context.context.returned;
+          const removed = context.path === "/organization/remove-member";
+          const member = removed
+            ? Option.map(Schema.decodeUnknownOption(RemovedMember)(returned), (r) => r.member)
+            : Schema.decodeUnknownOption(ChangedMember)(returned);
+          if (Option.isNone(member) || (!removed && mayInvite(member.value.role))) return;
+          await context.context.adapter.updateMany({
+            model: "invitation",
+            where: [
+              { field: "organizationId", value: member.value.organizationId },
+              { field: "inviterId", value: member.value.userId },
+              { field: "status", value: "pending" },
             ],
             update: { status: "canceled" },
           });

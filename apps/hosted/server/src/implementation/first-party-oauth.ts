@@ -15,18 +15,23 @@ export const FirstPartyOAuthClientDefinition = FirstPartyOAuthClient.mapFields(
 export type FirstPartyOAuthClientDefinition = typeof FirstPartyOAuthClientDefinition.Encoded;
 
 /**
- * Every scope Executor for Google may ask for and a grant may hold. This is v1's
+ * Every scope Executor for Google may ask for. Google lets the production client ask a user for a
+ * sensitive or restricted scope only once its OAuth verification approves that scope for the
+ * client, and shows "This app is blocked" otherwise, so this list must hold only the scopes
+ * approved for it and non-sensitive ones, which need no approval. Add a scope only after Google approves
+ * it for the production client; until then an app asking for it is refused before Google's consent
+ * screen, and its user signs in with their own client.
+ *
+ * Sources, kept by the operator: Google's verification approvals for the production client of
+ * 2026-10-05 (the Workspace scopes, `https://mail.google.com/` and `gmail.settings.basic` among
+ * them) and 2026-10-25 (YouTube, Google Ads, BigQuery and Apps Script). The list began as v1's
  * `GOOGLE_ALLOWED_SCOPES` (`apps/cloud/src/engine/first-party-oauth-clients.ts` in
- * UsefulSoftwareCo/executor): the scopes v1's catalog requested for its 13 first-party Google
- * presets (Calendar, Meet, Gmail, Sheets, Drive, Docs, Slides, Forms, Tasks, People, Photos
- * Library, Photos Picker and Search Console), each with `openid email profile`, and
- * `gmail.modify`, which Gmail connections made before the full-Gmail review keep. It is the scope
- * set approved for the production app, extended on 2026-10-25 for YouTube, Google Ads,
- * BigQuery and Apps Script. Apps Script metrics is non-sensitive. Google reports `email` and
- * `profile` as granted under their `userinfo` names, and a grant holds only allowed scopes, so those two are allowed
- * as well.
+ * UsefulSoftwareCo/executor): the scopes of v1's 13 first-party Google presets (Calendar, Meet,
+ * Gmail, Sheets, Drive, Docs, Slides, Forms, Tasks, People, Photos Library, Photos Picker and
+ * Search Console). `openid`, `email` and `profile`, their `userinfo` names, under which Google
+ * reports `email` and `profile` granted, and Apps Script metrics are non-sensitive.
  */
-const googleAllowedScopes = [
+const googleSignInScopes = [
   "openid",
   "email",
   "profile",
@@ -38,7 +43,6 @@ const googleAllowedScopes = [
   "https://www.googleapis.com/auth/meetings.space.settings",
   "https://mail.google.com/",
   "https://www.googleapis.com/auth/gmail.settings.basic",
-  "https://www.googleapis.com/auth/gmail.modify",
   "https://www.googleapis.com/auth/spreadsheets",
   "https://www.googleapis.com/auth/drive.file",
   "https://www.googleapis.com/auth/drive",
@@ -69,6 +73,25 @@ const googleAllowedScopes = [
   "https://www.googleapis.com/auth/script.deployments",
   "https://www.googleapis.com/auth/script.processes",
   "https://www.googleapis.com/auth/script.metrics",
+];
+
+/**
+ * Scopes Executor for Google grants hold that Google has not approved for the production client,
+ * so no sign-in on Cloud asks for them. The grants keep renewing; a sign-in or reconnect asking for
+ * one is refused, leading with the user's own client and naming the approved scope that covers it,
+ * which grants more. A self-host operator's own Google client asks for them as before
+ * (`FirstPartyRegistrations`). Move a scope from here to `googleSignInScopes` once Google approves
+ * it; either list is one line per scope.
+ *
+ * - `gmail.modify`: v1 asked for it, and Gmail connections made then hold it. Google has not
+ *   approved it for the production client; the full Gmail scope, `https://mail.google.com/`, is
+ *   approved and covers it.
+ */
+const googleHeldScopes = [
+  {
+    scope: "https://www.googleapis.com/auth/gmail.modify",
+    instead: ["https://mail.google.com/"],
+  },
 ];
 
 /**
@@ -121,7 +144,8 @@ const slackMcpUserScopes = [
  *   `uploads.github.com`, where GitHub takes release asset uploads; and `api.githubcopilot.com`,
  *   GitHub's MCP server. GitHub accepts GitHub App user tokens on all three, and v1 sent this
  *   client's tokens to every GitHub REST operation, uploads included, and to GitHub's MCP server.
- * - `google` is Executor for Google, v1's Google client. Like every Google
+ * - `google` is Executor for Google, v1's Google client. It asks only for the scopes Google approved
+ *   for it, and its grants may also hold the held scopes, which it no longer asks for. Like every Google
  *   sign-in, it sends `access_type=offline` and `prompt=consent`, so each returns a refresh token. It has no revocation URL: Google
  *   revokes every grant a user gave the client at once, so removing one account would end the
  *   user's other Google accounts in every organization. Its tokens go to Google's API hosts.
@@ -163,7 +187,8 @@ export const firstPartyOAuthClientDefinitions: readonly FirstPartyOAuthClientDef
     },
     tokenEndpointAuthMethod: "client_secret_post",
     defaultScopes: ["openid", "email", "profile"],
-    allowedScopes: googleAllowedScopes,
+    allowedScopes: googleSignInScopes,
+    heldScopes: googleHeldScopes,
     placement: { hosts: ["*.googleapis.com"] },
   },
   {
@@ -233,15 +258,47 @@ const testDefinitions = (allowed: boolean) =>
   });
 
 /**
+ * Whose OAuth registrations the reviewed clients' credentials are. Cloud's are Executor's own,
+ * which a service may approve for only some scopes, as Google approved Executor for Google: their
+ * held scopes are never asked for. A self-host operator sets the credentials of its own
+ * registrations, which no approval of Executor's limits, so each reviewed client asks for its held
+ * scopes as allowed ones, as it did before they were held.
+ */
+export type FirstPartyRegistrations = "executor" | "operator";
+
+/** A reviewed definition as `registrations` may use it. */
+const forRegistrations = (
+  definition: FirstPartyOAuthClientDefinition,
+  registrations: FirstPartyRegistrations,
+): FirstPartyOAuthClientDefinition => {
+  const { heldScopes, ...menu } = definition;
+  if (registrations === "executor" || heldScopes === undefined) return definition;
+  return {
+    ...menu,
+    allowedScopes: [
+      ...(menu.allowedScopes ?? menu.defaultScopes),
+      ...heldScopes.map((held) => held.scope),
+    ],
+  };
+};
+
+/**
  * The operator's clients whose credentials are set, checked at startup. A client ID without its
  * secret, or a secret without its ID, stops the host and names the missing setting; no value is
- * ever repeated. `testDefinitions` lets an E2E host add `EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS`;
- * every other host passes `false` and refuses to start with it set.
+ * ever repeated. `registrations` says whose registrations the reviewed clients are (see
+ * `FirstPartyRegistrations`); test definitions are used as declared. `testDefinitions` lets an E2E
+ * host add `EXECUTOR_TEST_OAUTH_CLIENT_DEFINITIONS`; every other host passes `false` and refuses
+ * to start with it set.
  */
-export const firstPartyOAuthClients = (options: { readonly testDefinitions: boolean }) =>
+export const firstPartyOAuthClients = (options: {
+  readonly testDefinitions: boolean;
+  readonly registrations: FirstPartyRegistrations;
+}) =>
   Effect.gen(function* () {
     const reviewed = yield* Schema.decodeUnknownEffect(Definitions)(
-      firstPartyOAuthClientDefinitions,
+      firstPartyOAuthClientDefinitions.map((definition) =>
+        forRegistrations(definition, options.registrations),
+      ),
     ).pipe(Effect.orDie);
     const definitions = [...reviewed, ...(yield* testDefinitions(options.testDefinitions))];
     const seen = new Set<string>();

@@ -36,6 +36,7 @@ import {
   SelfHostWorkflowRequests,
 } from "./implementation/executor-services.ts";
 import { selfHostRouteMap } from "./implementation/routes.ts";
+import { SelfHostSettingInvalid } from "./contracts/config.ts";
 import {
   bindingBlobStore,
   bindingDashboard,
@@ -256,7 +257,11 @@ export class ExecutorProduct extends DurableObject<Environment> implements Produ
         return opened.value;
       }
       const squashed = Cause.squash(opened.cause);
-      if (Schema.is(FirstPartyOAuthClientsInvalid)(squashed)) settings = squashed.message;
+      if (
+        Schema.is(FirstPartyOAuthClientsInvalid)(squashed) ||
+        Schema.is(SelfHostSettingInvalid)(squashed)
+      )
+        settings = squashed.message;
       failure = opened.cause;
     } catch (error) {
       failure = error;

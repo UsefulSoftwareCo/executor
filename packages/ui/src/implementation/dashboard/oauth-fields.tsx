@@ -2,7 +2,12 @@ import { useEffect, useState } from "react";
 import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Cause, Exit, Option, Redacted } from "effect";
-import type { Account, OAuthClientId, OAuthConnectOptions } from "@executor-js/sdk";
+import {
+  OAuthSetupFailed,
+  type Account,
+  type OAuthClientId,
+  type OAuthConnectOptions,
+} from "@executor-js/sdk";
 import type { OAuthSubmission } from "../../contracts/credentials.ts";
 import type { FailureProps, Query } from "../../contracts/dashboard.ts";
 import type { ComponentType, ReactNode } from "react";
@@ -183,6 +188,15 @@ export function OAuthFields<A, E>({
     : acceptsSecret
       ? "client ID (and secret, if it has one)"
       : "client ID";
+  // The instance's own client matches the service but may not ask for these scopes, so the person
+  // enters their own; that explanation takes the place of the line of help.
+  const refusal =
+    setup !== "unresolved" && setup.operatorScopeRefusal !== undefined
+      ? new OAuthSetupFailed({
+          reason: "operator_scope_refused",
+          operatorScopes: setup.operatorScopeRefusal,
+        })
+      : undefined;
   // Client entry's one line of help; a failure, which carries its own recovery, replaces it.
   const guidance = machine
     ? `Create an OAuth client in ${providerName}’s developer settings${setup.scopes.length > 0 ? " with the permissions under Advanced" : ""}, then enter its ${details}.`
@@ -312,6 +326,8 @@ export function OAuthFields<A, E>({
       {prominent && clientSelect}
       {error ? (
         <Failure cause={error} layout="compact" />
+      ) : manual && refusal !== undefined ? (
+        <ErrorNotice error={refusal} layout="compact" context="While connecting an account." />
       ) : (
         manual && (
           <p className="text-[13px] leading-5 text-pretty text-muted-foreground">{guidance}</p>

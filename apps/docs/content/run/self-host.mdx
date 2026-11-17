@@ -30,6 +30,8 @@ These settings override the defaults:
 | `EXECUTOR_TRUSTED_PROXIES`           | no       | Comma-separated addresses of your reverse proxies, so rate limits count each client behind them. List only proxies. See below. |
 | `EXECUTOR_APP_WORKERS` | no | Most app and data Workers kept loaded at once. The default is `64`. See below. |
 | `EXECUTOR_APP_WORKER_IDLE_SECONDS` | no | Unload an app or data Worker not called for this long; `0` keeps idle Workers loaded up to the limit. The default is `300`. See below. |
+| `EXECUTOR_MCP_CLIENTS` | no | Most MCP clients the server keeps state for at once; each API key or OAuth grant in use is one. The default is `512`. See [Connect an agent](#connect-an-agent). |
+| `EXECUTOR_MCP_CLIENTS_PER_USER` | no | Most of those one member may hold. The default is `256`. |
 | `EXECUTOR_OAUTH_CLIENT_METADATA_URL` | no       | Identify Executor to OAuth services by a client metadata document instead of registering a client. Off by default. See below. |
 | `EXECUTOR_CATALOG_URL`               | no       | `index.json` of the official app feed that onboarding and **Add app** list. The default is `https://catalog.executor.sh/index.json`; `off` lists only the built-in Executor app, for an instance without outbound internet access. |
 | `EXECUTOR_REGISTRY_URL`              | no       | Origin of the public app registry. The default is `https://api.executor.sh`. |
@@ -50,7 +52,10 @@ the server and do not use the network. Thus the bundled Executor app works when
 that origin resolves to a private address, such as a Tailscale name. To let app
 code reach other private addresses, set `EXECUTOR_APPS_ALLOW_PRIVATE_FETCH=true`.
 The default is `false`. Every app in the instance shares that network position,
-so grant it deliberately.
+so grant it deliberately. App builds follow the same setting for every download
+off the registry's origin: a dependency declared by tarball URL, and a tarball or
+redirect the registry's metadata sends elsewhere. Downloads from the registry's
+own origin, including a private `EXECUTOR_NPM_REGISTRY`, work either way.
 
 Each app runs in its own Worker for each set of accounts it is called with, and
 each loaded Worker holds its own memory. The server keeps at most
@@ -327,6 +332,22 @@ command.
 
 The MCP endpoint is `<your origin>/mcp`. Sign-in happens in the browser, the
 same way as hosted. See [Add an MCP client](/mcp-clients).
+
+The server keeps each MCP client's state in memory, one client for each API key
+or OAuth grant in use. A connected client holds about 200 KB, so the default
+of 512 clients takes about 120 MB. It keeps at most `EXECUTOR_MCP_CLIENTS` of
+them. When a new client would pass that, the server forgets the one used least
+recently. The forgotten client's next request is answered `404` (session not
+found), and the client must initialize a new session, as after a server
+restart. Some clients do not do that on their own and keep getting `404`, so
+their tool calls fail until you reconnect them, for example by restarting the
+agent or reconnecting its MCP server. A member who already holds
+`EXECUTOR_MCP_CLIENTS_PER_USER` clients loses their own least recently used one instead, so one member cannot
+push everyone else's out. A client with a request in flight or a program
+waiting for approval is never forgotten. When no client can be, a new one gets
+`503` with `Retry-After: 1` until one finishes. A client unused for 30 minutes
+is forgotten anyway. Raise the limit with care: with about 800 clients kept,
+tool calls took several times as long on a 16-core machine.
 
 ## Move from a local Executor
 

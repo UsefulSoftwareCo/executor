@@ -90,6 +90,11 @@ export const appWorkerBudgetLimit = 2;
  * stalled app reached during the program is told apart from one discovery gave up on.
  */
 export const lazyStallTimeoutMs = 15_000;
+/** The MCP client bound the client bound scenarios run with: three clients, two per member. */
+const mcpClientBoundEnvironment = {
+  EXECUTOR_MCP_CLIENTS: "3",
+  EXECUTOR_MCP_CLIENTS_PER_USER: "2",
+};
 /**
  * Seconds after which the aged search rows scenarios' server renews the rows a search serves
  * (`EXECUTOR_TOOL_LISTING_RENEW_SECONDS`), in place of the default day: MCP readers never renew
@@ -3121,6 +3126,59 @@ export const scenarios = plan({
       local: na("ChatGPT app domain verification is for the hosted Cloud domain."),
     },
   },
+  appDependencyTarballPrivateRefused: {
+    fixtures: "actors",
+    file: "app-dependency-network.spec.ts",
+    title:
+      "with private fetch off, a build refuses a dependency whose tarball URL is a private address and never requests it",
+    serverEnvironment: { EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "false" },
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud Workers reach only public addresses; the tarball fixture is served on loopback.",
+      ),
+      local: na("Local lets builds reach private addresses by design."),
+    },
+  },
+  appDependencyTarballPublic: {
+    fixtures: "actors",
+    file: "app-dependency-network.spec.ts",
+    title:
+      "with private fetch off, a build installs a dependency whose tarball URL is a public address",
+    serverEnvironment: { EXECUTOR_APPS_ALLOW_PRIVATE_FETCH: "false" },
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud builds use the same installer; only self-host restricts the build network."),
+      local: na("Local lets builds reach every address by design."),
+    },
+  },
+  appDependencyRegistryOrigin: {
+    file: "app-dependency-network.spec.ts",
+    title:
+      "with private fetch off, a build installs from a private registry's own origin, refuses what it sends to other private addresses, and words failures without its text",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud Workers reach only public addresses; the registry fixture is on loopback."),
+      local: na(
+        "Local lets builds reach every address by design; only self-host starts a scenario-owned server.",
+      ),
+    },
+  },
+  appDependencyTarballPrivateAllowed: {
+    fixtures: "actors",
+    file: "app-dependency-network.spec.ts",
+    title:
+      "with private fetch on, a build installs tarball URLs on a private address, and a failed download names only the package and status",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud Workers reach only public addresses; the tarball fixture is served on loopback.",
+      ),
+      local: na(
+        "This scenario uses hosted routes; Local shares the same workerd compiler and allows private addresses.",
+      ),
+    },
+  },
   appPackage: {
     fixtures: "actors",
     file: "app-package.spec.ts",
@@ -3934,7 +3992,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "credential-placement.spec.ts",
     title:
-      "Executor for Google is offered to providers on Google's endpoints whose scopes it allows, once its credentials are set",
+      "Executor for Google is offered to providers on Google's endpoints whose scopes it allows, once its credentials are set, and a self-host operator's own Google client still signs in gmail.modify",
     targets: {
       "self-host": scheduled,
       cloud: na(
@@ -4033,6 +4091,19 @@ export const scenarios = plan({
       local: na("Local products have no operator OAuth clients."),
     },
   },
+  credentialManagedHeld: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "the operator's OAuth client keeps renewing grants that hold a scope it may no longer ask for, refuses sign-ins and reconnects that ask for it before the service, and a reconnect on the user's own client keeps that client",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
   credentialManagedScopes: {
     fixtures: "actors",
     file: "credential-placement.spec.ts",
@@ -4056,6 +4127,19 @@ export const scenarios = plan({
       cloud: na(
         "Cloud reads the same settings with the same code; a deploy fails on them before any request.",
       ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedGoogleCloud: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "Cloud's own Executor for Google registration refuses before Google a sign-in asking for a scope Google has not approved for it, such as gmail.modify, leading with the user's own client, and still signs in approved scopes",
+    targets: {
+      "self-host": na(
+        "Self-host's operator registers its own Google client, which keeps gmail.modify; the self-host Google scenario covers that.",
+      ),
+      cloud: managedCloud,
       local: na("Local products have no operator OAuth clients."),
     },
   },
@@ -6321,6 +6405,18 @@ export const scenarios = plan({
       local: na("This scenario uses hosted app domains."),
     },
   },
+  appUiLongSrcset: {
+    fixtures: "actors",
+    file: "app-ui-srcset.spec.ts",
+    appOrigin: true,
+    title:
+      "an app page whose srcset holds a long run of commas is served as fast as a page of its size and rewritten",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud serves app pages through the same hosted page code that self-host runs."),
+      local: na("This scenario uses hosted sign-in; Local rewrites pages with the same code."),
+    },
+  },
   appUi: {
     fixtures: "actors",
     file: "app-ui.spec.ts",
@@ -8230,6 +8326,48 @@ export const scenarios = plan({
       local: na("Local keeps one protocol server for the process and sets no session bound."),
     },
   },
+  mcpClientsIdleForgotten: {
+    fixtures: "actors",
+    file: "mcp-client-bound.spec.ts",
+    title:
+      "Self-host MCP admits a new client past its client bound by forgetting the least recently used idle one, whose session is told to initialize again",
+    serverEnvironment: mcpClientBoundEnvironment,
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Each Cloud MCP client is its own session object; there is no shared list to bound.",
+      ),
+      local: na("Local keeps one protocol server for the process and sets no client bound."),
+    },
+  },
+  mcpClientsPerUser: {
+    fixtures: "actors",
+    file: "mcp-client-bound.spec.ts",
+    title:
+      "Self-host MCP admits a member's client past their share by forgetting that member's own oldest idle client, not another member's",
+    serverEnvironment: mcpClientBoundEnvironment,
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Each Cloud MCP client is its own session object; there is no shared list to bound.",
+      ),
+      local: na("Local keeps one protocol server for the process and sets no client bound."),
+    },
+  },
+  mcpClientsOwningWork: {
+    fixtures: "actors",
+    file: "mcp-client-bound.spec.ts",
+    title:
+      "Self-host MCP never forgets a client whose approval prompt waits or whose program is paused, and refuses a new client with 503 when none can be",
+    serverEnvironment: mcpClientBoundEnvironment,
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Each Cloud MCP client is its own session object; there is no shared list to bound.",
+      ),
+      local: na("Local keeps one protocol server for the process and sets no client bound."),
+    },
+  },
   mcpSessionBound: {
     fixtures: "actors",
     file: "mcp-protocol-versions.spec.ts",
@@ -9695,8 +9833,64 @@ export const scenarios = plan({
   invitationRedemption: {
     fixtures: "actors",
     file: "invitation-redemption.spec.ts",
+    title: "self-host invitation links admit the intended role exactly once",
+    targets: {
+      local: na("Self-host invitation signup."),
+      "self-host": scheduled,
+      cloud: na("Cloud requires a verified recipient instead of password registration."),
+    },
+  },
+  invitationInviterAuthority: {
+    fixtures: "actors",
+    file: "invitation-inviter-authority.spec.ts",
+    legacyStorage: true,
     title:
-      "self-host invitation links admit the intended role exactly once without replacing accounts",
+      "self-host invitations left pending after their inviter lost the role to invite are neither accepted nor registered",
+    targets: {
+      local: na("Hosted organization invitations."),
+      "self-host": scheduled,
+      cloud: na("cloud-invitation-inviter-authority.spec.ts writes Cloud's own database."),
+    },
+  },
+  invitationInviterResend: {
+    fixtures: "actors",
+    file: "invitation-inviter-authority.spec.ts",
+    legacyStorage: true,
+    title:
+      "self-host invitations left pending after their inviter lost the role to invite are accepted once an owner resends them",
+    targets: {
+      local: na("Hosted organization invitations."),
+      "self-host": scheduled,
+      cloud: na("cloud-invitation-inviter-authority.spec.ts writes Cloud's own database."),
+    },
+  },
+  cloudInvitationInviterResend: {
+    fixtures: "actors",
+    file: "cloud-invitation-inviter-authority.spec.ts",
+    title:
+      "Cloud invitations left pending after their inviter lost the role to invite are accepted once an owner resends them",
+    targets: {
+      local: na("Hosted organization invitations."),
+      "self-host": na("invitation-inviter-authority.spec.ts writes self-host's own database."),
+      cloud: managedCloud,
+    },
+  },
+  cloudInvitationInviterAuthority: {
+    fixtures: "actors",
+    file: "cloud-invitation-inviter-authority.spec.ts",
+    title:
+      "Cloud invitations left pending after their inviter lost the role to invite are neither accepted nor offered at entry",
+    targets: {
+      local: na("Hosted organization invitations."),
+      "self-host": na("invitation-inviter-authority.spec.ts writes self-host's own database."),
+      cloud: managedCloud,
+    },
+  },
+  invitationReadmission: {
+    fixtures: "actors",
+    file: "invitation-redemption.spec.ts",
+    title:
+      "self-host invitations readmit a former admin as a member only with their password and die with their inviter's membership",
     targets: {
       local: na("Self-host invitation signup."),
       "self-host": scheduled,

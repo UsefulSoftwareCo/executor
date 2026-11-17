@@ -42,6 +42,7 @@ import {
   makeAppWorkerResidency,
   type AppWorkerResidency,
 } from "./app-worker-residency.ts";
+import { isPrivateHostname } from "@executor-js/utils/url-policy";
 import { compileWorkerApp } from "../workerd-build.ts";
 import { assembleWorkerBundle } from "./worker-build-storage.ts";
 import { declarationFailed } from "./worker-source-map.ts";
@@ -190,6 +191,28 @@ export class AppOutbound extends WorkerEntrypoint<Environment> {
     });
   }
 }
+/** The installer's name for a destination the host's network policy refuses. */
+class TarballDestinationRefused extends Error {
+  override readonly name = "NetworkRefused";
+}
+/**
+ * How a build reaches anything off its registry's origin when the operator has not allowed
+ * private fetch: tarball URL dependencies, and tarballs or redirects registry metadata sends
+ * elsewhere. They go through the public-only network, as app code's own requests do. This
+ * Worker's global `fetch` uses the `internet` service, which reaches private addresses, and stays
+ * the path to the registry's own origin, so an operator's private registry keeps working. The
+ * installer follows each redirect itself and sends every hop here or to the registry. A private
+ * address named in the URL is refused before sending; one a public name resolves to is refused by
+ * the network, which workerd reports with an error reference only.
+ */
+const publicTarballFetch =
+  (network: HttpService) =>
+  (input: string, init?: RequestInit): Promise<Response> => {
+    const url = URL.parse(input);
+    if (url === null || isPrivateHostname(url.hostname))
+      return Promise.reject(new TarballDestinationRefused());
+    return network.fetch(new Request(url, init));
+  };
 type OutboundLoopback = (options: { readonly props: OutboundProps }) => Fetcher;
 const OutboundExports = Schema.Struct({
   AppOutbound: Schema.declare((value): value is OutboundLoopback => typeof value === "function"),
@@ -307,7 +330,12 @@ class AppApi extends RpcTarget {
         ).pipe(Effect.mapError((cause) => buildFailed("source", cause)));
         const compiled = yield* compileWorkerApp(
           request.files,
-          this.#env.NPM_REGISTRY === "" ? {} : { registry: this.#env.NPM_REGISTRY },
+          {
+            ...(this.#env.NPM_REGISTRY === "" ? {} : { registry: this.#env.NPM_REGISTRY }),
+            ...(this.#env.APPS_PRIVATE_FETCH
+              ? {}
+              : { tarballFetch: publicTarballFetch(this.#env.PUBLIC_FETCH) }),
+          },
           request.public ?? [],
         );
         const { bundle, framework, ui, sourceMap } = compiled;

@@ -88,7 +88,10 @@ export const selfHostExecutorServices = <E, R>(
         oauthRedirectUri: Option.getOrUndefined(accountCallback),
       });
       // Only E2E hosts add test client definitions; see `firstPartyOAuthClients`.
+      // A self-host operator's credentials are its own registrations, which Executor's service
+      // approvals do not limit.
       const firstPartyClients = yield* firstPartyOAuthClients({
+        registrations: "operator",
         testDefinitions:
           (yield* Config.String("EXECUTOR_ENVIRONMENT").pipe(Config.withDefault(""))) === "e2e",
       });
