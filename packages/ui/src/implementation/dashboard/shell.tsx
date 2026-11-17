@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   BookOpen01Icon,
@@ -37,6 +37,11 @@ const navigationClass =
  */
 const collapsedClass =
   "[&_.sidebar-header]:justify-center [&_.wordmark]:hidden [&_nav_a]:justify-center [&_nav_a]:gap-0! [&_nav_a]:px-0! [&_nav_a]:h-9 [&_nav_a]:text-[0px]! [&_nav_a_>_span]:hidden [&_.sidebar-resource-links]:items-center [&_.sidebar-resource-links]:px-0 [&_.sidebar-resource-links_a]:w-full [&_.sidebar-resource-links_a]:justify-center [&_.sidebar-resource-links_a]:min-h-8 [&_.sidebar-resource-links_a_>_span]:hidden [&_.sidebar-resource-links_button]:w-full [&_.sidebar-resource-links_button]:justify-center [&_.sidebar-resource-links_button]:min-h-8 [&_.sidebar-resource-links_button_>_span]:hidden [&_.hosted-identity]:px-0 [&_.organization-trigger]:justify-center [&_.organization-trigger]:px-0 [&_.organization-name]:hidden [&_.organization-chevron]:hidden [&_.session-menu]:justify-center [&_.session-menu]:px-0 [&_.session-name]:hidden [&_.sidebar-version]:hidden";
+
+const SidebarCollapsed = createContext(false);
+
+/** Whether the sidebar is the icon rail, for a notice that renders a compact form there. */
+export const useSidebarCollapsed = () => useContext(SidebarCollapsed);
 
 /** Links and the optional support trigger share one compact style. */
 function ResourceLinks({
@@ -83,7 +88,10 @@ export function DashboardShell({
   readonly banner?: ReactNode;
   /** A product-owned way to reach the team, shown with the resource links. */
   readonly support?: ReactNode;
-  /** A small product-owned card above the resource links; the icon rail hides it. */
+  /**
+   * A small product-owned card above the resource links' divider, also in the icon rail, where
+   * it reads `useSidebarCollapsed` to render a compact form. Pass nothing when there is none.
+   */
   readonly notice?: ReactNode;
   readonly footer?: ReactNode;
   readonly children: ReactNode;
@@ -132,9 +140,13 @@ export function DashboardShell({
           {brand}
         </div>
         <nav aria-label="Main navigation">{navigation}</nav>
-        {notice && !collapsed && <div className="sidebar-notice mt-auto pt-4 pb-3">{notice}</div>}
+        {notice && (
+          <div className="sidebar-notice mt-auto pt-4 pb-3">
+            <SidebarCollapsed.Provider value={collapsed}>{notice}</SidebarCollapsed.Provider>
+          </div>
+        )}
         <div
-          className={`sidebar-utilities ${notice && !collapsed ? "" : "mt-auto"} [padding:12px_0_16px] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground`}
+          className={`sidebar-utilities ${notice ? "" : "mt-auto"} [padding:12px_0_16px] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground`}
         >
           <ResourceLinks docsUrl={docsUrl} support={support} />
           {footer}

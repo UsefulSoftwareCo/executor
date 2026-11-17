@@ -33,6 +33,11 @@ import { ServiceFailed } from "../../server/src/contracts/service.ts";
 import { DesktopFailed, externalUrl, type DesktopRecovery } from "./contracts/desktop.ts";
 import { release } from "../../../../scripts/releases/config.ts";
 import { makeUpdater } from "./implementation/updates.ts";
+import {
+  type DesktopUpdate,
+  desktopUpdateRestartUrl,
+  desktopUpdateScript,
+} from "../../web/src/contracts/desktop-update.ts";
 import { makeOpenBrowserAction } from "./implementation/browser.ts";
 import { movingUrl, startupUrl } from "./implementation/startup.ts";
 import { makeConnection, type Connection } from "./implementation/connection.ts";
@@ -666,6 +671,39 @@ const desktop = Effect.gen(function* () {
           }
         };
 
+        /** The page `current` shows is the dashboard, not the startup or recovery page. */
+        const showsDashboard = (current: BrowserWindow) => {
+          const dashboard = origin();
+          if (current.isDestroyed() || dashboard === undefined) return false;
+          return URL.parse(current.webContents.getURL())?.origin === dashboard;
+        };
+        /** The update the dashboard's sidebar shows while it downloads and once it is ready. */
+        let update = Option.none<DesktopUpdate>();
+        const showUpdate = (current: BrowserWindow) => {
+          if (!showsDashboard(current)) return;
+          const script = desktopUpdateScript(Option.getOrUndefined(update));
+          run(
+            Effect.tryPromise(() => current.webContents.executeJavaScript(script)).pipe(
+              Effect.catch(() => Effect.logWarning("Desktop window could not show the update")),
+            ),
+          );
+        };
+        /**
+         * The application menu, set once the desktop's actions exist. Its Updates menu also
+         * offers the ready update's restart, as the sidebar does, for someone who keeps no
+         * window open.
+         */
+        let menu: ((update: Option.Option<DesktopUpdate>) => Menu) | undefined;
+        const updater = yield* makeUpdater({
+          restart: after,
+          show: (next) => {
+            update = next;
+            if (window !== undefined) showUpdate(window);
+            if (menu !== undefined) Menu.setApplicationMenu(menu(update));
+          },
+        });
+        yield* closing("its updater");
+
         const followAppearance = () => {
           if (window !== undefined && !window.isDestroyed())
             window.setBackgroundColor(windowBackground());
@@ -693,6 +731,8 @@ const desktop = Effect.gen(function* () {
           current.once("ready-to-show", () => {
             if (!current.isDestroyed()) current.show();
           });
+          // Each document the dashboard loads is told about the update.
+          current.webContents.on("dom-ready", () => showUpdate(current));
           current.webContents.on("did-finish-load", () => {
             if (!current.isDestroyed() && origin() !== undefined)
               current.webContents.setBackgroundThrottling(true);
@@ -707,6 +747,12 @@ const desktop = Effect.gen(function* () {
             if (isRecoveryLink(url)) {
               event.preventDefault();
               recover(current, url);
+              return;
+            }
+            // The sidebar card's restart button, a link; only the dashboard can follow it.
+            if (url === desktopUpdateRestartUrl) {
+              event.preventDefault();
+              if (showsDashboard(current)) run(updater.install);
               return;
             }
             if (new URL(url).origin !== origin()) {
@@ -769,8 +815,6 @@ const desktop = Effect.gen(function* () {
         );
         yield* closing("its windows");
 
-        const checkForUpdates = yield* makeUpdater(after);
-        yield* closing("its updater");
         const openBrowser = yield* makeOpenBrowserAction(browserSession, origin);
         const exportDiagnostics = yield* makeExportDiagnosticsAction({
           directory,
@@ -817,12 +861,20 @@ const desktop = Effect.gen(function* () {
                   { label: "Rotate local API key…", click: () => run(rotateKeyAction) },
                 ];
               });
-        Menu.setApplicationMenu(
+        menu = (current) =>
           applicationMenu({
             file: [{ label: "Open in browser", click: () => run(openBrowser) }, ...dataActions],
-            updates: app.isPackaged
-              ? [{ label: "Check for updates…", click: () => run(checkForUpdates) }]
-              : [],
+            updates: [
+              ...Option.toArray(Option.filter(current, ({ state }) => state === "ready")).map(
+                ({ version }) => ({
+                  label: `Restart to update (v${version})`,
+                  click: () => run(updater.install),
+                }),
+              ),
+              ...(app.isPackaged || updater.configured
+                ? [{ label: "Check for updates…", click: () => run(updater.check) }]
+                : []),
+            ],
             help: [
               { label: "Show diagnostics folder", click: () => void shell.openPath(diagnostics) },
               { label: "Export diagnostics…", click: () => run(exportDiagnostics) },
@@ -833,8 +885,8 @@ const desktop = Effect.gen(function* () {
                     { label: "Reset Executor data…", click: () => run(reset) },
                   ]),
             ],
-          }),
-        );
+          });
+        Menu.setApplicationMenu(menu(update));
         if (Result.isFailure(migration))
           view = {
             kind: "recovery",

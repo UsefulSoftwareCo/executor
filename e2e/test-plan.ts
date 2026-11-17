@@ -1798,6 +1798,20 @@ export const scenarios = plan({
       "self-host": na("Desktop clipboard permission"),
     },
   },
+  desktopUpdate: {
+    file: "desktop-update.spec.ts",
+    title:
+      "desktop shows a downloaded update in the sidebar and the Updates menu, clears both when a newer download fails verification, and installs from either",
+    targets: {
+      local: {
+        status: "not-run",
+        reason:
+          "Runs on macOS against a development build with desktop-update.config.ts (e2e/README.md, Desktop update).",
+      },
+      cloud: na("Only the desktop app updates itself."),
+      "self-host": na("Only the desktop app updates itself."),
+    },
+  },
   desktopReset: {
     file: "desktop-recovery.spec.ts",
     title:
@@ -3354,6 +3368,16 @@ export const scenarios = plan({
       cloud: managedCloud,
       "self-host": scheduled,
       local: na("The local dashboard is covered by its own support scenario."),
+    },
+  },
+  localDesktopUpdate: {
+    file: "local-desktop-update.spec.ts",
+    title:
+      "local dashboard shows the desktop's update as a card above the sidebar's links only while there is one, as a download status and then a named restart button the keyboard reaches, without moving the navigation or the links, also in a short window and the collapsed rail, announces once that it is ready, and wraps a long version",
+    targets: {
+      local: scheduled,
+      "self-host": na("Only the desktop app, which runs the local dashboard, updates itself."),
+      cloud: na("Only the desktop app, which runs the local dashboard, updates itself."),
     },
   },
   localSupportDialog: {

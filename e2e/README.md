@@ -1146,6 +1146,22 @@ EXECUTOR_E2E_DESKTOP_EXECUTABLE='/path/to/Executor Preview.app/Contents/MacOS/Ex
   bunx vitest run --config e2e/desktop-release.config.ts
 ```
 
+### Desktop update
+
+The desktop update scenario (`desktopUpdate`) runs the desktop's updater from its feed to its
+restart: the sidebar's card and the Updates menu offer a downloaded version, a newer download that
+fails verification clears both, and the menu's item and the card's button each install. It runs
+only on macOS, against a development build, which reads the loopback feed the scenario serves from
+`EXECUTOR_DESKTOP_DEV_UPDATE_CONFIG` (a release build does not contain that setting). Squirrel.Mac, which installs a
+macOS update and accepts only Executor's signed app, is played through Electron's `autoUpdater`.
+No CI job runs it; run it before merging a change to the desktop's updater or its menu:
+
+```sh
+node apps/local/desktop/scripts/build.mjs
+bun run web:build
+bunx vitest run --config e2e/desktop-update.config.ts
+```
+
 Verify a locally built image without pushing it:
 
 ```sh

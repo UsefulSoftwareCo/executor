@@ -25,6 +25,11 @@ import { publicDocsBaseUrl } from "@executor-js/ui/contracts/documentation";
 import { documentBuild } from "@executor-js/dashboard-start/document-build";
 import { NameAccountDialog } from "./pages/name-account-dialog.tsx";
 import { OwnerMigrationBanner } from "./owner-migration.tsx";
+import {
+  DesktopUpdateAnnouncement,
+  DesktopUpdateCard,
+  useDesktopUpdate,
+} from "./desktop-update.tsx";
 
 /** Finish pairing and session checks before mounting any dashboard data consumers. */
 export function AuthenticationGate({
@@ -124,11 +129,13 @@ function Dashboard() {
   const refresh = useAtomRefresh(overviewAtom);
   const data = AsyncResult.value(result);
   const error = AsyncResult.isFailure(result) ? Cause.findErrorOption(result.cause) : Option.none();
+  const update = useDesktopUpdate();
   if (Option.isSome(error) && Schema.is(DashboardUnauthorized)(error.value))
     return <Connect expired />;
   return (
     <DashboardShell
       docsUrl={publicDocsBaseUrl}
+      notice={Option.isSome(update) && <DesktopUpdateCard update={update.value} />}
       brand={
         <Link
           to="/apps"
@@ -199,6 +206,7 @@ function Dashboard() {
       <OwnerMigrationBanner />
       <Outlet />
       <NameAccountDialog />
+      <DesktopUpdateAnnouncement update={update} />
     </DashboardShell>
   );
 }

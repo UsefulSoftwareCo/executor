@@ -783,6 +783,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "desktop-next-server.config.ts": () => import("./desktop-next-server.config.ts"),
   "desktop-recovery.config.ts": () => import("./desktop-recovery.config.ts"),
   "desktop-release.config.ts": () => import("./desktop-release.config.ts"),
+  "desktop-update.config.ts": () => import("./desktop-update.config.ts"),
   "emulator-failures.config.ts": () => import("./emulator-failures.config.ts"),
   "export-public.config.ts": () => import("./export-public.config.ts"),
   "docker-release.config.ts": () => import("./docker-release.config.ts"),
