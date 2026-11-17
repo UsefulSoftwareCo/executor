@@ -66,6 +66,7 @@ const forwarded: ReadonlyArray<readonly [method: string, target: string]> = [
   ["GET", "/og-image.png"],
   ["GET", "/pattern-graph-paper.svg"],
   ["GET", "/.well-known/agent-skills/index.json"],
+  ["GET", "/.well-known/security.txt"],
   ["POST", `${analyticsProxy}/e/?ip=0`],
   ["GET", `${analyticsProxy}/static/array.js`],
   ["POST", errorTunnel],
