@@ -130,6 +130,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
   const tokenContentTypes: Array<string | undefined> = [];
   /** The `scope` parameter of the latest authorization request. */
   let authorizationScope: string | null | undefined;
+  /** Whether the latest authorization request carried a PKCE challenge. */
+  let authorizationChallenged: boolean | undefined;
   /**
    * The RFC 8707 `resource` parameter of the latest authorization request, code exchange and
    * refresh; null when it named none.
@@ -250,7 +252,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
     {
       clientId: string;
       redirect: string;
-      challenge: string;
+      challenge: string | null;
       nonce: string | null;
       scope: string | null;
     }
@@ -299,6 +301,14 @@ export const oauthSetupIssuer = Effect.gen(function* () {
    * section 2.3.1. "literal" compares them as sent, as Google and PlanetScale (Doorkeeper) do.
    */
   let basicCredentials: "form-decoded" | "literal" = "form-decoded";
+  /**
+   * "required" refuses an authorization request without an S256 challenge. "refused" models
+   * LinkedIn's web flow: a token request that carries `code_verifier` fails client authentication
+   * with 401 `invalid_client`, even with the right secret and challenge.
+   */
+  let pkce: "required" | "refused" = "required";
+  /** Token requests, as received, whose client authentication was refused. */
+  let refusedClientAuthentications = 0;
   /** Credentials issued by the next registrations; unset issues numbered synthetic clients. */
   let registeredClient: { readonly clientId: string; readonly clientSecret: string } | undefined;
   /** RFC 6749 section 2.3.1 client authentication presented at the token or revocation endpoint. */
@@ -407,13 +417,14 @@ export const oauthSetupIssuer = Effect.gen(function* () {
         if (
           clientId === null ||
           redirect === null ||
-          challenge === null ||
-          params.get("code_challenge_method") !== "S256" ||
+          (pkce === "required" &&
+            (challenge === null || params.get("code_challenge_method") !== "S256")) ||
           !clients.get(clientId)?.redirects.includes(redirect)
         )
           return HttpServerResponse.empty({ status: 400 });
         const code = randomUUID();
         nonceRequested = params.get("nonce") !== null;
+        authorizationChallenged = challenge !== null;
         authorizationScope = params.get("scope");
         authorizationResource = params.get("resource");
         const requested = authorizationScope?.split(" ") ?? [];
@@ -542,10 +553,19 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             redirect: issued !== undefined && input.get("redirect_uri") === issued.redirect,
             pkce:
               issued !== undefined &&
-              verifier !== null &&
-              createHash("sha256").update(verifier).digest("base64url") === issued.challenge,
+              (pkce === "refused"
+                ? verifier === null && issued.challenge === null
+                : verifier !== null &&
+                  createHash("sha256").update(verifier).digest("base64url") === issued.challenge),
             ...authChecks,
           };
+        if (!refreshing && pkce === "refused" && verifier !== null) {
+          refusedClientAuthentications++;
+          return yield* HttpServerResponse.json(
+            { error: "invalid_client", error_description: "Client authentication failed" },
+            { status: 401 },
+          );
+        }
         if (
           clientId === undefined ||
           client === undefined ||
@@ -1064,6 +1084,8 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       readonly revocation?: typeof revocation;
       /** How the token and revocation endpoints read HTTP Basic client credentials. */
       readonly basicCredentials?: typeof basicCredentials;
+      /** Whether sign-in requires PKCE or, like LinkedIn's web flow, refuses it. */
+      readonly pkce?: typeof pkce;
       /** Credentials issued by the next registrations; null restores numbered synthetic clients. */
       readonly registeredClient?: typeof registeredClient | null;
       /** The token request encoding the service accepts; it refuses the other one. */
@@ -1152,6 +1174,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
             input.refreshedExpiresIn === null ? undefined : input.refreshedExpiresIn;
         if (input.revocation !== undefined) revocation = input.revocation;
         if (input.basicCredentials !== undefined) basicCredentials = input.basicCredentials;
+        if (input.pkce !== undefined) pkce = input.pkce;
         if (input.registeredClient !== undefined)
           registeredClient = input.registeredClient === null ? undefined : input.registeredClient;
       }),
@@ -1223,6 +1246,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       tokenChecks,
       tokenContentTypes: [...tokenContentTypes],
       authorizationScope,
+      authorizationChallenged,
       authorizationResource,
       exchangeResource,
       refreshResource,
@@ -1230,6 +1254,7 @@ export const oauthSetupIssuer = Effect.gen(function* () {
       refreshes,
       refreshChecks,
       lastExchangeAuth,
+      refusedClientAuthentications,
       nonceRequested,
       revocations: [...revocations],
       revocationArrivals,

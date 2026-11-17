@@ -1604,6 +1604,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
             ? {}
             : { authorizationParams: method.authorizationParams }),
           ...(method.tokenResponse === undefined ? {} : { tokenResponse: method.tokenResponse }),
+          ...("pkce" in method && method.pkce === false ? { pkce: false as const } : {}),
         };
       }).pipe(protocolStage("discover")),
     /**
@@ -1737,11 +1738,20 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
       resource?: string;
       authorizationParams?: Readonly<Record<string, string>>;
       scopeSeparator?: string;
+      /** `false` when the provider declares that its token endpoint refuses PKCE. */
+      pkce?: false;
     }) =>
       Effect.gen(function* () {
+        // Without PKCE only the client's secret binds the code to this client.
+        if (input.pkce === false && input.client.token_endpoint_auth_method === "none")
+          return yield* new OAuthProtocolFailed({ reason: "invalid_client" });
         const state = `${options.statePrefix ?? ""}${yield* Effect.sync(oauth.generateRandomState)}`;
-        const verifier = yield* Effect.sync(oauth.generateRandomCodeVerifier);
-        const challenge = yield* request(() => oauth.calculatePKCECodeChallenge(verifier));
+        const verifier =
+          input.pkce === false ? undefined : yield* Effect.sync(oauth.generateRandomCodeVerifier);
+        const challenge =
+          verifier === undefined
+            ? undefined
+            : yield* request(() => oauth.calculatePKCECodeChallenge(verifier));
         const url = new URL(input.server.authorization_endpoint);
         for (const [key, value] of Object.entries(renewableGrantParams(url)))
           if (!url.searchParams.has(key)) url.searchParams.set(key, value);
@@ -1753,15 +1763,21 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
           client_id: input.client.client_id,
           redirect_uri: input.redirectUri,
           state,
-          code_challenge: challenge,
-          code_challenge_method: "S256",
+          ...(challenge === undefined
+            ? {}
+            : { code_challenge: challenge, code_challenge_method: "S256" }),
         }))
           url.searchParams.set(key, value);
         if (input.scopes.length > 0)
           url.searchParams.set("scope", input.scopes.join(input.scopeSeparator ?? " "));
         if (input.resource !== undefined) url.searchParams.set("resource", input.resource);
-        // No `nonce`: Executor ignores ID tokens, and PKCE S256 binds the code to this attempt.
-        return { state, verifier, authorizationUrl: url.href };
+        // No `nonce`: Executor ignores ID tokens, and PKCE S256, when sent, binds the code to this
+        // attempt.
+        return {
+          state,
+          ...(verifier === undefined ? {} : { verifier }),
+          authorizationUrl: url.href,
+        };
       }).pipe(protocolStage("authorize")),
     /**
      * Validate the authorization response before any token request: its state, its RFC 9207
@@ -1803,7 +1819,8 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
         client: OAuthRegistration;
         clientKind: OAuthClientKind;
         redirectUri: string;
-        verifier: string;
+        /** Absent when the attempt signed in without PKCE. */
+        verifier?: string | undefined;
         resource?: string | undefined;
         tokenRequestFormat?: OAuthTokenRequestFormat | undefined;
         tokenResponse?: OAuthTokenResponse | undefined;
@@ -1820,7 +1837,7 @@ export const makeOAuthProtocol = (options: OAuthOptions) => {
               clientAuth(input.client),
               parameters,
               input.redirectUri,
-              input.verifier,
+              input.verifier ?? oauth.nopkce,
               {
                 ...settings,
                 ...(input.resource === undefined

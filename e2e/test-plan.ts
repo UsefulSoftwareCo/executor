@@ -5690,6 +5690,39 @@ export const scenarios = plan({
       local: na("Exercises shared OAuth through the hosted API."),
     },
   },
+  oauthPkceRefused: {
+    fixtures: "actors",
+    file: "oauth-pkce-refused.spec.ts",
+    title:
+      "A service that refuses PKCE from confidential clients signs in and reconnects when its provider declares pkce: false, with secrets of reserved characters unchanged however the client was saved",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Exercises shared OAuth through the hosted API."),
+    },
+  },
+  oauthPkceDefault: {
+    fixtures: "actors",
+    file: "oauth-pkce-refused.spec.ts",
+    title:
+      "A provider that declares nothing about PKCE signs in and reconnects with an S256 challenge and its verifier",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Exercises shared OAuth through the hosted API."),
+    },
+  },
+  oauthPkceChanged: {
+    fixtures: "actors",
+    file: "oauth-pkce-refused.spec.ts",
+    title:
+      "Turning PKCE off gives a new provider: an account connected before is refused a reconnect and a sign-in in flight fails when it saves, each telling the person to connect again",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+      local: na("Exercises shared OAuth through the hosted API."),
+    },
+  },
   oauthDeclaredEndpoints: {
     fixtures: "actors",
     file: "oauth-declared-endpoints.spec.ts",
