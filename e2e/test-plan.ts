@@ -8432,6 +8432,28 @@ export const scenarios = plan({
       cloud: na("Hosted products cover the same partition in patMcpResumeAcrossSessions."),
     },
   },
+  selfHostMcpParkedBatch: {
+    fixtures: "actors",
+    file: "self-host-mcp-parked.spec.ts",
+    title: "Self-host MCP resumes all three gated batch calls across idle entry deadlines",
+    serverEnvironment: { EXECUTOR_MCP_SESSION_IDLE_MS: "1500" },
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud holds parked programs through its object alarm."),
+      local: na("Local does not use the self-host idle-expiring session map."),
+    },
+  },
+  selfHostMcpLostProgram: {
+    fixtures: "actors",
+    file: "self-host-mcp-parked.spec.ts",
+    title:
+      "Self-host MCP reports a crashed parked program as lost through its restored protocol session",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud session restore has its own crash and interaction-record coverage."),
+      local: na("Local does not use self-host metadata storage."),
+    },
+  },
   patMcpResumeAcrossSessions: {
     fixtures: "actors",
     file: "pat-mcp.spec.ts",

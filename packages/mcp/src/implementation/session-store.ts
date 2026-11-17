@@ -1,6 +1,6 @@
 /**
- * Keeps a session object's MCP protocol sessions in the object's own storage, so a session
- * outlives the object's eviction or a deploy: the next request restores it instead of answering
+ * Keeps a host's MCP protocol sessions in synchronous metadata storage, so a session
+ * outlives idle eviction or a deploy: the next request restores it instead of answering
  * 404 and making the client initialize again.
  *
  * A record holds only what `initialize` negotiated (version, client capabilities and info) and
@@ -21,8 +21,8 @@
  * it and registered the session, within the same step; a record it cannot use is deleted.
  * Writes made with no await between them also commit together.
  */
-import type { ElicitationMode } from "@executor-js/mcp";
-import type * as Cloudflare from "alchemy/Cloudflare";
+import type { ElicitationMode } from "../contracts/elicitation.ts";
+import type { McpMetadataStorage } from "../contracts/storage.ts";
 import { Clock, Duration, Effect, Schema } from "effect";
 import { McpSchema, type McpServer } from "effect/ai";
 
@@ -51,9 +51,8 @@ type Loaded =
 
 /** One store per elicitation mode: a session belongs to the mode that opened it. */
 export const mcpSessionStore =
-  (storage: Cloudflare.DurableObjectStorage) =>
+  (kv: McpMetadataStorage) =>
   (mode: ElicitationMode): McpServer.SessionStore => {
-    const kv = storage.kv;
     const key = (sessionId: string) => `${prefix}${mode}:${sessionId}`;
     // The object's sessions across modes, beyond `kept` by last use, or older than `retention`.
     const prune = (now: number) => {

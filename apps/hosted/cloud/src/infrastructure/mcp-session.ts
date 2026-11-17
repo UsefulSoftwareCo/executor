@@ -15,7 +15,7 @@ import {
   mcpSessionKey,
 } from "@executor-js/hosted-server";
 import { PgPool } from "@effect/sql-pg";
-import { runningPrograms } from "@executor-js/mcp";
+import { runningPrograms, mcpInteractionStore, mcpSessionStore } from "@executor-js/mcp";
 import type { RuntimeContext } from "alchemy";
 import * as Cloudflare from "alchemy/Cloudflare";
 import * as PgConnection from "@effect/sql-pg/PgConnection";
@@ -39,8 +39,6 @@ import { cloudDatabaseConnection } from "./database.ts";
 import { cloudObjectDatabase, ObjectDatabase } from "./object-database.ts";
 import { ObjectRequests, objectRequest } from "./served-request.ts";
 import { interactionFaults } from "./mcp-interaction-faults.ts";
-import { mcpInteractionStore } from "./mcp-interaction-store.ts";
-import { mcpSessionStore } from "./mcp-session-store.ts";
 
 /**
  * How often an object holding a program wakes itself. workerd evicts an object 70–140 s after its
@@ -98,7 +96,7 @@ export const makeMcpSession = Effect.fn(function* ({
     const handler = yield* makeHostedMcp(
       undefined,
       undefined,
-      mcpSessionStore(state.storage),
+      mcpSessionStore(state.storage.kv),
       mcpInteractionStore(faults.kv, () => clock.currentTimeMillisUnsafe()),
     ).pipe(Effect.provide(HttpServer.layerServices));
     /** While the object holds a program, an alarm is due within `holdMillis`. */

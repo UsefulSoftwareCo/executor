@@ -25,6 +25,7 @@ import { dashboardFiles } from "./implementation/web.ts";
 import { selfHostRouteMap } from "./implementation/routes.ts";
 import { selfHostExecutor } from "./executor.ts";
 import { selfHostDatabase } from "./database.ts";
+import { nativeMcpStorage } from "./implementation/mcp-storage.ts";
 
 const settings = Config.all({
   host: Config.String("HOST").pipe(Config.withDefault("0.0.0.0")),
@@ -66,7 +67,7 @@ const server = Layer.unwrap(
     );
   }),
 ).pipe(
-  Layer.provide(selfHostDatabase),
+  Layer.provide(Layer.merge(selfHostDatabase, nativeMcpStorage)),
   Layer.provide(
     Layer.unwrap(
       dataDirectory.pipe(Effect.map((directory) => localTelemetry(directory, "executor-selfhost"))),
