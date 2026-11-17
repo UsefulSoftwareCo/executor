@@ -11,10 +11,17 @@ import {
   makeHostedMcp,
   mcpSessionKey,
 } from "@executor-js/hosted-server";
-import { McpLimits, defaultMcpLimits } from "@executor-js/mcp";
+import {
+  McpLimits,
+  defaultMcpLimits,
+  callerMcpStorage,
+  mcpInteractionStore,
+  mcpSessionStore,
+} from "@executor-js/mcp";
 import { PgliteClient } from "@effect/sql-pglite";
-import { Config, Effect, RcMap, Schema } from "effect";
+import { Clock, Config, Effect, Exit, RcMap, Schema, Scope } from "effect";
 import { HttpServerResponse } from "effect/http";
+import { SelfHostMcpStorage } from "./contracts/mcp-storage.ts";
 
 /**
  * Protocol sessions a handler keeps in each elicitation mode, by last use, forgetting only sessions
@@ -26,6 +33,13 @@ const maxSessions = 256;
 
 /** Own protocol sessions in the server scope; the returned handler receives SDK/auth per request. */
 export const selfHostMcp = Effect.gen(function* () {
+  const storage = yield* SelfHostMcpStorage;
+  const clock = yield* Clock.Clock;
+  const hostScope = yield* Effect.scope;
+  const idleMillis = yield* Config.schema(
+    Schema.Int.check(Schema.isGreaterThan(0)),
+    "EXECUTOR_MCP_SESSION_IDLE_MS",
+  ).pipe(Config.withDefault(30 * 60_000));
   // Decoded as McpLimits, so a budget that is not a positive integer stops startup.
   const limits = yield* Schema.decodeUnknownEffect(McpLimits)({
     ...defaultMcpLimits,
@@ -35,17 +49,55 @@ export const selfHostMcp = Effect.gen(function* () {
   });
   const sessions = yield* RcMap.make({
     // Each session keeps what its callers' last tool calls read (CallStateCache).
-    lookup: (_key: string) =>
-      Effect.map(
-        makeHostedMcp(undefined, limits, undefined, undefined, maxSessions),
+    lookup: (key: string) => {
+      const records = callerMcpStorage(storage, key);
+      return Effect.map(
+        makeHostedMcp(
+          undefined,
+          limits,
+          mcpSessionStore(records),
+          mcpInteractionStore(records, () => clock.currentTimeMillisUnsafe()),
+          maxSessions,
+        ),
         (handler) => ({
           ...handler,
+          holding: false,
           calls: new Map<string, CallState>(),
         }),
-      ),
-    idleTimeToLive: "30 minutes",
+      );
+    },
+    idleTimeToLive: idleMillis,
     capacity: 256,
   });
+  /**
+   * Acquire before the HTTP request releases its reference. A parked program owns a reference,
+   * not a timer racing the idle deadline. Once the last program ends, normal idle eviction resumes.
+   */
+  const hold = (
+    key: string,
+    handler: Effect.Success<ReturnType<typeof makeHostedMcp>> & { holding: boolean },
+  ) =>
+    Effect.gen(function* () {
+      if (handler.holding || handler.programs() === 0) return;
+      const scope = yield* Scope.make();
+      yield* RcMap.get(sessions, key).pipe(
+        Effect.provideService(Scope.Scope, scope),
+        Effect.onError(() => Scope.close(scope, Exit.void)),
+        // This request already holds the key, so retaining it cannot exceed capacity.
+        Effect.orDie,
+      );
+      handler.holding = true;
+      yield* Effect.gen(function* () {
+        while (handler.programs() > 0) yield* Effect.sleep("1 second");
+      }).pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            handler.holding = false;
+          }).pipe(Effect.andThen(Scope.close(scope, Exit.void))),
+        ),
+        Effect.forkIn(hostScope),
+      );
+    }).pipe(Effect.uninterruptible);
   const http = authenticatedMcp((access, address) =>
     Effect.gen(function* () {
       const handler = yield* RcMap.get(sessions, mcpSessionKey(access));
@@ -59,6 +111,7 @@ export const selfHostMcp = Effect.gen(function* () {
           PgliteClient.pipelined(leaves, { outside, begin: "ISOLATION LEVEL REPEATABLE READ" }),
         ),
         Effect.provideService(CallStateCache, handler.calls),
+        Effect.ensuring(hold(mcpSessionKey(access), handler)),
       );
     }).pipe(
       Effect.catchTag("ExceededCapacityError", () =>
@@ -73,7 +126,9 @@ export const selfHostMcp = Effect.gen(function* () {
   const approvals = browserMcpRequest((access, address, issuer) =>
     Effect.gen(function* () {
       const host = yield* RcMap.get(sessions, mcpSessionKey(access));
-      return yield* hostedMcpApproval(host.approvals, access, address, issuer);
+      return yield* hostedMcpApproval(host.approvals, access, address, issuer).pipe(
+        Effect.ensuring(hold(mcpSessionKey(access), host)),
+      );
     }).pipe(
       Effect.catchTag("ExceededCapacityError", () =>
         Effect.succeed(HttpServerResponse.empty({ status: 503 })),

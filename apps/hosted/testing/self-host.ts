@@ -10,6 +10,7 @@ import { HttpRouter } from "effect/http";
 import * as Statement from "effect/sql/Statement";
 import { selfHostRoutes } from "../self-host/src/main.ts";
 import { selfHostDatabase } from "../self-host/src/database.ts";
+import { nativeMcpStorage } from "../self-host/src/implementation/mcp-storage.ts";
 import { selfHostConfiguration } from "../self-host/src/implementation/bootstrap.ts";
 import { devAppName, freePort } from "../../../scripts/dev-host.ts";
 import { developmentSettings, developmentSignIn } from "./development.ts";
@@ -80,7 +81,7 @@ const command = Command.make("test-self-host", {
           );
         }),
       ).pipe(
-        Layer.provide(selfHostDatabase),
+        Layer.provide(Layer.merge(selfHostDatabase, nativeMcpStorage)),
         Layer.provide(localTelemetry(directory, "executor-selfhost-test")),
         Layer.provide(BunHttpServer.layerHttpServices),
       );

@@ -1,7 +1,7 @@
 /**
- * Keeps a session object's record of the requests it issued in the object's own storage, so a
- * resume after the object restarted learns what became of its request: answered, expired, ended
- * with its program, or lost with the program when the object restarted while it waited.
+ * Keeps the host's record of the requests it issued in synchronous metadata storage, so a
+ * resume after a restart learns what became of its request: answered, expired, ended
+ * with its program, or lost with the program when the host restarted while it waited.
  * Programs stay in memory and cannot continue after a restart; only the reason survives.
  *
  * A record holds the caller the request was issued to (the object's own key and the elicitation
@@ -19,8 +19,8 @@
  * clean up: issuing a request prunes every record past retention and beyond `kept`, and reading one
  * past retention deletes it. An object holds at most `kept` records between issues.
  */
-import type { InteractionEnd, InteractionRecords } from "@executor-js/mcp";
-import type * as Cloudflare from "alchemy/Cloudflare";
+import type { InteractionEnd, InteractionRecords } from "../contracts/execute.ts";
+import type { McpMetadataStorage } from "../contracts/storage.ts";
 import { Duration, Schema } from "effect";
 
 const prefix = "mcp-request:";
@@ -37,7 +37,7 @@ const IssuedRecord = Schema.Struct({
 const decodeRecord = Schema.decodeUnknownOption(IssuedRecord);
 
 export const mcpInteractionStore = (
-  kv: Cloudflare.DurableObjectStorage["kv"],
+  kv: McpMetadataStorage,
   now: () => number,
 ): InteractionRecords => {
   const key = (id: string) => `${prefix}${id}`;

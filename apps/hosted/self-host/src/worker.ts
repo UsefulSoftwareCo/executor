@@ -36,6 +36,7 @@ import {
   SelfHostWorkflowRequests,
 } from "./implementation/executor-services.ts";
 import { selfHostRouteMap } from "./implementation/routes.ts";
+import { SelfHostMcpStorage } from "./contracts/mcp-storage.ts";
 import {
   bindingBlobStore,
   bindingDashboard,
@@ -148,6 +149,7 @@ const prepare = (state: DurableObjectState, env: Environment) =>
         HttpServer.layerServices,
         Digest.layerWebCrypto,
         Layer.succeed(ScheduleHostReady, Effect.void),
+        Layer.succeed(SelfHostMcpStorage, state.storage.kv),
       ),
     );
     return yield* Effect.gen(function* () {

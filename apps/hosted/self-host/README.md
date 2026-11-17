@@ -4,6 +4,33 @@ Run Executor in one Docker container. It includes the dashboard, API, MCP server
 PGlite database, and isolated app runtime. You do not need a separate database,
 Node, or Bun on the host.
 
+## MCP approvals and restarts
+
+A caller's MCP entry stays in memory while it owns a program, including a batch
+waiting for several approvals. After its last program ends, it expires after
+30 idle minutes (`EXECUTOR_MCP_SESSION_IDLE_MS`, a positive integer in milliseconds).
+The existing 256-entry admission limit still applies; parked programs are not
+evicted to make room for another caller.
+
+Protocol sessions and minimal interaction records use the same bounded stores
+as Cloud: 64 protocol sessions per caller, retained for seven days, and 256
+interaction records, retained for one day after their deadlines. Pruning is lazy
+on access. Records are partitioned by the verified caller and elicitation mode;
+they contain no tool arguments or answers and grant no access.
+
+The packaged host uses its existing product actor's persistent KV. Source/Bun
+self-host uses `mcp.sqlite` in `EXECUTOR_DATA_DIR`; include this file in offline
+backups alongside the product database. Creation is additive and repeat-safe:
+there is no product schema migration, backfill, or change to existing journals.
+An older server ignores this metadata, so rolling back does not change its
+ability to serve existing product data.
+
+**Programs themselves are not durable.** A crash or deployment still loses a
+parked program. The same protocol session can reach `resume` afterward, which
+reports `lost` when an issue record survived without an end. A missing record
+still reports `not-found`; neither answer proves that earlier calls did not run.
+Check state with safe reads and never replay an entire batch automatically.
+
 ## Run the published beta
 
 The beta image is `ghcr.io/usefulsoftwareco/executor-selfhost:beta`, for Linux

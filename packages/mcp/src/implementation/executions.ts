@@ -237,12 +237,21 @@ export const makeExecutions = (
     ): Extract<McpExecutionResult, { status: "unavailable" }> => {
       const now = clock.currentTimeMillisUnsafe();
       const reason: ResumeUnavailableReason = reasonFor(caller, requestId);
+      const pending = open(caller, now);
+      // `lost` proves the host recorded issuing the request to this caller, so its program is gone.
+      // `not-found` also answers a mistyped ID, another caller, or a missing record, so it must not
+      // claim that a program existed.
+      const lostProgram = pending.length === 0 && reason === "lost";
       return {
         status: "unavailable",
         requestId,
         reason,
-        message: resumeUnavailableMessage(reason),
-        pending: open(caller, now),
+        message:
+          resumeUnavailableMessage(reason) +
+          (lostProgram
+            ? " No pending requests remain for this caller: Executor no longer holds this program here, not just its approval. Earlier calls may have run. Check current state before repeating any call."
+            : ""),
+        pending,
       };
     };
     const failure = (

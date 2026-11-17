@@ -1233,6 +1233,9 @@ layer(HostedLive, { excludeTestServices: true })("Hosted MCP execute failures", 
         );
         expect(foreign).toMatchObject({ requestId: pending, reason: "not-found" });
         expect(foreign.message).not.toContain("already answered");
+        // `not-found` also answers a mistyped ID or a missing record, so it must not claim that the
+        // request was issued here or that a program existed.
+        expect(foreign.message).not.toContain("no longer holds this program");
         // Nor does it list the first grant's open request among its own.
         expect(foreign.pending).toEqual([]);
 
