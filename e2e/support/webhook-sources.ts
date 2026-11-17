@@ -102,9 +102,10 @@ export const sweepPaceFor = (metadata: {
 /**
  * Read `attempt` until it is settled while the webhook source sweep can still reach the app's
  * pending sources; see `waitOnSweep` in `webhook-sweep.ts`. It passes on the product's read alone;
- * the sweep's spans only make it fail sooner, on a pass that skipped a source.
+ * the sweep's spans only make it fail sooner, on a pass that skipped a source. For any state the
+ * sweep's reconciliation of the app's sources brings about, such as a deploy's subscriptions.
  */
-const waitOnAppSweep = <A, E, R>(
+export const settleOnSweep = <A, E, R>(
   actor: Session,
   appPath: string,
   what: string,
@@ -169,14 +170,14 @@ const waitOnAppSweep = <A, E, R>(
 
 /**
  * Wait for background registration until `settled` accepts the sources `actor` sees, and return
- * them; see `waitOnAppSweep` for when it gives up.
+ * them; see `settleOnSweep` for when it gives up.
  */
 export const settleWebhookSources = (
   actor: Session,
   appPath: string,
   settled: (sources: readonly WebhookSourceRow[]) => boolean,
 ) =>
-  waitOnAppSweep(
+  settleOnSweep(
     actor,
     appPath,
     "Webhook sources",
@@ -213,7 +214,7 @@ export const settleWebhookSubscriptions = (
   appPath: string,
   settled: (subscriptions: readonly WebhookSubscriptionRow[]) => boolean,
 ) =>
-  waitOnAppSweep(
+  settleOnSweep(
     actor,
     appPath,
     "Webhook subscriptions",
@@ -232,7 +233,7 @@ export const settleWebhookSubscriptions = (
 export const removeAppWhenStopped = (actor: Session, appPath: string) =>
   Effect.gen(function* () {
     const api = yield* Api;
-    return yield* waitOnAppSweep(
+    return yield* settleOnSweep(
       actor,
       appPath,
       "App removal",
