@@ -16,6 +16,7 @@ import {
   mediaTypeUpstream,
   openapi32Upstream,
   otherHostDocument,
+  policyJson,
   requestEchoUpstream,
   unsupportedAuthDocument,
   v1Document,
@@ -834,10 +835,20 @@ export default defineApp({}, async ({ cache, fetch, signal }) => ({
           })),
         ]);
 
-        // A HuJSON answer comes back as its text, not parsed as JSON or returned as a file.
-        const read = yield* app.call("policy.getPolicyFile", "query", {});
-        expect(read.status, JSON.stringify(read.body)).toBe(200);
-        expect(yield* body(Schema.String, read)).toBe(hujsonPolicy);
+        const read = (input: unknown) =>
+          app
+            .call("policy.getPolicyFile", "query", input)
+            .pipe(
+              Effect.tap((response) =>
+                Effect.sync(() => expect(response.status, JSON.stringify(response.body)).toBe(200)),
+              ),
+            );
+        // Without an Accept header the policy answers JSON.
+        expect(yield* body(Schema.Json, yield* read({}))).toEqual(policyJson);
+        // The declared Accept header reaches the API, which Swagger alone would drop, and the
+        // HuJSON answer comes back as its text, not parsed as JSON or returned as a file.
+        const hujson = yield* read({ headers: { Accept: "application/hujson" } });
+        expect(yield* body(Schema.String, hujson)).toBe(hujsonPolicy);
       }),
     ),
   );

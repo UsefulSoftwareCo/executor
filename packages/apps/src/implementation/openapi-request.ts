@@ -298,9 +298,16 @@ export function createRequest(config: {
             let fixedQuery = declared.query;
             // Swagger has no `querystring` serializer, so the whole query string is added here.
             const querystrings: string[] = [];
+            // Swagger ignores a header parameter named Accept, as OpenAPI says, but documents such as
+            // Tailscale's declare one to choose the answer's media type, so it goes out as that.
+            let accept: string | undefined;
             const swaggerParameters = op.request.parameters.filter((p) => {
               const group = args[p.in === "header" ? "headers" : p.in];
               const value = group === undefined ? undefined : object(group)[p.name];
+              if (p.in === "header" && p.name.toLowerCase() === "accept") {
+                if (value !== undefined) accept = scalar(value);
+                return false;
+              }
               if (p.in === "path" && value !== undefined && fixedQuery.includes(`{${p.name}}`))
                 fixedQuery = fixedQuery.replaceAll(
                   `{${p.name}}`,
@@ -362,6 +369,7 @@ export function createRequest(config: {
                 parameters,
                 securities: { authorized },
                 ...(contentType === undefined ? {} : { requestContentType: contentType }),
+                ...(accept === undefined ? {} : { responseContentType: accept }),
                 ...(body === undefined ? {} : { requestBody: body }),
               }),
             );

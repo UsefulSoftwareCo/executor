@@ -1137,7 +1137,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "live-openapi-import.spec.ts",
     title:
-      "Live OpenAPI sends and returns HuJSON as written text, while JSON, every +json type and AWS JSON stay JSON",
+      "Live OpenAPI sends and returns HuJSON as written text, asked for by a declared Accept header, while JSON, every +json type and AWS JSON stay JSON",
     targets: {
       "self-host": scheduled,
       cloud: na("Loopback upstream fixture"),
