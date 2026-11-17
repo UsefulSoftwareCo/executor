@@ -300,8 +300,8 @@ there is no feedback table, so durable retention belongs to the receiver for now
 
 ### Trace sampling
 
-Recording every span made Motel the busiest process under load, so the product
-samples traces before they reach it. `EXECUTOR_TRACE_SAMPLE_RATE` (0 to 1,
+Recording every span made the telemetry collector the busiest process under load,
+so the product samples traces before they reach it. `EXECUTOR_TRACE_SAMPLE_RATE` (0 to 1,
 default `0.1`) is the fraction of ordinary traces kept; the decision comes from
 the trace ID, so every request of a trace, including the product's requests to
 itself through the app process, agrees. A request whose `traceparent` has the
@@ -313,8 +313,8 @@ until the trace is decided, and drops them when its last local root ends fast
 and successful. Kept-by-tail roots carry `executor.trace.sampled_by` (`error` or
 `slow`). Logs and metrics are never sampled. `EXECUTOR_TRACE_SAMPLE_RATE=1`
 records everything, as before. The native host passes both variables to the
-product with the other `EXECUTOR_*` settings; the app and Motel processes export
-no spans of their own.
+product with the other `EXECUTOR_*` settings; the app and telemetry collector
+processes export no spans of their own.
 
 The product database is PGlite
 (PostgreSQL). Bun development stores it at `/app/data/hosted.pglite`; the native
