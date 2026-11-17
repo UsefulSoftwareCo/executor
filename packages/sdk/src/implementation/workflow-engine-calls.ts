@@ -13,6 +13,8 @@
  * duration and how many times the run asked for that pair (`binding.worker.js`, `sleep`). A later
  * replay asks for the first of them. For a `sleep(d)` whose first call failed:
  * - the engine never saw it: the repeat is the first entry, which a replay finds. No extra wait.
+ *   If that failed call itself outlasted `d`, as a slow failure can a short sleep, the sleep is
+ *   over without an entry, and a later replay waits `d` once more. Up to `d` extra.
  * - the engine recorded it and the answer was lost at `t` before `d`: the repeat waits `d` as a
  *   second entry; a replay finds the first. Up to `t` extra.
  * - the answer was lost after `d`: the failed call lasted `d`, so the sleep is over and is not
@@ -23,7 +25,9 @@
  *
  * A repeat would wait the whole duration again after an engine that did wait and lost only its
  * answer. So a `sleep` whose failed call itself lasted the duration is over instead of repeated:
- * only an engine holding the call for the sleep makes it last that long.
+ * the sleep's time has passed. Usually that is an engine that held the call for the sleep; a slow
+ * failure in transit can also outlast a short sleep, which then also ends, never early, but with
+ * no engine entry, so a later replay can wait it once more.
  *
  * Nothing bounds a call itself: a sleep's call lasts as long as the sleep. Cancellation interrupts
  * it, and the waits between calls, at once: the call runs in the RPC handler's fiber, which the
@@ -83,14 +87,16 @@ export const repeatedSleep = (
       const failure = result.failure;
       const transient = transientEngineCall(failure);
       const failed = engineCallOf(failure);
-      // A call that failed only after lasting the whole sleep was held by an engine that waited
-      // it and lost only its answer: the sleep is over, and the engine has its entry.
-      const waited =
-        durationMillis !== undefined && (yield* Clock.currentTimeMillis) - called >= durationMillis;
+      // A call that failed only after lasting the whole sleep: the sleep's time has passed, so it
+      // is over. Usually an engine waited it and lost only its answer; see the header for the rest.
+      const lasted = (yield* Clock.currentTimeMillis) - called;
+      const waited = durationMillis !== undefined && lasted >= durationMillis;
       if (transient !== undefined && waited) {
         yield* Effect.annotateCurrentSpan({
           "executor.workflow.call.attempts": attempts,
           "executor.workflow.call.waited": true,
+          // How long the failed call lasted: at least the sleep's duration, or it would be repeated.
+          "executor.workflow.call.waited_ms": lasted,
         });
         return null;
       }

@@ -2,6 +2,7 @@
 import {
   Cause,
   Config,
+  ConfigProvider,
   Console,
   Effect,
   Exit,
@@ -23,6 +24,8 @@ import { type FixtureControl, fixtureControlEnvironment } from "./fixtures.ts";
 import { RecordingPaceMs, Target } from "../support/platform.ts";
 import { roleHost } from "../support/role-hosts.ts";
 import { prepareCloudScenarios } from "./prepare-scenarios.ts";
+import { attachedStage, axiomSpans } from "../support/axiom.ts";
+import { sweepSpan } from "../support/webhook-sweep.ts";
 import { removalSettlementFile, settleRemovals } from "./removal-settlement.ts";
 import { removalStallsFile } from "./removal-evidence.ts";
 import { holdRun, pruneRuns } from "./run-retention.ts";
@@ -307,6 +310,9 @@ export const runSuite = ({
                         }),
                       })
                     : undefined;
+                  // Spans of an attached stage are read from Axiom by its stage name; an origin
+                  // that does not name it fails here, once.
+                  const stage = attachment === undefined ? undefined : yield* attachedStage(origin);
                   const preparedScenarios =
                     attachment?.appUiBaseUrl === undefined
                       ? {}
@@ -323,6 +329,25 @@ export const runSuite = ({
                           appUiBaseUrl: attachment.appUiBaseUrl,
                           fixtures: attachment.fixtures,
                           workers: targetWorkers,
+                          sweepPasses: (since) =>
+                            axiomSpans(stage).pipe(
+                              Effect.flatMap((spans) =>
+                                spans.search(sweepSpan, {}, undefined, since),
+                              ),
+                              Effect.provide(
+                                ConfigProvider.layer(
+                                  ConfigProvider.fromUnknown(
+                                    attachment.axiom === undefined
+                                      ? {}
+                                      : {
+                                          E2E_AXIOM_TOKEN: reveal(attachment.axiom.token),
+                                          E2E_AXIOM_DATASET: attachment.axiom.dataset,
+                                          E2E_AXIOM_ORG_ID: attachment.axiom.organization,
+                                        },
+                                  ),
+                                ),
+                              ),
+                            ),
                           scenarios: plan
                             .filter(
                               (scenario: typeof TestPlan.Type) =>

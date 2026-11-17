@@ -8297,6 +8297,16 @@ export const scenarios = plan({
       cloud: na("Cloud's apps do not run in a local workerd."),
     },
   },
+  buildRetainStorage: {
+    file: "build-retain-storage.spec.ts",
+    title:
+      "A build whose framework write storage refused answers try again, concurrent builds share one write, and an app that does not compile still fails",
+    targets: {
+      "self-host": scheduled,
+      local: na("The probe runs the deploy path against a stand-in store; one target covers it."),
+      cloud: na("The probe runs the SDK's deploy path and Cloud's write retry in one process."),
+    },
+  },
   runtimeHopShape: {
     file: "runtime-hop-shape.spec.ts",
     title: "A failed exchange with the local app runtime records how far it got, as shapes only",

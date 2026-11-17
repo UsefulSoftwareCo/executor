@@ -19,6 +19,7 @@ import { ReleaseRefusal, releaseRefusalReport } from "../contracts/release-guard
 import { withStageAdmin } from "./test-stage-inventory.ts";
 import { discoverTestStages } from "./test-stage-discovery.ts";
 import { findOrphanBranches } from "./test-stage-orphans.ts";
+import { branchGone, branchOutcomeMessage, removeStageBranch } from "./test-stage-branch.ts";
 import { awaitStageRollout } from "./test-stage-rollout.ts";
 import {
   destroyUnreadableStage,
@@ -167,6 +168,26 @@ const destroy = (stageSlug: string, options: DestroyOptions) =>
           },
         ),
       ).pipe(Effect.timeout("10 minutes"));
+      // Alchemy deletes the branch only when its state records it. A create that stopped before
+      // Alchemy recorded it leaves the branch "not owned by this stack"; remove it by its exact
+      // name (test-stage-branch.ts). The lease stays until the branch is confirmed gone, so the
+      // next scheduled run retries what this one could not finish.
+      if (lease?.database === "planetscale") {
+        const outcome = yield* removeStageBranch(stageSlug).pipe(
+          Effect.catch((error) =>
+            Effect.fail(
+              failure(
+                `Could not check PlanetScale branch test-${stageSlug} after the destroy (${"message" in error ? error.message : "configuration or request failed"}). No delete was sent. Its stage lease is kept, so scheduled cleanup tries again.`,
+              ),
+            ),
+          ),
+        );
+        if (Option.isSome(outcome)) {
+          const message = branchOutcomeMessage(`test-${stageSlug}`, outcome.value);
+          if (!branchGone(outcome.value)) return yield* failure(message);
+          yield* Console.log(message);
+        }
+      }
       // Failed destruction retains the lease, so the next scheduled run retries it.
       yield* admin.remove(stageSlug);
     }),
@@ -408,10 +429,10 @@ const cleanup = Command.make("cleanup", {}, () =>
       (stage) =>
         destroy(stage.slug, { automatic: true, expectedOwner: Option.none(), byName: false }).pipe(
           Effect.as(true),
-          Effect.catch(() =>
-            Console.error(`Cleanup failed for ${stage.slug}; its lease remains for retry.`).pipe(
-              Effect.as(false),
-            ),
+          Effect.catch((error) =>
+            Console.error(
+              `Cleanup failed for ${stage.slug}; its lease remains for retry.${Schema.is(TestStageFailed)(error) ? ` ${error.message}` : ""}`,
+            ).pipe(Effect.as(false)),
           ),
         ),
       { concurrency: 4 },

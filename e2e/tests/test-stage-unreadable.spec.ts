@@ -71,6 +71,8 @@ interface World {
   /** Alchemy records by stage and logical ID: readable, undecryptable, or failing that many reads. */
   state: Record<string, Record<string, "readable" | "undecryptable" | number>>;
   faults: Fault[];
+  /** The PlanetScale test database's branches: whether production, and what a delete answers. */
+  planetscale?: Record<string, { production: boolean; deleteStatus: number }>;
   /** Pages of the bucket listing, by name, when the listing is paginated. */
   bucketPages?: ReadonlyArray<ReadonlyArray<string>>;
   /** Listing results that report more pages than they return. */
@@ -263,6 +265,40 @@ const answer = (world: World, method: string, url: URL, body: string, authorizat
     const stage = url.searchParams.get("stage");
     if (stage !== null) world.state[stage] = {};
     return { status: 204, headers: {}, body: "" };
+  }
+
+  // PlanetScale: the test database's branches.
+  if (
+    (match =
+      /^\/v1\/organizations\/synthetic-org\/databases\/executor-test\/branches(?:\/([^/]+))?$/u.exec(
+        path,
+      ))
+  ) {
+    const branches = world.planetscale ?? {};
+    const name = match[1] === undefined ? undefined : decodeURIComponent(match[1]);
+    if (name === undefined && method === "GET")
+      return json({
+        type: "list",
+        current_page: 1,
+        next_page: null,
+        data: Object.keys(branches).map((branch) => ({
+          name: branch,
+          created_at: "2026-11-16T00:00:00Z",
+        })),
+      });
+    const branch = name === undefined ? undefined : branches[name];
+    if (branch === undefined) return missing;
+    if (method === "GET") return json({ name, production: branch.production, ready: false });
+    if (method === "DELETE") {
+      if (branch.deleteStatus !== 204)
+        return {
+          status: branch.deleteStatus,
+          headers: {},
+          body: JSON.stringify({ code: "forbidden" }),
+        };
+      delete branches[name!];
+      return { status: 204, headers: {}, body: "" };
+    }
   }
 
   // Cloudflare.
@@ -552,6 +588,8 @@ const cli = (
           TEST_STAGE_AXIOM_API: apis.origin,
           TEST_STAGE_STATE_STORE_URL: apis.origin,
           TEST_STAGE_STATE_STORE_TOKEN: "state-token",
+          // Only read when a case names a PlanetScale test database.
+          TEST_STAGE_PLANETSCALE_API: apis.origin,
           TEST_STAGE_REMOVAL_SETTLE: "10 millis",
           TEST_STAGE_API_BACKOFF: "10 millis",
           ...(options.registry === undefined
@@ -1030,6 +1068,147 @@ describe("Removing a test stage by name, with its registry", () => {
         expect(
           yield* psql("select count(*) from executor_test_stage_leases where slug = 'pr-2994'"),
         ).toBe("1\n");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+});
+
+/**
+ * A deployed E2E stage on PlanetScale whose deploy stopped before Alchemy recorded its branch: the
+ * stage's Alchemy destroy (a stand-in that succeeds and deletes nothing) leaves the branch, and
+ * `test-stage destroy` then removes it by its exact name, keeping the stage's lease unless
+ * PlanetScale answers 404 (`test-stage-branch.ts`). The same holds for scheduled cleanup.
+ */
+describe("Removing a branch a PlanetScale stage's destroy left", () => {
+  const leftWorld = (slug: string, deleteStatus: number): World => ({
+    workers: [],
+    zones: [testZone, appZone, otherZone],
+    routes: {},
+    domains: [],
+    workflows: [],
+    buckets: {},
+    dns: {},
+    destinations: [],
+    hyperdrive: [],
+    certificates: [],
+    artifacts: {},
+    branches: [],
+    monitors: [],
+    tokens: [],
+    state: { [`test-${slug}`]: { Api: "readable", PreviewDatabase: "readable" } },
+    faults: [],
+    planetscale: {
+      [`test-${slug}`]: { production: false, deleteStatus },
+      // Never touched: production, the index-lock branch, a name that starts with the stage's.
+      main: { production: true, deleteStatus: 500 },
+      "idx-lock-38132096340-1": { production: true, deleteStatus: 500 },
+      [`test-${slug}-copy`]: { production: false, deleteStatus: 500 },
+    },
+    requests: [],
+  });
+  const planetscaleEnv = (bin: string) => ({
+    PATH: `${bin}:${process.env.PATH ?? ""}`,
+    TEST_STAGE_DATABASE: "executor-test",
+    PLANETSCALE_ORGANIZATION: "synthetic-org",
+    PLANETSCALE_API_TOKEN_ID: "synthetic-id",
+    PLANETSCALE_API_TOKEN: "synthetic-token",
+    TEST_STAGE_BRANCH_POLL: "10 millis",
+  });
+  /** A directory whose `alchemy` succeeds and does nothing, as a destroy that left the branch. */
+  const quietAlchemy = Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-stage-branch-" });
+    const bin = path.join(directory, "bin");
+    yield* fs.makeDirectory(bin);
+    yield* fs.writeFileString(path.join(bin, "alchemy"), "#!/bin/sh\nexit 0\n");
+    yield* fs.chmod(path.join(bin, "alchemy"), 0o755);
+    return bin;
+  });
+  const planetscaleRequests = (world: World) =>
+    world.requests.filter((request) => request.includes("/v1/organizations/"));
+  const leaseCount = (psql: (sql: string) => Effect.Effect<string, unknown>, slug: string) =>
+    psql(`select count(*) from executor_test_stage_leases where slug = '${slug}'`);
+  /** A temporary PlanetScale lease created at `createdAt`; it expires 3 hours later. */
+  const planetscaleLease = (slug: string, createdAt: string) =>
+    `insert into executor_test_stage_leases (slug, owner, created_at, expires_at, database_provider, retention, background)
+     values ('${slug}', 'CI', '${createdAt}', '${createdAt}'::timestamptz + interval '3 hours', 'planetscale', 'temporary', 'active')`;
+
+  it.live(
+    "destroy deletes the left branch by its exact name, and only then removes the lease",
+    () =>
+      Effect.gen(function* () {
+        const { url, psql } = yield* registry;
+        const world = leftWorld("e2e-left1", 204);
+        yield* prepareRegistry(world, url);
+        yield* psql(planetscaleLease("e2e-left1", "2099-01-01T00:00:00Z"));
+        const bin = yield* quietAlchemy;
+        const result = yield* cli(world, ["destroy", "e2e-left1", "--no-input", "--yes"], {
+          registry: url,
+          env: planetscaleEnv(bin),
+        });
+        expect(result.code, result.output).toBe(0);
+        expect(result.output).toContain(
+          "PlanetScale branch test-e2e-left1 was left by the destroy; a delete was sent (PlanetScale answered 204) and it is gone (404).",
+        );
+        const branch =
+          "/v1/organizations/synthetic-org/databases/executor-test/branches/test-e2e-left1";
+        expect(
+          planetscaleRequests(world).filter((request) => request.startsWith("DELETE ")),
+        ).toEqual([`DELETE ${branch}`]);
+        expect(Object.keys(world.planetscale!).toSorted()).toEqual([
+          "idx-lock-38132096340-1",
+          "main",
+          "test-e2e-left1-copy",
+        ]);
+        expect(yield* leaseCount(psql, "e2e-left1")).toBe("0\n");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "destroy keeps the lease when the delete is refused, and says so",
+    () =>
+      Effect.gen(function* () {
+        const { url, psql } = yield* registry;
+        const world = leftWorld("e2e-left2", 403);
+        yield* prepareRegistry(world, url);
+        yield* psql(planetscaleLease("e2e-left2", "2099-01-01T00:00:00Z"));
+        const bin = yield* quietAlchemy;
+        const result = yield* cli(world, ["destroy", "e2e-left2", "--no-input", "--yes"], {
+          registry: url,
+          env: planetscaleEnv(bin),
+        });
+        expect(result.code, result.output).not.toBe(0);
+        expect(result.output).toContain(
+          "PlanetScale branch test-e2e-left2 was left by the destroy. A delete was sent and PlanetScale refused it (403). Its stage lease is kept",
+        );
+        expect(yield* leaseCount(psql, "e2e-left2")).toBe("1\n");
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    180_000,
+  );
+
+  it.live(
+    "scheduled cleanup retries a due lease's left branch and keeps the lease it could not finish",
+    () =>
+      Effect.gen(function* () {
+        const { url, psql } = yield* registry;
+        const world = leftWorld("e2e-left3", 403);
+        yield* prepareRegistry(world, url);
+        // Past its cleanup deadline.
+        yield* psql(planetscaleLease("e2e-left3", "2026-11-16T01:00:00Z"));
+        const bin = yield* quietAlchemy;
+        const result = yield* cli(world, ["cleanup"], { registry: url, env: planetscaleEnv(bin) });
+        expect(result.code, result.output).not.toBe(0);
+        expect(result.output).toContain(
+          "Cleanup failed for e2e-left3; its lease remains for retry. PlanetScale branch test-e2e-left3 was left by the destroy. A delete was sent and PlanetScale refused it (403).",
+        );
+        expect(
+          planetscaleRequests(world).filter((request) => request.startsWith("DELETE ")),
+        ).toEqual([
+          "DELETE /v1/organizations/synthetic-org/databases/executor-test/branches/test-e2e-left3",
+        ]);
+        expect(yield* leaseCount(psql, "e2e-left3")).toBe("1\n");
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     180_000,
   );

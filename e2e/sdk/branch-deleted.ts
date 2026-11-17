@@ -72,7 +72,7 @@ export const confirmBranchDeleted = (
       ),
       Effect.catchTag("Unconfirmed", ({ reason }) =>
         Effect.gen(function* () {
-          const message = `PlanetScale branch ${branch} was not confirmed deleted after its teardown (${reason}). If it is still there, it keeps billing until someone with permission deletes it.`;
+          const message = `PlanetScale branch ${branch} is not confirmed gone after its teardown (${reason}). The teardown's own line above says whether it sent a delete and what PlanetScale answered. If the branch is still there, it keeps billing until someone with permission deletes it.`;
           const ci = yield* Config.String("GITHUB_ACTIONS").pipe(Config.option);
           if (Option.isSome(ci))
             yield* Console.error(`::error title=Leftover PlanetScale branch::${message}`);

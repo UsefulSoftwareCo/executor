@@ -14,12 +14,14 @@ import { scenarios, type TestPlan } from "../test-plan.ts";
 import { saveLostRequests } from "../lost-requests.ts";
 import {
   configureLostConnections,
-  lostRequestsOf,
   takeAllLostRequests,
+  forgetStageRequests,
   takeLostRequests,
-  type LostRequest,
+  unsentNote,
 } from "./lost-connections.ts";
 import { targetHosts } from "./role-hosts.ts";
+import { machineWorkMs, referenceMachineWorkMs, timeoutLine } from "./machine-speed.ts";
+import { hookTimeoutMs } from "../timeouts.ts";
 
 /** An extra Testing SDK scenario acquired by setup. The test may close its scope early. */
 export interface SdkScenarioFixture {
@@ -48,19 +50,6 @@ export const scenarioLifetime = (context: TestContext) => {
   return context.executorScenario;
 };
 
-/**
- * The line a failed scenario gains when one of its requests was sent again after a lost reused
- * connection (lost-connections.ts): what the scenario then saw may be the second attempt's answer,
- * such as a one-time code already used, and its own failure would not say so.
- */
-export const resendNote = (resent: ReadonlyArray<LostRequest>) =>
-  `${resent.length === 1 ? "A request of this scenario was" : `${resent.length} requests of this scenario were`} sent again after its reused connection was lost before any response (e2e/support/lost-connections.ts): ${resent
-    .map(
-      (lost) =>
-        `${lost.method} ${lost.path} at ${lost.at.slice(11, 19)}, ${lost.outcome}${lost.againStatus === undefined ? "" : ` with HTTP ${lost.againStatus}`}${lost.againCode === undefined ? "" : ` (${lost.againCode})`}`,
-    )
-    .join("; ")}. The failure above may come from the second attempt's answer.`;
-
 // Vitest's beforeEach and onTestFinished hooks are Promise APIs; this acquires each scenario's runtime.
 /* oxlint-disable executor/no-manual-effect-runtime-in-tests */
 /** Register bounded native hooks without replacing Effect Vitest's test execution. */
@@ -73,21 +62,48 @@ export const installScenarioLifecycle = () =>
     let completedAt: number | undefined;
     let provisioningMs: number | null = null;
     let save = (_finishedAt: number): Effect.Effect<void> => Effect.void;
+    let finished = false;
+    // A scenario that fails while a request of it never got a connection says so in its failure,
+    // a time-out included: "one stage request was unsent for 31.0 s".
+    context.onTestFailed(({ task }) => {
+      const note = unsentNote(task.name);
+      const first = task.result?.errors?.[0];
+      if (note === "" || first === undefined) return;
+      const original = first.message;
+      first.message = `${original}; ${note}`;
+      if (first.stack) first.stack = first.stack.replace(original, first.message);
+    });
+    // The time-out that applied, and, when the scenario or one of its hooks timed out, how fast
+    // the machine was then (machine-speed.ts). The line is also put on the time-out's own error.
+    let timing: Record<string, unknown> = {};
     let discard: Effect.Effect<void> = Effect.void;
     // A passing scenario's server data is never read again; failures keep theirs for diagnosis.
     context.onTestFinished(({ task }) => {
-      // A failure says when one of the scenario's requests was sent again.
-      const resent = lostRequestsOf(task.name).filter((lost) =>
-        lost.outcome.startsWith("sent again"),
-      );
-      if (task.result?.state === "fail" && resent.length > 0)
-        (task.result.errors ??= []).push({
-          name: "LostRequestResent",
-          message: resendNote(resent),
+      finished = true;
+      timing = { timeoutMs: task.timeout, hookTimeoutMs };
+      const timedOut = (task.result?.errors ?? []).flatMap((error) => {
+        const bound = /^(Test|Hook) timed out in (\d+)ms/.exec(error.message ?? "");
+        return bound ? [{ error, kind: bound[1], boundMs: Number(bound[2]) }] : [];
+      });
+      if (timedOut.length > 0) {
+        const machineMs = machineWorkMs();
+        const lines = timedOut.map(({ error, kind, boundMs }) => {
+          const line = `${kind} ${timeoutLine(boundMs, boundMs, machineMs)}`;
+          // The first line of the failure, which the job log and ci-failures print, names the
+          // machine's speed; Vitest's own message follows it.
+          const original = error.message;
+          error.message = `${line}\n${original}`;
+          if (error.stack) error.stack = error.stack.replace(original, error.message);
+          return line;
         });
+        timing = { ...timing, timedOut: lines, machineMs, referenceMachineWorkMs };
+        console.error(lines.join("\n"));
+      }
       return Effect.runPromise(
         Scope.close(scope, outcome).pipe(
           Effect.ensuring(Clock.currentTimeMillis.pipe(Effect.flatMap(save))),
+          // Closing the scope wrote the scenario's evidence, its stage requests included.
+          Effect.ensuring(Effect.sync(() => forgetStageRequests(task.name))),
           Effect.andThen(
             Effect.suspend(() => (task.result?.state === "pass" ? discard : Effect.void)),
           ),
@@ -103,10 +119,16 @@ export const installScenarioLifecycle = () =>
           const paths = yield* Path.Path;
           const directory = `${base.directory}/report/lifecycle`;
           yield* fs.makeDirectory(directory, { recursive: true });
-          // The stage this scenario sends to: its requests lost before any response are told apart
-          // and, where safe, sent again (lost-connections.ts). A target the scenario starts adds
+          // The stage this scenario sends to: its requests lost in transport are told apart
+          // and recorded, each on a connection of its own (lost-connections.ts). A target the scenario starts adds
           // its own origins as soon as it exists (sdk/scenario.ts).
-          configureLostConnections({ origins: Object.values(targetHosts(base)) });
+          // A request of which nothing was written is sent again, never at or past the
+          // scenario's own bound, counted from before its set-up.
+          configureLostConnections({
+            origins: Object.values(targetHosts(base)),
+            deadline: () =>
+              finished || context.task.timeout <= 0 ? undefined : startedAt + context.task.timeout,
+          });
           save = (finishedAt) =>
             saveLostRequests(base.directory, context.task.id, takeLostRequests(context.task.name))
               .pipe(
@@ -131,6 +153,7 @@ export const installScenarioLifecycle = () =>
                               : completedAt - readyAt,
                           cleanupMs: completedAt === undefined ? null : finishedAt - completedAt,
                           totalMs: finishedAt - startedAt,
+                          ...timing,
                         },
                         null,
                         2,

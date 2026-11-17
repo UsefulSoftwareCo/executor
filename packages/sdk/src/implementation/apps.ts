@@ -60,7 +60,7 @@ import {
 import type { Registry } from "../contracts/registry.ts";
 import { resolvePublication } from "./registry.ts";
 
-import type { BlobStorage } from "../contracts/blobs.ts";
+import { BlobStoreError, type BlobStorage } from "../contracts/blobs.ts";
 import { readVersionSource, writeVersionSource } from "./version-source.ts";
 import { readInitialSource, writeInitialSource } from "./initial-source.ts";
 import {
@@ -346,7 +346,11 @@ export const makeApps = (
                         reason: error.message,
                         message: error.message,
                       })
-                    : versionBuildFailed(owner, name, error),
+                    : // Storage failed while keeping the build: nothing about the app, and
+                      // deploying again may succeed.
+                      Schema.is(BlobStoreError)(error)
+                      ? new StorageError()
+                      : versionBuildFailed(owner, name, error),
           ),
         );
       // Each requirement records its scope; a name is used in one scope only.

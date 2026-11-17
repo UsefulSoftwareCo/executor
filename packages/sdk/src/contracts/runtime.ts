@@ -21,7 +21,7 @@ import { RecordedMessage } from "@executor-js/utils/recorded-message";
 import { BuildStage, SourceLocation, type BuildMemoryExceeded } from "./version.ts";
 import type { CodeFiles } from "./source.ts";
 import { BuildId, Json } from "./shared.ts";
-import type { BlobKey, BlobRange } from "./blobs.ts";
+import type { BlobKey, BlobRange, BlobStoreError } from "./blobs.ts";
 import type { HostApiCheck } from "./host-api.ts";
 
 /**
@@ -428,7 +428,9 @@ export interface Runtime<Requirements = never> {
     | RuntimeBuildFailed
     | RuntimeProtocolUnsupported
     | RuntimeAppsDependencyMissing
-    | BuildMemoryExceeded,
+    | BuildMemoryExceeded
+    // Keeping the build failed in storage: nothing about the app, and building again may succeed.
+    | BlobStoreError,
     Requirements
   >;
   readonly asset?: (input: {

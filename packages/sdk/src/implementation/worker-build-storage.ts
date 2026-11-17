@@ -2,14 +2,14 @@
  * Retained builds store each `apps` framework release once. A build's record holds its own modules
  * and the identity of the framework it links; loading a build reads both and links them.
  */
-import { BlobKey, BlobStore } from "../contracts/blobs.ts";
+import { BlobKey, BlobStore, BlobStoreError } from "../contracts/blobs.ts";
 import { RuntimeBuildFailed, RuntimeBuildUnavailable } from "../contracts/runtime.ts";
 import type { BuildId } from "../contracts/shared.ts";
 import type { UiBuildFile } from "../contracts/ui-build.ts";
 import type { RuntimeAsset } from "../contracts/runtime.ts";
 import { asciiJson } from "./ascii-json.ts";
 import { publicFileAsset, readPublicManifest } from "./public-files.ts";
-import { Effect, Option, Schema } from "effect";
+import { Effect, Option, Schedule, Schema } from "effect";
 import {
   type FrameworkIdentity,
   InlinedWorkerBuild,
@@ -20,6 +20,15 @@ import {
   type WorkerBundle,
   type WorkerFramework,
 } from "../contracts/worker-build.ts";
+
+/**
+ * A failure of storage itself, which writing again later may not meet: no status, a rate limit, or
+ * a server error. A store that answers another 4xx refused this write for what it carries (an
+ * invalid key), and so does a key the key type rejects: those are the app's, and are not repeated.
+ */
+export const storageFailure = (error: unknown): error is BlobStoreError =>
+  Schema.is(BlobStoreError)(error) &&
+  (error.status === undefined || error.status === 429 || error.status >= 500);
 
 /** Shared with the one-off framework migration, which reads and writes the same objects. */
 export const key = (value: string) => Schema.decodeUnknownEffect(BlobKey)(value);
@@ -64,7 +73,10 @@ export const assembleWorkerBundle = (
 
 /**
  * Store the framework once at its content address. Concurrent deploys of the same release write
- * identical content, and each put publishes a complete object, so a lost race is harmless.
+ * identical content, and each put publishes a complete object, so a lost race is harmless. A store
+ * may refuse a write that loses the race (R2 takes one write a second to a key): the object then
+ * being there means another build stored these same bytes, which is all this needs. The check is
+ * repeated for up to 7 s, since the other build's write may still be in flight.
  */
 const retainFramework = (framework: WorkerFramework) =>
   Effect.gen(function* () {
@@ -77,7 +89,21 @@ const retainFramework = (framework: WorkerFramework) =>
       "executor.build.framework_stored": stored,
     });
     const retained: RetainedFramework = { ...identity, modules: framework.modules };
-    if (!stored) yield* blobs.put(location, yield* encodeJson(RetainedFramework, retained));
+    if (!stored)
+      yield* blobs.put(location, yield* encodeJson(RetainedFramework, retained)).pipe(
+        Effect.catchIf(storageFailure, (refused) =>
+          // A look that itself fails counts as not found, so the write's own failure is reported.
+          blobs.exists(location).pipe(
+            Effect.orElseSucceed(() => false),
+            Effect.flatMap((found) => (found ? Effect.void : Effect.fail(refused))),
+            // At most 7 s: the other build's write, uncontended, takes under 2 s.
+            Effect.retry({ times: 3, schedule: Schedule.exponential("1 second") }),
+            Effect.tap(() =>
+              Effect.annotateCurrentSpan("executor.build.framework_stored_by", "another"),
+            ),
+          ),
+        ),
+      );
     return retained;
   });
 
@@ -123,7 +149,11 @@ export const retainWorkerBuild = (
     yield* blobs.put(yield* buildKey(build), body);
     return { record, framework: retained };
   }).pipe(
-    Effect.mapError(() => new RuntimeBuildFailed({ stage: "retain" })),
+    // A storage failure says nothing about the app and is reported as one; anything else here (a
+    // UI file name no key can hold, a key the store refuses) fails the build as it always has.
+    Effect.mapError((error) =>
+      storageFailure(error) ? error : new RuntimeBuildFailed({ stage: "retain" }),
+    ),
     Effect.withSpan("runtime.cloud.retain"),
   );
 

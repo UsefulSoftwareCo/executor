@@ -23,12 +23,10 @@ import { startScenario } from "./scenario.ts";
 import { awaitCompiler } from "./compiler-readiness.ts";
 import { FixtureFailed, fixtureRequest, type FixtureControl } from "./fixtures.ts";
 import { saveLostRequests } from "../lost-requests.ts";
-import {
-  configureLostConnections,
-  installLostConnections,
-  takeAllLostRequests,
-} from "../support/lost-connections.ts";
+import { configureLostConnections, takeAllLostRequests } from "../support/lost-connections.ts";
 import { targetHosts } from "../support/role-hosts.ts";
+import { drainWebhookQueue, fixtureQueueCount } from "./webhook-queue.ts";
+import type { SpanQuery } from "../support/contracts.ts";
 
 class DomainNotReady extends Schema.TaggedError<DomainNotReady>()("DomainNotReady", {
   reason: Schema.Literals(["http", "transport", "timeout"]),
@@ -276,6 +274,10 @@ const prepareCloudScenariosUnrecorded = (input: {
   /** The attached stage's fixture control, which reads the product's report of each address. */
   readonly fixtures: typeof FixtureControl.Type;
   readonly workers: number;
+  /** Delivered webhook sweep passes on this stage since a time (epoch milliseconds). */
+  readonly sweepPasses: (
+    since: number,
+  ) => Effect.Effect<typeof SpanQuery.Type, unknown, HttpClient.HttpClient>;
 }) =>
   Effect.gen(function* () {
     const started = yield* Clock.currentTimeMillis;
@@ -400,9 +402,29 @@ const prepareCloudScenariosUnrecorded = (input: {
       // setup failure; it never becomes a skip or a passing scenario.
       Effect.catchTag("TimeoutError", () => Effect.void),
     );
+    // Provisioning queues every organization's webhook sources at once. Scenarios start once the
+    // sweep has served that queue, not behind it.
+    const drain = yield* drainWebhookQueue({
+      count: fixtureQueueCount(input.fixtures),
+      passes: input.sweepPasses,
+      record: (figures) =>
+        Effect.flatMap(FileSystem.FileSystem, (fs) =>
+          fs.writeFileString(
+            `${input.target.directory}/webhook-queue.json`,
+            JSON.stringify(figures, null, 2),
+          ),
+        ).pipe(
+          Effect.andThen(
+            Console.log(
+              `Webhook source queue: provisioning finished in ${Math.round(figures.provisioningMs / 1000)}s${figures.provisioningOutstanding === undefined ? "" : ` (${figures.provisioningOutstanding} jobs still running at its bound)`}, ${figures.queued} queued, ${figures.drainMs === undefined ? `not drained within ${Math.round(figures.boundMs / 1000)}s` : `drained in ${Math.round(figures.drainMs / 1000)}s`} (bound ${Math.round(figures.boundMs / 1000)}s, ${figures.passes} passes, ${figures.passesWithRoom} with room${figures.failedReads === undefined ? "" : `, ${figures.failedReads} failed reads`}).`,
+            ),
+          ),
+          Effect.orDie,
+        ),
+    });
     const finished = yield* Clock.currentTimeMillis;
     yield* Console.log(
-      `Scenario infrastructure: ${Math.round((finished - started) / 1000)}s (${prepared.length} organizations, ${(yield* Ref.get(ready)).size}/${domains.length} HTTPS domains verified).`,
+      `Scenario infrastructure: ${Math.round((finished - started) / 1000)}s (${prepared.length} organizations, ${(yield* Ref.get(ready)).size}/${domains.length} HTTPS domains verified, ${drain.queued} webhook sources drained in ${Math.round((drain.drainMs ?? 0) / 1000)}s${drain.provisioningOutstanding === undefined ? "" : `; ${drain.provisioningOutstanding} provisioning jobs were still running when the queue was counted, so their sources may join after it and a webhook scenario may wait behind them`}).`,
     );
     const readyIds = yield* Ref.get(ready);
     const finalObservations = yield* Ref.get(observations);
@@ -442,14 +464,15 @@ const prepareCloudScenariosUnrecorded = (input: {
 /**
  * Prepare the run's Cloud organizations with the stage's requests watched as a scenario's are
  * (support/lost-connections.ts): the suite process sends them, `POST /api/onboarding/prepare`
- * among them, outside any Vitest worker. Requests lost before any response are saved in the run's
+ * among them, outside any Vitest worker. Requests lost in transport are saved in the run's
  * `report/lost-requests/` as the preparation's, whatever the preparation's outcome.
  */
 export const prepareCloudScenarios = (
   input: Parameters<typeof prepareCloudScenariosUnrecorded>[0],
 ) =>
   Effect.suspend(() => {
-    installLostConnections();
+    // The wrapper itself is installed by the suite's entry point, before anything could read
+    // `fetch` (support/stage-connections.ts); this names the stage and the records' owner.
     configureLostConnections({
       origins: Object.values(targetHosts(input.target)),
       scenario: () => undefined,

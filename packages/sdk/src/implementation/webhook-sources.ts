@@ -136,6 +136,13 @@ export const makeWebhookSources = (
 ) => {
   const now = Clock.currentTimeMillis;
   /**
+   * This service's own name in telemetry, on its sweep's passes and its reads of an app's sources,
+   * so a pass can be told from another server's that shares a collector. One host process (a
+   * self-hosted server's actor) reads and sweeps through one service; on Cloud each Worker has its
+   * own.
+   */
+  const instance = globalThis.crypto.randomUUID();
+  /**
    * A source joining the pending queue: `leaseUntil` of a pending source without a lease is when it
    * joined, so `tick` serves pending sources first in, first out. A source whose lease is held
    * keeps it; its holder finds the newer revision when it finishes and queues it at that time.
@@ -503,7 +510,11 @@ export const makeWebhookSources = (
         return yield* Schema.decodeUnknownEffect(Schema.Array(WebhookSourceSummary))(
           rows.map((row) => ({ ...row, label: labels.get(row.account) })),
         ).pipe(Effect.mapError(() => new StorageError()));
-      }),
+      }).pipe(
+        Effect.withSpan("sdk.webhooks.sources", {
+          attributes: { "executor.webhooks.instance": instance },
+        }),
+      ),
     link: (input: typeof LinkWebhookSource.Type) =>
       transaction(db, (tx) =>
         Effect.gen(function* () {
@@ -697,6 +708,14 @@ export const makeWebhookSources = (
                 ),
               ),
         );
+        // What this pass took, for anyone judging the queue from its traces: a pass that took fewer
+        // new sources than its limit left none of them behind.
+        yield* Effect.annotateCurrentSpan({
+          "executor.webhooks.instance": instance,
+          "executor.webhooks.sweep.limit": limit,
+          "executor.webhooks.sweep.taken": intent.length,
+          "executor.webhooks.sweep.retries": ready.length,
+        });
         const reconciled = yield* Effect.forEach(
           [...intent, ...ready],
           (row) =>
@@ -711,6 +730,6 @@ export const makeWebhookSources = (
         // A full batch of saved intent may have left more behind. Continue while it makes
         // progress; a batch whose intent all failed waits for the host's next wake.
         return intent.length >= limit && reconciled.slice(0, intent.length).some(Boolean);
-      }),
+      }).pipe(Effect.withSpan("sdk.webhooks.sweep")),
   };
 };

@@ -328,6 +328,38 @@ const main = Effect.gen(function* () {
    * The app domain status the product's location read reports for this scenario's team: the row
    * the coordinator wrote for its current slug, or `absent` before a pass has written one.
    */
+  /**
+   * The stage's webhook source queue: how many sources wait, pending and unleased, for the sweep;
+   * how many team and member provisioning jobs, which link the default app's accounts and so queue
+   * sources, are still to finish; and the database's clock when it counted. Counts of the test
+   * stage's own rows, never which.
+   */
+  const webhookQueue = Effect.gen(function* () {
+    const database = pool;
+    if (auth === undefined || database === undefined)
+      return yield* new TestAccountFailed({ stage: "configuration" });
+    const result = yield* Effect.tryPromise({
+      try: () =>
+        database.query(
+          `select (select count(*)::int from executor_webhook_sources
+                where status = 'pending' and lease is null) as pending,
+              (select count(*)::int from hosted_provisioning
+                where kind in ('team', 'member') and status in ('queued', 'running')) as provisioning,
+              (extract(epoch from now()) * 1000)::bigint::text as at`,
+        ),
+      catch: () => new TestAccountFailed({ stage: "database" }),
+    });
+    const [row] = yield* Schema.decodeUnknownEffect(
+      Schema.Tuple([
+        Schema.Struct({
+          pending: Schema.Int,
+          provisioning: Schema.Int,
+          at: Schema.NumberFromString,
+        }),
+      ]),
+    )(result.rows);
+    return row;
+  });
   const domain = Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
     const { id } = yield* request.json.pipe(
@@ -833,6 +865,7 @@ const main = Effect.gen(function* () {
     HttpRouter.add("POST", "/remove", endpoint(remove)),
     HttpRouter.add("POST", "/settle", endpoint(settle)),
     HttpRouter.add("POST", "/domain", endpoint(domain)),
+    HttpRouter.add("POST", "/webhook-queue", endpoint(webhookQueue)),
     HttpRouter.add("POST", "/api-key-use", endpoint(keyUse)),
     HttpRouter.add(
       "GET",

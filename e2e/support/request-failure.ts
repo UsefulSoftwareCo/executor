@@ -62,17 +62,23 @@ export const RequestFailure = Schema.Struct({
   /** A platform failure this is exactly one of; see `platformSignatures`. */
   signature: Schema.optional(Schema.Literals(["runtime-502", "lost"])),
   /**
-   * For a stage request that failed in transport: whether its connection was new or reused and
-   * how long it had been idle, how much of the request was written, whether a response began, and
-   * whether it was sent again (`support/lost-connections.ts`).
+   * For a stage request that failed in transport: whether its connection was new or reused, how
+   * many requests it had carried, how old and how long idle it was, how much of the request was
+   * written, and whether a response began (`support/lost-connections.ts`). Only a request of
+   * which nothing was written is sent again: how many attempts failed so, over how long, and why
+   * the repeats stopped.
    */
   sent: Schema.optional(
     Schema.Struct({
       connection: Schema.optional(Schema.Literals(["new", "reused"])),
+      earlierRequests: Schema.optional(Schema.Number),
+      connectionAgeMs: Schema.optional(Schema.Number),
       idleMs: Schema.optional(Schema.Number),
       written: Schema.Literals(["nothing", "headers", "whole request"]),
       responseStarted: Schema.Boolean,
-      again: Schema.optional(Schema.String),
+      attempts: Schema.optional(Schema.Number),
+      waitedMs: Schema.optional(Schema.Number),
+      stopped: Schema.optional(Schema.String),
     }),
   ),
 });
@@ -86,27 +92,31 @@ const sentOf = (cause: unknown): RequestFailure["sent"] => {
     if (facts !== undefined)
       return {
         ...(facts.connection !== undefined && { connection: facts.connection }),
+        ...(facts.earlierRequests !== undefined && { earlierRequests: facts.earlierRequests }),
+        ...(facts.connectionAgeMs !== undefined && { connectionAgeMs: facts.connectionAgeMs }),
         ...(facts.idleMs !== undefined && { idleMs: facts.idleMs }),
         written: facts.written,
         responseStarted: facts.responseStarted,
-        ...(facts.again !== undefined && {
-          again: `${facts.again.outcome}${facts.again.againCode === undefined ? "" : ` (${facts.again.againCode})`}`,
-        }),
+        ...(facts.repeats !== undefined && facts.repeats > 0 && { attempts: facts.repeats }),
+        ...(facts.waitedMs !== undefined && { waitedMs: facts.waitedMs }),
+        ...(facts.stopped !== undefined && { stopped: facts.stopped }),
       };
     current = nextCause(current);
   }
   return undefined;
 };
 
-/** `on a reused connection idle 4.2 s, whole request written, no response; not sent again: …`. */
+/**
+ * `on a new connection 12 ms old, whole request written, no response`, or for a reused one
+ * `on a reused connection (3 earlier requests, 4.2 s old) idle 0.0 s, …`.
+ */
 const sentText = (sent: NonNullable<RequestFailure["sent"]>) =>
   [
     sent.connection === undefined
-      ? "never written to a connection"
-      : `on a ${sent.connection} connection${sent.idleMs === undefined ? "" : ` idle ${(sent.idleMs / 1000).toFixed(1)} s`}`,
+      ? `never written to a connection${sent.attempts === undefined || sent.attempts < 2 ? "" : ` on any of ${sent.attempts} attempts over ${((sent.waitedMs ?? 0) / 1000).toFixed(1)} s`}${sent.stopped === undefined ? "" : `, not sent again: ${sent.stopped}`}`
+      : `on a ${sent.connection} connection${sent.connection === "reused" && sent.earlierRequests !== undefined ? ` (${sent.earlierRequests} earlier requests${sent.connectionAgeMs === undefined ? "" : `, ${(sent.connectionAgeMs / 1000).toFixed(1)} s old`})` : sent.connectionAgeMs === undefined ? "" : ` ${sent.connectionAgeMs} ms old`}${sent.idleMs === undefined ? "" : ` idle ${(sent.idleMs / 1000).toFixed(1)} s`}`,
     sent.connection === undefined ? undefined : `${sent.written} written`,
     sent.responseStarted ? "a response had begun" : "no response",
-    sent.again,
   ]
     .filter((part) => part !== undefined)
     .join(", ");
@@ -205,7 +215,7 @@ const connectionCodes: ReadonlyArray<readonly [RequestConnection, RegExp]> = [
   ],
   [
     "tls",
-    /^(?:EPROTO|ERR_TLS_\w+|ERR_SSL_\w+|CERT_\w+|UNABLE_TO_\w+|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN)$/u,
+    /^(?:EPROTO|ERR_TLS_\w+|ERR_SSL_[\w/]+|CERT_\w+|UNABLE_TO_\w+|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN)$/u,
   ],
   ["reset", /^(?:ECONNRESET|EPIPE)$/u],
   ["closed", /^(?:UND_ERR_SOCKET|UND_ERR_CLOSED|ECONNABORTED|ERR_STREAM_PREMATURE_CLOSE)$/u],
