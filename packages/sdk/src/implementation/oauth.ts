@@ -51,6 +51,8 @@ import {
   OAuthFirstPartyAttempt,
   OAuthServer,
   allowedScopes,
+  grantableScopes,
+  type OperatorScopeRefusal,
   type FirstPartyOAuthClient,
   type FirstPartyOAuthClientId,
   isFirstPartyAttempt,
@@ -658,12 +660,15 @@ export const makeOAuth = (
       .flatMap((part) => (separator === undefined ? [part] : part.split(separator)))
       .filter((granted) => granted !== "");
   };
-  /** Whether a token response for the operator's client reports only scopes the client allows. */
+  /**
+   * Whether a token response for the operator's client reports only scopes a grant of it may hold:
+   * those it allows, and its held scopes, which grants it issued earlier keep through renewal.
+   */
   const grantAllowed = (id: FirstPartyOAuthClientId, scope: string | undefined) => {
     const client = firstPartyClients.get(id);
     if (client === undefined) return false;
-    const allowed = allowedScopes(client);
-    return (grantedScopes(client, scope) ?? []).every((granted) => allowed.includes(granted));
+    const grantable = grantableScopes(client);
+    return (grantedScopes(client, scope) ?? []).every((granted) => grantable.includes(granted));
   };
   /**
    * The operator's client and authorization server as configured now, or undefined when the
@@ -758,6 +763,10 @@ export const makeOAuth = (
    * Scopes discovered only in the resource's advertised list are what it offers, not what it
    * requires, so they are narrowed to `allowedScopes`; the client is offered when any remain.
    * An `unlisted` client is offered only to reconnect an account whose grant it issued, `reconnecting`.
+   * A client whose endpoints match but which may not ask for every requested scope is not offered.
+   * When one of those is a held scope, `refused` names every scope it may not ask for, so a
+   * sign-in with no other automatic client can say why rather than send the person to a service
+   * that would refuse the client.
    */
   const firstPartyClient = (
     discovered: {
@@ -767,9 +776,16 @@ export const makeOAuth = (
       readonly scopesAdvertised?: true | undefined;
     },
     reconnecting?: FirstPartyOAuthClientId,
-  ) => {
-    if (discovered.grant !== "authorization_code") return undefined;
+  ): {
+    readonly offered?: {
+      readonly client: FirstPartyOAuthClient;
+      readonly scopes: readonly string[];
+    };
+    readonly refused?: OperatorScopeRefusal;
+  } => {
+    if (discovered.grant !== "authorization_code") return {};
     const { server } = discovered;
+    let refused: OperatorScopeRefusal | undefined;
     const same = (declared: string | undefined, configured: string) =>
       declared !== undefined && new URL(declared).href === new URL(configured).href;
     for (const client of firstPartyClients.values()) {
@@ -783,13 +799,27 @@ export const makeOAuth = (
       if (discovered.scopesAdvertised === true && discovered.scopes.length > 0) {
         const scopes = discovered.scopes.filter((scope) => allowed.includes(scope));
         if (scopes.length === 0) continue;
-        return { client, scopes };
+        return { offered: { client, scopes } };
       }
       const scopes = discovered.scopes.length === 0 ? client.defaultScopes : discovered.scopes;
-      if (!scopes.every((scope) => allowed.includes(scope))) continue;
-      return { client, scopes };
+      const [first, ...others] = scopes.filter((scope) => !allowed.includes(scope));
+      if (first === undefined) return { offered: { client, scopes } };
+      // Only a held scope, which the client once asked for, makes the client's refusal the
+      // answer; any other scope outside its menu leaves it simply not offered.
+      const held = (client.heldScopes ?? []).map((entry) => entry.scope);
+      if (![first, ...others].some((scope) => held.includes(scope))) continue;
+      refused ??= {
+        client: client.label,
+        scopes: [first, ...others],
+        instead: (client.heldScopes ?? []).flatMap((held) => {
+          const [replacement, ...rest] = held.instead;
+          return [first, ...others].includes(held.scope) && replacement !== undefined
+            ? [{ scope: held.scope, scopes: [replacement, ...rest] }]
+            : [];
+        }),
+      };
     }
-    return undefined;
+    return refused === undefined ? {} : { refused };
   };
   const encrypt = (identity: AccountId | OAuthAttemptId | OAuthClientId, value: unknown) =>
     decode(JsonObject, value).pipe(
@@ -1186,11 +1216,17 @@ export const makeOAuth = (
       // A registered client the caller is refused still counts, as a start finds it too.
       const existing = yield* existingAutomatic(input.owner, resolved);
       // The operator's own client, after the owner's registered clients and before CIMD and DCR.
-      const firstParty = existing === undefined ? firstPartyClient(discovered) : undefined;
+      const operating = existing === undefined ? firstPartyClient(discovered) : {};
+      const firstParty = operating.offered;
       const mode =
         existing === undefined && firstParty === undefined && registration === "manual"
           ? ("client-required" as const)
           : ("automatic" as const);
+      // Said only when no automatic client signs in, as a start then fails with it.
+      const refusal =
+        mode === "client-required" && operating.refused !== undefined
+          ? { operatorScopeRefusal: operating.refused }
+          : {};
       const resource =
         firstParty !== undefined
           ? sentResource(firstParty.client.server.resource, "operator")
@@ -1221,6 +1257,7 @@ export const makeOAuth = (
             : [];
       return {
         mode,
+        ...refusal,
         scopes: firstParty?.scopes ?? discovered.scopes,
         grant: "authorization_code",
         issuer: HttpUrl.make(resolved.issuer),
@@ -1464,7 +1501,8 @@ export const makeOAuth = (
           kind: "stored" as const,
           ...(yield* authorizedClientUse(existing.row, existing.secret, input, resolved)),
         };
-      const firstParty = firstPartyClient(discovered, reconnecting);
+      const operating = firstPartyClient(discovered, reconnecting);
+      const firstParty = operating.offered;
       if (firstParty !== undefined) return { kind: "firstParty" as const, firstParty };
       if (registration === "client_id_metadata_document") {
         const url =
@@ -1479,7 +1517,13 @@ export const makeOAuth = (
         return { kind: "entered" as const, client, callback: clientCallback(client, redirect) };
       }
       if (discovered.grant !== "authorization_code" || registration !== "dynamic")
-        return yield* new OAuthClientUnavailable(input);
+        return yield* operating.refused === undefined
+          ? new OAuthClientUnavailable(input)
+          : new OAuthSetupFailed({
+              reason: "operator_scope_refused",
+              operatorScopes: operating.refused,
+              ...(redirect === undefined ? {} : { callbackUrl: HttpUrl.make(redirect.href) }),
+            });
       if (redirect === undefined)
         return yield* new OAuthSetupFailed({ reason: "invalid_redirect" });
       const client = yield* protocol
@@ -1516,6 +1560,15 @@ export const makeOAuth = (
       // before this sign-in uses it, as it will for every later one.
       return { kind: "stored" as const, ...(yield* useStoredClient(used, input, resolved)) };
     }).pipe(Effect.withSpan("oauth.clients.automatic"));
+
+  /**
+   * Whether an automatic choice found no client to sign in with: none fits the service, or the
+   * operator's client fits it but may not ask for a held scope the sign-in requests. A reconnect then keeps the
+   * client its account signed in with in either case.
+   */
+  const noAutomaticClient = (error: unknown): error is OAuthClientUnavailable | OAuthSetupFailed =>
+    Schema.is(OAuthClientUnavailable)(error) ||
+    (Schema.is(OAuthSetupFailed)(error) && error.reason === "operator_scope_refused");
 
   /**
    * The client a sign-in uses. Without a choice, a reconnect keeps the stored client its account
@@ -1595,13 +1648,13 @@ export const makeOAuth = (
           // fall back to the copy the grant holds of the same client.
           if (kept.source === "manual") return yield* keep;
           return yield* automaticChoice(input, resolved, reconnecting).pipe(
-            Effect.catchTag("OAuthClientUnavailable", () => keep),
+            Effect.catchIf(noAutomaticClient, () => keep),
           );
         }
         // No stored client holds or held the grant's copy, so reusing it uses no stored client's
         // credentials. Completion checks again, in case one is stored meanwhile.
         return yield* automaticChoice(input, resolved, reconnecting).pipe(
-          Effect.catchTag("OAuthClientUnavailable", (error) =>
+          Effect.catchIf(noAutomaticClient, (error) =>
             reusable === undefined
               ? Effect.fail(error)
               : Effect.succeed({

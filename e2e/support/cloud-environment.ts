@@ -35,12 +35,13 @@ import {
 import { startFixtureControl, fixtureRequest } from "../sdk/fixtures.ts";
 import { roleHost } from "./role-hosts.ts";
 import { freePort } from "./ports.ts";
-import { OperatorOAuthFixture, operatorOAuthFile } from "./operator-oauth.ts";
+import { OperatorOAuthFixture, operatorOAuthFile, syntheticCloudGoogle } from "./operator-oauth.ts";
 import { reveal, secret } from "./failure-text.ts";
 
 /**
  * The operator settings for `fixture`: one test client, whose tokens go only to its own host, and
- * its credentials. Emulated Cloud adds the definition to its reviewed clients.
+ * its credentials, which emulated Cloud adds to its reviewed clients; and synthetic credentials for
+ * the reviewed Executor for Google client.
  */
 const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
   const origin = `http://127.0.0.1:${fixture.port}`;
@@ -61,6 +62,9 @@ const operatorOAuthClients = (fixture: typeof OperatorOAuthFixture.Type) => {
     ]),
     EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_ID: fixture.clientId,
     EXECUTOR_OAUTH_SYNTHETIC_CLOUD_MAIL_CLIENT_SECRET: fixture.clientSecret,
+    // The reviewed Executor for Google client, as Cloud's own registration.
+    EXECUTOR_OAUTH_GOOGLE_CLIENT_ID: syntheticCloudGoogle.clientId,
+    EXECUTOR_OAUTH_GOOGLE_CLIENT_SECRET: syntheticCloudGoogle.clientSecret,
   };
 };
 

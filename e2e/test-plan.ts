@@ -3934,7 +3934,7 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "credential-placement.spec.ts",
     title:
-      "Executor for Google is offered to providers on Google's endpoints whose scopes it allows, once its credentials are set",
+      "Executor for Google is offered to providers on Google's endpoints whose scopes it allows, once its credentials are set, and a self-host operator's own Google client still signs in gmail.modify",
     targets: {
       "self-host": scheduled,
       cloud: na(
@@ -4033,6 +4033,19 @@ export const scenarios = plan({
       local: na("Local products have no operator OAuth clients."),
     },
   },
+  credentialManagedHeld: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "the operator's OAuth client keeps renewing grants that hold a scope it may no longer ask for, refuses sign-ins and reconnects that ask for it before the service, and a reconnect on the user's own client keeps that client",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Restarts a runner-owned product with the operator's client; managed Cloud has no per-case operator settings.",
+      ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
   credentialManagedScopes: {
     fixtures: "actors",
     file: "credential-placement.spec.ts",
@@ -4056,6 +4069,19 @@ export const scenarios = plan({
       cloud: na(
         "Cloud reads the same settings with the same code; a deploy fails on them before any request.",
       ),
+      local: na("Local products have no operator OAuth clients."),
+    },
+  },
+  credentialManagedGoogleCloud: {
+    fixtures: "actors",
+    file: "credential-placement.spec.ts",
+    title:
+      "Cloud's own Executor for Google registration refuses before Google a sign-in asking for a scope Google has not approved for it, such as gmail.modify, leading with the user's own client, and still signs in approved scopes",
+    targets: {
+      "self-host": na(
+        "Self-host's operator registers its own Google client, which keeps gmail.modify; the self-host Google scenario covers that.",
+      ),
+      cloud: managedCloud,
       local: na("Local products have no operator OAuth clients."),
     },
   },
