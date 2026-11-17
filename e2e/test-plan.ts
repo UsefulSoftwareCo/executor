@@ -1128,6 +1128,17 @@ export const scenarios = plan({
       local: na("Hosted version API scenario"),
     },
   },
+  liveOpenapiHujson: {
+    fixtures: "actors",
+    file: "live-openapi-import.spec.ts",
+    title:
+      "Live OpenAPI sends and returns HuJSON as written text, while JSON, every +json type and AWS JSON stay JSON",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback upstream fixture"),
+      local: na("Hosted version API scenario"),
+    },
+  },
   liveOpenapiNaming: {
     fixtures: "actors",
     file: "live-openapi-import.spec.ts",
