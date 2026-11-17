@@ -18,7 +18,7 @@ import {
 import type { DeclarationCache } from "../contracts/declarations.ts";
 import type { CodeFiles } from "../contracts/source.ts";
 import type { BuildId, Json } from "../contracts/shared.ts";
-import { BlobStore, type BlobStorage } from "../contracts/blobs.ts";
+import { BlobStore, type BlobKey, type BlobStorage } from "../contracts/blobs.ts";
 
 const NativeRuntime = Symbol("executor.Runtime");
 
@@ -158,6 +158,48 @@ export const createAppRuntime = (options: {
 };
 
 /**
+ * What a stored object is, from the shape of its key alone: a key names an app, version or build,
+ * so the span records the kind and never the key.
+ */
+export const blobKind = (key: string) =>
+  key.startsWith("frameworks/")
+    ? "framework"
+    : /^bld_[^/]+(\/worker)?\.json$/u.test(key)
+      ? "build"
+      : /^bld_[^/]+\/ui\//u.test(key)
+        ? "build-ui"
+        : /^bld_[^/]+\/public\.json$/u.test(key)
+          ? "public-manifest"
+          : /^deployments\/[^/]+\/source\.json$/u.test(key)
+            ? "version-source"
+            : /^app-source\/[^/]+\/initial\.json$/u.test(key)
+              ? "initial-source"
+              : key.startsWith("app-public/")
+                ? "public-file"
+                : key.startsWith("team-icons/")
+                  ? "team-icon"
+                  : "other";
+
+/**
+ * One write, in a `storage.blob.put` span: the object's kind and size in bytes, and whether it was
+ * stored. A host's store adds how many attempts it made and its storage's failure code.
+ */
+const tracedPut = (blobs: BlobStorage, key: BlobKey, body: Uint8Array) =>
+  blobs.put(key, body).pipe(
+    Effect.tap(() => Effect.annotateCurrentSpan("storage.blob.outcome", "stored")),
+    Effect.tapError(() => Effect.annotateCurrentSpan("storage.blob.outcome", "failed")),
+    Effect.withSpan("storage.blob.put", {
+      attributes: { "storage.blob.size": body.byteLength, "storage.blob.kind": blobKind(key) },
+    }),
+  );
+
+/** A store whose writes each have a span (`tracedPut`); its other operations are unchanged. */
+export const withTracedPuts = (blobs: BlobStorage): BlobStorage => ({
+  ...blobs,
+  put: (key, body) => tracedPut(blobs, key, body),
+});
+
+/**
  * Provide the host store without changing caller cancellation, tracing, or resource scopes. App
  * cache changes the runtime reports forget that app's kept results in `declarations`.
  */
@@ -193,12 +235,7 @@ export const toEffectRuntime = (
         Effect.tap((found) => Effect.annotateCurrentSpan("storage.blob.found", found)),
         Effect.withSpan("storage.blob.exists"),
       ),
-    put: (key, body) =>
-      blobs.put(key, body).pipe(
-        Effect.withSpan("storage.blob.put", {
-          attributes: { "storage.blob.size": body.byteLength },
-        }),
-      ),
+    put: (key, body) => tracedPut(blobs, key, body),
     remove: (key) => blobs.remove(key).pipe(Effect.withSpan("storage.blob.remove")),
     removeAll: (keys) =>
       blobs.removeAll(keys).pipe(

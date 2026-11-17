@@ -44,10 +44,23 @@ const refusedWrite = (error: unknown) => {
   return code === "r2.10020" || code === "r2.100100" ? { status: 400 } : {};
 };
 
-/** Cloud's blob store write: repeated as `persistR2Object` says, then a `BlobStoreError`. */
+/**
+ * Cloud's blob store write: repeated as `persistR2Object` says, then a `BlobStoreError`. The write's
+ * span (the SDK's `storage.blob.put`) records how many attempts it took, each a whole upload.
+ */
 export const writeR2Object = <A, E>(write: Effect.Effect<A, E>) =>
-  write.pipe(
-    persistR2Object,
+  Effect.suspend(() => {
+    let attempts = 0;
+    return Effect.suspend(() => {
+      attempts += 1;
+      return write;
+    }).pipe(
+      persistR2Object,
+      Effect.ensuring(
+        Effect.suspend(() => Effect.annotateCurrentSpan("storage.blob.attempts", attempts)),
+      ),
+    );
+  }).pipe(
     Effect.asVoid,
     Effect.tapError((error) =>
       Effect.annotateCurrentSpan({ "storage.blob.failure.code": providerFailureCode(error) }),

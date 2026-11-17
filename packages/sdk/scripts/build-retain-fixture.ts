@@ -18,8 +18,11 @@
  *   storage key does: the deploy fails once as the app's, unrepeated.
  * - `invalid-key`: the store refuses the framework's key as invalid (HTTP 400, as R2's 10020 for
  *   a key over 1,024 bytes): the deploy fails once as the app's, unrepeated.
+ * - `spans`: one deploy under a tracer that keeps every span: each write the deploy makes through
+ *   the executor's own store (its version source and initial source) has a `storage.blob.put`
+ *   span with its kind, size and outcome.
  */
-import { Effect, Layer, Redacted, Schema, Stream } from "effect";
+import { Effect, Layer, Redacted, Schema, Stream, Tracer } from "effect";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { pgliteLayer } from "fumadb-effect/pglite";
 import { SqlClient } from "effect/sql";
@@ -33,7 +36,7 @@ import { retainWorkerBuild } from "../src/implementation/worker-build-storage.ts
 import { markdownRefusals } from "../src/markdown.ts";
 import { memoryRegistry, memoryRepositories } from "../src/testing.ts";
 
-const cases = ["concurrent", "refused", "source", "ui-name", "invalid-key"] as const;
+const cases = ["concurrent", "refused", "source", "ui-name", "invalid-key", "spans"] as const;
 type Case = (typeof cases)[number];
 const name = process.argv[process.argv.indexOf("--case") + 1] as Case;
 if (!cases.includes(name)) throw new Error(`--case must be one of ${cases.join(", ")}`);
@@ -134,6 +137,16 @@ const transport = {
   invoke: () => Effect.die(new Error("The stub runtime runs no tools")),
 };
 
+/** Every span the deploy opens, kept to read their attributes once they end. */
+const spans: Array<Tracer.NativeSpan> = [];
+const keepingTracer = Tracer.make({
+  span: (options) => {
+    const span = new Tracer.NativeSpan(options);
+    spans.push(span);
+    return span;
+  },
+});
+
 const program = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const storage = yield* makeExecutorStorage({ provider: "postgresql" }).pipe(
@@ -184,10 +197,30 @@ const program = Effect.gen(function* () {
     deploy,
     { concurrency: "unbounded" },
   );
+  // The bytes the deploy's two source writes carry: its files as JSON.
+  const sourceBytes = new TextEncoder().encode(
+    JSON.stringify([
+      { path: "index.ts", content: "export default {}" },
+      {
+        path: "package.json",
+        content: JSON.stringify({ type: "module", dependencies: { apps: "0.0.1" } }),
+      },
+    ]),
+  ).byteLength;
+  const writes = spans
+    .filter((span) => span.name === "storage.blob.put")
+    .map((span) => ({
+      kind: span.attributes.get("storage.blob.kind"),
+      size: span.attributes.get("storage.blob.size"),
+      outcome: span.attributes.get("storage.blob.outcome"),
+      ended: span.status._tag === "Ended",
+      keys: [...span.attributes.keys()].sort(),
+    }));
   return {
     deploys,
     builds,
     framework,
+    ...(name === "spans" && { writes, sourceBytes }),
     elapsedMs: Date.now() - started,
     frameworkObjects: (yield* blobs.list(
       yield* Schema.decodeUnknownEffect(BlobKey)("frameworks").pipe(Effect.orDie),
@@ -196,7 +229,10 @@ const program = Effect.gen(function* () {
       },
     )).names.length,
   };
-}).pipe(Effect.provideService(CurrentActor, "local" as never));
+}).pipe(
+  Effect.provideService(CurrentActor, "local" as never),
+  name === "spans" ? Effect.withTracer(keepingTracer) : (self) => self,
+);
 
 Effect.runPromise(
   Effect.scoped(program).pipe(

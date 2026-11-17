@@ -22,6 +22,10 @@
  * the invalid key's failure keeps R2's 400; a persistent refusal stops after three attempts. And
  * 17 builds keeping their shared framework at once through that write and the retain stage's
  * look-again, against a put refusing a key's writes faster than one a second, are all kept.
+ *
+ * And the spans the writes leave: a deploy's version source and initial source writes each have a
+ * `storage.blob.put` span with the object's kind, its size in bytes and its outcome, and never its
+ * key; Cloud's write records how many attempts (each a whole upload) it took.
  */
 import { expect, layer } from "@effect/vitest";
 import { Effect, Schema } from "effect";
@@ -36,7 +40,16 @@ const Deploy = Schema.Struct({
   stage: Schema.optional(Schema.String),
   message: Schema.optional(Schema.String),
 });
+const PutSpan = Schema.Struct({
+  kind: Schema.String,
+  size: Schema.Number,
+  outcome: Schema.String,
+  ended: Schema.Boolean,
+  keys: Schema.Array(Schema.String),
+});
 const Retain = Schema.Struct({
+  writes: Schema.optional(Schema.Array(PutSpan)),
+  sourceBytes: Schema.optional(Schema.Number),
   deploys: Schema.Array(Deploy),
   builds: Schema.Number,
   framework: Schema.Struct({
@@ -60,6 +73,7 @@ const Writes = Schema.Struct({
   persistent: Write,
   "invalid-key": Write,
   statuses: Schema.Record(Schema.String, Schema.NullOr(Schema.Number)),
+  attempts: Schema.Record(Schema.String, Schema.NullOr(Schema.Number)),
   framework: Schema.Struct({
     retained: Schema.Number,
     failed: Schema.Array(Schema.String),
@@ -180,6 +194,30 @@ layer(TestLive, { excludeTestServices: true })("Build retain storage", (it) => {
             }
           }),
         );
+        yield* evidence.step(
+          "a deploy's source writes each have a span with their kind, size and outcome, not their key",
+          Effect.gen(function* () {
+            const traced = yield* retain("spans");
+            expect(traced.deploys).toEqual([{ outcome: "deployed" }]);
+            const keys = ["storage.blob.kind", "storage.blob.outcome", "storage.blob.size"];
+            expect(traced.writes).toEqual([
+              {
+                kind: "version-source",
+                size: traced.sourceBytes,
+                outcome: "stored",
+                ended: true,
+                keys,
+              },
+              {
+                kind: "initial-source",
+                size: traced.sourceBytes,
+                outcome: "stored",
+                ended: true,
+                keys,
+              },
+            ]);
+          }),
+        );
         // One run of Cloud's write fixture: the write retry alone, and with the look-again.
         const writes = yield* fixture(
           "apps/hosted/cloud/scripts/r2-write-fixture.ts",
@@ -201,6 +239,16 @@ layer(TestLive, { excludeTestServices: true })("Build retain storage", (it) => {
               "r2.10001": null,
             });
           }),
+        );
+        yield* evidence.step(
+          "Cloud's write records on its span how many attempts it took",
+          Effect.sync(() =>
+            expect(writes.attempts).toEqual({
+              "stored-at-once": 1,
+              "rate-limited-once": 2,
+              persistent: 3,
+            }),
+          ),
         );
         yield* evidence.step(
           "17 builds keep a shared framework through Cloud's write retry and the look-again together",
