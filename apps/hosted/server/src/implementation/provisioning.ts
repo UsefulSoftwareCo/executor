@@ -25,10 +25,88 @@ export const ProvisioningJob = Schema.Union([
   }),
 ]);
 const Manager = Schema.Struct({ userId: Schema.String, name: Schema.String });
+/**
+ * The part of a failure a background log may name. Messages, stacks, URLs and headers never enter
+ * it: a registry is reduced to its origin, so an operator's credentials and path stay out.
+ */
+const FailureCause = Schema.Struct({
+  tag: Schema.String,
+  package: Schema.optional(Schema.String),
+  version: Schema.optional(Schema.String),
+  registry: Schema.optional(Schema.String),
+  status: Schema.optional(Schema.Int),
+});
+type FailureCause = typeof FailureCause.Type;
+/** A log line keeps one record: no control character may enter it from a field. */
+const hasControlCharacter = (value: string) =>
+  [...value].some((character) => {
+    const code = character.codePointAt(0) ?? 0;
+    return code < 0x20 || code === 0x7f;
+  });
+/** A bounded name an error states as its own field, never text quoted from a response. */
+const causeName = (value: unknown) =>
+  typeof value === "string" &&
+  value.length > 0 &&
+  value.length <= 200 &&
+  !hasControlCharacter(value)
+    ? value
+    : undefined;
+/** Only a tag an error class names, so a response cannot choose the text logged. */
+const causeTag = (value: unknown) =>
+  typeof value === "object" &&
+  value !== null &&
+  "_tag" in value &&
+  typeof value._tag === "string" &&
+  /^[A-Za-z][A-Za-z0-9]{0,63}$/u.test(value._tag)
+    ? value._tag
+    : undefined;
+const causeOrigin = (value: unknown) => {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  try {
+    return new URL(value).origin;
+  } catch {
+    return undefined;
+  }
+};
+/**
+ * Project a failure onto the fields that may reach a background log: its tagged name and, when an
+ * error or its cause chain states them as typed fields, the package, version, registry origin and
+ * HTTP status. An error that states none of them is named by its tag alone.
+ */
+const failureCause = (error: unknown): FailureCause => {
+  let tag = "Unknown";
+  let packageName: string | undefined;
+  let version: string | undefined;
+  let registry: string | undefined;
+  let status: number | undefined;
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && typeof current === "object" && current !== null; depth += 1) {
+    const value = current as Record<string, unknown>;
+    tag = tag === "Unknown" ? (causeTag(value) ?? tag) : tag;
+    packageName ??= causeName(value.dependency) ?? causeName(value.package);
+    version ??= causeName(value.version);
+    registry ??= causeOrigin(value.registry);
+    status ??=
+      typeof value.status === "number" &&
+      Number.isInteger(value.status) &&
+      value.status >= 100 &&
+      value.status <= 599
+        ? value.status
+        : undefined;
+    current = value.cause;
+  }
+  return {
+    tag,
+    ...(packageName === undefined ? {} : { package: packageName }),
+    ...(version === undefined ? {} : { version }),
+    ...(registry === undefined ? {} : { registry }),
+    ...(status === undefined ? {} : { status }),
+  };
+};
 /** A safe failure projection for background logs and workflow retries. */
 export class ProvisioningFailed extends Schema.TaggedError<ProvisioningFailed>()(
   "ProvisioningFailed",
-  {},
+  { cause: Schema.optional(FailureCause) },
 ) {}
 /** Optional product services stay owned by the host, not by shared auth or the SDK. */
 export interface ProvisioningServices {
@@ -123,9 +201,10 @@ const attempt = <E, R>(
         : Effect.logWarning("Provisioning step failed", {
             job: id,
             reason: Schema.is(StorageError)(error) ? "storage" : "dependency",
+            cause: failureCause(error),
           }),
     ),
-    Effect.mapError(() => new ProvisioningFailed()),
+    Effect.mapError((error) => new ProvisioningFailed({ cause: failureCause(error) })),
     Effect.withSpan("hosted.provision"),
   );
 
@@ -219,11 +298,31 @@ export const drainProvisioning = (services: ProvisioningServices) =>
     for (const job of jobs)
       yield* provision(job.id, services).pipe(
         Effect.timeout("5 minutes"),
-        Effect.catch(() =>
+        Effect.catch((error) =>
           Effect.gen(function* () {
-            yield* sql`update hosted_provisioning set status = case when attempts >= 8 then 'failed' else 'queued' end,
-        available_at = now() + least(300, power(2, attempts)) * interval '1 second', updated_at = now() where id = ${job.id}`;
-            yield* Effect.logWarning("Provisioning attempt failed", { job: job.id });
+            const [state] =
+              yield* sql`update hosted_provisioning set status = case when attempts >= 8 then 'failed' else 'queued' end,
+        available_at = now() + least(300, power(2, attempts)) * interval '1 second', updated_at = now() where id = ${job.id}
+        returning status, attempts`.pipe(
+                Effect.flatMap(
+                  Schema.decodeUnknownEffect(
+                    Schema.Array(Schema.Struct({ status: Schema.String, attempts: Schema.Number })),
+                  ),
+                ),
+              );
+            yield* Effect.logWarning("Provisioning attempt failed", {
+              job: job.id,
+              ...(state === undefined
+                ? {}
+                : {
+                    attempts: state.attempts,
+                    outcome: state.status === "failed" ? "failed" : "requeued",
+                  }),
+              cause:
+                Schema.is(ProvisioningFailed)(error) && error.cause !== undefined
+                  ? error.cause
+                  : failureCause(error),
+            });
           }),
         ),
       );
