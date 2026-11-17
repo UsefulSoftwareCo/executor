@@ -37,7 +37,12 @@ import type {
   ToolSearchUnavailable,
 } from "./tools.ts";
 import type { AccountScope, App, AppRequirements } from "./apps.ts";
-import type { BuildMemoryExceeded, BuildUnanswered, VersionBuildFailed } from "./version.ts";
+import type {
+  AppVersionChanged,
+  BuildMemoryExceeded,
+  BuildUnanswered,
+  VersionBuildFailed,
+} from "./version.ts";
 import type { Account } from "./account.ts";
 import type {
   AccountConnectionRefused,
@@ -50,6 +55,7 @@ import type {
   ApprovalRequestId,
   OwnerId,
   StorageError,
+  VersionId,
 } from "./shared.ts";
 import type { BlobStorage } from "./blobs.ts";
 import type { MarkdownReader, MarkdownUnavailable } from "./markdown.ts";
@@ -459,10 +465,29 @@ export type Executor = Omit<FlatExecutor, "apps" | "appWorkflows" | "appWorkflow
       },
     ) => ReturnType<FlatExecutor["apps"]["copy"]>;
     /**
+     * Host-only: `deploy` files to an existing app only while `expectedVersion` is its active
+     * version and nothing activated since this deploy reserved its order. Both are checked under
+     * the app's lock when the deploy reserves its order and again when it activates; otherwise it
+     * fails with `AppVersionChanged` and records no version. For a host that replaces a version
+     * it has checked, so a concurrent deploy or activation is never overwritten or mistaken for
+     * its own. A build the host's compiler or runner did not answer is `BuildUnanswered`, as for
+     * `build`.
+     */
+    readonly deployReplacing: (input: {
+      readonly owner: OwnerId;
+      readonly app: AppId;
+      readonly files: SourceFiles;
+      readonly expectedVersion: VersionId;
+    }) => Effect.Effect<
+      Effect.Success<ReturnType<FlatExecutor["apps"]["deploy"]>>,
+      Effect.Error<ReturnType<FlatExecutor["apps"]["deploy"]>> | AppVersionChanged | BuildUnanswered
+    >;
+    /**
      * Host-only: compile source files as `deploy` would and return the requirements they declare,
      * writing nothing: no app, version or source is saved, and the build is neither retained nor
      * cached. For checks that must not create anything. Fails
-     * like `deploy`'s build, except that a compiler that did not answer is `BuildUnanswered`.
+     * like `deploy`'s build, except that a build the host's compiler or runner did not answer is
+     * `BuildUnanswered`.
      */
     readonly build: (input: {
       readonly owner: OwnerId;
@@ -519,6 +544,6 @@ export type PromiseExecutor = Promisify<
     | "apps"
   > & {
     readonly tools: Omit<Executor["tools"], "approval" | "searchable" | "search">;
-    readonly apps: Omit<Executor["apps"], "copyAs" | "build">;
+    readonly apps: Omit<Executor["apps"], "copyAs" | "build" | "deployReplacing">;
   }
 >;

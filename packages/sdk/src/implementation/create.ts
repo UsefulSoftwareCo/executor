@@ -282,6 +282,14 @@ export const createExecutor = (
                 app.activeVersion === version.id ? activated(app.id) : Effect.void,
               ),
             ),
+        deployReplacing: (input) =>
+          apps
+            .deployReplacing(input)
+            .pipe(
+              Effect.tap(({ app, version }) =>
+                app.activeVersion === version.id ? activated(app.id) : Effect.void,
+              ),
+            ),
         activate: (input) => apps.activate(input).pipe(Effect.tap((app) => activated(app.id))),
         checkCredentials,
       },

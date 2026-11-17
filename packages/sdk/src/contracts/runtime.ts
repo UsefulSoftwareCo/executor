@@ -281,8 +281,10 @@ export class RuntimeBuildFailed extends Schema.TaggedError<RuntimeBuildFailed>()
     message: Schema.optional(BuildMessage),
     location: Schema.optional(SourceLocation),
     /**
-     * The compiler did not answer in time: a host failure that says nothing about the source, and
-     * that building again may not repeat.
+     * The host's compiler or runner did not answer: the compiler did not reply in time, or a call
+     * to the compiler or to the runner that reads the build's requirements failed before it
+     * replied. A host failure that says nothing about the source, and that building again may not
+     * repeat. Set only where the host made the call, never from an error's text.
      */
     unanswered: Schema.optional(Schema.Literal(true)),
   },

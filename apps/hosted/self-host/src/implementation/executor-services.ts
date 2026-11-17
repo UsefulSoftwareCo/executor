@@ -1,7 +1,11 @@
 import { hostedAppCapabilities } from "@executor-js/hosted-server/app-management";
 import { executorSelfHostApiDocument } from "../contracts/api.ts";
 import { AppGitOrigins, AppManagementHost } from "@executor-js/app-management";
-import { expireIdleAgentGrants, runStartupDataSteps } from "@executor-js/app-management/data-steps";
+import {
+  expireIdleAgentGrants,
+  runStartupDataSteps,
+  startupCatalogCopyRebuild,
+} from "@executor-js/app-management/data-steps";
 import { SelfHostAuth, selfHostAuth } from "../auth.ts";
 /** Self-host SDK uses the same PGlite connection as Better Auth. */
 import type { HostEgress } from "@executor-js/utils/url-policy";
@@ -161,6 +165,9 @@ export const selfHostExecutorServices = <E, R>(
       yield* Effect.forkScoped(deliverEvents(executor));
       // The schema is current and nothing serves or builds yet; the caller holds the data lock.
       const auth = yield* selfHostAuth;
+      // Self-host applies at startup without a reviewed report, so the catalog-copy rebuild is
+      // listed only when its operator turns it on.
+      const catalogCopyRebuild = yield* startupCatalogCopyRebuild;
       yield* runStartupDataSteps(
         {
           executor,
@@ -170,6 +177,7 @@ export const selfHostExecutorServices = <E, R>(
           // and its first pass reconciles the sources a redeploy left pending.
           executorAppRedeployed: executorDefaultRedeployed(Effect.void),
           appCopies: hostedAppCopies(executor),
+          ...(catalogCopyRebuild === undefined ? {} : { catalogCopyRebuild }),
         },
         "private_hosted",
       );

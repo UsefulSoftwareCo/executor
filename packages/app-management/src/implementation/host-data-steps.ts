@@ -1,5 +1,5 @@
 /** The data steps every host runs, in order. Local, self-host and Cloud share this one list. */
-import { Clock, Config, Effect } from "effect";
+import { Clock, Config, Effect, Option } from "effect";
 import type { DataStepJournal } from "../contracts/data-steps.ts";
 import { runDataSteps } from "./data-steps.ts";
 import { frameworkPinCatchUpRelease, frameworkPinRelease } from "../contracts/framework-pin.ts";
@@ -36,6 +36,12 @@ import {
   type UnremovableWebhooksHostServices,
 } from "./unremovable-webhooks.ts";
 import { agentGrantModesStep, agentGrantModesStepName } from "./agent-grant-modes.ts";
+import {
+  catalogCopyRebuildScope,
+  catalogCopyRebuildStep,
+  type CatalogCopyRebuildHost,
+} from "./catalog-copy-rebuild.ts";
+import { catalogCopyRebuildStepName } from "../contracts/catalog-copy-rebuild.ts";
 import type { SqlClient } from "effect/sql";
 import type { DataStep } from "../contracts/data-steps.ts";
 
@@ -48,16 +54,19 @@ export type DataStepHost = FrameworkPinHost &
   LocalOwnersHost &
   OAuthClientsByIssuerHost &
   ProfileAppCopiesHost &
-  UnremovableWebhooksHostServices;
+  UnremovableWebhooksHostServices &
+  CatalogCopyRebuildHost;
 
 /**
  * A step by its journal name. A `local` step is listed only by a host that passes local owners:
- * local, whose journal requires them. Self-host and Cloud never list one.
+ * local, whose journal requires them. Self-host and Cloud never list one. A step with `listed` is
+ * listed only by a host it accepts.
  */
 type ListedStep =
   | {
       readonly name: string;
       readonly step: (host: DataStepHost, name: string) => DataStep<SqlClient.SqlClient>;
+      readonly listed?: (host: Pick<DataStepHost, "catalogCopyRebuild">) => boolean;
     }
   | {
       readonly name: string;
@@ -105,12 +114,23 @@ const listedSteps: ReadonlyArray<ListedStep> = [
   // One-off: store on each MCP grant the approval mode its consent's resource named, now that the
   // grant record, not the URL, holds it.
   { name: agentGrantModesStepName, step: agentGrantModesStep },
+  // One-off: rebuild untouched copies of official catalog apps from their own installed source on
+  // apps 0.0.1-beta.140, where the account merge fix is (E-042). Listed only by a host that passes
+  // `catalogCopyRebuild`: Cloud, and self-host when its operator turns it on
+  // (`EXECUTOR_CATALOG_COPY_REBUILD=on`). See notes/catalog-copy-rebuild.md.
+  {
+    name: catalogCopyRebuildStepName,
+    step: catalogCopyRebuildStep,
+    listed: (host) => host.catalogCopyRebuild !== undefined,
+  },
 ];
 
 export const hostDataSteps = (host: DataStepHost): ReadonlyArray<DataStep<SqlClient.SqlClient>> =>
   listedSteps.flatMap((listed) =>
     "step" in listed
-      ? [listed.step(host, listed.name)]
+      ? listed.listed === undefined || listed.listed(host)
+        ? [listed.step(host, listed.name)]
+        : []
       : host.localOwners === undefined
         ? []
         : [listed.local(host, host.localOwners)],
@@ -120,15 +140,53 @@ export const hostDataSteps = (host: DataStepHost): ReadonlyArray<DataStep<SqlCli
  * The journal names of the steps `hostDataSteps` lists for a host, in order, without building
  * them. `bun run check` holds local's to SDK storage (`scripts/check-local-data-steps.ts`).
  */
-export const hostDataStepNames = (host: Pick<DataStepHost, "localOwners">) =>
+export const hostDataStepNames = (host: Pick<DataStepHost, "localOwners" | "catalogCopyRebuild">) =>
   listedSteps.flatMap((listed) =>
-    "step" in listed || host.localOwners !== undefined ? [listed.name] : [],
+    "step" in listed
+      ? listed.listed === undefined || listed.listed(host)
+        ? [listed.name]
+        : []
+      : host.localOwners !== undefined
+        ? [listed.name]
+        : [],
   );
 
 /**
  * Local and self-host apply pending steps at startup. `report` holds them: each start then reports
  * what applying would do, writes nothing and records no step as applied.
  */
+/**
+ * Self-host lists the catalog-copy rebuild only when its operator sets `on`: it applies at
+ * startup, without the report Cloud reviews first. Local never lists it. With `on`, every copy is
+ * in scope unless `EXECUTOR_CATALOG_COPY_REBUILD_SCOPE` names a narrower one (see
+ * `CatalogCopyRebuildScope`); turning the step on is the operator's choice for the whole host.
+ * An app still failing after three starts is recorded `gave-up`, since each start waits for the
+ * step before it serves.
+ *
+ * Self-host is not paced. E2E runs only, `EXECUTOR_TEST_CATALOG_COPY_REBUILD_PACE` with
+ * `EXECUTOR_ENVIRONMENT=e2e` paces each start as Cloud paces each tick, so a scenario can see
+ * where a pace stops the step; the next start resumes it.
+ */
+export const startupCatalogCopyRebuild = Effect.gen(function* () {
+  const listed = yield* Config.Literals(["off", "on"], "EXECUTOR_CATALOG_COPY_REBUILD").pipe(
+    Config.withDefault("off" as const),
+  );
+  if (listed === "off") return undefined;
+  const scope = yield* Config.String("EXECUTOR_CATALOG_COPY_REBUILD_SCOPE").pipe(
+    Config.withDefault("all"),
+  );
+  const environment = yield* Config.String("EXECUTOR_ENVIRONMENT").pipe(Config.withDefault(""));
+  const pace =
+    environment === "e2e"
+      ? yield* Config.Int("EXECUTOR_TEST_CATALOG_COPY_REBUILD_PACE").pipe(Config.option)
+      : Option.none();
+  return {
+    scope: yield* catalogCopyRebuildScope(scope),
+    passes: 3,
+    ...(Option.isSome(pace) ? { pace: pace.value } : {}),
+  };
+});
+
 export const startupDataStepMode = Config.Literals(["report", "apply"], "EXECUTOR_DATA_STEPS").pipe(
   Config.withDefault("apply" as const),
 );

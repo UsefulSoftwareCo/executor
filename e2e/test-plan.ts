@@ -6581,6 +6581,134 @@ export const scenarios = plan({
       ),
     },
   },
+  catalogCopyRebuild: {
+    fixtures: "actors",
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "Untouched catalog copies are rebuilt once on beta.140 from their own source, and a report writes nothing",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildUnreachableRegistry: {
+    fixtures: "actors",
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "A catalog copy rebuild that cannot reach the npm registry is retried at the next start, not skipped",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildCompilerUnavailable: {
+    fixtures: "actors",
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "A catalog copy rebuild whose compiler does not answer is retried at the next start, not skipped",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildConcurrentActivation: {
+    fixtures: "actors",
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title: "A catalog copy rebuild never deploys over a version activated while it builds",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildInterrupted: {
+    fixtures: "actors",
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "A catalog copy rebuild stopped after its deploy is finished by the next start, not redeployed",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildStaged: {
+    fixtures: "actors",
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "A catalog copy rebuild applies only to its stage's scope, and a wider stage rebuilds the copies left",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildGivesUp: {
+    fixtures: "actors",
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "A catalog copy rebuild whose registry never comes back gives up after three starts, and the next stage tries again",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildPaced: {
+    fixtures: "actors",
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "A paced catalog copy rebuild starts no more compiler builds per run than its pace, and deploys a copy it stopped after its check at the next run",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
+  catalogCopyRebuildIntentKept: {
+    fixtures: "actors",
+    legacyStorage: true,
+    serverEnvironment: { EXECUTOR_DATA_STEPS: "report", EXECUTOR_CATALOG_COPY_REBUILD: "on" },
+    file: "catalog-copy-rebuild.spec.ts",
+    title:
+      "A catalog copy rebuild left part way stays to be finished when the app cannot be read, through the retry bound and into a stage that does not name it",
+    targets: {
+      "self-host": scheduled,
+      cloud: na(
+        "Cloud runs the same step from its Worker's cron; the local Worker never reaches it because the earlier framework pin step keeps retrying there without Cloudflare Artifacts.",
+      ),
+      local: na("Local never lists the catalog copy rebuild."),
+    },
+  },
   buildFrameworkMigration: {
     fixtures: "actors",
     serverEnvironment: { EXECUTOR_DATA_STEPS: "report" },

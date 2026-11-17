@@ -26,6 +26,7 @@ export {
 export { appRuntime, buildLoadSpan, type AppRuntimeHost } from "./implementation/app-runtime.ts";
 export {
   remoteAppRunner,
+  RunnerUnanswered,
   serveAppRunner,
   type RemoteAppRunner,
   type RemoteCapabilities,
