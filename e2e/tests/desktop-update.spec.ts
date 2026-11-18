@@ -28,10 +28,16 @@ import {
 } from "../support/desktop.ts";
 import { scenarios } from "../test-plan.ts";
 
-/** What the feed offers: a version, and whether its download's bytes fail verification. */
+/**
+ * What the feed offers: a version, whether its download's bytes fail verification, and the notes
+ * the release feed lists in electron-updater's `releaseNotes` (scripts/releases/desktop-feed.ts).
+ */
 interface Offer {
   readonly version: string;
   readonly corrupt: boolean;
+  readonly notes?: ReadonlyArray<{ readonly version: string; readonly note: string | null }>;
+  /** The release after which `notes` lists every one, as `releaseNotesSince`. */
+  readonly since?: string;
 }
 
 /**
@@ -42,7 +48,13 @@ interface Offer {
 const updateFeed = Effect.gen(function* () {
   const port = yield* freePort;
   let offer:
-    | { readonly version: string; readonly listed: Buffer; readonly served: Buffer }
+    | {
+        readonly version: string;
+        readonly listed: Buffer;
+        readonly served: Buffer;
+        readonly notes?: Offer["notes"];
+        readonly since?: Offer["since"];
+      }
     | undefined;
   const file = (version: string) => `Executor-${version}-mac-arm64.zip`;
   yield* Effect.acquireRelease(
@@ -63,6 +75,17 @@ const updateFeed = Effect.gen(function* () {
               `path: ${file(offer.version)}`,
               `sha512: ${sha512}`,
               `releaseDate: '2026-11-17T00:00:00.000Z'`,
+              // JSON strings are YAML strings, as the release feed writes them.
+              ...(offer.notes === undefined
+                ? []
+                : [
+                    "releaseNotes:",
+                    ...offer.notes.flatMap((entry) => [
+                      `  - version: ${entry.version}`,
+                      `    note: ${JSON.stringify(entry.note)}`,
+                    ]),
+                  ]),
+              ...(offer.since === undefined ? [] : [`releaseNotesSince: ${offer.since}`]),
               "",
             ].join("\n"),
           );
@@ -97,6 +120,8 @@ const updateFeed = Effect.gen(function* () {
           version: next.version,
           listed,
           served: next.corrupt ? randomBytes(listed.length) : listed,
+          notes: next.notes,
+          since: next.since,
         };
       }),
   };
@@ -282,7 +307,21 @@ it.live(scenarios.desktopUpdate.title, () =>
 
           // Checking again downloads it whole. The menu's check offers the restart in a dialog,
           // which is declined here; the block and the menu keep offering it with the long version.
-          yield* feed.offer({ version: "2.0.0-beta.123", corrupt: false });
+          // This time the feed lists notes, as the release feed does: one line is HTML, which the
+          // release notes' allow-list refuses, and a release newer than the offer is left out.
+          yield* feed.offer({
+            version: "2.0.0-beta.123",
+            corrupt: false,
+            notes: [
+              { version: "2.0.0-beta.124", note: "Not offered yet." },
+              {
+                version: "2.0.0-beta.123",
+                note: 'Apps open from the sidebar.\n<img src=x onerror="document.title=1">\nThe desktop app restarts faster.',
+              },
+              { version: "2.0.0-beta.122", note: null },
+            ],
+            since: "2.0.0-beta.121",
+          });
           yield* clickMenuItem(electron, "Updates", "Check for updates…");
           yield* dialogShown(electron, "Executor 2 2.0.0-beta.123 is ready to install.");
           yield* driver("the newer update is ready in the sidebar", () =>
@@ -295,10 +334,46 @@ it.live(scenarios.desktopUpdate.title, () =>
           ).toBe("Update ready: Executor v2.0.0-beta.123. Restart Executor to install it.");
           expect(yield* blockLines(page)).toEqual([
             "Update ready",
-            "Version 2.0.0-beta.123 is ready to install.",
+            "v2.0.0-beta.123 Apps open from the sidebar.",
             "Restart to update",
           ]);
+          // The updater passes on how far back the feed says its notes are whole.
+          expect(
+            yield* driver("read the update the desktop sent", () =>
+              page.evaluate(
+                () =>
+                  JSON.parse(document.documentElement.getAttribute("data-desktop-update") ?? "{}")
+                    .releasesSince,
+              ),
+            ),
+          ).toBe("2.0.0-beta.121");
           yield* screenshot(page, "desktop-update-ready");
+          // The block opens the notes: a development build runs no release version, so every
+          // release up to the ready one is listed, each with its notes as text.
+          yield* driver("open the notes", () =>
+            sidebar(page)
+              .getByRole("button", { name: "See what's new in v2.0.0-beta.123" })
+              .click(),
+          );
+          const notes = page.getByRole("dialog", { name: "What's new in v2.0.0-beta.123" });
+          expect(
+            yield* driver("read the notes", () =>
+              notes.evaluate((element) =>
+                [...element.querySelectorAll(".release-notes-release")].map((release) => [
+                  release.querySelector("h3")?.textContent,
+                  ...[...release.querySelectorAll("li, p")].map((item) => item.textContent),
+                ]),
+              ),
+            ),
+          ).toEqual([
+            ["v2.0.0-beta.123", "Apps open from the sidebar.", "The desktop app restarts faster."],
+            ["v2.0.0-beta.122", "No changes were listed for this release."],
+          ]);
+          expect(yield* driver("count images", () => notes.locator("img").count())).toBe(0);
+          yield* screenshot(page, "desktop-update-notes");
+          yield* driver("close the notes", () =>
+            page.keyboard.press("Escape").then(() => notes.waitFor({ state: "detached" })),
+          );
           expect(yield* updatesMenu(electron, (labels) => labels.length === 2)).toEqual([
             "Restart to update (v2.0.0-beta.123)",
             "Check for updates…",

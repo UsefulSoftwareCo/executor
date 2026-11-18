@@ -9,7 +9,11 @@ import { app, dialog } from "electron";
 import { autoUpdater } from "electron-updater";
 import { Duration, Effect, FileSystem, Option, Path, Ref, Schedule, Semaphore } from "effect";
 
-import type { DesktopUpdate } from "../../../web/src/contracts/desktop-update.ts";
+import {
+  type DesktopUpdate,
+  feedReleases,
+  feedReleasesSince,
+} from "../../../web/src/contracts/desktop-update.ts";
 import { UpdateFailed } from "../contracts/desktop.ts";
 const invoke = <A>(operation: () => Promise<A>) =>
   Effect.tryPromise({ try: operation, catch: () => new UpdateFailed() });
@@ -87,6 +91,10 @@ export const makeUpdater = (options: {
         const result = yield* invoke(() => autoUpdater.checkForUpdates());
         if (result === null || !result.isUpdateAvailable) return Option.none<string>();
         const version = result.updateInfo.version;
+        // The notes come in the feed file this check already read; nothing else is fetched.
+        const releases = feedReleases(result.updateInfo.releaseNotes, version);
+        const releasesSince = feedReleasesSince(result.updateInfo);
+        const running = app.getVersion();
         const previous = yield* Ref.get(update);
         if (
           Option.isSome(previous) &&
@@ -108,7 +116,15 @@ export const makeUpdater = (options: {
           Effect.onInterrupt(() => Effect.sync(() => cancellation.cancel())),
           Effect.onError(() => set(Option.none())),
         );
-        yield* set(Option.some({ state: "ready", version }));
+        yield* set(
+          Option.some({
+            state: "ready",
+            version,
+            current: running,
+            ...(releases === undefined ? {} : { releases }),
+            ...(releases === undefined || releasesSince === undefined ? {} : { releasesSince }),
+          }),
+        );
         return Option.some(version);
       });
 

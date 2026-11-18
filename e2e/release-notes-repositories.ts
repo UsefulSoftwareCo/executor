@@ -66,9 +66,10 @@ export const portTrailers = [
 /**
  * Main with a release commit for beta.4 and the merges after it, and a public repository whose
  * tags export beta.3 (main's first commit), beta.4 (its release commit, named by a short sha) and
- * beta.6, from a commit main does not hold. Executor 1's tags are there too.
+ * beta.6, from a commit main does not hold. Executor 1's tags are there too. `before` merges
+ * between beta.3 and beta.4.
  */
-export const repositories = (after: ReadonlyArray<Merge>) =>
+export const repositories = (after: ReadonlyArray<Merge>, before: ReadonlyArray<Merge> = []) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -97,6 +98,7 @@ export const repositories = (after: ReadonlyArray<Merge>) =>
         return yield* git(main, "rev-parse", "HEAD");
       });
     const first = yield* commit({ title: "Start (#1)", files: ["apps/cli/src/main.ts"] });
+    for (const merge of before) yield* commit(merge);
     const beta4 = yield* commit({
       title: "Release 2.0.0-beta.4 [skip ci]",
       files: ["apps/cli/package.json"],
@@ -118,15 +120,36 @@ export const repositories = (after: ReadonlyArray<Merge>) =>
     return { main, publicRepo: `file://${published}`, first, beta4, merged };
   });
 
+/**
+ * Runs `scripts/releases/release-notes.ts` in main with `args`. Every run also writes the notes as
+ * JSON, to a scratch file with the most history the script lists when the case writes no `--json`
+ * of its own, and when the script succeeds the desktop feed's check
+ * (`desktop-feed.ts --check-notes`, the release workflow's next step) must accept that file for the
+ * same version: so no case's history can make notes that the feed refuses.
+ */
 export const notes = (
   repos: { readonly main: string; readonly publicRepo: string },
   args: ReadonlyArray<string>,
 ) =>
   Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const option = (name: string) =>
+      args.includes(name) ? args[args.indexOf(name) + 1] : undefined;
+    const json =
+      option("--json") ??
+      path.join(
+        yield* fs.makeTempDirectoryScoped({ prefix: "executor-notes-json-" }),
+        "notes.json",
+      );
+    const written = [
+      ...args,
+      ...(option("--json") === undefined ? ["--json", json] : []),
+      ...(option("--history") === undefined ? ["--history", "20"] : []),
+    ];
     const child = yield* processes.spawn(
-      ChildProcess.make("node", [path.resolve("scripts/releases/release-notes.ts"), ...args], {
+      ChildProcess.make("node", [path.resolve("scripts/releases/release-notes.ts"), ...written], {
         cwd: repos.main,
         env: { ...process.env, PUBLIC_REPO: repos.publicRepo },
         stdout: "pipe",
@@ -141,6 +164,23 @@ export const notes = (
       ],
       { concurrency: "unbounded" },
     );
+    if (Number(exitCode) === 0) {
+      const version = option("--version");
+      const feed = yield* run(
+        "node",
+        [
+          path.resolve("scripts/releases/desktop-feed.ts"),
+          "--check-notes",
+          json,
+          ...(version === undefined ? [] : ["--version", version]),
+        ],
+        process.cwd(),
+      );
+      expect(
+        feed.exitCode,
+        `the desktop feed refuses the notes release-notes.ts ${written.join(" ")} wrote: ${feed.stdout}${feed.stderr}`,
+      ).toBe(0);
+    }
     return { stdout, stderr, exitCode: Number(exitCode) };
   }).pipe(Effect.scoped);
 

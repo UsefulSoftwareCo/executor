@@ -1,8 +1,23 @@
 /**
  * Build the desktop update channel files for this release from every platform's
- * electron-builder metadata. Usage: desktop-feed.ts <downloaded artifacts> <output>.
+ * electron-builder metadata. Usage: desktop-feed.ts <downloaded artifacts> <output> [<notes>].
  * Nothing is uploaded; the release workflow publishes the output after the
  * versioned GitHub release is public.
+ *
+ * `<notes>` is the JSON `scripts/releases/release-notes.ts --json` writes. Each channel file then
+ * carries, as electron-updater's `releaseNotes` (`{ version, note }`, newest first), the notes of
+ * this release and the ones before it that reach the desktop app, one per line, so an install
+ * shows what changed between its version and this one from the file its updater already reads.
+ * A release with none has a `null` note. The notes list only as far back as the notes script
+ * could place every release, so the file also carries the notes' `since` as `releaseNotesSince`:
+ * every release after it, up to this one, is listed, and an install says "since" only from there.
+ * The notes script and the feed hold the notes to one rule (`notesHistoryProblem`).
+ *
+ * `desktop-feed.ts --check-notes <notes> [--version <version>]` reads `<notes>` as the feed would
+ * for `--version` (by default this release's) and writes nothing. The release workflow runs it as
+ * soon as the notes are written, before any build, and again in the publish job on the copy that
+ * job downloaded, before it makes anything public, so notes the feed cannot carry stop the release
+ * there rather than after everything else is public.
  */
 import { createHash } from "node:crypto";
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
@@ -21,6 +36,7 @@ import {
   ReleaseVersion,
   type ReleaseChannel,
 } from "./config.ts";
+import { NotesHistory, notesHistoryProblem } from "./notes-history.ts";
 
 const UpdateFile = Schema.Struct({
   url: Schema.String,
@@ -29,18 +45,61 @@ const UpdateFile = Schema.Struct({
   blockMapSize: Schema.optional(Schema.Number),
   isAdminRightsRequired: Schema.optional(Schema.Boolean),
 });
+/** The notes the desktop shows: those for every install and for the CLI and desktop app. */
+const desktopAreas = new Set(["All installs", "CLI and desktop"]);
+
 const UpdateInfo = Schema.Struct({
   version: ReleaseVersion,
   files: Schema.NonEmptyArray(UpdateFile),
   releaseDate: Schema.String,
 });
 
+/**
+ * The notes that reach the desktop app, from `release-notes.ts --json`'s file for `version`, and
+ * the release after which they list every one, once `notesHistoryProblem` finds nothing wrong.
+ */
+const readNotes = Effect.fnUntraced(function* (
+  notesFile: string,
+  version: typeof ReleaseVersion.Type,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const notes = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(NotesHistory))(
+    yield* fs.readFileString(notesFile),
+  );
+  const problem = notesHistoryProblem(notes, version);
+  if (problem !== undefined) return yield* Effect.die(new Error(`${notesFile} ${problem}`));
+  const releaseNotes = notes.releases.map((entry) => {
+    const lines = entry.notes
+      .filter((note) => desktopAreas.has(note.area))
+      .map((note) => note.text);
+    return { version: entry.version, note: lines.length === 0 ? null : lines.join("\n") };
+  });
+  return { releaseNotes, since: notes.since };
+});
+
 const program = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const [input, output] = process.argv.slice(2);
+  const argv = process.argv.slice(2);
+  if (
+    argv[0] === "--check-notes" &&
+    argv[1] !== undefined &&
+    (argv.length === 2 || (argv.length === 4 && argv[2] === "--version"))
+  ) {
+    const version = yield* Schema.decodeUnknownEffect(ReleaseVersion)(argv[3] ?? release.version);
+    const checked = yield* readNotes(argv[1], version);
+    return yield* Console.log(
+      `${argv[1]}: notes for ${checked.releaseNotes.length} releases, from ${version}, every one since ${checked.since}`,
+    );
+  }
+  const [input, output, notesFile] = argv;
   if (input === undefined || output === undefined)
-    return yield* Effect.die(new Error("Usage: desktop-feed.ts <artifacts> <output>"));
+    return yield* Effect.die(
+      new Error(
+        "Usage: desktop-feed.ts <artifacts> <output> [<notes>] | --check-notes <notes> [--version <version>]",
+      ),
+    );
+  const notes = notesFile === undefined ? undefined : yield* readNotes(notesFile, release.version);
   const assetBase = `https://github.com/${release.repository}/releases/download/${encodeURIComponent(release.tag)}/`;
 
   // Every platform must describe this exact version and the installer bytes it ships.
@@ -111,6 +170,9 @@ const program = Effect.gen(function* () {
       const feed = {
         ...info,
         files: info.files.map((file) => ({ ...file, url: assetBase + file.url })),
+        ...(notes === undefined
+          ? {}
+          : { releaseNotes: notes.releaseNotes, releaseNotesSince: notes.since }),
       };
       // JSON is valid YAML, and electron-updater parses these files as YAML.
       yield* fs.writeFileString(path.join(output, name), `${JSON.stringify(feed, null, 2)}\n`);

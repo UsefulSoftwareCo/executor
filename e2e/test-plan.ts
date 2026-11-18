@@ -3393,6 +3393,16 @@ export const scenarios = plan({
       cloud: na("Only the desktop app, which runs the local dashboard, updates itself."),
     },
   },
+  localDesktopUpdateNotes: {
+    file: "local-desktop-update.spec.ts",
+    title:
+      "local dashboard leads the desktop's ready update with its newest note and opens every note since the running version, newest first, as text with each release page, leaving out lines the release notes' allow-list refuses, and says they are the changes since the running version only when the feed says its notes are whole back to it",
+    targets: {
+      local: scheduled,
+      "self-host": na("Only the desktop app, which runs the local dashboard, updates itself."),
+      cloud: na("Only the desktop app, which runs the local dashboard, updates itself."),
+    },
+  },
   localSupportDialog: {
     file: "local-support-dialog.spec.ts",
     title: "local dashboard keeps its resource links without the Cloud support dialog",

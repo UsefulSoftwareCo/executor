@@ -6,7 +6,9 @@
  */
 import { expect, layer } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { Effect, FileSystem, Path } from "effect";
+import { Effect, FileSystem, Path, Stream } from "effect";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { createHash } from "node:crypto";
 import {
   acceptedNotes,
   git,
@@ -889,5 +891,355 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release notes", (it) =
             `::warning title=Release notes::${sha} has a message that holds "<", which can hide text when GitHub renders it, so none of its Release-note: lines are counted.`,
           ]);
       }),
+  );
+
+  it.effect(
+    "--json lists this release's notes and those of the releases before it as plain text by area, newest first, without a port's credit",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const repos = yield* repositories(
+          [
+            {
+              title: "Show app accounts on the Apps cards (#101)",
+              body: "Release-note: Each app's card now shows its accounts.",
+              files: ["packages/sdk/src/accounts.ts"],
+            },
+            {
+              title: "Fix self-host 502s behind a proxy (#103)",
+              body: "Release-note: A self-hosted Executor behind a proxy no longer answers 502.",
+              files: ["apps/hosted/self-host/src/proxy.ts"],
+            },
+            {
+              title: "Rate-limit each self-host client (#112)",
+              body: `Release-note: A ported change is listed without its credit.\n\n${portMarker}\n\n${portTrailers}`,
+              files: ["apps/hosted/self-host/src/limit.ts"],
+            },
+            {
+              title: "Bill Cloud workspaces by the hour (#117)",
+              body: "Release-note: Cloud workspaces are billed by the hour.",
+              files: ["apps/hosted/cloud/src/billing.ts"],
+            },
+          ],
+          [
+            {
+              title: "Speed up search (#90)",
+              body: "Release-note: Search answers faster.",
+              files: ["packages/sdk/src/search.ts"],
+            },
+            {
+              title: "Add executor upgrade (#91)",
+              body: "Release-note: The upgrade command updates Executor in place.",
+              files: ["apps/cli/src/upgrade.ts"],
+            },
+            {
+              title: "Hide a note (#92)",
+              body: "Release-note: PRIVATE <b>hidden</b> note",
+              files: ["packages/sdk/src/hidden.ts"],
+            },
+          ],
+        );
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-notes-json-" });
+        const json = `${directory}/notes.json`;
+        const result = yield* notes(repos, [
+          "--version",
+          "2.0.0-beta.5",
+          "--output",
+          `${directory}/notes.md`,
+          "--json",
+          json,
+          "--history",
+          "3",
+        ]);
+        expect(result.exitCode, result.stderr).toBe(0);
+        expect(JSON.parse(yield* fs.readFileString(json))).toEqual({
+          // Every release after beta.3 is listed.
+          since: "2.0.0-beta.3",
+          releases: [
+            {
+              version: "2.0.0-beta.5",
+              // In merge order; the Cloud-only line is left out, as from the Markdown.
+              notes: [
+                { area: "All installs", text: "Each app's card now shows its accounts." },
+                {
+                  area: "Self-host",
+                  text: "A self-hosted Executor behind a proxy no longer answers 502.",
+                },
+                { area: "Self-host", text: "A ported change is listed without its credit." },
+              ],
+            },
+            {
+              // Against beta.3. Its own release commit is no change, and the hidden note is none.
+              version: "2.0.0-beta.4",
+              notes: [
+                { area: "All installs", text: "Search answers faster." },
+                {
+                  area: "CLI and desktop",
+                  text: "The upgrade command updates Executor in place.",
+                },
+              ],
+            },
+            // beta.3 has no release before it in the public repository, so it is not listed.
+          ],
+        });
+        // The Markdown is as without --json: this release only, with the port's credit.
+        const markdown = yield* fs.readFileString(`${directory}/notes.md`);
+        expect(markdown).toContain("## Changes since 2.0.0-beta.4");
+        expect(markdown).toContain("thanks @danizord");
+        expect(markdown).not.toContain("Search answers faster.");
+        // The earlier release's warnings were its own run's; they are not repeated.
+        expect(result.stderr).not.toContain('holds "<"');
+        expect(yield* fs.readFileString(json)).not.toContain("PRIVATE");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "--json says since when its list is whole: a release it cannot place ends the list there, and the releases before it are left out, as the desktop feed would refuse them",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const repos = yield* repositories(
+          [
+            {
+              title: "Show app accounts on the Apps cards (#101)",
+              body: "Release-note: Each app's card now shows its accounts.",
+              files: ["packages/sdk/src/accounts.ts"],
+            },
+          ],
+          [
+            {
+              title: "Speed up search (#90)",
+              body: "Release-note: Search answers faster.",
+              files: ["packages/sdk/src/search.ts"],
+            },
+          ],
+        );
+        // 2.0.0 exports main's last merge. Below it, beta.6 exports a commit main does not hold, so
+        // nothing places it: 2.0.0 cannot be listed against it. beta.4 could be, against beta.3,
+        // but nothing would say that beta.6 and 2.0.0 are missing after it.
+        const published = repos.publicRepo.replace(/^file:\/\//u, "");
+        yield* git(
+          published,
+          "commit",
+          "--quiet",
+          "--allow-empty",
+          "-m",
+          `Export ${repos.merged.at(-1)}`,
+        );
+        yield* git(published, "tag", "executor@2.0.0");
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-notes-since-" });
+        const json = `${directory}/notes.json`;
+        const result = yield* notes(repos, [
+          "--version",
+          "2.0.1",
+          "--json",
+          json,
+          "--history",
+          "5",
+        ]);
+        expect(result.exitCode, result.stderr).toBe(0);
+        expect(result.stderr).toContain(
+          "executor@2.0.0 and the releases before it are left out of the JSON history: executor@2.0.0-beta.6 exports abcdef0, which this checkout does not hold.",
+        );
+        const written = JSON.parse(yield* fs.readFileString(json));
+        // The list is whole only after 2.0.0, and holds nothing before it. `notes` has checked
+        // that the desktop feed takes it.
+        expect({
+          since: written.since,
+          versions: written.releases.map((release: { version: string }) => release.version),
+        }).toEqual({ since: "2.0.0", versions: ["2.0.1"] });
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("--history takes a whole number from 1 to 20", () =>
+    Effect.gen(function* () {
+      const repos = yield* repositories([]);
+      for (const history of ["0", "21", "two"]) {
+        const result = yield* notes(repos, [
+          "--version",
+          "2.0.0-beta.5",
+          "--json",
+          "/dev/null",
+          "--history",
+          history,
+        ]);
+        expect(result.exitCode, history).not.toBe(0);
+        // NodeRuntime.runMain logs the failure to stdout.
+        expect(result.stdout).toContain(
+          `--history takes a whole number from 1 to 20; got ${history}.`,
+        );
+      }
+    }),
+  );
+
+  it.effect(
+    "desktop-feed.ts puts the notes that reach the desktop into each channel file as electron-updater's releaseNotes with how far back they are whole, and the release workflow checks them as the feed reads them before any build and in the publish job before it makes anything public",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const version = JSON.parse(yield* fs.readFileString("apps/cli/package.json")).version;
+        const channel = version.includes("-beta.") ? "beta" : "latest";
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-feed-notes-" });
+        // Each platform's electron-builder metadata and the installer bytes it describes.
+        const platforms = [
+          ["darwin", "arm64", `executor-v2-${channel}-mac.yml`],
+          ["darwin", "x64", `executor-v2-${channel}-mac.yml`],
+          ["linux", "x64", `executor-v2-${channel}-linux.yml`],
+          ["linux", "arm64", `executor-v2-${channel}-linux-arm64.yml`],
+          ["win32", "x64", `executor-v2-${channel}.yml`],
+        ] as const;
+        for (const [platform, arch, file] of platforms) {
+          const artifacts = path.join(
+            directory,
+            "artifacts",
+            `${version}-${platform}-${arch}`,
+            "desktop-artifacts",
+          );
+          yield* fs.makeDirectory(artifacts, { recursive: true });
+          const bytes = Buffer.from(`${platform}-${arch}`);
+          const installer = `executor-desktop-${version}-${platform}-${arch}.zip`;
+          yield* fs.writeFile(path.join(artifacts, installer), bytes);
+          yield* fs.writeFileString(
+            path.join(artifacts, file),
+            JSON.stringify({
+              version,
+              files: [
+                {
+                  url: installer,
+                  sha512: createHash("sha512").update(bytes).digest("base64"),
+                  size: bytes.length,
+                },
+              ],
+              releaseDate: "2026-11-17T00:00:00.000Z",
+            }),
+          );
+        }
+        const writeNotes = (first: string, since: string | null = "2.0.0-beta.2") =>
+          fs.writeFileString(
+            path.join(directory, "notes.json"),
+            JSON.stringify({
+              ...(since === null ? {} : { since }),
+              releases: [
+                {
+                  version: first,
+                  notes: [
+                    { area: "All installs", text: "Search answers faster." },
+                    { area: "Self-host", text: "A self-hosted Executor reads its proxy." },
+                    { area: "CLI and desktop", text: "The desktop app has a tray menu." },
+                  ],
+                },
+                { version: "2.0.0-beta.4", notes: [] },
+                {
+                  version: "2.0.0-beta.3",
+                  notes: [{ area: "Self-host", text: "Only self-host changed." }],
+                },
+              ],
+            }),
+          );
+        const run = (args: ReadonlyArray<string>) =>
+          Effect.gen(function* () {
+            const child = yield* processes.spawn(
+              ChildProcess.make("node", ["scripts/releases/desktop-feed.ts", ...args], {
+                stdout: "pipe",
+                stderr: "pipe",
+              }),
+            );
+            const [stdout, stderr, exitCode] = yield* Effect.all(
+              [
+                child.stdout.pipe(Stream.decodeText(), Stream.mkString),
+                child.stderr.pipe(Stream.decodeText(), Stream.mkString),
+                child.exitCode,
+              ],
+              { concurrency: "unbounded" },
+            );
+            return { log: `${stdout}${stderr}`, exitCode: Number(exitCode) };
+          }).pipe(Effect.scoped);
+        const feed = (output: string) =>
+          run([path.join(directory, "artifacts"), output, path.join(directory, "notes.json")]);
+        const check = () => run(["--check-notes", path.join(directory, "notes.json")]);
+
+        yield* writeNotes(version);
+        const output = path.join(directory, "feed");
+        const result = yield* feed(output);
+        expect(result.exitCode, result.log).toBe(0);
+        for (const [, , file] of platforms) {
+          const written = JSON.parse(yield* fs.readFileString(path.join(output, file)));
+          // Newest first; one note per line, the self-host ones left out; none is null.
+          expect(written.releaseNotes, file).toEqual([
+            { version, note: "Search answers faster.\nThe desktop app has a tray menu." },
+            { version: "2.0.0-beta.4", note: null },
+            { version: "2.0.0-beta.3", note: null },
+          ]);
+          // How far back the notes are whole, as the notes say.
+          expect(written.releaseNotesSince, file).toBe("2.0.0-beta.2");
+        }
+
+        // Notes for another release stop the step rather than describe this one.
+        yield* writeNotes("2.0.0-beta.4");
+        const wrong = yield* feed(path.join(directory, "wrong"));
+        expect(wrong.exitCode).not.toBe(0);
+        expect(wrong.log).toContain(`does not start with ${version}`);
+
+        // The feed reads the notes only after the release, the image, npm and Homebrew are public.
+        // `--check-notes` reads them as the feed does and writes nothing, so the release workflow
+        // runs it where it writes them, in the metadata job, before any build, and on the copy the
+        // publish job downloads: notes the feed would refuse stop the release before that job
+        // makes anything public.
+        const refused = yield* check();
+        expect(refused.exitCode).not.toBe(0);
+        expect(refused.log).toContain(`does not start with ${version}`);
+        yield* fs.writeFileString(path.join(directory, "notes.json"), "{ not json");
+        expect((yield* check()).exitCode).not.toBe(0);
+        // Notes that do not say how far back they are whole, or that list a release not after
+        // that, are refused: the desktop would tell its user what the list does not hold.
+        yield* writeNotes(version, null);
+        expect((yield* check()).exitCode).not.toBe(0);
+        yield* writeNotes(version, "2.0.0-beta.3");
+        const notAfter = yield* check();
+        expect(notAfter.exitCode).not.toBe(0);
+        expect(notAfter.log).toContain("lists a release that is not after its since, 2.0.0-beta.3");
+        yield* writeNotes(version);
+        const before = yield* fs.readDirectory(directory, { recursive: true });
+        const accepted = yield* check();
+        expect(accepted.exitCode, accepted.log).toBe(0);
+        expect((yield* fs.readDirectory(directory, { recursive: true })).toSorted()).toEqual(
+          before.toSorted(),
+        );
+        const workflow = yield* fs.readFileString(".github/workflows/release-artifacts.yml");
+        const metadata = workflow.slice(
+          workflow.indexOf("\n  metadata:\n"),
+          workflow.indexOf("\n  git-sources:\n"),
+        );
+        const written = metadata.indexOf("node scripts/releases/release-notes.ts --output");
+        const checked = metadata.indexOf(
+          'node scripts/releases/desktop-feed.ts --check-notes "$RUNNER_TEMP/release-notes/notes.json"',
+        );
+        expect({ written: written >= 0, checkedAfter: checked > written }).toEqual({
+          written: true,
+          checkedAfter: true,
+        });
+        // The publish job checks the copy it downloaded, as the feed reads it, before its first
+        // step that makes anything public: the source export and the draft release.
+        const publish = workflow.slice(workflow.indexOf("\n  publish:\n"));
+        const downloaded = publish.indexOf(
+          "name: release-notes\n          path: .local/release-notes",
+        );
+        const checkedCopy = publish.indexOf(
+          "node scripts/releases/desktop-feed.ts --check-notes .local/release-notes/notes.json",
+        );
+        const firstPublic = Math.min(
+          publish.indexOf("scripts/export-public.sh"),
+          publish.indexOf("gh release create"),
+          publish.indexOf("docker buildx imagetools create"),
+          publish.indexOf("scripts/releases/publish-npm.ts"),
+        );
+        expect({
+          downloaded: downloaded >= 0,
+          checkedAfterDownload: checkedCopy > downloaded,
+          checkedBeforePublic: checkedCopy >= 0 && checkedCopy < firstPublic,
+        }).toEqual({ downloaded: true, checkedAfterDownload: true, checkedBeforePublic: true });
+      }).pipe(Effect.scoped),
   );
 });

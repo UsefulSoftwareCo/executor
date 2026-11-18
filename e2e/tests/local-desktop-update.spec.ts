@@ -14,7 +14,16 @@ import { TestLive, withCase } from "../support/case.ts";
 import { Target } from "../support/platform.ts";
 import { scenarios } from "../test-plan.ts";
 
-type Update = { readonly state: "downloading" | "ready"; readonly version: string } | null;
+type Update = {
+  readonly state: "downloading" | "ready";
+  readonly version: string;
+  readonly current?: string;
+  readonly releases?: ReadonlyArray<{
+    readonly version: string;
+    readonly notes: ReadonlyArray<string>;
+  }>;
+  readonly releasesSince?: string | undefined;
+} | null;
 
 /** What the desktop's main process runs in the dashboard's page when its update changes. */
 const showUpdate = (page: Page, update: Update) =>
@@ -606,6 +615,317 @@ layer(TestLive, { excludeTestServices: true })("Local desktop update", (it) => {
           text: `Update ready: Executor v${long}. Restart Executor to install it.`,
         });
         yield* browser.checkpoint("Long version ready");
+      }),
+    ),
+  );
+
+  it.effect(scenarios.localDesktopUpdateNotes.title, (context) =>
+    withCase(
+      context,
+      Effect.gen(function* () {
+        const api = yield* Api,
+          browser = yield* Browser,
+          target = yield* Target,
+          session = yield* api.session();
+        const { url } = yield* body(
+          Schema.Struct({ url: Schema.String }),
+          yield* session.send("POST", "/auth/pair", undefined, {
+            authorization: `Bearer ${Redacted.value(target.apiKey)}`,
+          }),
+        );
+        yield* browser.use("Pair the local dashboard", (page) =>
+          page.setViewportSize({ width: 1180, height: 800 }).then(() => page.goto(url)),
+        );
+        yield* browser.use("Wait for apps", (page) =>
+          page.getByRole("heading", { level: 1, name: /^Apps/ }).waitFor(),
+        );
+        const without = yield* browser.use("Measure the sidebar", layout);
+        const title = yield* browser.use("Read the page title", (page) => page.title());
+
+        // The desktop runs 2.2.0 and its feed lists notes for the releases up to 2.4.0, and says
+        // that every release after 2.0.0 is there. One of 2.4.0's lines is HTML, and one of 2.3.0's
+        // a Markdown link: neither is a note the release notes' allow-list accepts, so the
+        // dashboard leaves both out, whatever the desktop sent.
+        const ready: Update = {
+          state: "ready",
+          version: "2.4.0",
+          current: "2.2.0",
+          releasesSince: "2.0.0",
+          releases: [
+            {
+              version: "2.4.0",
+              notes: [
+                "Apps open from the sidebar.",
+                '<img src=x onerror="document.title=1">',
+                "The desktop app restarts faster.",
+              ],
+            },
+            {
+              version: "2.3.0",
+              notes: ["[Read more](https://example.invalid)"],
+            },
+            { version: "2.2.0", notes: ["Already installed."] },
+            { version: "2.1.0", notes: ["Older still."] },
+          ],
+        };
+        yield* browser.use("Show a ready update with notes", (page) => showUpdate(page, ready));
+        const opener = (page: Page) =>
+          page.locator("aside.sidebar").getByRole("button", { name: "See what's new in v2.4.0" });
+        yield* browser.use("Wait for the block's button", (page) => opener(page).waitFor());
+        // The line leads with the ready version's newest note; the restart link is as before.
+        expect(yield* browser.use("Read the block", lines)).toEqual([
+          "Update ready",
+          "v2.4.0 Apps open from the sidebar.",
+          "Restart to update",
+        ]);
+        expect(
+          yield* browser.use("Read the restart link", (page) =>
+            Promise.all([
+              restartLink(page).getAttribute("href"),
+              page.locator("aside.sidebar .sidebar-update a").count(),
+              page.locator("aside.sidebar .sidebar-update button").count(),
+            ]),
+          ),
+        ).toEqual(["executor-update:restart", 1, 1]);
+        expect(yield* browser.use("Measure the block in place of the links", layout)).toEqual(
+          inPlaceOfLinks(without),
+        );
+        yield* browser.checkpoint("Update ready with its newest note");
+
+        // The keyboard opens the panel: every release after the running one up to the ready one,
+        // newest first, each with its notes as text and its public release page.
+        yield* browser.use("Focus the block's button", (page) => opener(page).focus());
+        yield* browser.use("Open the notes", (page) => page.keyboard.press("Enter"));
+        const dialog = (page: Page) => page.getByRole("dialog", { name: "What's new in v2.4.0" });
+        yield* browser.use("Wait for the notes", (page) => dialog(page).waitFor());
+        yield* browser.checkpoint("What's new in the ready update");
+        expect(
+          yield* browser.use("Read the notes", (page) =>
+            dialog(page).evaluate((element) => ({
+              description: element.querySelector("p")?.textContent,
+              releases: [...element.querySelectorAll(".release-notes-release")].map((release) => ({
+                heading: release.querySelector("h3")?.textContent,
+                notes: [...release.querySelectorAll("li")].map((item) => item.textContent),
+                empty: release.querySelector("p")?.textContent ?? null,
+                page: release.querySelector("a")?.getAttribute("href"),
+              })),
+              links: [...element.querySelectorAll("a")].map((link) => [
+                link.textContent,
+                link.getAttribute("href"),
+                link.getAttribute("target"),
+              ]),
+              images: element.querySelectorAll("img").length,
+            })),
+          ),
+        ).toEqual({
+          description:
+            "Changes since v2.2.0, the version running now. Executor restarts to install it.",
+          releases: [
+            {
+              heading: "v2.4.0",
+              notes: ["Apps open from the sidebar.", "The desktop app restarts faster."],
+              empty: null,
+              page: "https://github.com/UsefulSoftwareCo/executor/releases/tag/executor%402.4.0",
+            },
+            {
+              heading: "v2.3.0",
+              notes: [],
+              empty: "No changes were listed for this release.",
+              page: "https://github.com/UsefulSoftwareCo/executor/releases/tag/executor%402.3.0",
+            },
+          ],
+          links: [
+            [
+              "Release page",
+              "https://github.com/UsefulSoftwareCo/executor/releases/tag/executor%402.4.0",
+              "_blank",
+            ],
+            [
+              "Release page",
+              "https://github.com/UsefulSoftwareCo/executor/releases/tag/executor%402.3.0",
+              "_blank",
+            ],
+            ["All releases", "https://github.com/UsefulSoftwareCo/executor/releases", "_blank"],
+            ["Restart to update", "executor-update:restart", null],
+          ],
+          images: 0,
+        });
+        // Nothing from the refused HTML ran.
+        expect(yield* browser.use("Read the page title again", (page) => page.title())).toBe(title);
+        // The panel repeats the restart, with the sidebar link's name.
+        expect(
+          yield* browser.use("Read the panel's restart", (page) =>
+            dialog(page)
+              .getByRole("link", { name: "Restart Executor to install v2.4.0" })
+              .getAttribute("href"),
+          ),
+        ).toBe("executor-update:restart");
+        // Escape closes it and returns focus to the block.
+        yield* browser.use("Close the notes", (page) => page.keyboard.press("Escape"));
+        yield* browser.use("Wait for the notes to close", (page) =>
+          dialog(page).waitFor({ state: "detached" }),
+        );
+        expect(
+          yield* browser.use("Read the focused control", (page) =>
+            page.evaluate(() => document.activeElement?.getAttribute("aria-label") ?? null),
+          ),
+        ).toBe("See what's new in v2.4.0");
+
+        // A ready version with no notes of its own shows the version alone; the panel still lists
+        // what changed in between.
+        yield* browser.use("Show a ready update whose version has no notes", (page) =>
+          showUpdate(page, {
+            ...ready,
+            releases: [{ version: "2.4.0", notes: [] }, ...(ready.releases ?? []).slice(1)],
+          }),
+        );
+        yield* browser.use("Wait for the version line", (page) =>
+          page
+            .locator("aside.sidebar .sidebar-update")
+            .getByText("Version 2.4.0 is ready to install.")
+            .waitFor(),
+        );
+        expect(yield* browser.use("Read the version-only block", lines)).toEqual([
+          "Update ready",
+          "Version 2.4.0 is ready to install.",
+          "Restart to update",
+        ]);
+        expect(yield* browser.use("Check the block opens", (page) => opener(page).count())).toBe(1);
+
+        // A development build runs no release version: every release up to the ready one is listed.
+        yield* browser.use("Show a development build's update", (page) =>
+          showUpdate(page, { ...ready, current: "0.0.0" }),
+        );
+        yield* browser.use("Open the development build's notes", (page) =>
+          opener(page)
+            .click()
+            .then(() => dialog(page).waitFor()),
+        );
+        expect(
+          yield* browser.use("Read the development build's notes", (page) =>
+            dialog(page).evaluate((element) => ({
+              description: element.querySelector("p")?.textContent,
+              versions: [...element.querySelectorAll(".release-notes-release h3")].map(
+                (heading) => heading.textContent,
+              ),
+            })),
+          ),
+        ).toEqual({
+          description: "Executor restarts to install it.",
+          versions: ["v2.4.0", "v2.3.0", "v2.2.0", "v2.1.0"],
+        });
+        yield* browser.use("Close the development build's notes", (page) =>
+          page.keyboard.press("Escape"),
+        );
+
+        // Only the feed knows whether its list is whole: the notes script leaves out a release it
+        // cannot place. The panel says "since" the running version only when the feed says the
+        // list is whole back to it, and otherwise says the list may leave some out.
+        yield* browser.use("Wait for the development build's notes to close", (page) =>
+          dialog(page).waitFor({ state: "detached" }),
+        );
+        const describe = (version: string) => (page: Page) =>
+          page.getByRole("dialog", { name: `What's new in v${version}` }).evaluate((element) => ({
+            description: element.querySelector("p")?.textContent,
+            versions: [...element.querySelectorAll(".release-notes-release h3")].map(
+              (heading) => heading.textContent,
+            ),
+            more: [...element.querySelectorAll("a")]
+              .filter((link) => link.textContent === "All releases")
+              .map((link) => link.getAttribute("href")),
+          }));
+        const partial =
+          "Recent changes. Some releases since the version running now may not be listed here; All releases has every one. Executor restarts to install it.";
+        for (const [name, update, expected] of [
+          // Whole back to 2.0.0, which runs now: no release lies between it and the oldest listed,
+          // and the panel does not claim one does.
+          [
+            "whole back to the running version",
+            { ...ready, current: "2.0.0" },
+            {
+              description:
+                "Changes since v2.0.0, the version running now. Executor restarts to install it.",
+              versions: ["v2.4.0", "v2.3.0", "v2.2.0", "v2.1.0"],
+            },
+          ],
+          // The same between two betas next to each other.
+          [
+            "whole between two betas",
+            {
+              state: "ready",
+              version: "2.0.0-beta.2",
+              current: "2.0.0-beta.1",
+              releasesSince: "2.0.0-beta.1",
+              releases: [{ version: "2.0.0-beta.2", notes: ["Apps open from the sidebar."] }],
+            },
+            {
+              description:
+                "Changes since v2.0.0-beta.1, the version running now. Executor restarts to install it.",
+              versions: ["v2.0.0-beta.2"],
+            },
+          ],
+          // A feed holding only 2.4.0, whole only after 2.3.0, on a desktop running 2.0.0.
+          [
+            "whole only after a later release",
+            {
+              state: "ready",
+              version: "2.4.0",
+              current: "2.0.0",
+              releasesSince: "2.3.0",
+              releases: [{ version: "2.4.0", notes: ["Apps open from the sidebar."] }],
+            },
+            { description: partial, versions: ["v2.4.0"] },
+          ],
+          // A feed that does not say, even with an entry as old as the running version.
+          [
+            "silent about its range",
+            { ...ready, releasesSince: undefined },
+            { description: partial, versions: ["v2.4.0", "v2.3.0"] },
+          ],
+        ] as const) {
+          const version = update.version;
+          yield* browser.use(`Show an update ${name}`, (page) => showUpdate(page, update));
+          yield* browser.use(`Open the notes ${name}`, (page) =>
+            page
+              .locator("aside.sidebar")
+              .getByRole("button", { name: `See what's new in v${version}` })
+              .click()
+              .then(() =>
+                page.getByRole("dialog", { name: `What's new in v${version}` }).waitFor(),
+              ),
+          );
+          expect(yield* browser.use(`Read the notes ${name}`, describe(version)), name).toEqual({
+            ...expected,
+            more: ["https://github.com/UsefulSoftwareCo/executor/releases"],
+          });
+          if (name === "whole only after a later release")
+            yield* browser.checkpoint("Notes the feed does not say are whole");
+          yield* browser.use(`Close the notes ${name}`, (page) =>
+            page.keyboard
+              .press("Escape")
+              .then(() => page.getByRole("dialog").waitFor({ state: "detached" })),
+          );
+        }
+
+        // A feed with no notes, or with none after the running version, shows the block of a
+        // plain update: the version, the restart, nothing to open.
+        for (const [name, update] of [
+          ["no notes", { state: "ready", version: "2.4.0", current: "2.2.0" }],
+          [
+            "none newer",
+            { ...ready, releases: [{ version: "2.2.0", notes: ["Already installed."] }] },
+          ],
+        ] as const) {
+          yield* browser.use(`Show an update with ${name}`, (page) => showUpdate(page, update));
+          yield* browser.use(`Wait for the plain block with ${name}`, (page) =>
+            opener(page).waitFor({ state: "detached" }),
+          );
+          expect(yield* browser.use(`Read the block with ${name}`, lines)).toEqual([
+            "Update ready",
+            "Version 2.4.0 is ready to install.",
+            "Restart to update",
+          ]);
+        }
       }),
     ),
   );

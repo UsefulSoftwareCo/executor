@@ -10,6 +10,13 @@
  * release can be written again from main with its version and its `Release` commit. Without
  * `--output` they go to stdout.
  *
+ * `--json <file>` also writes the notes as plain text, `{ since, releases }`: this release's and,
+ * with `--history <n>`, those of the releases before it, newest first, each against the release
+ * before it. `since` says how far back it is whole: every release after `since`, up to this one, is
+ * listed, and none before it. The list stops at the newest earlier release this checkout cannot
+ * place, which `since` is then, so it has no gaps. The desktop update feed reads the file under the
+ * same rule (notes-history.ts), and this script checks it so before writing it.
+ *
  * The release before is the highest `executor@<version>` tag below this version in the public
  * repository (`PUBLIC_REPO`, by default UsefulSoftwareCo/executor). That tag's commit exports a
  * commit of this repository, which its subject names (`Export <sha>`, scripts/export-public.sh),
@@ -64,6 +71,8 @@ import { Console, Effect, FileSystem, Option, Path, Schedule, Schema, Stream } f
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { matchesAny, shippedSources } from "../../e2e/release-lanes.ts";
 import { compareReleaseVersions, release, ReleaseVersion } from "./config.ts";
+import { refusal } from "@executor-js/utils/release-notes";
+import { type NotesHistory, notesHistoryProblem } from "./notes-history.ts";
 
 class ReleaseNotesFailed extends Schema.TaggedError<ReleaseNotesFailed>()("ReleaseNotesFailed", {
   message: Schema.String,
@@ -75,10 +84,10 @@ const notShipped = ["**/scripts/**", "**/test/**", "**/tests/**", "**/fixtures/*
 /** The commits Beta and the bun.lock repair push to main, which change no source. */
 const automatedTitle = /\[skip ci\]$/u;
 
-/** The longest one note may be, in characters; a longer one is left out. */
-const maxNoteLength = 300;
 /** The most characters the listed lines may hold together; later changes are left out. */
 const maxNotesLength = 10_000;
+/** The most releases `--json` lists, this one included. */
+const maxHistory = 20;
 
 const areas = ["All installs", "CLI and desktop", "Self-host", "Other"] as const;
 type Area = (typeof areas)[number];
@@ -117,8 +126,12 @@ const gitOk = (args: ReadonlyArray<string>, cwd?: string) =>
     ),
   );
 
-/** The release before `version` in the public repository, and the commit of this one it exports. */
-const previousRelease = (version: typeof ReleaseVersion.Type, publicRepo: string) =>
+/**
+ * The `count` releases before `version` in the public repository, oldest first, each with the
+ * commit of this one it exports, or why it has none. The last, the release before this one, must
+ * have one; an earlier release without one is only left out of the history (`--json`).
+ */
+const earlierReleases = (version: typeof ReleaseVersion.Type, publicRepo: string, count: number) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     // A short outage of the public repository should not fail a publishing run.
@@ -135,7 +148,8 @@ const previousRelease = (version: typeof ReleaseVersion.Type, publicRepo: string
           ? [parsed.value]
           : [];
       })
-      .sort(compareReleaseVersions);
+      .sort(compareReleaseVersions)
+      .slice(-count);
     const previous = tags.at(-1);
     if (previous === undefined)
       return yield* new ReleaseNotesFailed({
@@ -152,23 +166,44 @@ const previousRelease = (version: typeof ReleaseVersion.Type, publicRepo: string
           "--depth=1",
           "--filter=tree:0",
           publicRepo,
-          `refs/tags/executor@${previous}`,
+          ...tags.map((tag) => `refs/tags/executor@${tag}:refs/tags/executor@${tag}`),
         ],
         scratch,
       ),
     );
-    const subject = (yield* gitOk(["log", "-1", "--format=%s", "FETCH_HEAD"], scratch)).trim();
-    const exported = /^Export ([0-9a-f]{7,40})$/u.exec(subject)?.[1];
-    if (exported === undefined)
-      return yield* new ReleaseNotesFailed({
-        message: `executor@${previous} in ${publicRepo} is "${subject}", not the "Export <sha>" commit scripts/export-public.sh makes, so its source is unknown.`,
-      });
-    const source = yield* git(["rev-parse", "--verify", "--quiet", `${exported}^{commit}`]);
-    if (source.exitCode !== 0)
-      return yield* new ReleaseNotesFailed({
-        message: `executor@${previous} exports ${exported}, which this checkout does not hold. It needs main's history (fetch-depth: 0).`,
-      });
-    return { version: previous, source: source.stdout.trim() };
+    // Each release has a source, or why it has none.
+    const releases: Array<
+      { readonly version: typeof ReleaseVersion.Type } & (
+        | { readonly source: string; readonly missing?: undefined }
+        | { readonly source?: undefined; readonly missing: string }
+      )
+    > = [];
+    for (const tag of tags) {
+      const subject = (yield* gitOk(
+        ["log", "-1", "--format=%s", `refs/tags/executor@${tag}`],
+        scratch,
+      )).trim();
+      const exported = /^Export ([0-9a-f]{7,40})$/u.exec(subject)?.[1];
+      if (exported === undefined) {
+        releases.push({
+          version: tag,
+          missing: `executor@${tag} in ${publicRepo} is "${subject}", not the "Export <sha>" commit scripts/export-public.sh makes, so its source is unknown.`,
+        });
+        continue;
+      }
+      const source = yield* git(["rev-parse", "--verify", "--quiet", `${exported}^{commit}`]);
+      releases.push(
+        source.exitCode === 0
+          ? { version: tag, source: source.stdout.trim() }
+          : {
+              version: tag,
+              missing: `executor@${tag} exports ${exported}, which this checkout does not hold. It needs main's history (fetch-depth: 0).`,
+            },
+      );
+    }
+    const last = releases.at(-1)!;
+    if (last.source === undefined) return yield* new ReleaseNotesFailed({ message: last.missing });
+    return { previous: { version: last.version, source: last.source }, releases };
   }).pipe(Effect.scoped);
 
 interface Commit {
@@ -255,39 +290,6 @@ const coAuthors = (lines: ReadonlyArray<string>) => {
     const address = coAuthor.exec(line)?.groups?.address;
     return address === undefined ? [] : [{ index: start + offset, address }];
   });
-};
-
-/** The characters a note may hold: ASCII letters and digits, spaces and sentence punctuation. */
-const noteCharacter = /^[A-Za-z0-9 .,;:!?'"()-]$/u;
-
-/** A character as a warning may show it: itself when printable ASCII, otherwise its code point. */
-const shown = (character: string) =>
-  /^[!-~]$/u.test(character)
-    ? `"${character}"`
-    : `U+${character.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`;
-
-/**
- * Why a note may not be published, or undefined when it is plain prose GitHub renders as nothing
- * but its text. This is an allow-list: anything not described here is refused, never rewritten.
- */
-const refusal = (text: string): string | undefined => {
-  const characters = Array.from(text);
-  if (characters.length > maxNoteLength) return `is longer than ${maxNoteLength} characters`;
-  const other = characters.find((character) => !noteCharacter.test(character));
-  if (other !== undefined) return `holds ${shown(other)}, which a note may not`;
-  if (!/^[A-Za-z0-9]/u.test(text)) return "does not start with a letter or a digit";
-  if (/^[0-9]+[.)]/u.test(text)) return "starts like a numbered list";
-  if (/:(?! |$)/u.test(text)) return "has a colon followed by something other than a space";
-  // A dot may end a sentence or sit between digits (1.5), never inside a word (example.com).
-  if (/\.(?=[A-Za-z])|(?<![0-9])\.(?=[0-9])/u.test(text))
-    return "has a dot inside a word, as in a host name";
-  if (/[A-Za-z]-[0-9]/u.test(text)) return "joins letters to digits with a hyphen, as in GH-123";
-  // GitHub links a commit only as a whole word, so a word that merely holds hex letters is fine.
-  if (text.split(/[^A-Za-z0-9]+/u).some((word) => /^[0-9A-Fa-f]{7,}$/u.test(word)))
-    return "has a whole word of 7 or more hex characters or digits, as in a commit hash";
-  if (/\bghsa-/iu.test(text)) return "names a security advisory";
-  if (/executor-next/iu.test(text)) return "names a private repository";
-  return undefined;
 };
 
 /**
@@ -387,9 +389,12 @@ const parseArguments = (argv: ReadonlyArray<string>) =>
     for (let index = 0; index < argv.length; index += 2) {
       const name = argv[index]!;
       const value = argv[index + 1];
-      if (!["--version", "--to", "--output"].includes(name) || value === undefined)
+      if (
+        !["--version", "--to", "--output", "--json", "--history"].includes(name) ||
+        value === undefined
+      )
         return yield* new ReleaseNotesFailed({
-          message: `Usage: release-notes.ts [--version <version>] [--to <commit>] [--output <file>]; got ${argv.join(" ")}`,
+          message: `Usage: release-notes.ts [--version <version>] [--to <commit>] [--output <file>] [--json <file> [--history <releases>]]; got ${argv.join(" ")}`,
         });
       options[name.slice(2)] = value;
     }
@@ -410,7 +415,12 @@ NodeRuntime.runMain(
     );
     const to = (yield* gitOk(["rev-parse", "--verify", `${options.to ?? "HEAD"}^{commit}`])).trim();
     const publicRepo = process.env.PUBLIC_REPO || `https://github.com/${release.repository}.git`;
-    const previous = yield* previousRelease(version, publicRepo);
+    const history = Number(options.history ?? "1");
+    if (!Number.isInteger(history) || history < 1 || history > maxHistory)
+      return yield* new ReleaseNotesFailed({
+        message: `--history takes a whole number from 1 to ${maxHistory}; got ${options.history}.`,
+      });
+    const { previous, releases } = yield* earlierReleases(version, publicRepo, history);
     const ancestor = yield* git(["merge-base", "--is-ancestor", previous.source, to]);
     if (ancestor.exitCode !== 0)
       return yield* new ReleaseNotesFailed({
@@ -422,126 +432,147 @@ NodeRuntime.runMain(
     const localOnly = shipped.local.filter((glob) => !shipped.image.includes(glob));
     const imageOnly = shipped.image.filter((glob) => !shipped.local.includes(glob));
 
-    const commits = yield* commitsBetween(previous.source, to);
-    // A revert and the commit it reverts cancel. Newest first, so a revert that is itself reverted
-    // cancels nothing, and the change it reverted stands. GitHub cuts a long reverted title with "…".
-    const cancelled = new Set<string>();
-    for (let index = commits.length - 1; index >= 0; index -= 1) {
-      const commit = commits[index]!;
-      if (cancelled.has(commit.sha)) continue;
-      const reverted = /^Revert "(.+)"$/u.exec(bareTitle(commit.title))?.[1];
-      if (reverted === undefined) continue;
-      const wanted = bareTitle(reverted);
-      const matches = (title: string) =>
-        wanted.endsWith("…") ? title.startsWith(wanted.slice(0, -1)) : title === wanted;
-      const target = commits
-        .slice(0, index)
-        .findLast((earlier) => !cancelled.has(earlier.sha) && matches(bareTitle(earlier.title)));
-      if (target === undefined) continue;
-      cancelled.add(target.sha);
-      cancelled.add(commit.sha);
-    }
-
     // The job log is private: a warning names a commit, and never its title or its note.
     const warn = (sha: string, message: string) =>
       Console.warn(`::warning title=Release notes::${sha} ${message}`);
-    const listed = new Map<Area, Array<string>>(areas.map((area) => [area, []]));
-    const credited = new Set<number>();
-    let other = 0;
-    let length = 0;
-    for (const commit of commits) {
-      if (automatedTitle.test(commit.title)) continue;
-      const { notes, ignored, refused, hiddenBy } = notesOf(commit.message);
-      if (hiddenBy !== undefined)
-        yield* warn(
-          commit.sha,
-          `has a message that holds ${JSON.stringify(hiddenBy)}, which can hide text when GitHub renders it, so none of its Release-note: lines are counted.`,
-        );
-      for (const { line, reason } of ignored)
-        yield* warn(commit.sha, `line ${line} has Release-note: ${reason}, so it is not counted.`);
-      for (const { line, reason } of refused)
-        yield* warn(
-          commit.sha,
-          `line ${line} has a Release-note: line that ${reason}, so the notes leave it out.`,
-        );
-      if (cancelled.has(commit.sha)) {
-        if (notes.length > 0)
-          yield* warn(
-            commit.sha,
-            "has a Release-note: line, but a revert in this release cancels it, so the notes leave it out.",
+    /**
+     * The changes main's commits after `from` up to `to` list: as the notes' Markdown lines by area,
+     * with a port's credit, and as plain notes, each its area and text alone. `warn` reports what
+     * is left out, and why.
+     */
+    const listChanges = (
+      from: string,
+      to: string,
+      warn: (sha: string, message: string) => Effect.Effect<void>,
+    ) =>
+      Effect.gen(function* () {
+        const commits = yield* commitsBetween(from, to);
+        // A revert and the commit it reverts cancel. Newest first, so a revert that is itself reverted
+        // cancels nothing, and the change it reverted stands. GitHub cuts a long reverted title with "…".
+        const cancelled = new Set<string>();
+        for (let index = commits.length - 1; index >= 0; index -= 1) {
+          const commit = commits[index]!;
+          if (cancelled.has(commit.sha)) continue;
+          const reverted = /^Revert "(.+)"$/u.exec(bareTitle(commit.title))?.[1];
+          if (reverted === undefined) continue;
+          const wanted = bareTitle(reverted);
+          const matches = (title: string) =>
+            wanted.endsWith("…") ? title.startsWith(wanted.slice(0, -1)) : title === wanted;
+          const target = commits
+            .slice(0, index)
+            .findLast(
+              (earlier) => !cancelled.has(earlier.sha) && matches(bareTitle(earlier.title)),
+            );
+          if (target === undefined) continue;
+          cancelled.add(target.sha);
+          cancelled.add(commit.sha);
+        }
+
+        const listed = new Map<Area, Array<string>>(areas.map((area) => [area, []]));
+        const plain: Array<{ readonly area: Area; readonly text: string }> = [];
+        const credited = new Set<number>();
+        let other = 0;
+        let length = 0;
+        for (const commit of commits) {
+          if (automatedTitle.test(commit.title)) continue;
+          const { notes, ignored, refused, hiddenBy } = notesOf(commit.message);
+          if (hiddenBy !== undefined)
+            yield* warn(
+              commit.sha,
+              `has a message that holds ${JSON.stringify(hiddenBy)}, which can hide text when GitHub renders it, so none of its Release-note: lines are counted.`,
+            );
+          for (const { line, reason } of ignored)
+            yield* warn(
+              commit.sha,
+              `line ${line} has Release-note: ${reason}, so it is not counted.`,
+            );
+          for (const { line, reason } of refused)
+            yield* warn(
+              commit.sha,
+              `line ${line} has a Release-note: line that ${reason}, so the notes leave it out.`,
+            );
+          if (cancelled.has(commit.sha)) {
+            if (notes.length > 0)
+              yield* warn(
+                commit.sha,
+                "has a Release-note: line, but a revert in this release cancels it, so the notes leave it out.",
+              );
+            continue;
+          }
+          if (notes.length === 0) {
+            other += 1;
+            continue;
+          }
+          const files = commit.files.filter(
+            (file) => matchesAny(everything, file) && !matchesAny(notShipped, file),
           );
-        continue;
-      }
-      if (notes.length === 0) {
-        other += 1;
-        continue;
-      }
-      const files = commit.files.filter(
-        (file) => matchesAny(everything, file) && !matchesAny(notShipped, file),
-      );
-      const { number: ported, handles, unread, unnamed } = port(commit.message);
-      for (const line of unread)
-        yield* warn(
-          commit.sha,
-          `line ${line} has a Public-PR: line that is not Public-PR: ${release.repository}#<number> <40-hex sha>, so the notes credit nothing from it.`,
-        );
-      if (ported !== undefined)
-        for (const line of unnamed)
-          yield* warn(
-            commit.sha,
-            `line ${line} has a Co-authored-by: trailer without a users.noreply.github.com address that names a GitHub handle, so the notes thank no one for it.`,
-          );
-      if (ported === undefined && files.length === 0) {
-        yield* warn(
-          commit.sha,
-          "has a Release-note: line on a change to nothing a release ships (Cloud-only, CI, tests or tooling), so the notes leave it out.",
-        );
-        other += 1;
-        continue;
-      }
-      if (ported !== undefined && credited.has(ported)) {
-        yield* warn(
-          commit.sha,
-          `has a Release-note: line on a port of public #${ported}, which an earlier change already lists, so the notes leave it out.`,
-        );
-        other += 1;
-        continue;
-      }
-      // The one link and mention in the notes, built only from `publicPr`'s number and `noreply`'s
-      // handles: both public, and neither free text.
-      const credit =
-        ported === undefined
-          ? ""
-          : ` ([#${ported}](https://github.com/${release.repository}/pull/${ported})${
-              handles.length > 0
-                ? `, thanks ${handles.map((handle) => `@${handle}`).join(", ")}`
-                : ""
-            })`;
-      // An accepted note renders as its text alone, so it is printed as written.
-      const lines = notes.map((note) => `- ${note}${credit}`);
-      const added = lines.reduce((total, line) => total + line.length, 0);
-      // Once one change does not fit, later ones do not either, so the notes keep merge order.
-      if (length + added > maxNotesLength) {
-        length = maxNotesLength;
-        yield* warn(
-          commit.sha,
-          `has a Release-note: line past the ${maxNotesLength.toLocaleString("en-US")} characters the notes hold, so the notes leave it out.`,
-        );
-        other += 1;
-        continue;
-      }
-      length += added;
-      const area: Area =
-        files.length === 0
-          ? "Other"
-          : files.every((file) => matchesAny(localOnly, file))
-            ? "CLI and desktop"
-            : files.every((file) => matchesAny(imageOnly, file))
-              ? "Self-host"
-              : "All installs";
-      if (ported !== undefined) credited.add(ported);
-      listed.get(area)!.push(...lines);
-    }
+          const { number: ported, handles, unread, unnamed } = port(commit.message);
+          for (const line of unread)
+            yield* warn(
+              commit.sha,
+              `line ${line} has a Public-PR: line that is not Public-PR: ${release.repository}#<number> <40-hex sha>, so the notes credit nothing from it.`,
+            );
+          if (ported !== undefined)
+            for (const line of unnamed)
+              yield* warn(
+                commit.sha,
+                `line ${line} has a Co-authored-by: trailer without a users.noreply.github.com address that names a GitHub handle, so the notes thank no one for it.`,
+              );
+          if (ported === undefined && files.length === 0) {
+            yield* warn(
+              commit.sha,
+              "has a Release-note: line on a change to nothing a release ships (Cloud-only, CI, tests or tooling), so the notes leave it out.",
+            );
+            other += 1;
+            continue;
+          }
+          if (ported !== undefined && credited.has(ported)) {
+            yield* warn(
+              commit.sha,
+              `has a Release-note: line on a port of public #${ported}, which an earlier change already lists, so the notes leave it out.`,
+            );
+            other += 1;
+            continue;
+          }
+          // The one link and mention in the notes, built only from `publicPr`'s number and `noreply`'s
+          // handles: both public, and neither free text.
+          const credit =
+            ported === undefined
+              ? ""
+              : ` ([#${ported}](https://github.com/${release.repository}/pull/${ported})${
+                  handles.length > 0
+                    ? `, thanks ${handles.map((handle) => `@${handle}`).join(", ")}`
+                    : ""
+                })`;
+          // An accepted note renders as its text alone, so it is printed as written.
+          const lines = notes.map((note) => `- ${note}${credit}`);
+          const added = lines.reduce((total, line) => total + line.length, 0);
+          // Once one change does not fit, later ones do not either, so the notes keep merge order.
+          if (length + added > maxNotesLength) {
+            length = maxNotesLength;
+            yield* warn(
+              commit.sha,
+              `has a Release-note: line past the ${maxNotesLength.toLocaleString("en-US")} characters the notes hold, so the notes leave it out.`,
+            );
+            other += 1;
+            continue;
+          }
+          length += added;
+          const area: Area =
+            files.length === 0
+              ? "Other"
+              : files.every((file) => matchesAny(localOnly, file))
+                ? "CLI and desktop"
+                : files.every((file) => matchesAny(imageOnly, file))
+                  ? "Self-host"
+                  : "All installs";
+          if (ported !== undefined) credited.add(ported);
+          listed.get(area)!.push(...lines);
+          plain.push(...notes.map((text) => ({ area, text })));
+        }
+        return { listed, plain, other, length };
+      });
+    const { listed, other } = yield* listChanges(previous.source, to, warn);
 
     const sections = areas.flatMap((area) => {
       const lines = listed.get(area)!;
@@ -580,8 +611,60 @@ NodeRuntime.runMain(
       "",
     ].join("\n");
 
-    if (options.output === undefined) return yield* Console.log(notes);
-    yield* fs.makeDirectory(path.dirname(options.output), { recursive: true });
-    yield* fs.writeFileString(options.output, notes);
+    if (options.output === undefined) yield* Console.log(notes);
+    else {
+      yield* fs.makeDirectory(path.dirname(options.output), { recursive: true });
+      yield* fs.writeFileString(options.output, notes);
+    }
+
+    if (options.json === undefined) return;
+    // The same notes as plain text, for the products to show: this release's, then each earlier
+    // release's against the release before it, newest first, back to the newest release whose
+    // source or whose predecessor's is unknown. That release and every one before it are left out,
+    // so `since`, the release before the oldest listed, says how far back the list is whole. A
+    // reader cannot tell a gap from the versions alone, so the list has none. The left-out
+    // releases' own warnings were the job log's when they were published, so they are not repeated.
+    const plain: Array<NotesHistory["releases"][number]> = [
+      { version, notes: (yield* listChanges(previous.source, to, () => Effect.void)).plain },
+    ];
+    let since = previous.version;
+    const leftOut = (version: string, reason: string) =>
+      Console.warn(
+        `::warning title=Release notes::executor@${version} and the releases before it are left out of the JSON history: ${reason}`,
+      );
+    for (let index = releases.length - 1; index >= 1; index -= 1) {
+      const current = releases[index]!;
+      const before = releases[index - 1]!;
+      if (current.source === undefined) {
+        yield* leftOut(current.version, current.missing);
+        break;
+      }
+      if (before.source === undefined) {
+        yield* leftOut(current.version, before.missing);
+        break;
+      }
+      const ordered = yield* git(["merge-base", "--is-ancestor", before.source, current.source]);
+      if (ordered.exitCode !== 0) {
+        yield* leftOut(
+          current.version,
+          `executor@${before.version} was not built from its history.`,
+        );
+        break;
+      }
+      const { plain: listed } = yield* listChanges(
+        before.source,
+        current.source,
+        () => Effect.void,
+      );
+      plain.push({ version: current.version, notes: listed });
+      since = before.version;
+    }
+    const written: NotesHistory = { since, releases: plain };
+    // The feed refuses notes that break its rule; stop here rather than write them.
+    const problem = notesHistoryProblem(written, version);
+    if (problem !== undefined)
+      return yield* new ReleaseNotesFailed({ message: `The JSON history ${problem}.` });
+    yield* fs.makeDirectory(path.dirname(options.json), { recursive: true });
+    yield* fs.writeFileString(options.json, `${JSON.stringify(written, null, 2)}\n`);
   }).pipe(Effect.provide(NodeServices.layer)),
 );
