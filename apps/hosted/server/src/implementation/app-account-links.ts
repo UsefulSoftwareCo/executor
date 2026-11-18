@@ -1,8 +1,9 @@
 /**
  * The routes that link accounts to an app's requirements, in either scope. App links need edit
- * access to the app and, to link, the caller's own account or one already linked for everyone to an
- * app they can edit; unlinking needs edit access or ownership of the account; reading them needs
- * use of the app. User links are the caller's own: linking another person's account is never
+ * access to the app and, to link, the caller's own account, or for an administrator one already
+ * linked for everyone that no member but its owner would come to edit (see
+ * `appLinkableAccountsAs`); unlinking needs edit access or ownership of the account; reading them
+ * needs use of the app. User links are the caller's own: linking another person's account is never
  * possible.
  */
 import {
@@ -44,7 +45,7 @@ import {
   requireCurrentAppAccess,
   visibleAccounts,
 } from "./resource-policy.ts";
-import { recordSecurityAudit } from "./security-audit.ts";
+import { audited } from "./security-audit.ts";
 
 const caller = Effect.gen(function* () {
   const user = yield* CurrentUserId;
@@ -188,8 +189,10 @@ const requirementView = (
       return account === undefined ? [] : [account];
     });
     const linkedIds = new Set(linkedAccounts.map((account) => account.id));
-    // App requirements also take accounts already linked for everyone to an app the caller edits.
-    const candidates = yield* scope === "app" ? appLinkableAccounts(all) : visibleAccounts(all);
+    // App requirements also take accounts an administrator may reuse from another app's link.
+    const candidates = yield* scope === "app"
+      ? appLinkableAccounts(app.id, all)
+      : visibleAccounts(all);
     const usable = candidates.filter((account) => !linkedIds.has(account.id));
     return {
       requirement,
@@ -284,16 +287,25 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           const owner = yield* appManagerOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* executor.apps.get({ owner, app: params.app });
-          // The caller's own account, or one already linked for everyone to an app they can edit.
-          yield* requireAppLinkableAs(yield* currentResourceAuthority, params.account);
+          // The caller's own account, or one an administrator reuses from another app's link.
+          const checked = yield* requireAppLinkableAs(
+            yield* currentResourceAuthority,
+            params.app,
+            params.account,
+          );
           yield* executor.accounts.get({ owner, account: params.account });
-          const { changed, authority } = yield* lockedChange(
+          const result = yield* lockedChange(
             executor,
-            { app: params.app, access: "manage" },
+            { app: params.app, access: "manage", reuse: checked === "app_link" },
             (sql, actor) =>
               Effect.gen(function* () {
-                // Checked again under the lock, holding the app links it relies on until commit.
-                const authority = yield* requireAppLinkableAs(actor, params.account, true);
+                // Checked again under the lock, holding what a reuse relies on until commit.
+                const authority = yield* requireAppLinkableAs(
+                  actor,
+                  params.app,
+                  params.account,
+                  true,
+                );
                 const changed = yield* addLink(sql, executor.webhooks, {
                   app: params.app,
                   requirement: params.requirement,
@@ -304,28 +316,36 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
                 return { changed, authority };
               }),
           );
-          if (changed) yield* wake;
-          yield* recordSecurityAudit({
-            action: "app_account.link",
-            outcome: "success",
-            target: { kind: "account", id: params.account },
-            detail: { app: params.app, authority },
-          });
-          return yield* savedLink(
-            executor,
-            owner,
-            params.app,
-            null,
-            params.requirement,
-            params.account,
-          );
-        }),
+          if (result.changed) yield* wake;
+          return result;
+        }).pipe(
+          audited(
+            "app_account.link",
+            { kind: "account", id: () => params.account },
+            { app: params.app },
+            ({ changed, authority }) => ({ authority, changed: String(changed) }),
+          ),
+          Effect.andThen(
+            Effect.gen(function* () {
+              const owner = yield* currentOwner;
+              const executor = yield* Effect.flatten(HostedExecutor);
+              return yield* savedLink(
+                executor,
+                owner,
+                params.app,
+                null,
+                params.requirement,
+                params.account,
+              );
+            }),
+          ),
+        ),
       )
       .handle("appUnlink", ({ params }) =>
         Effect.gen(function* () {
           // Unlinking needs edit access to the app, not use of the account: an editor can stop the
           // app using an account they cannot use. An account's owner may also stop any app using
-          // it, since someone who can edit another app it serves may have linked it there.
+          // it, since an administrator may have linked it to one they cannot edit.
           const owns = (yield* ownedAccountIds(
             [params.account],
             yield* currentResourceAuthority,
@@ -346,14 +366,16 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           );
           if (!removed) return yield* new AccountNotFound({ account: params.account });
           yield* wake;
-          yield* recordSecurityAudit({
-            action: "app_account.unlink",
-            outcome: "success",
-            target: { kind: "account", id: params.account },
-            detail: { app: params.app, authority: owns ? "owner" : "app_manager" },
-          });
-          return { requirement: params.requirement, account: params.account };
-        }),
+          return { owns, unlinked: { requirement: params.requirement, account: params.account } };
+        }).pipe(
+          audited(
+            "app_account.unlink",
+            { kind: "account", id: () => params.account },
+            { app: params.app },
+            ({ owns }) => ({ authority: owns ? "owner" : "app_manager" }),
+          ),
+          Effect.map(({ unlinked }) => unlinked),
+        ),
       )
       .handle("appConnect", ({ params, payload }) => connect(services, "app", params, payload))
       .handle("userList", ({ params }) =>

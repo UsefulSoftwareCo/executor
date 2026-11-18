@@ -67,6 +67,7 @@ const team = ${teamProvider};
 const requirements = { app: { accounts: { team } } };
 const who = query({ input: object({}) }, async (ctx: QueryContext<typeof requirements>) => ({
   team: ctx.app.accounts.team.id,
+  token: ctx.app.accounts.team.fields.token,
 }));
 export default defineApp(requirements, async () => ({ tools: router({ who }) }));`;
 /** An app whose one key requirement is in `scope`. */
@@ -575,6 +576,66 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
           403,
           "OrganizationForbidden",
         );
+      }),
+    ),
+  );
+  it.effect(scenarios.hostedAppLinkReuseChain.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const fixture = yield* appLinksFixture([{ path: "index.ts", content: source }]);
+        const { api, actors, prefix, connect } = fixture;
+        const appLink = (actor: Session, appPath: string, account: string) =>
+          linkAccountResponse(actor, appPath, "team", account, "app");
+        const appUnlink = (actor: Session, appPath: string, account: string) =>
+          api.request(
+            actor,
+            "DELETE",
+            `${appPath}/accounts/app/team/${encodeURIComponent(account)}`,
+          );
+        const memberApp = Effect.gen(function* () {
+          const created = yield* api.request(actors.member, "POST", `${prefix}/apps/deploy`, {
+            name: `Member app ${randomUUID().slice(0, 8)}`,
+            files: [{ path: "index.ts", content: teamAppSource }, appsManifest],
+          });
+          expect(created.status, JSON.stringify(created.body)).toBe(200);
+          const appPath = `${prefix}/apps/${(yield* body(Resource, created)).id}`;
+          yield* fixture.adopt(appPath);
+          return appPath;
+        });
+
+        // The owner links their own account for everyone to the fixture's app. A member cannot
+        // link it to an app they created.
+        const secret = yield* connect(actors.owner, "app", "team", "OWNER-SECRET-TOKEN");
+        const m1 = yield* memberApp;
+        yield* refused(yield* appLink(actors.member, m1, secret), 403, "OrganizationForbidden");
+
+        // Nor can an administrator put it there for them: the member edits that app, so its code
+        // could read the owner's credential. The account is not offered there either.
+        yield* refused(yield* appLink(actors.admin, m1, secret), 403, "OrganizationForbidden");
+        const offered = yield* api.request(actors.admin, "GET", `${m1}/accounts/app/team`);
+        expect(
+          (yield* okBody(LinkRequirement, offered)).accounts.map((entry) => entry.account.id),
+        ).not.toContain(secret);
+
+        // So the member has nothing to chain from: linking it to a second app of theirs is
+        // refused, and that app's code never receives the owner's token.
+        const m2 = yield* memberApp;
+        yield* refused(yield* appLink(actors.member, m2, secret), 403, "OrganizationForbidden");
+        const read = yield* api.request(actors.member, "POST", `${m2}/tools/call`, {
+          tool: "who",
+          kind: "query",
+          input: {},
+        });
+        yield* refused(read, 409, "AccountRequired");
+        expect(JSON.stringify(read.body)).not.toContain("OWNER-SECRET-TOKEN");
+
+        // The administrator's unlink finds nothing in the member's app, and afterwards the member
+        // still cannot link the account to any app of theirs.
+        yield* refused(yield* appUnlink(actors.admin, m1, secret), 404, "AccountNotFound");
+        const m4 = yield* memberApp;
+        yield* refused(yield* appLink(actors.member, m4, secret), 403, "OrganizationForbidden");
+        expect(yield* linkedAccountIds(actors.member, m4, "app")).toEqual([]);
       }),
     ),
   );

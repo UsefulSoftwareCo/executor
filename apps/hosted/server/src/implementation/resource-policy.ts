@@ -598,24 +598,40 @@ export const requireAccountOwnerAs = (actor: ResourceAuthority, account: Account
   });
 /**
  * What lets an actor link an account to an app's own requirement for everyone: `owner` for their
- * own account, `app_link` for an account already linked for everyone to an app of the
- * organization the actor can edit, whose owner is still a member.
+ * own account, `app_link` for an account an administrator reuses from another app's link.
  */
 export type AppLinkAuthority = "owner" | "app_link";
-const ReusableLink = Schema.Struct({ account: AccountId, app: AppId });
+const ReusableLink = Schema.Struct({
+  account: AccountId,
+  app: AppId,
+  owner: Principal.fields.userId,
+});
+const TargetEditors = Schema.Struct({
+  creator: Schema.NullOr(Principal.fields.userId),
+  role: Schema.NullOr(OrganizationRole),
+});
 /**
- * The accounts among `accounts` the actor may link to an app's own requirement for everyone, with
- * what lets them. An account's owner may link it. So may someone who can edit an app its owner, or
- * someone after them, already linked it to for everyone: that app runs with the account for every
- * caller, and editing it already lets them deploy code that does, so linking it to another app
- * they can edit gives them no use of it they lack. The account stays its owner's; nobody else may
- * use it directly, link it for themselves, or read it outside the apps that link it. An account
- * linked only by members for themselves, or whose owner left, is never reused. With `lock`, the
- * app link rows a grant relies on stay share-locked until the transaction ends, so removing one
- * waits for the link that relied on it.
+ * The accounts among `accounts` the actor may link to `app`'s own requirements for everyone, with
+ * what lets them. An account's owner may link it anywhere they edit. An organization owner or
+ * administrator may also reuse an account its owner already linked for everyone to an app they
+ * can edit, whose owner is still a member: editing that app already lets them run code with the
+ * account, so they gain no use of it.
+ *
+ * Reuse never reaches a member who could not already use the account: it is refused when the
+ * target app's creator is a member other than the account's owner, since that member edits the
+ * app and so could deploy code that reads the credential. Members never reuse an account, so
+ * nothing a member can edit ever comes to hold another person's account unless its owner linked
+ * it there, and an administrator's unlink cannot leave links behind that a member made from
+ * theirs. The account stays its owner's; nobody else may use it directly, link it for themselves
+ * or read it outside the apps that link it.
+ *
+ * With `lock`, the app link rows a reuse relies on and the target's access row stay share-locked
+ * until the transaction ends, so unlinking a source or changing the target's access waits for the
+ * link.
  */
 export const appLinkableAccountsAs = (
   actor: ResourceAuthority,
+  app: AppId,
   accounts: readonly AccountId[],
   lock = false,
 ) =>
@@ -624,9 +640,16 @@ export const appLinkableAccountsAs = (
     if (accounts.length === 0) return linkable;
     for (const account of yield* ownedAccountIds(accounts, actor)) linkable.set(account, "owner");
     const others = accounts.filter((account) => !linkable.has(account));
-    if (others.length === 0) return linkable;
+    if (others.length === 0 || actor.role === "member") return linkable;
     const sql = yield* policyDatabase;
-    const rows = yield* sql`select l.account, l.app
+    const [target] = yield* Schema.decodeUnknownEffect(Schema.Array(TargetEditors))(
+      yield* sql`select t.creator_id as creator, m.role
+        from hosted_app_access t
+        left join member m on m."organizationId" = t.organization_id and m."userId" = t.creator_id
+        where t.id = ${app} and t.organization_id = ${actor.organization}${lock ? sql` for share of t` : sql``}`,
+    );
+    if (target === undefined) return linkable;
+    const rows = yield* sql`select l.account, l.app, p.personal_user_id as owner
       from hosted_app_account_links l
       join executor_apps app on app.id = l.app
       join executor_accounts a on a.id = l.account and a.owner = app.owner
@@ -643,28 +666,39 @@ export const appLinkableAccountsAs = (
         .filter((access) => access.canManage)
         .map((access) => access.app),
     );
-    for (const link of links) if (editable.has(link.app)) linkable.set(link.account, "app_link");
+    for (const link of links)
+      if (
+        editable.has(link.app) &&
+        (target.creator === null || target.role !== "member" || target.creator === link.owner)
+      )
+        linkable.set(link.account, "app_link");
     return linkable;
   }).pipe(
     Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
   );
-/** The accounts of a list the request's actor may link for everyone ({@link appLinkableAccountsAs}). */
-export const appLinkableAccounts = (accounts: readonly Account[]) =>
+/** The accounts of a list the request's actor may link to `app` for everyone. */
+export const appLinkableAccounts = (app: AppId, accounts: readonly Account[]) =>
   Effect.gen(function* () {
     const actor = yield* currentResourceAuthority;
     const linkable = yield* appLinkableAccountsAs(
       actor,
+      app,
       accounts.map((account) => account.id),
     );
     return accounts.filter((account) => linkable.has(account.id));
   });
 /**
- * What lets the actor link this account for everyone, or `OrganizationForbidden` when nothing
- * does; see {@link appLinkableAccountsAs}.
+ * What lets the actor link this account to `app` for everyone, or `OrganizationForbidden` when
+ * nothing does; see {@link appLinkableAccountsAs}.
  */
-export const requireAppLinkableAs = (actor: ResourceAuthority, account: AccountId, lock = false) =>
+export const requireAppLinkableAs = (
+  actor: ResourceAuthority,
+  app: AppId,
+  account: AccountId,
+  lock = false,
+) =>
   Effect.gen(function* () {
-    const authority = (yield* appLinkableAccountsAs(actor, [account], lock)).get(account);
+    const authority = (yield* appLinkableAccountsAs(actor, app, [account], lock)).get(account);
     if (authority === undefined) return yield* new OrganizationForbidden();
     return authority;
   });

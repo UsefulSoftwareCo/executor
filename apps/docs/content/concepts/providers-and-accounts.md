@@ -116,10 +116,12 @@ with your links.
 
 People who can edit an app link its app accounts for everyone, in the **App
 accounts** section of the app's **Accounts** tab. Linking needs edit access to
-the app, and the account must be your own or already linked for everyone to an
-app you can edit: accounts are never shared, so this is how one account
-serves everyone. Reusing an account this way does not make it yours; it stays
-its owner's, and its owner may unlink it from any app. It stops serving if its
+the app, and the account must be your own: accounts are never shared, so this
+is how one account serves everyone. An organization owner or admin may also
+reuse an account already linked for everyone to an app they can edit, but not
+into an app a member created, unless that member owns the account. Reusing an
+account does not make it yours; it stays its owner's, and its owner may unlink
+it from any app. It stops serving if its
 owner leaves the organization. Callers use the account through the app without
 access to the account itself, and they cannot choose or replace it; everyone
 else sees the section read-only, without the account's details from the

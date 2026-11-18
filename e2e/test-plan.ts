@@ -9446,7 +9446,18 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "app-account-app-links.spec.ts",
     title:
-      "a hosted manager links for everyone an account they do not own only once it serves an app they can edit; its owner may still unlink it from any app",
+      "a hosted administrator links for everyone an account they do not own only once it serves an app they can edit; its owner may still unlink it from any app",
+    targets: {
+      local: na("Hosted managers and personal accounts; Local has one user."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppLinkReuseChain: {
+    fixtures: "actors",
+    file: "app-account-app-links.spec.ts",
+    title:
+      "a hosted administrator cannot reuse an owner's account into an app a member edits, so the member can never chain it into their own apps or read its secret, before or after an unlink",
     targets: {
       local: na("Hosted managers and personal accounts; Local has one user."),
       "self-host": scheduled,
