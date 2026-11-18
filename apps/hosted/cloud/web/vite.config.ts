@@ -3,6 +3,7 @@ import { dashboardViteConfig } from "@executor-js/hosted-web/vite";
 import { mergeConfig } from "vite-plus";
 import { browserOnlySettings } from "./browser-only-settings.ts";
 import { cloudflareRoutes } from "./cloudflare-routes.ts";
+import { cloudReleaseNotes } from "./release-notes.ts";
 
 const apiUrl = process.env.HOSTED_API_URL ?? "http://127.0.0.1:4411";
 
@@ -27,6 +28,7 @@ export default mergeConfig(
     build: { sourcemap: "hidden" },
     plugins: [
       cloudflareRoutes(),
+      cloudReleaseNotes(),
       // The stack sets a release only for stages that report to Sentry. Every such build injects
       // the same code; only a build holding the upload token sends its source maps.
       ...(process.env.SENTRY_RELEASE

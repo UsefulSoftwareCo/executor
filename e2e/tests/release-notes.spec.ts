@@ -1242,4 +1242,200 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release notes", (it) =
         }).toEqual({ downloaded: true, checkedAfterDownload: true, checkedBeforePublic: true });
       }).pipe(Effect.scoped),
   );
+
+  it.effect(
+    "--cloud lists the newest notes of the last 30 days on changes that reach Cloud and no other product's own code, Cloud-only ones included, without asking the public repository",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const old = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString();
+        const selection: ReadonlyArray<Merge> = [
+          {
+            // Older than the window: left out.
+            title: "Change Cloud long ago (#300)",
+            body: "Release-note: PRIVATE old Cloud note.",
+            files: ["apps/hosted/cloud/src/old.ts"],
+            date: old,
+          },
+          {
+            title: "Show Cloud news (#301)",
+            body: "Release-note: Cloud members see what is new.",
+            files: ["apps/hosted/cloud/web/src/news.ts"],
+          },
+          {
+            // The hosted dashboard is Cloud's as much as the self-host image's.
+            title: "Open the hosted dashboard faster (#302)",
+            body: "Release-note: The dashboard opens faster.",
+            files: ["apps/hosted/web/src/open.ts"],
+          },
+          {
+            title: "Show app accounts on the Apps cards (#303)",
+            body: "Release-note: Each app's card now shows its accounts.",
+            files: ["packages/sdk/src/accounts.ts"],
+          },
+          {
+            title: "Add executor upgrade --rollback (#304)",
+            body: "Release-note: PRIVATE the CLI alone.",
+            files: ["apps/cli/src/upgrade.ts", "apps/local/desktop/src/menu.ts"],
+          },
+          {
+            // It reaches Cloud too, but also changes the local server's own code, so its note is
+            // written for the CLI's and desktop's users.
+            title: "Share sign-in limits per client (#309)",
+            body: "Release-note: PRIVATE Local Executor and Cloud alike.",
+            files: ["apps/hosted/cloud/src/limits.ts", "apps/local/server/src/limits.ts"],
+          },
+          {
+            title: "Fix self-host 502s behind a proxy (#305)",
+            body: "Release-note: PRIVATE the self-host image alone.",
+            files: ["apps/hosted/self-host/src/proxy.ts", "apps/docs/content/run/self-host.mdx"],
+          },
+          {
+            title: "Document self-host settings (#306)",
+            body: "Release-note: PRIVATE the docs alone.",
+            files: ["apps/docs/content/run/settings.mdx", ".changeset/settings.md"],
+          },
+          {
+            title: "Test Cloud (#307)",
+            body: "Release-note: PRIVATE tests and CI alone.",
+            files: ["e2e/tests/cloud.spec.ts", ".github/workflows/ci.yml", "notes/cloud.md"],
+          },
+          {
+            title: "Hide a Cloud note (#308)",
+            body: "Release-note: PRIVATE <b>hidden</b> Cloud note.",
+            files: ["apps/hosted/cloud/src/hidden.ts"],
+          },
+          {
+            // Two notes in one change keep the order they were written in.
+            title: "Name Cloud's teams (#311)",
+            body: "Release-note: Teams have names.\nRelease-note: A team's name shows on its page.",
+            files: ["apps/hosted/cloud/src/teams.ts"],
+          },
+        ];
+        const numbered: ReadonlyArray<Merge> = Array.from({ length: 11 }, (_, index) => ({
+          title: `Cloud change ${index + 1} (#${320 + index})`,
+          body: `Release-note: Cloud change number ${index + 1}.`,
+          files: [`apps/hosted/cloud/src/change-${index + 1}.ts`],
+        }));
+        const repos = yield* repositories([...selection, ...numbered]);
+        const today = new Date().toISOString().slice(0, 10);
+        // A public repository that does not exist: Cloud's notes never read one.
+        const offline = { main: repos.main, publicRepo: "file:///nonexistent/public" };
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-cloud-notes-" });
+
+        const selected = yield* notes(offline, [
+          "--cloud",
+          `${directory}/cloud.json`,
+          "--to",
+          repos.merged[selection.length - 1]!,
+        ]);
+        expect(selected.exitCode, selected.stdout + selected.stderr).toBe(0);
+        expect(JSON.parse(yield* fs.readFileString(`${directory}/cloud.json`))).toEqual({
+          notes: [
+            { date: today, text: "Teams have names." },
+            { date: today, text: "A team's name shows on its page." },
+            { date: today, text: "Each app's card now shows its accounts." },
+            { date: today, text: "The dashboard opens faster." },
+            { date: today, text: "Cloud members see what is new." },
+          ],
+        });
+
+        // At most ten, the newest, written to stdout with `-`.
+        const newest = yield* notes(offline, ["--cloud", "-"]);
+        expect(newest.exitCode, newest.stderr).toBe(0);
+        expect(JSON.parse(newest.stdout)).toEqual({
+          notes: Array.from({ length: 10 }, (_, index) => ({
+            date: today,
+            text: `Cloud change number ${11 - index}.`,
+          })),
+        });
+        expect(newest.stdout + selected.stdout).not.toContain("PRIVATE");
+        expect(yield* fs.readFileString(`${directory}/cloud.json`)).not.toContain("PRIVATE");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "--cloud keeps the ten newest of many long notes, reads them from a checkout of main's whole history without file contents however long before the window the last change was, and refuses a checkout that stops inside the window or grafts or replaces its history",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        // The last change before the window merged 90 days ago: a gap of 60 days before it starts.
+        const old = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+        // 45 notes of about 280 characters each: more than the 10,000 a release's notes hold.
+        const long = (number: number) =>
+          `Cloud change number ${number} ${"is described at length and ".repeat(9)}ends here.`;
+        const repos = yield* repositories([
+          {
+            title: "Change Cloud long ago (#400)",
+            body: "Release-note: An old Cloud note.",
+            files: ["apps/hosted/cloud/src/old.ts"],
+            date: old.toISOString(),
+          },
+          ...Array.from({ length: 45 }, (_, index) => ({
+            title: `Cloud change ${index + 1} (#${401 + index})`,
+            body: `Release-note: ${long(index + 1)}`,
+            files: [`apps/hosted/cloud/src/change-${index + 1}.ts`],
+          })),
+        ]);
+        const offline = { main: repos.main, publicRepo: "file:///nonexistent/public" };
+        const full = yield* notes(offline, ["--cloud", "-"]);
+        expect(full.exitCode, full.stdout + full.stderr).toBe(0);
+        expect(
+          JSON.parse(full.stdout).notes.map((note: { readonly text: string }) => note.text),
+        ).toEqual(Array.from({ length: 10 }, (_, index) => long(45 - index)));
+
+        // The deploy's checkout: every commit of main, no file contents. Its origin is then gone,
+        // so a read that needed a file's contents would fail rather than fetch them.
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-cloud-history-" });
+        yield* git(repos.main, "config", "uploadpack.allowFilter", "true");
+        const whole = `${directory}/whole`;
+        yield* git(
+          directory,
+          "clone",
+          "--quiet",
+          "--no-local",
+          "--filter=blob:none",
+          `file://${repos.main}`,
+          whole,
+        );
+        yield* git(whole, "remote", "set-url", "origin", "file:///nonexistent/main");
+        const fromWhole = yield* notes({ ...offline, main: whole }, ["--cloud", "-"]);
+        expect(fromWhole.exitCode, fromWhole.stdout + fromWhole.stderr).toBe(0);
+        expect(fromWhole.stdout).toBe(full.stdout);
+
+        // A depth-one clone, as CI's other checkouts are, holds one commit of the window: the
+        // reader stops and says what it needs rather than list that commit's notes alone.
+        const refusedBy = (main: string) =>
+          notes({ ...offline, main }, ["--cloud", "-"]).pipe(
+            Effect.tap((result) =>
+              Effect.sync(() => {
+                expect(result.exitCode).not.toBe(0);
+                expect(result.stdout).not.toContain('"notes"');
+              }),
+            ),
+            Effect.map((result) => result.stdout + result.stderr),
+          );
+        const shallow = `${directory}/shallow`;
+        yield* git(directory, "clone", "--quiet", "--depth", "1", `file://${repos.main}`, shallow);
+        const fromShallow = yield* refusedBy(shallow);
+        expect(fromShallow).toContain("holds no commit of main from before");
+        expect(fromShallow).toContain("fetch-depth: 0");
+        // Deepened to every commit of the window but not one before it, it is still refused.
+        const windowStart = Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
+        yield* git(shallow, "fetch", "--quiet", `--shallow-since=@${windowStart}`, "origin");
+        expect(yield* refusedBy(shallow)).toContain("holds no commit of main from before");
+
+        // A whole history whose head is grafted to have no parent, or replaced by such a commit,
+        // looks as if main began there.
+        const grafted = `${directory}/grafted`;
+        yield* git(directory, "clone", "--quiet", `file://${repos.main}`, grafted);
+        const head = yield* git(grafted, "rev-parse", "HEAD");
+        yield* fs.writeFileString(`${grafted}/.git/info/grafts`, `${head}\n`);
+        expect(yield* refusedBy(grafted)).toContain("grafts its history");
+        const replaced = `${directory}/replaced`;
+        yield* git(directory, "clone", "--quiet", `file://${repos.main}`, replaced);
+        yield* git(replaced, "replace", "--graft", "HEAD");
+        expect(yield* refusedBy(replaced)).toContain("replaces commits");
+      }).pipe(Effect.scoped),
+  );
 });

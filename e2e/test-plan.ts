@@ -14,6 +14,7 @@ export const TargetPlan = Schema.Union([
         "rolled-back",
         "oauth-proxy-preview",
         "revocation-budget",
+        "empty-release-notes",
       ]),
     ),
   }),
@@ -80,6 +81,11 @@ const oauthProxyPreviewCloud = { status: "scheduled", runtime: "oauth-proxy-prev
  * `removalRevocationBudgetMs`; every other local Cloud keeps the deployed budget.
  */
 const revocationBudgetCloud = { status: "scheduled", runtime: "revocation-budget" } as const;
+/**
+ * Runs alone on a managed local Cloud whose dashboard is built with an empty notes file, as a deploy
+ * whose window has no notes builds it; every other local Cloud builds it with fixed notes.
+ */
+const emptyReleaseNotesCloud = { status: "scheduled", runtime: "empty-release-notes" } as const;
 const na = (reason: string) => ({ status: "not-applicable", reason }) as const;
 const cloudOnboarding = {
   cloud: scheduled,
@@ -3371,6 +3377,28 @@ export const scenarios = plan({
       cloud: managedCloud,
       "self-host": na("Self-host does not export product analytics."),
       local: na("Local does not export product analytics."),
+    },
+  },
+  cloudWhatsNew: {
+    fixtures: "actors",
+    file: "cloud-whats-new.spec.ts",
+    title:
+      "Cloud shows every member the newest note its build holds above the sidebar's links, which stay, and opens all of them by day, also in a short window and not in the collapsed rail, whatever the browser's clock says, and shows nothing where there are none",
+    targets: {
+      cloud: managedCloud,
+      "self-host": scheduled,
+      local: na("Cloud's notes are Cloud's; the desktop shows its update's notes."),
+    },
+  },
+  cloudWhatsNewEmpty: {
+    fixtures: "actors",
+    file: "cloud-whats-new.spec.ts",
+    title:
+      "Cloud built with an empty notes file shows no what's new and keeps no room for it, and keeps the sidebar's links",
+    targets: {
+      cloud: emptyReleaseNotesCloud,
+      "self-host": na("Self-host has no Cloud notes; the scenario with notes covers it."),
+      local: na("Cloud's notes are Cloud's; the desktop shows its update's notes."),
     },
   },
   supportDialog: {
@@ -11801,7 +11829,8 @@ export const scenarios = plan({
  * prove it, and runs only those. A rolled-back run starts it with its rollback switch on, sign-in
  * on the deployment origin, and runs only the scenarios that prove the switch. A revocation-budget
  * run starts it with organization removal's revocation budget shortened, and runs only the
- * scenarios that run that budget out.
+ * scenarios that run that budget out. An empty-release-notes run builds its dashboard with an
+ * empty notes file, and runs only the scenarios that show it.
  */
 export type CloudMode =
   | "managed"
@@ -11809,7 +11838,8 @@ export type CloudMode =
   | "rate-limited"
   | "rolled-back"
   | "oauth-proxy-preview"
-  | "revocation-budget";
+  | "revocation-budget"
+  | "empty-release-notes";
 
 const cloudRuntimeReasons = {
   managed: "Requires the managed local Cloud target and its local collectors.",
@@ -11822,6 +11852,8 @@ const cloudRuntimeReasons = {
     "Requires a managed test stage signing in through a second local Cloud's OAuth proxy: e2e:cloud --oauth-proxy-preview.",
   "revocation-budget":
     "Requires a managed local Cloud with organization removal's revocation budget shortened: e2e:cloud --removal-revocation-budget.",
+  "empty-release-notes":
+    "Requires a managed local Cloud whose dashboard is built with an empty notes file: e2e:cloud --empty-release-notes.",
 } as const;
 
 /**
@@ -11855,7 +11887,8 @@ export const scenariosForSuite = (
           ? cloudMode !== "rate-limited" &&
             cloudMode !== "rolled-back" &&
             cloudMode !== "oauth-proxy-preview" &&
-            cloudMode !== "revocation-budget"
+            cloudMode !== "revocation-budget" &&
+            cloudMode !== "empty-release-notes"
           : cloud.runtime === cloudMode;
       return runs
         ? scenario
@@ -11871,7 +11904,9 @@ export const scenariosForSuite = (
                       ? "Runs on Cloud as the OAuth proxy's production, not on a stage signing in through it."
                       : cloudMode === "revocation-budget"
                         ? "Runs on Cloud with organization removal's deployed revocation budget."
-                        : "Runs on Cloud without the per-address auth limit."
+                        : cloudMode === "empty-release-notes"
+                          ? "Runs on Cloud built with the fixed test notes."
+                          : "Runs on Cloud without the per-address auth limit."
                   : cloudRuntimeReasons[cloud.runtime],
               ),
             },

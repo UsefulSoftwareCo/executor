@@ -15,13 +15,18 @@ const identity = {
   GIT_COMMITTER_EMAIL: "maintainer@example.com",
 };
 
-const run = (command: string, args: ReadonlyArray<string>, cwd: string) =>
+const run = (
+  command: string,
+  args: ReadonlyArray<string>,
+  cwd: string,
+  env: Record<string, string> = {},
+) =>
   Effect.gen(function* () {
     const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
     const child = yield* processes.spawn(
       ChildProcess.make(command, args, {
         cwd,
-        env: { ...process.env, ...identity },
+        env: { ...process.env, ...identity, ...env },
         stdout: "pipe",
         stderr: "pipe",
       }),
@@ -37,8 +42,11 @@ const run = (command: string, args: ReadonlyArray<string>, cwd: string) =>
     return { stdout, stderr, exitCode: Number(exitCode) };
   }).pipe(Effect.scoped);
 
-export const git = (cwd: string, ...args: ReadonlyArray<string>) =>
-  run("git", args, cwd).pipe(
+export const git = (cwd: string, ...args: ReadonlyArray<string>) => gitWith({}, cwd, ...args);
+
+/** `git` with more environment, such as a commit's date. */
+export const gitWith = (env: Record<string, string>, cwd: string, ...args: ReadonlyArray<string>) =>
+  run("git", args, cwd, env).pipe(
     Effect.tap((result) =>
       Effect.sync(() => expect(result.exitCode, `git ${args.join(" ")}: ${result.stderr}`).toBe(0)),
     ),
@@ -54,6 +62,8 @@ export interface Merge {
   readonly body?: string;
   readonly moves?: ReadonlyArray<readonly [string, string]>;
   readonly files: ReadonlyArray<string>;
+  /** When it merged, as an ISO date; now by default. */
+  readonly date?: string;
 }
 
 export const portMarker = `Public-PR: UsefulSoftwareCo/executor#2436 ${"5".repeat(40)}`;
@@ -94,7 +104,16 @@ export const repositories = (after: ReadonlyArray<Merge>, before: ReadonlyArray<
           message,
           merge.body === undefined ? `${merge.title}\n` : `${merge.title}\n\n${merge.body}\n`,
         );
-        yield* git(main, "commit", "--quiet", "--file", message);
+        yield* gitWith(
+          merge.date === undefined
+            ? {}
+            : { GIT_AUTHOR_DATE: merge.date, GIT_COMMITTER_DATE: merge.date },
+          main,
+          "commit",
+          "--quiet",
+          "--file",
+          message,
+        );
         return yield* git(main, "rev-parse", "HEAD");
       });
     const first = yield* commit({ title: "Start (#1)", files: ["apps/cli/src/main.ts"] });
@@ -125,7 +144,8 @@ export const repositories = (after: ReadonlyArray<Merge>, before: ReadonlyArray<
  * JSON, to a scratch file with the most history the script lists when the case writes no `--json`
  * of its own, and when the script succeeds the desktop feed's check
  * (`desktop-feed.ts --check-notes`, the release workflow's next step) must accept that file for the
- * same version: so no case's history can make notes that the feed refuses.
+ * same version: so no case's history can make notes that the feed refuses. A `--cloud` run writes
+ * Cloud's notes, which the feed never reads, and runs as given.
  */
 export const notes = (
   repos: { readonly main: string; readonly publicRepo: string },
@@ -143,11 +163,14 @@ export const notes = (
         yield* fs.makeTempDirectoryScoped({ prefix: "executor-notes-json-" }),
         "notes.json",
       );
-    const written = [
-      ...args,
-      ...(option("--json") === undefined ? ["--json", json] : []),
-      ...(option("--history") === undefined ? ["--history", "20"] : []),
-    ];
+    const feedNotes = !args.includes("--cloud");
+    const written = feedNotes
+      ? [
+          ...args,
+          ...(option("--json") === undefined ? ["--json", json] : []),
+          ...(option("--history") === undefined ? ["--history", "20"] : []),
+        ]
+      : args;
     const child = yield* processes.spawn(
       ChildProcess.make("node", [path.resolve("scripts/releases/release-notes.ts"), ...written], {
         cwd: repos.main,
@@ -164,7 +187,7 @@ export const notes = (
       ],
       { concurrency: "unbounded" },
     );
-    if (Number(exitCode) === 0) {
+    if (feedNotes && Number(exitCode) === 0) {
       const version = option("--version");
       const feed = yield* run(
         "node",

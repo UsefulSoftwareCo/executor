@@ -96,7 +96,16 @@ export function DesktopUpdateBlock({ update }: { readonly update: DesktopUpdate 
               ? `Changes since v${running}, the version running now. Executor restarts to install it.`
               : "Recent changes. Some releases since the version running now may not be listed here; All releases has every one. Executor restarts to install it."
         }
-        releases={releases.map((release) => ({ ...release, url: releasePageUrl(release.version) }))}
+        releases={releases.map((release) => ({
+          key: release.version,
+          heading: `v${release.version}`,
+          mono: true,
+          notes: release.notes,
+          url: {
+            href: releasePageUrl(release.version),
+            label: `Release page for v${release.version}`,
+          },
+        }))}
         more={{
           label: "All releases",
           url: "https://github.com/UsefulSoftwareCo/executor/releases",

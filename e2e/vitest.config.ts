@@ -17,6 +17,7 @@ const cloudMode = Schema.decodeUnknownSync(
     "rolled-back",
     "oauth-proxy-preview",
     "revocation-budget",
+    "empty-release-notes",
   ]),
 )(process.env.E2E_CLOUD_MODE);
 export default defineConfig({

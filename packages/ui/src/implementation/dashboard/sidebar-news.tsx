@@ -83,13 +83,15 @@ export function NewsVersion({ version }: { readonly version: string }) {
   return <span className="font-mono text-[11px] text-muted-foreground">v{version}</span>;
 }
 
-/** One release in the notes panel: its version, its notes as plain text and its public page. */
+/** One group of notes in the panel, such as a release: its heading, its notes as plain text and
+ * the public page that holds them. */
 export interface NewsRelease {
-  readonly version: string;
+  readonly key: string;
+  readonly heading: string;
+  /** A version, set in mono. */
+  readonly mono?: boolean;
   readonly notes: ReadonlyArray<string>;
-  /** A heading beside the version, such as its date. */
-  readonly detail?: string;
-  readonly url?: string;
+  readonly url?: { readonly href: string; readonly label: string };
 }
 
 /**
@@ -134,17 +136,12 @@ export function ReleaseNotesDialog({
         <div className="grid gap-5">
           {releases.map((release) => (
             <section
-              key={release.version}
-              aria-label={`Version ${release.version}`}
+              key={release.key}
+              aria-label={release.heading}
               className="release-notes-release grid gap-2"
             >
-              <h3 className="flex items-baseline justify-between gap-2 text-[13px] font-medium">
-                <span className="font-mono">v{release.version}</span>
-                {release.detail !== undefined && (
-                  <span className="text-[12px] font-normal text-muted-foreground">
-                    {release.detail}
-                  </span>
-                )}
+              <h3 className={`text-[13px] font-medium ${release.mono === true ? "font-mono" : ""}`}>
+                {release.heading}
               </h3>
               {release.notes.length === 0 ? (
                 <p className="text-[13px] text-muted-foreground">
@@ -164,7 +161,7 @@ export function ReleaseNotesDialog({
                 </ul>
               )}
               {release.url !== undefined && (
-                <ExternalLink url={release.url} label={`Release page for v${release.version}`}>
+                <ExternalLink url={release.url.href} label={release.url.label}>
                   Release page
                 </ExternalLink>
               )}

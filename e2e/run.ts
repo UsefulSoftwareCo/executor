@@ -67,6 +67,9 @@ const command = Command.make(
     removalRevocationBudget: Flag.Boolean("removal-revocation-budget").pipe(
       Flag.withDefault(false),
     ),
+    // Start managed Cloud with its dashboard built from an empty notes file, and run only the
+    // scenarios that show it.
+    emptyReleaseNotes: Flag.Boolean("empty-release-notes").pipe(Flag.withDefault(false)),
     // Run one part of a local or self-host run; see `partPattern`.
     part: Flag.String("part").pipe(Flag.optional),
   },

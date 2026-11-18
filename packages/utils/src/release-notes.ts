@@ -3,6 +3,7 @@
  * accepts, and the products that show notes accept only these too, so a malformed or tampered
  * notes file can show nothing but plain sentences. Notes are text, never Markdown or HTML.
  */
+import { Schema } from "effect";
 
 /** The longest one note may be, in characters; a longer one is left out. */
 export const maxNoteLength = 300;
@@ -46,3 +47,24 @@ export const isPlainNote = (text: string) => refusal(text) === undefined;
 /** A release's public page, with its notes and installers. */
 export const releasePageUrl = (version: string) =>
   `https://github.com/UsefulSoftwareCo/executor/releases/tag/${encodeURIComponent(`executor@${version}`)}`;
+
+/**
+ * How many days back Cloud's what's new reaches, from the commit a deploy builds. Cloud deploys
+ * every merge to main, so a note goes with the first deploy after it is this old.
+ */
+export const cloudNoteDays = 30;
+
+/**
+ * Cloud's notes as `scripts/releases/release-notes.ts --cloud` writes them and the Cloud dashboard's
+ * build takes them: newest first, each the day (`YYYY-MM-DD`, UTC) its change reached main and the
+ * note's text.
+ */
+export const CloudReleaseNotes = Schema.Struct({
+  notes: Schema.Array(
+    Schema.Struct({
+      date: Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/u)),
+      text: Schema.String,
+    }),
+  ),
+});
+export type CloudReleaseNotes = typeof CloudReleaseNotes.Type;

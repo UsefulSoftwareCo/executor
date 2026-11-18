@@ -7,6 +7,7 @@ import { OrganizationBoundary, OrganizationContent } from "@executor-js/hosted-w
 import { NameAccountDialog } from "@executor-js/hosted-web/pages/name-account-dialog";
 import { HostedNavigation } from "@executor-js/hosted-web/navigation";
 import { CloudSupport } from "../components/support.tsx";
+import { cloudNotes, CloudWhatsNew } from "../components/whats-new.tsx";
 import { CloudNavigation } from "../components/navigation.tsx";
 import { setupGateRedirect } from "../../contracts/onboarding.ts";
 import { serverDocument } from "../document.ts";
@@ -45,6 +46,7 @@ function OrganizationLayout() {
               <CloudNavigation organizationSlug={organizationSlug} />
             </HostedNavigation>
           }
+          news={cloudNotes.length > 0 && <CloudWhatsNew notes={cloudNotes} />}
           support={<CloudSupport />}
         >
           <OrganizationContent pending={<CloudPagePending />}>

@@ -73,6 +73,7 @@ export function DashboardShell({
   support,
   notice,
   noticeMark,
+  news,
   footer,
   children,
 }: {
@@ -104,6 +105,11 @@ export function DashboardShell({
         readonly dot: boolean;
       }
     | undefined;
+  /**
+   * A product's news, such as Cloud's what's new, in the same place as `notice` but with the
+   * resource links kept under it. A `notice` takes its place while there is one.
+   */
+  readonly news?: ReactNode;
   readonly footer?: ReactNode;
   readonly children: ReactNode;
 }) {
@@ -111,10 +117,11 @@ export function DashboardShell({
   const medium = useMediaQuery(mediumViewport);
   const [mediumCollapsed, setMediumCollapsed] = useState(true);
   const collapsed = medium && mediumCollapsed;
-  /** The notice takes the resource links' place wherever it shows: not in the icon rail. */
-  const links = (shown: ReactNode) =>
-    shown ? null : <ResourceLinks docsUrl={docsUrl} support={support} />;
-  const railNotice = collapsed ? null : notice;
+  /** The block above the footer: the notice, which takes the links' place, or else the news. */
+  const block = notice ? notice : news ? news : null;
+  const links = (sheet: boolean) =>
+    notice && (sheet || !collapsed) ? null : <ResourceLinks docsUrl={docsUrl} support={support} />;
+  const railBlock = collapsed ? null : block;
   const railMark = collapsed && notice ? noticeMark : undefined;
   return (
     <div
@@ -156,7 +163,7 @@ export function DashboardShell({
           {brand}
         </div>
         <nav aria-label="Main navigation">{navigation}</nav>
-        {railNotice && <div className="sidebar-notice mt-auto pt-4 pb-3">{railNotice}</div>}
+        {railBlock && <div className="sidebar-notice mt-auto pt-4 pb-3">{railBlock}</div>}
         {railMark && (
           <div className="sidebar-notice-mark mt-auto flex justify-center pt-4 pb-2">
             <button
@@ -177,9 +184,9 @@ export function DashboardShell({
           </div>
         )}
         <div
-          className={`sidebar-utilities ${railNotice || railMark ? "" : "mt-auto"} [padding:12px_0_16px] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground`}
+          className={`sidebar-utilities ${railBlock || railMark ? "" : "mt-auto"} [padding:12px_0_16px] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground`}
         >
-          {links(railNotice)}
+          {links(false)}
           {footer}
         </div>
       </aside>
@@ -212,9 +219,9 @@ export function DashboardShell({
           <DialogTitle className="sr-only">Menu</DialogTitle>
           <div className="mx-auto mb-2 h-1 w-9 rounded-full bg-border" aria-hidden />
           <nav aria-label="Main navigation">{navigation}</nav>
-          {notice && <div className="sidebar-notice mt-3">{notice}</div>}
+          {block && <div className="sidebar-notice mt-3">{block}</div>}
           <div className="sidebar-utilities mt-3 [padding:12px_0_0] border-t border-t-border text-muted-foreground [&_a:hover]:text-foreground">
-            {links(notice)}
+            {links(true)}
             {footer}
           </div>
         </DialogContent>

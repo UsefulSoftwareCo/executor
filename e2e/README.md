@@ -1033,7 +1033,10 @@ running only the scenarios declaring `runtime: "oauth-proxy-preview"`.
 `bun run e2e:cloud --removal-revocation-budget` starts it with organization
 removal's revocation budget shortened to five seconds and runs only the
 scenarios declaring `runtime: "revocation-budget"`; every other local Cloud
-keeps the deployed five minutes. Production (`v2`),
+keeps the deployed five minutes. `bun run e2e:cloud --empty-release-notes`
+builds its dashboard with an empty notes file and runs only the scenarios
+declaring `runtime: "empty-release-notes"`; every other local Cloud builds it
+with fixed notes. Production (`v2`),
 ordinary previews and every other deployed stage always retain rate limits,
 whatever their configuration; `bun run auth:rate-limit` (part of `check`)
 proves it. Local and

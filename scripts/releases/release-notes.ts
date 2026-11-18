@@ -5,17 +5,30 @@
  * no matrix, and the publish job creates the GitHub release with them.
  *
  *   node scripts/releases/release-notes.ts [--version <version>] [--to <commit>] [--output <file>]
+ *     [--json <file> [--history <releases>]]
+ *   node scripts/releases/release-notes.ts --cloud <file or -> [--to <commit>]
  *
  * `--version` defaults to apps/cli/package.json and `--to` to HEAD, so the notes of an earlier
  * release can be written again from main with its version and its `Release` commit. Without
  * `--output` they go to stdout.
  *
- * `--json <file>` also writes the notes as plain text, `{ since, releases }`: this release's and,
- * with `--history <n>`, those of the releases before it, newest first, each against the release
- * before it. `since` says how far back it is whole: every release after `since`, up to this one, is
- * listed, and none before it. The list stops at the newest earlier release this checkout cannot
- * place, which `since` is then, so it has no gaps. The desktop update feed reads the file under the
- * same rule (notes-history.ts), and this script checks it so before writing it.
+ * `--json` also writes the notes as plain text,
+ * `{ since, releases: [{ version, notes: [{ area, text }] }] }`: this release's and, with
+ * `--history n`, those of the `n - 1` public releases before it, each against the release before
+ * it, newest first, without a port's credit. `since` says how far back it is whole: every release
+ * after `since`, up to this one, is listed, and none before it. The list stops at the newest
+ * earlier release this checkout cannot place, which `since` is then, so it has no gaps. The
+ * desktop update feed reads the file under the same rule (notes-history.ts), and this script
+ * checks it so before writing it.
+ *
+ * `--cloud` writes Cloud's notes instead, `{ notes: [{ date, text }] }`, newest change first and a
+ * change's own lines in the order written: the accepted lines of main's commits in the
+ * `cloudWindowDays` days before `--to`, at most `cloudMaxNotes`, on changes that reach Cloud
+ * (`reachesCloud`) and change no other product's own code (`anotherProducts`), Cloud-only ones
+ * included, under the same rules as the release's. It reads no public repository. It refuses a
+ * window it cannot see in full: the checkout must hold a commit of main from before the window,
+ * and no grafted or replaced history. The production deploy writes them to a file before it
+ * builds, and the Cloud dashboard's build takes that file (apps/hosted/cloud/web/release-notes.ts).
  *
  * The release before is the highest `executor@<version>` tag below this version in the public
  * repository (`PUBLIC_REPO`, by default UsefulSoftwareCo/executor). That tag's commit exports a
@@ -71,12 +84,19 @@ import { Console, Effect, FileSystem, Option, Path, Schedule, Schema, Stream } f
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { matchesAny, shippedSources } from "../../e2e/release-lanes.ts";
 import { compareReleaseVersions, release, ReleaseVersion } from "./config.ts";
-import { refusal } from "@executor-js/utils/release-notes";
+import { cloudNoteDays, refusal } from "@executor-js/utils/release-notes";
+import { notDeployInputs } from "../../apps/hosted/cloud/src/infrastructure/deploy-inputs.ts";
 import { type NotesHistory, notesHistoryProblem } from "./notes-history.ts";
 
 class ReleaseNotesFailed extends Schema.TaggedError<ReleaseNotesFailed>()("ReleaseNotesFailed", {
   message: Schema.String,
 }) {}
+
+/** The self-host image's own code, which Cloud does not build. */
+const selfHostOnly = ["apps/hosted/self-host/**"];
+
+/** Documentation that Cloud serves but that changes nothing Cloud does. */
+const documents = ["apps/docs/**", "**/*.mdx", ".changeset/**"];
 
 /** Files in a shipped package that change nothing a user installs. */
 const notShipped = ["**/scripts/**", "**/test/**", "**/tests/**", "**/fixtures/**", "**/*.md"];
@@ -88,6 +108,10 @@ const automatedTitle = /\[skip ci\]$/u;
 const maxNotesLength = 10_000;
 /** The most releases `--json` lists, this one included. */
 const maxHistory = 20;
+/** How far back from `--to` `--cloud` reads main, in days: as long as the dashboard shows a note. */
+const cloudWindowDays = cloudNoteDays;
+/** The most notes `--cloud` lists. */
+const cloudMaxNotes = 10;
 
 const areas = ["All installs", "CLI and desktop", "Self-host", "Other"] as const;
 type Area = (typeof areas)[number];
@@ -208,6 +232,8 @@ const earlierReleases = (version: typeof ReleaseVersion.Type, publicRepo: string
 
 interface Commit {
   readonly sha: string;
+  /** When it reached main: its committer date, as GitHub's squash merge writes it. */
+  readonly date: string;
   /** Private: used only to match a revert to its target, never printed. */
   readonly title: string;
   readonly message: string;
@@ -219,7 +245,7 @@ interface Commit {
  * detection, which reads file contents: the metadata job's checkout has none, and no credentials to
  * fetch them, and a renamed file's two paths classify it as well as one.
  */
-const commitsBetween = (from: string, to: string) =>
+const commitsBetween = (from: string | undefined, to: string) =>
   gitOk([
     "log",
     "--first-parent",
@@ -227,17 +253,18 @@ const commitsBetween = (from: string, to: string) =>
     "--no-renames",
     "--reverse",
     "--name-only",
-    "--format=%x1e%H%x1f%s%x1f%B%x1f",
-    `${from}..${to}`,
+    "--format=%x1e%H%x1f%cI%x1f%s%x1f%B%x1f",
+    from === undefined ? to : `${from}..${to}`,
   ]).pipe(
     Effect.map((log) =>
       log
         .split("\x1e")
         .slice(1)
         .map((entry): Commit => {
-          const [sha = "", title = "", message = "", files = ""] = entry.split("\x1f");
+          const [sha = "", date = "", title = "", message = "", files = ""] = entry.split("\x1f");
           return {
             sha,
+            date,
             title,
             message,
             files: files.split("\n").filter((file) => file !== ""),
@@ -390,11 +417,11 @@ const parseArguments = (argv: ReadonlyArray<string>) =>
       const name = argv[index]!;
       const value = argv[index + 1];
       if (
-        !["--version", "--to", "--output", "--json", "--history"].includes(name) ||
+        !["--version", "--to", "--output", "--json", "--history", "--cloud"].includes(name) ||
         value === undefined
       )
         return yield* new ReleaseNotesFailed({
-          message: `Usage: release-notes.ts [--version <version>] [--to <commit>] [--output <file>] [--json <file> [--history <releases>]]; got ${argv.join(" ")}`,
+          message: `Usage: release-notes.ts [--version <version>] [--to <commit>] [--output <file>] [--json <file> [--history <releases>]], or release-notes.ts --cloud <file or -> [--to <commit>]; got ${argv.join(" ")}`,
         });
       options[name.slice(2)] = value;
     }
@@ -414,23 +441,33 @@ NodeRuntime.runMain(
       ),
     );
     const to = (yield* gitOk(["rev-parse", "--verify", `${options.to ?? "HEAD"}^{commit}`])).trim();
-    const publicRepo = process.env.PUBLIC_REPO || `https://github.com/${release.repository}.git`;
-    const history = Number(options.history ?? "1");
-    if (!Number.isInteger(history) || history < 1 || history > maxHistory)
-      return yield* new ReleaseNotesFailed({
-        message: `--history takes a whole number from 1 to ${maxHistory}; got ${options.history}.`,
-      });
-    const { previous, releases } = yield* earlierReleases(version, publicRepo, history);
-    const ancestor = yield* git(["merge-base", "--is-ancestor", previous.source, to]);
-    if (ancestor.exitCode !== 0)
-      return yield* new ReleaseNotesFailed({
-        message: `executor@${previous.version} was built from ${previous.source}, which is not in the history of ${to}.`,
-      });
-
     const shipped = yield* shippedSources;
     const everything = [...new Set([...shipped.local, ...shipped.image])];
     const localOnly = shipped.local.filter((glob) => !shipped.image.includes(glob));
     const imageOnly = shipped.image.filter((glob) => !shipped.local.includes(glob));
+    /**
+     * Whether a change to `file` reaches Cloud: a file a Cloud deploy reads
+     * (apps/hosted/cloud/src/infrastructure/deploy-inputs.ts) that is not only the CLI's and the
+     * desktop app's (`localOnly`) or the self-host image's own (`selfHostOnly`; Cloud builds the
+     * hosted dashboard and server too), nor a script, test, fixture or document (the
+     * docs site describes every product, so a change to it alone says nothing about Cloud).
+     */
+    const reachesCloud = (file: string) =>
+      !notDeployInputs.some((entry) => entry.path.test(file)) &&
+      !matchesAny([...notShipped, ...documents], file) &&
+      !matchesAny([...localOnly, ...selfHostOnly], file);
+    /**
+     * Whether a change is another product's too: it changes code that is only the CLI's, the
+     * desktop app's or the self-host image's. Its note is written for their users (AGENTS.md asks
+     * for one only on a change they would notice), so Cloud leaves it out even when the change
+     * also reaches Cloud.
+     */
+    const anotherProducts = (files: ReadonlyArray<string>) =>
+      files.some(
+        (file) =>
+          matchesAny([...localOnly, ...selfHostOnly], file) &&
+          !matchesAny([...notShipped, ...documents], file),
+      );
 
     // The job log is private: a warning names a commit, and never its title or its note.
     const warn = (sha: string, message: string) =>
@@ -441,9 +478,10 @@ NodeRuntime.runMain(
      * is left out, and why.
      */
     const listChanges = (
-      from: string,
+      from: string | undefined,
       to: string,
       warn: (sha: string, message: string) => Effect.Effect<void>,
+      reach: "release" | "cloud" = "release",
     ) =>
       Effect.gen(function* () {
         const commits = yield* commitsBetween(from, to);
@@ -469,7 +507,12 @@ NodeRuntime.runMain(
         }
 
         const listed = new Map<Area, Array<string>>(areas.map((area) => [area, []]));
-        const plain: Array<{ readonly area: Area; readonly text: string }> = [];
+        const plain: Array<{
+          readonly area: Area;
+          readonly text: string;
+          readonly date: string;
+          readonly sha: string;
+        }> = [];
         const credited = new Set<number>();
         let other = 0;
         let length = 0;
@@ -503,8 +546,10 @@ NodeRuntime.runMain(
             other += 1;
             continue;
           }
-          const files = commit.files.filter(
-            (file) => matchesAny(everything, file) && !matchesAny(notShipped, file),
+          const files = commit.files.filter((file) =>
+            reach === "release"
+              ? matchesAny(everything, file) && !matchesAny(notShipped, file)
+              : reachesCloud(file),
           );
           const { number: ported, handles, unread, unnamed } = port(commit.message);
           for (const line of unread)
@@ -518,6 +563,10 @@ NodeRuntime.runMain(
                 commit.sha,
                 `line ${line} has a Co-authored-by: trailer without a users.noreply.github.com address that names a GitHub handle, so the notes thank no one for it.`,
               );
+          if (reach === "cloud" && (files.length === 0 || anotherProducts(commit.files))) {
+            other += 1;
+            continue;
+          }
           if (ported === undefined && files.length === 0) {
             yield* warn(
               commit.sha,
@@ -548,7 +597,9 @@ NodeRuntime.runMain(
           const lines = notes.map((note) => `- ${note}${credit}`);
           const added = lines.reduce((total, line) => total + line.length, 0);
           // Once one change does not fit, later ones do not either, so the notes keep merge order.
-          if (length + added > maxNotesLength) {
+          // Cloud's notes have their own bound, the newest `cloudMaxNotes`, so the length a release's
+          // notes hold does not apply: it would keep the oldest and drop the newest.
+          if (reach === "release" && length + added > maxNotesLength) {
             length = maxNotesLength;
             yield* warn(
               commit.sha,
@@ -568,10 +619,72 @@ NodeRuntime.runMain(
                   : "All installs";
           if (ported !== undefined) credited.add(ported);
           listed.get(area)!.push(...lines);
-          plain.push(...notes.map((text) => ({ area, text })));
+          plain.push(...notes.map((text) => ({ area, text, date: commit.date, sha: commit.sha })));
         }
         return { listed, plain, other, length };
       });
+
+    const cloudFile = options.cloud;
+    if (cloudFile !== undefined) {
+      // Cloud runs main, not releases: the newest notes merged in the window before `to`.
+      const end = new Date((yield* gitOk(["log", "-1", "--format=%cI", to])).trim());
+      const start = new Date(end.getTime() - cloudWindowDays * 24 * 60 * 60 * 1000);
+      // A history that is grafted or has replaced commits is not main's own, and could hide
+      // commits inside the window without a trace, so neither is read.
+      const grafts = (yield* gitOk(["rev-parse", "--git-path", "info/grafts"])).trim();
+      const replaced = (yield* gitOk(["replace", "--list"])).trim();
+      if ((yield* fs.exists(grafts)) || replaced !== "")
+        return yield* new ReleaseNotesFailed({
+          message: `This checkout ${replaced !== "" ? "replaces commits (git replace)" : `grafts its history (${grafts})`}, so it cannot show main's history as it is. Write Cloud's notes from a checkout without them.`,
+        });
+      // The window is seen in full only from a commit before it: every commit after that one on
+      // main's first-parent line is then in this checkout. A shallow checkout that stops inside the
+      // window, such as CI's depth-one clone, has none and is refused rather than list fewer notes.
+      const before = (yield* gitOk([
+        "rev-list",
+        "-1",
+        "--first-parent",
+        `--before=${start.toISOString()}`,
+        to,
+      ])).trim();
+      if (before === "") {
+        const oldest = (yield* gitOk(["rev-list", "--first-parent", to]))
+          .trim()
+          .split("\n")
+          .at(-1)!;
+        return yield* new ReleaseNotesFailed({
+          message: `This checkout's history holds no commit of main from before ${start.toISOString()}, the start of the ${cloudWindowDays} days before ${end.toISOString()} that Cloud's notes cover; its oldest is from ${(yield* gitOk(["log", "-1", "--format=%cI", oldest])).trim()}. Write them from a checkout with main's whole history (fetch-depth: 0).`,
+        });
+      }
+      const { plain } = yield* listChanges(before, to, warn, "cloud");
+      // Newest change first, and a change's own notes in the order they were written.
+      const changes: Array<typeof plain> = [];
+      for (const note of plain)
+        if (changes.at(-1)?.[0]?.sha === note.sha) changes.at(-1)!.push(note);
+        else changes.push([note]);
+      const notes = changes
+        .toReversed()
+        .flat()
+        .slice(0, cloudMaxNotes)
+        .map((note) => ({ date: new Date(note.date).toISOString().slice(0, 10), text: note.text }));
+      const json = `${JSON.stringify({ notes }, null, 2)}\n`;
+      if (cloudFile === "-") return yield* Effect.sync(() => process.stdout.write(json));
+      yield* fs.makeDirectory(path.dirname(cloudFile), { recursive: true });
+      return yield* fs.writeFileString(cloudFile, json);
+    }
+    const publicRepo = process.env.PUBLIC_REPO || `https://github.com/${release.repository}.git`;
+    const history = Number(options.history ?? "1");
+    if (!Number.isInteger(history) || history < 1 || history > maxHistory)
+      return yield* new ReleaseNotesFailed({
+        message: `--history takes a whole number from 1 to ${maxHistory}; got ${options.history}.`,
+      });
+    const { previous, releases } = yield* earlierReleases(version, publicRepo, history);
+    const ancestor = yield* git(["merge-base", "--is-ancestor", previous.source, to]);
+    if (ancestor.exitCode !== 0)
+      return yield* new ReleaseNotesFailed({
+        message: `executor@${previous.version} was built from ${previous.source}, which is not in the history of ${to}.`,
+      });
+
     const { listed, other } = yield* listChanges(previous.source, to, warn);
 
     const sections = areas.flatMap((area) => {
@@ -624,8 +737,13 @@ NodeRuntime.runMain(
     // so `since`, the release before the oldest listed, says how far back the list is whole. A
     // reader cannot tell a gap from the versions alone, so the list has none. The left-out
     // releases' own warnings were the job log's when they were published, so they are not repeated.
+    const textByArea = (notes: ReadonlyArray<{ readonly area: Area; readonly text: string }>) =>
+      notes.map(({ area, text }) => ({ area, text }));
     const plain: Array<NotesHistory["releases"][number]> = [
-      { version, notes: (yield* listChanges(previous.source, to, () => Effect.void)).plain },
+      {
+        version,
+        notes: textByArea((yield* listChanges(previous.source, to, () => Effect.void)).plain),
+      },
     ];
     let since = previous.version;
     const leftOut = (version: string, reason: string) =>
@@ -656,7 +774,7 @@ NodeRuntime.runMain(
         current.source,
         () => Effect.void,
       );
-      plain.push({ version: current.version, notes: listed });
+      plain.push({ version: current.version, notes: textByArea(listed) });
       since = before.version;
     }
     const written: NotesHistory = { since, releases: plain };
