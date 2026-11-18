@@ -410,7 +410,10 @@ REST or GraphQL API to get around a refusal, and no change to the ruleset. Only
 Rhys turns it off, in an emergency. See [CI configuration](notes/ci.md#the-main-ruleset).
 
 A failure on `main` is a regression or a flake that a PR selection missed. Fixing
-it takes priority over new work that touches the same area.
+it takes priority over new work that touches the same area. While CI on `main` is red, one
+open issue labelled `main-red` names the failed jobs and scenarios and the commits
+since the last green run (`.github/workflows/main-health.yml`); it closes itself
+on the next green run. Read it before investigating.
 
 A PR run takes at most about seven minutes. Wait for it once; do not poll post-merge
 suites before handing off. When a job fails in a scenario the change does not
