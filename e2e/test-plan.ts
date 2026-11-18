@@ -95,6 +95,13 @@ const cloudOnboarding = {
   local: na("Local uses device pairing instead of Cloud account onboarding."),
 };
 
+/** The self-host update check's scenarios: only self-host has an update to offer. */
+const updateCheckTargets = {
+  "self-host": scheduled,
+  cloud: na("Cloud always runs the newest code; it has no update to offer."),
+  local: na("The CLI prints its own update notice and the desktop app updates itself."),
+};
+
 /** App Workers the budget scenarios keep loaded; their spec asserts this limit. */
 export const appWorkerBudgetLimit = 2;
 /**
@@ -10434,12 +10441,48 @@ export const scenarios = plan({
   selfHostUpdateCheck: {
     file: "self-host-update-check.spec.ts",
     title:
-      "Self-host asks its npm registry for a newer release at most once a day whatever the answer or restarts, with only a plain client's headers, and shows owners and admins how to update, never members, a stable instance only a stable release, reads a private plain-HTTP mirror as app installs do, directly whatever the proxy variables say, asks nothing and warns once when it cannot record the attempt, keeps showing the release it last heard of through an outage, and shows nothing and asks nothing when turned off, air-gapped or unanswered",
-    targets: {
-      "self-host": scheduled,
-      cloud: na("Cloud always runs the newest code; it has no update to offer."),
-      local: na("The CLI prints its own update notice and the desktop app updates itself."),
-    },
+      "Self-host asks its npm registry once for a newer release, with only a plain client's headers, and shows owners and admins how to update, never members",
+    targets: updateCheckTargets,
+  },
+  selfHostUpdateCheckChannels: {
+    file: "self-host-update-check.spec.ts",
+    title:
+      "Self-host offers a stable instance only a stable release, and a beta instance a newer stable release",
+    targets: updateCheckTargets,
+  },
+  selfHostUpdateCheckDaily: {
+    file: "self-host-update-check.spec.ts",
+    title:
+      "Self-host asks its npm registry for a newer release at most once a day whatever the answer or restarts, and keeps showing the release it last heard of through an outage",
+    targets: updateCheckTargets,
+  },
+  selfHostUpdateCheckRecord: {
+    file: "self-host-update-check.spec.ts",
+    title:
+      "Self-host asks nothing for a newer release and warns once a start when it cannot record the attempt, and asks once it can",
+    targets: updateCheckTargets,
+  },
+  selfHostUpdateCheckMirror: {
+    file: "self-host-update-check.spec.ts",
+    title:
+      "Self-host reads a private plain-HTTP mirror for a newer release as app installs do, directly whatever the proxy variables say",
+    targets: updateCheckTargets,
+  },
+  selfHostUpdateCheckOff: {
+    file: "self-host-update-check.spec.ts",
+    title: "Self-host shows no update and asks nothing when its update check is turned off",
+    targets: updateCheckTargets,
+  },
+  selfHostUpdateCheckAirGapped: {
+    file: "self-host-update-check.spec.ts",
+    title: "Self-host shows no update and no error when its npm registry cannot be reached",
+    targets: updateCheckTargets,
+  },
+  selfHostUpdateCheckUnanswered: {
+    file: "self-host-update-check.spec.ts",
+    title:
+      "Self-host starts, sets up and serves without an update while its npm registry never answers",
+    targets: updateCheckTargets,
   },
   selfHostCatalogFeed: {
     file: "self-host-catalog-feed.spec.ts",
