@@ -29,7 +29,7 @@ import {
 } from "../contracts/app-accounts.ts";
 import { BearerAuthentication, SessionAuthentication, CurrentUserId } from "../contracts/auth.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { OrganizationForbidden } from "../contracts/organization.ts";
+import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { appManagerOwner, currentOwner, usableApp } from "./access.ts";
 import { connectAccount, connectionUrl } from "./accounts.ts";
@@ -289,12 +289,14 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           return yield* requirementView(executor, owner, app, "app", params.requirement, linked);
         }),
       )
-      .handle("appLink", ({ params }) =>
-        Effect.gen(function* () {
+      .handle("appLink", ({ params }) => {
+        // The app the audit record names: only once it was found, never the request's text.
+        let resolved: AppId | undefined;
+        return Effect.gen(function* () {
           const user = yield* caller;
           const owner = yield* appManagerOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
-          yield* executor.apps.get({ owner, app: params.app });
+          resolved = (yield* executor.apps.get({ owner, app: params.app })).id;
           // The caller's own account, or one an administrator reuses from another app's link.
           const checked = yield* requireAppLinkableAs(
             yield* currentResourceAuthority,
@@ -330,7 +332,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           audited(
             "app_account.link",
             { kind: "account", id: () => params.account },
-            { app: params.app },
+            () => (resolved === undefined ? {} : { app: resolved }),
             ({ changed, authority }) => ({ authority, changed: String(changed) }),
           ),
           Effect.andThen(
@@ -347,10 +349,11 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
               );
             }),
           ),
-        ),
-      )
-      .handle("appUnlink", ({ params }) =>
-        Effect.gen(function* () {
+        );
+      })
+      .handle("appUnlink", ({ params }) => {
+        let resolved: AppId | undefined;
+        return Effect.gen(function* () {
           // Unlinking needs edit access to the app, not use of the account: an editor can stop the
           // app using an account they cannot use. An account's owner may also stop any app using
           // it, since an administrator may have linked it to one they cannot edit.
@@ -366,7 +369,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
             !(yield* appLinkApps(yield* policyDatabase, params.account)).includes(params.app)
           )
             return yield* new OrganizationForbidden();
-          yield* executor.apps.get({ owner, app: params.app });
+          resolved = (yield* executor.apps.get({ owner, app: params.app })).id;
           const { removed, authority } = yield* lockedChange(
             executor,
             { app: params.app, access: "unlink", account: params.account },
@@ -396,25 +399,31 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           audited(
             "app_account.unlink",
             { kind: "account", id: () => params.account },
-            { app: params.app },
+            () => (resolved === undefined ? {} : { app: resolved }),
             ({ authority }) => ({ authority }),
           ),
           Effect.map(({ unlinked }) => unlinked),
-        ),
-      )
-      .handle("appUnlinkOwned", ({ params }) =>
-        Effect.gen(function* () {
+        );
+      })
+      .handle("appUnlinkOwned", ({ params }) => {
+        // Named only once one of the owner's links shows the app exists.
+        let resolved: AppId | undefined;
+        return Effect.gen(function* () {
           yield* requireAccountOwner(params.account);
           const executor = yield* Effect.flatten(HostedExecutor);
+          const { organization } = yield* CurrentOrganization;
+          // Removing app links takes the organization's reuse lock, so take it first here too,
+          // before the app's link lock, in the order a reuse takes them.
           yield* lockedChange(
             executor,
-            { app: params.app, access: "unlink", account: params.account },
+            { app: params.app, access: "unlink", account: params.account, reuse: true },
             (sql, actor) =>
               Effect.gen(function* () {
                 yield* requireAccountOwnerAs(actor, params.account);
                 if (!(yield* appLinkApps(sql, params.account)).includes(params.app))
                   return yield* new OrganizationForbidden();
-                yield* removeAppLinksOf(executor, sql, params.account, params.app);
+                resolved = params.app;
+                yield* removeAppLinksOf(executor, sql, organization, params.account, params.app);
               }),
           );
           yield* wake;
@@ -423,11 +432,11 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           audited(
             "app_account.unlink",
             { kind: "account", id: () => params.account },
-            { app: params.app },
+            () => (resolved === undefined ? {} : { app: resolved }),
             () => ({ authority: "owner" }),
           ),
-        ),
-      )
+        );
+      })
       .handle("appConnect", ({ params, payload }) => connect(services, "app", params, payload))
       .handle("userList", ({ params }) =>
         Effect.gen(function* () {

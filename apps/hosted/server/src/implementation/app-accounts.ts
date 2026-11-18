@@ -268,6 +268,17 @@ export const lockAppLinks = (sql: SqlClient.SqlClient, app: AppId) =>
   lockLinks(sql, app).pipe(Effect.catchTag("SqlError", () => new StorageError()));
 
 /**
+ * Serialize, in the caller's transaction, with every reuse of an app link in the organization (see
+ * {@link lockedChange}) and every removal of an account's app links ({@link removeAppLinksOf}).
+ * Take it before any app's link lock: both orders the same way, so neither deadlocks the other.
+ */
+export const lockAppLinkReuse = (sql: SqlClient.SqlClient, organization: string) =>
+  sql`select pg_advisory_xact_lock(hashtextextended(${`executor-app-link-reuse:${organization}`}, 0))`.pipe(
+    Effect.asVoid,
+    Effect.catchTag("SqlError", () => new StorageError()),
+  );
+
+/**
  * Run a link change in one transaction under the app's link lock, after checking the caller's
  * access again there. The request checked it before, but the transaction can wait for the lock
  * while the caller's role, the app's audience or the account's audience changes; this check reads
@@ -295,9 +306,7 @@ export const lockedChange = <A, E, R>(
         // A reuse share-locks its source links and may replace a link another reuse relies on;
         // one at a time per organization, taken before any app lock, so two cannot deadlock.
         if (input.reuse === true)
-          yield* sql`select pg_advisory_xact_lock(hashtextextended(${`executor-app-link-reuse:${(yield* CurrentOrganization).organization}`}, 0))`.pipe(
-            Effect.catchTag("SqlError", () => new StorageError()),
-          );
+          yield* lockAppLinkReuse(sql, (yield* CurrentOrganization).organization);
         yield* lockAppLinks(sql, input.app);
         const actor = yield* lockCurrentActor;
         if (input.access === "unlink") {
@@ -546,30 +555,39 @@ const AppLinkRow = Schema.Struct({ app: AppId, requirement: Schema.String });
  * lock, bringing each webhook source in line as unlinking it by hand does. The caller must check
  * ownership. With `app`, remove only that app's links, without disclosing its requirements.
  * Returns whether any link was removed.
+ *
+ * It first takes the organization's reuse lock ({@link lockAppLinkReuse}), so no reuse of one of
+ * these links commits a copy elsewhere while this runs: a reuse in progress finishes first and its
+ * link is read here, and one that starts later finds no link to reuse. The owner may still link
+ * the account themselves meanwhile, from another tab, so the links are read again until none is
+ * left; if some remain after a bounded number of passes, this fails rather than report success
+ * with links left behind, and the caller can try again.
  */
 export const removeAppLinksOf = (
   executor: Executor,
   sql: SqlClient.SqlClient,
+  organization: string,
   account: AccountId,
   app?: AppId,
 ) =>
   executor[StorageHost].transaction(
     Effect.gen(function* () {
+      yield* lockAppLinkReuse(sql, organization);
       let removed = false;
-      // A reuse that held a link this removes may have committed a new one meanwhile, which the
-      // last read missed; read again until none is left, a bounded number of times.
       for (let pass = 0; pass < 8; pass++) {
         const rows = yield* Schema.decodeUnknownEffect(Schema.Array(AppLinkRow))(
           yield* sql`select distinct app, requirement from hosted_app_account_links
             where account = ${account} and subject is null
               and ${app === undefined ? sql`true` : sql`app = ${app}`} order by app, requirement`,
         );
-        if (rows.length === 0) break;
+        if (rows.length === 0) return removed;
         for (const row of rows)
           if (yield* removeLink(sql, executor.webhooks, { ...row, account, subject: null }))
             removed = true;
       }
-      return removed;
+      return yield* Effect.logWarning("App links kept reappearing while removing them", {
+        account,
+      }).pipe(Effect.andThen(Effect.fail(new StorageError())));
     }).pipe(Effect.catchTags(sqlFailures)),
   );
 

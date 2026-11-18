@@ -121,7 +121,8 @@ is how one account serves everyone. An organization owner or admin may also
 reuse an account already linked for everyone to an app they can read and edit
 with the same calling credential. A credential limited to selected apps cannot
 reuse accounts from apps outside that selection. Reuse is not allowed
-into an app a member created, unless that member owns the account. Reusing an
+into an app a member created, unless that member owns the account, nor into one
+created by someone who has since left the organization. Reusing an
 account does not make it yours; it stays its owner's, and its owner may unlink
 it from any app. It stops serving if its
 owner leaves the organization. Callers use the account through the app without

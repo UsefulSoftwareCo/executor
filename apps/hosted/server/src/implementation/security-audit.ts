@@ -66,18 +66,21 @@ export const recordSecurityAudit = (event: SecurityAuditEvent) =>
  * `auth.failure.reason` when a check recorded one. A request that ends before the action does is
  * `interrupted`: a change it started may still be stored. Only a completed action names its target,
  * by `target.id` of its result, a record the action found authorized or stored; what the request
- * asked for can be any text. `succeeded` adds detail read from a completed action's result.
+ * asked for can be any text. `succeeded` adds detail read from a completed action's result. A
+ * `detail` function is read once the action ends, so it can name what the action resolved before
+ * it was refused, never what the request named.
  */
 export const audited =
   <A>(
     action: SecurityAuditAction,
     target: { readonly kind: string; readonly id: (value: A) => string | undefined },
-    detail?: Readonly<Record<string, string>>,
+    detail?: Readonly<Record<string, string>> | (() => Readonly<Record<string, string>>),
     succeeded?: (value: A) => Readonly<Record<string, string>>,
   ) =>
   <E, R>(effect: Effect.Effect<A, E, R>) =>
-    Effect.onExit(effect, (exit) =>
-      recordSecurityAudit({
+    Effect.onExit(effect, (exit) => {
+      const ended = typeof detail === "function" ? detail() : detail;
+      return recordSecurityAudit({
         action,
         outcome: Exit.isSuccess(exit)
           ? "success"
@@ -87,7 +90,45 @@ export const audited =
         target: { kind: target.kind, id: Exit.isSuccess(exit) ? target.id(exit.value) : undefined },
         detail:
           Exit.isSuccess(exit) && succeeded !== undefined
-            ? { ...detail, ...succeeded(exit.value) }
-            : detail,
-      }),
+            ? { ...ended, ...succeeded(exit.value) }
+            : ended,
+      });
+    });
+
+/**
+ * The records hooks inside a storage transaction made, which a request that starts the transaction
+ * collects and records once it returns, so after the transaction committed.
+ */
+export class CommittedAudits extends Context.Service<
+  CommittedAudits,
+  { readonly pending: SecurityAuditEvent[] }
+>()("hosted/CommittedAudits") {}
+
+/**
+ * Record `event` once the transaction it describes commits: held for the request that collects
+ * {@link CommittedAudits}, or recorded now where no request does.
+ */
+export const recordSecurityAuditOnCommit = (event: SecurityAuditEvent) =>
+  Effect.flatMap(
+    Effect.serviceOption(CommittedAudits),
+    Option.match({
+      onNone: () => recordSecurityAudit(event),
+      onSome: (audits) =>
+        Effect.sync(() => {
+          audits.pending.push(event);
+        }),
+    }),
+  );
+
+/**
+ * Run `effect`, which commits its transactions before it returns, collecting the records its hooks
+ * made; record them once it succeeds. A failed or interrupted run rolled back what they describe.
+ */
+export const withCommittedAudits = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.suspend(() => {
+    const audits = { pending: [] as SecurityAuditEvent[] };
+    return effect.pipe(
+      Effect.provideService(CommittedAudits, audits),
+      Effect.tap(() => Effect.forEach(audits.pending, recordSecurityAudit, { discard: true })),
     );
+  });

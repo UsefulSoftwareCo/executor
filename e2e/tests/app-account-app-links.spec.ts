@@ -6,13 +6,14 @@
  * override them.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Effect, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
 import { Resource } from "../support/contracts.ts";
+import { Telemetry } from "../support/evidence.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import {
@@ -20,6 +21,7 @@ import {
   linkAccount,
   linkAccountResponse,
   linkedAccountIds,
+  requirementPath,
 } from "../support/app-accounts.ts";
 import {
   LinkRequirement,
@@ -84,6 +86,31 @@ const scopedOAuthApp = (
 const service = defineProvider({ name: "App link connection OAuth fixture", auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer}/mcp`)} }) } });
 export default defineApp({ ${scope}: { accounts: { service } } }, async () => ({ tools: router({}) }));`;
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
+const TeamWho = Schema.Struct({ team: Schema.String, token: Schema.String });
+const SessionIdentity = Schema.Struct({ user: Schema.Struct({ email: Schema.String }) });
+const LogRecords = Schema.fromJsonString(
+  Schema.Struct({
+    data: Schema.Array(
+      Schema.Struct({
+        body: Schema.String,
+        attributes: Schema.Record(Schema.String, Schema.Unknown),
+      }),
+    ),
+  }),
+);
+/** The audit attributes of the one `security.audit` record for `action` in a trace's logs. */
+const auditOf = (logs: string, action: string) => {
+  const records = Schema.decodeUnknownSync(LogRecords)(logs).data.filter(
+    (record) => record.body === "security.audit" && record.attributes["audit.action"] === action,
+  );
+  expect(records, `one ${action} record`).toHaveLength(1);
+  const attributes = records[0]?.attributes ?? {};
+  return Object.fromEntries(Object.entries(attributes).filter(([key]) => key.startsWith("audit.")));
+};
+const traced = () => {
+  const traceId = randomBytes(16).toString("hex");
+  return { traceId, traceparent: `00-${traceId}-${randomBytes(8).toString("hex")}-01` };
+};
 const LinkedRefusal = Schema.Struct({ _tag: Schema.String, apps: Schema.Array(Schema.String) });
 
 layer(HostedLive, { excludeTestServices: true })("App account app links", (it) => {
@@ -717,6 +744,241 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         const m4 = yield* memberApp;
         yield* refused(yield* appLink(actors.member, m4, secret), 403, "OrganizationForbidden");
         expect(yield* linkedAccountIds(actors.member, m4, "app")).toEqual([]);
+      }),
+    ),
+  );
+  it.effect(scenarios.hostedAppLinkReuseDeparted.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const fixture = yield* appLinksFixture([{ path: "index.ts", content: source }]);
+        const { api, actors, prefix, connect } = fixture;
+        const appLink = (actor: Session, appPath: string, account: string) =>
+          linkAccountResponse(actor, appPath, "team", account, "app");
+        /** An app with one plain team requirement that `actor` creates. */
+        const deployAs = (actor: Session) =>
+          Effect.gen(function* () {
+            const created = yield* api.request(actor, "POST", `${prefix}/apps/deploy`, {
+              name: `Reuse departure ${randomUUID().slice(0, 8)}`,
+              files: [{ path: "index.ts", content: teamAppSource }, appsManifest],
+            });
+            expect(created.status, JSON.stringify(created.body)).toBe(200);
+            const appPath = `${prefix}/apps/${(yield* body(Resource, created)).id}`;
+            yield* fixture.adopt(appPath);
+            return appPath;
+          });
+        const who = (actor: Session, appPath: string) =>
+          api.request(actor, "POST", `${appPath}/tools/call`, {
+            tool: "who",
+            kind: "query",
+            input: {},
+          });
+        const leaves = (actor: Session) =>
+          Effect.gen(function* () {
+            const { user } = yield* body(
+              SessionIdentity,
+              yield* api.request(actor, "GET", "/api/auth/get-session"),
+            );
+            yield* ok(
+              yield* api.request(actors.owner, "POST", "/api/auth/organization/remove-member", {
+                organizationId: actors.organization.id,
+                memberIdOrEmail: user.email,
+              }),
+            );
+          });
+
+        // The member links their own account for everyone to an app they created, and the
+        // administrator reuses it in an app of their own, whose code then runs with it.
+        const memberSource = yield* deployAs(actors.member);
+        const started = yield* api.request(
+          actors.member,
+          "POST",
+          `${requirementPath(memberSource, "app", "team")}/connections`,
+          {},
+        );
+        const saved = yield* okBody(
+          Resource,
+          yield* fixture.submit(
+            actors.member,
+            (yield* okBody(Resource, started)).id,
+            "MEMBER-SECRET-TOKEN",
+          ),
+        );
+        const memberAccount = saved.id;
+        yield* fixture.saved(actors.member, memberAccount);
+        const adminApp = yield* deployAs(actors.admin);
+        yield* ok(yield* appLink(actors.admin, adminApp, memberAccount));
+        expect(yield* okBody(TeamWho, yield* who(actors.admin, adminApp))).toEqual({
+          team: memberAccount,
+          token: "MEMBER-SECRET-TOKEN",
+        });
+
+        // The owner links theirs for everyone to the fixture's app, while the member still
+        // created an app the administrator can edit.
+        const secret = yield* connect(actors.owner, "app", "team", "OWNER-SECRET-TOKEN");
+        const memberTarget = yield* deployAs(actors.member);
+        yield* refused(
+          yield* appLink(actors.admin, memberTarget, secret),
+          403,
+          "OrganizationForbidden",
+        );
+
+        // The member leaves. Their account stops serving every app, the administrator's included,
+        // and the administrator can no longer reuse it anywhere.
+        yield* leaves(actors.member);
+        yield* refused(yield* who(actors.admin, adminApp), 409, "AccountRequired");
+        const otherAdminApp = yield* deployAs(actors.admin);
+        yield* refused(
+          yield* appLink(actors.admin, otherAdminApp, memberAccount),
+          403,
+          "OrganizationForbidden",
+        );
+
+        // An app whose creator left still counts as theirs: invited back, they would edit it
+        // again, so the owner's account is neither offered there nor linked.
+        const offered = yield* api.request(
+          actors.admin,
+          "GET",
+          `${memberTarget}/accounts/app/team`,
+        );
+        expect(
+          (yield* okBody(LinkRequirement, offered)).accounts.map((entry) => entry.account.id),
+        ).not.toContain(secret);
+        yield* refused(
+          yield* appLink(actors.admin, memberTarget, secret),
+          403,
+          "OrganizationForbidden",
+        );
+        expect(yield* linkedAccountIds(actors.admin, memberTarget, "app")).toEqual([]);
+        // An app the administrator created still takes it.
+        yield* ok(yield* appLink(actors.admin, otherAdminApp, secret));
+        expect(yield* okBody(TeamWho, yield* who(actors.admin, otherAdminApp))).toEqual({
+          team: secret,
+          token: "OWNER-SECRET-TOKEN",
+        });
+      }),
+    ),
+  );
+  it.effect(scenarios.hostedAppLinkAudit.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const fixture = yield* appLinksFixture([{ path: "index.ts", content: source }]);
+        const { api, actors, prefix, path, app } = fixture;
+        const telemetry = yield* Telemetry;
+        /** The trace's audit record for `action`, once it reached the collector. */
+        const audit = (traceId: string, action: string) =>
+          telemetry.logs(traceId).pipe(
+            Effect.filterOrFail(
+              (logs) => logs.includes(action),
+              () => new Error(`The ${action} record has not reached the collector`),
+            ),
+            Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+            Effect.map((logs) => ({ logs, record: auditOf(logs, action) })),
+          );
+        const idOf = (appPath: string) => appPath.slice(appPath.lastIndexOf("/") + 1);
+
+        // Connecting from the app links the owner's new account for everyone: recorded once the
+        // save commits, as the owner's.
+        const connected = traced();
+        const started = yield* api.request(
+          actors.owner,
+          "POST",
+          `${requirementPath(path, "app", "team")}/connections`,
+          {},
+        );
+        const saved = yield* okBody(
+          Resource,
+          yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/connections/${(yield* okBody(Resource, started)).id}/submit`,
+            { method: "key", label: "AUDIT-OWNER-TOKEN", fields: { token: "AUDIT-OWNER-TOKEN" } },
+            { traceparent: connected.traceparent },
+          ),
+        );
+        const secret = saved.id;
+        yield* fixture.saved(actors.owner, secret);
+        const connect = yield* audit(connected.traceId, "app_account.link");
+        expect(connect.record).toMatchObject({
+          "audit.outcome": "success",
+          "audit.target.kind": "account",
+          "audit.target.id": secret,
+          "audit.app": app.id,
+          "audit.authority": "owner",
+          "audit.via": "connect",
+          "audit.changed": "true",
+        });
+        expect(connect.logs).not.toContain("AUDIT-OWNER-TOKEN");
+
+        // The administrator reuses it in another app: recorded as a reuse.
+        const other = yield* fixture.another(teamAppSource);
+        const reused = traced();
+        yield* ok(
+          yield* api.request(
+            actors.admin,
+            "PUT",
+            `${requirementPath(other, "app", "team")}/${secret}`,
+            undefined,
+            { traceparent: reused.traceparent },
+          ),
+        );
+        expect((yield* audit(reused.traceId, "app_account.link")).record).toMatchObject({
+          "audit.outcome": "success",
+          "audit.target.id": secret,
+          "audit.app": idOf(other),
+          "audit.authority": "app_link",
+          "audit.changed": "true",
+        });
+
+        // A refused link names no app, and never the one the request named.
+        const missing = `app_${randomUUID()}`;
+        const refusal = traced();
+        const denied = yield* api.request(
+          actors.admin,
+          "PUT",
+          `${requirementPath(`${prefix}/apps/${missing}`, "app", "team")}/${secret}`,
+          undefined,
+          { traceparent: refusal.traceparent },
+        );
+        expect(denied.status, JSON.stringify(denied.body)).not.toBe(200);
+        const failed = yield* audit(refusal.traceId, "app_account.link");
+        expect(failed.record).toMatchObject({ "audit.outcome": "failure" });
+        expect(failed.record).not.toHaveProperty("audit.app");
+        expect(failed.record).not.toHaveProperty("audit.target.id");
+        expect(failed.logs).not.toContain(missing);
+
+        // An editor's unlink of someone else's account is recorded as the app manager's.
+        const managed = traced();
+        yield* ok(
+          yield* api.request(
+            actors.admin,
+            "DELETE",
+            `${requirementPath(path, "app", "team")}/${secret}`,
+            undefined,
+            { traceparent: managed.traceparent },
+          ),
+        );
+        expect((yield* audit(managed.traceId, "app_account.unlink")).record).toMatchObject({
+          "audit.outcome": "success",
+          "audit.target.id": secret,
+          "audit.app": app.id,
+          "audit.authority": "app_manager",
+        });
+
+        // Its owner's unlink from every requirement of the other app is recorded as the owner's.
+        const owned = traced();
+        yield* ok(
+          yield* api.request(actors.owner, "DELETE", `${other}/accounts/app/${secret}`, undefined, {
+            traceparent: owned.traceparent,
+          }),
+        );
+        expect((yield* audit(owned.traceId, "app_account.unlink")).record).toMatchObject({
+          "audit.outcome": "success",
+          "audit.target.id": secret,
+          "audit.app": idOf(other),
+          "audit.authority": "owner",
+        });
       }),
     ),
   );

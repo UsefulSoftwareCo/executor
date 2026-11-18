@@ -123,7 +123,7 @@ export const removeUser = Effect.gen(function* () {
       (entry) => entry.organization === organization.id,
     )) {
       // Leaving already stops the account serving its apps; deleting it removes those links.
-      if (yield* removeAppLinksOf(executor, sql, account))
+      if (yield* removeAppLinksOf(executor, sql, organization.id, account))
         yield* Effect.serviceOption(ScheduleWakeup).pipe(
           Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: (wake) => wake })),
         );

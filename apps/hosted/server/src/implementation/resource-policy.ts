@@ -621,7 +621,10 @@ const TargetEditors = Schema.Struct({
  *
  * Reuse never reaches a member who could not already use the account: it is refused when the
  * target app's creator is a member other than the account's owner, since that member edits the
- * app and so could deploy code that reads the credential. Members never reuse an account, so
+ * app and so could deploy code that reads the credential. A creator who has left the organization
+ * counts as a member: invited back, they would edit the app again. Only an app without a creator,
+ * one the system created or whose creator's user was deleted, has nobody who edits it as its
+ * creator. Members never reuse an account, so
  * nothing a member can edit ever comes to hold another person's account unless its owner linked
  * it there, and an administrator's unlink cannot leave links behind that a member made from
  * theirs. The account stays its owner's; nobody else may use it directly, link it for themselves
@@ -679,7 +682,9 @@ export const appLinkableAccountsAs = (
     for (const link of links)
       if (
         editable.has(link.app) &&
-        (target.creator === null || target.role !== "member" || target.creator === link.owner)
+        (target.creator === null ||
+          (target.role !== null && target.role !== "member") ||
+          target.creator === link.owner)
       )
         linkable.set(link.account, "app_link");
     return linkable;

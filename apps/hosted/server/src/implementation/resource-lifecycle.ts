@@ -27,7 +27,7 @@ import {
   linkedAccounts,
   sourceActorLost,
 } from "./app-accounts.ts";
-import { recordSecurityAudit } from "./security-audit.ts";
+import { recordSecurityAuditOnCommit } from "./security-audit.ts";
 import { usableAppLinks } from "./resource-policy.ts";
 
 type AppCreation =
@@ -705,9 +705,10 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
             subject: input.scope === "app" ? null : user,
             linkedBy: user,
           }).pipe(Effect.mapError(() => new StorageError()));
-          // A connection completing for an app requirement links the new account for everyone.
+          // A connection completing for an app requirement links the new account for everyone,
+          // recorded once the account save that makes the link commits.
           if (input.scope === "app")
-            yield* recordSecurityAudit({
+            yield* recordSecurityAuditOnCommit({
               action: "app_account.link",
               outcome: "success",
               target: { kind: "account", id: input.account.id },

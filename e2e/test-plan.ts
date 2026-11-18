@@ -9464,6 +9464,28 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
+  hostedAppLinkReuseDeparted: {
+    fixtures: "actors",
+    file: "app-account-app-links.spec.ts",
+    title:
+      "a hosted administrator's reuse of an account stops serving once its owner leaves, and is refused into an app whose creator left, as if they were still a member",
+    targets: {
+      local: na("Hosted managers and personal accounts; Local has one user."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppLinkAudit: {
+    fixtures: "actors",
+    file: "app-account-app-links.spec.ts",
+    title:
+      "hosted app links and unlinks, a connection's included, leave audit records naming the account, the app found and the authority; a refused one names no app",
+    targets: {
+      local: na("Local has no hosted audit records."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
   hostedAppLinkOAuthConnections: {
     fixtures: "actors",
     file: "app-account-app-links.spec.ts",
@@ -9480,6 +9502,17 @@ export const scenarios = plan({
     file: "app-account-link-held-access.spec.ts",
     title:
       "an app link or unlink waiting for the app's lock is refused when the admin is demoted meanwhile, and goes through when nothing changed",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The statement hold is mounted by the self-host test entry point."),
+      local: na("Local has no organization roles."),
+    },
+  },
+  hostedAppLinkReuseHeldDemotion: {
+    fixtures: "actors",
+    file: "app-account-link-held-access.spec.ts",
+    title:
+      "an administrator's reuse of an owner's account waiting for its checks is refused when they are demoted meanwhile, and a demoted administrator can neither reuse nor unlink it",
     targets: {
       "self-host": scheduled,
       cloud: na("The statement hold is mounted by the self-host test entry point."),
