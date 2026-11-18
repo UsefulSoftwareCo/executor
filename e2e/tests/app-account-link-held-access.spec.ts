@@ -1,6 +1,6 @@
 /**
  * Linking an account for everyone needs edit access to the app and use of the account, and
- * unlinking one needs edit access. Saving an MCP connection that runs an app as an account links
+ * unlinking someone else's needs edit access. Saving an MCP connection that runs an app as an account links
  * that account for the member, which needs use of the app and of the account. Each route checks
  * before its write, which then waits for the app's link lock; access revoked in between must refuse
  * the write. The self-host test entry point holds the request just after its last check has
@@ -248,26 +248,93 @@ layer(HostedLive, { excludeTestServices: true })("App account link held access",
         expect(linked.status, JSON.stringify(linked.body)).toBe(200);
         expect(yield* appLinks).toEqual([["service", first]]);
 
+        // The owner links their account again. Its owner may unlink an account from any app, so
+        // the admin's unlinks below are of the owner's account, which needs edit access.
+        const relinked = yield* send(owner, "PUT", linkPath(second));
+        expect(relinked.status, JSON.stringify(relinked.body)).toBe(200);
+        expect(yield* appLinks).toEqual([["service", second]]);
+
         // Demoted while its unlink waits, the admin no longer edits the app: the link stays.
         const kept = yield* held(
           "app-access",
           app,
-          send(admin, "DELETE", linkPath(first)),
+          send(admin, "DELETE", linkPath(second)),
           setRole("member"),
         );
         yield* refused(kept);
-        expect(yield* appLinks).toEqual([["service", first]]);
+        expect(yield* appLinks).toEqual([["service", second]]);
         yield* setRole("admin");
 
         // Held and released with nothing changed, the unlink removes it.
         const unlinked = yield* held(
           "app-access",
           app,
-          send(admin, "DELETE", linkPath(first)),
+          send(admin, "DELETE", linkPath(second)),
           Effect.void,
         );
         expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
         expect(yield* appLinks).toEqual([]);
+      }),
+    ),
+  );
+
+  it.effect(scenarios.hostedAppLinkReuseHeldDemotion.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const { send, admin, owner, prefix, setRole, connect, held } = yield* heldCase("app");
+        // The owner links their own account for everyone to the case's app, which the admin can
+        // edit, so the admin may reuse it in another app the owner created.
+        const account = yield* connect(owner, "synthetic-held-reuse");
+        const deployed = yield* send(owner, "POST", `${prefix}/apps/deploy`, {
+          name: `Held reuse ${randomUUID().slice(0, 8)}`,
+          files: [{ path: "index.ts", content: source }, appsManifest],
+        });
+        expect(deployed.status, JSON.stringify(deployed.body)).toBe(200);
+        const target = `${prefix}/apps/${(yield* body(App, deployed)).id}`;
+        // Runs before the case's own cleanup, which deletes the account.
+        yield* Effect.addFinalizer(() => send(owner, "DELETE", target).pipe(Effect.orDie));
+        const targetLinks = send(owner, "GET", `${target}/accounts/app`).pipe(
+          Effect.flatMap((response) => body(Links, response)),
+          Effect.map((found) => found.map((link) => [link.requirement, link.account.id])),
+        );
+        const reusePath = `${requirementPath(target, "app", "service")}/${account}`;
+
+        // Demoted while the reuse waits, just after its check of who owns the account, the admin
+        // reuses nothing: a member never reuses an account.
+        const demoted = yield* held(
+          "account-access",
+          account,
+          send(admin, "PUT", reusePath),
+          setRole("member"),
+        );
+        yield* refused(demoted);
+        expect(yield* targetLinks).toEqual([]);
+        // Nor once the demotion committed.
+        yield* refused(yield* send(admin, "PUT", reusePath));
+        expect(yield* targetLinks).toEqual([]);
+        yield* setRole("admin");
+
+        // Held and released with nothing changed, the reuse links the owner's account.
+        const reused = yield* held(
+          "account-access",
+          account,
+          send(admin, "PUT", reusePath),
+          Effect.void,
+        );
+        expect(reused.status, JSON.stringify(reused.body)).toBe(200);
+        expect(yield* targetLinks).toEqual([["service", account]]);
+
+        // Demoted right after, the admin can neither reuse it again nor unlink it: the app is the
+        // owner's, and only its owner and the account's owner may change its links.
+        yield* setRole("member");
+        yield* refused(yield* send(admin, "DELETE", reusePath));
+        yield* refused(yield* send(admin, "PUT", reusePath));
+        expect(yield* targetLinks).toEqual([["service", account]]);
+        // The account's owner still unlinks it.
+        const unlinked = yield* send(owner, "DELETE", reusePath);
+        expect(unlinked.status, JSON.stringify(unlinked.body)).toBe(200);
+        expect(yield* targetLinks).toEqual([]);
       }),
     ),
   );

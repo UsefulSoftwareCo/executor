@@ -111,7 +111,8 @@ const namesProfile = (apps: string, targets: string) => `exists (
  * one link per app (and subject), kept by the link routes under the app's lock; many() any number.
  * Removing the app or the member removes their links. Deleting an account removes its links, but
  * an account with an app link is refused first (`AccountLinkedToApp`, and the account removal hook
- * under the account's row lock). `linked_by` is the member who made the link, kept as history.
+ * under the account's row lock). `linked_by` records the member who made the link. An explicit
+ * app-link reuse prefixes that ID with `reuse:`; unprefixed owner and legacy links are unchanged.
  *
  * - One user link per app, requirement, account and member from every enabled profile that is not
  *   being removed and whose account set stays with the app, the requirement taken from the

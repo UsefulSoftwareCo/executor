@@ -9442,6 +9442,83 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
+  hostedAppLinkReuse: {
+    fixtures: "actors",
+    file: "app-account-app-links.spec.ts",
+    title:
+      "a hosted administrator links for everyone an account they do not own only once it serves an app they can edit; its owner may still unlink it from any app",
+    targets: {
+      local: na("Hosted managers and personal accounts; Local has one user."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppLinkReuseChain: {
+    fixtures: "actors",
+    file: "app-account-app-links.spec.ts",
+    title:
+      "a hosted administrator cannot reuse an owner's account into an app a member edits, so the member can never chain it into their own apps or read its secret, before or after an unlink",
+    targets: {
+      local: na("Hosted managers and personal accounts; Local has one user."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppLinkReuseDeparted: {
+    fixtures: "actors",
+    file: "app-account-app-links.spec.ts",
+    title:
+      "a hosted administrator's reuse of an account stops serving once its owner leaves, and is refused into an app whose creator left, as if they were still a member",
+    targets: {
+      local: na("Hosted managers and personal accounts; Local has one user."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppLinkAudit: {
+    fixtures: "actors",
+    file: "app-account-app-links.spec.ts",
+    title:
+      "hosted app links and unlinks, a connection's included, leave audit records naming the account, the app found and the authority; a refused one names no app",
+    targets: {
+      local: na("Local has no hosted audit records."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppLinkCreatorDemotion: {
+    fixtures: "actors",
+    file: "app-account-app-links.spec.ts",
+    title:
+      "a reused hosted app account stops serving when the app's creator is demoted and serves again on promotion, while an owner-made link keeps serving",
+    targets: {
+      local: na("Local has no organization roles."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
+  hostedAppLinkCreatorRemoval: {
+    fixtures: "actors",
+    file: "app-account-app-links.spec.ts",
+    title:
+      "a reused hosted app account refused after its app's creator is demoted stays refused once the creator, removed from the organization, deletes their user, and the unlink is audited",
+    targets: {
+      local: na("Local has no organization roles."),
+      "self-host": na("Self-host users are managed by the instance operator."),
+      cloud: managedCloud,
+    },
+  },
+  hostedAppLinkCreatorDemotionDuringRefresh: {
+    fixtures: "actors",
+    file: "app-account-app-links.spec.ts",
+    title:
+      "a reused hosted app account refuses a call already waiting on OAuth refresh when the creator is demoted",
+    targets: {
+      local: na("Local has no organization roles."),
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
+    },
+  },
   hostedAppLinkOAuthConnections: {
     fixtures: "actors",
     file: "app-account-app-links.spec.ts",
@@ -9458,6 +9535,17 @@ export const scenarios = plan({
     file: "app-account-link-held-access.spec.ts",
     title:
       "an app link or unlink waiting for the app's lock is refused when the admin is demoted meanwhile, and goes through when nothing changed",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("The statement hold is mounted by the self-host test entry point."),
+      local: na("Local has no organization roles."),
+    },
+  },
+  hostedAppLinkReuseHeldDemotion: {
+    fixtures: "actors",
+    file: "app-account-link-held-access.spec.ts",
+    title:
+      "an administrator's reuse of an owner's account waiting for its checks is refused when they are demoted meanwhile, and a demoted administrator can neither reuse nor unlink it",
     targets: {
       "self-host": scheduled,
       cloud: na("The statement hold is mounted by the self-host test entry point."),

@@ -178,7 +178,11 @@ linked to a single-account requirement and every account you linked to a
 `.many()` requirement; for each of the app's own requirements, the accounts
 linked for everyone. A single-account requirement with no account fails with
 `AccountRequired`, which says whether you need to link one or someone who can
-edit the app does. A tool input that passes `$accounts` fails with
+edit the app does. A reused app link whose creator is missing or no longer an
+organization admin or owner fails with `AppLinkCreatorNotAuthorized` (409), unless the
+creator owns the account or the account's owner made the link. Ask an admin to
+relink an eligible account, or ask the account's owner to link it directly.
+A tool input that passes `$accounts` fails with
 `AccountChoiceUnsupported`.
 
 To use a different account, link it on the app's **Accounts** tab. To use two
@@ -193,7 +197,9 @@ from an app that uses the account: open its menu on the app's **Accounts** tab a
 linked to it keeps working.
 
 Removing an account removes your links to it. An account linked to an app for
-everyone cannot be removed until someone who can edit the app unlinks it
-(`AccountLinkedToApp`). An app left with no account
+everyone cannot be removed until it is unlinked (`AccountLinkedToApp`). As its
+owner, call `appAccounts.appUnlinkOwned` with the account and each app id named by
+that error. This removes all its app links there without needing access to the
+app or its requirement names. An app left with no account
 for a requirement exposes no tools until you link or connect another. Executor
 does not substitute a different account.

@@ -1,5 +1,5 @@
 import { accountOAuthRedirectUri } from "./auth.ts";
-import { audited } from "./security-audit.ts";
+import { audited, withCommittedAudits } from "./security-audit.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { CurrentPolicy } from "../contracts/authorization.ts";
 import { permittedAppIds } from "@executor-js/authorization";
@@ -270,9 +270,10 @@ export const submitConnection = (
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
-    return yield* executor.accountConnections
-      .submit({ ...input, owner })
-      .pipe(Effect.tap(() => Effect.flatten(ScheduleWakeup)));
+    return yield* executor.accountConnections.submit({ ...input, owner }).pipe(
+      withCommittedAudits,
+      Effect.tap(() => Effect.flatten(ScheduleWakeup)),
+    );
   });
 /**
  * The member's client choice is checked against its audience here, then named to the SDK, which
@@ -289,11 +290,14 @@ export const startOAuth = (
     yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
     const client = yield* connectionClient(executor, owner, input);
     const { client: _selected, ...rest } = input;
-    return yield* executor.accountConnections.startOAuth({
-      ...rest,
-      owner,
-      ...(client === undefined ? {} : { client }),
-    });
+    // A sign-in that needs no redirect completes here, linking the account as completion does.
+    return yield* executor.accountConnections
+      .startOAuth({
+        ...rest,
+        owner,
+        ...(client === undefined ? {} : { client }),
+      })
+      .pipe(withCommittedAudits);
   });
 /** Completion rechecks connection and target ownership before saving provider credentials. */
 export const completeOAuth = (
@@ -303,9 +307,10 @@ export const completeOAuth = (
   Effect.gen(function* () {
     const executor = yield* Effect.flatten(HostedExecutor);
     yield* checkConnection(yield* ownedConnection(executor, owner, input.connection));
-    return yield* executor.accountConnections
-      .completeOAuth({ ...input, owner })
-      .pipe(Effect.tap(() => Effect.flatten(ScheduleWakeup)));
+    return yield* executor.accountConnections.completeOAuth({ ...input, owner }).pipe(
+      withCommittedAudits,
+      Effect.tap(() => Effect.flatten(ScheduleWakeup)),
+    );
   });
 
 /** Account policy and persisted connection ownership protect management and OAuth return requests. */

@@ -1,7 +1,10 @@
 /**
  * The routes that link accounts to an app's requirements, in either scope. App links need edit
- * access to the app and, to link, use of the account; reading them needs use of the app. User links
- * are the caller's own: linking another person's account is never possible.
+ * access to the app and, to link, the caller's own account, or for an administrator one already
+ * linked for everyone that no member but its owner would come to edit (see
+ * `appLinkableAccountsAs`); unlinking needs edit access or ownership of the account; reading them
+ * needs use of the app. User links are the caller's own: linking another person's account is never
+ * possible.
  */
 import {
   AccountNotFound,
@@ -26,18 +29,31 @@ import {
 } from "../contracts/app-accounts.ts";
 import { BearerAuthentication, SessionAuthentication, CurrentUserId } from "../contracts/auth.ts";
 import { HostedExecutor } from "../contracts/executor.ts";
-import { OrganizationForbidden } from "../contracts/organization.ts";
+import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { appManagerOwner, currentOwner, usableApp } from "./access.ts";
 import { connectAccount, connectionUrl } from "./accounts.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
-import { addLink, callerLinkedAccounts, lockedChange, removeLink } from "./app-accounts.ts";
 import {
+  addLink,
+  callerLinkedAccounts,
+  lockedChange,
+  removeLink,
+  removeAppLinksOf,
+  appLinkApps,
+} from "./app-accounts.ts";
+import {
+  appLinkableAccounts,
+  currentResourceAuthority,
+  ownedAccountIds,
   policyDatabase,
   requireAccountOwner,
+  requireAccountOwnerAs,
+  requireAppLinkableAs,
   requireCurrentAppAccess,
   visibleAccounts,
 } from "./resource-policy.ts";
+import { audited } from "./security-audit.ts";
 
 const caller = Effect.gen(function* () {
   const user = yield* CurrentUserId;
@@ -181,7 +197,11 @@ const requirementView = (
       return account === undefined ? [] : [account];
     });
     const linkedIds = new Set(linkedAccounts.map((account) => account.id));
-    const usable = (yield* visibleAccounts(all)).filter((account) => !linkedIds.has(account.id));
+    // App requirements also take accounts an administrator may reuse from another app's link.
+    const candidates = yield* scope === "app"
+      ? appLinkableAccounts(app.id, all)
+      : visibleAccounts(all);
+    const usable = candidates.filter((account) => !linkedIds.has(account.id));
     return {
       requirement,
       scope,
@@ -269,60 +289,155 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           return yield* requirementView(executor, owner, app, "app", params.requirement, linked);
         }),
       )
-      .handle("appLink", ({ params }) =>
-        Effect.gen(function* () {
+      .handle("appLink", ({ params }) => {
+        // The app the audit record names: only once it was found, never the request's text.
+        let resolved: AppId | undefined;
+        return Effect.gen(function* () {
           const user = yield* caller;
           const owner = yield* appManagerOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
-          yield* executor.apps.get({ owner, app: params.app });
-          yield* requireAccountOwner(params.account);
-          yield* executor.accounts.get({ owner, account: params.account });
-          const changed = yield* lockedChange(
-            executor,
-            { app: params.app, access: "manage", account: params.account },
-            (sql) =>
-              addLink(sql, executor.webhooks, {
-                app: params.app,
-                requirement: params.requirement,
-                account: params.account,
-                subject: null,
-                linkedBy: user,
-              }),
-          );
-          if (changed) yield* wake;
-          return yield* savedLink(
-            executor,
-            owner,
+          resolved = (yield* executor.apps.get({ owner, app: params.app })).id;
+          // The caller's own account, or one an administrator reuses from another app's link.
+          const checked = yield* requireAppLinkableAs(
+            yield* currentResourceAuthority,
             params.app,
-            null,
-            params.requirement,
             params.account,
           );
-        }),
-      )
-      .handle("appUnlink", ({ params }) =>
-        Effect.gen(function* () {
-          // Unlinking needs edit access to the app, not use of the account: an editor can stop the
-          // app using an account they cannot use.
-          const owner = yield* appManagerOwner(params.app);
-          const executor = yield* Effect.flatten(HostedExecutor);
-          yield* executor.apps.get({ owner, app: params.app });
-          const removed = yield* lockedChange(
+          yield* executor.accounts.get({ owner, account: params.account });
+          const result = yield* lockedChange(
             executor,
-            { app: params.app, access: "manage" },
-            (sql) =>
-              removeLink(sql, executor.webhooks, {
-                app: params.app,
-                requirement: params.requirement,
-                account: params.account,
-                subject: null,
+            { app: params.app, access: "manage", reuse: checked === "app_link" },
+            (sql, actor) =>
+              Effect.gen(function* () {
+                // Checked again under the lock, holding what a reuse relies on until commit.
+                const authority = yield* requireAppLinkableAs(
+                  actor,
+                  params.app,
+                  params.account,
+                  true,
+                );
+                const changed = yield* addLink(sql, executor.webhooks, {
+                  app: params.app,
+                  requirement: params.requirement,
+                  account: params.account,
+                  subject: null,
+                  linkedBy: user,
+                  reused: authority === "app_link",
+                });
+                return { changed, authority };
+              }),
+          );
+          if (result.changed) yield* wake;
+          return result;
+        }).pipe(
+          audited(
+            "app_account.link",
+            { kind: "account", id: () => params.account },
+            () => (resolved === undefined ? {} : { app: resolved }),
+            ({ changed, authority }) => ({ authority, changed: String(changed) }),
+          ),
+          Effect.andThen(
+            Effect.gen(function* () {
+              const owner = yield* currentOwner;
+              const executor = yield* Effect.flatten(HostedExecutor);
+              return yield* savedLink(
+                executor,
+                owner,
+                params.app,
+                null,
+                params.requirement,
+                params.account,
+              );
+            }),
+          ),
+        );
+      })
+      .handle("appUnlink", ({ params }) => {
+        let resolved: AppId | undefined;
+        return Effect.gen(function* () {
+          // Unlinking needs edit access to the app, not use of the account: an editor can stop the
+          // app using an account they cannot use. An account's owner may also stop any app using
+          // it, since an administrator may have linked it to one they cannot edit.
+          const owns = (yield* ownedAccountIds(
+            [params.account],
+            yield* currentResourceAuthority,
+          )).has(params.account);
+          const owner = owns ? yield* currentOwner : yield* appManagerOwner(params.app);
+          const executor = yield* Effect.flatten(HostedExecutor);
+          // An owner must already have a link here; do not disclose whether arbitrary apps exist.
+          if (
+            owns &&
+            !(yield* appLinkApps(yield* policyDatabase, params.account)).includes(params.app)
+          )
+            return yield* new OrganizationForbidden();
+          resolved = (yield* executor.apps.get({ owner, app: params.app })).id;
+          const { removed, authority } = yield* lockedChange(
+            executor,
+            { app: params.app, access: "unlink", account: params.account },
+            (sql, actor) =>
+              Effect.gen(function* () {
+                const authority = (yield* ownedAccountIds([params.account], actor)).has(
+                  params.account,
+                )
+                  ? "owner"
+                  : "app_manager";
+                const removed = yield* removeLink(sql, executor.webhooks, {
+                  app: params.app,
+                  requirement: params.requirement,
+                  account: params.account,
+                  subject: null,
+                });
+                return { removed, authority };
               }),
           );
           if (!removed) return yield* new AccountNotFound({ account: params.account });
           yield* wake;
-          return { requirement: params.requirement, account: params.account };
-        }),
-      )
+          return {
+            authority,
+            unlinked: { requirement: params.requirement, account: params.account },
+          };
+        }).pipe(
+          audited(
+            "app_account.unlink",
+            { kind: "account", id: () => params.account },
+            () => (resolved === undefined ? {} : { app: resolved }),
+            ({ authority }) => ({ authority }),
+          ),
+          Effect.map(({ unlinked }) => unlinked),
+        );
+      })
+      .handle("appUnlinkOwned", ({ params }) => {
+        // Named only once one of the owner's links shows the app exists.
+        let resolved: AppId | undefined;
+        return Effect.gen(function* () {
+          yield* requireAccountOwner(params.account);
+          const executor = yield* Effect.flatten(HostedExecutor);
+          const { organization } = yield* CurrentOrganization;
+          // Removing app links takes the organization's reuse lock, so take it first here too,
+          // before the app's link lock, in the order a reuse takes them.
+          yield* lockedChange(
+            executor,
+            { app: params.app, access: "unlink", account: params.account, reuse: true },
+            (sql, actor) =>
+              Effect.gen(function* () {
+                yield* requireAccountOwnerAs(actor, params.account);
+                if (!(yield* appLinkApps(sql, params.account)).includes(params.app))
+                  return yield* new OrganizationForbidden();
+                resolved = params.app;
+                yield* removeAppLinksOf(executor, sql, organization, params.account, params.app);
+              }),
+          );
+          yield* wake;
+          return { app: params.app, account: params.account };
+        }).pipe(
+          audited(
+            "app_account.unlink",
+            { kind: "account", id: () => params.account },
+            () => (resolved === undefined ? {} : { app: resolved }),
+            () => ({ authority: "owner" }),
+          ),
+        );
+      })
       .handle("appConnect", ({ params, payload }) => connect(services, "app", params, payload))
       .handle("userList", ({ params }) =>
         Effect.gen(function* () {

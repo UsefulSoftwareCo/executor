@@ -23,7 +23,8 @@ import {
   type UserRemovalOutcome,
 } from "../contracts/user-removal.ts";
 import { removeAccount } from "./accounts.ts";
-import { removeAppLinksOf } from "./app-accounts.ts";
+import { removeAppLinksOf, removeReusedLinksInAppsOf } from "./app-accounts.ts";
+import { recordSecurityAudit } from "./security-audit.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { policyDatabase } from "./resource-policy.ts";
 
@@ -123,7 +124,7 @@ export const removeUser = Effect.gen(function* () {
       (entry) => entry.organization === organization.id,
     )) {
       // Leaving already stops the account serving its apps; deleting it removes those links.
-      if (yield* removeAppLinksOf(executor, sql, account))
+      if (yield* removeAppLinksOf(executor, sql, organization.id, account))
         yield* Effect.serviceOption(ScheduleWakeup).pipe(
           Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: (wake) => wake })),
         );
@@ -139,6 +140,29 @@ export const removeUser = Effect.gen(function* () {
         Effect.provideService(CurrentPolicy, fullAuthority),
       );
     }
+  }
+  // Deleting the user nulls the creator of the apps they made, in every organization they created
+  // one in, including those they already left; unlink the reuses in those apps first.
+  const created = yield* sql`select distinct organization_id as id from hosted_app_access
+    where creator_id = ${user} order by organization_id`.pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: OrganizationId })))),
+    Effect.mapError(() => new StorageError()),
+  );
+  for (const organization of created) {
+    const removed = yield* removeReusedLinksInAppsOf(executor, sql, organization.id, user);
+    for (const link of removed)
+      yield* recordSecurityAudit({
+        action: "app_account.unlink",
+        outcome: "success",
+        target: { kind: "account", id: link.account },
+        detail: { app: link.app, authority: "creator_removal" },
+        user,
+        organization: organization.id,
+      });
+    if (removed.length > 0)
+      yield* Effect.serviceOption(ScheduleWakeup).pipe(
+        Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: (wake) => wake })),
+      );
   }
   const removals = yield* OrganizationRemovals;
   for (const organization of deleted) yield* removals.begin(organization.id, organization.id);

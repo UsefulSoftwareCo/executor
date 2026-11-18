@@ -10,6 +10,7 @@ import {
   AppNotFound,
   AppNotDeployed,
   AccountRequired,
+  AppLinkCreatorNotAuthorized,
   AccountChoiceUnsupported,
   AccountSelectionInvalid,
 } from "./apps.ts";
@@ -96,6 +97,7 @@ export const appDataErrors = [
   AccountNotFound,
   VersionNotFound,
   AccountRequired,
+  AppLinkCreatorNotAuthorized,
   AccountChoiceUnsupported,
   AccountSelectionInvalid,
   OAuthReconnectRequired,

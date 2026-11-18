@@ -116,15 +116,32 @@ with your links.
 
 People who can edit an app link its app accounts for everyone, in the **App
 accounts** section of the app's **Accounts** tab. Linking needs edit access to
-the app, and the account must be your own: accounts are never shared, so this is
-how one account serves everyone. It stops serving if its owner leaves the
-organization. Callers use the account through the app without
+the app, and the account must be your own: accounts are never shared, so this
+is how one account serves everyone. An organization owner or admin may also
+reuse an account already linked for everyone to an app they can read and edit
+with the same calling credential. A credential limited to selected apps cannot
+reuse accounts from apps outside that selection. Reuse is not allowed
+into an app a member created, unless that member owns the account, nor into one
+created by someone who has since left the organization or an app without a
+creator. The same rule applies when the link is used. If a creator who does not
+own the account is demoted or leaves, or the app loses its creator, the reused
+link stops serving with `AppLinkCreatorNotAuthorized` (409). Deleting a user
+also removes reused links from the apps they created.
+If that creator becomes an admin or owner again, the stored link can serve
+again. An admin can relink an eligible account, or the account's owner can link
+it directly if they can edit the app. A link made by the account owner does not
+depend on the creator's role. The account stays its owner's, and its owner may
+unlink it from any app. It stops serving if its owner leaves the organization.
+Callers use the account through the app without
 access to the account itself, and they cannot choose or replace it; everyone
 else sees the section read-only, without the account's details from the
 provider. Linking another account to a plain slot replaces the one before; a
 `.many()` slot uses every linked account. Unlinking stops the app using the
 account, which stays saved. An account linked to an app for everyone cannot be
-deleted until it is unlinked. The same account may also be linked for yourself.
+deleted until it is unlinked. Its owner can call `appAccounts.appUnlinkOwned` with
+the account and app ids to remove all its app links there, even when the app is
+private and they cannot read its requirement names. This returns only those ids,
+not the app's contents. The same account may also be linked for yourself.
 
 When an app account needs reconnecting, the people who can edit the app are
 told, and a call that needs it fails saying that one of them must reconnect it.

@@ -193,7 +193,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
       .annotate(
         OpenApi.Description,
         forEveryone
-          ? "Read one of this app's own requirements: the accounts linked to it, then the other accounts of its provider you can use and could link, each marked linked or not. Needs edit access to the app."
+          ? "Read one of this app's own requirements: the accounts linked to it, then the other accounts of its provider you could link, each marked linked or not: your own and, for an organization owner or admin, accounts already linked for everyone to an app they can edit, unless a member other than the account's owner, or someone who has since left the organization, created this app. Needs edit access to the app."
           : "Read one of this app's user requirements: the accounts you linked to it, then the other accounts of its provider you can use and could link, each marked linked or not. Choose from these accounts before linking.",
       ),
     HttpApiEndpoint.put(`${scope}Link`, `${path}/:requirement/:account`, {
@@ -205,7 +205,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
       .annotate(
         OpenApi.Description,
         forEveryone
-          ? "Link an account to one of this app's own requirements, so every caller and the app's background work use it through the app, without access to the account itself. Needs edit access to the app and use of the account. Linking an account to a plain requirement replaces the account linked to it before; for many() it adds one. Linking again changes nothing. The replaced account stays saved."
+          ? "Link an account to one of this app's own requirements, so every caller and the app's background work use it through the app, without access to the account itself. Needs edit access to the app, and the account must be your own, or, for an organization owner or admin, already linked for everyone to an app they can edit and this app not created by a member other than the account's owner or by someone who has since left the organization; it stays its owner's. Linking an account to a plain requirement replaces the account linked to it before; for many() it adds one. Linking again changes nothing. The replaced account stays saved."
           : "Link one of your accounts to one of this app's user requirements. Needs use of the app and of the account. Linking an account to a plain requirement replaces the account you linked to it before; for many() it adds one. Linking again changes nothing. The replaced account stays saved.",
       ),
     HttpApiEndpoint.delete(`${scope}Unlink`, `${path}/:requirement/:account`, {
@@ -217,7 +217,7 @@ const scopeEndpoints = <const S extends AccountScope>(scope: S) => {
       .annotate(
         OpenApi.Description,
         forEveryone
-          ? "Stop this app using an account for one of its own requirements. Needs edit access to the app, not use of the account. Calls and background work that need the requirement fail until another account is linked, and the app's webhooks registered with the account are removed. The account stays saved."
+          ? "Stop this app using an account for one of its own requirements. Needs edit access to the app, not use of the account, or ownership of the account. Calls and background work that need the requirement fail until another account is linked, and the app's webhooks registered with the account are removed. The account stays saved."
           : "Stop using an account for one of this app's user requirements. The account and its other links stay unchanged.",
       ),
     HttpApiEndpoint.post(`${scope}Connect`, `${path}/:requirement/connections`, {
@@ -251,6 +251,18 @@ export const HostedAppAccounts = HttpApiGroup.make("appAccounts")
   .add(appGet)
   .add(appLink)
   .add(appUnlink)
+  .add(
+    HttpApiEndpoint.delete("appUnlinkOwned", `${prefix}/app/:account`, {
+      params: { ...app, account: AccountId },
+      success: Schema.Struct({ app: AppId, account: AccountId }),
+      error: [StorageError, OrganizationForbidden],
+    })
+      .annotate(RequiredAction, "manage")
+      .annotate(
+        OpenApi.Description,
+        "As the account's owner, stop one app using it for everyone across all requirements. Needs only the app id, not access to the app or its requirement names. Returns only the app and account ids. An app without one of your account's app links is forbidden, whether it exists or not. The account stays saved.",
+      ),
+  )
   .add(appConnect)
   .add(userList)
   .add(userGet)

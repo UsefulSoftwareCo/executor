@@ -27,6 +27,7 @@ const errorMessage = Match.type<HostedError>().pipe(
     ScheduleNotFound: () => "This schedule or run is no longer available.",
     ConnectionNotFound: () => "This connection was revoked or no longer exists.",
     ConnectionAccountUnlinked: (error) => error.description,
+    AppLinkCreatorNotAuthorized: (error) => error.description,
     ConnectionIdTaken: () => "This connection could not be created. Close the form and try again.",
     ConnectedAgentNotFound: () => "This agent is no longer connected.",
     ConnectionKeyNotFound: () => "This key was already revoked.",

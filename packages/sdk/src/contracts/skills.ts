@@ -10,6 +10,7 @@ import { OAuthReconnectRequired, OAuthRenewalFailed } from "./oauth.ts";
 import { AppEvaluationFailed, AppProviderFailed } from "./tools.ts";
 import {
   AccountRequired,
+  AppLinkCreatorNotAuthorized,
   AccountChoiceUnsupported,
   AccountSelectionInvalid,
   AppAccounts,
@@ -114,6 +115,7 @@ export const AppSkillErrors = [
   SkillDefinitionInvalid,
   SkillRevisionChanged,
   AccountRequired,
+  AppLinkCreatorNotAuthorized,
   AccountChoiceUnsupported,
   AccountSelectionInvalid,
   AppEvaluationFailed,

@@ -3,6 +3,7 @@ import { ApiError } from "@executor-js/utils/api-error";
 import { withLegacyKeys } from "@executor-js/utils/legacy-keys";
 import { DeclaredRequirements } from "apps/contracts";
 import { AppSlug } from "./app-slug.ts";
+import { callPresentation, MayHaveWritten } from "./call-presentation.ts";
 export { AppSlug, appSlug, appSlugFits } from "./app-slug.ts";
 /** Apps own deployed code and declared requirements. Callers choose accounts for each operation. */
 import { Effect, Schema } from "effect";
@@ -425,6 +426,29 @@ export const AccountRequired = UserFacingError.define({
 });
 /** A plain requirement with no linked account. */
 export type AccountRequired = typeof AccountRequired.Type;
+
+/** A reused app link no longer has an authorized target creator. */
+export const AppLinkCreatorNotAuthorized = UserFacingError.define({
+  tag: "AppLinkCreatorNotAuthorized",
+  status: 409,
+  fields: {
+    app: AppId,
+    account: AccountId,
+    requirement: Schema.String,
+    mayHaveWritten: MayHaveWritten,
+  },
+  presentation: callPresentation(({ requirement }) => ({
+    title: "This reused app account no longer serves",
+    description: `The reused account for “${requirement}” no longer serves because the app's creator is missing or is no longer an organization admin or owner. Ask an admin to relink an eligible account, or ask the account's owner to link it directly.`,
+    recovery: {
+      action:
+        "Ask an admin to relink an eligible account, or ask the account's owner to link it directly.",
+      instructions:
+        "In the app's Accounts tab, an admin can replace the refused link with an account eligible for this app. To keep using the same account when the creator is missing or is no longer an admin or owner, the account's owner must have edit access to the app and link their account directly.",
+    },
+  })),
+});
+export type AppLinkCreatorNotAuthorized = typeof AppLinkCreatorNotAuthorized.Type;
 
 /** A linked account, named by its saved label. */
 export const AccountChoice = Schema.Struct({ id: AccountId, label: Schema.String });

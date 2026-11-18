@@ -475,8 +475,11 @@ const beforeTheApp = [
  * Executor's own failures, which the call route can report before the host hands the call to the
  * app's code or after it, such as saving the approval request a write's policy asked for. After
  * it, they record that the call may have written (`mcpExecuteApprovalSaveFailed`).
+ * `AppLinkCreatorNotAuthorized` comes from the product's recheck of a reused app account, which
+ * runs where resolving the call's accounts does: before the hand-off, after the catalog read's
+ * hand-off, and again when an account's credentials are renewed during the call.
  */
-const eitherSide = ["StorageError", "CredentialsError"];
+const eitherSide = ["StorageError", "CredentialsError", "AppLinkCreatorNotAuthorized"];
 
 /** The reply each forging tool's failure is rewritten to. */
 const forgedReplies = {

@@ -18,6 +18,7 @@ import {
   AppNotDeployed,
   AppNotFound,
   AccountRequired,
+  AppLinkCreatorNotAuthorized,
   AccountChoiceUnsupported,
   AccountSelectionInvalid,
 } from "./apps.ts";
@@ -232,6 +233,7 @@ export const ScheduleErrors = [
   AppNotFound,
   AppNotDeployed,
   AccountRequired,
+  AppLinkCreatorNotAuthorized,
   AccountChoiceUnsupported,
   AccountSelectionInvalid,
   AccountNotFound,

@@ -1672,6 +1672,7 @@ catch (error) { return { caught: { message: error.message, reference: typeof err
           "404": ["AccountNotFound", "AppNotFound", "ToolNotFound", "VersionNotFound"],
           "409": [
             "AccountRequired",
+            "AppLinkCreatorNotAuthorized",
             "AppNotDeployed",
             "ConnectionAccountUnlinked",
             "OAuthReconnectRequired",

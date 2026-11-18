@@ -37,6 +37,7 @@ import {
 } from "./connection-state.ts";
 import { requireTargetProvider } from "./connection-target.ts";
 import { Account } from "../contracts/account.ts";
+import type { AppLinkCreatorNotAuthorized } from "../contracts/apps.ts";
 import {
   OAuthClientUnavailable,
   type CheckOAuthSetup,
@@ -2969,8 +2970,8 @@ export const makeOAuth = (
       ? Effect.succeed(undefined)
       : lifecycle.accountsResolving(accounts);
   /** Fail unless the product still authorizes every one of `accounts` in `current`. */
-  const enforced = (
-    current: Effect.Effect<ReadonlySet<AccountId> | undefined, StorageError>,
+  const enforced = <E>(
+    current: Effect.Effect<ReadonlySet<AccountId> | undefined, E>,
     accounts: readonly StoredAccount[],
   ) =>
     Effect.flatMap(current, (allowed) =>
@@ -2989,10 +2990,10 @@ export const makeOAuth = (
     allowed: ReadonlySet<AccountId> | undefined,
     resolution: Resolution,
     rejected?: JsonObject,
-    recheck: Effect.Effect<void, StorageError | AccountUseRefused> = enforced(
-      authorized([account]),
-      [account],
-    ),
+    recheck: Effect.Effect<
+      void,
+      StorageError | AccountUseRefused | AppLinkCreatorNotAuthorized
+    > = enforced(authorized([account]), [account]),
   ) =>
     Effect.gen(function* () {
       if (allowed !== undefined && !allowed.has(account.id)) return yield* new AccountUseRefused();
@@ -3021,7 +3022,10 @@ export const makeOAuth = (
     use: CredentialUse,
     accounts: readonly StoredAccount[],
     appUses: ReadonlyArray<AppAccountUse> = [],
-  ): Effect.Effect<ReadonlySet<AccountId> | undefined, StorageError> =>
+  ): Effect.Effect<
+    ReadonlySet<AccountId> | undefined,
+    StorageError | AppLinkCreatorNotAuthorized
+  > =>
     lifecycle === undefined
       ? Effect.succeed(undefined)
       : use.kind === "run"
@@ -3077,10 +3081,10 @@ export const makeOAuth = (
         readonly provider: ProviderDefinition;
       } & AccountUses
     >,
-    authority: Effect.Effect<ReadonlySet<AccountId> | undefined, StorageError> = selectionAuthority(
-      use,
-      selected,
-    ),
+    authority: Effect.Effect<
+      ReadonlySet<AccountId> | undefined,
+      StorageError | AppLinkCreatorNotAuthorized
+    > = selectionAuthority(use, selected),
   ) =>
     Effect.gen(function* () {
       const supplied = yield* GrantReadAhead;

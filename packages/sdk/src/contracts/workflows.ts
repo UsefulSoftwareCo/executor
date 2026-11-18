@@ -19,6 +19,7 @@ import {
   AppNotDeployed,
   AppNotFound,
   AccountRequired,
+  AppLinkCreatorNotAuthorized,
   AccountChoiceUnsupported,
   AccountSelectionInvalid,
 } from "./apps.ts";
@@ -79,6 +80,7 @@ export const WorkflowErrors = [
   AppNotDeployed,
   AccountNotFound,
   AccountRequired,
+  AppLinkCreatorNotAuthorized,
   AccountChoiceUnsupported,
   AccountSelectionInvalid,
   VersionNotFound,

@@ -28,7 +28,7 @@ import type {
   ToolSearchPage,
   ToolSearchUnavailable,
 } from "./tools.ts";
-import type { AccountScope, App, AppRequirements } from "./apps.ts";
+import type { AccountScope, App, AppLinkCreatorNotAuthorized, AppRequirements } from "./apps.ts";
 import type { BuildMemoryExceeded, BuildUnanswered, VersionBuildFailed } from "./version.ts";
 import type { Account } from "./account.ts";
 import type {
@@ -112,7 +112,9 @@ export interface ResourceLifecycle {
    */
   readonly appLinks: (input: {
     readonly app: AppId;
-  }) => Effect.Effect<ReadonlyArray<AccountLinkRecord>, StorageError>;
+    readonly requirements: AppRequirements["accounts"];
+    readonly source?: AccountId | undefined;
+  }) => Effect.Effect<ReadonlyArray<AccountLinkRecord>, StorageError | AppLinkCreatorNotAuthorized>;
   /**
    * Resolving a webhook source's accounts found that its actor no longer has the source account
    * linked, or can no longer use it. The product links the source again with another subject who
@@ -143,7 +145,7 @@ export interface ResourceLifecycle {
     app: { readonly id: AppId; readonly owner: OwnerId },
     accounts: readonly Pick<Account, "id" | "owner">[],
     appUses: readonly AppAccountUse[],
-  ) => Effect.Effect<ReadonlySet<AccountId>, StorageError>;
+  ) => Effect.Effect<ReadonlySet<AccountId>, StorageError | AppLinkCreatorNotAuthorized>;
   /**
    * {@link appResolving} for several apps of one owner at once, for the `CurrentActor`, such as
    * every app a search reads: a host reads them in one statement. Each app's entry, in order, is
@@ -158,7 +160,9 @@ export interface ResourceLifecycle {
       readonly appUses: readonly AppAccountUse[];
     }>,
   ) => Effect.Effect<
-    ReadonlyArray<Result.Result<ReadonlySet<AccountId>, StorageError>>,
+    ReadonlyArray<
+      Result.Result<ReadonlySet<AccountId>, StorageError | AppLinkCreatorNotAuthorized>
+    >,
     StorageError
   >;
   /**
@@ -178,7 +182,7 @@ export interface ResourceLifecycle {
     app: { readonly id: AppId; readonly owner: OwnerId },
     accounts: readonly Pick<Account, "id" | "owner">[],
     appUses: readonly AppAccountUse[],
-  ) => Effect.Effect<ReadonlySet<AccountId>, StorageError>;
+  ) => Effect.Effect<ReadonlySet<AccountId>, StorageError | AppLinkCreatorNotAuthorized>;
   /**
    * Recheck product authority for the `CurrentActor` before acquiring account credentials without
    * running the app's code or removing what it registered, such as checking an account, and again
