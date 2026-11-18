@@ -55,6 +55,8 @@ const jobs = [
   "cloud-oauth-proxy-preview",
   "cloud-revocation-budget",
   "cloud-empty-release-notes",
+  "cloud-fix-release-notes",
+  "cloud-feature-release-notes",
 ];
 /** The outputs that start the E2E runners: each sharded job's parts and the Cloud runners. */
 const runnerOutputs = ["local-shards", "self-host-shards", "cloud-runners"];
@@ -769,13 +771,13 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           expect(productParts).toBeGreaterThan(1);
           expect(runners.map(({ name }) => name)).toEqual([
             "cloud",
-            "cloud-isolate, cloud-telemetry-flush, cloud-connections",
+            "cloud-isolate, cloud-telemetry-flush, cloud-connections, cloud-feature-release-notes",
             ...Array.from(
               { length: productParts },
               (_, index) => `cloud-product ${index + 1}/${productParts}`,
             ),
             "cloud-workers, cloud-locks, cloud-batch, cloud-autumn",
-            "cloud-domains, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview",
+            "cloud-domains, cloud-rate-limit, cloud-rollback, cloud-oauth-proxy-preview, cloud-fix-release-notes",
             "cloud-removal-recovery, cloud-export-hang, cloud-listings, cloud-revocation-budget, cloud-empty-release-notes",
           ]);
           // Each Cloud job's pattern is on exactly one runner and empty on the others. The runner
@@ -3737,6 +3739,8 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         "cloud-oauth-proxy-preview",
         "cloud-revocation-budget",
         "cloud-empty-release-notes",
+        "cloud-fix-release-notes",
+        "cloud-feature-release-notes",
       ])
         expect(noCloud.log).toMatch(
           new RegExp(`- the ${job} job on cloud: (\\d+) of \\1 scenarios did not run`),

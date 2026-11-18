@@ -605,7 +605,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release notes", (it) =
       const repos = yield* repositories(merges);
       const output = path.join(repos.main, "..", "out", "notes.md");
       const written = yield* notes(repos, ["--version", "2.0.0-beta.5", "--output", output]);
-      expect(written.exitCode, written.stderr).toBe(0);
+      expect(written.exitCode, written.stdout + written.stderr).toBe(0);
       expect(written.stdout).toBe("");
       expect(yield* fs.readFileString(output)).toContain("## Changes since 2.0.0-beta.4\n");
 
@@ -1293,6 +1293,402 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release notes", (it) =
   );
 
   it.effect(
+    "a note's kind, written before it as Feature:, Improvement: or Fix:, is never part of its text, reaches only Cloud's notes, is a fix when not written, and --check says which it counted",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const repos = yield* repositories([
+          {
+            // Before Cloud's window, so Cloud's notes can see all of it.
+            title: "Change the SDK long ago (#499)",
+            files: ["packages/sdk/src/old.ts"],
+            date: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString(),
+          },
+          {
+            title: "Rename teams (#500)",
+            body: "Release-note: Feature: Teams can be renamed.",
+            files: ["packages/sdk/src/teams.ts"],
+          },
+          {
+            // The kind's word in any case, and a change's lines each with its own kind.
+            title: "Search faster (#501)",
+            body: "Release-note: improvement: Search answers faster.\nRelease-note: Fix: Search no longer drops the last result.",
+            files: ["packages/sdk/src/search.ts"],
+          },
+          {
+            title: "Fix the apps page (#502)",
+            body: "Release-note: The apps page no longer flickers.",
+            files: ["packages/sdk/src/apps.ts"],
+          },
+          {
+            // A word that names no kind is the note's own: a fix, with its text as written.
+            title: "Move the settings page (#503)",
+            body: "Release-note: Note: the settings page has moved.",
+            files: ["packages/sdk/src/settings.ts"],
+          },
+          {
+            // A kind with no note after it is refused, not published as the word alone.
+            title: "Mark nothing (#504)",
+            body: "Release-note: Feature:",
+            files: ["packages/sdk/src/empty.ts"],
+          },
+        ]);
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-note-kinds-" });
+        const release = yield* notes(repos, [
+          "--version",
+          "2.0.0-beta.5",
+          "--output",
+          `${directory}/notes.md`,
+          "--json",
+          `${directory}/notes.json`,
+        ]);
+        expect(release.exitCode, release.stderr).toBe(0);
+        expect(release.stderr).toMatch(
+          /has a Release-note: line that names its kind, feature, but no note after it, so the notes leave it out/,
+        );
+        const written = [
+          "Teams can be renamed.",
+          "Search answers faster.",
+          "Search no longer drops the last result.",
+          "The apps page no longer flickers.",
+          "Note: the settings page has moved.",
+        ];
+        // The release's notes and the desktop's are the text alone, in merge order.
+        const markdown = yield* fs.readFileString(`${directory}/notes.md`);
+        for (const text of written) expect(markdown).toContain(`- ${text}\n`);
+        expect(markdown).not.toMatch(/Feature:|improvement:|Fix:/u);
+        expect(JSON.parse(yield* fs.readFileString(`${directory}/notes.json`)).releases[0]).toEqual(
+          {
+            version: "2.0.0-beta.5",
+            notes: written.map((text) => ({ area: "All installs", text })),
+          },
+        );
+
+        // Cloud's notes, newest change first, carry each note's kind; an unmarked note is a fix.
+        const today = new Date().toISOString().slice(0, 10);
+        const cloud = yield* notes({ ...repos, publicRepo: "file:///nonexistent/public" }, [
+          "--cloud",
+          "-",
+        ]);
+        expect(cloud.exitCode, cloud.stdout + cloud.stderr).toBe(0);
+        expect(JSON.parse(cloud.stdout)).toEqual({
+          notes: [
+            { date: today, text: "Note: the settings page has moved.", kind: "fix" },
+            { date: today, text: "The apps page no longer flickers.", kind: "fix" },
+            { date: today, text: "Search answers faster.", kind: "improvement" },
+            { date: today, text: "Search no longer drops the last result.", kind: "fix" },
+            { date: today, text: "Teams can be renamed.", kind: "feature" },
+          ],
+        });
+
+        // Before pushing, --check names the kind of each line it counts, and fails on a kind with
+        // no note.
+        const base = yield* git(repos.main, "rev-parse", "HEAD");
+        yield* git(
+          repos.main,
+          "commit",
+          "--quiet",
+          "--allow-empty",
+          "-m",
+          "Add a dark theme",
+          "-m",
+          "Release-note: Feature: The settings page has a dark theme.\nRelease-note: The settings page no longer flashes white.",
+        );
+        const checked = yield* notes(repos, ["--check", base]);
+        expect(checked.exitCode, checked.stdout + checked.stderr).toBe(0);
+        expect(checked.stdout).toContain(
+          "Release-note accepted: The settings page has a dark theme.\n  Kind: feature\n",
+        );
+        expect(checked.stdout).toContain(
+          "Release-note accepted: The settings page no longer flashes white.\n  Kind: fix, so Cloud's what's new never leads with it",
+        );
+        yield* git(
+          repos.main,
+          "commit",
+          "--quiet",
+          "--allow-empty",
+          "-m",
+          "Mark it",
+          "-m",
+          "Release-note: Improvement:",
+        );
+        const empty = yield* notes(repos, ["--check", base, "--title", "Add a dark theme"]);
+        expect(empty.exitCode).not.toBe(0);
+        expect(empty.stdout + empty.stderr).toMatch(
+          /has a Release-note: line that names its kind, improvement, but no note after it/,
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a note's kind is cut off before the note rules apply: a note valid only without its kind is listed, one invalid only without it is left out, and the length, character, none and hidden-message rules are a plain note's",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        // A note of exactly `length` characters that the rules accept.
+        const sized = (length: number) =>
+          `${`Teams can be renamed${" now".repeat(100)}`.slice(0, length - 1)}.`;
+        const longest = sized(300);
+        expect(longest.length).toBe(300);
+        const repos = yield* repositories([
+          {
+            // Before Cloud's window, so Cloud's notes can see all of it.
+            title: "Change the SDK long ago (#599)",
+            files: ["packages/sdk/src/old.ts"],
+            date: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString(),
+          },
+          {
+            // 300 characters after its kind, 309 with it: the limit counts the note alone.
+            title: "Rename teams (#600)",
+            body: `Release-note: Feature: ${longest}`,
+            files: ["packages/sdk/src/teams.ts"],
+          },
+          {
+            title: "Rename teams again (#601)",
+            body: `Release-note: Improvement: ${sized(301)}`,
+            files: ["packages/sdk/src/teams-again.ts"],
+          },
+          {
+            // A note that starts well only with its kind before it: the note itself does not.
+            title: "Ship the beta (#602)",
+            body: "Release-note: Feature: (Beta) Teams have colours.",
+            files: ["packages/sdk/src/beta.ts"],
+          },
+          {
+            title: "Fix search (#603)",
+            body: "Release-note: Fix: Search finds issue #12 again.",
+            files: ["packages/sdk/src/search.ts"],
+          },
+          {
+            // A message that could hide a line has no notes, kind or not.
+            title: "Open apps faster (#604)",
+            body: "Release-note: Feature: PRIVATE apps open faster.\n\nSee [the guide].",
+            files: ["packages/sdk/src/open.ts"],
+          },
+          {
+            title: "Quote a note (#605)",
+            body: "    Release-note: Feature: INDENTED\n\n> Release-note: Feature: QUOTED",
+            files: ["packages/sdk/src/quote.ts"],
+          },
+          {
+            // No space after the colon: no kind, so the whole is the note, which a colon refuses.
+            title: "Color teams (#606)",
+            body: "Release-note: Feature:Teams have colours.",
+            files: ["packages/sdk/src/color.ts"],
+          },
+          {
+            // A kind before none says nothing: it is refused, never published as the word none.
+            title: "Mark none (#607)",
+            body: "Release-note: Improvement: none",
+            files: ["packages/sdk/src/none.ts"],
+          },
+          {
+            // A tab after the colon is no kind, so the whole is the note, which the tab refuses.
+            title: "Tab a kind (#608)",
+            body: "Release-note: Feature:\tTeams have colours.",
+            files: ["packages/sdk/src/tab.ts"],
+          },
+          {
+            // Two spaces: the kind is cut off with one, so the note starts with a space.
+            title: "Space a kind (#609)",
+            body: "Spaced out.\n\nRelease-note: Feature:  Teams have colours.",
+            files: ["packages/sdk/src/spaces.ts"],
+          },
+        ]);
+        const directory = yield* fs.makeTempDirectoryScoped({
+          prefix: "executor-note-kind-rules-",
+        });
+        const release = yield* notes(repos, [
+          "--version",
+          "2.0.0-beta.5",
+          "--output",
+          `${directory}/notes.md`,
+          "--json",
+          `${directory}/notes.json`,
+        ]);
+        expect(release.exitCode, release.stderr).toBe(0);
+        // Only the 300-character note is listed, as written after its kind.
+        expect(JSON.parse(yield* fs.readFileString(`${directory}/notes.json`)).releases[0]).toEqual(
+          { version: "2.0.0-beta.5", notes: [{ area: "All installs", text: longest }] },
+        );
+        const markdown = yield* fs.readFileString(`${directory}/notes.md`);
+        expect(markdown).toContain(`- ${longest}\n`);
+        expect(markdown).not.toMatch(
+          /Feature:|Improvement:|Fix:|colours|#12|PRIVATE|INDENTED|QUOTED|^- none/mu,
+        );
+        for (const reason of [
+          "line 3 has a Release-note: line that is longer than 300 characters",
+          "line 3 has a Release-note: line that does not start with a letter or a digit",
+          'line 3 has a Release-note: line that holds "#", which a note may not',
+          'has a message that holds "["',
+          "line 3 has Release-note: indented",
+          "line 5 has Release-note: quoted",
+          "line 3 has a Release-note: line that has a colon followed by something other than a space",
+          "line 3 has a Release-note: line that names its kind, improvement, but no note after it",
+          "line 3 has a Release-note: line that holds U+0009, which a note may not",
+          "line 5 has a Release-note: line that does not start with a letter or a digit",
+        ])
+          expect(release.stderr).toContain(reason);
+
+        // Cloud's notes hold the same one note, with its kind.
+        const cloud = yield* notes({ ...repos, publicRepo: "file:///nonexistent/public" }, [
+          "--cloud",
+          "-",
+        ]);
+        expect(cloud.exitCode, cloud.stdout + cloud.stderr).toBe(0);
+        expect(JSON.parse(cloud.stdout)).toEqual({
+          notes: [{ date: new Date().toISOString().slice(0, 10), text: longest, kind: "feature" }],
+        });
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "the desktop's update feed carries a note's text without its kind, as the release notes do",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        // desktop-feed.ts writes the feed of the version this checkout releases.
+        const version = JSON.parse(yield* fs.readFileString("apps/cli/package.json")).version;
+        const channel = version.includes("-beta.") ? "beta" : "latest";
+        const repos = yield* repositories([
+          {
+            title: "Rename teams (#700)",
+            body: "Release-note: Feature: Teams can be renamed.",
+            files: ["packages/sdk/src/teams.ts"],
+          },
+          {
+            title: "Search faster (#701)",
+            body: "Release-note: Improvement: Search answers faster.\nRelease-note: Fix: Search no longer drops the last result.",
+            files: ["packages/sdk/src/search.ts"],
+          },
+        ]);
+        // The release before this checkout's: a tag below it, above the scratch beta.6, that
+        // exports main's beta.4 commit, so the notes are the two changes above.
+        const published = repos.publicRepo.replace(/^file:\/\//u, "");
+        yield* git(published, "commit", "--quiet", "--allow-empty", "-m", `Export ${repos.beta4}`);
+        yield* git(published, "tag", "executor@2.0.0-beta.7");
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-feed-kinds-" });
+        const json = path.join(directory, "notes.json");
+        const written = yield* notes(repos, ["--version", version, "--json", json]);
+        expect(written.exitCode, written.stdout + written.stderr).toBe(0);
+        // Each platform's electron-builder metadata and the installer bytes it describes.
+        const files = [
+          ["darwin", "arm64", `executor-v2-${channel}-mac.yml`],
+          ["darwin", "x64", `executor-v2-${channel}-mac.yml`],
+          ["linux", "x64", `executor-v2-${channel}-linux.yml`],
+          ["linux", "arm64", `executor-v2-${channel}-linux-arm64.yml`],
+          ["win32", "x64", `executor-v2-${channel}.yml`],
+        ] as const;
+        for (const [platform, arch, file] of files) {
+          const artifacts = path.join(
+            directory,
+            "artifacts",
+            `${version}-${platform}-${arch}`,
+            "desktop-artifacts",
+          );
+          yield* fs.makeDirectory(artifacts, { recursive: true });
+          const bytes = Buffer.from(`${platform}-${arch}`);
+          const installer = `executor-desktop-${version}-${platform}-${arch}.zip`;
+          yield* fs.writeFile(path.join(artifacts, installer), bytes);
+          yield* fs.writeFileString(
+            path.join(artifacts, file),
+            JSON.stringify({
+              version,
+              files: [
+                {
+                  url: installer,
+                  sha512: createHash("sha512").update(bytes).digest("base64"),
+                  size: bytes.length,
+                },
+              ],
+              releaseDate: "2026-11-17T00:00:00.000Z",
+            }),
+          );
+        }
+        const output = path.join(directory, "feed");
+        const child = yield* processes.spawn(
+          ChildProcess.make(
+            "node",
+            ["scripts/releases/desktop-feed.ts", path.join(directory, "artifacts"), output, json],
+            { stdout: "pipe", stderr: "pipe" },
+          ),
+        );
+        const [log, exitCode] = yield* Effect.all(
+          [
+            Stream.merge(child.stdout, child.stderr).pipe(Stream.decodeText(), Stream.mkString),
+            child.exitCode,
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(Number(exitCode), log).toBe(0);
+        for (const [, , file] of files) {
+          const feed = JSON.parse(yield* fs.readFileString(path.join(output, file)));
+          expect(feed.releaseNotes[0], file).toEqual({
+            version,
+            note: "Teams can be renamed.\nSearch answers faster.\nSearch no longer drops the last result.",
+          });
+          expect(JSON.stringify(feed.releaseNotes), file).not.toMatch(/Feature|Improvement|Fix:/u);
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a note merged before kinds could be written has the kind scripts/releases/note-kinds.ts gives it only on its own pull request and with its exact text, an entry whose change has left Cloud's window is not listed, and the failed tool calls note it no longer marks is a fix",
+    () =>
+      Effect.gen(function* () {
+        // The note note-kinds.ts marks, and the one it no longer marks, as written on main.
+        const hosts =
+          "The connect account dialog now sums up a long list of hosts a credential may be sent to by domain, with a button that shows every host.";
+        const interrupted =
+          "Agents are now told to run independent tool calls so that one failure keeps the other results, and when one of several tool calls running together fails, the error now says the others were interrupted, that finished calls did run, and how to keep their results.";
+        const repos = yield* repositories([
+          {
+            // Older than Cloud's window: its entry does nothing, and nothing fails.
+            title: "Shorten the connect form's host list long ago (#4903)",
+            body: `Release-note: ${hosts}`,
+            files: ["apps/hosted/cloud/src/hosts-old.ts"],
+            date: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000).toISOString(),
+          },
+          {
+            // Its own pull request: the marked text is an improvement, another line of it a fix.
+            title: "Shorten the connect form's host list (#4903)",
+            body: `Release-note: ${hosts}\nRelease-note: The connect account dialog opens faster.`,
+            files: ["apps/hosted/cloud/src/hosts.ts"],
+          },
+          {
+            // Unmarked on purpose, so it does not lead: a fix on its own pull request too.
+            title:
+              "Explain interrupted calls when a program fails with calls still running (#4972)",
+            body: `Release-note: ${interrupted}`,
+            files: ["apps/hosted/cloud/src/calls.ts"],
+          },
+          {
+            // The same text on another pull request is a fix.
+            title: "Copy the host list (#4999)",
+            body: `Release-note: ${hosts}`,
+            files: ["apps/hosted/cloud/src/hosts-copy.ts"],
+          },
+        ]);
+        const cloud = yield* notes({ ...repos, publicRepo: "file:///nonexistent/public" }, [
+          "--cloud",
+          "-",
+        ]);
+        expect(cloud.exitCode, cloud.stdout + cloud.stderr).toBe(0);
+        const today = new Date().toISOString().slice(0, 10);
+        expect(JSON.parse(cloud.stdout)).toEqual({
+          notes: [
+            { date: today, text: hosts, kind: "fix" },
+            { date: today, text: interrupted, kind: "fix" },
+            { date: today, text: hosts, kind: "improvement" },
+            { date: today, text: "The connect account dialog opens faster.", kind: "fix" },
+          ],
+        });
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
     "--cloud lists the newest notes of the last 30 days on changes that reach Cloud and no other product's own code, Cloud-only ones included, without asking the public repository",
     () =>
       Effect.gen(function* () {
@@ -1381,11 +1777,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release notes", (it) =
         expect(selected.exitCode, selected.stdout + selected.stderr).toBe(0);
         expect(JSON.parse(yield* fs.readFileString(`${directory}/cloud.json`))).toEqual({
           notes: [
-            { date: today, text: "Teams have names." },
-            { date: today, text: "A team's name shows on its page." },
-            { date: today, text: "Each app's card now shows its accounts." },
-            { date: today, text: "The dashboard opens faster." },
-            { date: today, text: "Cloud members see what is new." },
+            { date: today, text: "Teams have names.", kind: "fix" },
+            { date: today, text: "A team's name shows on its page.", kind: "fix" },
+            { date: today, text: "Each app's card now shows its accounts.", kind: "fix" },
+            { date: today, text: "The dashboard opens faster.", kind: "fix" },
+            { date: today, text: "Cloud members see what is new.", kind: "fix" },
           ],
         });
 
@@ -1396,6 +1792,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Release notes", (it) =
           notes: Array.from({ length: 10 }, (_, index) => ({
             date: today,
             text: `Cloud change number ${11 - index}.`,
+            kind: "fix",
           })),
         });
         expect(newest.stdout + selected.stdout).not.toContain("PRIVATE");

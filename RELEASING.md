@@ -393,6 +393,26 @@ line number. When a change has several lines that count, each is listed, once,
 in the order written; `none` among them is skipped. A line cannot be withdrawn
 by a later one, so reword or drop the commit before merging instead.
 
+A note may start with the kind of change it is: `Feature: `, `Improvement: `
+or `Fix: ` (the word in any case, then a colon and exactly one space, not a
+tab or two spaces, which leave the note refused), as in
+`Release-note: Improvement: Search answers faster.` The kind is not part of the
+note: it is cut off first, and the rules below apply to the text after it,
+which must itself start with a letter or a digit and is counted against the
+300 characters without the kind. It is never published, in the release, the
+desktop feed, Cloud's notes or anywhere else. A note without one is a fix. A
+kind with no note after it, or with `none`, is refused. Cloud's What's new
+leads with the newest feature or improvement of its notes, never a fix; with
+neither it shows a plain line, and its panel lists every note, fixes included,
+in order. So write `Feature: ` for something new and `Improvement: ` for
+something that already worked and now works better, and `Fix: ` or nothing
+for something that was broken. Mark a note for what it is, and never reword a
+fix to sound like a feature. `--check` prints the kind it counted for each
+line. `scripts/releases/note-kinds.ts` gives one note merged before kinds
+could be written its kind by hand, since a commit message on main cannot change;
+it is a stopgap, so never add to it, and delete it once that commit leaves
+Cloud's 30 days (the file says when).
+
 A note is published only when it is plain prose, and then exactly as written.
 It may hold only ASCII letters, digits, spaces and these punctuation marks:
 `.` `,` `;` `:` `!` `?` `'` `"` `(` `)` `-`. It must also:

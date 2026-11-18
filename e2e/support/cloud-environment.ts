@@ -37,7 +37,7 @@ import { roleHost } from "./role-hosts.ts";
 import { freePort } from "./ports.ts";
 import { OperatorOAuthFixture, operatorOAuthFile, syntheticCloudGoogle } from "./operator-oauth.ts";
 import { reveal, secret } from "./failure-text.ts";
-import { cloudTestNotes, emptyCloudNotes } from "./cloud-release-notes.ts";
+import { cloudNotesFile, type CloudNotesSource } from "./cloud-release-notes.ts";
 
 /**
  * The operator settings for `fixture`: one test client, whose tokens go only to its own host, and
@@ -112,11 +112,12 @@ export const startCloudEnvironment = (input: {
    */
   readonly removalRevocationBudgetMs?: number;
   /**
-   * Build the dashboard with an empty notes file, as a deploy whose window has no notes does,
-   * instead of `cloudTestNotes`. Only the Cloud of the scenarios that show that sets it
-   * (`e2e:cloud --empty-release-notes`).
+   * Build the dashboard with these notes instead of `cloudTestNotes` (`CloudNotesSource`): an empty
+   * file, as a deploy whose window has no notes writes, or notes the deploy's own script writes from
+   * commit messages. Only the Cloud of the scenarios that show them sets it
+   * (`e2e:cloud --release-notes <source>`).
    */
-  readonly emptyReleaseNotes?: true;
+  readonly releaseNotes?: CloudNotesSource;
   /**
    * Which host serves the dashboard and sign-in: `app.` of the origin, or, with the rollback
    * switch (`CLOUD_BROWSER_ORIGIN=deployment`), the origin itself.
@@ -217,6 +218,7 @@ export const startCloudEnvironment = (input: {
       mode: 0o600,
     });
     yield* Effect.addFinalizer(() => fs.remove(v1Handoff).pipe(Effect.orDie));
+    const notes = yield* cloudNotesFile(input.releaseNotes, directory);
     const env = {
       PATH: [path.join(cloud, "node_modules/.bin"), process.env.PATH ?? ""].join(
         process.platform === "win32" ? ";" : ":",
@@ -267,11 +269,9 @@ export const startCloudEnvironment = (input: {
       CLOUD_DEV_DATABASE_PASSWORD: databasePassword,
       CLOUD_DEV_EXTERNAL_DATABASE: "true",
       EXECUTOR_EMULATORS: JSON.stringify(reveal(fixture).services),
-      // The dashboard's notes input: these fixed notes, or an empty file, as a deploy's build takes
-      // the notes it wrote (e2e/support/cloud-release-notes.ts).
-      EXECUTOR_CLOUD_RELEASE_NOTES: JSON.stringify(
-        input.emptyReleaseNotes === true ? emptyCloudNotes : cloudTestNotes,
-      ),
+      // The dashboard's notes input, as a deploy's build takes the notes it wrote: fixed notes, an
+      // empty file, or notes the deploy's script wrote (e2e/support/cloud-release-notes.ts).
+      EXECUTOR_CLOUD_RELEASE_NOTES: notes,
       // Fails only engine calls to steps the workflow engine calls scenario's app names.
       EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS: JSON.stringify(engineCallFaults),
       V1_MCP_FORWARD_SECRET: v1ForwardSecret,

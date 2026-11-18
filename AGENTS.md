@@ -252,7 +252,12 @@ anywhere has no notes, so keep HTML, links, math and code blocks out of it. The
 one exception is a line that is only a co-author trailer,
 `Co-authored-by: Name <name@host>` (a bot's name may end `[bot]`), with nothing
 after it, anywhere in the message.
-Every such line is listed. A note is plain prose of at most 300 characters:
+Every such line is listed. Start the note with its kind, `Feature: `, `Improvement: ` or `Fix: `
+(the word, a colon and exactly one space; a tab or two spaces leave the note refused), as in
+`Release-note: Feature: Teams can be renamed.`: Cloud's What's new leads only with a feature
+or an improvement, the kind is cut off before the rules below are applied and is never published,
+and a note without one is a fix. Mark a note for what it is, and never reword a fix to sound like a
+feature. A note, after its kind, is plain prose of at most 300 characters:
 ASCII letters, digits, spaces and `.,;:!?'"()-`, starting with a letter or
 digit, with no `@`, `#`, `/`, URL, host name, code, Markdown, `GH-123` or whole
 word of 7 or more hex characters or digits; any other is left out whole. Name no

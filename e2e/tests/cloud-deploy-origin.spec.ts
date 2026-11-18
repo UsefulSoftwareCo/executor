@@ -92,16 +92,25 @@ layer(NodeServices.layer, { excludeTestServices: true })("Cloud deploy origin", 
         const written = `${directory}/written.json`;
         yield* fs.writeFileString(
           written,
-          JSON.stringify({ notes: [{ date: "2026-11-14", text: "Apps open from the sidebar." }] }),
+          JSON.stringify({
+            notes: [{ date: "2026-11-14", text: "Apps open from the sidebar.", kind: "feature" }],
+          }),
         );
         const malformed = `${directory}/malformed.json`;
         yield* fs.writeFileString(malformed, JSON.stringify({ notes: [{ date: "yesterday" }] }));
+        // A note must say which kind it is, as the notes script writes it, so the block can lead
+        // with a feature or an improvement and never guess.
+        const unkinded = `${directory}/unkinded.json`;
+        yield* fs.writeFileString(
+          unkinded,
+          JSON.stringify({ notes: [{ date: "2026-11-14", text: "Apps open from the sidebar." }] }),
+        );
 
         const without = yield* check(production);
         expect(without.exitCode).not.toBe(0);
         expect(without.output).toContain("EXECUTOR_CLOUD_RELEASE_NOTES_FILE is unset");
         expect(without.output).not.toContain(valid);
-        for (const file of [`${directory}/missing.json`, malformed]) {
+        for (const file of [`${directory}/missing.json`, malformed, unkinded]) {
           const refused = yield* check({ ...production, EXECUTOR_CLOUD_RELEASE_NOTES_FILE: file });
           expect(refused.exitCode, file).not.toBe(0);
           expect(refused.output).toContain("Nothing was deployed.");

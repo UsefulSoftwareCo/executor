@@ -12,6 +12,7 @@ import { hostSlot } from "./host-slot.ts";
 import { runSuite } from "./sdk/suite.ts";
 import { exactly, split } from "./scenario-parts.ts";
 import { scenariosForSuite } from "./test-plan.ts";
+import { cloudNotesSources } from "./support/cloud-release-notes.ts";
 
 /**
  * Self-host and local workers each run their own product server, PGlite database and browser, which
@@ -67,9 +68,10 @@ const command = Command.make(
     removalRevocationBudget: Flag.Boolean("removal-revocation-budget").pipe(
       Flag.withDefault(false),
     ),
-    // Start managed Cloud with its dashboard built from an empty notes file, and run only the
-    // scenarios that show it.
-    emptyReleaseNotes: Flag.Boolean("empty-release-notes").pipe(Flag.withDefault(false)),
+    // Start managed Cloud with its dashboard built from other notes than the fixed ones (an empty
+    // file, only fixes, or a feature newest; `CloudNotesSource`), and run only the scenarios that
+    // show them.
+    releaseNotes: Flag.Literals("release-notes", cloudNotesSources).pipe(Flag.optional),
     // Run one part of a local or self-host run; see `partPattern`.
     part: Flag.String("part").pipe(Flag.optional),
   },
@@ -86,6 +88,7 @@ const command = Command.make(
         ...flags,
         name,
         workers: Option.getOrUndefined(flags.workers),
+        releaseNotes: Option.getOrUndefined(flags.releaseNotes),
         defaultWorkers: available,
       });
     }).pipe(Effect.scoped),

@@ -44,6 +44,28 @@ export const refusal = (text: string): string | undefined => {
 /** Whether `text` is a note that may be shown: plain prose that renders as its text alone. */
 export const isPlainNote = (text: string) => refusal(text) === undefined;
 
+/**
+ * What a note's writer says it is. A `Release-note:` line names it before the note, as in
+ * `Release-note: Feature: <text>`, and the word and its colon are never part of the published
+ * text. A note without one is a fix, so a note nobody marked never leads Cloud's what's new.
+ */
+export const noteKinds = ["feature", "improvement", "fix"] as const;
+export type NoteKind = (typeof noteKinds)[number];
+
+/**
+ * A `Release-note:` line's text as its kind and its note: `Feature: `, `Improvement: ` or `Fix: `
+ * at its start, the word in any case and then a colon and one space, names the kind and is cut
+ * off; without one it is a fix, and the text is the note. Only a single space counts: after a tab
+ * there is no kind, so the whole line is the note and the tab refuses it, and after two spaces
+ * the note starts with a space, which is refused. A kind with nothing after it leaves an empty
+ * note, which is refused.
+ */
+export const kindOfNote = (line: string): { readonly kind: NoteKind; readonly text: string } => {
+  const marked = /^(feature|improvement|fix):(?: (.*))?$/iu.exec(line);
+  if (marked === null) return { kind: "fix", text: line };
+  return { kind: marked[1]!.toLowerCase() as NoteKind, text: marked[2] ?? "" };
+};
+
 /** A release's public page, with its notes and installers. */
 export const releasePageUrl = (version: string) =>
   `https://github.com/UsefulSoftwareCo/executor/releases/tag/${encodeURIComponent(`executor@${version}`)}`;
@@ -56,15 +78,25 @@ export const cloudNoteDays = 30;
 
 /**
  * Cloud's notes as `scripts/releases/release-notes.ts --cloud` writes them and the Cloud dashboard's
- * build takes them: newest first, each the day (`YYYY-MM-DD`, UTC) its change reached main and the
- * note's text.
+ * build takes them: newest first, each the day (`YYYY-MM-DD`, UTC) its change reached main, the
+ * note's text and the kind its writer gave it.
  */
 export const CloudReleaseNotes = Schema.Struct({
   notes: Schema.Array(
     Schema.Struct({
       date: Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}$/u)),
       text: Schema.String,
+      kind: Schema.Literals(noteKinds),
     }),
   ),
 });
 export type CloudReleaseNotes = typeof CloudReleaseNotes.Type;
+
+/**
+ * The note Cloud's what's new leads with: the newest feature or improvement of `notes` (newest
+ * first). A fix never leads; with none of the others it is undefined, and the block shows a plain
+ * title instead while its panel still lists every note.
+ */
+export const whatsNewHeadline = <Note extends { readonly kind: NoteKind }>(
+  notes: ReadonlyArray<Note>,
+) => notes.find((note) => note.kind !== "fix");

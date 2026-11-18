@@ -15,6 +15,8 @@ export const TargetPlan = Schema.Union([
         "oauth-proxy-preview",
         "revocation-budget",
         "empty-release-notes",
+        "fix-release-notes",
+        "feature-release-notes",
       ]),
     ),
   }),
@@ -86,6 +88,17 @@ const revocationBudgetCloud = { status: "scheduled", runtime: "revocation-budget
  * whose window has no notes builds it; every other local Cloud builds it with fixed notes.
  */
 const emptyReleaseNotesCloud = { status: "scheduled", runtime: "empty-release-notes" } as const;
+/**
+ * Runs alone on a managed local Cloud whose dashboard is built with notes the deploy's notes script
+ * writes from commit messages that hold only fixes (`cloudChanges` in
+ * e2e/support/cloud-release-notes.ts).
+ */
+const fixReleaseNotesCloud = { status: "scheduled", runtime: "fix-release-notes" } as const;
+/**
+ * Runs alone on a managed local Cloud whose dashboard is built with notes the deploy's notes script
+ * writes from commit messages whose newest is a feature.
+ */
+const featureReleaseNotesCloud = { status: "scheduled", runtime: "feature-release-notes" } as const;
 const na = (reason: string) => ({ status: "not-applicable", reason }) as const;
 const cloudOnboarding = {
   cloud: scheduled,
@@ -3471,10 +3484,32 @@ export const scenarios = plan({
     fixtures: "actors",
     file: "cloud-whats-new.spec.ts",
     title:
-      "Cloud shows every member the newest note its build holds above the sidebar's links, which stay, and opens all of them by day, also in a short window and not in the collapsed rail, whatever the browser's clock says, and shows nothing where there are none",
+      "Cloud shows every member the newest feature or improvement its build holds, not a newer fix, above the sidebar's links, which stay, and opens all of them by day, fixes included, also in a short window and not in the collapsed rail, whatever the browser's clock says, and shows nothing where there are none",
     targets: {
       cloud: managedCloud,
       "self-host": scheduled,
+      local: na("Cloud's notes are Cloud's; the desktop shows its update's notes."),
+    },
+  },
+  cloudWhatsNewFixes: {
+    fixtures: "actors",
+    file: "cloud-whats-new.spec.ts",
+    title:
+      "Cloud built with notes that are all fixes, one marked Fix: and one unmarked, leads what's new with a plain line, never a fix, and lists every fix without its kind word",
+    targets: {
+      cloud: fixReleaseNotesCloud,
+      "self-host": na("Self-host has no Cloud notes; the scenario with notes covers it."),
+      local: na("Cloud's notes are Cloud's; the desktop shows its update's notes."),
+    },
+  },
+  cloudWhatsNewFeature: {
+    fixtures: "actors",
+    file: "cloud-whats-new.spec.ts",
+    title:
+      "Cloud built with notes whose newest is a feature leads what's new with that feature, without its kind word, over an older improvement and fix, and lists every note without one",
+    targets: {
+      cloud: featureReleaseNotesCloud,
+      "self-host": na("Self-host has no Cloud notes; the scenario with notes covers it."),
       local: na("Cloud's notes are Cloud's; the desktop shows its update's notes."),
     },
   },
@@ -11964,7 +11999,9 @@ export const scenarios = plan({
  * on the deployment origin, and runs only the scenarios that prove the switch. A revocation-budget
  * run starts it with organization removal's revocation budget shortened, and runs only the
  * scenarios that run that budget out. An empty-release-notes run builds its dashboard with an
- * empty notes file, and runs only the scenarios that show it.
+ * empty notes file, and a fix-release-notes or feature-release-notes run with notes the deploy's
+ * notes script writes from commit messages (`cloudChanges`), and each runs only the scenarios that
+ * show its notes.
  */
 export type CloudMode =
   | "managed"
@@ -11973,7 +12010,9 @@ export type CloudMode =
   | "rolled-back"
   | "oauth-proxy-preview"
   | "revocation-budget"
-  | "empty-release-notes";
+  | "empty-release-notes"
+  | "fix-release-notes"
+  | "feature-release-notes";
 
 const cloudRuntimeReasons = {
   managed: "Requires the managed local Cloud target and its local collectors.",
@@ -11987,7 +12026,11 @@ const cloudRuntimeReasons = {
   "revocation-budget":
     "Requires a managed local Cloud with organization removal's revocation budget shortened: e2e:cloud --removal-revocation-budget.",
   "empty-release-notes":
-    "Requires a managed local Cloud whose dashboard is built with an empty notes file: e2e:cloud --empty-release-notes.",
+    "Requires a managed local Cloud whose dashboard is built with an empty notes file: e2e:cloud --release-notes empty.",
+  "fix-release-notes":
+    "Requires a managed local Cloud whose dashboard is built with notes that are all fixes: e2e:cloud --release-notes fixes.",
+  "feature-release-notes":
+    "Requires a managed local Cloud whose dashboard is built with notes whose newest is a feature: e2e:cloud --release-notes feature.",
 } as const;
 
 /**
@@ -12022,7 +12065,9 @@ export const scenariosForSuite = (
             cloudMode !== "rolled-back" &&
             cloudMode !== "oauth-proxy-preview" &&
             cloudMode !== "revocation-budget" &&
-            cloudMode !== "empty-release-notes"
+            cloudMode !== "empty-release-notes" &&
+            cloudMode !== "fix-release-notes" &&
+            cloudMode !== "feature-release-notes"
           : cloud.runtime === cloudMode;
       return runs
         ? scenario
@@ -12038,7 +12083,9 @@ export const scenariosForSuite = (
                       ? "Runs on Cloud as the OAuth proxy's production, not on a stage signing in through it."
                       : cloudMode === "revocation-budget"
                         ? "Runs on Cloud with organization removal's deployed revocation budget."
-                        : cloudMode === "empty-release-notes"
+                        : cloudMode === "empty-release-notes" ||
+                            cloudMode === "fix-release-notes" ||
+                            cloudMode === "feature-release-notes"
                           ? "Runs on Cloud built with the fixed test notes."
                           : "Runs on Cloud without the per-address auth limit."
                   : cloudRuntimeReasons[cloud.runtime],
