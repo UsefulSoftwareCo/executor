@@ -25,6 +25,7 @@ import {
 } from "../../contracts/credentials.ts";
 import { CredentialFields } from "../components/credential-fields.tsx";
 import { Button } from "../components/button.tsx";
+import { Spinner } from "../components/spinner.tsx";
 import { CopyButton } from "./code.tsx";
 import {
   Select,
@@ -97,6 +98,17 @@ export function AccountForm<A, E>({
     // A result belongs to the credentials it checked; any edit needs a new validation.
     setVerdict({ state: "idle" });
   };
+  const submitText =
+    !validates || auth?.type !== "secrets"
+      ? submitLabel
+      : verdict.state === "checking"
+        ? "Validating…"
+        : verdict.state === "idle"
+          ? "Validate"
+          : verdict.state === "done" && verdict.result.status === "healthy"
+            ? "Continue"
+            : "Continue anyway";
+  const busy = pending || verdict.state === "checking";
   const save = (input: AccountSubmission) => {
     updatePending(true);
     setError(undefined);
@@ -111,7 +123,7 @@ export function AccountForm<A, E>({
   };
   return (
     <form
-      className="setup-form flex max-w-145 flex-col gap-4"
+      className="setup-form flex max-w-145 min-w-0 flex-col gap-4"
       onSubmit={(event) => {
         event.preventDefault();
         if (
@@ -154,7 +166,8 @@ export function AccountForm<A, E>({
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
-            <SelectContent>
+            {/* As wide as the field: a long method name wraps instead of widening the menu. */}
+            <SelectContent className="w-(--radix-select-trigger-width)">
               {methods.map(([name, auth]) => (
                 <SelectItem key={name} value={name}>
                   {auth.type === "oauth2" ? `Sign in with ${provider.definition.name}` : auth.label}
@@ -201,27 +214,27 @@ export function AccountForm<A, E>({
             <CredentialVerdict
               app={check.app}
               verdict={verdict}
-              label={auth.label}
+              method={auth.label}
               provider={provider.definition.name}
             />
           )}
           {error && <Failure cause={error} />}
           <div className="form-actions flex items-center gap-5 pt-1 text-[13px] [&_a]:text-muted-foreground max-[740px]:[&_>_a]:min-h-11 max-[740px]:[&_>_a]:inline-flex max-[740px]:[&_>_a]:items-center max-[740px]:flex-wrap max-[740px]:gap-[12px_20px] max-[480px]:[&_>_button]:basis-full">
+            {/* Busy without Button's `loading`, whose spinner is a second live region named
+                "Loading" and hides the text from the button's name. The name always says what the
+                button does; the verdict line alone announces the check. */}
             <Button
               type="submit"
-              className="w-full"
-              loading={pending || verdict.state === "checking"}
-              disabled={!credentialsComplete(fields, values)}
+              className={busy ? "relative w-full" : "w-full"}
+              disabled={busy || !credentialsComplete(fields, values)}
+              aria-label={submitText}
             >
-              {!validates || auth?.type !== "secrets"
-                ? submitLabel
-                : verdict.state === "checking"
-                  ? "Validating…"
-                  : verdict.state === "idle"
-                    ? `Validate ${auth.label}`
-                    : verdict.state === "done" && verdict.result.status === "healthy"
-                      ? "Continue"
-                      : "Continue anyway"}
+              <span className={busy ? "invisible" : undefined}>{submitText}</span>
+              {busy && (
+                <span className="absolute inset-0 flex items-center justify-center" aria-hidden>
+                  <Spinner className="size-3.5" />
+                </span>
+              )}
             </Button>
             {actions}
           </div>
@@ -271,7 +284,7 @@ function CredentialAccess({
             icon={SquareLock02Icon}
             className="mt-0.5 size-3.5 shrink-0 text-emerald-600"
           />
-          <span>
+          <span className="min-w-0">
             {hosts.length === 0 ? (
               "Executor never sends hidden values on the app's requests."
             ) : (
@@ -292,7 +305,7 @@ function CredentialAccess({
       {readable && (
         <p className="flex items-start gap-1.5" data-credential-access="readable">
           <HugeiconsIcon icon={ViewIcon} className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
-          <span>
+          <span className="min-w-0">
             The app can read {hidden ? "the other" : "these"} values and send them anywhere.
             {hosts === undefined && " You can ask your agent to limit where they are sent."}
           </span>
@@ -304,7 +317,7 @@ function CredentialAccess({
 
 /** A host name as the access notices show it. */
 const HostChip = ({ host }: { readonly host: string }) => (
-  <span className="rounded border border-border bg-muted/50 px-1 py-px font-mono text-[11px] text-foreground">
+  <span className="rounded border border-border bg-muted/50 px-1 py-px font-mono text-[11px] text-foreground wrap-anywhere">
     {host}
   </span>
 );
@@ -327,7 +340,7 @@ function SignInAccess({
       data-credential-access="readable"
     >
       <HugeiconsIcon icon={ViewIcon} className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
-      <span>
+      <span className="min-w-0">
         The app can read your {provider} sign-in and send it anywhere. You can ask your agent to
         limit where it is sent.
       </span>
@@ -342,7 +355,7 @@ function SignInAccess({
         icon={SquareLock02Icon}
         className="mt-0.5 size-3.5 shrink-0 text-emerald-600"
       />
-      <span>
+      <span className="min-w-0">
         {hosts.length === 0 ? (
           <>Executor never sends your {provider} sign-in on the app's requests.</>
         ) : (
@@ -367,47 +380,53 @@ type Verdict =
   | { readonly state: "done"; readonly result: CredentialCheck }
   | { readonly state: "unverified" };
 
-/** What a failed check found, as the form shows it and the fix prompt quotes it. */
+/**
+ * What a failed check found, as the form shows it and the fix prompt quotes it. It says
+ * "credentials", not the method's label: a label names a sign-in method ("Auth token or API key")
+ * and does not read as the object of a sentence.
+ */
 const checkFailure = (
   status: Exclude<AccountCheckStatus, "healthy">,
   provider: string,
-  label: string,
   message: string | undefined,
 ) =>
   Match.value(status).pipe(
-    Match.when("credentials_rejected", () => `${provider} rejected this ${label}`),
-    Match.when("forbidden", () => `This ${label} is missing a permission the app needs`),
+    Match.when("credentials_rejected", () => `${provider} rejected these credentials`),
+    Match.when("forbidden", () => "These credentials are missing a permission the app needs"),
     Match.when("upstream_unavailable", () => `Couldn't reach ${provider} to check it`),
     Match.when(
       "check_failed",
-      () => `Couldn't verify this ${label}${message === undefined ? "" : `: ${message}`}`,
+      () => `Couldn't verify these credentials${message === undefined ? "" : `: ${message}`}`,
     ),
     Match.exhaustive,
   );
 
 /** Hands a check that may be wrong to the user's agent, which fixes and redeploys the app. */
-const checkFixPrompt = (app: AppId, provider: string, label: string, failure: string) =>
+const checkFixPrompt = (app: AppId, provider: string, method: string, failure: string) =>
   [
-    `The account check in my Executor app (app ID: ${app}) failed for my ${provider} ${label}, and the check itself may be wrong.`,
+    `The account check in my Executor app (app ID: ${app}) failed for my ${provider} credentials (sign-in method: ${method}), and the check itself may be wrong.`,
     "",
     `The check reported: ${failure}`,
     "",
-    `Start with the Executor app's executor skill. Read the app's source, find the health check for the ${provider} provider, and fix it so it accepts a working ${label} and still rejects a bad one. Deploy the updated app. Don't ask me to paste the ${label} into chat.`,
+    `Start with the Executor app's executor skill. Read the app's source, find the health check for the ${provider} provider, and fix it so it accepts working credentials and still rejects bad ones. Deploy the updated app. Don't ask me to paste the credentials into chat.`,
   ].join("\n");
 
 /**
  * Whether the entered credentials work, as the app's check found. The line keeps its height while
  * empty, so a short result never moves the form; the app's own explanation of a failure may wrap.
+ * It is the form's one live region: assistive technology hears "Validating…" while the check runs,
+ * then the result in its place.
  */
 function CredentialVerdict({
   app,
   verdict,
-  label,
+  method,
   provider,
 }: {
   readonly app: AppId;
   readonly verdict: Verdict;
-  readonly label: string;
+  /** The sign-in method's label, which only the fix prompt names. */
+  readonly method: string;
   readonly provider: string;
 }) {
   const shown =
@@ -420,7 +439,7 @@ function CredentialVerdict({
   const failure =
     shown === undefined || shown.status === "healthy"
       ? undefined
-      : checkFailure(shown.status, provider, label, shown.message);
+      : checkFailure(shown.status, provider, shown.message);
   const tone =
     shown === undefined
       ? "muted"
@@ -442,6 +461,7 @@ function CredentialVerdict({
       aria-live="polite"
       {...(shown === undefined ? {} : { "data-credential-check": shown.status })}
     >
+      {verdict.state === "checking" && <span className="sr-only">Validating…</span>}
       {shown !== undefined && (
         <>
           <HugeiconsIcon
@@ -458,10 +478,10 @@ function CredentialVerdict({
             aria-hidden
           />
           <div className="flex min-w-0 flex-col items-start gap-0.5">
-            <span className="line-clamp-3 break-words">
+            <span className="line-clamp-3 wrap-anywhere">
               {failure ??
                 (name === undefined ? (
-                  <>Valid {label}</>
+                  <>Valid credentials</>
                 ) : (
                   <>
                     Signed in as <span className="font-medium text-foreground">{name}</span>
@@ -471,12 +491,12 @@ function CredentialVerdict({
             {doubtsCheck && (
               <>
                 <span className="text-muted-foreground" data-credential-check-advice>
-                  The app's check may be wrong. You can still add this {label} and ask your agent to
-                  fix the check.
+                  The app's check may be wrong. You can still add these credentials and ask your
+                  agent to fix the check.
                 </span>
                 <div className="mt-1 text-foreground">
                   <CopyButton
-                    code={checkFixPrompt(app, provider, label, failure)}
+                    code={checkFixPrompt(app, provider, method, failure)}
                     label="Copy fix prompt"
                     text="Copy fix prompt"
                     variant="outline"

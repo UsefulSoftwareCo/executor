@@ -58,7 +58,7 @@ export function ConnectionDialogHeader({
     <div className="flex items-center gap-3 pr-7">
       <ProviderIcon name={provider.definition.name} url={providerDisplayUrl(provider.definition)} />
       <div className="min-w-0">
-        <DialogTitle className="text-base">
+        <DialogTitle className="text-base wrap-anywhere">
           {action} {provider.definition.name}
         </DialogTitle>
         <DialogDescription className={notice ? "mt-1 text-xs" : "sr-only"}>

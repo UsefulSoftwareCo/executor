@@ -5009,6 +5009,27 @@ export const scenarios = plan({
       local: na("The hosted and local dashboards share the credential form and check contract."),
     },
   },
+  connectFormLongLabel: {
+    fixtures: "actors",
+    file: "connect-form-layout.spec.ts",
+    title:
+      "The connect form keeps a paragraph-long sign-in method label, an unbroken field title and a long host list inside its dialog at desktop and phone widths, and its submit button says Validate and keeps its accessible name while the form announces the check once",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Self-host renders the same hosted connect dialog and shared form."),
+      local: na("The local dialog has its own scenario."),
+    },
+  },
+  localConnectFormLongLabel: {
+    file: "connect-form-layout.spec.ts",
+    title:
+      "The local connect dialog keeps a paragraph-long sign-in method label and a long host list inside it at desktop and phone widths",
+    targets: {
+      local: scheduled,
+      "self-host": na("The hosted connect dialog has its own scenario."),
+      cloud: na("The hosted connect dialog has its own scenario."),
+    },
+  },
   accountSecretFieldsExact: {
     fixtures: "actors",
     file: "account-secret-fields.spec.ts",
