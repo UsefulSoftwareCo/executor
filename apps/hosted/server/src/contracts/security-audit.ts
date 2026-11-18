@@ -28,6 +28,8 @@ export const SecurityAuditAction = Schema.Literals([
   "organization.delete",
   "user.delete",
   "credential.read",
+  "app_account.link",
+  "app_account.unlink",
 ]);
 export type SecurityAuditAction = typeof SecurityAuditAction.Type;
 

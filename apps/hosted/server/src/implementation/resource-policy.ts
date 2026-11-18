@@ -596,6 +596,78 @@ export const requireAccountOwnerAs = (actor: ResourceAuthority, account: Account
     if (!(yield* ownedAccountIds([account], actor)).has(account))
       return yield* new OrganizationForbidden();
   });
+/**
+ * What lets an actor link an account to an app's own requirement for everyone: `owner` for their
+ * own account, `app_link` for an account already linked for everyone to an app of the
+ * organization the actor can edit, whose owner is still a member.
+ */
+export type AppLinkAuthority = "owner" | "app_link";
+const ReusableLink = Schema.Struct({ account: AccountId, app: AppId });
+/**
+ * The accounts among `accounts` the actor may link to an app's own requirement for everyone, with
+ * what lets them. An account's owner may link it. So may someone who can edit an app its owner, or
+ * someone after them, already linked it to for everyone: that app runs with the account for every
+ * caller, and editing it already lets them deploy code that does, so linking it to another app
+ * they can edit gives them no use of it they lack. The account stays its owner's; nobody else may
+ * use it directly, link it for themselves, or read it outside the apps that link it. An account
+ * linked only by members for themselves, or whose owner left, is never reused. With `lock`, the
+ * app link rows a grant relies on stay share-locked until the transaction ends, so removing one
+ * waits for the link that relied on it.
+ */
+export const appLinkableAccountsAs = (
+  actor: ResourceAuthority,
+  accounts: readonly AccountId[],
+  lock = false,
+) =>
+  Effect.gen(function* () {
+    const linkable = new Map<AccountId, AppLinkAuthority>();
+    if (accounts.length === 0) return linkable;
+    for (const account of yield* ownedAccountIds(accounts, actor)) linkable.set(account, "owner");
+    const others = accounts.filter((account) => !linkable.has(account));
+    if (others.length === 0) return linkable;
+    const sql = yield* policyDatabase;
+    const rows = yield* sql`select l.account, l.app
+      from hosted_app_account_links l
+      join executor_apps app on app.id = l.app
+      join executor_accounts a on a.id = l.account and a.owner = app.owner
+      join hosted_account_access p on p.account_id = a.id
+        and a.owner = 'organization:' || p.organization_id
+      where l.subject is null and ${sql.in("l.account", others)}
+        and p.organization_id = ${actor.organization}
+        and exists(select 1 from member owner_member
+          where owner_member."organizationId" = p.organization_id
+            and owner_member."userId" = p.personal_user_id)${lock ? sql` for share of l` : sql``}`;
+    const links = yield* Schema.decodeUnknownEffect(Schema.Array(ReusableLink))(rows);
+    const editable = new Set(
+      (yield* applicationAccesses([...new Set(links.map((link) => link.app))], actor))
+        .filter((access) => access.canManage)
+        .map((access) => access.app),
+    );
+    for (const link of links) if (editable.has(link.app)) linkable.set(link.account, "app_link");
+    return linkable;
+  }).pipe(
+    Effect.catchTags({ SqlError: () => new StorageError(), SchemaError: () => new StorageError() }),
+  );
+/** The accounts of a list the request's actor may link for everyone ({@link appLinkableAccountsAs}). */
+export const appLinkableAccounts = (accounts: readonly Account[]) =>
+  Effect.gen(function* () {
+    const actor = yield* currentResourceAuthority;
+    const linkable = yield* appLinkableAccountsAs(
+      actor,
+      accounts.map((account) => account.id),
+    );
+    return accounts.filter((account) => linkable.has(account.id));
+  });
+/**
+ * What lets the actor link this account for everyone, or `OrganizationForbidden` when nothing
+ * does; see {@link appLinkableAccountsAs}.
+ */
+export const requireAppLinkableAs = (actor: ResourceAuthority, account: AccountId, lock = false) =>
+  Effect.gen(function* () {
+    const authority = (yield* appLinkableAccountsAs(actor, [account], lock)).get(account);
+    if (authority === undefined) return yield* new OrganizationForbidden();
+    return authority;
+  });
 /** Missing or denied policies are omitted; storage failures remain visible rather than empty lists. */
 export const visibleAccounts = (accounts: readonly Account[]) =>
   Effect.flatMap(currentResourceAuthority, (actor) => visibleAccountsAs(actor, accounts));

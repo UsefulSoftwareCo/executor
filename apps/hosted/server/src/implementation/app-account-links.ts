@@ -1,7 +1,9 @@
 /**
  * The routes that link accounts to an app's requirements, in either scope. App links need edit
- * access to the app and, to link, use of the account; reading them needs use of the app. User links
- * are the caller's own: linking another person's account is never possible.
+ * access to the app and, to link, the caller's own account or one already linked for everyone to an
+ * app they can edit; unlinking needs edit access or ownership of the account; reading them needs
+ * use of the app. User links are the caller's own: linking another person's account is never
+ * possible.
  */
 import {
   AccountNotFound,
@@ -33,11 +35,16 @@ import { connectAccount, connectionUrl } from "./accounts.ts";
 import { accountOAuthRedirectUri } from "./auth.ts";
 import { addLink, callerLinkedAccounts, lockedChange, removeLink } from "./app-accounts.ts";
 import {
+  appLinkableAccounts,
+  currentResourceAuthority,
+  ownedAccountIds,
   policyDatabase,
   requireAccountOwner,
+  requireAppLinkableAs,
   requireCurrentAppAccess,
   visibleAccounts,
 } from "./resource-policy.ts";
+import { recordSecurityAudit } from "./security-audit.ts";
 
 const caller = Effect.gen(function* () {
   const user = yield* CurrentUserId;
@@ -181,7 +188,9 @@ const requirementView = (
       return account === undefined ? [] : [account];
     });
     const linkedIds = new Set(linkedAccounts.map((account) => account.id));
-    const usable = (yield* visibleAccounts(all)).filter((account) => !linkedIds.has(account.id));
+    // App requirements also take accounts already linked for everyone to an app the caller edits.
+    const candidates = yield* scope === "app" ? appLinkableAccounts(all) : visibleAccounts(all);
+    const usable = candidates.filter((account) => !linkedIds.has(account.id));
     return {
       requirement,
       scope,
@@ -275,21 +284,33 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           const owner = yield* appManagerOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* executor.apps.get({ owner, app: params.app });
-          yield* requireAccountOwner(params.account);
+          // The caller's own account, or one already linked for everyone to an app they can edit.
+          yield* requireAppLinkableAs(yield* currentResourceAuthority, params.account);
           yield* executor.accounts.get({ owner, account: params.account });
-          const changed = yield* lockedChange(
+          const { changed, authority } = yield* lockedChange(
             executor,
-            { app: params.app, access: "manage", account: params.account },
-            (sql) =>
-              addLink(sql, executor.webhooks, {
-                app: params.app,
-                requirement: params.requirement,
-                account: params.account,
-                subject: null,
-                linkedBy: user,
+            { app: params.app, access: "manage" },
+            (sql, actor) =>
+              Effect.gen(function* () {
+                // Checked again under the lock, holding the app links it relies on until commit.
+                const authority = yield* requireAppLinkableAs(actor, params.account, true);
+                const changed = yield* addLink(sql, executor.webhooks, {
+                  app: params.app,
+                  requirement: params.requirement,
+                  account: params.account,
+                  subject: null,
+                  linkedBy: user,
+                });
+                return { changed, authority };
               }),
           );
           if (changed) yield* wake;
+          yield* recordSecurityAudit({
+            action: "app_account.link",
+            outcome: "success",
+            target: { kind: "account", id: params.account },
+            detail: { app: params.app, authority },
+          });
           return yield* savedLink(
             executor,
             owner,
@@ -303,13 +324,18 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
       .handle("appUnlink", ({ params }) =>
         Effect.gen(function* () {
           // Unlinking needs edit access to the app, not use of the account: an editor can stop the
-          // app using an account they cannot use.
-          const owner = yield* appManagerOwner(params.app);
+          // app using an account they cannot use. An account's owner may also stop any app using
+          // it, since someone who can edit another app it serves may have linked it there.
+          const owns = (yield* ownedAccountIds(
+            [params.account],
+            yield* currentResourceAuthority,
+          )).has(params.account);
+          const owner = owns ? yield* currentOwner : yield* appManagerOwner(params.app);
           const executor = yield* Effect.flatten(HostedExecutor);
           yield* executor.apps.get({ owner, app: params.app });
           const removed = yield* lockedChange(
             executor,
-            { app: params.app, access: "manage" },
+            { app: params.app, access: "unlink", account: params.account },
             (sql) =>
               removeLink(sql, executor.webhooks, {
                 app: params.app,
@@ -320,6 +346,12 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
           );
           if (!removed) return yield* new AccountNotFound({ account: params.account });
           yield* wake;
+          yield* recordSecurityAudit({
+            action: "app_account.unlink",
+            outcome: "success",
+            target: { kind: "account", id: params.account },
+            detail: { app: params.app, authority: owns ? "owner" : "app_manager" },
+          });
           return { requirement: params.requirement, account: params.account };
         }),
       )

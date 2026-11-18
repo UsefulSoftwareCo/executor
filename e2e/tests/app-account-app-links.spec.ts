@@ -61,6 +61,14 @@ const Who = Schema.Struct({
   extra: Schema.Array(Schema.String),
   mail: Schema.String,
 });
+/** Another app whose one app requirement takes the team provider, reporting the account it runs with. */
+const teamAppSource = `import { defineApp, defineProvider, secrets, query, object, string, router, type QueryContext } from "apps";
+const team = ${teamProvider};
+const requirements = { app: { accounts: { team } } };
+const who = query({ input: object({}) }, async (ctx: QueryContext<typeof requirements>) => ({
+  team: ctx.app.accounts.team.id,
+}));
+export default defineApp(requirements, async () => ({ tools: router({ who }) }));`;
 /** An app whose one key requirement is in `scope`. */
 const scopedKeyApp = (
   scope: "app" | "user",
@@ -259,8 +267,11 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         expect(
           yield* refused(yield* link(actors.owner, "team", ownerMail), 422, "RequirementMismatch"),
         ).toMatchObject({ requirement: "team", scope: "app", reason: "provider" });
-        // The admin manages the app but cannot use the owner's personal account.
-        expect((yield* link(actors.admin, "extra", first)).status).toBe(403);
+        // The admin manages the app but does not own the owner's personal account. It is already
+        // linked here for everyone, so the admin may link it to another requirement of the app, as
+        // the app already runs with it; they still cannot read the account itself.
+        yield* ok(yield* link(actors.admin, "extra", first));
+        yield* ok(yield* unlink(actors.admin, "extra", first));
 
         // An account linked for everyone cannot be deleted until it is unlinked.
         const deleting = yield* api.request(actors.owner, "DELETE", `${prefix}/accounts/${first}`);
@@ -429,6 +440,141 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         const linked = yield* linkedAccountIds(actors.member, path);
         expect(linked).toHaveLength(1);
         yield* fixture.saved(actors.member, linked[0] ?? "missing");
+      }),
+    ),
+  );
+  it.effect(scenarios.hostedAppLinkReuse.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const fixture = yield* appLinksFixture([{ path: "index.ts", content: source }]);
+        const { api, actors, prefix, connect, start, submit } = fixture;
+        const appLink = (actor: Session, appPath: string, account: string) =>
+          linkAccountResponse(actor, appPath, "team", account, "app");
+        const appUnlink = (actor: Session, appPath: string, account: string) =>
+          api.request(
+            actor,
+            "DELETE",
+            `${appPath}/accounts/app/team/${encodeURIComponent(account)}`,
+          );
+        const choices = (actor: Session, appPath: string) =>
+          api.request(actor, "GET", `${appPath}/accounts/app/team`).pipe(
+            Effect.flatMap((response) => okBody(LinkRequirement, response)),
+            Effect.map((read) => read.accounts.map((entry) => [entry.account.id, entry.linked])),
+          );
+        const who = (actor: Session, appPath: string) =>
+          api
+            .request(actor, "POST", `${appPath}/tools/call`, {
+              tool: "who",
+              kind: "query",
+              input: {},
+            })
+            .pipe(
+              Effect.flatMap((response) =>
+                okBody(Schema.Struct({ team: Schema.String }), response),
+              ),
+            );
+
+        // The owner links their own team account for everyone to the fixture's app. A second app
+        // the admin can edit takes the same provider; nothing fills its requirement yet.
+        const shared = yield* connect(actors.owner, "app", "team", "team-shared");
+        const second = yield* fixture.another(teamAppSource);
+        yield* refused(
+          yield* api.request(actors.member, "POST", `${second}/tools/call`, {
+            tool: "who",
+            kind: "query",
+            input: {},
+          }),
+          409,
+          "AccountRequired",
+        );
+
+        // The admin does not own the account, but it already serves an app they can edit, so they
+        // may choose it for the second app and link it there for everyone. Every caller then runs
+        // with it, and the admin still cannot read the account itself.
+        expect(yield* choices(actors.admin, second)).toEqual([[shared, false]]);
+        yield* ok(yield* appLink(actors.admin, second, shared));
+        expect(yield* who(actors.member, second)).toEqual({ team: shared });
+        expect(
+          (yield* api.request(actors.admin, "GET", `${prefix}/accounts/${shared}`)).status,
+        ).not.toBe(200);
+
+        // Nothing else is opened: the admin cannot link the account for themselves, and an account
+        // of the owner's that serves no app for everyone is neither offered nor linkable.
+        const userTeam = yield* fixture.another(teamUserSource);
+        yield* refused(
+          yield* linkAccountResponse(actors.admin, userTeam, "team", shared),
+          403,
+          "OrganizationForbidden",
+        );
+        const ownerStarted = yield* start(actors.owner, "user", "team", userTeam);
+        expect(ownerStarted.status, JSON.stringify(ownerStarted.body)).toBe(200);
+        const personal = (yield* okBody(
+          Resource,
+          yield* submit(actors.owner, (yield* body(Resource, ownerStarted)).id, "team-personal"),
+        )).id;
+        yield* fixture.saved(actors.owner, personal);
+        expect((yield* choices(actors.admin, second)).map(([id]) => id)).not.toContain(personal);
+        yield* refused(
+          yield* appLink(actors.admin, second, personal),
+          403,
+          "OrganizationForbidden",
+        );
+
+        // A member who cannot edit the second app cannot link to it either.
+        yield* refused(yield* appLink(actors.member, second, shared), 403, "OrganizationForbidden");
+
+        // A member links their own account for everyone to an app they created. The admin reuses
+        // it for the second app, replacing its plain link. The account cannot be deleted while any
+        // app links it, but the member, who cannot edit the second app, may still stop it using
+        // their account, though not unlink another's.
+        const created = yield* api.request(actors.member, "POST", `${prefix}/apps/deploy`, {
+          name: `Member app ${randomUUID().slice(0, 8)}`,
+          files: [{ path: "index.ts", content: teamAppSource }, appsManifest],
+        });
+        expect(created.status, JSON.stringify(created.body)).toBe(200);
+        const own = `${prefix}/apps/${(yield* body(Resource, created)).id}`;
+        yield* fixture.adopt(own);
+        const memberStarted = yield* start(actors.member, "app", "team", own);
+        expect(memberStarted.status, JSON.stringify(memberStarted.body)).toBe(200);
+        const memberTeam = (yield* okBody(
+          Resource,
+          yield* submit(actors.member, (yield* body(Resource, memberStarted)).id, "member-team"),
+        )).id;
+        yield* fixture.saved(actors.member, memberTeam);
+        yield* ok(yield* appLink(actors.admin, second, memberTeam));
+        expect(yield* who(actors.owner, second)).toEqual({ team: memberTeam });
+        yield* refused(
+          yield* api.request(actors.member, "DELETE", `${prefix}/accounts/${memberTeam}`),
+          409,
+          "AccountLinkedToApp",
+        );
+        yield* refused(
+          yield* appUnlink(actors.member, second, shared),
+          403,
+          "OrganizationForbidden",
+        );
+        expect(yield* ok(yield* appUnlink(actors.member, second, memberTeam))).toEqual({
+          requirement: "team",
+          account: memberTeam,
+        });
+        yield* refused(
+          yield* api.request(actors.owner, "POST", `${second}/tools/call`, {
+            tool: "who",
+            kind: "query",
+            input: {},
+          }),
+          409,
+          "AccountRequired",
+        );
+
+        // Once the account serves no app the admin can edit, they cannot link it again.
+        yield* ok(yield* appUnlink(actors.member, own, memberTeam));
+        yield* refused(
+          yield* appLink(actors.admin, second, memberTeam),
+          403,
+          "OrganizationForbidden",
+        );
       }),
     ),
   );

@@ -38,6 +38,7 @@ import {
   LinkedAccount,
   linkedAccountJson,
   lockCurrentActor,
+  ownedAccountIds,
   policyDatabase,
   requireAccountOwnerAs,
   requireAppAccessAs,
@@ -273,13 +274,14 @@ export const lockAppLinks = (sql: SqlClient.SqlClient, app: AppId) =>
  * what committed meanwhile. The caller's membership row stays share-locked until the change
  * commits, so a role change or removal waits for it. `access` is the access the change needs to the
  * app; `account`, when set, the account the change links, which the caller must still be able to
- * use. The change gets the checked actor, for any further check of its own under the lock.
+ * use. With `unlink`, `account` is the account the change unlinks, and owning it stands in for edit
+ * access. The change gets the checked actor, for any further check of its own under the lock.
  */
 export const lockedChange = <A, E, R>(
   executor: Executor,
   input: {
     readonly app: AppId;
-    readonly access: "manage" | "use";
+    readonly access: "manage" | "use" | "unlink";
     readonly account?: AccountId | undefined;
   },
   change: (sql: SqlClient.SqlClient, actor: ResourceAuthority) => Effect.Effect<A, E, R>,
@@ -290,12 +292,21 @@ export const lockedChange = <A, E, R>(
       Effect.gen(function* () {
         yield* lockAppLinks(sql, input.app);
         const actor = yield* lockCurrentActor;
+        if (input.access === "unlink") {
+          // An account's owner may stop any app using it; anyone else needs edit access.
+          if (input.account === undefined || !(yield* ownsAccountAs(actor, input.account)))
+            yield* requireAppAccessAs(actor, input.app, "manage");
+          return yield* change(sql, actor);
+        }
         yield* requireAppAccessAs(actor, input.app, input.access);
         if (input.account !== undefined) yield* requireAccountOwnerAs(actor, input.account);
         return yield* change(sql, actor);
       }),
     );
   });
+
+const ownsAccountAs = (actor: ResourceAuthority, account: AccountId) =>
+  Effect.map(ownedAccountIds([account], actor), (owned) => owned.has(account));
 
 /** One link: `subject` null for an app link, else the member it is linked for. */
 export interface LinkKey {

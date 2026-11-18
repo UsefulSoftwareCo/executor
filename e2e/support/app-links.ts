@@ -369,6 +369,8 @@ export const appLinksFixture = (files: ReadonlyArray<{ path: string; content: st
       get,
       call,
       group,
+      /** Remove an app deployed outside `another` on cleanup, before the fixture's accounts. */
+      adopt: (appPath: string) => Effect.sync(() => others.push(appPath)),
       /** Record an account saved outside `connect` for cleanup. */
       saved: (actor: Session, id: string) => Effect.sync(() => saved.push({ actor, id })),
     };
