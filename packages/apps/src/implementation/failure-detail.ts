@@ -347,6 +347,16 @@ const graphqlStages = {
   call: "to this tool call",
 } satisfies Record<GraphqlError["phase"], string>;
 
+/** Why a request got no answer, when `fetch`'s rejection says. */
+const graphqlTransports = {
+  connection: (stage: string) =>
+    `The GraphQL server did not answer ${stage}: the connection failed. The request may have reached it.`,
+  aborted: (stage: string) =>
+    `The GraphQL server did not answer ${stage}: the request was cancelled.`,
+  subrequest_limit: (stage: string) =>
+    `The GraphQL server did not answer ${stage}: the call reached its limit on outbound requests, so the request was not sent.`,
+} satisfies Record<NonNullable<GraphqlError["transport"]>, (stage: string) => string>;
+
 /**
  * A response path such as `projectCreate.input.items[0]`, bounded; unusual names are quoted.
  * Secrets are replaced in each segment the server stated before it is quoted.
@@ -415,9 +425,11 @@ const graphqlFailureMessage = (error: GraphqlError, secrets: readonly string[]) 
         : "The GraphQL endpoint URL or connection settings are invalid.",
     ),
     Match.when("request", () =>
-      error.status === undefined
-        ? `The request to the GraphQL server failed ${stage}.`
-        : `The GraphQL server ${answered} ${stage}.`,
+      error.status !== undefined
+        ? `The GraphQL server ${answered} ${stage}.`
+        : error.transport === undefined
+          ? `The request to the GraphQL server failed ${stage}.`
+          : graphqlTransports[error.transport](stage),
     ),
     Match.when("execution", () => `The GraphQL server ${answered} with errors ${stage}.`),
     Match.exhaustive,

@@ -95,6 +95,12 @@ export class GraphqlError extends Schema.TaggedError<GraphqlError>()("GraphqlErr
    * may be, or it did not arrive in time. The status is still the server's answer.
    */
   unreadBody: Schema.optional(Schema.Literals(["too_large", "incomplete"])),
+  /**
+   * Why a `request` failure without a status got no answer, read from how `fetch` rejected:
+   * the connection failed, the request was cancelled, or the call reached its limit on outbound
+   * requests. Absent when the rejection names none of these.
+   */
+  transport: Schema.optional(Schema.Literals(["connection", "aborted", "subrequest_limit"])),
 }) {}
 
 const Name = Schema.String.check(Schema.isPattern(/^[_A-Za-z][_0-9A-Za-z]*$/u));

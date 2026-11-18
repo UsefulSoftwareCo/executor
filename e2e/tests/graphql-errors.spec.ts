@@ -38,7 +38,8 @@ type Mode =
   | "html"
   | "huge"
   | "wide"
-  | "stalled";
+  | "stalled"
+  | "dropped";
 
 const fixture = Effect.gen(function* () {
   const mode = yield* Ref.make<Mode>("ok");
@@ -210,6 +211,11 @@ const fixture = Effect.gen(function* () {
             Stream.concat(Stream.make(new TextEncoder().encode('{"errors":[')), Stream.never),
             { status: 400, contentType: "application/json" },
           );
+        // The connection closed before any answer, as when a server or proxy drops it.
+        case "dropped":
+          return HttpServerResponse.stream(Stream.fail("dropped"), {
+            contentType: "application/json",
+          });
         default:
           return yield* HttpServerResponse.json({
             data: { projectCreate: { id: "project-1", name: "Synthetic" } },
@@ -408,6 +414,13 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL errors", (it) => {
         expect(yield* promptly("huge")).toMatchObject({ code: "request", message: tooLarge });
         expect(yield* promptly("wide")).toMatchObject({ code: "request", message: tooLarge });
         expect(yield* promptly("stalled")).toMatchObject({ code: "request", message: incomplete });
+
+        // A request that got no answer says why, instead of only that it failed.
+        expect(yield* promptly("dropped")).toMatchObject({
+          code: "request",
+          message:
+            "The GraphQL server did not answer to this tool call: the connection failed. The request may have reached it.",
+        });
 
         // An app's own deadline shorter than the body's read keeps the status too.
         const files = authoredAppFiles(

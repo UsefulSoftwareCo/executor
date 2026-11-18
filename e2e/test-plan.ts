@@ -652,6 +652,16 @@ export const scenarios = plan({
       local: na("Hosted app version scenario"),
     },
   },
+  graphqlLargeSchema: {
+    fixtures: "actors",
+    file: "graphql-cache.spec.ts",
+    title: "GraphQL schemas as large as GitHub's load through an account's credentials",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Loopback introspection fixture"),
+      local: na("Hosted app version scenario"),
+    },
+  },
   graphqlStatedErrors: {
     fixtures: "actors",
     file: "graphql-errors.spec.ts",

@@ -8,6 +8,7 @@ import { Effect, Option, Redacted, Ref, Result, Schema, Stream } from "effect";
 import {
   FetchHttpClient,
   HttpClient,
+  HttpClientError,
   HttpClientRequest,
   type HttpClientResponse,
 } from "effect/http";
@@ -259,6 +260,22 @@ const refusedBody = (response: HttpClientResponse.HttpClientResponse) =>
     return Option.isSome(body) && body.value.errors?.length ? statedErrors(body.value.errors) : {};
   });
 
+/**
+ * Why `fetch` rejected before the server answered. The platform rejects with a `TypeError` when
+ * its network fails, and Executor's app network does the same when its send fails; an abort or a
+ * deadline rejects with `AbortError` or `TimeoutError`; the subrequest limit with
+ * `SubrequestLimitReached`. Other rejections, such as one carrying a `code`, name no cause here.
+ */
+const transportFailure = (error: unknown): GraphqlError["transport"] => {
+  if (!HttpClientError.isHttpClientError(error) || error.reason._tag !== "TransportError")
+    return undefined;
+  const cause = error.reason.cause;
+  if (!(cause instanceof Error)) return undefined;
+  if (cause.name === "AbortError" || cause.name === "TimeoutError") return "aborted";
+  if (cause.name === "SubrequestLimitReached") return "subrequest_limit";
+  return cause.name === "TypeError" && !("code" in cause) ? "connection" : undefined;
+};
+
 function selection(text: string): SelectionSetNode {
   const document = parse("query { result { " + text + " } }");
   const definition = document.definitions[0];
@@ -363,15 +380,22 @@ export const graphqlClientEffect = (input: GraphqlToolsOptions) =>
                 ),
               ),
           }),
-          Effect.mapError((error) =>
-            error instanceof ProviderError && options.accountId !== undefined
-              ? accountProviderError(error, options.accountId)
-              : error instanceof GraphqlError ||
-                  error instanceof ProviderError ||
-                  error instanceof NetworkRefused
-                ? error
-                : new GraphqlError({ phase, reason: "request" }),
-          ),
+          Effect.mapError((error) => {
+            if (error instanceof ProviderError && options.accountId !== undefined)
+              return accountProviderError(error, options.accountId);
+            if (
+              error instanceof GraphqlError ||
+              error instanceof ProviderError ||
+              error instanceof NetworkRefused
+            )
+              return error;
+            const transport = transportFailure(error);
+            return new GraphqlError({
+              phase,
+              reason: "request",
+              ...(transport === undefined ? {} : { transport }),
+            });
+          }),
         );
       });
     const discover = request("discover", getIntrospectionQuery()).pipe(

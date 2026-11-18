@@ -1,7 +1,7 @@
 /** GraphQL metadata caching through real app deploys and an external introspection server. */
 import { expect, layer } from "@effect/vitest";
 import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Schema, Stream } from "effect";
 import { HttpRouter, HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { createServer } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -140,6 +140,132 @@ const fixture = () =>
           version = next.version;
           fail = next.fail;
         }),
+    };
+  });
+
+/**
+ * A schema shaped like GitHub's: about 3.4 MB of introspection, of which only a few hundred
+ * operations become tools. It is sent gzip-encoded after a delay, as GitHub sends its own.
+ */
+const largeFixture = () =>
+  Effect.gen(function* () {
+    let discover = 0;
+    let lastQuery = "";
+    const scalar = (name: string) => ({ kind: "SCALAR", name, ofType: null });
+    const required = (type: Schema.Json) => ({ kind: "NON_NULL", name: null, ofType: type });
+    const object = (name: string) => ({ kind: "OBJECT", name, ofType: null });
+    const describe = (name: string) =>
+      `${name} in the synthetic large schema. It is described at length, as public schemas describe every field, so that the introspection grows to the size of a real one.`;
+    const type = (kind: string, name: string, extra: Record<string, Schema.Json> = {}) => ({
+      kind,
+      name,
+      fields: null,
+      inputFields: null,
+      enumValues: null,
+      ...extra,
+    });
+    const objects = 1_200;
+    const types: Schema.Json[] = [
+      type("OBJECT", "Query", {
+        fields: Array.from({ length: 40 }, (_, i) => ({
+          name: `node_${i}`,
+          description: describe(`node_${i}`),
+          args: [
+            {
+              name: "id",
+              description: "The node's ID.",
+              type: required(scalar("ID")),
+              defaultValue: null,
+            },
+          ],
+          type: object(`Node${i}`),
+        })),
+      }),
+      type("OBJECT", "Mutation", {
+        fields: Array.from({ length: 280 }, (_, i) => ({
+          name: `update_${i}`,
+          description: describe(`update_${i}`),
+          args: [
+            {
+              name: "input",
+              description: null,
+              type: required({ kind: "INPUT_OBJECT", name: `Update${i}Input`, ofType: null }),
+              defaultValue: null,
+            },
+          ],
+          type: scalar("String"),
+        })),
+      }),
+      ...Array.from({ length: objects }, (_, i) =>
+        type("OBJECT", `Node${i}`, {
+          fields: Array.from({ length: 12 }, (_, j) => ({
+            name: `field${j}`,
+            description: describe(`Node${i}.field${j}`),
+            args: [],
+            type: j === 0 ? object(`Node${(i + 1) % objects}`) : scalar("String"),
+          })),
+        }),
+      ),
+      ...Array.from({ length: 280 }, (_, i) =>
+        type("INPUT_OBJECT", `Update${i}Input`, {
+          inputFields: Array.from({ length: 8 }, (_, j) => ({
+            name: `value${j}`,
+            description: describe(`Update${i}Input.value${j}`),
+            type: j === 0 ? required(scalar("ID")) : scalar("String"),
+            defaultValue: null,
+          })),
+        }),
+      ),
+      type("SCALAR", "String"),
+      type("SCALAR", "ID"),
+    ];
+    const introspection = new TextEncoder().encode(
+      JSON.stringify({
+        data: {
+          __schema: { queryType: { name: "Query" }, mutationType: { name: "Mutation" }, types },
+        },
+      }),
+    );
+    const compressed = yield* Stream.fromReadableStream({
+      evaluate: () => new Blob([introspection]).stream().pipeThrough(new CompressionStream("gzip")),
+      onError: (error) => error,
+    }).pipe(Stream.mkUint8Array);
+    const routes = HttpRouter.add(
+      "POST",
+      "/graphql",
+      Effect.gen(function* () {
+        const request = yield* HttpServerRequest.HttpServerRequest;
+        const message = yield* request.json.pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(Schema.Struct({ query: Schema.String }))),
+        );
+        if (request.headers["x-fixture-variant"] !== "large")
+          return HttpServerResponse.empty({ status: 401 });
+        if (message.query.includes("__schema")) {
+          discover++;
+          yield* Effect.sleep("5 seconds");
+          return HttpServerResponse.uint8Array(compressed, {
+            contentType: "application/json",
+            headers: { "content-encoding": "gzip" },
+          });
+        }
+        lastQuery = message.query;
+        const name = /\{\s*(\w+)/.exec(message.query)?.[1] ?? "";
+        return yield* HttpServerResponse.json({
+          data: { [name]: name.startsWith("node_") ? { field1: "large" } : "updated" },
+        });
+      }),
+    );
+    const services = yield* Layer.build(
+      HttpRouter.serve(routes, { disableLogger: true, disableListenLog: true }).pipe(
+        Layer.provideMerge(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: 0 })),
+      ),
+    );
+    const server = yield* HttpServer.HttpServer.pipe(Effect.provideContext(services));
+    if (!("port" in server.address)) return yield* Effect.die("Expected TCP fixture");
+    return {
+      url: `http://127.0.0.1:${server.address.port}/graphql`,
+      bytes: introspection.byteLength,
+      stats: Effect.sync(() => ({ discover, lastQuery })),
     };
   });
 
@@ -379,6 +505,54 @@ layer(HostedLive, { excludeTestServices: true })("GraphQL cache", (it) => {
         ).toBe(404);
         expect((yield* upstream.stats).discover).toBe(5);
         yield* Effect.logInfo("GraphQL cache measurements", { coldMs, warmMs, fields: 3001 });
+      }),
+    ),
+  );
+
+  it.effect(scenarios.graphqlLargeSchema.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const upstream = yield* largeFixture();
+        expect(upstream.bytes).toBeGreaterThan(3_000_000);
+        const app = yield* deploy(upstream.url, true, true);
+        const connection = yield* body(
+          Resource,
+          yield* app.api.request(
+            app.actors.owner,
+            "POST",
+            connectionsPath(app.path, "user", "service"),
+            {},
+          ),
+        );
+        const account = yield* body(
+          Resource,
+          yield* app.api.request(
+            app.actors.owner,
+            "POST",
+            `${app.prefix}/connections/${connection.id}/submit`,
+            { method: "key", label: "Large GraphQL", fields: { token: "large" } },
+          ),
+        );
+        yield* Effect.addFinalizer(() =>
+          app.api
+            .request(app.actors.owner, "DELETE", `${app.prefix}/accounts/${account.id}`)
+            .pipe(Effect.orDie),
+        );
+        const query = yield* app.call("query_node_0", {
+          accountId: account.id,
+          input: { arguments: { id: "1" }, select: "field1" },
+        });
+        expect(query.status, JSON.stringify(query.body)).toBe(200);
+        expect(yield* body(Schema.Json, query)).toEqual({ field1: "large" });
+        const mutation = yield* app.call("mutation_update_279", {
+          accountId: account.id,
+          input: { arguments: { input: { value0: "1" } } },
+        });
+        expect(mutation.status, JSON.stringify(mutation.body)).toBe(200);
+        expect((yield* upstream.stats).lastQuery).toMatch(/^mutation/);
+        // Both calls, and the listing, read the one stored catalog.
+        expect((yield* upstream.stats).discover).toBe(1);
       }),
     ),
   );
