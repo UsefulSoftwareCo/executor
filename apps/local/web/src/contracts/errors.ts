@@ -174,6 +174,7 @@ const errorMessage = Match.type<DashboardError>().pipe(
             "Connect an account first",
             "This app needs an account before its live tools can load. Connect one from the Accounts tab.",
           ),
+    AppLinkCreatorNotAuthorized: (error) => message(error.title, error.description),
     AccountChoiceUnsupported: () =>
       message(
         "Accounts are not chosen per call",

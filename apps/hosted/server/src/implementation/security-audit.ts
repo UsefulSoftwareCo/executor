@@ -3,6 +3,7 @@
  * request's span knows about the client and its credential, so it can be read on its own.
  */
 import { currentRequestSpan } from "@executor-js/telemetry/http";
+import type { AccountId, AppId } from "@executor-js/sdk/core";
 import { Cause, Context, Effect, Exit, Option } from "effect";
 import { HttpServerRequest } from "effect/http";
 import { CurrentUserId } from "../contracts/auth.ts";
@@ -59,6 +60,41 @@ export const recordSecurityAudit = (event: SecurityAuditEvent) =>
         if (typeof value === "string" || typeof value === "number") annotations[key] = value;
       }
     yield* Effect.logInfo("security.audit").pipe(Effect.annotateLogs(annotations));
+  });
+
+/**
+ * Telemetry is best effort. Keep a bounded, per-process/isolate set of recently reported link
+ * states, not a permission cache. Repeated calls for one refusal do not each emit a record.
+ * The database supplies the link and creator membership revision; a later demotion is new even
+ * if nobody tried to use the link while the creator was promoted.
+ */
+const reportedAppLinkRefusals = new Map<string, string>();
+export const recordAppLinkCreatorRefusal = (link: {
+  readonly app: AppId;
+  readonly id: AccountId;
+  readonly requirement: string;
+  readonly creatorRefusal: string;
+}) =>
+  Effect.suspend(() => {
+    const key = JSON.stringify([link.app, link.requirement, link.id]);
+    const previous = reportedAppLinkRefusals.get(key);
+    reportedAppLinkRefusals.delete(key);
+    reportedAppLinkRefusals.set(key, link.creatorRefusal);
+    if (previous === link.creatorRefusal) return Effect.void;
+    if (reportedAppLinkRefusals.size > 4096) {
+      const oldest = reportedAppLinkRefusals.keys().next().value;
+      if (oldest !== undefined) reportedAppLinkRefusals.delete(oldest);
+    }
+    return recordSecurityAudit({
+      action: "app_account.use_refused",
+      outcome: "failure",
+      target: { kind: "account", id: link.id },
+      detail: {
+        app: link.app,
+        requirement: link.requirement,
+        reason: "creator_not_admin_or_owner",
+      },
+    });
   });
 
 /**

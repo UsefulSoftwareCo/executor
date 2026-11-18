@@ -74,6 +74,7 @@ const deliveryRefusals = {
   VersionNotFound: "version-not-found",
   AccountNotFound: "account-not-found",
   AccountRequired: "account-required",
+  AppLinkCreatorNotAuthorized: "app-link-creator-not-authorized",
   AccountSelectionInvalid: "account-selection-invalid",
   CredentialsError: "credentials",
   OAuthReconnectRequired: "oauth-reconnect-required",
@@ -719,7 +720,10 @@ export const makeWebhooks = (
                         // The registration's actor, not the subscription's.
                         Effect.provideService(CurrentActor, state.actor),
                         Effect.provideService(CurrentCaller, systemCaller("webhook", state.actor)),
-                        Effect.catchTag("AccountUseRefused", () => Effect.succeed(undefined)),
+                        Effect.catchTags({
+                          AccountUseRefused: () => Effect.succeed(undefined),
+                          AppLinkCreatorNotAuthorized: () => Effect.succeed(undefined),
+                        }),
                       )
                     : undefined;
                   if (context === undefined) refused = true;

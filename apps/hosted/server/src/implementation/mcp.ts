@@ -405,6 +405,8 @@ export const hostedMcpBackend = Effect.gen(function* () {
           OrganizationForbidden: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
           AppNotFound: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
           AccountRequired: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
+          AppLinkCreatorNotAuthorized: () =>
+            Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
           ConnectionAccountUnlinked: () =>
             Effect.fail(new ElicitationFailed({ reason: "forbidden" })),
           AppNotDeployed: () => Effect.fail(new ElicitationFailed({ reason: "forbidden" })),

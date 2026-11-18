@@ -10,6 +10,7 @@ import {
   CurrentCaller,
   type LinkedAccounts,
   AccountNotFound,
+  AppLinkCreatorNotAuthorized,
   AppId,
   StorageError,
   StorageHost,
@@ -35,6 +36,10 @@ import { ConnectionAccountUnlinked, RequirementMismatch } from "../contracts/app
 import { CurrentOrganization, OrganizationForbidden } from "../contracts/organization.ts";
 import {
   AppAccountReads,
+  appLinkRows,
+  checkedAppLinkJson,
+  CheckedAppLink,
+  creatorRefusal,
   LinkedAccount,
   linkedAccountJson,
   lockCurrentActor,
@@ -42,11 +47,13 @@ import {
   policyDatabase,
   requireAccountOwnerAs,
   requireAppAccessAs,
+  reusedAppLinkPrefix,
   usableAppLinks,
   usableLinks,
   type ResourceAuthority,
 } from "./resource-policy.ts";
 import { userAccountIds } from "./authorization.ts";
+import { recordAppLinkCreatorRefusal } from "./security-audit.ts";
 
 const sqlFailures = {
   SqlError: () => new StorageError(),
@@ -76,6 +83,55 @@ export const appLinkedAccounts = (sql: SqlClient.SqlClient, apps: readonly AppId
     return yield* Schema.decodeUnknownEffect(Schema.Array(LinkedAccount))(rows);
   }).pipe(Effect.catchTags(sqlFailures));
 
+export const checkedAppLinkedAccounts = (sql: SqlClient.SqlClient, app: AppId) =>
+  Effect.gen(function* () {
+    const rows = yield* sql`select l.app, l.requirement, a.id, a.provider, a.label, a.description,
+        ${creatorRefusal(sql)} as "creatorRefusal"
+      from ${appLinkRows(sql, [app])}
+      order by l.created_at, a.id`;
+    return yield* Schema.decodeUnknownEffect(Schema.Array(CheckedAppLink))(rows);
+  }).pipe(Effect.catchTags(sqlFailures));
+
+/** Report every affected link, but surface one actionable error in selection order. */
+export const refuseAppLinkCreators = (
+  links: ReadonlyArray<{
+    readonly app: AppId;
+    readonly id: AccountId;
+    readonly requirement: string;
+    readonly creatorRefusal: string | null;
+  }>,
+) =>
+  Effect.gen(function* () {
+    let refusal: AppLinkCreatorNotAuthorized | undefined;
+    for (const link of links) {
+      if (link.creatorRefusal === null) continue;
+      yield* recordAppLinkCreatorRefusal({ ...link, creatorRefusal: link.creatorRefusal });
+      refusal ??= new AppLinkCreatorNotAuthorized({
+        app: link.app,
+        account: link.id,
+        requirement: link.requirement,
+      });
+    }
+    if (refusal !== undefined) return yield* refusal;
+  });
+
+/** An operation only needs the newest link of a plain requirement and every link of a many(). */
+export const checkRequirementAppLinks = (
+  app: AppId,
+  requirements: AppRequirements["accounts"],
+  links: ReadonlyArray<typeof CheckedAppLink.Type>,
+  source?: AccountId,
+) =>
+  refuseAppLinkCreators(
+    Object.entries(requirements).flatMap(([slot, required]) => {
+      if (required.scope !== "app") return [];
+      const candidates = links.filter((link) => link.app === app && link.requirement === slot);
+      if (required.cardinality === "many") return candidates;
+      const selected = candidates.find((link) => link.id === source) ?? candidates.at(-1);
+      return selected === undefined ? [] : [selected];
+    }),
+  );
+
 const AccountReadsRow = Schema.Struct({
   user: Schema.fromJsonString(AppAccountReads.fields.user),
   app: Schema.fromJsonString(AppAccountReads.fields.app),
@@ -93,8 +149,8 @@ export const appAccountReads = (
     const rows = yield* sql`select
       (select coalesce(json_agg(${json} order by l.created_at, a.id), '[]'::json)::text
         from ${usableLinks(sql, { subject: input.subject, apps: [input.app] })}) as "user",
-      (select coalesce(json_agg(${json} order by l.created_at, a.id), '[]'::json)::text
-        from ${usableAppLinks(sql, [input.app])}) as app`;
+      (select coalesce(json_agg(${checkedAppLinkJson(sql)} order by l.created_at, a.id),
+        '[]'::json)::text from ${appLinkRows(sql, [input.app])}) as app`;
     const read = (yield* Schema.decodeUnknownEffect(Schema.Array(AccountReadsRow))(rows))[0];
     if (read === undefined) return yield* new StorageError();
     return read;
@@ -155,12 +211,17 @@ const callerRequirements = (version: AppVersion, links?: CallerLinks) =>
         return yield* appAccountReads(yield* policyDatabase, { subject, app: version.app });
       });
     const reads = yield* read;
+    yield* checkRequirementAppLinks(version.app, version.requirements.accounts, reads.app);
     const own = (links: ReadonlyArray<LinkedAccount>) =>
       links
         .filter((link) => link.app === version.app)
         .map((link) => ({ requirement: link.requirement, account: link }));
     return {
-      appLinks: linkedRequirements(version.requirements.accounts, "app", own(reads.app)),
+      appLinks: linkedRequirements(
+        version.requirements.accounts,
+        "app",
+        own(reads.app.filter((link) => link.creatorRefusal === null)),
+      ),
       userLinks: linkedRequirements(
         version.requirements.accounts,
         "user",
@@ -455,6 +516,7 @@ export const addLink = (
   webhooks: WebhookSources,
   input: LinkKey & {
     readonly linkedBy: string;
+    readonly reused?: boolean;
     readonly config?: typeof WebhookSourceConfig.Type | undefined;
   },
 ) =>
@@ -491,11 +553,21 @@ export const addLink = (
           );
     for (const { account } of replaced) yield* removeLink(sql, webhooks, { ...input, account });
     // Each link is dated when it is made, so links made in one transaction keep their order.
+    // An owner can explicitly take over a reused link; a reuse cannot overwrite owner consent.
     const inserted = yield* sql`insert into hosted_app_account_links
         (app, requirement, subject, account, linked_by, created_at)
       values (${input.app}, ${input.requirement}, ${input.subject}, ${input.account},
-        ${input.linkedBy}, clock_timestamp())
-      on conflict do nothing returning account`;
+        ${input.reused === true ? `${reusedAppLinkPrefix}${input.linkedBy}` : input.linkedBy},
+        clock_timestamp())
+      ${
+        input.subject === null && input.reused !== true
+          ? sql`on conflict (app, requirement, account) where subject is null
+            do update set linked_by = excluded.linked_by, created_at = excluded.created_at
+            where starts_with(hosted_app_account_links.linked_by, ${reusedAppLinkPrefix})
+              and exists(select 1 from hosted_account_access p
+                where p.account_id = excluded.account and p.personal_user_id = excluded.linked_by)`
+          : sql`on conflict do nothing`
+      } returning account`;
     if (inserted.length === 0) return replaced.length > 0;
     yield* syncSource(sql, webhooks, {
       app: input.app,

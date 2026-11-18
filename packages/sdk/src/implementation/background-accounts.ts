@@ -80,7 +80,14 @@ export const backgroundAccounts = (
 
     const appRequirements = required("app");
     if (appRequirements.length > 0) {
-      const links = lifecycle === undefined ? [] : yield* lifecycle.appLinks({ app: app.id });
+      const links =
+        lifecycle === undefined
+          ? []
+          : yield* lifecycle.appLinks({
+              app: app.id,
+              requirements: version.requirements.accounts,
+              source: input.source,
+            });
       const existing = new Set(
         (yield* readAccounts(db, [...new Set(links.map(({ account }) => account))])).map(
           (account) => account.id,

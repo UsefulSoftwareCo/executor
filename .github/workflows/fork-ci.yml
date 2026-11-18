@@ -91,6 +91,8 @@ jobs:
           bun run e2e:apps-published -- --testNamePattern 'self-host gate'
       - name: Tool error contract scenarios
         run: bun run e2e:self-host --test-name 'Every error tools/call and tools/run declare|Every error a write reports after its app code received the call'
+      - name: Reused app account scenario
+        run: bun run e2e:self-host --test-name '^a reused hosted app account stops serving' --workers 1
       - name: Operator feedback scenarios
         run: bun run e2e:self-host --test-name 'self-host feedback webhook|self-host with DO_NOT_TRACK|self-host analytics pseudonymize|Hosted feedback enforces'
       # Run the large cold catalog alone, not beside the functional scenarios' servers.

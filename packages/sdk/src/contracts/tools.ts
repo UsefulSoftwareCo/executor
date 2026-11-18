@@ -61,6 +61,7 @@ import {
 import { AccountNotFound } from "./account.ts";
 import {
   AccountRequired,
+  AppLinkCreatorNotAuthorized,
   AccountChoiceUnsupported,
   AccountSelectionInvalid,
   AppAccounts,
@@ -1367,6 +1368,7 @@ export type ToolSearchStale = typeof ToolSearchStale.Type;
 export const RenewalFailure = Schema.Union([
   OAuthReconnectRequired,
   OAuthRenewalFailed,
+  AppLinkCreatorNotAuthorized,
   StorageError,
   CredentialsError,
 ]);
@@ -1399,6 +1401,7 @@ const renewalRecovery = (
         },
       };
     case "OAuthReconnectRequired":
+    case "AppLinkCreatorNotAuthorized":
       return { recovery: failure.recovery };
     case "OAuthRenewalFailed":
       return failure.retryable
@@ -1985,6 +1988,7 @@ export type ToolPolicyFailed = typeof ToolPolicyFailed.Type;
  */
 export const CallFailure = Schema.Union([
   ToolCallFailed,
+  AppLinkCreatorNotAuthorized,
   AppProviderFailed,
   AppEvaluationFailed,
   ToolElicitationFailed,
@@ -2022,6 +2026,7 @@ export const callFailurePresentation = (failure: CallFailure): ErrorPresentation
       ToolApprovalRequired: refusalPresentation(toolApprovalRequired),
       ToolPolicyFailed: refusalPresentation(toolPolicyFailed),
       ToolCallFailed: presented,
+      AppLinkCreatorNotAuthorized: presented,
       AppProviderFailed: presented,
       AppEvaluationFailed: presented,
       ToolElicitationFailed: presented,
@@ -2123,6 +2128,7 @@ const toolCallErrors = [
   AppProviderFailed,
   AccountNotFound,
   AccountRequired,
+  AppLinkCreatorNotAuthorized,
   AccountChoiceUnsupported,
   AccountSelectionInvalid,
   ToolNotFound,
@@ -2282,6 +2288,7 @@ export const ToolsGroup = HttpApiGroup.make("tools")
         AppProviderFailed,
         AccountNotFound,
         AccountRequired,
+        AppLinkCreatorNotAuthorized,
         AccountChoiceUnsupported,
         AccountSelectionInvalid,
         OAuthReconnectRequired,
@@ -2309,6 +2316,7 @@ export const ToolsGroup = HttpApiGroup.make("tools")
         AppProviderFailed,
         AccountNotFound,
         AccountRequired,
+        AppLinkCreatorNotAuthorized,
         AccountChoiceUnsupported,
         AccountSelectionInvalid,
         OAuthReconnectRequired,
@@ -2336,6 +2344,7 @@ export const ToolsGroup = HttpApiGroup.make("tools")
         AppProviderFailed,
         AccountNotFound,
         AccountRequired,
+        AppLinkCreatorNotAuthorized,
         AccountChoiceUnsupported,
         AccountSelectionInvalid,
         OAuthReconnectRequired,

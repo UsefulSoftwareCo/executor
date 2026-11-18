@@ -88,6 +88,9 @@ export default defineApp({ ${scope}: { accounts: { service } } }, async () => ({
 const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const TeamWho = Schema.Struct({ team: Schema.String, token: Schema.String });
 const SessionIdentity = Schema.Struct({ user: Schema.Struct({ email: Schema.String }) });
+const Memberships = Schema.Struct({
+  members: Schema.Array(Schema.Struct({ ...Resource.fields, ...SessionIdentity.fields })),
+});
 const LogRecords = Schema.fromJsonString(
   Schema.Struct({
     data: Schema.Array(
@@ -856,6 +859,122 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
           team: secret,
           token: "OWNER-SECRET-TOKEN",
         });
+      }),
+    ),
+  );
+  it.effect(scenarios.hostedAppLinkCreatorDemotion.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const fixture = yield* appLinksFixture([{ path: "index.ts", content: source }]);
+        const { api, actors, prefix, connect } = fixture;
+        const telemetry = yield* Telemetry;
+        const creator = yield* okBody(
+          SessionIdentity,
+          yield* api.request(actors.admin, "GET", "/api/auth/get-session"),
+        );
+        const { members } = yield* okBody(
+          Memberships,
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `/api/auth/organization/list-members?organizationId=${actors.organization.id}`,
+          ),
+        );
+        const membership = members.find((member) => member.user.email === creator.user.email);
+        if (membership === undefined) return yield* Effect.die("The creator has no membership");
+        const role = (role: "admin" | "member") =>
+          Effect.gen(function* () {
+            yield* ok(
+              yield* api.request(
+                actors.owner,
+                "POST",
+                "/api/auth/organization/update-member-role",
+                {
+                  organizationId: actors.organization.id,
+                  memberId: membership.id,
+                  role,
+                },
+              ),
+            );
+          });
+        const token = `demotion-fixture-${randomUUID()}`;
+        const account = yield* connect(actors.owner, "app", "team", token);
+        const created = yield* okBody(
+          Resource,
+          yield* api.request(actors.admin, "POST", `${prefix}/apps/deploy`, {
+            name: "Creator demotion",
+            files: [{ path: "index.ts", content: teamAppSource }, appsManifest],
+          }),
+        );
+        const path = `${prefix}/apps/${created.id}`;
+        yield* fixture.adopt(path);
+        const link = (actor: Session) => linkAccount(actor, path, "team", account, "app");
+        const who = (traceparent?: string) =>
+          api.request(
+            actors.admin,
+            "POST",
+            `${path}/tools/call`,
+            { tool: "who", kind: "query", input: {} },
+            traceparent === undefined ? undefined : { traceparent },
+          );
+        const serves = Effect.gen(function* () {
+          const served = yield* okBody(TeamWho, yield* who());
+          expect(served.team).toBe(account);
+          expect(served.token === token).toBe(true);
+        });
+        const action = "app_account.use_refused";
+        yield* link(actors.admin);
+        yield* serves;
+        yield* role("member");
+
+        // The creator can still use their app, but not the reused account.
+        const first = traced();
+        const declined = yield* who(first.traceparent);
+        expect(declined.status).toBe(409);
+        yield* refused(declined, 409, "AppLinkCreatorNotAuthorized");
+        const logs = yield* telemetry.logs(first.traceId).pipe(
+          Effect.filterOrFail(
+            (logs) => logs.includes(action),
+            () => new Error("The refusal audit has not reached the collector"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+        );
+        expect(auditOf(logs, action)).toEqual({
+          "audit.action": action,
+          "audit.outcome": "failure",
+          "audit.target.kind": "account",
+          "audit.target.id": account,
+          "audit.app": created.id,
+          "audit.requirement": "team",
+          "audit.reason": "creator_not_admin_or_owner",
+        });
+        expect(logs.includes(token)).toBe(false);
+        yield* refused(yield* who(first.traceparent), 409, "AppLinkCreatorNotAuthorized");
+
+        yield* role("admin");
+        yield* serves;
+        yield* role("member");
+        const second = traced();
+        yield* refused(yield* who(second.traceparent), 409, "AppLinkCreatorNotAuthorized");
+        const secondLogs = yield* telemetry.logs(second.traceId).pipe(
+          Effect.filterOrFail(
+            (logs) => logs.includes(action),
+            () => new Error("The second demotion audit has not reached the collector"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+        );
+        expect(auditOf(secondLogs, action)["audit.target.id"]).toBe(account);
+        expect(auditOf(yield* telemetry.logs(first.traceId), action)["audit.target.id"]).toBe(
+          account,
+        );
+
+        // The account owner can make the link themselves without promoting the creator.
+        yield* link(actors.owner);
+        yield* serves;
+        yield* role("admin");
+        yield* role("member");
+        yield* serves;
       }),
     ),
   );

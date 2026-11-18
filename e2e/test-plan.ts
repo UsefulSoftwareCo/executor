@@ -9486,6 +9486,17 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
+  hostedAppLinkCreatorDemotion: {
+    fixtures: "actors",
+    file: "app-account-app-links.spec.ts",
+    title:
+      "a reused hosted app account stops serving when the app's creator is demoted and serves again on promotion, while an owner-made link keeps serving",
+    targets: {
+      local: na("Local has no organization roles."),
+      "self-host": scheduled,
+      cloud: scheduled,
+    },
+  },
   hostedAppLinkOAuthConnections: {
     fixtures: "actors",
     file: "app-account-app-links.spec.ts",

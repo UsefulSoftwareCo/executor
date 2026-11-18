@@ -122,10 +122,15 @@ reuse an account already linked for everyone to an app they can read and edit
 with the same calling credential. A credential limited to selected apps cannot
 reuse accounts from apps outside that selection. Reuse is not allowed
 into an app a member created, unless that member owns the account, nor into one
-created by someone who has since left the organization. Reusing an
-account does not make it yours; it stays its owner's, and its owner may unlink
-it from any app. It stops serving if its
-owner leaves the organization. Callers use the account through the app without
+created by someone who has since left the organization. The same rule applies
+when the link is used. If a creator who does not own the account is demoted or
+leaves, the reused link stops serving with `AppLinkCreatorNotAuthorized` (409).
+If that creator becomes an admin or owner again, the stored link can serve
+again. An admin can relink an eligible account, or the account's owner can link
+it directly if they can edit the app. A link made by the account owner does not
+depend on the creator's role. The account stays its owner's, and its owner may
+unlink it from any app. It stops serving if its owner leaves the organization.
+Callers use the account through the app without
 access to the account itself, and they cannot choose or replace it; everyone
 else sees the section read-only, without the account's details from the
 provider. Linking another account to a plain slot replaces the one before; a

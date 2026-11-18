@@ -40,8 +40,9 @@ import {
 import { refuse } from "./auth-telemetry.ts";
 import {
   appAccountReads,
-  appLinkedAccounts,
+  checkedAppLinkedAccounts,
   callerAccounts,
+  refuseAppLinkCreators,
   versionAccounts,
 } from "./app-accounts.ts";
 import {
@@ -405,7 +406,10 @@ const checkAppLinked = (app: AppId, linked: AppAccounts["app"]) =>
       ids.map((id) => ({ requirement, id })),
     );
     if (used.length === 0) return;
-    const current = yield* appLinkedAccounts(yield* policyDatabase, [app]);
+    const current = (yield* checkedAppLinkedAccounts(yield* policyDatabase, app)).filter((link) =>
+      used.some(({ requirement, id }) => link.requirement === requirement && link.id === id),
+    );
+    yield* refuseAppLinkCreators(current);
     for (const { requirement, id } of used)
       if (!current.some((link) => link.requirement === requirement && link.id === id))
         return yield* new OrganizationForbidden();

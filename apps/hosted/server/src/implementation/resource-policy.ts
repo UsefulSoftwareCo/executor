@@ -231,7 +231,20 @@ export const usableLinks = (
  * first, as in {@link usableLinks}.
  */
 export const usableAppLinks = (sql: SqlClient.SqlClient, apps: readonly AppId[]) =>
-  sql`(select l.app, l.requirement, l.account, l.created_at, app.owner
+  sql`${appLinkRows(sql, apps)} and ${creatorMayUseAppLink(sql)}`;
+
+// Links inherited from the shared-account model can also have a different linker and owner.
+// Mark only explicit reuses, preserving every pre-PR link without changing the schema.
+export const reusedAppLinkPrefix = "reuse:";
+
+const creatorMayUseAppLink = (sql: SqlClient.SqlClient) =>
+  sql`(not starts_with(l.linked_by, ${reusedAppLinkPrefix}) or target.creator_id is null
+    or target.creator_id = p.personal_user_id
+    or coalesce(creator_member.role in ('owner', 'admin'), false))`;
+
+/** Both usable and creator-refused links, excluding accounts whose owner left. */
+export const appLinkRows = (sql: SqlClient.SqlClient, apps: readonly AppId[]) =>
+  sql`(select l.app, l.requirement, l.account, l.created_at, l.linked_by, app.owner
         from hosted_app_account_links l
         join executor_apps app on app.id = l.app
         where l.subject is null and ${sql.in("l.app", apps)}
@@ -239,12 +252,25 @@ export const usableAppLinks = (sql: SqlClient.SqlClient, apps: readonly AppId[])
       join executor_accounts a on a.id = l.account and a.owner = l.owner
       join hosted_account_access p on p.account_id = a.id
         and a.owner = 'organization:' || p.organization_id
+      join hosted_app_access target on target.id = l.app
+        and target.organization_id = p.organization_id
+      left join member creator_member on creator_member."organizationId" = target.organization_id
+        and creator_member."userId" = target.creator_id
       where exists(select 1 from member owner_member
           where owner_member."organizationId" = p.organization_id
             and owner_member."userId" = p.personal_user_id)`;
 /** The JSON of one usable link, for a read over {@link usableLinks} or {@link usableAppLinks}. */
 export const linkedAccountJson = `json_build_object('app', l.app, 'requirement', l.requirement,
   'id', a.id, 'provider', a.provider, 'label', a.label, 'description', a.description)`;
+
+/** Null when usable; otherwise a private audit key for this link and creator membership state. */
+export const creatorRefusal = (sql: SqlClient.SqlClient) =>
+  sql`case when ${creatorMayUseAppLink(sql)} then null else
+    json_build_array(l.created_at, creator_member.id, creator_member.xmin::text)::text end`;
+
+export const checkedAppLinkJson = (sql: SqlClient.SqlClient) =>
+  sql`(${sql.literal(linkedAccountJson)}::jsonb ||
+    jsonb_build_object('creatorRefusal', ${creatorRefusal(sql)}))`;
 
 /** One account linked to an app requirement, which the caller or the app may still use. */
 export const LinkedAccount = Schema.Struct({
@@ -256,10 +282,14 @@ export const LinkedAccount = Schema.Struct({
   description: Schema.NullOr(Schema.String),
 });
 export type LinkedAccount = typeof LinkedAccount.Type;
-/** The caller's usable user links to an app and the app's usable app links, oldest first. */
+export const CheckedAppLink = Schema.Struct({
+  ...LinkedAccount.fields,
+  creatorRefusal: Schema.NullOr(Schema.String),
+});
+/** Usable user links and app links checked against creator authority, oldest first. */
 export const AppAccountReads = Schema.Struct({
   user: Schema.Array(LinkedAccount),
-  app: Schema.Array(LinkedAccount),
+  app: Schema.Array(CheckedAppLink),
 });
 export type AppAccountReads = typeof AppAccountReads.Type;
 
@@ -290,8 +320,8 @@ export const resourceAuthorityForLinks = (
       where g.app_id = p.id and gm.member_id = m.id) as granted,
     (select coalesce(json_agg(${sql.literal(linkedAccountJson)} order by l.created_at, a.id),
       '[]'::json)::text from ${usableLinks(sql, { subject: user, apps: [app] })}) as "userLinks",
-    (select coalesce(json_agg(${sql.literal(linkedAccountJson)} order by l.created_at, a.id),
-      '[]'::json)::text from ${usableAppLinks(sql, [app])}) as "appLinks"
+    (select coalesce(json_agg(${checkedAppLinkJson(sql)} order by l.created_at, a.id),
+      '[]'::json)::text from ${appLinkRows(sql, [app])}) as "appLinks"
     from member m
     left join hosted_app_access p on p.id = ${app} and p.organization_id = m."organizationId"
     where m."organizationId" = ${organization} and m."userId" = ${user}`;
@@ -318,7 +348,7 @@ export const resourceAuthorityForLinks = (
         user: Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(LinkedAccount)))(
           row.userLinks,
         ),
-        app: Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(LinkedAccount)))(
+        app: Schema.decodeUnknownEffect(Schema.fromJsonString(AppAccountReads.fields.app))(
           row.appLinks,
         ),
       }).pipe(Effect.mapError(() => new StorageError())),
@@ -331,7 +361,7 @@ const MemberPoliciesLinks = Schema.Struct({
   ...Membership.fields,
   policies: Schema.fromJsonString(Schema.Array(AppPolicy)),
   userLinks: Schema.fromJsonString(Schema.Array(LinkedAccount)),
-  appLinks: Schema.fromJsonString(Schema.Array(LinkedAccount)),
+  appLinks: Schema.fromJsonString(AppAccountReads.fields.app),
 });
 /**
  * {@link resourceAuthorityForLinks} for many apps, such as every app a search reads: membership,
@@ -360,8 +390,8 @@ export const resourceAuthorityForAppsWithLinks = (
       where ${sql.in("p.id", apps)} and p.organization_id = m."organizationId") as policies,
     (select coalesce(json_agg(${json} order by l.created_at, a.id), '[]'::json)::text
       from ${usableLinks(sql, { subject: user, apps })}) as "userLinks",
-    (select coalesce(json_agg(${json} order by l.created_at, a.id), '[]'::json)::text
-      from ${usableAppLinks(sql, apps)}) as "appLinks"
+    (select coalesce(json_agg(${checkedAppLinkJson(sql)} order by l.created_at, a.id),
+      '[]'::json)::text from ${appLinkRows(sql, apps)}) as "appLinks"
     from member m
     where m."organizationId" = ${organization} and m."userId" = ${user}`;
     const found = yield* Schema.decodeUnknownEffect(Schema.Array(MemberPoliciesLinks))(rows);
@@ -401,8 +431,8 @@ export const resourceAuthorityForLinksOfApps = (
     (select coalesce(json_agg(${sql.literal(linkedAccountJson)} order by l.created_at, a.id),
       '[]'::json)::text from ${usableLinks(sql, { subject: user, apps })}
       and l.app = ap.id) as "userLinks",
-    (select coalesce(json_agg(${sql.literal(linkedAccountJson)} order by l.created_at, a.id),
-      '[]'::json)::text from ${usableAppLinks(sql, apps)} and l.app = ap.id) as "appLinks"
+    (select coalesce(json_agg(${checkedAppLinkJson(sql)} order by l.created_at, a.id),
+      '[]'::json)::text from ${appLinkRows(sql, apps)} and l.app = ap.id) as "appLinks"
     from member m
     left join hosted_app_access ap on ${sql.in("ap.id", apps)}
       and ap.organization_id = m."organizationId"
@@ -435,7 +465,9 @@ export const resourceAuthorityForLinksOfApps = (
                   ),
                   accounts: Effect.all({
                     user: links(row.userLinks),
-                    app: links(row.appLinks),
+                    app: Schema.decodeUnknownEffect(
+                      Schema.fromJsonString(AppAccountReads.fields.app),
+                    )(row.appLinks),
                   }).pipe(Effect.mapError(() => new StorageError())),
                 },
               ] as const,
@@ -624,11 +656,10 @@ const TargetEditors = Schema.Struct({
  * app and so could deploy code that reads the credential. A creator who has left the organization
  * counts as a member: invited back, they would edit the app again. Only an app without a creator,
  * one the system created or whose creator's user was deleted, has nobody who edits it as its
- * creator. Members never reuse an account, so
- * nothing a member can edit ever comes to hold another person's account unless its owner linked
- * it there, and an administrator's unlink cannot leave links behind that a member made from
- * theirs. The account stays its owner's; nobody else may use it directly, link it for themselves
- * or read it outside the apps that link it.
+ * creator. Members never reuse an account. At use time the same creator rule applies to reused
+ * links: a demotion or departure stops them serving, and promotion can restore them. Owner-made
+ * links do not depend on the creator's role. The account stays its owner's; nobody else may use
+ * it directly or link it for themselves.
  *
  * With `lock`, the app link rows a reuse relies on and the target's access row stay share-locked
  * until the transaction ends, so unlinking a source or changing the target's access waits for the
@@ -665,8 +696,13 @@ export const appLinkableAccountsAs = (
       join executor_accounts a on a.id = l.account and a.owner = app.owner
       join hosted_account_access p on p.account_id = a.id
         and a.owner = 'organization:' || p.organization_id
+      join hosted_app_access target on target.id = l.app
+        and target.organization_id = p.organization_id
+      left join member creator_member on creator_member."organizationId" = p.organization_id
+        and creator_member."userId" = target.creator_id
       where l.subject is null and ${sql.in("l.account", others)}
         and p.organization_id = ${actor.organization}
+        and ${creatorMayUseAppLink(sql)}
         and exists(select 1 from member owner_member
           where owner_member."organizationId" = p.organization_id
             and owner_member."userId" = p.personal_user_id)${lock ? sql` for share of l` : sql``}`;

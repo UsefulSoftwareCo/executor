@@ -158,6 +158,8 @@ export const hostedMcpApproval = (
       StorageError: () => Effect.succeed(HttpServerResponse.empty({ status: 503 })),
       OrganizationForbidden: () => Effect.succeed(HttpServerResponse.empty({ status: 403 })),
       AccountNotFound: () => Effect.succeed(HttpServerResponse.empty({ status: 403 })),
+      AppLinkCreatorNotAuthorized: (error) =>
+        Effect.succeed(HttpServerResponse.jsonUnsafe(error, { status: 409 })),
       ElicitationFailed: (error) =>
         Effect.succeed(
           HttpServerResponse.empty({ status: error.reason === "forbidden" ? 403 : 503 }),

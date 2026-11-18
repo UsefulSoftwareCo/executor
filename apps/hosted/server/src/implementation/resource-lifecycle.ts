@@ -3,6 +3,7 @@ import {
   AccountConnectionRefused,
   AccountConnectionTargetChanged,
   AccountId,
+  AppLinkCreatorNotAuthorized,
   AccountScope,
   AppId,
   StorageError,
@@ -23,12 +24,14 @@ import { requireGroupSharing } from "./group-sharing.ts";
 import {
   addLink,
   appLinkApps,
-  appLinkedAccounts,
+  checkedAppLinkedAccounts,
+  checkRequirementAppLinks,
+  refuseAppLinkCreators,
   linkedAccounts,
   sourceActorLost,
 } from "./app-accounts.ts";
 import { recordSecurityAuditOnCommit } from "./security-audit.ts";
-import { usableAppLinks } from "./resource-policy.ts";
+import { appLinkRows, creatorRefusal } from "./resource-policy.ts";
 
 type AppCreation =
   | { readonly kind: "member" }
@@ -147,19 +150,22 @@ const accountAccess = (sql: SqlClient.SqlClient, accounts: readonly AccountOwner
           where m."organizationId" = p.organization_id and m."userId" = ${user})`;
 const AllowedAccount = Schema.Struct({ id: AccountId, owner: Schema.String });
 type AllowedAccount = typeof AllowedAccount.Type;
-const AllowedUse = Schema.Struct({ requirement: Schema.String, id: AccountId });
+const CheckedUse = Schema.Struct({
+  app: AppId,
+  requirement: Schema.String,
+  id: AccountId,
+  creatorRefusal: Schema.NullOr(Schema.String),
+});
 const AppRecheck = Schema.Struct({
   access: Schema.Number,
   accounts: Schema.fromJsonString(Schema.Array(AllowedAccount)),
-  appLinks: Schema.fromJsonString(Schema.Array(AllowedUse)),
+  appLinks: Schema.fromJsonString(Schema.Array(CheckedUse)),
 });
 /** {@link AppRecheck} for several apps: the row of each app the actor may use, and each app link. */
 const AppsRecheck = Schema.Struct({
   access: Schema.fromJsonString(Schema.Array(AppId)),
   accounts: AppRecheck.fields.accounts,
-  appLinks: Schema.fromJsonString(
-    Schema.Array(Schema.Struct({ ...AllowedUse.fields, app: AppId })),
-  ),
+  appLinks: AppRecheck.fields.appLinks,
 });
 // Each account must still belong to the owner the invocation resolved it under.
 const allowedOf = (accounts: readonly AccountOwner[], allowed: ReadonlyArray<AllowedAccount>) => {
@@ -169,6 +175,24 @@ const allowedOf = (accounts: readonly AccountOwner[], allowed: ReadonlyArray<All
 /** An app requirement's account, as the SDK asks it to be checked. */
 type AppUse = Parameters<ResourceLifecycle["appResolving"]>[2][number];
 const useKey = (requirement: string, account: AccountId) => JSON.stringify([requirement, account]);
+const checkedUses = (
+  app: AppId,
+  rows: readonly (typeof CheckedUse.Type)[],
+  uses: readonly AppUse[],
+) =>
+  rows.filter(
+    (row) =>
+      row.app === app &&
+      uses.some((use) => use.requirement === row.requirement && use.account.id === row.id),
+  );
+const useRows = (
+  sql: SqlClient.SqlClient,
+  apps: readonly AppId[],
+  accounts: readonly AccountId[],
+) =>
+  sql`(select coalesce(json_agg(json_build_object('app', l.app, 'requirement', l.requirement,
+      'id', a.id, 'creatorRefusal', ${creatorRefusal(sql)})), '[]'::json)::text
+    from ${appLinkRows(sql, apps)} and ${sql.in("l.account", accounts)})`;
 /**
  * The accounts that passed every check asked of them: each user account by `users`, and each of an
  * account's app requirements by `uses`. An account in both lists must pass both.
@@ -252,29 +276,26 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
         const linkRows =
           uses.length === 0
             ? sql.literal(noRows)
-            : sql`(select coalesce(json_agg(json_build_object('requirement', l.requirement,
-                  'id', a.id)), '[]'::json)::text
-                from ${usableAppLinks(sql, [app.id])}
-                  and ${sql.in(
-                    "l.account",
-                    uses.map((use) => use.account.id),
-                  )})`;
+            : useRows(
+                sql,
+                [app.id],
+                uses.map((use) => use.account.id),
+              );
         return {
           columns: sql`(select count(*)::int from (${access}) access) as access,
             ${users} as accounts, ${linkRows} as "appLinks"`,
           passed: (row: typeof AppRecheck.Type) =>
-            row.access !== 1
-              ? undefined
-              : passedEvery(
-                  accounts,
-                  appUses,
-                  allowedOf(owned, row.accounts),
-                  new Set(
-                    row.appLinks
-                      .filter((link) => uses.some((use) => use.account.id === link.id))
-                      .map((link) => useKey(link.requirement, link.id)),
-                  ),
-                ),
+            Effect.gen(function* () {
+              if (row.access !== 1) return yield* new StorageError();
+              const links = checkedUses(app.id, row.appLinks, uses);
+              yield* refuseAppLinkCreators(links);
+              return passedEvery(
+                accounts,
+                appUses,
+                allowedOf(owned, row.accounts),
+                new Set(links.map((link) => useKey(link.requirement, link.id))),
+              );
+            }),
         };
       });
     const lifecycle: ResourceLifecycle = {
@@ -298,11 +319,13 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           ),
         ),
       appLinks: (input) =>
-        appLinkedAccounts(sql, [input.app]).pipe(
-          Effect.map((linked) =>
-            linked.map((link) => ({ requirement: link.requirement, account: link.id })),
-          ),
-        ),
+        Effect.gen(function* () {
+          const links = yield* checkedAppLinkedAccounts(sql, input.app);
+          yield* checkRequirementAppLinks(input.app, input.requirements, links, input.source);
+          return links
+            .filter((link) => link.creatorRefusal === null)
+            .map((link) => ({ requirement: link.requirement, account: link.id }));
+        }),
       // The actor must be a member who may use the app now: a member removed from the app's
       // groups stops running it, including schedules, webhook callbacks and workflow steps. The
       // actor's use of its user accounts, and each app requirement's app link, are rechecked in
@@ -314,8 +337,7 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           const rows = yield* sql`select ${check.columns}`;
           const checked = (yield* Schema.decodeUnknownEffect(Schema.Array(AppRecheck))(rows))[0];
           if (checked === undefined) return yield* new StorageError();
-          const passed = check.passed(checked);
-          return passed === undefined ? yield* new StorageError() : passed;
+          return yield* check.passed(checked);
         }).pipe(
           Effect.catchTags({
             SqlError: () => new StorageError(),
@@ -350,44 +372,39 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
           const linkRows =
             used.length === 0
               ? sql.literal(noRows)
-              : sql`(select coalesce(json_agg(json_build_object('app', l.app,
-                    'requirement', l.requirement, 'id', a.id)), '[]'::json)::text
-                  from ${usableAppLinks(
-                    sql,
-                    used.map((app) => app.id),
-                  )}
-                    and ${sql.in("l.account", [
-                      ...new Set(used.flatMap((app) => usesOf(app).map((use) => use.account.id))),
-                    ])})`;
+              : useRows(
+                  sql,
+                  used.map((app) => app.id),
+                  [...new Set(used.flatMap((app) => usesOf(app).map((use) => use.account.id)))],
+                );
           const rows = yield* sql`select
             (select coalesce(json_agg(access.id), '[]'::json)::text from (${access}) access)
               as access,
             ${users} as accounts, ${linkRows} as "appLinks"`;
           const checked = (yield* Schema.decodeUnknownEffect(Schema.Array(AppsRecheck))(rows))[0];
           if (checked === undefined) return yield* new StorageError();
-          return apps.map((app): Result.Result<ReadonlySet<AccountId>, StorageError> => {
-            // Exactly one row lets the actor use the app, as `appResolving` requires.
-            if (checked.access.filter((id) => id === app.id).length !== 1)
-              return Result.fail(new StorageError());
-            const uses = usesOf(app);
-            return Result.succeed(
-              passedEvery(
-                app.accounts,
-                app.appUses,
-                allowedOf(
-                  user === undefined ? [] : organizationAccounts(app.accounts),
-                  checked.accounts,
+          return yield* Effect.forEach(apps, (app) =>
+            Effect.gen(function* () {
+              // Exactly one row lets the actor use the app, as `appResolving` requires.
+              if (checked.access.filter((id) => id === app.id).length !== 1)
+                return Result.fail<StorageError | AppLinkCreatorNotAuthorized>(new StorageError());
+              const uses = usesOf(app);
+              const links = checkedUses(app.id, checked.appLinks, uses);
+              const refusal = yield* Effect.result(refuseAppLinkCreators(links));
+              if (Result.isFailure(refusal)) return Result.fail(refusal.failure);
+              return Result.succeed(
+                passedEvery(
+                  app.accounts,
+                  app.appUses,
+                  allowedOf(
+                    user === undefined ? [] : organizationAccounts(app.accounts),
+                    checked.accounts,
+                  ),
+                  new Set(links.map((row) => useKey(row.requirement, row.id))),
                 ),
-                new Set(
-                  checked.appLinks
-                    .filter(
-                      (row) => row.app === app.id && uses.some((use) => use.account.id === row.id),
-                    )
-                    .map((row) => useKey(row.requirement, row.id)),
-                ),
-              ),
-            );
-          });
+              );
+            }),
+          );
         }).pipe(
           Effect.catchTags({
             SqlError: () => new StorageError(),
@@ -425,16 +442,27 @@ export const hostedResourceLifecycle = Effect.gen(function* () {
                   and exists(select 1 from member owner_member
                     where owner_member."organizationId" = p.organization_id
                       and owner_member."userId" = p.personal_user_id))`;
-          const rows = yield* sql`select ${users} as accounts, ${ours} as ours`;
+          const linkRows =
+            uses.length === 0
+              ? sql.literal(noRows)
+              : useRows(
+                  sql,
+                  [app.id],
+                  uses.map((use) => use.account.id),
+                );
+          const rows = yield* sql`select ${users} as accounts, ${ours} as ours,
+            ${linkRows} as "appLinks"`;
           const checked = (yield* Schema.decodeUnknownEffect(
             Schema.Array(
               Schema.Struct({
                 accounts: AppRecheck.fields.accounts,
+                appLinks: AppRecheck.fields.appLinks,
                 ours: Schema.fromJsonString(Schema.Array(AccountId)),
               }),
             ),
           )(rows))[0];
           if (checked === undefined) return yield* new StorageError();
+          yield* refuseAppLinkCreators(checkedUses(app.id, checked.appLinks, uses));
           const owner = new Set(checked.ours);
           return passedEvery(
             accounts,

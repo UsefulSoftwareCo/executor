@@ -322,6 +322,7 @@ export const hostedAppAccountHandlers = HttpApiBuilder.group(HostedApi, "appAcco
                   account: params.account,
                   subject: null,
                   linkedBy: user,
+                  reused: authority === "app_link",
                 });
                 return { changed, authority };
               }),

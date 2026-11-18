@@ -30,6 +30,7 @@ import {
 } from "apps/contracts";
 import {
   AccountRequired,
+  AppLinkCreatorNotAuthorized,
   AccountSelectionInvalid,
   AppNotFound,
   AppNotDeployed,
@@ -332,7 +333,7 @@ export interface RecheckAhead {
    * `ResourceLifecycle.appResolving`.
    */
   readonly appUses: readonly AppAccountUse[];
-  readonly result: Exit.Exit<ReadonlySet<AccountId>, StorageError>;
+  readonly result: Exit.Exit<ReadonlySet<AccountId>, StorageError | AppLinkCreatorNotAuthorized>;
 }
 
 /**
@@ -932,6 +933,8 @@ export const callFailure =
           Match.tagsExhaustive({
             ToolCallFailed: (failure) =>
               mayHaveWritten(ToolCallFailed, notSentOnly(failure) ? partlyRun(failure) : failure),
+            AppLinkCreatorNotAuthorized: (failure) =>
+              mayHaveWritten(AppLinkCreatorNotAuthorized, failure),
             AppProviderFailed: (failure) => mayHaveWritten(AppProviderFailed, failure),
             AppEvaluationFailed: (failure) => mayHaveWritten(AppEvaluationFailed, failure),
             ToolElicitationFailed: (failure) => mayHaveWritten(ToolElicitationFailed, failure),
