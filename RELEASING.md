@@ -156,6 +156,18 @@ run. A push and a scheduled tick decide alike:
   `gh workflow run release-artifacts.yml --ref main -f channel=build`. A run still
   pacing or building holds nothing, since the publishing run tests every platform
   on the commit it publishes and publishes only when all pass.
+- **Release check** also starts the installed CLI suite on Windows, a narrowed
+  build (`jobs=cli`, `targets=win32-x64`, about USD 1.40 and 13 minutes), on a
+  decision of its own (`e2e/release-check.ts`, `windows`): it compares main with
+  the last commit a Windows check tested, or will, never with the Linux check's, so
+  a commit the Linux check already covers still gets its Windows run. It starts at
+  most once every four hours; a decision inside that wait skips it and keeps the
+  comparison where it was, so the first push or hourly backstop after the four
+  hours starts it for every commit since. A decision that fails starts it. It runs
+  from the `ci/windows-check` branch, which the step sets to main's commit, so it
+  never shares a concurrency group with a publication from `main`, and Beta
+  neither waits for it nor counts it. A red one shows a Windows-only failure hours
+  before a publishing run would; the red-main issue reports it.
 - A build run can be narrowed, to prove one job on one platform without paying
   for the whole matrix (a full build costs about USD 7; the installed CLI suite
   on Windows alone about USD 1.40):

@@ -4107,14 +4107,16 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
  * A `gh` for e2e/release-check.ts: `run list` answers the runs in `runs.json` with the event its
  * `-e` names, as GitHub filters, `run view N` answers
  * `jobs-N.json`, and `api <compare path> --jq <filter>` applies the filter to `compared.json` with
- * jq, as gh does. A `fails` file beside it makes `run list` fail.
+ * jq, as gh does. A `fails` file beside it makes `run list` fail, and a `windows-fails` file only
+ * the list of Windows checks.
  */
 const stubCheckGh = `#!/bin/sh
 dir=$(dirname "$0")
 case "$1 $2" in
   "run list") [ -f "$dir/fails" ] && { echo "HTTP 502: Bad Gateway" >&2; exit 1; }
-    while [ $# -gt 0 ]; do [ "$1" = -e ] && event=$2; shift; done
-    exec jq --arg event "$event" '[.[] | select(.event == $event)] | map(del(.event))' "$dir/runs.json" ;;
+    while [ $# -gt 0 ]; do [ "$1" = -e ] && event=$2; [ "$1" = -b ] && branch=$2; shift; done
+    [ "$branch" = ci/windows-check ] && [ -f "$dir/windows-fails" ] && { echo "HTTP 504: Gateway Timeout" >&2; exit 1; }
+    exec jq --arg event "$event" --arg branch "$branch" '[.[] | select(.event == $event and .branch == $branch)] | map(del(.event, .branch))' "$dir/runs.json" ;;
   "run view") exec cat "$dir/jobs-$3.json" ;;
   api*) exec jq -r "$4" "$dir/compared.json" ;;
 esac
@@ -4134,14 +4136,31 @@ interface DispatchedRun {
   readonly metadata?: "success" | "skipped";
 }
 
+/** A Windows check: a narrowed build dispatched on ci/windows-check, newest first in `windows`. */
+interface WindowsRun {
+  readonly id: number;
+  readonly sha: string;
+  /** How long before the decision it started, in hours. */
+  readonly hoursAgo: number;
+  readonly title?: string;
+  readonly status?: "queued" | "in_progress" | "completed";
+  readonly conclusion?: "success" | "failure" | "cancelled";
+  /** The metadata job; anything but success means the run tested nothing. */
+  readonly metadata?: "success" | "failure" | "skipped";
+}
+
 const head = "f".repeat(40);
 
 /**
- * `node e2e/release-check.ts` for a push of `head`, with these dispatched runs on main and these
- * files changed since the base it picks, in the checkout or a fixture tree `root`.
+ * `node e2e/release-check.ts` for a push of `head`, with these dispatched runs on main, these
+ * Windows checks, and these files changed since the base it picks (the same list for either
+ * decision), in the checkout or a fixture tree `root`. `output` is the paced check's `run` line,
+ * `windows` the Windows check's.
  */
 const decideCheck = (input: {
   readonly checks: ReadonlyArray<DispatchedRun>;
+  readonly windows?: ReadonlyArray<WindowsRun>;
+  readonly windowsFails?: boolean;
   readonly changed?: ReadonlyArray<string>;
   readonly renamed?: ReadonlyArray<{ readonly from: string; readonly to: string }>;
   readonly status?: string;
@@ -4158,21 +4177,41 @@ const decideCheck = (input: {
     yield* fs.writeFileString(path.join(bin, "gh"), stubCheckGh);
     yield* fs.chmod(path.join(bin, "gh"), 0o755);
     if (input.fails === true) yield* fs.writeFileString(path.join(bin, "fails"), "");
+    if (input.windowsFails === true) yield* fs.writeFileString(path.join(bin, "windows-fails"), "");
+    const now = Date.now();
     yield* fs.writeFileString(
       path.join(bin, "runs.json"),
-      JSON.stringify(
-        input.checks.map((check) => ({
+      JSON.stringify([
+        ...input.checks.map((check) => ({
           databaseId: check.id,
           // A check is a repository dispatch; a build or a publication is a workflow dispatch.
           event: check.title === undefined ? "repository_dispatch" : "workflow_dispatch",
+          branch: "main",
           status: check.status ?? "completed",
           conclusion:
             (check.status ?? "completed") === "completed" ? (check.conclusion ?? "success") : "",
           headSha: check.sha,
           url: `https://github.com/owner/repository/actions/runs/${check.id}`,
         })),
-      ),
+        ...(input.windows ?? []).map((run) => ({
+          databaseId: run.id,
+          event: "workflow_dispatch",
+          branch: "ci/windows-check",
+          status: run.status ?? "completed",
+          conclusion:
+            (run.status ?? "completed") === "completed" ? (run.conclusion ?? "success") : "",
+          headSha: run.sha,
+          url: `https://github.com/owner/repository/actions/runs/${run.id}`,
+          createdAt: new Date(now - run.hoursAgo * 3_600_000).toISOString(),
+          displayTitle: run.title ?? "Executor releases (build, cli on win32-x64)",
+        })),
+      ]),
     );
+    for (const run of input.windows ?? [])
+      yield* fs.writeFileString(
+        path.join(bin, `jobs-${run.id}.json`),
+        JSON.stringify({ jobs: [{ name: "metadata", conclusion: run.metadata ?? "success" }] }),
+      );
     for (const check of input.checks)
       yield* fs.writeFileString(
         path.join(bin, `jobs-${check.id}.json`),
@@ -4217,10 +4256,18 @@ const decideCheck = (input: {
       [child.all.pipe(Stream.decodeText(), Stream.mkString), child.exitCode],
       { concurrency: "unbounded" },
     );
+    const written = (yield* fs.readFileString(output)).split("\n").filter((line) => line !== "");
+    const line = (key: string) =>
+      written
+        .filter((entry) => entry.startsWith(`${key}=`))
+        .map((entry) => `${entry}\n`)
+        .join("");
     return {
       exitCode,
       log,
-      output: yield* fs.readFileString(output),
+      output: line("run"),
+      windows: line("windows"),
+      written,
       summary: yield* fs.readFileString(summary),
     };
   }).pipe(Effect.scoped);
@@ -4349,6 +4396,7 @@ layer(NodeServices.layer)("Release check after a push to main", (it) => {
       });
       expect(failed.exitCode).not.toBe(0);
       expect(failed.output).toBe("");
+      expect(failed.windows).toBe("");
       expect(failed.log).toContain("HTTP 502: Bad Gateway");
     }),
   );
@@ -4370,11 +4418,117 @@ layer(NodeServices.layer)("Release check after a push to main", (it) => {
       expect(dispatch).not.toContain("actions/checkout");
       expect(dispatch).not.toContain("./.github/actions");
       expect(dispatch).toContain(
-        "if: ${{ !cancelled() && (needs.decide.result != 'success' || needs.decide.outputs.run != 'false') }}",
+        "if: ${{ !cancelled() && (needs.decide.result != 'success' || needs.decide.outputs.run != 'false' || needs.decide.outputs.windows != 'false') }}",
       );
       expect(dispatch).toContain(
         'gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" -f event_type=release-check',
       );
+      // Each start follows its own decision, and a decision that failed starts both.
+      const linux = dispatch.slice(
+        dispatch.indexOf("- name: Start the paced release check"),
+        dispatch.indexOf("- name: Start the paced Windows check"),
+      );
+      const windows = dispatch.slice(dispatch.indexOf("- name: Start the paced Windows check"));
+      expect(linux).toContain(
+        "if: needs.decide.result != 'success' || needs.decide.outputs.run != 'false'\n",
+      );
+      expect(windows).toContain(
+        "if: needs.decide.result != 'success' || needs.decide.outputs.windows != 'false'\n",
+      );
+      expect(decide).toContain("      windows: ${{ steps.decide.outputs.windows }}\n");
+      // The Windows start reads no runs and keeps no pace of its own: the decision does both.
+      expect(windows).not.toContain("gh run list");
+      expect(windows).toContain(
+        'gh workflow run release-artifacts.yml -R "$GITHUB_REPOSITORY" --ref "$BRANCH" -f channel=build -f targets=win32-x64 -f jobs=cli',
+      );
+      expect(windows).toContain("BRANCH: ci/windows-check\n");
+    }),
+  );
+
+  it.effect(
+    "Windows has its own base: a commit the Linux check covers still gets a Windows run",
+    () =>
+      Effect.gen(function* () {
+        const changed = ["apps/local/server/src/bin.ts"];
+        // The review's case: a merge during the Windows pace skipped it, and a later decision
+        // finds the Linux check already on this commit.
+        const linuxDone: DispatchedRun = { id: 80, sha: head };
+        const paced = yield* decideCheck({
+          checks: [linuxDone],
+          windows: [{ id: 90, sha: "b".repeat(40), hoursAgo: 1 }],
+          changed,
+        });
+        expect(paced.exitCode, paced.log).toBe(0);
+        expect(paced.output).toBe("run=false\n");
+        expect(paced.windows).toBe("windows=false\n");
+        expect(paced.summary).toContain("runs/90 started less than 14400 s ago");
+        expect(paced.summary).toContain(`since ${"b".repeat(40)}, which`);
+        const later = yield* decideCheck({
+          checks: [linuxDone],
+          windows: [{ id: 90, sha: "b".repeat(40), hoursAgo: 5 }],
+          changed,
+        });
+        expect(later.exitCode, later.log).toBe(0);
+        expect(later.output).toBe("run=false\n");
+        expect(later.windows).toBe("windows=true\n");
+        expect(later.summary).toContain(`## Windows check\n\nRuns: since ${"b".repeat(40)}`);
+        // A Windows check on this commit already, or nothing it reads changed, skips it.
+        const same = yield* decideCheck({
+          checks: [linuxDone],
+          windows: [{ id: 91, sha: head, hoursAgo: 5 }],
+        });
+        expect(same.windows, same.log).toBe("windows=false\n");
+        const unrelated = yield* decideCheck({
+          checks: [tested],
+          windows: [{ id: 92, sha: "b".repeat(40), hoursAgo: 5 }],
+          changed: ["notes/ci.md"],
+        });
+        expect(unrelated.windows, unrelated.log).toBe("windows=false\n");
+      }),
+  );
+
+  it.effect("the Windows base passes over runs that tested nothing, and the pace counts them", () =>
+    Effect.gen(function* () {
+      const changed = ["notes/ci.md"];
+      const summary = (windows: ReadonlyArray<WindowsRun>) =>
+        decideCheck({ checks: [tested], windows, changed });
+      const passed = yield* summary([
+        { id: 95, sha: "1".repeat(40), hoursAgo: 6, conclusion: "cancelled" },
+        { id: 94, sha: "2".repeat(40), hoursAgo: 7, conclusion: "failure", metadata: "failure" },
+        { id: 93, sha: "3".repeat(40), hoursAgo: 8, title: "Executor releases (build)" },
+        { id: 92, sha: "4".repeat(40), hoursAgo: 9, conclusion: "failure" },
+      ]);
+      expect(passed.summary, passed.log).toContain(`since ${"4".repeat(40)}, which`);
+      expect(passed.summary).toContain("runs/92 tests");
+      // One still running tests its commit; a red one tested its commit, and the issue reports it.
+      const running = yield* summary([
+        { id: 96, sha: "5".repeat(40), hoursAgo: 0.5, status: "in_progress" },
+      ]);
+      expect(running.summary, running.log).toContain("runs/96 tests");
+      // A run that tested nothing still sets the pace: it was started, and it cost the money.
+      const failedEarly = yield* decideCheck({
+        checks: [tested],
+        windows: [
+          { id: 97, sha: "6".repeat(40), hoursAgo: 1, conclusion: "failure", metadata: "failure" },
+          { id: 92, sha: "4".repeat(40), hoursAgo: 9 },
+        ],
+        changed: ["apps/local/server/src/bin.ts"],
+      });
+      expect(failedEarly.windows, failedEarly.log).toBe("windows=false\n");
+      expect(failedEarly.summary).toContain("runs/97 started less than");
+    }),
+  );
+
+  it.effect("without a Windows check, or GitHub, the Windows check runs, never skips", () =>
+    Effect.gen(function* () {
+      const none = yield* decideCheck({ checks: [{ id: 81, sha: head }] });
+      expect(none.output, none.log).toBe("run=false\n");
+      expect(none.windows).toBe("windows=true\n");
+      expect(none.summary).toContain("no earlier Windows check tested a commit of main");
+      const failed = yield* decideCheck({ checks: [{ id: 81, sha: head }], windowsFails: true });
+      expect(failed.exitCode).not.toBe(0);
+      expect(failed.windows).toBe("");
+      expect(failed.log).toContain("HTTP 504: Gateway Timeout");
     }),
   );
 
