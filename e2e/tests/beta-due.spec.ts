@@ -16,6 +16,16 @@ const version = "2.0.0-beta.5";
 const apps = "0.0.1-beta.3";
 const hour = 60 * 60 * 1000;
 
+/** The gate's `gh api` reads, without their `--jq`: pages of release runs and earlier attempts. */
+const apiReads = (calls: ReadonlyArray<string>) =>
+  calls.filter((call) => call.startsWith("api ")).map((call) => call.split(" --jq ")[0]);
+/** One page of the release workflow's dispatched runs on main, newest first. */
+const runsPage = (page: number) =>
+  `api repos/${repository}/actions/workflows/release-artifacts.yml/runs?event=workflow_dispatch&branch=main&per_page=100&page=${page}`;
+/** The read of one earlier attempt of a run. */
+const attemptRead = (run: number, attempt: number) =>
+  `api repos/${repository}/actions/runs/${run}/attempts/${attempt}`;
+
 /** Answers `npm view <package> time dist-tags --json` from `$FAKE_NPM/<package>.json`. */
 const stubNpm = `#!/bin/sh
 [ "$1" = view ] && [ "$3 $4 $5" = "time dist-tags --json" ] || { echo "stub npm: unsupported: $*" >&2; exit 2; }
@@ -25,8 +35,10 @@ cat "$FAKE_NPM/$2.json"
 /**
  * Answers `gh run list` as GitHub does: the runs of `$FAKE_GITHUB/runs.json`, newest first, with
  * the event `-e` names, at most `-L` of them. Fails it when `$FAKE_GITHUB/list-fails` exists.
- * Answers `gh run view <id> --json jobs` from `$FAKE_GITHUB/jobs-<id>.json`. Appends every call
- * to `$FAKE_GITHUB/calls`.
+ * Answers `gh run view <id> --json jobs` from `$FAKE_GITHUB/jobs-<id>.json`, the read of one
+ * attempt of a run (`gh api .../runs/<id>/attempts/<n>`) from `$FAKE_GITHUB/attempt-<id>-<n>.json`,
+ * and a page of the release workflow's dispatched runs (`gh api .../workflows/<file>/runs?...`)
+ * from the same runs, newest first, 100 a page. Appends every call to `$FAKE_GITHUB/calls`.
  */
 const stubGh = `#!/bin/sh
 echo "$*" >> "$FAKE_GITHUB/calls"
@@ -40,6 +52,10 @@ if [ "$1 $2" = "run list" ]; then
 fi
 case "$1 $2 $*" in
   "run view "*) cat "$FAKE_GITHUB/jobs-$3.json" ;;
+  "api "*/attempts/*) exec cat "$FAKE_GITHUB/attempt-$(echo "$2" | sed 's|.*/runs/||; s|/attempts/|-|').json" ;;
+  "api "*/workflows/release-artifacts.yml/runs\\?*)
+    page=$(echo "$2" | sed 's/.*[?&]page=\\([0-9]*\\).*/\\1/')
+    exec jq -c --argjson page "$page" '[.[] | select(.event == "workflow_dispatch")][($page - 1) * 100:$page * 100] | map(del(.event))' "$FAKE_GITHUB/runs.json" ;;
   *) echo "stub gh: unsupported: $*" >&2; exit 2 ;;
 esac
 `;
@@ -51,6 +67,11 @@ interface ReleaseRun {
   readonly hoursAgo: number;
   readonly headSha: string;
   readonly attempt?: number;
+  /**
+   * When each attempt ran, in hours ago, first to latest, one for each of `attempt`; every one ran
+   * when the run was created (`hoursAgo`) by default.
+   */
+  readonly attemptsHoursAgo?: ReadonlyArray<number>;
   /** The publish job's conclusion; it is skipped when a build or test job failed. */
   readonly publish?: "success" | "failure" | "skipped";
   /** `build` builds and tests without publishing; a dispatch of Beta asks for `beta`. */
@@ -61,6 +82,10 @@ interface ReleaseRun {
   readonly title?: string;
   /** The name of the metadata step that runs only when publishing, if the workflow renamed it. */
   readonly publishingStep?: string;
+  /** The docker job's architecture push: it publishes an image tag outside the publish job. */
+  readonly dockerPush?: "success" | "failure" | "skipped";
+  /** Further failed jobs, by the name the run gives them, each with the step that failed. */
+  readonly failedJobs?: ReadonlyArray<{ readonly name: string; readonly step: string }>;
 }
 
 /** A paced check on main, which the Release check workflow dispatches after a relevant push. */
@@ -167,10 +192,12 @@ const world = Effect.gen(function* () {
     path.join(main, "packages/apps/package.json"),
     JSON.stringify({ version: apps }),
   );
-  yield* fs.copyFile(
-    ".github/workflows/release-artifacts.yml",
-    path.join(main, ".github/workflows/release-artifacts.yml"),
-  );
+  // The tick reads which release steps publish from these (scripts/releases/publishing-steps.ts).
+  for (const workflow of ["release-artifacts.yml", "bun-runtime.yml"])
+    yield* fs.copyFile(
+      `.github/workflows/${workflow}`,
+      path.join(main, `.github/workflows/${workflow}`),
+    );
   yield* git("init", "--quiet");
   yield* git("add", "--all");
   yield* git("commit", "--quiet", "-m", "Start");
@@ -211,7 +238,7 @@ const world = Effect.gen(function* () {
 
   /** Runs the script on this event, with npm and the release runs in this state. */
   const decide = (input: {
-    readonly event?: "push" | "schedule" | "workflow_dispatch" | "pull_request";
+    readonly event?: "push" | "schedule" | "workflow_dispatch" | "workflow_run" | "pull_request";
     /** Hours since npm published the committed version; npm lacks it when undefined. */
     readonly published?: number;
     readonly betaTag?: string;
@@ -221,6 +248,8 @@ const world = Effect.gen(function* () {
     readonly matrix?: ReadonlyArray<MatrixRun>;
     /** GitHub fails the listing of release runs. */
     readonly listFails?: boolean;
+    /** Commits on main CI passed on, newest first, as pushes. */
+    readonly green?: ReadonlyArray<{ readonly headSha: string; readonly hoursAgo: number }>;
   }) =>
     Effect.gen(function* () {
       const time: Record<string, string> = { "2.0.0-beta.4": ago(30) };
@@ -275,6 +304,7 @@ const world = Effect.gen(function* () {
         readonly headSha: string;
         readonly hoursAgo: number;
         readonly attempt?: number;
+        readonly attemptsHoursAgo?: ReadonlyArray<number>;
       }) => ({
         databaseId: run.id,
         status: run.status ?? "completed",
@@ -284,6 +314,8 @@ const world = Effect.gen(function* () {
             : "",
         headSha: run.headSha,
         createdAt: ago(run.hoursAgo),
+        startedAt: ago(run.attemptsHoursAgo?.at(-1) ?? run.hoursAgo),
+        updatedAt: ago(run.attemptsHoursAgo?.at(-1) ?? run.hoursAgo),
         attempt: run.attempt ?? 1,
         url: `https://github.com/${repository}/actions/runs/${run.id}`,
       });
@@ -305,6 +337,14 @@ const world = Effect.gen(function* () {
                 displayTitle: "Executor releases (check)",
               },
             })),
+            ...(input.green ?? []).map((ci, index) => ({
+              hoursAgo: ci.hoursAgo,
+              run: {
+                ...listed({ id: 5000 + index, conclusion: "success", ...ci }),
+                event: "push",
+                displayTitle: "Change the product",
+              },
+            })),
             ...runs.map((release) => ({
               hoursAgo: release.hoursAgo,
               run: {
@@ -321,6 +361,11 @@ const world = Effect.gen(function* () {
         ),
       );
       for (const release of runs) {
+        for (const [index, hoursAgo] of (release.attemptsHoursAgo ?? []).entries())
+          yield* fs.writeFileString(
+            path.join(github, `attempt-${release.id}-${index + 1}.json`),
+            JSON.stringify({ startedAt: ago(hoursAgo), updatedAt: ago(hoursAgo) }),
+          );
         const metadata = release.metadata ?? "success";
         yield* fs.writeFileString(
           path.join(github, `jobs-${release.id}.json`),
@@ -340,9 +385,32 @@ const world = Effect.gen(function* () {
               },
               {
                 name: "docker (blacksmith-16vcpu-ubuntu-2404-arm, arm64)",
-                conclusion: release.publish === undefined ? "failure" : "success",
-                steps: [],
+                conclusion:
+                  release.dockerPush === "failure" || release.publish === undefined
+                    ? "failure"
+                    : "success",
+                steps:
+                  release.dockerPush === undefined
+                    ? []
+                    : [
+                        {
+                          name: "Verify setup, OAuth, execution, retained data and interrupted renewals",
+                          conclusion: "success",
+                        },
+                        {
+                          name: "Push the tested architecture without moving a channel",
+                          conclusion: release.dockerPush,
+                        },
+                      ],
               },
+              ...(release.failedJobs ?? []).map((job) => ({
+                name: job.name,
+                conclusion: "failure",
+                steps: [
+                  { name: "Set up job", conclusion: "success" },
+                  { name: job.step, conclusion: "failure" },
+                ],
+              })),
               { name: "publish", conclusion: release.publish ?? "skipped", steps: [] },
               {
                 name: "releases",
@@ -588,6 +656,486 @@ layer(NodeServices.layer, { excludeTestServices: true })("Beta publication gate"
         const manual = yield* decide({ event: "workflow_dispatch", runs: failed(0.2) });
         expect(manual.outputs.decision, manual.output).toBe("dispatch");
       }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "after two failed attempts, CI passing on a newer main commit retries at once, at most five a day",
+    () =>
+      Effect.gen(function* () {
+        const { decide, merge, released, previous } = yield* world;
+        const failed = (count: number): ReadonlyArray<ReleaseRun> => [
+          ...Array.from({ length: count }, (_, index) => ({
+            id: 10 + index,
+            hoursAgo: 0.5 + index,
+            headSha: released,
+          })),
+          { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+        ];
+
+        // A fix merged, but CI has not passed on it yet: the back-off holds.
+        const fix = yield* merge;
+        const waiting = yield* decide({
+          runs: failed(2),
+          green: [{ headSha: released, hoursAgo: 2 }],
+        });
+        expect(waiting.outputs.decision, waiting.output).toBe("none");
+        expect(waiting.outputs.reason).toContain("waits for CI to pass on a newer main commit");
+
+        // CI passed on the fix: the next tick, a CI completion included, publishes again.
+        for (const event of ["schedule", "push", "workflow_run"] as const) {
+          const green = yield* decide({
+            event,
+            runs: failed(2),
+            green: [{ headSha: fix, hoursAgo: 0.1 }],
+          });
+          expect(green.exitCode, green.output).toBe(0);
+          expect(green.outputs.decision, `${event}: ${green.output}`).toBe("dispatch");
+          expect(green.outputs.reason).toContain(`CI passed on ${fix.slice(0, 9)} after it`);
+          expect(green.outputs.reason).toContain("2 of 5 attempts today failed");
+        }
+
+        // Five failed attempts in a day: a green main no longer retries early.
+        const many = yield* decide({ runs: failed(5), green: [{ headSha: fix, hoursAgo: 0.1 }] });
+        expect(many.outputs.decision, many.output).toBe("none");
+        expect(many.output).toContain("::warning::");
+
+        // A failure in the publish job is never retried this way: it is re-run from its artifacts.
+        const publishing = yield* decide({
+          runs: [
+            { id: 30, publish: "failure", attempt: 2, hoursAgo: 0.5, headSha: released },
+            ...failed(1),
+          ],
+          green: [{ headSha: fix, hoursAgo: 0.1 }],
+        });
+        expect(publishing.outputs.decision, publishing.output).toBe("none");
+        expect(publishing.outputs.reason).toContain("failed to publish");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "five failed attempts in a day hold every path, the six-hour one and a manual one",
+    () =>
+      Effect.gen(function* () {
+        const { decide, merge, released, previous } = yield* world;
+        // The review's probe: five failures in the last day, the newest more than six hours ago,
+        // and main moved since. The six-hour path dispatched a sixth.
+        const five: ReadonlyArray<ReleaseRun> = [
+          ...[6.5, 9, 12, 15, 18].map((hoursAgo, index) => ({
+            id: 40 + index,
+            hoursAgo,
+            headSha: released,
+          })),
+          { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+        ];
+        const fix = yield* merge;
+        for (const event of ["schedule", "push", "workflow_run", "workflow_dispatch"] as const) {
+          const held = yield* decide({
+            event,
+            runs: five,
+            green: [{ headSha: fix, hoursAgo: 0.1 }],
+          });
+          expect(held.exitCode, held.output).toBe(0);
+          expect(held.outputs.decision, `${event}: ${held.output}`).toBe("none");
+          expect(held.output).toContain("::warning::");
+          expect(held.outputs.reason).toContain("5 publishing attempts failed in the last day");
+        }
+        // A re-run of a publish failure counts against the same bound.
+        const rerun = yield* decide({
+          runs: [{ id: 50, publish: "failure", hoursAgo: 0.5, headSha: released }, ...five],
+        });
+        expect(rerun.outputs.decision, rerun.output).toBe("none");
+        expect(rerun.outputs.reason).toContain("6 publishing attempts failed in the last day");
+        // Once the oldest falls out of the last day, four remain, and the six-hour path runs again.
+        const four = yield* decide({
+          runs: [
+            ...[6.5, 9, 12, 15, 25].map((hoursAgo, index) => ({
+              id: 60 + index,
+              hoursAgo,
+              headSha: released,
+            })),
+            { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+          ],
+        });
+        expect(four.outputs.decision, four.output).toBe("dispatch");
+        expect(four.outputs.reason).toContain("4 of 5 attempts today failed");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "failed attempts are counted from the runs of the last month, not the last 30 records",
+    () =>
+      Effect.gen(function* () {
+        const { decide, merge, released, previous } = yield* world;
+        const fix = yield* merge;
+        // The fourth review's probes. One fresh failure, then builds, then a run created 70 hours ago whose four re-runs
+        // today failed: beyond the 30 runs the gate lists, it gave "1 of 5" and dispatched. With
+        // 120 builds the run is on the second page.
+        for (const builds of [29, 120])
+          for (const event of ["schedule", "workflow_dispatch"] as const) {
+            const held = yield* decide({
+              event,
+              runs: [
+                { id: 401, hoursAgo: 0.5, headSha: released },
+                ...Array.from({ length: builds }, (_, index) => ({
+                  id: 1000 + index,
+                  hoursAgo: 30 + index * 0.3,
+                  headSha: released,
+                  channel: "build" as const,
+                  conclusion: "success" as const,
+                  publish: "skipped" as const,
+                })),
+                {
+                  id: 440,
+                  hoursAgo: 70,
+                  attempt: 5,
+                  attemptsHoursAgo: [70, 20, 15, 10, 2],
+                  headSha: released,
+                },
+              ],
+              green: [{ headSha: fix, hoursAgo: 0.1 }],
+            });
+            expect(held.outputs.decision, `${builds} builds, ${event}: ${held.output}`).toBe(
+              "none",
+            );
+            expect(held.output).toContain("::warning::");
+            expect(held.outputs.reason).toContain("5 publishing attempts failed in the last day");
+            expect(apiReads(held.calls)).toEqual([
+              ...(builds === 29 ? [runsPage(1)] : [runsPage(1), runsPage(2)]),
+              attemptRead(440, 4),
+              attemptRead(440, 3),
+              attemptRead(440, 2),
+            ]);
+          }
+        // Two fresh failures and a run created 50 hours ago, re-run
+        // three times today, make five: two of its earlier attempts are read, then it stops.
+        const mixed = yield* decide({
+          runs: [
+            { id: 301, hoursAgo: 0.5, headSha: released },
+            { id: 302, hoursAgo: 1, headSha: released },
+            {
+              id: 303,
+              hoursAgo: 50,
+              attempt: 4,
+              attemptsHoursAgo: [50, 10, 5, 2],
+              headSha: released,
+            },
+            { id: 304, hoursAgo: 80, conclusion: "success", publish: "success", headSha: previous },
+          ],
+          green: [{ headSha: fix, hoursAgo: 0.1 }],
+        });
+        expect(mixed.outputs.decision, mixed.output).toBe("none");
+        expect(mixed.outputs.reason).toContain("5 publishing attempts failed in the last day");
+        expect(apiReads(mixed.calls)).toEqual([
+          runsPage(1),
+          attemptRead(303, 3),
+          attemptRead(303, 2),
+        ]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("when counting takes more than ten requests, the count is unknown and holds", () =>
+    Effect.gen(function* () {
+      const { decide, released } = yield* world;
+      // Ten runs from earlier days, each re-run in the last day and cancelled: whether a first
+      // attempt ran in the last day takes one request each, ten beside the page of runs.
+      const rerun: ReadonlyArray<ReleaseRun> = Array.from({ length: 10 }, (_, index) => ({
+        id: 100 + index,
+        attempt: 2,
+        conclusion: "cancelled",
+        hoursAgo: 30 + index,
+        attemptsHoursAgo: [30 + index, 1 + index * 0.5],
+        headSha: released,
+      }));
+      for (const event of ["schedule", "workflow_dispatch"] as const) {
+        const held = yield* decide({
+          event,
+          runs: [{ id: 99, hoursAgo: 0.2, headSha: released }, ...rerun],
+        });
+        expect(held.exitCode, held.output).toBe(0);
+        expect(held.outputs.decision, `${event}: ${held.output}`).toBe("none");
+        expect(held.output).toContain("::warning::");
+        expect(held.outputs.reason).toContain(
+          "could not be counted within 10 requests, so it holds",
+        );
+        expect(apiReads(held.calls)).toEqual([
+          runsPage(1),
+          ...rerun.slice(0, 9).map((each) => attemptRead(each.id, 1)),
+        ]);
+      }
+      // Nine take ten requests in all, and the count is known: one failed, so one more starts.
+      const nine = yield* decide({
+        event: "workflow_dispatch",
+        runs: [{ id: 99, hoursAgo: 0.2, headSha: released }, ...rerun.slice(0, 9)],
+      });
+      expect(nine.outputs.decision, nine.output).toBe("dispatch");
+      expect(nine.outputs.reason).toContain("1 of 5 attempts today failed");
+      expect(apiReads(nine.calls)).toHaveLength(10);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a failed image tag push in the docker job is a publishing failure, never retried early",
+    () =>
+      Effect.gen(function* () {
+        const { decide, merge, released, previous } = yield* world;
+        const fix = yield* merge;
+        const earlier: ReadonlyArray<ReleaseRun> = [
+          { id: 70, hoursAgo: 2, headSha: released },
+          { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+        ];
+        // The review's case: the push failed, so publish was skipped, and CI is green on a fix.
+        const first = yield* decide({
+          runs: [{ id: 71, dockerPush: "failure", hoursAgo: 0.5, headSha: released }, ...earlier],
+          green: [{ headSha: fix, hoursAgo: 0.1 }],
+        });
+        expect(first.exitCode, first.output).toBe(0);
+        expect(first.outputs).toMatchObject({ decision: "rerun", run: "71", version });
+        expect(first.outputs.reason).toContain(
+          "docker (blacksmith-16vcpu-ubuntu-2404-arm, arm64): Push the tested architecture without moving a channel",
+        );
+        const again = yield* decide({
+          runs: [
+            { id: 71, dockerPush: "failure", attempt: 2, hoursAgo: 0.5, headSha: released },
+            ...earlier,
+          ],
+          green: [{ headSha: fix, hoursAgo: 0.1 }],
+        });
+        expect(again.outputs.decision, again.output).toBe("none");
+        expect(again.outputs.reason).toContain("inspect it");
+        // A push that succeeded before a test failed elsewhere published nothing that failed: the
+        // early retry stands.
+        const tested = yield* decide({
+          runs: [
+            {
+              id: 72,
+              dockerPush: "success",
+              failedJobs: [
+                {
+                  name: "cli (win32, x64)",
+                  step: "Exercise the installed CLI through HTTP and the browser",
+                },
+              ],
+              hoursAgo: 0.5,
+              headSha: released,
+            },
+            ...earlier,
+          ],
+          green: [{ headSha: fix, hoursAgo: 0.1 }],
+        });
+        expect(tested.outputs.decision, tested.output).toBe("dispatch");
+        expect(tested.outputs.reason).toContain(`CI passed on ${fix.slice(0, 9)} after it`);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a failure in the Bun runtime's release, or in a job nothing lists, is not retried early",
+    () =>
+      Effect.gen(function* () {
+        const { decide, merge, released, previous } = yield* world;
+        const fix = yield* merge;
+        for (const job of [
+          { name: "bun-runtime / release", step: "Publish" },
+          { name: "sign-everything (linux-x64)", step: "Run a step no table knows" },
+        ]) {
+          const result = yield* decide({
+            runs: [
+              { id: 80, failedJobs: [job], hoursAgo: 0.5, headSha: released },
+              { id: 79, hoursAgo: 2, headSha: released },
+              { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+            ],
+            green: [{ headSha: fix, hoursAgo: 0.1 }],
+          });
+          expect(result.outputs.decision, `${job.name}: ${result.output}`).toBe("rerun");
+          expect(result.outputs.reason).toContain(job.name);
+        }
+        // Build and test failures, in any job, qualify as before.
+        for (const job of [
+          { name: "bun-runtime / build linux-x64", step: "Build" },
+          { name: "collector (darwin-arm64)", step: "Run ./.github/actions/collector" },
+          { name: "metadata", step: "Write the release notes" },
+          { name: "local (linux-x64)", step: "Verify packaged desktop startup and restart" },
+        ]) {
+          const result = yield* decide({
+            runs: [
+              { id: 81, failedJobs: [job], hoursAgo: 0.5, headSha: released },
+              { id: 79, hoursAgo: 2, headSha: released },
+              { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+            ],
+            green: [{ headSha: fix, hoursAgo: 0.1 }],
+          });
+          expect(result.outputs.decision, `${job.name}: ${result.output}`).toBe("dispatch");
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a job whose name GitHub cut short is found by its id, so beta.61's failed CLI test retries early",
+    () =>
+      Effect.gen(function* () {
+        const { decide, merge, released, previous } = yield* world;
+        const fix = yield* merge;
+        // beta.61's run 44248912608: GitHub listed the failed Windows CLI job with its matrix values
+        // cut off by an ellipsis, without the closing parenthesis.
+        const truncated =
+          "cli (win32, x64, true, blacksmith-16vcpu-windows-2025, win, exe, 8, .local/releases/2.0.0-beta.61...";
+        const earlier: ReadonlyArray<ReleaseRun> = [
+          { id: 89, hoursAgo: 2, headSha: released },
+          { id: 1, conclusion: "success", publish: "success", hoursAgo: 30, headSha: previous },
+        ];
+        const result = yield* decide({
+          runs: [
+            {
+              id: 90,
+              failedJobs: [
+                {
+                  name: truncated,
+                  step: "Exercise the installed CLI through HTTP and the browser",
+                },
+              ],
+              hoursAgo: 0.5,
+              headSha: released,
+            },
+            ...earlier,
+          ],
+          green: [{ headSha: fix, hoursAgo: 0.1 }],
+        });
+        expect(result.exitCode, result.output).toBe(0);
+        expect(result.outputs.decision, result.output).toBe("dispatch");
+        expect(result.outputs.reason).toContain(`CI passed on ${fix.slice(0, 9)} after it`);
+        // Cut short anywhere, a job keeps its id, and a step it does not have counts as publishing.
+        for (const [name, step, decision] of [
+          [
+            "docker (blacksmith-16vcpu-ubuntu-2404-a...",
+            "Push the tested architecture without moving a channel",
+            "rerun",
+          ],
+          [
+            "local-macos-arm64 (darwin, arm64, true, blacksmith-6vcpu-...",
+            "Verify packaged desktop startup and restart",
+            "dispatch",
+          ],
+          [
+            "cli (win32, x64, true, blacksmith-16vcpu-windows-2025, win, exe, 8...",
+            "A step cli does not have",
+            "rerun",
+          ],
+        ] as const) {
+          const each = yield* decide({
+            runs: [
+              { id: 91, failedJobs: [{ name, step }], hoursAgo: 0.5, headSha: released },
+              ...earlier,
+            ],
+            green: [{ headSha: fix, hoursAgo: 0.1 }],
+          });
+          expect(each.outputs.decision, `${name}: ${each.output}`).toBe(decision);
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("every failed attempt counts toward the five a day, re-runs included", () =>
+    Effect.gen(function* () {
+      const { decide, merge, released, previous } = yield* world;
+      const fix = yield* merge;
+      const done = {
+        id: 1,
+        conclusion: "success",
+        publish: "success",
+        hoursAgo: 30,
+        headSha: previous,
+      } as const;
+      // The review's probe: three runs, two of them on their second attempt, five failures in
+      // the last day. Counting runs saw three and dispatched a sixth.
+      const five: ReadonlyArray<ReleaseRun> = [
+        { id: 20, attempt: 2, hoursAgo: 1, headSha: released },
+        { id: 21, attempt: 2, hoursAgo: 3, headSha: released },
+        { id: 22, hoursAgo: 7, headSha: released },
+        done,
+      ];
+      for (const event of ["schedule", "workflow_run", "workflow_dispatch"] as const) {
+        const held = yield* decide({ event, runs: five, green: [{ headSha: fix, hoursAgo: 0.1 }] });
+        expect(held.outputs.decision, `${event}: ${held.output}`).toBe("none");
+        expect(held.outputs.reason).toContain("5 publishing attempts failed in the last day");
+      }
+      // An earlier attempt counts as failed whatever ended the latest, a cancellation included:
+      // two, one and one make four, so one more may start.
+      const four = yield* decide({
+        runs: [
+          { id: 23, attempt: 2, hoursAgo: 1, headSha: released },
+          { id: 24, attempt: 2, conclusion: "cancelled", hoursAgo: 3, headSha: released },
+          { id: 25, hoursAgo: 5, headSha: released },
+          done,
+        ],
+        green: [{ headSha: fix, hoursAgo: 0.1 }],
+      });
+      expect(four.outputs.decision, four.output).toBe("dispatch");
+      expect(four.outputs.reason).toContain("4 of 5 attempts today failed");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a failed attempt counts by when it ran, so re-runs today of an older run count", () =>
+    Effect.gen(function* () {
+      const { decide, merge, released, previous } = yield* world;
+      const fix = yield* merge;
+      const done = {
+        id: 1,
+        conclusion: "success",
+        publish: "success",
+        hoursAgo: 40,
+        headSha: previous,
+      } as const;
+      // The review's probe: a run created 25 hours ago, its first attempt then and four failed
+      // re-runs in the last day, beside one fresh failure. Dating attempts by the run's creation
+      // counted 1 of 5 and dispatched; five failed in the last day, so every path holds.
+      const rerunToday = {
+        id: 40,
+        attempt: 5,
+        hoursAgo: 25,
+        attemptsHoursAgo: [25, 20, 15, 10, 2],
+        headSha: released,
+      } as const;
+      const five: ReadonlyArray<ReleaseRun> = [
+        { id: 41, hoursAgo: 0.5, headSha: released },
+        rerunToday,
+        done,
+      ];
+      for (const event of ["schedule", "workflow_run", "workflow_dispatch"] as const) {
+        const held = yield* decide({ event, runs: five, green: [{ headSha: fix, hoursAgo: 0.1 }] });
+        expect(held.outputs.decision, `${event}: ${held.output}`).toBe("none");
+        expect(held.outputs.reason).toContain("5 publishing attempts failed in the last day");
+        // One page of runs, then its earlier attempts newest first, one request each, until five
+        // are known: attempt 1 is never read. The fresh run needs none.
+        expect(apiReads(held.calls)).toEqual([
+          runsPage(1),
+          attemptRead(40, 4),
+          attemptRead(40, 3),
+          attemptRead(40, 2),
+        ]);
+      }
+      // Attempts that ran over a day ago do not count: the first two, at 25 and 24.5 hours, and
+      // none of a run whose latest attempt started over a day ago, so three of the old run's and
+      // the fresh one make four, and one more may start.
+      const four = yield* decide({
+        runs: [
+          { id: 42, hoursAgo: 0.5, headSha: released },
+          { ...rerunToday, id: 43, attemptsHoursAgo: [25, 24.5, 15, 10, 2] },
+          { id: 44, attempt: 3, hoursAgo: 40, attemptsHoursAgo: [40, 35, 30], headSha: released },
+          done,
+        ],
+        green: [{ headSha: fix, hoursAgo: 0.1 }],
+      });
+      expect(four.outputs.decision, four.output).toBe("dispatch");
+      expect(four.outputs.reason).toContain("4 of 5 attempts today failed");
+      // A run created and re-run within the day is counted without reading its attempts.
+      const within = yield* decide({
+        runs: [
+          { id: 45, attempt: 3, hoursAgo: 6, attemptsHoursAgo: [6, 4, 2], headSha: released },
+          done,
+        ],
+        green: [{ headSha: fix, hoursAgo: 0.1 }],
+      });
+      expect(within.outputs.reason, within.output).toContain("3 of 5 attempts today failed");
+      expect(apiReads(within.calls)).toEqual([runsPage(1)]);
+    }).pipe(Effect.scoped),
   );
 
   it.effect("an attempt that failed in its publish job is re-run once from its own artifacts", () =>
@@ -1711,5 +2259,126 @@ layer(NodeServices.layer, { excludeTestServices: true })("Red matrix issue", (it
       expect(result.output).toContain("The pace job ended failure");
       expect(result.calls).toEqual([]);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "every step of the release workflows says whether it publishes, and a new one without it fails",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const directory = yield* fs.makeTempDirectoryScoped({
+          prefix: "executor-publishing-steps-",
+        });
+        const cli = path.resolve("scripts/releases/publishing-steps-check.ts");
+        const artifacts = yield* fs.readFileString(".github/workflows/release-artifacts.yml");
+        /** The check's problems with a release-artifacts.yml of this text. */
+        const problems = (text: string) =>
+          Effect.gen(function* () {
+            const file = path.join(directory, `release-artifacts-${text.length}.yml`);
+            yield* fs.writeFileString(file, text);
+            const result = yield* run(".", "node", [cli, "check", file], {});
+            return result.output.split("\n").filter((line) => line !== "");
+          });
+        const current = yield* run(".", "node", [cli, "check"], {});
+        expect(current.exitCode, current.output).toBe(0);
+        expect(current.output).toBe("");
+        // The review's cases: a step that pushes with docker buildx, and a Docker action with
+        // push: true, in a job that publishes nothing yet. Neither command is guessed at: each
+        // lacks a declaration, and that fails.
+        const anchor = "      - name: Check the tested and published archives are the same bytes\n";
+        expect(artifacts).toContain(anchor);
+        for (const step of [
+          '      - name: Push a preview image\n        run: docker buildx build --push --tag "$IMAGE:preview" .\n',
+          "      - uses: docker/build-push-action@v6\n        with:\n          push: true\n          tags: preview\n",
+          "      - name: Build something\n        run: true\n        env:\n          PUBLISHES: maybe\n",
+        ])
+          expect(yield* problems(artifacts.replace(anchor, step + anchor))).toEqual([
+            expect.stringMatching(
+              /^release-artifacts\.yml: job archives's step \d+ \(.+\) does not say whether it publishes: give it env PUBLISHES "yes" or "no"$/,
+            ),
+          ]);
+        // Declared, it passes, whichever it says.
+        expect(
+          yield* problems(
+            artifacts.replace(
+              anchor,
+              '      - name: Push a preview image\n        run: docker buildx build --push --tag "$IMAGE:preview" .\n        env:\n          PUBLISHES: "yes"\n' +
+                anchor,
+            ),
+          ),
+        ).toEqual([]);
+        // A job named so that its id does not start the name GitHub shows fails too.
+        const renamed = artifacts.replace(
+          "\n  archives:\n",
+          "\n  archives:\n    name: Compare archives\n",
+        );
+        expect(renamed).not.toBe(artifacts);
+        expect(yield* problems(renamed)).toEqual([
+          `release-artifacts.yml: job archives is named "Compare archives", which does not start with its id; a run's job is found by its id at the start of its name`,
+        ]);
+        // How a run names each job, cut short or not, finds it: a matrix job, a named one, a
+        // called one. Failed jobs with no failed step publish nothing; the publish job always does.
+        const classify = (jobs: ReadonlyArray<{ name: string; step?: string }>) =>
+          Effect.gen(function* () {
+            const input = path.join(directory, "jobs.json");
+            yield* fs.writeFileString(
+              input,
+              JSON.stringify(
+                jobs.map(({ name, step }) => ({
+                  name,
+                  conclusion: "failure",
+                  steps: [
+                    { name: "Set up runner", conclusion: "success" },
+                    ...(step === undefined ? [] : [{ name: step, conclusion: "failure" }]),
+                    { name: "Complete runner", conclusion: "success" },
+                  ],
+                })),
+              ),
+            );
+            const result = yield* run(
+              ".",
+              "sh",
+              ["-c", 'node "$0" classify < "$1"', cli, input],
+              {},
+            );
+            expect(result.exitCode, result.output).toBe(0);
+            return JSON.parse(result.output) as ReadonlyArray<string>;
+          });
+        expect(
+          yield* classify([
+            { name: "docker (blacksmith-16vcpu-ubuntu-2404-arm, arm64)" },
+            { name: "collector (linux-x64)", step: "Post Run ./.github/actions/setup" },
+            {
+              name: "cli (win32, x64, true, blacksmith-16vcpu-windows-2025, win, exe, 8, .local/releases/2.0.0-beta.61...",
+            },
+            { name: "bun-runtime / build linux-x64", step: "Build" },
+            { name: "bun-runtime / smoke darwin-arm64" },
+            { name: "releases", step: "Require every job the run needed to pass" },
+          ]),
+        ).toEqual([]);
+        expect(
+          yield* classify([
+            {
+              name: "publish",
+              step: "Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262",
+            },
+          ]),
+        ).toEqual(["publish: Run actions/checkout@11d5960a326750d5838078e36cf38b85af677262"]);
+        expect(
+          yield* classify([
+            { name: "bun-runtime / release", step: "Publish" },
+            {
+              name: "docker (blacksmith-8vcpu-ubuntu-2404, amd64)",
+              step: "Post Push the tested architecture without moving a channel",
+            },
+            { name: "sign (linux-x64)" },
+          ]),
+        ).toEqual([
+          "bun-runtime / release: Publish",
+          "docker (blacksmith-8vcpu-ubuntu-2404, amd64): Post Push the tested architecture without moving a channel",
+          "sign (linux-x64) (a job of no release workflow: what it publishes is unknown)",
+        ]);
+      }).pipe(Effect.scoped),
   );
 });

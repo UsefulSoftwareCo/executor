@@ -14,13 +14,23 @@
  * - When npm lists the committed version, a new beta is due once main has commits after its
  *   release commit and npm published it at least six hours ago (`bump`). A manual dispatch skips
  *   the six hours.
- * - When npm lacks it, the version is published again rather than skipped. An attempt that failed
- *   in its publish job may already have a public draft for its source, so that run's failed jobs
- *   are re-run once from its own artifacts (`rerun`); after that, publication needs inspection
- *   (RELEASING.md). An attempt that failed before publishing is dispatched again on the next tick
- *   (`dispatch`). After two failures in a row, automatic ticks wait six hours since the last
- *   attempt, and until main has moved past it or a day has passed: a broken main costs at most five
- *   publishing runs a day. A manual dispatch retries at once.
+ * - When npm lacks it, the version is published again rather than skipped, at most five failed
+ *   attempts a day: once five publishing attempts (re-runs included) failed in the last 24 hours,
+ *   no tick dispatches or re-runs another, a manual dispatch included. Attempts are selected by
+ *   when they ran: the release runs created within GitHub's 30-day re-run window, and the
+ *   attempts of each that ran in the last day, in at most ten requests a tick; when those cannot
+ *   tell, it holds. An attempt that failed in a step that publishes
+ *   anything (each step declares it, scripts/releases/publishing-steps.ts: the publish job, the
+ *   image's architecture tags, the Bun runtime's release, and any failed job or step that cannot
+ *   be told apart) may already
+ *   have left something public for its source, so that run's failed jobs are re-run once from its
+ *   own artifacts (`rerun`); after that, publication needs inspection (RELEASING.md). An attempt
+ *   that failed before publishing is dispatched again on the next tick (`dispatch`). After two
+ *   failures in a row, automatic ticks wait six hours since the last attempt, and until main has
+ *   moved past it or a day has passed, unless CI passed on a main commit after the last
+ *   attempt's: a failure in a test, fixed by a merge, is retried as soon as main is green again.
+ *   A manual dispatch skips the back-off. Beta also ticks when CI finishes on a push to main, so
+ *   a green main is seen at once.
  * - An attempt for the committed version that succeeded while npm still lacks it fails the tick:
  *   another run would succeed the same way, on every tick, with nothing red.
  *
@@ -42,14 +52,15 @@
  * runs, since two release runs on main must not overlap.
  *
  * Writes `decision` (`none`, `bump`, `dispatch` or `rerun`), `version` and `run` to
- * `GITHUB_OUTPUT`. Reads npm with `npm view`, the release runs with `gh run list` and `gh run
- * view`, and the history with `git`, so `e2e/tests/beta-due.spec.ts` drives it with stubs. It
+ * `GITHUB_OUTPUT`. Reads npm with `npm view`, the release runs with `gh run list`, `gh run view`
+ * and `gh api`, and the history with `git`, so `e2e/tests/beta-due.spec.ts` drives it with stubs. It
  * changes nothing itself: beta.yml acts on its decision.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Clock, Config, Console, Effect, FileSystem, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { publishingFailures, releaseWorkflow } from "./publishing-steps.ts";
 
 const hour = 60 * 60 * 1000;
 /** The least time between two published betas. */
@@ -58,6 +69,25 @@ const gap = 6 * hour;
 const backOff = 6 * hour;
 /** After two failed attempts in a row, retry this long after the last one even if main is still. */
 const stale = 24 * hour;
+/** At most this many failed publishing attempts a day retry early, on a newer green main. */
+const dailyAttempts = 5;
+/** How many builds and publications the gate reads (`gh run list -L`). */
+const runLimit = 30;
+/**
+ * GitHub re-runs a run only within 30 days of its first attempt, so a run created longer ago than
+ * that and a day has no attempt in the last day.
+ */
+const rerunWindow = 30 * 24 * hour;
+/** Runs a page of the release workflow's runs holds when the count reads them. */
+const pageSize = 100;
+/**
+ * The most requests one tick spends counting failed attempts: pages of runs and earlier attempts.
+ * The last month of release runs is one page (63 on 18 Nov 2026), and five failures are known
+ * after at most four attempt reads.
+ */
+const countRequests = 10;
+/** The titles of publishing runs (release-artifacts.yml's `run-name` for each channel). */
+const publishingTitles = ["Executor releases (beta)", "Executor releases (latest)"];
 
 class BetaGateFailed extends Schema.TaggedError<BetaGateFailed>()("BetaGateFailed", {
   message: Schema.String,
@@ -83,6 +113,26 @@ const Run = Schema.Struct({
   displayTitle: Schema.String,
 });
 type Run = typeof Run.Type;
+
+/**
+ * A page of the release workflow's runs, each with when its latest attempt started and was last
+ * updated (GitHub's `run_started_at` and `updated_at`): a re-run keeps the run's `createdAt`, so
+ * only these date it.
+ */
+const RunsPage = Schema.fromJsonString(
+  Schema.Array(
+    Schema.Struct({
+      ...Run.fields,
+      startedAt: Schema.String,
+      updatedAt: Schema.String,
+    }),
+  ),
+);
+
+/** When one attempt of a run started and was last updated, read from its attempt. */
+const AttemptTimes = Schema.fromJsonString(
+  Schema.Struct({ startedAt: Schema.String, updatedAt: Schema.String }),
+);
 
 const Step = Schema.Struct({ name: Schema.String, conclusion: Schema.String });
 
@@ -166,9 +216,9 @@ NodeRuntime.runMain(
     const output = yield* Config.String("GITHUB_OUTPUT");
     const repository = yield* Config.String("GITHUB_REPOSITORY");
     const event = yield* Config.String("GITHUB_EVENT_NAME");
-    if (!["push", "schedule", "workflow_dispatch"].includes(event))
+    if (!["push", "schedule", "workflow_dispatch", "workflow_run"].includes(event))
       return yield* new BetaGateFailed({
-        message: `beta.yml runs on push, schedule and workflow_dispatch, not ${event}.`,
+        message: `beta.yml runs on push, schedule, workflow_dispatch and workflow_run, not ${event}.`,
       });
     /** A person asked for this tick, so it skips the six hours and the retry back-off. */
     const manual = event === "workflow_dispatch";
@@ -199,7 +249,7 @@ NodeRuntime.runMain(
       "-b",
       "main",
       "-L",
-      "30",
+      String(runLimit),
       "--json",
       "databaseId,status,conclusion,headSha,createdAt,attempt,url,displayTitle",
     ]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(Run)))));
@@ -260,6 +310,69 @@ NodeRuntime.runMain(
         jobsRead.set(run.databaseId, jobs);
         return jobs;
       });
+    const inLastDay = (...times: ReadonlyArray<string>) =>
+      times.some((time) => now - Date.parse(time) < stale);
+    /**
+     * How many publishing attempts failed in the last day, selected by when they ran, not by
+     * their place in a list: every run of the release workflow created within GitHub's re-run
+     * window, newest first, a page at a time, and of each publishing run whose latest attempt ran
+     * in the last day, the attempts that did. A run on its third attempt failed three times, or
+     * twice and then once more, since only a finished attempt is re-run, so each earlier attempt
+     * counts as failed whatever ended it, and a re-run never makes room. Reading stops once five
+     * are known. It spends at most `countRequests`; when they run out first, `known` is false.
+     */
+    const failedInLastDay = Effect.gen(function* () {
+      let requests = 0;
+      let failed = 0;
+      const unknown = () => ({ failed, known: false });
+      const known = () => ({ failed, known: true });
+      for (let page = 1; ; page++) {
+        if (failed >= dailyAttempts) return known();
+        if (requests >= countRequests) return unknown();
+        requests++;
+        const listed = yield* succeed("gh", [
+          "api",
+          `repos/${repository}/actions/workflows/${releaseWorkflow}/runs?event=workflow_dispatch&branch=main&per_page=${pageSize}&page=${page}`,
+          "--jq",
+          '[.workflow_runs[] | {databaseId: .id, status, conclusion: (.conclusion // ""), headSha: .head_sha, createdAt: .created_at, startedAt: .run_started_at, updatedAt: .updated_at, attempt: .run_attempt, url: .html_url, displayTitle: .display_title}] | @json',
+        ]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(RunsPage)));
+        for (const run of listed) {
+          // Newest first: no run from here on can have an attempt in the last day.
+          if (now - Date.parse(run.createdAt) >= rerunWindow + stale) return known();
+          if (!publishingTitles.includes(run.displayTitle)) continue;
+          if (
+            run.status === "completed" &&
+            run.conclusion !== "success" &&
+            run.conclusion !== "cancelled" &&
+            inLastDay(run.startedAt, run.updatedAt)
+          )
+            failed++;
+          // Every earlier attempt ended before the latest started, so none ran in the last day
+          // unless the latest started in it.
+          if (run.attempt === 1 || !inLastDay(run.startedAt)) continue;
+          if (inLastDay(run.createdAt)) {
+            // Created in the last day, so every earlier attempt ran in it.
+            failed += run.attempt - 1;
+            continue;
+          }
+          // Earlier attempts, newest first, one request each: once one ran before the last day,
+          // so did every attempt before it.
+          for (let attempt = run.attempt - 1; attempt >= 1 && failed < dailyAttempts; attempt--) {
+            if (requests >= countRequests) return unknown();
+            requests++;
+            const times = yield* succeed("gh", [
+              "api",
+              `repos/${repository}/actions/runs/${run.databaseId}/attempts/${attempt}`,
+              "--jq",
+              "{startedAt: .run_started_at, updatedAt: .updated_at} | @json",
+            ]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(AttemptTimes)));
+            if (!inLastDay(times.startedAt, times.updatedAt)) break;
+            failed++;
+          }
+        }
+        if (listed.length < pageSize) return known();
+      }
+    });
     const decide = Effect.gen(function* () {
       // Any build or publication: two must not run on main at once. A check, which publishes
       // nothing and may pace for two hours, is not in this list and holds no tick.
@@ -326,17 +439,37 @@ NodeRuntime.runMain(
           });
         return act("dispatch", `executor@${version} is not on npm yet.`);
       }
+      // The daily bound holds on every path that starts or re-runs an attempt, a manual dispatch
+      // of Beta included: at most five failed publishing attempts a day.
+      const counted = yield* failedInLastDay;
+      if (counted.failed >= dailyAttempts || !counted.known)
+        return hold(
+          `executor@${version} is not on npm, and ${counted.failed >= dailyAttempts ? `at least ${counted.failed} publishing attempts failed in the last day` : `how many publishing attempts failed in the last day could not be counted within ${countRequests} requests, so it holds`}; at most ${dailyAttempts} a day are started, so the next waits until fewer than ${dailyAttempts} fall in the last 24 hours. The last is ${last.url}. To publish now, inspect the failures and dispatch Executor releases with channel beta by hand (RELEASING.md, "Publish beta").`,
+        );
+      const failedToday = counted.failed;
+      // A failure in a step that publishes anything, in the publish job or any other (the image's
+      // architecture tags are pushed in the docker job), may have left something public: the run's
+      // failed jobs are re-run once from its artifacts, and then it holds. Judged by the failed
+      // step, not by the job's name (scripts/releases/publishing-steps.ts).
       const publishJob = latest.jobs.jobs.find((job) => job.name === "publish");
-      if (publishJob !== undefined && publishJob.conclusion !== "skipped") {
+      const publishing = [
+        ...(publishJob !== undefined && publishJob.conclusion !== "skipped" ? ["publish"] : []),
+        ...publishingFailures(latest.jobs.jobs, {
+          [releaseWorkflow]: yield* fs.readFileString(`.github/workflows/${releaseWorkflow}`),
+          "bun-runtime.yml": yield* fs.readFileString(".github/workflows/bun-runtime.yml"),
+        }),
+      ];
+      if (publishing.length > 0) {
+        const where = [...new Set(publishing)].join("; ");
         if (last.attempt === 1)
           return {
             decision: "rerun",
-            reason: `${last.url} built and tested executor@${version} but failed to publish it; re-running its failed jobs from its artifacts.`,
+            reason: `${last.url} failed in a step that publishes executor@${version} (${where}); re-running its failed jobs from its artifacts.`,
             warning: false,
             run: last,
           } satisfies Decision;
         return hold(
-          `${last.url} failed to publish executor@${version} again after a re-run. It may hold a public draft, so a new run cannot replace it; inspect it (RELEASING.md, "Publish beta").`,
+          `${last.url} failed to publish executor@${version} again after a re-run (${where}). It may hold a public draft or tag, so a new run cannot replace it; inspect it (RELEASING.md, "Publish beta").`,
         );
       }
       const twice = attempts.length === 2 && attempts[1]?.run.conclusion !== "success";
@@ -344,16 +477,56 @@ NodeRuntime.runMain(
       if (manual || !twice)
         return act(
           "dispatch",
-          `executor@${version} is not on npm; ${last.url} failed, so it is published again.`,
+          `executor@${version} is not on npm; ${last.url} failed before publishing, so it is published again (${failedToday} of ${dailyAttempts} attempts today failed).`,
         );
       const moved = head !== last.headSha && (yield* commitsSince(last.headSha)) !== "0";
       if (since >= backOff && (moved || since >= stale))
         return act(
           "dispatch",
-          `executor@${version} is not on npm after two or more failed attempts in a row; the last, ${last.url}, started ${ago(since)}${moved ? " and main has moved since" : ""}.`,
+          `executor@${version} is not on npm after two or more failed attempts in a row; the last, ${last.url}, started ${ago(since)}${moved ? " and main has moved since" : ""} (${failedToday} of ${dailyAttempts} attempts today failed).`,
         );
+      // A failure before publishing is retried as soon as CI passed on a main commit after the
+      // attempt's, which a fix makes, within the daily bound above.
+      if (moved) {
+        const green = (yield* succeed("gh", [
+          "run",
+          "list",
+          "-R",
+          repository,
+          "-w",
+          "ci.yml",
+          "-b",
+          "main",
+          "-e",
+          "push",
+          "-s",
+          "success",
+          "-L",
+          "1",
+          "--json",
+          "headSha,url",
+        ]).pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(
+              Schema.fromJsonString(
+                Schema.Array(Schema.Struct({ headSha: Schema.String, url: Schema.String })),
+              ),
+            ),
+          ),
+        ))[0];
+        const after =
+          green === undefined || green.headSha === last.headSha
+            ? false
+            : (yield* command("git", ["merge-base", "--is-ancestor", last.headSha, green.headSha]))
+                .exitCode === 0;
+        if (green !== undefined && after)
+          return act(
+            "dispatch",
+            `executor@${version} is not on npm after two or more failed attempts in a row; the last, ${last.url}, failed before publishing, and CI passed on ${green.headSha.slice(0, 9)} after it (${green.url}), so it is published again (${failedToday} of ${dailyAttempts} attempts today failed).`,
+          );
+      }
       return hold(
-        `executor@${version} is not on npm after two or more failed attempts in a row; the last is ${last.url}, ${ago(since)}. The next attempt waits for six hours after it and for a new commit on main, or a day; dispatch this workflow to retry now.`,
+        `executor@${version} is not on npm after two or more failed attempts in a row; the last is ${last.url}, ${ago(since)}. The next attempt waits for CI to pass on a newer main commit (at most ${dailyAttempts} failed attempts a day), or for six hours after it and a new commit on main, or a day; dispatch this workflow to retry now.`,
       );
     });
 
