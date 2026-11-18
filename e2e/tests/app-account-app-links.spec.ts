@@ -1028,6 +1028,16 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         );
         yield* refused(yield* who(actors.owner), 409, "AppLinkCreatorNotAuthorized");
 
+        // The owner removes them from the organization before they delete their user, so the
+        // organization is no longer one of theirs when they do.
+        yield* ok(
+          yield* api.request(actors.owner, "POST", "/api/auth/organization/remove-member", {
+            organizationId: actors.organization.id,
+            memberIdOrEmail: creator.user.email,
+          }),
+        );
+        yield* refused(yield* who(actors.owner), 409, "AppLinkCreatorNotAuthorized");
+
         // Deleting their user leaves the app without a creator; the reuse must not serve again.
         const removal = traced();
         const deleted = yield* api.request(actors.admin, "DELETE", "/api/user", undefined, {

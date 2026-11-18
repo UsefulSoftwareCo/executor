@@ -141,10 +141,14 @@ export const removeUser = Effect.gen(function* () {
       );
     }
   }
-  for (const organization of planned.organizations) {
-    if (organization.outcome !== "leave") continue;
-    // Deleting the user nulls the creator of the apps they made, which would let a reuse refused
-    // while they were a member serve again; unlink those reuses first.
+  // Deleting the user nulls the creator of the apps they made, in every organization they created
+  // one in, including those they already left; unlink the reuses in those apps first.
+  const created = yield* sql`select distinct organization_id as id from hosted_app_access
+    where creator_id = ${user} order by organization_id`.pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(Schema.Array(Schema.Struct({ id: OrganizationId })))),
+    Effect.mapError(() => new StorageError()),
+  );
+  for (const organization of created) {
     const removed = yield* removeReusedLinksInAppsOf(executor, sql, organization.id, user);
     for (const link of removed)
       yield* recordSecurityAudit({
