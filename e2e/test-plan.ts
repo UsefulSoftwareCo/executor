@@ -3676,6 +3676,16 @@ export const scenarios = plan({
       local: na("Operator feedback webhooks are self-host only."),
     },
   },
+  feedbackGithubIssues: {
+    fixtures: "actors",
+    file: "feedback-github.spec.ts",
+    title: "self-host feedback files a GitHub issue and links it in the operator webhook",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Operator feedback receivers are self-host only."),
+      local: na("Operator feedback receivers are self-host only."),
+    },
+  },
   selfHostAnalytics: {
     fixtures: "actors",
     file: "instance-analytics.spec.ts",

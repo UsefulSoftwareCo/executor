@@ -56,6 +56,10 @@ const maxClockOffset = 40 * 86_400_000;
 export const OperatorSettings = Schema.Struct({
   EXECUTOR_FEEDBACK_WEBHOOK_URL: Schema.optionalKey(Schema.String),
   EXECUTOR_FEEDBACK_WEBHOOK_SECRET: Schema.optionalKey(Schema.String),
+  EXECUTOR_FEEDBACK_GITHUB_REPOSITORY: Schema.optionalKey(Schema.String),
+  EXECUTOR_FEEDBACK_GITHUB_TOKEN: Schema.optionalKey(Schema.String),
+  EXECUTOR_FEEDBACK_GITHUB_API_URL: Schema.optionalKey(Schema.String),
+  EXECUTOR_FEEDBACK_GITHUB_LABELS: Schema.optionalKey(Schema.String),
   EXECUTOR_URL_ALLOW_LOOPBACK_HTTP: Schema.optionalKey(Schema.String),
   EXECUTOR_URL_ALLOW_HTTP_ORIGINS: Schema.optionalKey(Schema.String),
   NODE_EXTRA_CA_CERTS: Schema.optionalKey(Schema.NonEmptyString),

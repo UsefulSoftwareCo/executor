@@ -20,6 +20,11 @@ services:
       # Optional operator-owned feedback receiver, independent of anonymous analytics.
       EXECUTOR_FEEDBACK_WEBHOOK_URL:
       EXECUTOR_FEEDBACK_WEBHOOK_SECRET:
+      # Optional: file each feedback submission as an issue in owner/repository.
+      EXECUTOR_FEEDBACK_GITHUB_REPOSITORY:
+      EXECUTOR_FEEDBACK_GITHUB_TOKEN:
+      EXECUTOR_FEEDBACK_GITHUB_LABELS:
+      EXECUTOR_FEEDBACK_GITHUB_API_URL:
       # Optional override of X-Forwarded-For for client-IP assertions from trusted peers.
       # Requires EXECUTOR_TRUSTED_PROXIES; see README "Rate limits behind a proxy".
       EXECUTOR_TRUSTED_PROXY_HEADER:

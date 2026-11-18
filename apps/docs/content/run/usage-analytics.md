@@ -20,7 +20,7 @@ EXECUTOR_DISABLE_ANALYTICS=1
 Any value other than empty, `0`, `false`, `no` or `off` turns analytics off.
 Nothing is recorded or sent to analytics, including feedback: the `feedback.submit`
 tool then returns `FeedbackDisabled` unless the self-host operator configured
-`EXECUTOR_FEEDBACK_WEBHOOK_URL`. That independent receiver takes precedence for
+`EXECUTOR_FEEDBACK_WEBHOOK_URL` or `EXECUTOR_FEEDBACK_GITHUB_REPOSITORY`. That independent receiver takes precedence for
 feedback and receives the submitted message, sender identity and instance origin;
 the anonymous analytics guarantees below do not apply to that explicit delivery.
 

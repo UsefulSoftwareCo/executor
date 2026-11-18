@@ -94,7 +94,7 @@ jobs:
       - name: Reused app account scenario
         run: bun run e2e:self-host --test-name '^a reused hosted app account (stops serving|refuses a call)' --workers 1
       - name: Operator feedback scenarios
-        run: bun run e2e:self-host --test-name 'self-host feedback webhook|self-host with DO_NOT_TRACK|self-host analytics pseudonymize|Hosted feedback enforces'
+        run: bun run e2e:self-host --test-name 'self-host feedback webhook|self-host feedback files|self-host with DO_NOT_TRACK|self-host analytics pseudonymize|Hosted feedback enforces'
       # Run the large cold catalog alone, not beside the functional scenarios' servers.
       - name: Cold MCP discovery
         run: bun run e2e:self-host --test-name 'Cold MCP discovery serves 8549'
