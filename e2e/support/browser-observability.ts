@@ -1,5 +1,6 @@
 /** Inject response and document failures through Playwright's real network boundary. */
 import { Clock, Duration, Effect, Schedule, Schema } from "effect";
+import type { Request as PlaywrightRequest } from "playwright";
 import { Browser } from "./browser.ts";
 import { driver } from "./platform.ts";
 import { replaceResponses } from "./browser-responses.ts";
@@ -342,7 +343,7 @@ export const holdReplayChunks = Effect.gen(function* () {
  */
 export const holdUnseenKeepalive = Effect.gen(function* () {
   const browser = yield* Browser;
-  const path = "/__unseen-keepalive";
+  const path = unseenKeepalivePath;
   const unseen = (url: URL) => url.pathname === path;
   let release = () => {};
   const released = new Promise<void>((resolve) => {
@@ -395,36 +396,59 @@ export const holdUnseenKeepalive = Effect.gen(function* () {
   };
 });
 
+/** The path of the other sender's request `holdUnseenKeepalive` holds. */
+const unseenKeepalivePath = "/__unseen-keepalive";
+
 /**
  * Record, until the scope closes, each trace and log export the page sends: `bodies` is every one
  * that reached the browser's network boundary, in order. A request the browser refused never does.
+ * It also follows the page's own requests in flight; another sender's held request is not one.
  */
 export const recordTelemetryExports = Effect.gen(function* () {
   const browser = yield* Browser;
   const bodies: Array<string> = [];
   const exports = (url: URL) => /^\/api\/telemetry\/(?:traces|logs)$/.test(url.pathname);
+  const inFlight = new Set<PlaywrightRequest>();
+  const started = (request: PlaywrightRequest) => {
+    if (new URL(request.url()).pathname !== unseenKeepalivePath) inFlight.add(request);
+  };
+  const ended = (request: PlaywrightRequest) => {
+    inFlight.delete(request);
+  };
   yield* Effect.acquireRelease(
-    browser.use("Record the page's telemetry exports", (page) =>
-      page.route(exports, (route) => {
+    browser.use("Record the page's telemetry exports", (page) => {
+      page.on("request", started);
+      page.on("requestfinished", ended);
+      page.on("requestfailed", ended);
+      return page.route(exports, (route) => {
         bodies.push(route.request().postData() ?? "");
         return route.fallback();
-      }),
-    ),
+      });
+    }),
     () =>
       browser
-        .use("Stop recording telemetry exports", (page) => page.unroute(exports))
+        .use("Stop recording telemetry exports", (page) => {
+          page.off("request", started);
+          page.off("requestfinished", ended);
+          page.off("requestfailed", ended);
+          return page.unroute(exports);
+        })
         .pipe(Effect.orDie),
   );
   return {
     bodies: Effect.sync(() => [...bodies]),
-    /** Wait until the page has started no export for `quiet`: nothing of its own is in flight. */
+    /**
+     * Wait until, for `quiet`, the page has started no export and had no request of its own in
+     * flight. A request that ends later makes telemetry of its own: a slow read that fails is
+     * reported, and its records exported, after the wait.
+     */
     idle: (quiet: Duration.Input) =>
       Effect.gen(function* () {
         let seen = -1;
         let since = 0;
         while (true) {
           const now = yield* Clock.currentTimeMillis;
-          if (bodies.length !== seen) {
+          if (bodies.length !== seen || inFlight.size > 0) {
             seen = bodies.length;
             since = now;
           } else if (now - since >= Duration.toMillis(Duration.fromInputUnsafe(quiet))) return;
