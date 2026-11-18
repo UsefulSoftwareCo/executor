@@ -431,6 +431,8 @@ interface Upper {
   readonly number: number;
   readonly headRefOid: string;
   readonly isCrossRepository?: boolean;
+  /** A draft now, as the pull request list says; ready by default. */
+  readonly isDraft?: boolean;
 }
 
 interface StubRecord {
@@ -472,6 +474,15 @@ interface GitHubAnswers {
   readonly otherArtifacts?: Readonly<Record<string, ReadonlyArray<{ id: number; name: string }>>>;
   /** A run's select job, for a run whose status is not completed. */
   readonly selectJobs?: Readonly<Record<string, { status: string; waitingAbove?: boolean }>>;
+  /** A run's required checks' jobs, by run: their names, statuses and conclusions. */
+  readonly runJobs?: Readonly<
+    Record<string, ReadonlyArray<{ name: string; status: string; conclusion?: string | null }>>
+  >;
+  /**
+   * That many E2E matrix jobs listed before a run's other jobs, as a full run lists them, so the
+   * required checks come after the first page of 100.
+   */
+  readonly matrixJobs?: Readonly<Record<string, number>>;
   readonly failPullRequests?: boolean;
   readonly failCompare?: ReadonlyArray<string>;
   /**
@@ -550,7 +561,7 @@ if (args[0] === "pr" && args[1] === "list") {
 } else if (args[0] === "api" && /\\/pulls\\?base=/.test(pathArg)) {
   if (answers.failPullRequests) fail("gh: Server Error (HTTP 502)");
   const uppers = answers.upperSnapshots ? at(answers.upperSnapshots, "/pulls?base=") : answers.uppers || [];
-  reply(uppers.map((pull) => ({ number: pull.number, head: { sha: pull.headRefOid, repo: { full_name: pull.isCrossRepository ? "someone/fork" : "owner/repository" } } })));
+  reply(uppers.map((pull) => ({ number: pull.number, draft: pull.isDraft === true, head: { sha: pull.headRefOid, repo: { full_name: pull.isCrossRepository ? "someone/fork" : "owner/repository" } } })));
 } else if (args[0] === "api" && /\\/actions\\/runs\\?/.test(pathArg)) {
   const headSha = pathArg.replace(/^.*head_sha=/, "").replace(/&.*$/, "");
   const runs = ((answers.upperRuns || {})[headSha] || []).map((run) => ({ path: ".github/workflows/ci.yml", status: "completed", conclusion: "success", html_url: "https://github.com/owner/repository/actions/runs/" + run.id, head_repository: { full_name: run.repository || "owner/repository" }, ...run }));
@@ -563,7 +574,11 @@ if (args[0] === "pr" && args[1] === "list") {
 } else if (args[0] === "api" && /\\/actions\\/runs\\/\\d+\\/jobs/.test(pathArg)) {
   const run = pathArg.replace(/^.*\\/runs\\//, "").replace(/\\/.*$/, "");
   const select = (answers.selectJobs || {})[run] || { status: "in_progress" };
-  reply({ jobs: [{ name: "checks / select", status: select.status, steps: [{ name: "Check that the layer above was computed on this layer", status: select.waitingAbove ? "in_progress" : "pending" }] }] });
+  // A page of at most 100, as GitHub lists them, with the run's count of jobs.
+  const page = Number((pathArg.match(/[?&]page=(\\d+)/) || [])[1] || 1);
+  const matrix = Array.from({ length: (answers.matrixJobs || {})[run] || 0 }, (_, index) => ({ name: "checks / e2e-self-host (" + (index + 1) + ")", status: "completed", conclusion: "success" }));
+  const all = [{ name: "checks / select", status: select.status, steps: [{ name: "Check that the layer above was computed on this layer", status: select.waitingAbove ? "in_progress" : "pending" }] }, ...matrix, ...((answers.runJobs || {})[run] || [])];
+  reply({ total_count: all.length, jobs: all.slice((page - 1) * 100, page * 100) });
 } else if (args[0] === "api" && /\\/compare\\//.test(args[1]) && value("--jq") === ".status") {
   const pair = args[1].replace(/^.*\\/compare\\//, "").replace(/\\?.*$/, "");
   const status = (answers.contains || {})[pair];
@@ -1265,12 +1280,14 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
   /** A `skip` layer `lower` at `head`, its stack ending on `bottom`, and one layer above. */
   const lowerHead = sha("c");
   // A thousandth of the rule's time: a 240-second bound takes a quarter of a second.
-  const skipLayer = (bottom = "main") => ({
+  /** A skip layer's check, as a draft's unless `ready`: a ready one is enforced on merge gates. */
+  const skipLayer = (bottom = "main", ready = false) => ({
     HEAD_REF: "lower",
     HEAD_SHA: lowerHead,
     BASELINE_BRANCH: bottom,
     GITHUB_RUN_ID: "500",
     SKIP_ABOVE_TIME_SCALE: "0.001",
+    LOWER_DRAFT: ready ? "false" : "true",
   });
   const upperHead = sha("d");
   const record = (base: string, baseline: string, format = "2", tested?: string) =>
@@ -1294,6 +1311,149 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
       reason: string;
       message: string;
     } | null;
+
+  it.effect(
+    "a ready skip layer passes only on a ready layer's green merge gate above, and fails the step otherwise",
+    () =>
+      Effect.gen(function* () {
+        // A format 4 record: built on this layer's head, compared with main, with what it gates.
+        const gated = (gate: string, above = "none") =>
+          `format 4\npull request 11\nmerge tree ${sha("e")}\nbase ${lowerHead}\ntested ${sha("e")}\nselection x\nworker-growth y\nbaseline main@${sha("6")}\nabove ${above}\ngate ${gate}\n`;
+        const jobs = (check: string | null, e2e: string | null) => ({
+          runJobs: {
+            "600": [
+              {
+                name: "checks / check",
+                status: check === null ? "in_progress" : "completed",
+                conclusion: check,
+              },
+              {
+                name: "checks / e2e",
+                status: e2e === null ? "queued" : "completed",
+                conclusion: e2e,
+              },
+            ],
+          },
+        });
+        const ready = skipLayer("main", true);
+        // The ready top layer's full run passed: the skip layer passes, enforced.
+        const green = yield* baseline(
+          ["above"],
+          ready,
+          upper(gated("full"), jobs("success", "success")),
+        );
+        expect(green.exitCode, green.log).toBe(0);
+        expect(decided(green.log)).toMatchObject({
+          mode: "enforce",
+          decision: "pass",
+          rule: "gate",
+        });
+        expect(green.outputs.decision).toBe("pass");
+        // So does the narrowing table's selection, which is what that layer merges on.
+        const narrowed = yield* baseline(
+          ["above"],
+          ready,
+          upper(gated("narrowed"), jobs("success", "success")),
+        );
+        expect(narrowed.exitCode, narrowed.log).toBe(0);
+        // The review's case: the layer above ran a draft's selection. It fails the step.
+        const draft = yield* baseline(
+          ["above"],
+          ready,
+          upper(gated("draft"), jobs("success", "success")),
+        );
+        expect(draft.exitCode).not.toBe(0);
+        expect(decided(draft.log)).toMatchObject({ mode: "enforce", decision: "fail" });
+        expect(decided(draft.log)!.reason).toContain(
+          "is a draft's, which runs only its block's selection",
+        );
+        expect(decided(draft.log)!.message).toContain("mark #11 ready for review (gh pr ready 11)");
+        // A full run that failed, or one still running when the wait ends, fails it too.
+        const red = yield* baseline(
+          ["above"],
+          ready,
+          upper(gated("full"), jobs("success", "failure")),
+        );
+        expect(red.exitCode).not.toBe(0);
+        expect(decided(red.log)!.reason).toContain(
+          "ended with checks / check success and checks / e2e failure",
+        );
+        const running = yield* baseline(["above"], ready, upper(gated("full"), jobs(null, null)));
+        expect(running.exitCode).not.toBe(0);
+        expect(running.log).toContain("runs the full suite for a merge and has not finished");
+        expect(decided(running.log)!.waited).toBeGreaterThanOrEqual(skipCheck.bounds.testing);
+        // A record from before the rule, old format or format 3, proves no merge gate.
+        for (const text of [
+          record(lowerHead, `main@${sha("6")}`, ""),
+          record(lowerHead, `main@${sha("6")}`, "3", sha("e")),
+        ]) {
+          const old = yield* baseline(["above"], ready, upper(text, jobs("success", "success")));
+          expect(old.exitCode, text).not.toBe(0);
+          expect(decided(old.log)!.reason).toContain("recorded no merge gate");
+        }
+        // A ready skip layer above passes on its own check having passed by this rule.
+        const stacked = yield* baseline(["above"], ready, upper(gated("stack", "pass")));
+        expect(stacked.exitCode, stacked.log).toBe(0);
+        const stackedFailed = yield* baseline(["above"], ready, upper(gated("stack", "fail")));
+        expect(stackedFailed.exitCode).not.toBe(0);
+        // A merge gate on another head (this layer moved) never passes it.
+        const moved = yield* baseline(
+          ["above"],
+          ready,
+          upper(gated("full").replace(`base ${lowerHead}`, `base ${sha("b")}`), {
+            ...jobs("success", "success"),
+            contains: { [`${lowerHead}...${sha("e")}`]: "diverged" },
+          }),
+        );
+        expect(moved.exitCode).not.toBe(0);
+        // A draft skip layer is only observed: the same draft run above is logged, and passes.
+        const observed = yield* baseline(
+          ["above"],
+          skipLayer(),
+          upper(gated("draft"), jobs("success", "success")),
+        );
+        expect(observed.exitCode, observed.log).toBe(0);
+        expect(decided(observed.log)).toMatchObject({ mode: "observe", decision: "would pass" });
+        // The layer above was marked ready, ran in full and passed, and is a draft again: its run
+        // stays on its head, but a draft is not merged, so it gates nothing.
+        const draftAgain = yield* baseline(["above"], ready, {
+          ...upper(gated("full"), jobs("success", "success")),
+          uppers: [{ number: 11, headRefOid: upperHead, isDraft: true }],
+        });
+        expect(draftAgain.exitCode).not.toBe(0);
+        expect(decided(draftAgain.log)).toMatchObject({ mode: "enforce", decision: "fail" });
+        expect(decided(draftAgain.log)!.reason).toContain(
+          "this layer is ready for review, and #11 is a draft now, so no run of it gates a merge",
+        );
+        expect(decided(draftAgain.log)!.message).toContain("gh pr ready 11");
+        // Nor does a ready skip layer above that has become a draft.
+        const stackedDraft = yield* baseline(["above"], ready, {
+          ...upper(gated("stack", "pass")),
+          uppers: [{ number: 11, headRefOid: upperHead, isDraft: true }],
+        });
+        expect(stackedDraft.exitCode).not.toBe(0);
+        // A full run lists more jobs than a page holds (96 E2E matrix jobs on 18 Nov), and its
+        // required checks come last: they are read from the page they are on.
+        const paged = yield* baseline(["above"], ready, {
+          ...upper(gated("full"), jobs("success", "success")),
+          matrixJobs: { "600": 120 },
+        });
+        expect(paged.exitCode, paged.log).toBe(0);
+        expect(decided(paged.log)).toMatchObject({ decision: "pass", rule: "gate" });
+        expect(
+          paged.calls.some((call) => call.includes("/runs/600/jobs?per_page=100&page=2")),
+        ).toBe(true);
+        // And a failure on that page fails it, as on the first.
+        const pagedRed = yield* baseline(["above"], ready, {
+          ...upper(gated("full"), jobs("success", "failure")),
+          matrixJobs: { "600": 230 },
+        });
+        expect(pagedRed.exitCode).not.toBe(0);
+        expect(decided(pagedRed.log)!.reason).toContain(
+          "ended with checks / check success and checks / e2e failure",
+        );
+      }),
+  );
 
   it.effect(
     "observing, the skip check logs what it would decide and passes, as a skip layer always did",
@@ -1338,7 +1498,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         // A record in this format without a baseline proves nothing; a later format is not read.
         for (const [text, why] of [
           [good.replace(/baseline .*\n/, ""), "a baseline it did not record"],
-          [record(lowerHead, `main@${sha("6")}`, "4"), "wrote a record in format 4"],
+          [record(lowerHead, `main@${sha("6")}`, "5"), "wrote a record in format 5"],
           [good.replace("above none", "above fail"), "its own check of the layer above it fails"],
           [good.replace("above none", "above error"), "its own check of the layer above it fails"],
         ] as const)
@@ -1855,6 +2015,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
           bottom: "main",
           repository: "o/r",
           runId: "5",
+          ready: false,
         };
         const throwing = Effect.sync(() =>
           skipCheck.next(
@@ -2269,14 +2430,16 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
   it.effect("one constant decides observe or enforce, and the bounds compose", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
-      // Observing until a day of decisions has been counted; flipping it is a one-line change.
-      expect(skipCheck.enforce).toBe(false);
+      // Enforced on a layer ready for review, which can be merged; observed on a draft.
+      expect(skipCheck.enforcing({ ready: true })).toBe(true);
+      expect(skipCheck.enforcing({ ready: false })).toBe(false);
       const lower = {
         ref: "lower",
         head: lowerHead,
         bottom: "main",
         repository: "o/r",
         runId: "5",
+        ready: false,
       };
       const stale = skipCheck.judge(
         {
@@ -2285,6 +2448,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
             {
               pull: 11,
               head: upperHead,
+              draft: false,
               runs: [
                 {
                   id: 1,
@@ -2330,12 +2494,20 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
       // The bounds, and how they compose: a layer under a waiting layer waits five polls longer
       // than that layer can wait for the top, and select has room for the longest wait after the
       // description's 3 minutes.
-      expect(skipCheck.bounds).toEqual({ stale: 240, noRun: 240, selecting: 900, chained: 1200 });
+      expect(skipCheck.bounds).toEqual({
+        stale: 240,
+        noRun: 240,
+        selecting: 900,
+        chained: 1200,
+        testing: 3000,
+      });
       expect(skipCheck.bounds.chained - skipCheck.bounds.selecting).toBeGreaterThanOrEqual(5 * 60);
+      // A ready layer waits for the top's merge gate to finish, longer than for it to choose.
+      expect(skipCheck.bounds.testing - skipCheck.bounds.chained).toBeGreaterThanOrEqual(5 * 60);
       const checks = yield* fs.readFileString(".github/workflows/checks.yml");
       const select = checks.slice(checks.indexOf("  select:"), checks.indexOf("\n  static:"));
       const timeout = Number(select.match(/^ {4}timeout-minutes: (\d+)$/m)?.[1]);
-      expect(timeout * 60).toBeGreaterThanOrEqual(180 + skipCheck.bounds.chained + 5 * 60);
+      expect(timeout * 60).toBeGreaterThanOrEqual(180 + skipCheck.bounds.testing + 5 * 60);
       // The record format the workflow writes is the one the check reads.
       expect(select).toContain(`          RECORD_FORMAT: "${skipCheck.recordFormat}"\n`);
     }),
@@ -2372,10 +2544,14 @@ layer(NodeServices.layer, { excludeTestServices: true })("Worker size baseline",
         expect(tested).toContain(
           "          ABOVE: ${{ steps.above.outputs.decision || 'none' }}\n",
         );
+        // And what it gates, which a ready layer below requires (e2e/ci-skip-check.ts).
+        expect(tested).toContain("          GATE: ${{ steps.select.outputs.gate }}\n");
+        // The check reads whether its own layer is a draft from select, read live.
+        expect(select).toContain("          LOWER_DRAFT: ${{ steps.select.outputs.draft }}\n");
         // What the run tested, for the layer below: the merge commit this checkout holds.
         expect(tested).toContain("          tested=$(git rev-parse HEAD)\n");
         expect(select).toContain(
-          `printf 'format %s\\npull request %s\\nmerge tree %s\\nbase %s\\ntested %s\\nselection %s\\nworker-growth %s\\nbaseline %s\\nabove %s\\n' "$RECORD_FORMAT" "$PULL" "$tree" "$BASE_SHA" "$tested" "$SELECTION" "$WORKER_GROWTH" "$BASELINE" "$ABOVE"`,
+          `printf 'format %s\\npull request %s\\nmerge tree %s\\nbase %s\\ntested %s\\nselection %s\\nworker-growth %s\\nbaseline %s\\nabove %s\\ngate %s\\n' "$RECORD_FORMAT" "$PULL" "$tree" "$BASE_SHA" "$tested" "$SELECTION" "$WORKER_GROWTH" "$BASELINE" "$ABOVE" "$GATE"`,
         );
         // A recorded build names its commit.
         expect(checks).toContain(
@@ -2545,12 +2721,16 @@ const replay = (push: Push) => {
     bottom: push.bottom,
     repository: "UsefulSoftwareCo/executor-next",
     runId: String(push.run),
+    // These pushes were checked by the rule for a layer computed on; a draft's.
+    ready: false,
   };
   const look = (at: number): skipCheck.Observation => ({
     _tag: "Read",
     uppers: push.uppers.map((upper) => ({
       pull: upper.pull,
       head: upper.head,
+      // The lower layer is a draft's, which no upper's state decides.
+      draft: false,
       runs: push.runs
         .filter(
           (run) =>

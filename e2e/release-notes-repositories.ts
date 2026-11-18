@@ -163,7 +163,8 @@ export const notes = (
         yield* fs.makeTempDirectoryScoped({ prefix: "executor-notes-json-" }),
         "notes.json",
       );
-    const feedNotes = !args.includes("--cloud");
+    // --cloud and --check write no release notes for the desktop feed.
+    const feedNotes = !args.includes("--cloud") && !args.includes("--check");
     const written = feedNotes
       ? [
           ...args,

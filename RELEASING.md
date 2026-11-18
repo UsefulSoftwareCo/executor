@@ -127,7 +127,8 @@ not.
 ## Publish beta
 
 The **Beta** workflow (`.github/workflows/beta.yml`) publishes betas. It checks
-on every push to `main` and on a schedule at minutes 8 and 38, and
+on every push to `main`, when CI passes on a push to `main`, and on a schedule
+at minutes 8 and 38, and
 `scripts/releases/beta-due.ts` decides from npm, the release runs and main's
 history. Before deciding, each tick runs `scripts/releases/lock-repair.sh`, which
 pushes `Refresh bun.lock [skip ci]` when main's bun.lock is not what
@@ -156,6 +157,18 @@ run. A push and a scheduled tick decide alike:
   `gh workflow run release-artifacts.yml --ref main -f channel=build`. A run still
   pacing or building holds nothing, since the publishing run tests every platform
   on the commit it publishes and publishes only when all pass.
+- **Release check** also starts the installed CLI suite on Windows, a narrowed
+  build (`jobs=cli`, `targets=win32-x64`, about USD 1.40 and 13 minutes), on a
+  decision of its own (`e2e/release-check.ts`, `windows`): it compares main with
+  the last commit a Windows check tested, or will, never with the Linux check's, so
+  a commit the Linux check already covers still gets its Windows run. It starts at
+  most once every four hours; a decision inside that wait skips it and keeps the
+  comparison where it was, so the first push or hourly backstop after the four
+  hours starts it for every commit since. A decision that fails starts it. It runs
+  from the `ci/windows-check` branch, which the step sets to main's commit, so it
+  never shares a concurrency group with a publication from `main`, and Beta
+  neither waits for it nor counts it. A red one shows a Windows-only failure hours
+  before a publishing run would; the red-main issue reports it.
 - A build run can be narrowed, to prove one job on one platform without paying
   for the whole matrix (a full build costs about USD 7; the installed CLI suite
   on Windows alone about USD 1.40):
@@ -175,13 +188,33 @@ run. A push and a scheduled tick decide alike:
   it commits `Release 2.0.0-beta.N+1` to `main` and dispatches **Executor
   releases** with channel **beta**.
 - When npm lacks the committed version, it publishes it again instead of
-  skipping it. An attempt that failed in its build or test jobs is dispatched
-  again on the next tick. After two failures in a row, the next attempt waits
-  six hours after the last one and for a new commit on `main`, or a day, so a
-  broken `main` costs at most five publishing runs a day. An attempt that failed
-  in its publish job has its failed jobs re-run once from its own artifacts;
-  after that, inspect it as below. Each skipped retry leaves a warning on the
-  Beta run, and the failed release runs stay red.
+  skipping it. At most five publishing attempts a day fail: once five failed in
+  the last 24 hours, counting each re-run of a run as an attempt of its own, no
+  tick starts or re-runs another, a manual dispatch of Beta
+  included, until one of them is a day old (dispatch **Executor releases** with
+  channel **beta** by hand to publish sooner, after inspecting them). It finds
+  them by when they ran: the release runs of the last month (GitHub re-runs a
+  run only within 30 days), and the earlier attempts of those re-run in the last
+  day, stopping once five are known. When ten requests cannot tell, the tick
+  holds. Within that
+  bound, an attempt that failed before publishing is dispatched again on the next
+  tick. After two failures in a row, the next attempt waits six hours after the
+  last one and for a new commit on `main`, or a day, unless CI has passed on a
+  `main` commit after the last attempt's: a failure that a merge fixed is retried
+  as soon as `main` is green again. Beta also ticks when CI finishes green on a
+  push to `main`, so that retry starts within minutes.
+- An attempt that failed in a step that publishes anything is never retried that
+  way: it has its failed jobs re-run once from its own artifacts; after that,
+  inspect it as below. It is judged by the step, not the job's name: every step
+  of `release-artifacts.yml` and `bun-runtime.yml` declares in its `env` whether
+  it publishes, `PUBLISHES: "yes"` (every step of the `publish` job, the docker
+  job's architecture push, the dispatch of Deploy and the Bun runtime's release)
+  or `PUBLISHES: "no"`, and `e2e/tests/beta-due.spec.ts` fails a step that
+  declares neither, so give every new step one. A run's job is found by the job id
+  at the start of its name, which GitHub cuts short for a long matrix job; a job or
+  step that cannot be found counts as publishing
+  (`scripts/releases/publishing-steps.ts`). Each skipped retry leaves a warning
+  on the Beta run, and the failed release runs stay red.
 - Only publishing runs count as attempts. A dispatch with channel **build**
   does not publish, so it neither adds to a failure streak nor counts as a
   success, though it still makes the tick wait while it runs.

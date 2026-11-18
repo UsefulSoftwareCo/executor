@@ -93,6 +93,25 @@ export const pullRequestReads: ReadonlyArray<{
       "A skip with one writes skip=true, in the key; without one select fails and records nothing.",
   },
   {
+    where: "e2e/ci-selection.ts: pulls/${pullRequest}",
+    reads: "whether the pull request is a draft, read live rather than from the event",
+    covered:
+      "It decides the outputs draft, gate and, ready, the full suite, which are in the key, and the name of the e2e job.",
+  },
+  {
+    where: "e2e/ci-selection.ts: pulls/${pullRequest}/commits",
+    reads:
+      "the title and commit messages, which the squash on main carries, for a directive that would skip main's CI",
+    covered:
+      "A directive fails select, which then records nothing; a run is repeated only when its select succeeded. A reworded commit is a new head, and a run on a new head is never a repeat.",
+  },
+  {
+    where: "e2e/ci-selection.ts: commits/${compareHead}/pulls",
+    reads:
+      "on a push to main, the pull request that landed it, to say when it was a lower stack layer",
+    covered: "Read only on a push to main, which records nothing and is never repeated.",
+  },
+  {
     where: "e2e/ci-selection.ts: pulls/${pullRequest}/files",
     reads: "the pull request's changed files",
     covered: "They decide the outputs, in the key.",

@@ -19,6 +19,15 @@
  * It writes `run=false` only when it is sure: no earlier check, a comparison GitHub cuts short or
  * cannot make, or any failure leaves `run` unwritten or `true`, and the workflow then starts the
  * check. Reads GitHub with `gh`, so e2e/tests/ci-selection.spec.ts drives it with a stub.
+ *
+ * The paced check builds Linux x64 and the image only. Windows has a decision of its own, written as
+ * `windows`: the installed CLI suite on Windows, a narrowed build dispatched on the
+ * `ci/windows-check` branch (`windowsBranch`). Its comparison runs from the last Windows check that
+ * tested a commit, or will, by the same rule, never from the Linux check: a commit the Linux check
+ * covered may still be one no Windows check has. It starts at most once every
+ * WINDOWS_PACE_SECONDS; a decision inside that pace writes `windows=false` and keeps the base where
+ * it was, so the first decision after the pace, a push or the hourly backstop, starts it for every
+ * commit since. A failure leaves `windows` unwritten, and the workflow then starts it.
  */
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -33,6 +42,11 @@ class ReleaseCheckFailed extends Schema.TaggedError<ReleaseCheckFailed>()("Relea
 /** GitHub's comparison lists at most this many files. */
 const compareFileLimit = 300;
 
+/** The branch the Windows check is dispatched on, which release-check.yml sets to main's commit. */
+export const windowsBranch = "ci/windows-check";
+/** The Windows check's title (release-artifacts.yml's `run-name` for that narrowed build). */
+export const windowsTitle = "Executor releases (build, cli on win32-x64)";
+
 const Run = Schema.Struct({
   databaseId: Schema.Number,
   status: Schema.String,
@@ -45,6 +59,15 @@ const Jobs = Schema.fromJsonString(
     jobs: Schema.Array(Schema.Struct({ name: Schema.String, conclusion: Schema.String })),
   }),
 );
+const WindowsRun = Schema.Struct({
+  databaseId: Schema.Number,
+  status: Schema.String,
+  conclusion: Schema.String,
+  headSha: Schema.String,
+  url: Schema.String,
+  createdAt: Schema.String,
+  displayTitle: Schema.String,
+});
 const Comparison = Schema.fromJsonString(
   Schema.Struct({ status: Schema.String, files: Schema.Array(Schema.String) }),
 );
@@ -81,13 +104,54 @@ NodeRuntime.runMain(
     const head = yield* Config.String("RELEASE_CHECK_HEAD");
     const output = yield* Config.String("GITHUB_OUTPUT");
     const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
-    const decide = (run: boolean, reason: string) =>
+    const pace = yield* Config.Number("WINDOWS_PACE_SECONDS").pipe(Config.withDefault(14_400));
+    const decide = (key: "run" | "windows", title: string, run: boolean, reason: string) =>
       Effect.gen(function* () {
-        const report = `## Release check\n\n${run ? "Runs" : "Skipped"}: ${reason}\n`;
+        const report = `## ${title}\n\n${run ? "Runs" : "Skipped"}: ${reason}\n`;
         yield* Console.log(report);
         if (Option.isSome(summary))
           yield* fs.writeFileString(summary.value, `${report}\n`, { flag: "a" });
-        yield* fs.writeFileString(output, `run=${run}\n`, { flag: "a" });
+        yield* fs.writeFileString(output, `${key}=${run}\n`, { flag: "a" });
+      });
+    const jobsOf = (run: { readonly databaseId: number }) =>
+      gh(["run", "view", String(run.databaseId), "-R", repository, "--json", "jobs"]).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(Jobs)),
+        Effect.map(
+          ({ jobs }) =>
+            (name: string) =>
+              jobs.find((job) => job.name === name)?.conclusion,
+        ),
+      );
+    /** Whether the changes since `base`, which `url` tests, hold a file a release lane reads. */
+    const changedSince = (base: string, url: string) =>
+      Effect.gen(function* () {
+        const comparison = yield* gh([
+          "api",
+          `repos/${repository}/compare/${base}...${head}`,
+          "--jq",
+          "{status, files: [.files[] | .filename, (.previous_filename // empty)]}",
+        ]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Comparison)));
+        if (comparison.status !== "ahead" && comparison.status !== "identical")
+          return {
+            run: true,
+            reason: `main is ${comparison.status} of ${base}, which ${url} tested, so the changes since cannot be listed.`,
+          };
+        if (comparison.files.length >= compareFileLimit)
+          return {
+            run: true,
+            reason: `GitHub lists at most ${compareFileLimit} changed files, and the changes since ${base} reach that.`,
+          };
+        const paths = mainPushPaths(yield* releaseSources);
+        const relevant = [...new Set(comparison.files)].filter((file) => matchesAny(paths, file));
+        return relevant.length === 0
+          ? {
+              run: false,
+              reason: `no file a release lane builds or runs changed since ${base}, which ${url} tests.`,
+            }
+          : {
+              run: true,
+              reason: `since ${base}, which ${url} tests, these changed: ${relevant.slice(0, 10).map(quoted).join(", ")}${relevant.length > 10 ? ` and ${relevant.length - 10} more` : ""}.`,
+            };
       });
 
     const runs = yield* gh([
@@ -113,51 +177,63 @@ NodeRuntime.runMain(
         base = run;
         break;
       }
-      const jobs = (yield* gh([
-        "run",
-        "view",
-        String(run.databaseId),
-        "-R",
-        repository,
-        "--json",
-        "jobs",
-      ]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Jobs)))).jobs;
-      const conclusion = (name: string) => jobs.find((job) => job.name === name)?.conclusion;
+      const conclusion = yield* jobsOf(run);
       if (conclusion("pace") === "success" && conclusion("metadata") !== "skipped") {
         base = run;
         break;
       }
     }
-    if (base === undefined) return yield* decide(true, "no earlier check on main tested a commit.");
-    if (base.headSha === head)
-      return yield* decide(false, `${base.url} tests this commit already.`);
+    const linux =
+      base === undefined
+        ? { run: true, reason: "no earlier check on main tested a commit." }
+        : base.headSha === head
+          ? { run: false, reason: `${base.url} tests this commit already.` }
+          : yield* changedSince(base.headSha, base.url);
+    yield* decide("run", "Release check", linux.run, linux.reason);
 
-    const comparison = yield* gh([
-      "api",
-      `repos/${repository}/compare/${base.headSha}...${head}`,
-      "--jq",
-      "{status, files: [.files[] | .filename, (.previous_filename // empty)]}",
-    ]).pipe(Effect.flatMap(Schema.decodeUnknownEffect(Comparison)));
-    if (comparison.status !== "ahead" && comparison.status !== "identical")
+    // The Windows check: its own runs on its own branch, its own base and its own pace.
+    const windowsRuns = (yield* gh([
+      "run",
+      "list",
+      "-R",
+      repository,
+      "-w",
+      "release-artifacts.yml",
+      "-e",
+      "workflow_dispatch",
+      "-b",
+      windowsBranch,
+      "-L",
+      "20",
+      "--json",
+      "databaseId,status,conclusion,headSha,url,createdAt,displayTitle",
+    ]).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Schema.Array(WindowsRun)))),
+    )).filter((run) => run.displayTitle === windowsTitle && run.conclusion !== "cancelled");
+    let windowsBase: typeof WindowsRun.Type | undefined;
+    for (const run of windowsRuns) {
+      if (run.status !== "completed" || (yield* jobsOf(run))("metadata") === "success") {
+        windowsBase = run;
+        break;
+      }
+    }
+    const windows =
+      windowsBase === undefined
+        ? { run: true, reason: "no earlier Windows check tested a commit of main." }
+        : windowsBase.headSha === head
+          ? { run: false, reason: `${windowsBase.url} tests this commit already.` }
+          : yield* changedSince(windowsBase.headSha, windowsBase.url);
+    // The newest Windows check of any outcome but a cancellation sets the pace.
+    const newest = windowsRuns[0];
+    const now = Date.now();
+    const next = newest === undefined ? 0 : Date.parse(newest.createdAt) + pace * 1000;
+    if (windows.run && newest !== undefined && now < next)
       return yield* decide(
-        true,
-        `main is ${comparison.status} of ${base.headSha}, which ${base.url} tested, so the changes since cannot be listed.`,
+        "windows",
+        "Windows check",
+        false,
+        `it is due, as ${windows.reason.replace(/\.$/, "")}, but ${newest.url} started less than ${pace} s ago, so the first decision after ${new Date(next).toISOString()} starts it, comparing from the same commit.`,
       );
-    if (comparison.files.length >= compareFileLimit)
-      return yield* decide(
-        true,
-        `GitHub lists at most ${compareFileLimit} changed files, and the changes since ${base.headSha} reach that.`,
-      );
-    const paths = mainPushPaths(yield* releaseSources);
-    const relevant = [...new Set(comparison.files)].filter((file) => matchesAny(paths, file));
-    return yield* relevant.length === 0
-      ? decide(
-          false,
-          `no file a release lane builds or runs changed since ${base.headSha}, which ${base.url} tests.`,
-        )
-      : decide(
-          true,
-          `since ${base.headSha}, which ${base.url} tests, these changed: ${relevant.slice(0, 10).map(quoted).join(", ")}${relevant.length > 10 ? ` and ${relevant.length - 10} more` : ""}.`,
-        );
+    yield* decide("windows", "Windows check", windows.run, windows.reason);
   }).pipe(Effect.provide(NodeServices.layer)),
 );
