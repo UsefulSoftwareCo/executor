@@ -2937,6 +2937,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           }).pipe(Effect.scoped);
         const head = (yield* run("git", ["rev-parse", "HEAD"])).log.trim();
         const originUrl = (yield* run("git", ["remote", "get-url", "origin"])).log.trim();
+        // What this checkout's origin/main is, or that it has none: no check below may move it.
+        const trackedMain = () =>
+          run("git", ["rev-parse", "--verify", "--quiet", "refs/remotes/origin/main"]);
+        const trackedBefore = yield* trackedMain();
         // origin: a bare repository whose main is this commit, borrowing this checkout's objects.
         const origin = path.join(scratch, "origin.git");
         yield* run("git", ["init", "--quiet", "--bare", origin]);
@@ -3138,6 +3142,10 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         });
         expect(offline.exitCode, offline.log).toBe(2);
         expect(offline.log).toContain("It needs the network, and cannot check offline");
+
+        // The fetches went to refs of pr:check's own: this checkout's origin/main is as it was,
+        // not the stand-in's main.
+        expect(yield* trackedMain()).toEqual(trackedBefore);
       }).pipe(Effect.scoped),
     heavyCaseTimeout,
   );
