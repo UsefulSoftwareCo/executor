@@ -978,6 +978,90 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
       }),
     ),
   );
+  it.effect(scenarios.hostedAppLinkCreatorRemoval.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const fixture = yield* appLinksFixture([{ path: "index.ts", content: source }]);
+        const { api, actors, prefix, connect } = fixture;
+        const telemetry = yield* Telemetry;
+        const creator = yield* okBody(
+          SessionIdentity,
+          yield* api.request(actors.admin, "GET", "/api/auth/get-session"),
+        );
+        const { members } = yield* okBody(
+          Memberships,
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `/api/auth/organization/list-members?organizationId=${actors.organization.id}`,
+          ),
+        );
+        const membership = members.find((member) => member.user.email === creator.user.email);
+        if (membership === undefined) return yield* Effect.die("The creator has no membership");
+        const token = `creator-removal-fixture-${randomUUID()}`;
+        const account = yield* connect(actors.owner, "app", "team", token);
+        const created = yield* okBody(
+          Resource,
+          yield* api.request(actors.admin, "POST", `${prefix}/apps/deploy`, {
+            name: "Creator removal",
+            files: [{ path: "index.ts", content: teamAppSource }, appsManifest],
+          }),
+        );
+        const path = `${prefix}/apps/${created.id}`;
+        yield* fixture.adopt(path);
+        const who = (actor: Session) =>
+          api.request(actor, "POST", `${path}/tools/call`, {
+            tool: "who",
+            kind: "query",
+            input: {},
+          });
+        // The admin reuses the owner's account in the app they created, then is demoted.
+        yield* linkAccount(actors.admin, path, "team", account, "app");
+        expect((yield* okBody(TeamWho, yield* who(actors.owner))).token === token).toBe(true);
+        yield* ok(
+          yield* api.request(actors.owner, "POST", "/api/auth/organization/update-member-role", {
+            organizationId: actors.organization.id,
+            memberId: membership.id,
+            role: "member",
+          }),
+        );
+        yield* refused(yield* who(actors.owner), 409, "AppLinkCreatorNotAuthorized");
+
+        // Deleting their user leaves the app without a creator; the reuse must not serve again.
+        const removal = traced();
+        const deleted = yield* api.request(actors.admin, "DELETE", "/api/user", undefined, {
+          traceparent: removal.traceparent,
+        });
+        expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
+        const after = yield* who(actors.owner);
+        expect(JSON.stringify(after.body).includes(token)).toBe(false);
+        yield* refused(after, 409, "AccountRequired");
+        expect(yield* linkedAccountIds(actors.owner, path, "app")).toEqual([]);
+        const action = "app_account.unlink";
+        const logs = yield* telemetry.logs(removal.traceId).pipe(
+          Effect.filterOrFail(
+            (logs) => logs.includes(action),
+            () => new Error("The unlink audit has not reached the collector"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+        );
+        expect(auditOf(logs, action)).toEqual({
+          "audit.action": action,
+          "audit.outcome": "success",
+          "audit.target.kind": "account",
+          "audit.target.id": account,
+          "audit.app": created.id,
+          "audit.authority": "creator_removal",
+        });
+        expect(logs.includes(token)).toBe(false);
+
+        // The account's owner can still link it to the app themselves.
+        yield* linkAccount(actors.owner, path, "team", account, "app");
+        expect((yield* okBody(TeamWho, yield* who(actors.owner))).token === token).toBe(true);
+      }),
+    ),
+  );
   it.effect(scenarios.hostedAppLinkAudit.title, (context) =>
     withHostedCase(
       context,

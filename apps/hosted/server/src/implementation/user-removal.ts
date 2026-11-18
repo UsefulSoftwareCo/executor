@@ -23,7 +23,8 @@ import {
   type UserRemovalOutcome,
 } from "../contracts/user-removal.ts";
 import { removeAccount } from "./accounts.ts";
-import { removeAppLinksOf } from "./app-accounts.ts";
+import { removeAppLinksOf, removeReusedLinksInAppsOf } from "./app-accounts.ts";
+import { recordSecurityAudit } from "./security-audit.ts";
 import { ScheduleWakeup } from "../contracts/schedules.ts";
 import { policyDatabase } from "./resource-policy.ts";
 
@@ -139,6 +140,25 @@ export const removeUser = Effect.gen(function* () {
         Effect.provideService(CurrentPolicy, fullAuthority),
       );
     }
+  }
+  for (const organization of planned.organizations) {
+    if (organization.outcome !== "leave") continue;
+    // Deleting the user nulls the creator of the apps they made, which would let a reuse refused
+    // while they were a member serve again; unlink those reuses first.
+    const removed = yield* removeReusedLinksInAppsOf(executor, sql, organization.id, user);
+    for (const link of removed)
+      yield* recordSecurityAudit({
+        action: "app_account.unlink",
+        outcome: "success",
+        target: { kind: "account", id: link.account },
+        detail: { app: link.app, authority: "creator_removal" },
+        user,
+        organization: organization.id,
+      });
+    if (removed.length > 0)
+      yield* Effect.serviceOption(ScheduleWakeup).pipe(
+        Effect.flatMap(Option.match({ onNone: () => Effect.void, onSome: (wake) => wake })),
+      );
   }
   const removals = yield* OrganizationRemovals;
   for (const organization of deleted) yield* removals.begin(organization.id, organization.id);

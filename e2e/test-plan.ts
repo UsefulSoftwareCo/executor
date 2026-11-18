@@ -9497,6 +9497,17 @@ export const scenarios = plan({
       cloud: scheduled,
     },
   },
+  hostedAppLinkCreatorRemoval: {
+    fixtures: "actors",
+    file: "app-account-app-links.spec.ts",
+    title:
+      "a reused hosted app account refused after its app's creator is demoted stays refused once the creator deletes their user, and the unlink is audited",
+    targets: {
+      local: na("Local has no organization roles."),
+      "self-host": na("Self-host users are managed by the instance operator."),
+      cloud: scheduled,
+    },
+  },
   hostedAppLinkOAuthConnections: {
     fixtures: "actors",
     file: "app-account-app-links.spec.ts",

@@ -663,6 +663,40 @@ export const removeAppLinksOf = (
     }).pipe(Effect.catchTags(sqlFailures)),
   );
 
+const ReusedLinkRow = Schema.Struct({ app: AppId, requirement: Schema.String, account: AccountId });
+/**
+ * Before a user who leaves an organization is deleted, unlink the reused app links in the apps they
+ * created there, except for accounts they own. Deleting the user sets those apps' creator to null,
+ * which the use-time check cannot tell from an app the system created, so a reuse refused while
+ * the creator was a member would serve again: an account's token reaching code a demoted member
+ * deployed. One transaction under the organization's reuse lock, so no reuse into those apps
+ * commits meanwhile. Returns the links removed, for the caller to audit.
+ */
+export const removeReusedLinksInAppsOf = (
+  executor: Executor,
+  sql: SqlClient.SqlClient,
+  organization: string,
+  user: string,
+) =>
+  executor[StorageHost].transaction(
+    Effect.gen(function* () {
+      yield* lockAppLinkReuse(sql, organization);
+      const rows = yield* Schema.decodeUnknownEffect(Schema.Array(ReusedLinkRow))(
+        yield* sql`select l.app, l.requirement, l.account from hosted_app_account_links l
+          join hosted_app_access target on target.id = l.app
+          left join hosted_account_access p on p.account_id = l.account
+          where l.subject is null and starts_with(l.linked_by, ${reusedAppLinkPrefix})
+            and target.organization_id = ${organization} and target.creator_id = ${user}
+            and p.personal_user_id is distinct from ${user}
+          order by l.app, l.requirement, l.account`,
+      );
+      const removed: Array<typeof ReusedLinkRow.Type> = [];
+      for (const row of rows)
+        if (yield* removeLink(sql, executor.webhooks, { ...row, subject: null })) removed.push(row);
+      return removed;
+    }).pipe(Effect.catchTags(sqlFailures)),
+  );
+
 /** The apps an account is linked to for everyone, which must unlink it before it can be deleted. */
 export const appLinkApps = (sql: SqlClient.SqlClient, account: AccountId) =>
   Effect.gen(function* () {
