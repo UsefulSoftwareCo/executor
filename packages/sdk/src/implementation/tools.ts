@@ -852,9 +852,10 @@ const partlyRun = ({ app, version, tool }: ToolCallFailed) =>
  * work after the hand-off, such as saving an approval request. Its error records that, so it leads
  * with Executor's instruction not to repeat the call and is never offered as a retry. That includes
  * a refusal, such as invalid input or a denied approval, which the app's reply reports. A failure
- * before the host handed over any work, and every failure of a call the app confirms only reads
- * (`confirmedRead`), keep their own classification. A query only its upstream calls one, such as
- * an MCP tool with `readOnlyHint`, may write like any other call.
+ * before the host handed over any work, and every failure of a call that only reads (`read`), keep
+ * their own classification. `read` is a query the app confirms only reads (`readOf`) or whose tool
+ * declares it only reads (`declaredReadOf`), such as an MCP tool with `readOnlyHint`: the advice is
+ * the tool's own, and Executor never repeats a declared read itself.
  */
 export const callFailure =
   (read: boolean, enteredApp: boolean, entries: number) =>
@@ -1538,6 +1539,35 @@ export const makeTools = (
         )
       : Effect.succeed(Effect.succeed(false));
   /**
+   * Whether a call named a query declares that it only reads: its kept listing marks the tool
+   * read-only (`readOnly`), the fact the dashboard shows as "Only reads data". For an MCP tool that
+   * is its server's `readOnlyHint` unless the app's `kinds` names its kind. It is the tool's claim,
+   * not the app's confirmation, so it decides only a failed call's advice (`callFailure`): the call
+   * is offered as a retry and is not said to have changed data. It never repeats a call; only a
+   * confirmed read is repeated (`readOf`). A call that names no kind is not a declared read: reading
+   * the catalog for its kind ran the app's code. The listing is read as `readOf` reads it.
+   */
+  const declaredReadOf = (state: InvocationSnapshot, name: ToolName, kind: ToolKind | undefined) =>
+    kind === "query"
+      ? listings.kept(state).pipe(
+          Effect.orElseSucceed(() => Effect.succeed<ToolListing | undefined>(undefined)),
+          Effect.flatMap((kept) =>
+            Effect.cached(
+              kept.pipe(
+                Effect.map(
+                  (listing) =>
+                    listing?.items.some((tool) => tool.name === name && tool.readOnly === true) ===
+                    true,
+                ),
+                Effect.tap((declared) =>
+                  Effect.annotateCurrentSpan("executor.tool.read_declared", declared),
+                ),
+              ),
+            ),
+          ),
+        )
+      : Effect.succeed(Effect.succeed(false));
+  /**
    * The listing a call that names no kind evaluates when none is kept. Evaluating the catalog runs
    * the app's code, which may write before it fails, and the call may write, so it is evaluated
    * once: a refused account is renewed, and the failure reports that renewal, as a call that may
@@ -1769,6 +1799,7 @@ export const makeTools = (
         // code, so the call's outcome stays unknown.
         const named = parsed.kind;
         const read = yield* readOf(state, parsed.tool, named);
+        const declaredRead = yield* declaredReadOf(state, parsed.tool, named);
         // Every failure from here, the app's or Executor's own, passes through `callFailure` once.
         return yield* Effect.gen(function* () {
           const kind = yield* kindOf(state, context, parsed.tool, named);
@@ -1839,8 +1870,8 @@ export const makeTools = (
             failure._tag === "AccountRequired" ||
             !enteredApp
               ? Effect.fail(failure)
-              : Effect.flatMap(read, (read) =>
-                  Effect.fail(appCode.callFailure(read, enteredApp)(failure)),
+              : Effect.flatMap(Effect.all([read, declaredRead]), ([read, declared]) =>
+                  Effect.fail(appCode.callFailure(read || declared, enteredApp)(failure)),
                 ),
           ),
           // A defect after the hand-off, such as in Executor's own code, does not establish what
@@ -1944,6 +1975,7 @@ export const makeTools = (
                   // As for a call, the saved (caller's) kind counts as a read only when the app
                   // confirms it.
                   const read = yield* readOf(state, saved.tool, saved.kind);
+                  const declaredRead = yield* declaredReadOf(state, saved.tool, saved.kind);
                   // As for a call, every failure from here passes through `callFailure` once, so a
                   // resumed call that may write reports what it failed with as possibly written.
                   return yield* Effect.gen(function* () {
@@ -2013,8 +2045,8 @@ export const makeTools = (
                       failure._tag === "AccountRequired" ||
                       !enteredApp
                         ? Effect.fail(failure)
-                        : Effect.flatMap(read, (read) =>
-                            Effect.fail(appCode.callFailure(read, enteredApp)(failure)),
+                        : Effect.flatMap(Effect.all([read, declaredRead]), ([read, declared]) =>
+                            Effect.fail(appCode.callFailure(read || declared, enteredApp)(failure)),
                           ),
                     ),
                     Effect.provideService(AppCodeEntered, appCode),

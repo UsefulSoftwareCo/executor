@@ -8418,8 +8418,7 @@ export const scenarios = plan({
   mcpExecuteHintedReadTimedOut: {
     fixtures: "actors",
     file: "mcp-execute-failures.spec.ts",
-    title:
-      "MCP tools only their server labels read-only are not offered as retries after they time out",
+    title: "MCP tools their server labels read-only are offered as retries after they time out",
     targets: {
       "self-host": scheduled,
       cloud: na("The silent MCP server is a loopback listener."),

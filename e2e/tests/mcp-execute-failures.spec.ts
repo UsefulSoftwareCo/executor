@@ -2469,15 +2469,18 @@ try { return await call(); } catch (error) {
         const api = yield* Api,
           actors = yield* Actors;
         const server = yield* refusingMcpServer;
-        // `peek` says it only reads, yet the server counts every call it receives and never
+        // `peek` says it only reads, and the server counts every call it receives and never
         // answers one. The app has no `kinds` entry for it, so only the server's hint calls it a
         // query.
         yield* server.refuse("silent-calls");
         const app = yield* hostedAppFiles("Hinted MCP read", mcpAppFiles(server.url, 1_000));
-        const peek = `tools[${JSON.stringify(app.slug)}].peek`;
+        const tools = `tools[${JSON.stringify(app.slug)}]`;
+        const peek = `${tools}.peek`;
+        const readAction =
+          "You may retry once. If it times out again, investigate before repeating it.";
 
         // A program that follows the retry policy repeats the call only when its error says an
-        // unchanged repeat is safe. The hint does not make it safe, so the call runs once.
+        // unchanged repeat is safe. The tool declares that it only reads, so it is.
         const followed = yield* executeOnce(
           app.client,
           "Repeat a timed-out hinted read only when its error says it is retryable",
@@ -2491,12 +2494,12 @@ try { return await call(); } catch (error) {
           "hinted-read-followed.json",
         );
         expect(followed.structured).toMatchObject({
-          execution: { ok: true, value: { retries: 0, retryable: false } },
+          execution: { ok: true, value: { retries: 1, retryable: true } },
         });
-        expect(yield* server.silentCalls).toBe(1);
+        // The program's own retry is the only repeat: Executor does not repeat a hinted read.
+        expect(yield* server.silentCalls).toBe(2);
 
-        // The agent is told the call may have changed data, and the read's advice is quoted, not
-        // offered.
+        // The agent gets the read's own advice and is not told the call may have changed data.
         const executed = yield* executeOnce(
           app.client,
           "Call a hinted read whose MCP server never answers",
@@ -2506,14 +2509,15 @@ try { return await call(); } catch (error) {
         const { message, response } = (yield* Schema.decodeUnknownEffect(ToolFailed)(
           executed.structured,
         )).execution.error;
-        expect(siteless(message)).toBe(
-          `ToolCallFailed (HTTP 502): The app’s MCP server did not answer the tool call in time, so Executor stopped waiting. The server may still finish it. Recovery: ${unknownOutcomeAction} Retryable (unchanged call): no.`,
+        expect(siteless(message)).toMatch(
+          /^ToolCallFailed \(HTTP 502\): The app’s MCP server did not answer the tool call in time, so Executor stopped waiting\. The server may still finish it\. Recovery: You may retry once\. If it times out again, investigate before repeating it\. Retryable \(unchanged call\): yes\./,
         );
-        expect(response).toMatchObject({ code: "ToolCallFailed", retryable: false });
-        expectUnknownOutcome(
-          response.recovery,
-          "For a call that only reads, the advice for this failure is: “You may retry once.",
-        );
+        expect(response).toMatchObject({
+          code: "ToolCallFailed",
+          retryable: true,
+          recovery: { action: readAction },
+        });
+        expect(JSON.stringify(response)).not.toContain("may have changed data");
 
         // A direct call gets the same answer.
         const direct = yield* app.client.use("Call a hinted read directly", (client, signal) =>
@@ -2544,11 +2548,11 @@ try { return await call(); } catch (error) {
         )(direct.structuredContent);
         expect(called.execution.value.error.response).toMatchObject({
           code: "ToolCallFailed",
-          retryable: false,
-          recovery: { action: unknownOutcomeAction },
+          retryable: true,
+          recovery: { action: readAction },
         });
 
-        // So does an API caller that names the call a query: the caller's kind is not the app's.
+        // So does an API caller that names the call a query.
         const rest = yield* api.request(actors.owner, "POST", `${app.path}/tools/call`, {
           tool: "peek",
           kind: "query",
@@ -2558,12 +2562,31 @@ try { return await call(); } catch (error) {
         expect(rest.body).toMatchObject({
           _tag: "ToolCallFailed",
           mcp: { phase: "call", reason: "timeout" },
-          mayHaveWritten: true,
+          recovery: { action: readAction },
+        });
+        expect(rest.body).not.toHaveProperty("mayHaveWritten");
+
+        // A tool that does not declare that it only reads keeps the conservative advice.
+        const looked = yield* executeOnce(
+          app.client,
+          "Call an unhinted tool whose MCP server never answers",
+          `return await ${tools}.lookup({});`,
+          "unhinted-call.json",
+        );
+        const write = (yield* Schema.decodeUnknownEffect(ToolFailed)(looked.structured)).execution
+          .error;
+        expect(write.response).toMatchObject({
+          code: "ToolCallFailed",
+          retryable: false,
           recovery: { action: unknownOutcomeAction },
         });
+        expectUnknownOutcome(
+          write.response.recovery,
+          "For a call that only reads, the advice for this failure is: “You may retry once.",
+        );
 
-        // Each call reached the server once: neither Executor nor the advice repeated one.
-        expect(yield* server.silentCalls).toBe(4);
+        // Each call reached the server once: Executor repeated none of them.
+        expect(yield* server.silentCalls).toBe(6);
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );
