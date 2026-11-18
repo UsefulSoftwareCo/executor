@@ -269,7 +269,7 @@ A PR run on an earlier head is cancelled by the new head's run; two runs on the
 same head both run, one after the other. Each push to `main` has its own
 concurrency group, so every push finishes a run and gives each merge a baseline,
 even when merges come in a burst. A stack that lands in one push gets one run, at
-its top commit. Overlapping `main` runs share no deployed stage, database or
+its top commit; `gh stack merge` lands it that way. Overlapping `main` runs share no deployed stage, database or
 secret. They do read the npm registry and create hosted emulators.dev instances,
 each named with a random UUID, so they do not interfere. The jobs live in `.github/workflows/checks.yml`,
 a `workflow_call` workflow, so another repository can call the same jobs.
@@ -380,8 +380,17 @@ top included; a draft above never passes it. On a draft it only logs what it wou
 (`skip-check` in the select log and summary): a draft cannot be merged. Never write `skip` on a
 long-lived branch's PR into `main`: it must be compared with `main` itself.
 After changing a lower layer, rebase the layers above it so the top runs again.
-Merge the stack only when the top layer passes, bottom first, without pausing between
-layers: each merge deploys production.
+Land a stack only when the top layer passes, and only with `gh stack merge <top PR> --yes
+--squash`, never layer by layer. It merges every layer in one operation and one push to
+`main`, so `main` runs CI, Deploy and the public export once, on the top commit, with no
+commit in between that has a code layer without its tests (checked with #5035 and #5036 on
+18 Nov 2026, `notes/ci.md`). A lower layer merged by itself lands untested by the run that
+covered it; `main`'s CI then warns "Stack layer landed alone".
+`gh stack merge` merges only the GitHub stack its argument is in, into that stack's base. First
+check that every layer is in one stack based on `main`: `gh api
+repos/UsefulSoftwareCo/executor-next/pulls/<top PR> --jq .stack` shows its number, size and base.
+If the layers sit in two stacks, run `gh stack unstack <upper stack>` and then `gh stack link <lower
+stack> <each PR above it>`, which changes no branch or base (done for #4989 to #5002 on 18 Nov 2026).
 
 The draft's selection is for fast answers while you work; the ready run is the one that
 cannot miss. Choose from the actual callers of the changed code. Search `e2e/tests/` for the

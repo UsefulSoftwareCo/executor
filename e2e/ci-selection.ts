@@ -1448,6 +1448,41 @@ NodeRuntime.runMain(
           ]))
             .split("\n")
             .filter((file) => file !== "");
+    // A push to main that ends on a lower stack layer, a pull request whose e2e block says skip,
+    // landed it without the layers above it: main has its code without the run that tested it. A
+    // stack lands with gh stack merge, in one push that ends on its top layer (AGENTS.md), so this
+    // says so for a layer merged by itself. It only says: a read that fails is logged.
+    if (
+      read === undefined &&
+      (yield* Config.String("GITHUB_EVENT_NAME").pipe(Config.withDefault(""))) === "push" &&
+      compareHead !== "" &&
+      repository !== ""
+    ) {
+      const landed = yield* gh([
+        "api",
+        `repos/${repository}/commits/${compareHead}/pulls`,
+        "--jq",
+        '[.[] | select(.merged_at != null) | {number, body: (.body // "")}]',
+      ]).pipe(
+        Effect.flatMap((text) =>
+          Effect.try({
+            try: () => JSON.parse(text) as ReadonlyArray<{ number: number; body: string }>,
+            catch: (cause) => new SelectionFailed({ message: String(cause) }),
+          }),
+        ),
+        Effect.catch((error) =>
+          Console.log(
+            `Could not read which pull request ${compareHead.slice(0, 9)} landed (${error.message.split("\n")[0]}), so whether it was a lower stack layer landed alone is not checked.`,
+          ).pipe(Effect.as([])),
+        ),
+      );
+      for (const pull of landed.filter(({ body }) => parseRequested(body)._tag === "Skip")) {
+        const message = `This push to main ends on #${pull.number}, a lower stack layer (its e2e block says skip), so it landed without the layers above it, whose run tested it. Land a stack with gh stack merge <top pull request> --yes --squash, which lands every layer in one push, never layer by layer (AGENTS.md).`;
+        yield* Console.log(`::warning title=Stack layer landed alone::${message}`);
+        if (Option.isSome(summary))
+          yield* fs.writeFileString(summary.value, `${message}\n\n`, { flag: "a" });
+      }
+    }
     const changed =
       read === undefined
         ? ""

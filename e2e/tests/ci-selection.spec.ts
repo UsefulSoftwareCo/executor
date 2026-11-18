@@ -87,6 +87,7 @@ const block = (...lines: ReadonlyArray<string>) =>
 const stubGh = `#!/bin/sh
 dir=$(dirname "$0")
 case "$*" in
+  *"/commits/"*"/pulls "*) cat "$dir/landed" 2>/dev/null || echo "[]"; exit ;;
   *"--jq .title"|*"--jq {title, commits} | @json"|*"/commits?"*)
     case "$*" in *"/commits?"*) kind=commits ;; *) kind=pull ;; esac
     read=$(cat "$dir/$kind.reads" 2>/dev/null || echo 0)
@@ -150,6 +151,8 @@ const select = (input: {
   };
   /** What the read of the title and commit count prints instead of the pull request's. */
   readonly pullAnswer?: string;
+  /** The merged pull requests a push's head commit belongs to, as the selector's --jq prints them. */
+  readonly landed?: ReadonlyArray<{ readonly number: number; readonly body: string }>;
   /** More of the job's environment. */
   readonly env?: Readonly<Record<string, string>>;
 }) =>
@@ -201,6 +204,8 @@ const select = (input: {
       );
     if (input.pullAnswer !== undefined)
       yield* fs.writeFileString(path.join(bin, "pull-answer"), input.pullAnswer);
+    if (input.landed !== undefined)
+      yield* fs.writeFileString(path.join(bin, "landed"), JSON.stringify(input.landed));
     yield* fs.writeFileString(path.join(bin, "files"), (input.changed ?? []).join("\n"));
     const compared = input.compared ?? [];
     if (compared !== "unknown")
@@ -651,6 +656,40 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "WORKERS: ${{ needs.select.outputs.full == 'true' && '4' || '8' }}",
         );
       }),
+  );
+
+  it.effect("a push to main that ends on a lower stack layer says it landed alone", () =>
+    Effect.gen(function* () {
+      const push = { GITHUB_EVENT_NAME: "push" };
+      const [alone, top, stack, unread, manual] = yield* Effect.all(
+        [
+          // The lower layer of a stack merged by itself: its block says skip.
+          select({ env: push, landed: [{ number: 41, body: `Code.\n\n${block("skip")}` }] }),
+          // gh stack merge lands the stack in one push, which ends on its top layer.
+          select({ env: push, landed: [{ number: 42, body: block("groups.spec.ts") }] }),
+          select({ env: push, landed: [{ number: 43, body: block("none") }] }),
+          // A push with no pull request, or one whose read fails, says nothing of it.
+          select({ env: push, landed: [] }),
+          // A manual run reads nothing of the kind. Named, since CI's own tooling job has an event.
+          select({
+            env: { GITHUB_EVENT_NAME: "workflow_dispatch" },
+            landed: [{ number: 41, body: block("skip") }],
+          }),
+        ],
+        { concurrency: "unbounded" },
+      );
+      for (const run of [alone, top, stack, unread, manual]) expect(run.exitCode, run.log).toBe(0);
+      expect(alone.log).toContain(
+        "::warning title=Stack layer landed alone::This push to main ends on #41, a lower stack layer (its e2e block says skip), so it landed without the layers above it",
+      );
+      expect(alone.summary).toContain(
+        "Land a stack with gh stack merge <top pull request> --yes --squash",
+      );
+      // What the push runs is the same either way: every job's full pattern.
+      expect(alone.outputs).toEqual(top.outputs);
+      for (const run of [top, stack, unread, manual])
+        expect(run.log).not.toContain("Stack layer landed alone");
+    }),
   );
 
   it.effect("a push to main runs every job's full pattern", () =>
@@ -1287,6 +1326,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           expect(run.exitCode, `${message}\n${run.log}`).toBe(0);
         }
       }),
+    heavyCaseTimeout,
   );
 
   it.effect(
@@ -1362,6 +1402,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         const push = yield* select({ commits: ["Release 2.0.0-beta.9 [skip ci]"] });
         expect(push.reads).toEqual({ pull: 0, commits: 0 });
       }),
+    heavyCaseTimeout,
   );
 
   it.effect("a name that is not a spec file in e2e/tests/ fails before any job is chosen", () =>
