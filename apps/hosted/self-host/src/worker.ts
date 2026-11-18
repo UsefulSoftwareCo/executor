@@ -36,6 +36,7 @@ import {
   SelfHostWorkflowRequests,
 } from "./implementation/executor-services.ts";
 import { selfHostRouteMap } from "./implementation/routes.ts";
+import { UpdateCheckNotRecorded } from "./implementation/update-check.ts";
 import { SelfHostSettingInvalid } from "./contracts/config.ts";
 import {
   bindingBlobStore,
@@ -102,6 +103,9 @@ const configuration = (native: HttpBinding) =>
       ),
     ),
   );
+
+/** The product actor's storage key for the release check's last answer. */
+const updateCheckKey = "update-check";
 
 const prepare = (state: DurableObjectState, env: Environment) =>
   Effect.gen(function* () {
@@ -179,6 +183,21 @@ const prepare = (state: DurableObjectState, env: Environment) =>
         egress,
         executorServices: Layer.succeedContext(services),
         dashboard: bindingDashboard(env.DASHBOARD, dashboard),
+        // The release check's last answer, in the product actor's own storage.
+        updateCheckStore: {
+          location: `the product's storage under the data volume's product directory, key "${updateCheckKey}"`,
+          read: Effect.promise(() => state.storage.get<string>(updateCheckKey)).pipe(
+            Effect.map(Option.fromUndefinedOr),
+          ),
+          write: (value) =>
+            Effect.tryPromise({
+              try: () => state.storage.put(updateCheckKey, value),
+              catch: (error) =>
+                new UpdateCheckNotRecorded({
+                  reason: error instanceof Error ? error.message : String(error),
+                }),
+            }),
+        },
       });
       const http = yield* HttpRouter.toHttpEffect(routes).pipe(
         Effect.provideService(Layer.CurrentMemoMap, yield* Layer.makeMemoMap),

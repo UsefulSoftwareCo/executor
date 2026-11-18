@@ -41,6 +41,7 @@ These settings override the defaults:
 | `EXECUTOR_TOOL_LISTING_LOAD_SECONDS` | no     | Stop evaluating an app's tool list after this long when no request is waiting for it; capped at the maximum age. The default is `45`. |
 | `EXECUTOR_EVALUATION_MEMORY_MB`      | no       | Memory for kept tool lists and app declarations. The default is `256`.  |
 | `EXECUTOR_NPM_REGISTRY`              | no       | npm registry that app builds install packages from. The default is `https://registry.npmjs.org`. |
+| `EXECUTOR_NO_UPDATE_CHECK`           | no       | Set to `1` to turn off the daily check for a newer release. See [Updates](#updates). |
 | `DO_NOT_TRACK` or `EXECUTOR_DISABLE_ANALYTICS` | no | Set to `1` to turn off anonymous usage analytics and feedback. See [usage analytics](/run/usage-analytics). |
 | `SSO_DISCOVERY_URL`                  | no       | OIDC discovery document. Leave it empty to keep SSO off.                 |
 | `SSO_CLIENT_ID`, `SSO_CLIENT_SECRET` | no       | Credentials for that identity provider.                                  |
@@ -290,6 +291,34 @@ secret manager as well; Executor does not save those overrides to disk. Keep
 the same key source across upgrades. If a saved key is missing or invalid for
 an existing database, startup fails instead of creating a replacement. Restore
 the original key. Changing the encryption key makes existing credentials unreadable.
+
+### Updates
+
+The server checks once a day whether a newer Executor release exists, and shows
+owners and admins an **Update available** note at the bottom of the sidebar, with
+how to update. Members see nothing. It sends one `GET` of
+`/-/package/executor/dist-tags` to the npm registry the server already installs
+app packages from: `EXECUTOR_NPM_REGISTRY`, by default `https://registry.npmjs.org`.
+That request has no query string, cookie or header of its own, and nothing that
+identifies this instance, its version, its organizations or its users. The app
+runtime that installs app packages sends it, in the image and on the native
+server built from source alike, so it reaches the registry exactly as installs
+do: a mirror that installs can use, on a private network or over plain HTTP,
+works for the check too, and both connect directly, without reading `HTTP_PROXY`
+or `HTTPS_PROXY`. It follows no redirect and gives up after 5 seconds. Each attempt is saved with the instance's
+data before the request goes out, so it asks at most once a day: a failed or
+unanswered request, or a restart, doesn't ask again within the day. If the
+attempt can't be saved, the check is off: the server doesn't ask, and logs one
+warning that says where it tried to save it, then one line once saving works
+again. With `EXECUTOR_NPM_REGISTRY` set it asks only your mirror, never the
+public registry. Members' browsers never contact the registry; they ask only
+this server. A beta image compares against betas and newer stable releases; a
+stable image compares against stable releases only. The server keeps the last
+answer it got, with the time of its last check, with the instance's data. When
+the registry can't be reached, it keeps showing the newer release from that
+answer, since that release still exists, and logs one debug line; startup and
+requests never wait for it. Set `EXECUTOR_NO_UPDATE_CHECK=1`
+to turn the check off, as for the CLI: the server then makes no request at all.
 
 Back up by snapshotting that volume. Do not remove it when you update the image.
 Before updating, stop the container and back up the volume. Pull the new image,

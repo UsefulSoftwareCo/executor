@@ -43,6 +43,7 @@ import {
   type AppWorkerResidency,
 } from "./app-worker-residency.ts";
 import { isPrivateHostname } from "@executor-js/utils/url-policy";
+import { defaultNpmRegistry } from "@executor-js/utils/release-version";
 import { compileWorkerApp } from "../workerd-build.ts";
 import { assembleWorkerBundle } from "./worker-build-storage.ts";
 import { declarationFailed } from "./worker-source-map.ts";
@@ -322,6 +323,9 @@ class AppApi extends RpcTarget {
   }
   [Symbol.dispose]() {
     this.#lifetime.abort();
+  }
+  readRegistry(path: string): Promise<{ readonly status: number; readonly body: string }> {
+    return readRegistry(this.#env, path);
   }
   async compile(input: string): Promise<string> {
     return this.#run(
@@ -642,6 +646,29 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
     }
   }
 }
+
+/**
+ * `path` on the registry builds install from (`NPM_REGISTRY`, or the public registry), read as
+ * builds read it: this Worker's global `fetch`, which the `internet` network serves, with no header
+ * and no redirect followed. The host's release check reads it here, over the session builds are
+ * compiled in, so it reaches the registry exactly as app installs do on every host.
+ */
+const readRegistry = async (
+  env: Environment,
+  path: string,
+): Promise<{ readonly status: number; readonly body: string }> => {
+  if (!path.startsWith("/") || path.startsWith("//")) return { status: 400, body: "" };
+  const registry = (env.NPM_REGISTRY === "" ? defaultNpmRegistry : env.NPM_REGISTRY).replace(
+    /\/+$/u,
+    "",
+  );
+  try {
+    const answer = await fetch(`${registry}${path}`, { redirect: "manual" });
+    return { status: answer.status, body: await answer.text() };
+  } catch {
+    return { status: 502, body: "" };
+  }
+};
 
 /** Only the authenticated Node host can reach administration or create an RPC session. */
 export default {

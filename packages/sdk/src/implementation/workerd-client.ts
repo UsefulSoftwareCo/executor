@@ -207,6 +207,16 @@ export const workerdHostHandler = (options: {
     );
   });
 
+/**
+ * A GET of `path` on the npm registry app builds install from, sent by the apps Worker as builds
+ * reach that registry (`WorkerdAppApi.readRegistry`, over the session builds are compiled in): its
+ * global `fetch`, with no header of the host's and no redirect followed. The answer is the
+ * registry's status and body; 502 when it was not reached.
+ */
+export type RegistryRead = (
+  path: `/${string}`,
+) => Effect.Effect<{ readonly status: number; readonly body: string }, RuntimeProtocolFailed>;
+
 /** Transport lifetime belongs to the host; each RPC scope owns its cancellation. */
 export interface WorkerdTransport {
   /**
@@ -350,5 +360,9 @@ export const connectedWorkerdApps = (blobs: BlobStorage, transport: WorkerdTrans
       } satisfies WorkflowRuntime,
       /** Evaluated results kept in each app's supervisor, so they outlive this process. */
       declarations: evaluatedDeclarations(transport.evaluated),
+      readRegistry: ((path) =>
+        rpc((api) =>
+          Effect.tryPromise({ try: () => api.readRegistry(path), catch: protocolFailure }),
+        )) satisfies RegistryRead,
     };
   });

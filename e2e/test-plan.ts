@@ -10350,6 +10350,16 @@ export const scenarios = plan({
       local: na("Local uses device pairing instead of administrator setup."),
     },
   },
+  selfHostUpdateCheck: {
+    file: "self-host-update-check.spec.ts",
+    title:
+      "Self-host asks its npm registry for a newer release at most once a day whatever the answer or restarts, with only a plain client's headers, and shows owners and admins how to update, never members, a stable instance only a stable release, reads a private plain-HTTP mirror as app installs do, directly whatever the proxy variables say, asks nothing and warns once when it cannot record the attempt, keeps showing the release it last heard of through an outage, and shows nothing and asks nothing when turned off, air-gapped or unanswered",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Cloud always runs the newest code; it has no update to offer."),
+      local: na("The CLI prints its own update notice and the desktop app updates itself."),
+    },
+  },
   selfHostCatalogFeed: {
     file: "self-host-catalog-feed.spec.ts",
     title:

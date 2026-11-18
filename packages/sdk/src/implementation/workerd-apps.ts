@@ -49,7 +49,12 @@ import type { Executor } from "../contracts/executor.ts";
 import type { DurableDeclarations } from "../contracts/declarations.ts";
 import { runtimeAdapter } from "./runtime.ts";
 
-import { connectedWorkerdApps, TransportClosed, workerdHostHandler } from "./workerd-client.ts";
+import {
+  connectedWorkerdApps,
+  TransportClosed,
+  workerdHostHandler,
+  type RegistryRead,
+} from "./workerd-client.ts";
 import { workerdHostModules } from "./workerd-bundle.ts";
 import { appWorkerIdleSeconds, appWorkerLimit } from "./app-worker-residency.ts";
 import { EngineFaults } from "../contracts/engine-faults.ts";
@@ -187,6 +192,7 @@ export const workerdApps = (options: {
     readonly runtime: ReturnType<typeof runtimeAdapter>;
     readonly workflows: WorkflowRuntime;
     readonly declarations: DurableDeclarations;
+    readonly readRegistry: RegistryRead;
   },
   RuntimeBuildFailed | WorkerdMigrationRequired | WorkflowFailure,
   Scope.Scope

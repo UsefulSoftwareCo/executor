@@ -13,6 +13,7 @@ import {
   Console,
   Deferred,
   Effect,
+  FileSystem,
   Layer,
   Option,
   Path,
@@ -23,6 +24,7 @@ import { dataDirectory } from "./contracts/config.ts";
 import { selfHostConfiguration } from "./implementation/bootstrap.ts";
 import { dashboardFiles } from "./implementation/web.ts";
 import { selfHostRouteMap } from "./implementation/routes.ts";
+import { UpdateCheckNotRecorded } from "./implementation/update-check.ts";
 import { selfHostExecutor } from "./executor.ts";
 import { selfHostDatabase } from "./database.ts";
 
@@ -51,7 +53,31 @@ export const selfHostRoutes = Effect.gen(function* () {
   const dashboard = yield* dashboardFiles(
     yield* path.fromFileUrl(new URL("../web/dist/", import.meta.url)),
   );
-  return yield* selfHostRouteMap({ skills, egress, executorServices, dashboard });
+  // The release check's last answer, beside the data it describes, as the CLI keeps its own.
+  const fs = yield* FileSystem.FileSystem;
+  const checkFile = path.resolve(yield* dataDirectory, "update-check.json");
+  return yield* selfHostRouteMap({
+    skills,
+    egress,
+    executorServices,
+    dashboard,
+    updateCheckStore: {
+      location: checkFile,
+      read: fs.readFileString(checkFile).pipe(Effect.option),
+      write: (value) =>
+        fs.writeFileString(checkFile, value).pipe(
+          Effect.mapError(
+            ({ reason }) =>
+              new UpdateCheckNotRecorded({
+                reason:
+                  reason.description === undefined
+                    ? reason._tag
+                    : `${reason._tag}: ${reason.description}`,
+              }),
+          ),
+        ),
+    },
+  });
 });
 
 const server = Layer.unwrap(

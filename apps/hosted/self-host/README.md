@@ -213,6 +213,34 @@ build your own. When the feed cannot be reached or read, both pages say so with
 a retry, and the built-in Executor app stays listed. An agent's catalog query
 fails with the same explanation, as it failed before.
 
+## Update check
+
+The server checks once a day whether a newer Executor release exists, and shows
+owners and admins an **Update available** note at the bottom of the sidebar, with
+how to update. Members see nothing. It sends one `GET` of
+`/-/package/executor/dist-tags` to the npm registry the server already installs
+app packages from: `EXECUTOR_NPM_REGISTRY`, by default `https://registry.npmjs.org`.
+That request has no query string, cookie or header of its own, and nothing that
+identifies this instance, its version, its organizations or its users. The app
+runtime that installs app packages sends it, in the image and on the native
+server built from source alike, so it reaches the registry exactly as installs
+do: a mirror that installs can use, on a private network or over plain HTTP,
+works for the check too, and both connect directly, without reading `HTTP_PROXY`
+or `HTTPS_PROXY`. It follows no redirect and gives up after 5 seconds. Each attempt is saved with the instance's
+data before the request goes out, so it asks at most once a day: a failed or
+unanswered request, or a restart, doesn't ask again within the day. If the
+attempt can't be saved, the check is off: the server doesn't ask, and logs one
+warning that says where it tried to save it, then one line once saving works
+again. With `EXECUTOR_NPM_REGISTRY` set it asks only your mirror, never the
+public registry. Members' browsers never contact the registry; they ask only
+this server. A beta image compares against betas and newer stable releases; a
+stable image compares against stable releases only. The server keeps the last
+answer it got, with the time of its last check, with the instance's data. When
+the registry can't be reached, it keeps showing the newer release from that
+answer, since that release still exists, and logs one debug line; startup and
+requests never wait for it. Set `EXECUTOR_NO_UPDATE_CHECK=1`
+to turn the check off, as for the CLI: the server then makes no request at all.
+
 ## Serve other users
 
 The supplied Compose file binds port 4400 to the host's loopback interface.

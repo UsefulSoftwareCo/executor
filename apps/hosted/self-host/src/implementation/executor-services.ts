@@ -53,7 +53,7 @@ import { deliverEvents } from "@executor-js/sdk/scheduling";
 import { markdownRefusals } from "@executor-js/sdk/markdown";
 import { Digest, SecureRandom } from "effect/crypto";
 import { HostedAppRuntime } from "@executor-js/hosted-server/app-ui/contracts";
-import { workerdHostHandler } from "@executor-js/sdk/workerd";
+import { workerdHostHandler, type RegistryRead } from "@executor-js/sdk/workerd";
 import type { AppRuntime, BlobStorage, WorkflowRuntime } from "@executor-js/sdk/core";
 import { Cause, Config, Effect, Layer, Option, Deferred, Schedule, Context, Scope } from "effect";
 import { GroupDatabase } from "@executor-js/hosted-server/groups";
@@ -67,6 +67,8 @@ export interface SelfHostPlatform {
   readonly workflows: WorkflowRuntime;
   /** Evaluated results kept in each app's data supervisor. */
   readonly declarations: DurableDeclarations;
+  /** Reads the npm registry app installs use, as they reach it; the release check's only path. */
+  readonly readRegistry: RegistryRead;
 }
 
 /** Private callback surface for app workflows, exposed only through a service binding. */
@@ -74,6 +76,11 @@ export class SelfHostWorkflowRequests extends Context.Service<
   SelfHostWorkflowRequests,
   Effect.Success<ReturnType<typeof workerdHostHandler>>
 >()("self-host/WorkflowRequests") {}
+
+/** How the release check reads the npm registry: as this host's app installs reach it. */
+export class SelfHostRegistry extends Context.Service<SelfHostRegistry, RegistryRead>()(
+  "self-host/Registry",
+) {}
 
 /** Database initialization finishes before this service is acquired. */
 export const selfHostExecutorServices = <E, R>(
@@ -105,9 +112,8 @@ export const selfHostExecutorServices = <E, R>(
       const background = (work: Effect.Effect<void>) =>
         Effect.forkIn(work, server).pipe(Effect.as(true));
       const ready = yield* Deferred.make<Executor>();
-      const { runtime, workflows, declarations, blobs, repositories } = yield* acquire(
-        Deferred.await(ready),
-      );
+      const { runtime, workflows, declarations, blobs, repositories, readRegistry } =
+        yield* acquire(Deferred.await(ready));
       const registry = remoteRegistry(
         yield* Config.String("EXECUTOR_REGISTRY_URL").pipe(
           Config.withDefault(hostedExecutorOrigin),
@@ -230,6 +236,7 @@ export const selfHostExecutorServices = <E, R>(
       });
       return Layer.mergeAll(
         Layer.succeed(SelfHostWorkflowRequests, workflowRequests),
+        Layer.succeed(SelfHostRegistry, readRegistry),
         Layer.succeed(SelfHostAuth, auth),
         Layer.succeed(ScheduledAuthority, scheduleAuthority),
         Layer.succeed(GroupDatabase, Effect.succeed(groupDatabase)),

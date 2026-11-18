@@ -12,7 +12,7 @@ export {
 } from "./implementation/worker-build-storage.ts";
 export { bindingWorkerdApps } from "./implementation/binding-workerd-apps.ts";
 export { declarationFailed } from "./implementation/worker-source-map.ts";
-export { workerdHostHandler } from "./implementation/workerd-client.ts";
+export { workerdHostHandler, type RegistryRead } from "./implementation/workerd-client.ts";
 export {
   IsolateStarted,
   makeAppRunner,

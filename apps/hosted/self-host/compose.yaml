@@ -45,6 +45,10 @@ services:
       EXECUTOR_CATALOG_URL:
       # Public app registry origin. The default is https://api.executor.sh.
       EXECUTOR_REGISTRY_URL:
+      # Set to 1 to turn off the daily check for a newer release, which asks the npm registry
+      # (EXECUTOR_NPM_REGISTRY) for the executor package's dist-tags and sends nothing about this
+      # instance.
+      EXECUTOR_NO_UPDATE_CHECK:
       # Optional HTTPS app origin base. Localhost derives it from BETTER_AUTH_URL.
       EXECUTOR_APP_UI_BASE_URL:
       # Unset passthrough entries stay absent; the default is the bundled collector.
