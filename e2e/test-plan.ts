@@ -130,7 +130,8 @@ const plan = <Name extends string>(scenarios: { readonly [_ in Name]: typeof Tes
  * (`EXECUTOR_TEST_WORKFLOW_ENGINE_FAULTS`, `engine-faults.ts`): each sleep of `napOnce` fails once,
  * every call of `nap-never` fails, `count-once`'s write runs before its answer fails once,
  * `waited-out` fails only after the engine waited, four times, the three `*-once` sleeps get the
- * engine's own answer once, and the three `*-until` sleepUntils get an answer once after their time. Each names a step only that scenario's app uses, so managed Cloud,
+ * engine's own answer once, the three `*-until` sleepUntils get an answer once after their time,
+ * and `late-until` reaches the engine three seconds late, after its time. Each names a step only that scenario's app uses, so managed Cloud,
  * whose one Worker serves every scenario, can carry the list for all of them.
  */
 export const engineCallFaults = [
@@ -145,6 +146,7 @@ export const engineCallFaults = [
   { call: "until", step: "paused-until", failures: 1, when: "after", answer: "paused" },
   { call: "until", step: "terminated-until", failures: 1, when: "after", answer: "terminated" },
   { call: "until", step: "transient-until", failures: 1, when: "after", answer: "internal" },
+  { call: "until", step: "late-until", failures: 1, lateMillis: 3000 },
 ] as const;
 
 export const scenarios = plan({

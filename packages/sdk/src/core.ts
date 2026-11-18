@@ -64,6 +64,8 @@ export {
   EngineFaults,
   engineFaultError,
   engineFaultFor,
+  engineLateFor,
+  type EngineFaultList,
   type EngineFault,
 } from "./contracts/engine-faults.ts";
 

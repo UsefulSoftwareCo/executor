@@ -71,7 +71,8 @@ import {
   engineFaultCall,
   engineFaultError,
   engineFaultFor,
-  type EngineFault,
+  engineLateFor,
+  type EngineFaultList,
 } from "../contracts/engine-faults.ts";
 import { nativeEngineFailure } from "./native-engine-failure.ts";
 
@@ -143,7 +144,7 @@ interface Environment {
   readonly RUNS: Workflow<{ run: string }>;
   readonly HOST: Fetcher;
   /** E2E runs only: engine call faults (`engine-faults.ts`); otherwise null. */
-  readonly WORKFLOW_ENGINE_FAULTS?: ReadonlyArray<EngineFault> | null;
+  readonly WORKFLOW_ENGINE_FAULTS?: EngineFaultList | null;
 }
 
 /** A native sleep: a failure without our marker is the platform's, recorded by class only. */
@@ -499,7 +500,12 @@ export class AppWorkflows extends WorkflowEntrypoint<Environment, { run: string 
           const native = <A>(work: () => Promise<A>) =>
             Effect.tryPromise({ try: work, catch: decodeWorkflowFailure });
           const faults = this.env.WORKFLOW_ENGINE_FAULTS;
-          const sleepCall = (name: string, work: () => Promise<unknown>) => {
+          const sleepCall = (name: string, call: () => Promise<unknown>) => {
+            const late = engineLateFor(faults, seed.runId, name);
+            const work =
+              late === undefined
+                ? call
+                : () => new Promise((settle) => setTimeout(settle, late)).then(call);
             const fault = engineFaultFor(faults, seed.runId, name);
             return nativeSleep(fault === undefined ? work : () => engineFaultCall(fault, work));
           };

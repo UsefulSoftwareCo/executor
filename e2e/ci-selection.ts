@@ -631,12 +631,15 @@ const verify = (suite: string | undefined, directory: string | undefined) =>
 const patchGuards: Readonly<Record<string, ReadonlyArray<string>>> = {
   // Its workflow worker is the products' workflow engine: the local engine scenarios and the
   // durability scenarios prove its behaviour from source, and the release-docker lane runs the
-  // image's packaged engine scenarios too (e2e/packaged-engine.ts).
+  // image's packaged engine scenarios too (e2e/packaged-engine.ts). The engine calls scenario
+  // proves a sleepUntil the engine refuses as past ends, so a rewording of that refusal in the
+  // patch runs it; `scripts/check-engine-refusals.ts` reads the patch for those words.
   "@alchemy.run/cloudflare-runtime": [
     "mcp-protocol-versions.spec.ts",
     "local-workflow-engine-steps.spec.ts",
     "local-workflow-engine-memory.spec.ts",
     "workflow-durability.spec.ts",
+    "workflow-engine-calls.spec.ts",
   ],
   // Its patch makes cancelling refuse an invitation that is no longer pending (the reaccept and
   // dialog scenarios), has self-host SSO read UserInfo claims through generic OAuth's guarded
