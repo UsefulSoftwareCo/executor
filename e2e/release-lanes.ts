@@ -301,6 +301,20 @@ const workspaceClosure = (root: string, roots: ReadonlyArray<string>) =>
     return [...found].sort().map((directory) => `${directory}/**`);
   });
 
+/**
+ * What a release ships: the workspace packages the CLI, the desktop app and the self-host image
+ * are built from, as globs, read from this checkout. scripts/releases/release-notes.ts lists the
+ * changes to these in a release's notes.
+ */
+export const shippedSources = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const root = path.dirname(path.dirname(yield* path.fromFileUrl(new URL(import.meta.url))));
+  return {
+    local: yield* workspaceClosure(root, artifactRoots.local),
+    image: yield* workspaceClosure(root, artifactRoots.image),
+  };
+});
+
 /** What each release check is built from and runs, read from this checkout. */
 export interface ReleaseSources {
   /** The source of the CLI and the desktop app, as globs over their workspace packages. */

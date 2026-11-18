@@ -324,5 +324,111 @@ cannot race or replace a newer main export. Both use
 A main export also merges the public pull requests that main ports, named by
 `Public-PR` lines in its commit messages; a release export merges none, because
 no pull request targets `v2-releases`.
-Public release notes come from the product README, not private PR titles or
-GitHub's generated changelog.
+
+## Release notes
+
+Each public release's notes list what changed since the release before it, then
+the install instructions at the top of
+[the release scripts' README](scripts/releases/README.md). The metadata job of a
+publishing run writes them with `scripts/releases/release-notes.ts`, before any
+build, and the publish job creates the release with them. They are not GitHub's
+generated changelog, which would list private pull requests and their titles.
+
+The notes list only changes whose squashed commit on main has a line
+`Release-note: <text>`, and that text is all they say about the change. Pull
+request titles stay private: the notes never print one, nor does any warning
+the script writes. `Release-note: none` is the same as no line.
+
+A line counts only when `Release-note:` starts a line of the message's body:
+not indented, not quoted with `>` (as a revert may quote the message it
+reverts) and not inline. A commit message that holds `<`, `[`, `$`, ` ``` ` or
+`~~~` anywhere, title included, has no notes at all, because HTML, a link
+definition, math or a code fence can hide a line from whoever reads the message
+rendered; the job log warns with the commit and the character. The one
+exception is a line that is a co-author trailer and nothing else, anywhere in
+the message, since a squash joins its commits' messages and a port's own
+trailers sit in the middle: `Co-authored-by: <name> <address>` (the key in any
+case), then only spaces, where the name holds no `<`, `>`, `[`, `]`, `$`,
+backtick or control character but may end `[bot]`, and the address, the line's
+only `<...>`, is `<local@host>` with a local part of letters, digits and
+`._+-` (a bot's ending `[bot]`) and a host of letters, digits, dots and hyphens.
+Any other `<` or `[`, even on a line that only starts like a trailer, still
+drops the notes. So write an
+example note in words, not in a code block or comment. Any other line that
+holds `Release-note:` is not counted, and the job log warns with its commit and
+line number. When a change has several lines that count, each is listed, once,
+in the order written; `none` among them is skipped. A line cannot be withdrawn
+by a later one, so reword or drop the commit before merging instead.
+
+A note is published only when it is plain prose, and then exactly as written.
+It may hold only ASCII letters, digits, spaces and these punctuation marks:
+`.` `,` `;` `:` `!` `?` `'` `"` `(` `)` `-`. It must also:
+
+- start with a letter or a digit, and not like a numbered list (`1.`, `1)`);
+- have a colon only before a space or at its end, so no `:emoji:` or `scheme:`;
+- have a dot only at the end of a sentence or between digits (`1.5`), never
+  inside a word as in a host name (`example.com`, `www.x`);
+- join no letters to digits with a hyphen (`GH-123`, `ABC-123`);
+- hold no whole word of 7 or more hex characters or digits, which GitHub links
+  when it names a commit (so `deadbeef`, `defaced` and `1234567` are refused,
+  and a number is written `1,000,000`); a word that only holds such a run, such
+  as `feedback`, is fine, because GitHub links a commit only as a whole word;
+- name no `GHSA-` advisory and no private repository;
+- be at most 300 characters.
+
+So a note holds no `@`, `#`, `/`, `<`, `>`, `[`, `]`, `&`, `*`, `_`, `~`, `|`,
+backslash, backtick, typographic quote or dash, accented or non-Latin letter,
+emoji or invisible character: no mention, issue or pull request reference,
+`owner/repo`, URL, email address, code, HTML or Markdown. Write a command or a
+name in words. Any other note is left out whole, never rewritten or cut, and
+the job log warns with its commit, its line number and the first rule it
+breaks. All listed lines together hold at most 10,000 characters: once a
+change's lines would pass that, it and every later change are left out and
+counted, with a warning. Neither stops the release, because a commit message on
+main cannot be changed.
+
+`e2e/tests/release-notes-render.spec.ts` (CI's tooling job, with the job's
+token) sends a corpus of accepted notes, as the script writes them, to GitHub's
+Markdown API and checks that each comes back as its text alone, inside nothing
+but the notes' headings, list and paragraph. It also renders the refused corpus
+and checks that the forms review found active still render as links, mentions,
+an emoji image or markup. The corpora are in `e2e/release-notes-repositories.ts`.
+
+A change with a line is listed when it changed a package the CLI, the desktop
+app or the self-host image is built from, other than its scripts, tests,
+fixtures and Markdown, under All installs, CLI and desktop, or Self-host by the
+packages it changed. A line on a change to nothing a release ships, such as
+Cloud-only code, CI or tooling, is not listed, and the job log warns with the
+commit. A port of a public pull request with a line links it and thanks its
+contributors by GitHub handle. That credit is the one place the notes hold a
+link and a mention, and it is safe because it is built only from a `Public-PR:`
+line that names `UsefulSoftwareCo/executor#<number>` exactly and from handles
+in `users.noreply.github.com` co-author addresses that match GitHub's handle
+rule, never from free text, so it can only point at a public pull request and
+the people who wrote it. Anything else gets no credit and a warning in the job
+log, and the note is listed as if the change were no port. A revert and the change it reverts cancel when
+both are in the release, newest first, so a reverted revert cancels nothing and
+the change it restored is listed. Every change not listed is counted in one
+line. A release with no line at all says "No release notes were written for
+this release." and still publishes. The notes link nothing else: no compare
+view, commit or private pull request.
+
+Warnings go to the publishing run's job log and its annotations in this
+private repository, and name commits only, never a title or a note's text. The
+notes themselves reach the public repository only as the release's body: the
+`release-notes` artifact is downloaded outside `.local/publish`, so it is never
+uploaded as a release asset.
+
+Write the line for a change a user of the CLI, the desktop app or the self-host
+image would notice: one plain sentence saying what changed for them, in the
+words above. Name no
+customer, organization or reporter, use no internal names, and say nothing about
+a security problem not yet fixed and disclosed. Put it in the body of a commit
+message on the pull request's branch, not only in the pull request's
+description: this repository squashes with the commits' messages as the body
+(`squash_merge_commit_message: COMMIT_MESSAGES`), so the description never
+reaches main.
+
+To see a release's notes without publishing, run
+`node scripts/releases/release-notes.ts --version <version> --to <its Release commit>`
+from a checkout of main.

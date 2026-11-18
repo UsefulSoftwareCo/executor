@@ -805,6 +805,8 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "cloud-postgres-volumes.config.ts": () => import("./cloud-postgres-volumes.config.ts"),
   "release-archives.config.ts": () => import("./release-archives.config.ts"),
   "release-evidence.config.ts": () => import("./release-evidence.config.ts"),
+  "release-notes.config.ts": () => import("./release-notes.config.ts"),
+  "release-notes-render.config.ts": () => import("./release-notes-render.config.ts"),
   "removal-evidence.config.ts": () => import("./removal-evidence.config.ts"),
   "request-failures.config.ts": () => import("./request-failures.config.ts"),
   "run-retention.config.ts": () => import("./run-retention.config.ts"),
