@@ -1,6 +1,6 @@
 /**
- * A deployed E2E stage's teardown removes its PlanetScale branch by its exact name when Alchemy's
- * destroy left it (a create that never became ready is "not owned by this stack"), and keeps the
+ * A stage's teardown reads its PlanetScale branch, `test-<slug>`, for any test stage's slug, and
+ * a deployed E2E stage's teardown removes it by that exact name when Alchemy's destroy left it (a create that never became ready is "not owned by this stack"), and keeps the
  * stage's lease unless PlanetScale then answers 404 (`test-stage-branch.ts`). These cases run the
  * removal as a process (`apps/hosted/cloud/scripts/test-stage-branch.ts`, the same
  * `removeStageBranch` the destroy calls) against a local server standing in for PlanetScale's API.
@@ -333,22 +333,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("Test stage branch remo
     60_000,
   );
 
-  it.effect("a name that is not exactly a deployed E2E stage's is refused before any request", () =>
+  it.effect("a name that is not a test stage's slug is refused before any request", () =>
     Effect.gen(function* () {
       const seen: Seen[] = [];
       const { origin } = yield* planetscale(seen, { "test-e2e-stuck1": stuck });
-      for (const slug of [
-        "idx-lock-38132096340-1",
-        "apps-v2-w5",
-        "pr-4120",
-        "main",
-        "e2e-",
-        "e2e-STUCK1",
-        "e2e-stuck1-copy",
-        "e2e-abcdefghijklmn",
-        "e2e-stuck1/../main",
-        "",
-      ]) {
+      for (const slug of ["e2e-", "e2e-STUCK1", "e2e-stuck1/../main", "-main", ""]) {
         const run = yield* remove(slug, origin);
         expect(run.code, slug).toBe(1);
         expect(run.outcome._tag, slug).toBe("Refused");
@@ -357,5 +346,49 @@ layer(NodeServices.layer, { excludeTestServices: true })("Test stage branch remo
       }
       expect(seen).toEqual([]);
     }),
+  );
+
+  it.effect(
+    "another stage's slug is read and never deleted: a branch the destroy removed lets the lease go",
+    () =>
+      Effect.gen(function* () {
+        const seen: Seen[] = [];
+        const { origin } = yield* planetscale(seen, { "test-e2e-stuck1": stuck });
+        for (const slug of [
+          "eapps-step1",
+          "pr-4120",
+          "main",
+          "idx-lock-38132096340-1",
+          "e2e-abcdefghijklmn",
+        ]) {
+          const run = yield* remove(slug, origin);
+          expect(run.code, slug).toBe(0);
+          expect(run.outcome, slug).toEqual({ _tag: "Absent" });
+          expect(run.leaseKept, slug).toBe(false);
+        }
+        // One read of each slug's own branch, and nothing else.
+        expect(seen.map(({ method, path }) => `${method} ${path}`)).toEqual(
+          ["eapps-step1", "pr-4120", "main", "idx-lock-38132096340-1", "e2e-abcdefghijklmn"].map(
+            (slug) => `GET ${branchPath(`test-${slug}`)}`,
+          ),
+        );
+      }),
+  );
+
+  it.effect(
+    "another stage's branch still there after the destroy is not deleted, and the lease is kept",
+    () =>
+      Effect.gen(function* () {
+        const seen: Seen[] = [];
+        const { origin } = yield* planetscale(seen, {});
+        for (const slug of ["apps-v2-w5", "e2e-stuck1-copy"]) {
+          const run = yield* remove(slug, origin);
+          expect(run.code, slug).toBe(1);
+          expect(run.outcome._tag, slug).toBe("NotDeleted");
+          expect(run.leaseKept, slug).toBe(true);
+          expect(run.message, slug).toContain("so no delete was sent");
+        }
+        expect(seen.filter(({ method }) => method !== "GET")).toEqual([]);
+      }),
   );
 });
