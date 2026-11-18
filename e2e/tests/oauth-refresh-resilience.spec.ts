@@ -803,10 +803,11 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
         yield* issuer.configure({ expiresIn: null });
         /**
          * The service refuses `read` once. Executor renews the grant but, with no kept listing
-         * confirming the query only reads, does not repeat it: one failed call that may have
-         * written. The next call uses the renewed token.
+         * confirming the query only reads, does not repeat it. Unlisted, it is a failed call that
+         * may have written; a kept listing that marks it read-only (`declared`) does not say so,
+         * and the call is still not repeated. The next call uses the renewed token.
          */
-        const refusedOnce = (appId: string, session: string) =>
+        const refusedOnce = (appId: string, session: string, declared: boolean) =>
           Effect.gen(function* () {
             yield* issuer.expireAccessTokens;
             const before = yield* refreshes;
@@ -818,10 +819,14 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
               reason: "unauthorized",
               status: 401,
               credentialsRenewed: true,
-              mayHaveWritten: true,
               account: { id: session },
-              recovery: { action: unknownOutcomeAction },
             });
+            if (declared) expect(refused.body).not.toHaveProperty("mayHaveWritten");
+            else
+              expect(refused.body).toMatchObject({
+                mayHaveWritten: true,
+                recovery: { action: unknownOutcomeAction },
+              });
             assertPrivate(refused.body);
             expect(yield* refreshes).toBe(before + 1);
             expect((yield* issuer.metrics).resourceRequests.GET).toBe(gets + 1);
@@ -834,17 +839,17 @@ layer(HostedLive, { excludeTestServices: true })("OAuth refresh resilience", (it
 
         // Nobody has listed the app's tools yet.
         const session = yield* connect("Synthetic unlisted account");
-        yield* refusedOnce(app.id, session);
+        yield* refusedOnce(app.id, session, false);
 
-        // The same app built on `apps` beta.95, from before `kindConfirmed`: its kept listing names
-        // `read` a query, but nothing confirms it.
+        // The same app built on `apps` beta.95, from before `kindConfirmed`: its kept listing marks
+        // `read` read-only, but nothing confirms it.
         const legacy = yield* deploy(`${name} beta.95`, ["service"], {
           path: "package.json",
           content: JSON.stringify({ dependencies: { apps: "0.0.1-beta.95" } }),
         });
         const legacySession = yield* connect("Synthetic beta.95 account", legacy.id);
         yield* list(legacy.id);
-        yield* refusedOnce(legacy.id, legacySession);
+        yield* refusedOnce(legacy.id, legacySession, true);
 
         // Built on the current release and listed, the app confirms `read`, so the refused call
         // is repeated with the renewed token and succeeds.

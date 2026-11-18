@@ -1506,8 +1506,9 @@ export const makeTools = (
    * Whether the app confirms that a tool only reads: its kept listing names the tool a query of a
    * kind the app's code or the tool's protocol fixes (`kindConfirmed`), not one only an upstream
    * claims, such as an MCP server's `readOnlyHint`. Only a call named a query and confirmed here
-   * keeps a read's advice to repeat it after it fails, and only such a call is repeated with renewed
-   * credentials. The caller's kind is its own claim and confirms nothing. It comes only from a
+   * is repeated with renewed credentials (`executeRenewing`). A query whose tool only declares that
+   * it reads (`declaredReadOf`) keeps a read's advice when it fails, but is never repeated. The
+   * caller's kind is its own claim and confirms nothing. It comes only from a
    * listing already kept (`listings.kept`): evaluating the catalog after a call failed would run
    * the app's code again, and its writes, only to word the failure. The listing kept in this
    * process is taken before the call hands over its work, since a cache change the call makes
@@ -1793,8 +1794,9 @@ export const makeTools = (
         const appCode = appEntries(() => {
           enteredApp = true;
         });
-        // The caller's kind, confirmed by the app for a query (`confirmedRead`), decides how a
-        // failure is reported and whether a refused call is repeated. For a call that names none,
+        // The caller's kind, confirmed by the app for a query (`readOf`), decides whether a refused
+        // call is repeated. A failure is reported as a read's when the app confirms the query or its
+        // tool declares that it only reads (`declaredReadOf`). For a call that names none,
         // the catalog only names the kind it is dispatched with: reading the catalog ran the app's
         // code, so the call's outcome stays unknown.
         const named = parsed.kind;
