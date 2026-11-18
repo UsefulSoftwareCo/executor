@@ -30,7 +30,9 @@ const issueTitle = (message: string) => {
       .split("\n")
       .map((text) => text.replace(/^[\s#>*-]+/u, "").trim())
       .find((text) => text !== "") ?? "Executor feedback";
-  return line.length > titleLimit ? `${line.slice(0, titleLimit - 1)}…` : line;
+  // By code point: a cut surrogate pair is not valid text for GitHub.
+  const characters = Array.from(line);
+  return characters.length > titleLimit ? `${characters.slice(0, titleLimit - 1).join("")}…` : line;
 };
 
 const issueBody = (report: FeedbackReport) =>

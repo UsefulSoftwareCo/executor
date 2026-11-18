@@ -53,7 +53,7 @@ const exercise = Effect.gen(function* () {
         });
         return github === 201
           ? yield* HttpServerResponse.json({ html_url: issueUrl, number: 7 }, { status: 201 })
-          : HttpServerResponse.empty({ status: github });
+          : HttpServerResponse.empty({ status: github, headers: { location: "/hook" } });
       }).pipe(Effect.orDie),
     ),
     HttpRouter.add(
@@ -120,6 +120,11 @@ const exercise = Effect.gen(function* () {
   expect(refused.body).toMatchObject({ _tag: "FeedbackUnavailable" });
   expect(JSON.stringify(refused.body)).not.toContain(receiver);
   expect(issues).toHaveLength(2);
+  // A redirect is refused, not followed with the token.
+  github = 307;
+  expect((yield* post("GitHub redirects this issue")).status).toBe(503);
+  expect(issues).toHaveLength(3);
+  expect(notifications).toHaveLength(0);
 
   // With a webhook too, the notification links the issue and either receiver is a receipt.
   yield* configure({ EXECUTOR_FEEDBACK_WEBHOOK_URL: `${receiver}/hook` });
@@ -135,7 +140,7 @@ const exercise = Effect.gen(function* () {
 
   github = 500;
   expect((yield* post("Only the webhook")).status).toBe(200);
-  expect(issues).toHaveLength(4);
+  expect(issues).toHaveLength(5);
   expect(notifications).toHaveLength(2);
   expect(notifications[1]!.issue).toBeUndefined();
   expect(notifications[1]!.body).toContain("\nIssue: not created");
@@ -143,21 +148,21 @@ const exercise = Effect.gen(function* () {
   github = 201;
   webhook = 503;
   expect((yield* post("Only the issue")).status).toBe(200);
-  expect(issues).toHaveLength(5);
+  expect(issues).toHaveLength(6);
   expect(notifications).toHaveLength(3);
 
   github = 500;
   const lost = yield* post("Neither receiver");
   expect(lost.status).toBe(503);
   expect(lost.body).toMatchObject({ _tag: "FeedbackUnavailable" });
-  expect(issues).toHaveLength(6);
+  expect(issues).toHaveLength(7);
   expect(notifications).toHaveLength(4);
 
   // A repository without a usable token refuses feedback without calling GitHub.
   yield* configure({ EXECUTOR_FEEDBACK_WEBHOOK_URL: "", EXECUTOR_FEEDBACK_GITHUB_TOKEN: "" });
   github = 201;
   expect((yield* post("No token")).status).toBe(503);
-  expect(issues).toHaveLength(6);
+  expect(issues).toHaveLength(7);
 
   yield* serverControl("stop");
   const fs = yield* FileSystem.FileSystem;

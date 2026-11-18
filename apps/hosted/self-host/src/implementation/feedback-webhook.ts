@@ -78,6 +78,8 @@ export const selfHostFeedbackWebhook = (origin: string) =>
         const who = [user.email ?? user.id, caller.client_name]
           .filter(Boolean)
           .join(" / ")
+          // One line: a client names itself, and must not add lines to an issue's sender list.
+          .replace(/\s+/gu, " ")
           .slice(0, 300);
         const issue =
           issues === undefined

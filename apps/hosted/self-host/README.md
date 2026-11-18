@@ -331,10 +331,11 @@ there is no feedback table, so durable retention belongs to the receiver for now
 Set `EXECUTOR_FEEDBACK_GITHUB_REPOSITORY` to `owner/repository` and
 `EXECUTOR_FEEDBACK_GITHUB_TOKEN` to a token that may create issues there (a
 fine-grained token with read and write access to Issues on that repository alone)
-to file each submission as an issue. Its title is the message's first line, up to
-120 characters. Its body is the whole message, which GitHub renders as Markdown,
-then the sender's email and client, the source, organization ID, instance origin
-and time. Issues identify the sender, so use a private repository.
+to file each submission as an issue. Its title is the message's first non-blank
+line without leading Markdown heading, quote or list markers, up to 120
+characters. Its body is the whole message, which GitHub renders as Markdown,
+then the sender's email (their user ID when they have none) and client, the
+source, organization ID, instance origin and time. Issues identify the sender, so use a private repository.
 `EXECUTOR_FEEDBACK_GITHUB_LABELS` is an optional comma-separated list of labels.
 `EXECUTOR_FEEDBACK_GITHUB_API_URL` is the API root for GitHub Enterprise Server
 (`https://github.example.com/api/v3`); the default is `https://api.github.com`.

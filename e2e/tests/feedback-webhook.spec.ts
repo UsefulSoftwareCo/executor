@@ -102,6 +102,8 @@ const exercise = (analyticsOff: boolean) =>
       },
     });
     expect(Number.isNaN(Date.parse(requests[0]!.payload.submittedAt))).toBe(false);
+    // Without a GitHub repository the notification says nothing about an issue.
+    expect(requests[0]!.payload.body).not.toContain("Issue:");
     hold = false;
     yield* Deferred.succeed(release, undefined);
     const accepted = yield* Fiber.join(pending);
