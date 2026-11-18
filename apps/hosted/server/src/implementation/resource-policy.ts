@@ -238,7 +238,7 @@ export const usableAppLinks = (sql: SqlClient.SqlClient, apps: readonly AppId[])
 export const reusedAppLinkPrefix = "reuse:";
 
 const creatorMayUseAppLink = (sql: SqlClient.SqlClient) =>
-  sql`(not starts_with(l.linked_by, ${reusedAppLinkPrefix}) or target.creator_id is null
+  sql`(not starts_with(l.linked_by, ${reusedAppLinkPrefix})
     or target.creator_id = p.personal_user_id
     or coalesce(creator_member.role in ('owner', 'admin'), false))`;
 
@@ -654,9 +654,9 @@ const TargetEditors = Schema.Struct({
  * Reuse never reaches a member who could not already use the account: it is refused when the
  * target app's creator is a member other than the account's owner, since that member edits the
  * app and so could deploy code that reads the credential. A creator who has left the organization
- * counts as a member: invited back, they would edit the app again. Only an app without a creator,
- * one the system created or whose creator's user was deleted, has nobody who edits it as its
- * creator. Members never reuse an account. At use time the same creator rule applies to reused
+ * counts as a member: invited back, they would edit the app again. An app without a creator takes
+ * no reuse either: the system's apps and apps whose creator's user was deleted look the same, and
+ * the latter may run code a demoted creator deployed. Members never reuse an account. At use time the same creator rule applies to reused
  * links: a demotion or departure stops them serving, and promotion can restore them. Owner-made
  * links do not depend on the creator's role. The account stays its owner's; nobody else may use
  * it directly or link it for themselves.
@@ -718,9 +718,7 @@ export const appLinkableAccountsAs = (
     for (const link of links)
       if (
         editable.has(link.app) &&
-        (target.creator === null ||
-          (target.role !== null && target.role !== "member") ||
-          target.creator === link.owner)
+        ((target.role !== null && target.role !== "member") || target.creator === link.owner)
       )
         linkable.set(link.account, "app_link");
     return linkable;
