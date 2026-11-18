@@ -2710,6 +2710,138 @@ return { failed: failed.isError, text: failed.content[0].text, read: read.isErro
       }).pipe(Effect.provide(McpClient.layer)),
     ),
   );
+  it.effect(scenarios.mcpExecuteRejectedPromiseAll.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        // `quick` answers at once, `fails` throws after a second and `slow` outlasts the program.
+        const app = yield* hostedApp(
+          "Rejected Promise.all",
+          `import { defineApp, query, object, router } from "apps";
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+export default defineApp({}, async () => ({ tools: router({
+  quick: query({ input: object({}) }, async () => "done"),
+  fails: query({ input: object({}) }, async () => {
+    await wait(1_000);
+    throw new Error("The batch lookup failed");
+  }),
+  slow: query({ input: object({}) }, async () => {
+    await wait(30_000);
+    return "late";
+  }),
+}) }));`,
+        );
+        const tools = `tools[${JSON.stringify(app.slug)}]`;
+        const interruptedNote =
+          "Other tool calls were still running when the program stopped and were interrupted. toolCalls lists every call with its outcome: calls marked success did run.";
+        const Reported = Schema.Struct({
+          status: Schema.Literal("completed"),
+          execution: Schema.Struct({
+            ok: Schema.Literal(false),
+            error: Schema.Struct({ kind: Schema.String, message: Schema.String }),
+            toolCalls: Schema.Array(
+              Schema.Struct({
+                name: Schema.String,
+                outcome: Schema.String,
+                reference: Schema.optional(Schema.String),
+              }),
+            ),
+          }),
+        });
+        const executed = yield* executeOnce(
+          app.client,
+          "Run calls with Promise.all where one rejects while others still run",
+          `return await Promise.all([
+  ${tools}.quick({}), ${tools}.quick({}), ${tools}.quick({}),
+  ${tools}.fails({}), ${tools}.slow({}), ${tools}.slow({}),
+]);`,
+          "rejected-promise-all.json",
+        );
+        const { execution } = yield* Schema.decodeUnknownEffect(Reported)(executed.structured);
+        // The program stops at the rejection; it does not wait for the calls still running.
+        expect(executed.elapsed).toBeLessThan(20_000);
+        // Each call reports what happened to it: finished calls ran, the failing call failed
+        // with its own reference, and the calls still running were interrupted.
+        expect(execution.toolCalls.map(({ name, outcome }) => [name, outcome])).toEqual([
+          [`${app.slug}.quick`, "success"],
+          [`${app.slug}.quick`, "success"],
+          [`${app.slug}.quick`, "success"],
+          [`${app.slug}.fails`, "failure"],
+          [`${app.slug}.slow`, "interrupted"],
+          [`${app.slug}.slow`, "interrupted"],
+        ]);
+        expect(execution.toolCalls[3]?.reference).toMatch(/^call_/u);
+        // The failure names the call's own error, then says the others were interrupted and that
+        // the calls marked success did run, leaving whether to repeat them to the agent, and
+        // ends with how to keep the results of the calls that succeed.
+        expect(execution.error.kind).toBe("ToolFailure");
+        expect(execution.error.message).toContain("The batch lookup failed");
+        expect(
+          execution.error.message.endsWith(
+            ` ${interruptedNote} To keep the results of the calls that succeed when one fails, use Promise.allSettled or a .catch on each call.`,
+          ),
+        ).toBe(true);
+        expect(execution.error.message).not.toContain("repeat");
+
+        // A failure that leaves no call running carries no such note.
+        const alone = yield* executeOnce(
+          app.client,
+          "Run one call after another until one fails",
+          `await ${tools}.quick({});
+return await ${tools}.fails({});`,
+          "rejected-alone.json",
+        );
+        const single = (yield* Schema.decodeUnknownEffect(Reported)(alone.structured)).execution;
+        expect(single.toolCalls.map(({ outcome }) => outcome)).toEqual(["success", "failure"]);
+        expect(single.error.message).toContain("The batch lookup failed");
+        expect(single.error.message).not.toContain("still running");
+
+        // A program that throws on its own while calls still run gets the note, but not the
+        // advice about tool-call rejections.
+        const thrown = yield* executeOnce(
+          app.client,
+          "Throw from the program while calls still run",
+          `const pending = [${tools}.slow({}), ${tools}.slow({})];
+await ${tools}.quick({});
+throw new Error("The program gave up");`,
+          "program-throws.json",
+        );
+        const own = (yield* Schema.decodeUnknownEffect(Reported)(thrown.structured)).execution;
+        expect(thrown.elapsed).toBeLessThan(20_000);
+        expect(own.toolCalls.map(({ name, outcome }) => [name, outcome])).toEqual([
+          [`${app.slug}.slow`, "interrupted"],
+          [`${app.slug}.slow`, "interrupted"],
+          [`${app.slug}.quick`, "success"],
+        ]);
+        expect(own.error.kind).toBe("ExecutionFailure");
+        expect(own.error.message).toContain("The program gave up");
+        expect(own.error.message.endsWith(` ${interruptedNote}`)).toBe(true);
+        expect(own.error.message).not.toContain("Promise.allSettled");
+        expect(own.error.message).not.toContain("repeat");
+
+        // The code-mode skill recommends allSettled for independent calls, keeps Promise.all for
+        // calls that must all succeed, and says what an uncaught Promise.all rejection does.
+        const skill = yield* app.client.use("Read the code-mode skill", (client, signal) =>
+          client.callTool(
+            { name: "skills", arguments: { app: "executor", name: "code-mode" } },
+            undefined,
+            { signal },
+          ),
+        );
+        const { content } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ content: Schema.String }),
+        )(skill.structuredContent);
+        const prose = content.replace(/\s+/gu, " ");
+        expect(prose).toContain(
+          "Use `await`, and `Promise.allSettled` for independent calls: one failed call then does not end the program, and the other results are kept; each entry has `status` and `value` or `reason`. Use `Promise.all` only when every call must succeed.",
+        );
+        expect(prose).toContain(
+          "`Promise.all` rejects on the first failure. If the program does not catch it, the program ends, and calls still running are `interrupted`; calls marked `success` did run.",
+        );
+        expect(prose).not.toContain("Use `await` and `Promise.all` for independent calls");
+      }).pipe(Effect.provide(McpClient.layer)),
+    ),
+  );
   it.effect(scenarios.mcpExecutePendingWriteRefused.title, (context) =>
     withHostedCase(
       context,

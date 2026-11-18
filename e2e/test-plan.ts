@@ -8446,6 +8446,17 @@ export const scenarios = plan({
       local: na("Hosted self-host covers the shared execute path."),
     },
   },
+  mcpExecuteRejectedPromiseAll: {
+    fixtures: "actors",
+    file: "mcp-execute-failures.spec.ts",
+    title:
+      "MCP programs stopped while calls still run report each call, and how to keep the others when a call rejected",
+    targets: {
+      "self-host": scheduled,
+      cloud: na("Hosted self-host covers the shared execute path."),
+      local: na("Hosted self-host covers the shared execute path."),
+    },
+  },
   mcpExecutePendingWriteRefused: {
     fixtures: "actors",
     file: "mcp-execute-failures.spec.ts",

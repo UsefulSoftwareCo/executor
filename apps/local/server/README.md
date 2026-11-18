@@ -424,8 +424,8 @@ and tool calls resolve their accounts again.
 Run a new execute to discover apps added or configured during a previous one.
 Incomplete or failing apps appear in `unavailableApps` with a safe error tag.
 
-Programs support `await`, `Promise.all`, loops and data transformation. There
-are no direct imports, fetch, process or filesystem globals. App tools still run
+Programs support `await`, `Promise.allSettled`, `Promise.all`, loops and data
+transformation. There are no direct imports, fetch, process or filesystem globals. App tools still run
 as trusted Node code with the selected credentials. Interpreter limits are
 cooperative; they do not isolate arbitrary app code or bound process memory.
 App code can pass `context.signal` to fetch to observe cancellation. Effects

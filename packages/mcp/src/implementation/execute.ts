@@ -1615,6 +1615,26 @@ export const reportedCalls = (progress: ExecutionProgress): Array<McpToolCall> =
     ];
   });
 
+/**
+ * Added to a program failure that left other calls running: those calls were interrupted, and
+ * calls that finished first did run.
+ */
+const interruptedSiblingsNote =
+  "Other tool calls were still running when the program stopped and were interrupted. toolCalls lists every call with its outcome: calls marked success did run.";
+
+/**
+ * Added after that note only when a tool call's rejection stopped the program, as when one call
+ * in a Promise.all rejects; a program that threw on its own gains nothing from it.
+ */
+const settleSiblingsAdvice =
+  "To keep the results of the calls that succeed when one fails, use Promise.allSettled or a .catch on each call.";
+
+/** The interrupted-calls note for a failure of this kind. */
+const interruptedNote = (kind: CodeMode.DiagnosticKind) =>
+  kind === "ToolFailure"
+    ? `${interruptedSiblingsNote} ${settleSiblingsAdvice}`
+    : interruptedSiblingsNote;
+
 /** The phase a timed-out execution was in, so callers can tell slow discovery from a slow program. */
 export const timeoutMessage = (timeoutMs: number, phase: "discovery" | "program") =>
   phase === "discovery"
@@ -1799,7 +1819,8 @@ function runProgram(
       const unknown =
         result.ok || unavailable !== undefined ? undefined : prepared.unknownTool(result.error);
       if (unknown !== undefined && !result.ok) yield* prepared.recheck(result.error);
-      const execution = executionDiagnostic({
+      const toolCalls = reportedCalls(progress);
+      const reported = executionDiagnostic({
         ...result,
         ...(result.ok ? {} : { error: programFailure(result.error) }),
         ...(unknown === undefined || result.ok
@@ -1821,8 +1842,18 @@ function runProgram(
               },
             }
           : {}),
-        toolCalls: reportedCalls(progress),
+        toolCalls,
       });
+      const execution =
+        reported.ok || timedOut || !toolCalls.some(({ outcome }) => outcome === "interrupted")
+          ? reported
+          : {
+              ...reported,
+              error: {
+                ...reported.error,
+                message: `${reported.error.message} ${interruptedNote(reported.error.kind)}`,
+              },
+            };
       if (timedOut) yield* Effect.annotateCurrentSpan("executor.timeout.phase", "program");
       // Signatures cost CPU per tool; a program renders them only for its global `search()` pages.
       yield* Effect.annotateCurrentSpan(
