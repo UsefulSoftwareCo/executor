@@ -817,6 +817,7 @@ const suiteConfigs: Record<string, () => Promise<unknown>> = {
   "ci-repeat.config.ts": () => import("./ci-repeat.config.ts"),
   "collector-job.config.ts": () => import("./collector-job.config.ts"),
   "conflict-markers.config.ts": () => import("./conflict-markers.config.ts"),
+  "coverage-unreadable.config.ts": () => import("./coverage-unreadable.config.ts"),
   "macos-staple.config.ts": () => import("./macos-staple.config.ts"),
   "npm-channel.config.ts": () => import("./npm-channel.config.ts"),
   "publish-guard.config.ts": () => import("./publish-guard.config.ts"),
