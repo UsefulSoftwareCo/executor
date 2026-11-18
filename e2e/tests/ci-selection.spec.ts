@@ -29,6 +29,7 @@ import {
 import { selectionKey, workerGrowthKey } from "../ci-key.ts";
 import { gateEnvironment, stepEnvironmentBlock } from "../support/gate-environment.ts";
 import { fileGuards } from "../file-guards.ts";
+import { narrowingOf, narrowings } from "../narrowing.ts";
 import { scenarios, scenariosForSuite } from "../test-plan.ts";
 
 const jobs = [
@@ -79,11 +80,28 @@ const block = (...lines: ReadonlyArray<string>) =>
  * the open pull requests based on the branch (`above.<n>`), the changed files, the files changed
  * between the run's comparison ends (`compared`) and main's contents (`main/<path with / as _>`).
  * The nth read of a kind returns its nth answer, and the last answer once they run out, so a case
- * can edit the description while the job waits.
+ * can edit the description while the job waits. The reads of the title and commit count (`pull`)
+ * and of the commits count themselves, and the nth fails with the text of `<kind>-fails.<n>` when
+ * that file exists; the commits read lists at most 250, as GitHub does however many pages are read.
  */
 const stubGh = `#!/bin/sh
 dir=$(dirname "$0")
 case "$*" in
+  *"--jq .title"|*"--jq {title, commits} | @json"|*"/commits?"*)
+    case "$*" in *"/commits?"*) kind=commits ;; *) kind=pull ;; esac
+    read=$(cat "$dir/$kind.reads" 2>/dev/null || echo 0)
+    echo $((read + 1)) > "$dir/$kind.reads"
+    [ -f "$dir/$kind-fails.$read" ] && { cat "$dir/$kind-fails.$read" >&2; exit 1; }
+    title=$(cat "$dir/title" 2>/dev/null || echo "Change something")
+    case "$kind $*" in
+      commits*) head -n 250 "$dir/commits" ;;
+      *".title") echo "$title" ;;
+      *) [ -f "$dir/pull-answer" ] && exec cat "$dir/pull-answer"
+        jq -cn --arg title "$title" --argjson commits "$(cat "$dir/commit-count")" '{$title, $commits}' ;;
+    esac
+    exit ;;
+  *"--jq .draft") [ -f "$dir/draft-fails" ] && { echo "HTTP 502" >&2; exit 1; }
+    cat "$dir/draft" 2>/dev/null || echo true; exit ;;
   "pr list "*) kind=above ;;
   *"/compare/"*) exec jq -r "$4" "$dir/compared.json" ;;
   *"/files "*) cat "$dir/files"; exit ;;
@@ -115,6 +133,23 @@ const select = (input: {
   readonly stackedAbove?: string | ReadonlyArray<string>;
   readonly wait?: number;
   readonly root?: string;
+  /**
+   * Whether the pull request is ready for review, as the live read finds it; a draft by default.
+   * `unreadable` fails the read.
+   */
+  readonly ready?: boolean | "unreadable";
+  /** The pull request's title and commit messages, as the squash on main would carry them. */
+  readonly title?: string;
+  readonly commits?: ReadonlyArray<string>;
+  /** How many commits the pull request says it has; as many as `commits` by default. */
+  readonly commitCount?: number;
+  /** What `gh` prints for each failed read of a kind, in order; the reads after them succeed. */
+  readonly failures?: {
+    readonly pull?: ReadonlyArray<string>;
+    readonly commits?: ReadonlyArray<string>;
+  };
+  /** What the read of the title and commit count prints instead of the pull request's. */
+  readonly pullAnswer?: string;
   /** More of the job's environment. */
   readonly env?: Readonly<Record<string, string>>;
 }) =>
@@ -138,7 +173,34 @@ const select = (input: {
         { discard: true },
       );
     yield* answers("body", input.body ?? "");
+    if (input.ready === "unreadable") yield* fs.writeFileString(path.join(bin, "draft-fails"), "");
+    else
+      yield* fs.writeFileString(path.join(bin, "draft"), input.ready === true ? "false" : "true");
     yield* answers("above", input.stackedAbove ?? "");
+    if (input.title !== undefined)
+      yield* fs.writeFileString(path.join(bin, "title"), `${input.title}\n`);
+    // As gh prints them with the selector's --jq: one JSON object a line.
+    const commits = input.commits ?? ["Change something"];
+    yield* fs.writeFileString(
+      path.join(bin, "commits"),
+      commits
+        .map((text, index) =>
+          JSON.stringify({ what: `commit ${String(index % 10).repeat(9)}`, text }),
+        )
+        .join("\n"),
+    );
+    yield* fs.writeFileString(
+      path.join(bin, "commit-count"),
+      String(input.commitCount ?? commits.length),
+    );
+    for (const [kind, texts] of Object.entries(input.failures ?? {}))
+      yield* Effect.forEach(
+        texts ?? [],
+        (text, index) => fs.writeFileString(path.join(bin, `${kind}-fails.${index}`), text),
+        { discard: true },
+      );
+    if (input.pullAnswer !== undefined)
+      yield* fs.writeFileString(path.join(bin, "pull-answer"), input.pullAnswer);
     yield* fs.writeFileString(path.join(bin, "files"), (input.changed ?? []).join("\n"));
     const compared = input.compared ?? [];
     if (compared !== "unknown")
@@ -199,6 +261,19 @@ const select = (input: {
       outputs,
       keys: { selection, workerGrowth },
       summary: yield* fs.readFileString(summary),
+      /** How many times the job read the title and commit count, and the commits. */
+      reads: {
+        pull: Number(
+          (yield* fs
+            .readFileString(path.join(bin, "pull.reads"))
+            .pipe(Effect.orElseSucceed(() => "0"))).trim(),
+        ),
+        commits: Number(
+          (yield* fs
+            .readFileString(path.join(bin, "commits.reads"))
+            .pipe(Effect.orElseSucceed(() => "0"))).trim(),
+        ),
+      },
     };
   }).pipe(Effect.scoped);
 
@@ -388,6 +463,34 @@ const e2eJobs = Object.keys(startedBy) as ReadonlyArray<E2eJob>;
  */
 const heavyCaseTimeout = 120_000;
 
+/**
+ * Main's files for `select`'s reads, as this checkout has them (patches and guarded files
+ * unchanged), with `plan` for main's e2e/test-plan.ts, or none when undefined.
+ */
+const mainWith = (plan: string | undefined) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const names = yield* fs.readDirectory("patches");
+    const hashed = (yield* processes.string(
+      ChildProcess.make("git", [
+        "hash-object",
+        ...guardedFiles,
+        ...names.map((name) => `patches/${name}`),
+      ]),
+    ))
+      .trim()
+      .split("\n");
+    return {
+      "package.json": yield* fs.readFileString("package.json"),
+      patches: names
+        .map((name, index) => `${hashed[guardedFiles.length + index]} ${name}`)
+        .join("\n"),
+      ...guardedListings(hashed.slice(0, guardedFiles.length)),
+      ...(plan === undefined ? {} : { "e2e/test-plan.ts": plan }),
+    } as Record<string, string>;
+  });
+
 /** The `select` outputs whose matrix fields the size budget measures (each entry's fields). */
 const matrixOutputs = ["local-shards", "self-host-shards", "cloud-runners"];
 
@@ -562,8 +665,12 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "release-docker-engine",
           "collector",
           "full",
+          "draft",
+          "gate",
         ].sort(),
       );
+      // A push is no draft, and vouches for main.
+      expect(run.outputs).toMatchObject({ draft: "false", gate: "push" });
       for (const job of [...jobs, ...runnerOutputs]) expect(run.outputs[job], job).not.toBe("");
       // Executor releases runs the whole release matrix on main after merge instead.
       for (const lane of [...laneOutputs, "release-docker-engine"])
@@ -701,6 +808,560 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(bare.outputs["cloud-runners"]).toBe("");
       expect(prefixed.outputs).toEqual(bare.outputs);
     }),
+  );
+
+  it.effect(
+    "a ready pull request runs every scenario unless all it changes is in the narrowing table",
+    () =>
+      Effect.gen(function* () {
+        const product = ["packages/sdk/src/implementation/tools.ts", "e2e/tests/groups.spec.ts"];
+        const narrow = ["notes/ci.md", "AGENTS.md", "e2e/tests/groups.spec.ts"];
+        const [draft, readyProduct, readyNarrow, readyCut, push] = yield* Effect.all(
+          [
+            select({ body: block("groups.spec.ts"), compared: product }),
+            select({ body: block("groups.spec.ts"), compared: product, ready: true }),
+            select({ body: block("groups.spec.ts"), compared: narrow, ready: true }),
+            select({
+              body: block("groups.spec.ts"),
+              compared: Array.from({ length: 300 }, (_, index) => `notes/${index}.md`),
+              ready: true,
+            }),
+            select({}),
+          ],
+          { concurrency: "unbounded" },
+        );
+        for (const run of [draft, readyProduct, readyNarrow, readyCut, push])
+          expect(run.exitCode, run.log).toBe(0);
+
+        // A draft runs its selection and says what being ready will run.
+        expect(draft.outputs.full).toBe("false");
+        expect(draft.summary).toContain(
+          "Once ready for review: the full suite, as it changes files outside e2e/narrowing.ts since main: packages/sdk/src/implementation/tools.ts.",
+        );
+
+        // Ready, a change to product source runs every scenario, as a push to main does.
+        expect(readyProduct.outputs.full).toBe("true");
+        expect(readyProduct.summary).toContain(
+          "Full suite: ready for review, and changes files outside e2e/narrowing.ts since main: packages/sdk/src/implementation/tools.ts",
+        );
+        for (const job of ["local", "self-host", "cloud"])
+          expect(readyProduct.outputs[job], job).toBe(push.outputs[job]);
+        expect(readyProduct.keys.selection).not.toBe(draft.keys.selection);
+
+        // Ready, notes, agent documents and spec files keep the block's selection.
+        expect(readyNarrow.outputs.full).toBe("false");
+        // The same selection as the draft's; being ready only adds the changed scenarios'
+        // repeats, and changes what the run vouches for.
+        const narrowDraft = (yield* select({ body: block("groups.spec.ts"), compared: narrow }))
+          .outputs;
+        for (const job of jobs) expect(readyNarrow.outputs[job], job).toBe(narrowDraft[job]);
+        expect(
+          shards(readyNarrow.outputs, "self-host").filter(
+            ({ shard }) => !shard.startsWith("repeat"),
+          ),
+        ).toEqual(shards(narrowDraft, "self-host"));
+        expect(readyNarrow.outputs).toMatchObject({ draft: "false", gate: "narrowed" });
+        expect(narrowDraft).toMatchObject({ draft: "true", gate: "draft" });
+        expect(readyNarrow.summary).not.toContain("Once ready for review");
+
+        // A comparison GitHub cut short narrows nothing.
+        expect(readyCut.outputs.full).toBe("true");
+        expect(readyCut.summary).toContain("(more files than the comparison with main lists)");
+      }),
+  );
+
+  it.effect(
+    "whether a pull request is ready is read live, so a re-run of a draft's run on a ready pull request runs in full",
+    () =>
+      Effect.gen(function* () {
+        const product = ["packages/sdk/src/implementation/tools.ts"];
+        // The event of a draft's run says draft; a re-run keeps that event. The live read decides.
+        const [rerun, unreadable, draft, push] = yield* Effect.all(
+          [
+            select({ body: block("groups.spec.ts"), compared: product, ready: true }),
+            select({ body: block("groups.spec.ts"), compared: product, ready: "unreadable" }),
+            select({ body: block("groups.spec.ts"), compared: product }),
+            select({}),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(rerun.exitCode, rerun.log).toBe(0);
+        expect(rerun.outputs).toMatchObject({ full: "true", draft: "false", gate: "full" });
+        expect(rerun.log).toContain("Pull request 1 is ready for review.");
+        // A read that fails runs as ready, in full.
+        expect(unreadable.exitCode, unreadable.log).toBe(0);
+        expect(unreadable.outputs).toMatchObject({ full: "true", draft: "false", gate: "full" });
+        expect(unreadable.log).toContain("so it runs as ready for review");
+        expect(draft.outputs).toMatchObject({ full: "false", draft: "true", gate: "draft" });
+        // A push vouches for main, and is no draft.
+        expect(push.outputs).toMatchObject({ full: "true", draft: "false", gate: "push" });
+        // The event's draft flag is no longer read anywhere in the workflows.
+        const fs = yield* FileSystem.FileSystem;
+        for (const file of [".github/workflows/checks.yml", ".github/workflows/ci.yml"])
+          expect(yield* fs.readFileString(file), file).not.toContain("pull_request.draft");
+      }),
+  );
+
+  it.effect(
+    "a draft's e2e job never reports the required check, so its narrowed green cannot stand for the merge",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const checks = yield* fs.readFileString(".github/workflows/checks.yml");
+        const e2e = checks.slice(checks.indexOf("\n  e2e:\n"));
+        expect(e2e.slice(0, e2e.indexOf("    needs:"))).toContain(
+          "    name: ${{ needs.select.outputs.draft == 'true' && 'e2e (draft)' || 'e2e' }}\n",
+        );
+        const select = checks.slice(checks.indexOf("  select:"), checks.indexOf("\n  static:"));
+        // Not behind the repeat condition: a repeat run names its job as its own select read it.
+        expect(select).toContain("      draft: ${{ steps.select.outputs.draft }}\n");
+        // Marking a pull request ready starts its run.
+        const ci = yield* fs.readFileString(".github/workflows/ci.yml");
+        expect(ci).toContain("    types: [opened, synchronize, reopened, ready_for_review]\n");
+        // The ruleset requires the name a ready run reports.
+        const ruleset = yield* fs.readFileString("apps/hosted/cloud/alchemy.github-ruleset.ts");
+        expect(ruleset).toContain('"checks / e2e"');
+        expect(ruleset).not.toContain("e2e (draft)");
+      }),
+  );
+
+  it.effect(
+    "a stack's top layer runs the spec files every layer below it changed, not only its own",
+    () =>
+      Effect.gen(function* () {
+        // The review's probe: a lower layer changed groups.spec.ts and skipped; the top selects
+        // none and changes nothing in e2e/tests itself.
+        const [draft, ready] = yield* Effect.all(
+          [
+            select({
+              body: block("none"),
+              changed: ["notes/top.md"],
+              compared: ["notes/top.md", "e2e/tests/groups.spec.ts"],
+            }),
+            select({
+              body: block("none"),
+              changed: ["notes/top.md"],
+              compared: ["notes/top.md", "e2e/tests/groups.spec.ts"],
+              ready: true,
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        for (const run of [draft, ready]) {
+          expect(run.exitCode, run.log).toBe(0);
+          expect(run.summary).toContain("Spec files: groups.spec.ts");
+          expect(
+            jobs.filter((job) => run.outputs[job] !== ""),
+            run.log,
+          ).not.toHaveLength(0);
+        }
+      }),
+  );
+
+  it.effect(
+    "a ready pull request runs its new scenarios four more times, the last under load",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const plan = yield* fs.readFileString("e2e/test-plan.ts");
+        const placement = Object.values(scenarios)
+          .filter(
+            (scenario) =>
+              scenario.file === "credential-placement.spec.ts" &&
+              scenario.targets["self-host"].status === "scheduled" &&
+              scenario.targets.cloud.status !== "scheduled",
+          )
+          .map((scenario) => scenario.title)
+          .toSorted();
+        expect(placement.length).toBeGreaterThan(1);
+        // The 17 Nov case: a new scenario in a changed spec file. Main's plan names the others.
+        const fresh = placement[0]!;
+        const main = yield* mainWith(
+          plan.replace(JSON.stringify(fresh), JSON.stringify("An older title")),
+        );
+        const changed = ["e2e/tests/credential-placement.spec.ts"];
+        const body = block("credential-placement.spec.ts");
+        const [draft, readyRun, readyFull, unchanged, nothingNew] = yield* Effect.all(
+          [
+            select({ body, changed, compared: changed, main }),
+            select({ body, changed, compared: changed, main, ready: true }),
+            select({
+              body,
+              changed,
+              compared: [...changed, "packages/sdk/src/implementation/tools.ts"],
+              main,
+              ready: true,
+            }),
+            select({ body, compared: ["notes/ci.md"], main, ready: true }),
+            // Every scenario of the changed file is in main's plan: nothing is new.
+            select({ body, changed, compared: changed, main: yield* mainWith(plan), ready: true }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        for (const run of [draft, readyRun, readyFull, unchanged, nothingNew])
+          expect(run.exitCode, run.log).toBe(0);
+        const repeated = (run: typeof readyRun) =>
+          shards(run.outputs, "self-host").filter(({ shard }) => shard.startsWith("repeat"));
+
+        // A draft, a ready pull request that changes no spec file, and one that adds no scenario
+        // repeat nothing.
+        for (const run of [draft, unchanged, nothingNew]) expect(repeated(run)).toEqual([]);
+
+        // Ready: four more runs of exactly the new scenario, the last under load.
+        for (const run of [readyRun, readyFull]) {
+          const repeats = repeated(run);
+          expect(repeats.map(({ shard }) => shard)).toEqual([
+            "repeat 1/4",
+            "repeat 2/4",
+            "repeat 3/4",
+            "repeat 4/4 under load",
+          ]);
+          expect(repeats.map((entry) => (entry as { load?: string }).load)).toEqual([
+            "",
+            "",
+            "",
+            "true",
+          ]);
+          for (const { pattern } of repeats) {
+            const matches = new RegExp(pattern);
+            for (const scenario of Object.values(scenarios))
+              if (scenario.targets["self-host"].status === "scheduled")
+                expect(matches.test(scenario.title), scenario.title).toBe(scenario.title === fresh);
+          }
+          expect(run.summary).toContain(
+            "self-host: 1 new scenarios run 4 more times, the last with half the cores busy; any failure fails the pull request.",
+          );
+          expect(run.summary).not.toContain("new scenarios repeat (the first by title)");
+        }
+        // The selection itself still runs once, on its own runner or a full run's 12.
+        expect(shards(readyRun.outputs, "self-host")[0]).toEqual({
+          shard: "1/1",
+          pattern: readyRun.outputs["self-host"],
+        });
+        expect(shards(readyFull.outputs, "self-host")).toHaveLength(12 + 4);
+        expect(readyFull.summary).toContain("| 12, split by spec file |");
+      }),
+    heavyCaseTimeout,
+  );
+
+  it.effect(
+    "at most 60 scenarios repeat in a run, each job's on one runner, and the outputs stay under GitHub's 1 MiB",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const checks = yield* fs.readFileString(".github/workflows/checks.yml");
+        // The outputs the select job exports, which GitHub caps at 1 MiB a job, measured in UTF-16.
+        const selectJob = checks.slice(
+          checks.indexOf("\n  select:\n"),
+          checks.indexOf("\n  static:"),
+        );
+        const exported = [
+          ...selectJob
+            .slice(selectJob.indexOf("    outputs:\n"), selectJob.indexOf("    steps:\n"))
+            .matchAll(/steps\.select\.outputs\.([\w-]+)/g),
+        ].map(([, name]) => name!);
+        expect(exported).toEqual(expect.arrayContaining(["local-shards", "self-host-shards"]));
+        const exportedBytes = (outputs: Readonly<Record<string, string>>) =>
+          [...new Set(exported)].reduce((sum, name) => sum + 2 * (outputs[name] ?? "").length, 0);
+        // A job with nothing selected exports no matrix.
+        const entries = (outputs: Readonly<Record<string, string>>, job: string) =>
+          outputs[`${job}-shards`] === "" ? [] : shards(outputs, job);
+        const titles = (job: string, run: { outputs: Readonly<Record<string, string>> }) =>
+          entries(run.outputs, job)
+            .filter(({ shard }) => shard.startsWith("repeat 1/4"))
+            .flatMap(({ pattern }) =>
+              Object.values(scenarios)
+                .filter((scenario) => new RegExp(pattern).test(scenario.title))
+                .map((scenario) => scenario.title),
+            );
+        const large = Array.from(
+          { length: 300 },
+          (_, index) => `packages/sdk/src/file-${index}.ts`,
+        );
+        // The review's cases: the selector's fallback for a comparison of 300 files, or none, with
+        // main's plan unread, so every scenario of every spec file counts as new; and changed spec
+        // files holding more new scenarios together than the cap (main's plan unread). The cap is
+        // over all of a run's repeats, by title, so no spec file's size can pass it.
+        const counts = new Map<string, number>();
+        for (const scenario of Object.values(scenarios))
+          if (scenario.targets["self-host"].status === "scheduled")
+            counts.set(scenario.file, (counts.get(scenario.file) ?? 0) + 1);
+        const busiest: Array<string> = [];
+        for (const [file] of [...counts].toSorted(([, a], [, b]) => b - a))
+          if (busiest.reduce((sum, each) => sum + counts.get(each)!, 0) <= 60) busiest.push(file);
+        expect(busiest.reduce((sum, each) => sum + counts.get(each)!, 0)).toBeGreaterThan(60);
+        const unread = yield* mainWith(undefined);
+        const runs = yield* Effect.all(
+          [
+            select({ body: block("none"), compared: large, main: unread, ready: true }),
+            select({ body: block("none"), compared: "unknown", main: unread, ready: true }),
+            select({
+              body: block(...busiest),
+              changed: busiest.map((file) => `e2e/tests/${file}`),
+              compared: busiest.map((file) => `e2e/tests/${file}`),
+              main: unread,
+              ready: true,
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        for (const run of runs) {
+          expect(run.exitCode, run.log).toBe(0);
+          const repeated = new Set([...titles("local", run), ...titles("self-host", run)]);
+          expect(repeated.size).toBeGreaterThan(0);
+          expect(repeated.size).toBeLessThanOrEqual(60);
+          // Each job's repeats fit one runner: four entries, none over the cap.
+          for (const job of ["local", "self-host"]) {
+            const repeats = entries(run.outputs, job).filter(({ shard }) =>
+              shard.startsWith("repeat"),
+            );
+            expect(repeats.length === 0 || repeats.length === 4, job).toBe(true);
+            expect(titles(job, run).length, job).toBeLessThanOrEqual(60);
+          }
+          expect(exportedBytes(run.outputs)).toBeLessThan(1024 * 1024);
+        }
+        // The fallback repeats a sample, and says so.
+        expect(runs[0]!.summary).toMatch(
+          /Only 60 of the \d+ new scenarios repeat \(the first by title\), so the outputs stay bounded: main's plan could not be read/,
+        );
+      }),
+    heavyCaseTimeout,
+  );
+
+  it.effect(
+    "the busy cores stop with the job: a step that always runs ends every loop it started",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const processes = yield* ChildProcessSpawner.ChildProcessSpawner;
+        const directory = yield* fs.makeTempDirectoryScoped({ prefix: "executor-busy-cores-" });
+        // One shell starts them, sees them run, stops them and looks again, as a job's steps do.
+        const script = [
+          "scripts/ci/busy-cores.sh start",
+          'cp "$RUNNER_TEMP/busy-cores.pids" "$RUNNER_TEMP/started"',
+          'for pid in $(cat "$RUNNER_TEMP/started"); do kill -0 "$pid" && echo "alive $pid"; done',
+          "scripts/ci/busy-cores.sh stop",
+          "sleep 0.3",
+          'for pid in $(cat "$RUNNER_TEMP/started"); do kill -0 "$pid" 2>/dev/null && echo "left $pid"; done',
+          "scripts/ci/busy-cores.sh stop",
+        ].join("\n");
+        const log = yield* processes.string(
+          ChildProcess.make("bash", ["-c", script], {
+            env: { RUNNER_TEMP: directory },
+            extendEnv: true,
+          }),
+        );
+        const started = Number(/^Started (\d+) busy loops on \d+ cores\.$/m.exec(log)?.[1]);
+        expect(started, log).toBeGreaterThan(0);
+        expect(log.match(/^alive \d+$/gm), log).toHaveLength(started);
+        expect(log).toContain(`Stopped ${started} busy loops.`);
+        expect(log).not.toMatch(/^left /m);
+        expect(log).toContain("No busy loops were started.");
+        expect(yield* fs.exists(path.join(directory, "busy-cores.pids"))).toBe(false);
+        // Each job that starts them stops them in a step that runs whatever came before.
+        const checks = yield* fs.readFileString(".github/workflows/checks.yml");
+        for (const job of ["e2e-local", "e2e-self-host"]) {
+          const text = checks.slice(checks.indexOf(`\n  ${job}:\n`));
+          const body = text.slice(0, text.indexOf("\n  e2e-", 5));
+          const start = body.indexOf("scripts/ci/busy-cores.sh start");
+          const stop = body.indexOf("run: scripts/ci/busy-cores.sh stop");
+          expect(start, job).toBeGreaterThan(-1);
+          expect(stop, job).toBeGreaterThan(start);
+          expect(body.slice(body.lastIndexOf("- name:", stop), stop), job).toMatch(
+            /if: always\(\)/,
+          );
+        }
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("every path in the narrowing table names something in the checkout", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      for (const { holds, paths } of narrowings)
+        for (const entry of paths) {
+          const directory = entry.slice(0, entry.lastIndexOf("/") + 1);
+          const found = entry.includes("*")
+            ? (yield* fs.readDirectory(directory)).some((name) =>
+                matchesPath(entry, `${directory}${name}`),
+              )
+            : yield* fs.exists(entry);
+          expect(found, `${holds}: ${entry}`).toBe(true);
+        }
+      // Product source and the harness never narrow.
+      expect(narrowingOf("packages/sdk/src/implementation/tools.ts")).toBeUndefined();
+      expect(narrowingOf("e2e/test-plan.ts")).toBeUndefined();
+      expect(narrowingOf("e2e/tests/support/fixtures.ts")).toBeUndefined();
+      expect(narrowingOf("bun.lock")).toBeUndefined();
+      expect(narrowingOf("packages/apps/README.md")).toBeUndefined();
+    }),
+  );
+
+  it.effect(
+    "a pull request whose squash would skip main's CI fails select, a skip layer's included",
+    () =>
+      Effect.gen(function* () {
+        // The squash carries the title and every commit message; GitHub skips push workflows
+        // for any of these, so main would get no CI, Deploy or public export for the merge.
+        const directives = [
+          { commits: ["Fix the lock\n\nPush it with [skip ci] as the refresh does"] },
+          { commits: ["Change something", "Tidy up [CI SKIP]"] },
+          { commits: ["Change something\n\nskip-checks: true"] },
+          { title: "Release notes [skip actions]" },
+          { title: "Tidy [no ci]" },
+          { title: "Tidy [actions skip]" },
+          // GitHub honours the bracketed strings anywhere: in backticks, mid-sentence, any case.
+          {
+            commits: ["Explain the lock refresh\n\nIt pushes with `[skip ci]` so CI does not run."],
+          },
+          { title: "Document how [Skip Actions] behaves on a push" },
+          // The trailer, last at the end of the message, after the documented two empty lines,
+          // after Git's one, with no space, and after other trailers. Where GitHub's page does
+          // not say (no empty line before it, an indented line, alone as a title) it fails too.
+          { commits: ["Change something\n\n\nskip-checks: true"] },
+          { commits: ["Change something\n\nskip-checks:true\n"] },
+          { commits: ["Change something\nskip-checks: true"] },
+          { commits: ["Change something\n\n  skip-checks: true"] },
+          { title: "skip-checks: true" },
+          {
+            commits: [
+              "Change something\n\nMore about it.\n\nCo-authored-by: Someone <someone@example.com>\nskip-checks: true",
+            ],
+          },
+        ];
+        for (const each of directives) {
+          const run = yield* select({ body: block("none"), ready: true, ...each });
+          expect(run.exitCode, JSON.stringify(each)).toBe(1);
+          expect(run.log).toContain(
+            "GitHub starts no push workflow for a commit whose message holds that",
+          );
+          expect(run.outputs).toEqual({});
+        }
+        // The failure says what to change.
+        const backticks = yield* select({
+          body: block("none"),
+          commits: ["Explain the lock refresh\n\nIt pushes with `[skip ci]` so CI does not run."],
+        });
+        expect(backticks.log).toContain(
+          "GitHub honours [skip ci] anywhere in a message, in a sentence or inside backticks too, so remove it or write it without its brackets",
+        );
+        const trailer = yield* select({
+          body: block("none"),
+          commits: ["Change something\n\nskip-checks: true"],
+        });
+        expect(trailer.log).toContain('holds "skip-checks: true"');
+        expect(trailer.log).toContain(
+          "GitHub honours skip-checks: true as the last line of a message, the end of its trailers, so remove that line",
+        );
+        const named = yield* select({
+          body: block("none"),
+          commits: ["Change something", "Tidy up [CI SKIP]"],
+        });
+        expect(named.log).toContain('Commit 111111111 of pull request 1 holds "[CI SKIP]".');
+        // A lower stack layer is squashed into its own commit too.
+        const skipLayer = yield* select({
+          body: block("skip"),
+          stackedAbove: "7",
+          commits: ["Change something [skip ci]"],
+        });
+        expect(skipLayer.exitCode).toBe(1);
+        expect(skipLayer.outputs).toEqual({});
+        // Words that only mention skipping are not a directive.
+        const plain = yield* select({
+          body: block("none"),
+          ready: true,
+          title: "Skip CI for documentation",
+          commits: ["Explain skip-checks: true in a sentence", "Refresh bun.lock skip ci"],
+        });
+        expect(plain.exitCode, plain.log).toBe(0);
+        // skip-checks: true skips only as the final trailer, so prose about it does not fail:
+        // on a line of its own with more prose after it, in backticks mid-sentence, or with a
+        // trailer after it, since GitHub's page says it must come last.
+        const prose = [
+          "Explain the beta push\n\nIts message ends with a line\n\nskip-checks: true\n\nso CI does not run for it.",
+          "Explain the beta push\n\nA `skip-checks: true` trailer would also stop CI.",
+          "Change something\n\nskip-checks: true\nCo-authored-by: Someone <someone@example.com>",
+        ];
+        for (const message of prose) {
+          const run = yield* select({ body: block("none"), ready: true, commits: [message] });
+          expect(run.exitCode, `${message}\n${run.log}`).toBe(0);
+        }
+      }),
+  );
+
+  it.effect(
+    "the skip-directive check passes only after reading the title and every commit, and fails otherwise",
+    () =>
+      Effect.gen(function* () {
+        const clean = { body: block("none"), ready: true } as const;
+        const fails = (run: { exitCode: number; outputs: Readonly<Record<string, string>> }) => {
+          expect(run.exitCode).toBe(1);
+          expect(run.outputs).toEqual({});
+        };
+        // An HTTP error while reading the title is not retried and fails, even with the directive
+        // unread in a commit that the other read would have found.
+        const title = yield* select({
+          ...clean,
+          commits: ["Change something [skip ci]"],
+          failures: { pull: ["gh: Server Error (HTTP 502)"] },
+        });
+        fails(title);
+        expect(title.reads.pull).toBe(1);
+        expect(title.log).toContain(
+          "Could not read the title and commit count of pull request 1 (gh api repos/owner/repository/pulls/1",
+        );
+        expect(title.log).toContain("select fails rather than pass unchecked");
+        const commits = yield* select({
+          ...clean,
+          failures: { commits: ["gh: Bad Gateway (HTTP 502)"] },
+        });
+        fails(commits);
+        expect(commits.reads.commits).toBe(1);
+        expect(commits.log).toContain("Could not read the commit messages of pull request 1");
+        // No answer at all is retried twice: a third try that succeeds passes, three that fail do not.
+        const dropped =
+          'Get "https://api.github.com/repos/owner/repository/pulls/1": dial tcp: i/o timeout';
+        const outlasted = yield* select({
+          ...clean,
+          failures: { pull: [dropped, dropped], commits: [dropped] },
+        });
+        expect(outlasted.exitCode, outlasted.log).toBe(0);
+        expect(outlasted.reads).toEqual({ pull: 3, commits: 2 });
+        const lost = yield* select({ ...clean, failures: { pull: [dropped, dropped, dropped] } });
+        fails(lost);
+        expect(lost.reads.pull).toBe(3);
+        expect(lost.log).toContain("dial tcp: i/o timeout");
+        // An answer that is not the title and count fails too.
+        fails(yield* select({ ...clean, pullAnswer: '{"title":"Change something"}\n' }));
+        // GitHub lists at most 250 commits: a 252-commit pull request with the directive in commit
+        // 251 and a clean head fails, without reading a commit, and says to squash or split it.
+        const many = Array.from({ length: 252 }, (_, index) =>
+          index === 250 ? "Tidy [skip ci]" : `Change part ${index + 1}`,
+        );
+        const capped = yield* select({ ...clean, commits: many });
+        fails(capped);
+        expect(capped.reads.commits).toBe(0);
+        expect(capped.log).toContain(
+          "Pull request 1 has 252 commits. GitHub lists at most 250 of a pull request's commits",
+        );
+        expect(capped.log).toContain(
+          "Squash its commits into 250 or fewer (git rebase, then a force push), or split it into a stack of smaller pull requests",
+        );
+        // Fewer commits read than the pull request has, as when a push lands between the reads.
+        const short = yield* select({ ...clean, commits: ["One", "Two"], commitCount: 3 });
+        fails(short);
+        expect(short.log).toContain("read 2 of its 3 commits");
+        // 250 commits, every one read and clean, pass.
+        const full = yield* select({
+          ...clean,
+          commits: Array.from({ length: 250 }, (_, index) => `Change part ${index + 1}`),
+        });
+        expect(full.exitCode, full.log).toBe(0);
+        // A push to main is no pull request and reads none of this: the beta's and the lock
+        // repair's direct pushes skip CI on purpose.
+        const push = yield* select({ commits: ["Release 2.0.0-beta.9 [skip ci]"] });
+        expect(push.reads).toEqual({ pull: 0, commits: 0 });
+      }),
   );
 
   it.effect("a name that is not a spec file in e2e/tests/ fails before any job is chosen", () =>
@@ -978,7 +1639,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         expect(run.outputs).toEqual({});
       }
       expect(skip.exitCode, skip.log).toBe(0);
-      expect(skip.outputs).toEqual({ skip: "true" });
+      expect(skip.outputs).toEqual({ skip: "true", draft: "true", gate: "draft" });
     }).pipe(Effect.scoped),
   );
 
@@ -1417,7 +2078,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
             expect(run.outputs, failure).toEqual({});
           }
           expect(skip.exitCode, skip.log).toBe(0);
-          expect(skip.outputs, failure).toEqual({ skip: "true" });
+          expect(skip.outputs, failure).toEqual({ skip: "true", draft: "true", gate: "draft" });
         }).pipe(Effect.scoped),
       { discard: true },
     ),
@@ -2642,7 +3303,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       expect(all.summary).toContain("Full suite: changes the lockfile");
       expect(bareAll.exitCode).toBe(1);
       expect(skip.exitCode).toBe(0);
-      expect(skip.outputs).toEqual({ skip: "true" });
+      expect(skip.outputs).toEqual({ skip: "true", draft: "true", gate: "draft" });
       expect(loneSkip.exitCode).toBe(1);
       expect(missing.exitCode).toBe(1);
       expect(twice.exitCode).toBe(1);
@@ -2668,7 +3329,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         wait: 30,
       });
       expect(run.exitCode, run.log).toBe(0);
-      expect(run.outputs).toEqual({ skip: "true" });
+      expect(run.outputs).toEqual({ skip: "true", draft: "true", gate: "draft" });
       expect(run.log).toMatch(
         /Waited \d+ s for an e2e block in the description, then an open pull request based on this branch\./,
       );
@@ -2695,7 +3356,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       );
       for (const [index, run] of waited.entries()) {
         expect(run.exitCode, `${skips[index]}: ${run.log}`).toBe(0);
-        expect(run.outputs, skips[index]).toEqual({ skip: "true" });
+        expect(run.outputs, skips[index]).toEqual({ skip: "true", draft: "true", gate: "draft" });
         expect(run.log, skips[index]).toMatch(
           /Waited \d+ s for an open pull request based on this branch\./,
         );
@@ -3402,7 +4063,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         for (const run of runs) expect(run.exitCode, run.log).toBe(0);
         expect(runs[0]!.outputs.collector).toBe("true");
         expect(runs[1]!.outputs.collector).toBe("true");
-        expect(runs[2]!.outputs).toEqual({ skip: "true" });
+        expect(runs[2]!.outputs).toEqual({ skip: "true", draft: "true", gate: "draft" });
         expect(runs[3]!.outputs.collector).toBe("true");
       }),
   );
@@ -3438,7 +4099,7 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         compared: ["apps/cli/src/main.ts", "e2e/support/docker-release-server.ts"],
       });
       expect(run.exitCode, run.log).toBe(0);
-      expect(run.outputs).toEqual({ skip: "true" });
+      expect(run.outputs).toEqual({ skip: "true", draft: "true", gate: "draft" });
     }),
   );
 
@@ -3964,18 +4625,113 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
       }),
   );
 
-  it.effect("the e2e check runs after a cancellation and skips only for a skipped layer", () =>
+  it.effect("the e2e check runs after a cancellation and on a skipped layer", () =>
     Effect.gen(function* () {
       // A check its condition skips counts as passed, so a condition that a cancellation can
-      // make false, such as !cancelled(), would pass a cancelled run.
+      // make false, such as !cancelled(), would pass a cancelled run. And its name is an
+      // expression, which GitHub evaluates only for a job that runs, so it never skips at all.
       const check = yield* workflowJob("e2e");
-      expect(check.if).toBe("${{ always() && needs.select.outputs.skip != 'true' }}");
+      expect(check.if).toBe("${{ always() }}");
       expect(check.needs).toBe(`[select, ${e2eJobs.join(", ")}]`);
       for (const job of e2eJobs)
         expect((yield* workflowJob(job)).if, job).toBe(
           startedBy[job].map((name) => `needs.select.outputs.${name} != ''`).join(" || "),
         );
     }),
+  );
+
+  it.effect(
+    "a required check whose job name is an expression never skips, so it always reports under its name",
+    () =>
+      Effect.gen(function* () {
+        // GitHub evaluates a job's `name:` only when the job runs. A job its `if` skips reports
+        // under the expression's raw text instead, so a required check named by an expression
+        // and skipped never reports, and the pull request stays blocked: a ready skip layer on
+        // 18 Nov 2026 showed `checks / ${{ needs.select.outputs.draft == 'true' && ... }}`
+        // skipped and no `checks / e2e`. A fixed name reports when skipped, as passed.
+        const fs = yield* FileSystem.FileSystem;
+        const ruleset = yield* fs.readFileString("apps/hosted/cloud/alchemy.github-ruleset.ts");
+        const required = JSON.parse(
+          ruleset.match(/const requiredStatusChecks = (\[[^\]]*\]) as const;/)![1]!,
+        ) as ReadonlyArray<string>;
+        expect(required).toEqual(["checks / check", "checks / e2e"]);
+        // ci.yml calls checks.yml as `checks`, so each required context is `checks / <name>`.
+        const ci = yield* fs.readFileString(".github/workflows/ci.yml");
+        expect(ci).toContain("  checks:\n    uses: ./.github/workflows/checks.yml\n");
+        const lines = (yield* fs.readFileString(".github/workflows/checks.yml")).split("\n");
+        const jobs = lines.flatMap((line, index) => {
+          const key = line.match(/^ {2}([a-z][\w-]*):$/)?.[1];
+          if (key === undefined) return [];
+          const end = lines.findIndex((next, at) => at > index && /^ {0,2}\S/.test(next));
+          const body = lines.slice(index + 1, end === -1 ? undefined : end);
+          const name = body
+            .find((text) => text.startsWith("    name: "))
+            ?.slice("    name: ".length);
+          const condition = body
+            .find((text) => text.startsWith("    if: "))
+            ?.slice("    if: ".length);
+          return [{ key, name: name ?? key, condition }];
+        });
+        // Each name a job can report: a fixed name, or every quoted string in its expression.
+        const names = (job: (typeof jobs)[number]) =>
+          job.name.includes("${{")
+            ? [...job.name.matchAll(/'([^']*)'/g)].map((match) => match[1]!)
+            : [job.name];
+        for (const context of required) {
+          const reporting = jobs.filter((job) =>
+            names(job).some((name) => `checks / ${name}` === context),
+          );
+          expect(
+            reporting.map((job) => job.key),
+            context,
+          ).toHaveLength(1);
+          const [job] = reporting;
+          if (job!.name.includes("${{"))
+            expect(job!.condition, `${context} is named by an expression: ${job!.name}`).toBe(
+              "${{ always() }}",
+            );
+        }
+        // e2e is the one: its draft's name keeps a draft's narrowed run off the required check.
+        expect(jobs.find((job) => job.key === "e2e")!.name).toContain("${{");
+        expect(jobs.find((job) => job.key === "check")!.name).toBe("check");
+      }),
+  );
+
+  it.effect(
+    "on a skipped layer the e2e check runs and passes only when select, with its skip check, succeeded",
+    () =>
+      Effect.gen(function* () {
+        const [skip, loneSkip] = yield* Effect.all(
+          [
+            select({ body: block("skip"), stackedAbove: "123", ready: true }),
+            select({ body: block("skip"), ready: true }),
+          ],
+          { concurrency: "unbounded" },
+        );
+        expect(skip.exitCode, skip.log).toBe(0);
+        expect(skip.outputs).toMatchObject({ skip: "true", draft: "false" });
+        // A skip layer chooses no E2E job, so each is skipped.
+        expect(e2eJobs.filter((job) => chosen(skip.outputs, job))).toEqual([]);
+        const skipped = Object.fromEntries(e2eJobs.map((job) => [job, "skipped"])) as Record<
+          E2eJob,
+          string
+        >;
+        const passed = yield* gate({ result: "success", outputs: skip.outputs }, skipped);
+        expect(passed.exitCode, passed.log).toBe(0);
+        // A select that failed, its skip check on a ready layer included, fails it, even when the
+        // skip output survived the failure.
+        expect(loneSkip.exitCode, loneSkip.log).toBe(1);
+        for (const result of ["failure", "cancelled"]) {
+          const failed = yield* gate(
+            { result, outputs: { skip: "true", draft: "false" } },
+            skipped,
+          );
+          expect(failed.exitCode, failed.log).toBe(1);
+          expect(failed.log).toContain(
+            `::error::select: ${result}, so the E2E jobs did not run its selection`,
+          );
+        }
+      }),
   );
 
   it.effect(
@@ -4635,36 +5391,20 @@ layer(NodeServices.layer)("Release check after a push to main", (it) => {
         const workflow = yield* fs.readFileString(".github/workflows/checks.yml");
         const full = yield* select({});
         expect(full.exitCode, full.log).toBe(0);
-        const outputs = full.outputs;
-        const values: Array<{ readonly what: string; readonly value: string }> = [];
-        // The two required gates, as GitHub passes them a full run's needs.
-        const jobNeeds = (job: string) =>
-          workflow
-            .slice(workflow.indexOf(`\n  ${job}:\n`))
-            .match(/^ {4}needs:\s*\[([^\]]*)\]/m)![1]!
-            .split(",")
-            .map((name) => name.trim())
-            .filter((name) => name.length > 0);
-        for (const [job, step] of [
-          ["check", "Require every static check to pass"],
-          ["e2e", "Require every selected E2E job to pass"],
-        ] as const) {
-          const needs = Object.fromEntries(
-            jobNeeds(job).map((name) => [
-              name,
-              { result: "success", outputs: name === "select" ? outputs : {} },
-            ]),
-          );
-          for (const [name, value] of Object.entries(gateEnvironment(workflow, job, step, needs)))
-            values.push({ what: `${job}'s ${name}`, value });
-        }
-        // Each matrix entry's fields reach TEST_NAME, `--test-name` and E2E_TEST_NAME.
-        for (const output of ["local-shards", "self-host-shards", "cloud-runners"])
-          for (const entry of JSON.parse(outputs[output] || "[]") as ReadonlyArray<
-            Record<string, string>
-          >)
-            for (const [field, value] of Object.entries(entry))
-              values.push({ what: `${output} ${entry.shard ?? entry.name} ${field}`, value });
+        // And a ready pull request's repeats at their largest: a comparison of 300 files, so every
+        // spec file counts, with main's plan unread, so every scenario counts as new.
+        const repeated = yield* select({
+          body: block("none"),
+          compared: Array.from({ length: 300 }, (_, index) => `packages/sdk/src/file-${index}.ts`),
+          main: yield* mainWith(undefined),
+          ready: true,
+        });
+        expect(repeated.exitCode, repeated.log).toBe(0);
+        expect(
+          (
+            JSON.parse(repeated.outputs["self-host-shards"]!) as ReadonlyArray<{ shard: string }>
+          ).some(({ shard }) => shard.startsWith("repeat")),
+        ).toBe(true);
         // The select outputs a step reads into a variable directly.
         const direct = [
           "collector",
@@ -4673,7 +5413,45 @@ layer(NodeServices.layer)("Release check after a push to main", (it) => {
           "self-host-inventory",
           "self-host-catalog",
         ];
-        for (const output of direct) values.push({ what: output, value: outputs[output] ?? "" });
+        const values: Array<{ readonly what: string; readonly value: string }> = [];
+        for (const [run, outputs] of [
+          ["every scenario", full.outputs],
+          ["the largest repeats", repeated.outputs],
+        ] as const) {
+          // The two required gates, as GitHub passes them a full run's needs.
+          const jobNeeds = (job: string) =>
+            workflow
+              .slice(workflow.indexOf(`\n  ${job}:\n`))
+              .match(/^ {4}needs:\s*\[([^\]]*)\]/m)![1]!
+              .split(",")
+              .map((name) => name.trim())
+              .filter((name) => name.length > 0);
+          for (const [job, step] of [
+            ["check", "Require every static check to pass"],
+            ["e2e", "Require every selected E2E job to pass"],
+          ] as const) {
+            const needs = Object.fromEntries(
+              jobNeeds(job).map((name) => [
+                name,
+                { result: "success", outputs: name === "select" ? outputs : {} },
+              ]),
+            );
+            for (const [name, value] of Object.entries(gateEnvironment(workflow, job, step, needs)))
+              values.push({ what: `${run}: ${job}'s ${name}`, value });
+          }
+          // Each matrix entry's fields reach TEST_NAME, `--test-name` and E2E_TEST_NAME.
+          for (const output of ["local-shards", "self-host-shards", "cloud-runners"])
+            for (const entry of JSON.parse(outputs[output] || "[]") as ReadonlyArray<
+              Record<string, string>
+            >)
+              for (const [field, value] of Object.entries(entry))
+                values.push({
+                  what: `${run}: ${output} ${entry.shard ?? entry.name} ${field}`,
+                  value,
+                });
+          for (const output of direct)
+            values.push({ what: `${run}: ${output}`, value: outputs[output] ?? "" });
+        }
         const over = values
           .map(({ what, value }) => ({ what, bytes: Buffer.byteLength(value) }))
           .filter(({ bytes }) => bytes > selectionValueBudget)

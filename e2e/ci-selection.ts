@@ -16,6 +16,12 @@
  * Each job receives a `--test-name` pattern, or an empty output when none of its scenarios is
  * selected; the job is then skipped.
  *
+ * Once a pull request is ready for review, it runs every scenario unless everything it changes since
+ * main is in the narrowing table (e2e/narrowing.ts), such as notes and spec files. A draft runs its
+ * block's selection; the ready run, which gates the merge, cannot miss a scenario the change
+ * reaches. The block is still required and checked on a ready pull request, and still adds spec
+ * files when the table narrows.
+ *
  * The block may also say `skip` on the lower layer of a stack: another open pull request must
  * build on its branch. Every check then skips, and the layer above tests the combined change. The
  * select job then checks that the layer above's run was built on this layer's head and compared
@@ -52,6 +58,7 @@ import {
   FileSystem,
   Option,
   Path,
+  Schedule,
   Schema,
   Stream,
 } from "effect";
@@ -63,6 +70,7 @@ import { packagedEngineDependency } from "./packaged-engine.ts";
 import { savePathFiles } from "./save-path.ts";
 import { blocksIn, parseRequested, type Requested } from "./ci-block.ts";
 import { fileGuards } from "./file-guards.ts";
+import { broadChanges } from "./narrowing.ts";
 import { selectionKey, workerGrowthKey } from "./ci-key.ts";
 import { mcpSearchChanged, mcpSearchTitles } from "./mcp-search-guard.ts";
 import { Target } from "./report-model.ts";
@@ -138,6 +146,21 @@ const harnessPattern = harnessTitles
   .join("|");
 /** GitHub's comparison lists at most this many files; a longer one may hide a harness path. */
 const compareFileLimit = 300;
+
+/**
+ * A ready pull request runs its new local and self-host scenarios this many more times, each on a
+ * runner of its own, the last of them with half the runner's cores kept busy, so a scenario that
+ * passes only sometimes fails the pull request before it reaches main. A new scenario is one in a
+ * spec file the stack changed that main's e2e/test-plan.ts does not name; when main's plan cannot
+ * be read, every scenario of a changed spec file counts, so not knowing never repeats less.
+ */
+const repeats = 4;
+/**
+ * At most this many scenarios repeat in a run, over all jobs, the first by title: each job's
+ * repeats then fit one runner, about a full run's self-host shard, and the outputs stay bounded
+ * however large the change. A larger change repeats this sample, and the run summary says so.
+ */
+const repeatLimit = 60;
 
 /**
  * Each output feeds one `--test-name` in checks.yml. Full runs use these patterns unchanged.
@@ -1002,6 +1025,55 @@ const spoken = (duration: Duration.Duration) => {
     : `${seconds} second${seconds === 1 ? "" : "s"}`;
 };
 
+/**
+ * The directive in a commit message that makes GitHub start no push workflow for the commit, so
+ * `main` would get no CI, Deploy or public export for it, with what the author should change; none
+ * when the message holds none. GitHub's rule ("Skipping workflow runs" in its Actions
+ * documentation): any of five bracketed strings anywhere in the message, in a sentence or inside
+ * backticks too (matched here in any case), or a `skip-checks:true` or `skip-checks: true` trailer,
+ * last in the trailers at the end of the message, after two empty lines. The trailer counts here
+ * whenever it is the message's last line, indented or not, with any number of empty lines before
+ * it: the documentation does not say what GitHub does with one empty line (Git collapses two to
+ * one) or none, so those fail rather than pass. A mention of `skip-checks: true` in a sentence, or
+ * on a line with more of the message after it, is not at the end, skips nothing and passes.
+ *
+ * A pull request lands as a squash whose title is its own or its one commit's and whose body is
+ * its commits' messages (the repository's squash settings), so none of them may hold one. Direct
+ * pushes are not pull requests: the release commit and the lock refresh skip CI on purpose.
+ */
+export const skipDirective = (
+  text: string,
+): { readonly directive: string; readonly change: string } | undefined => {
+  const bracketed = text.match(/\[(?:skip ci|ci skip|no ci|skip actions|actions skip)\]/iu);
+  if (bracketed !== null)
+    return {
+      directive: bracketed[0],
+      change: `GitHub honours ${bracketed[0]} anywhere in a message, in a sentence or inside backticks too, so remove it or write it without its brackets`,
+    };
+  const last = text.trim().split(/\r?\n/u).at(-1)!.trim();
+  if (/^skip-checks: ?true$/iu.test(last))
+    return {
+      directive: last,
+      change: `GitHub honours ${last} as the last line of a message, the end of its trailers, so remove that line`,
+    };
+  return undefined;
+};
+
+/** The first of `texts` (a title, commit messages) that would skip `main`'s workflows. */
+export const skipDirectiveIn = (
+  texts: ReadonlyArray<{ readonly what: string; readonly text: string }>,
+) =>
+  texts.flatMap(({ what, text }) => {
+    const found = skipDirective(text);
+    return found === undefined ? [] : [{ what, ...found }];
+  })[0];
+
+/**
+ * GitHub lists at most this many of a pull request's commits, however many pages are read ("List
+ * commits on a pull request" in its REST documentation).
+ */
+export const listedCommits = 250;
+
 /** Runs `gh` with the job's token and returns what it prints. */
 const gh = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
@@ -1021,6 +1093,25 @@ const gh = (args: ReadonlyArray<string>) =>
       });
     return output;
   }).pipe(Effect.scoped);
+
+/**
+ * `gh`, tried twice more when it got no answer from GitHub at all: a dropped connection, a timeout
+ * or a failed name lookup, which a retry can outlast. A failure GitHub answered, such as an HTTP
+ * 502, is not retried.
+ */
+const ghRead = (args: ReadonlyArray<string>) =>
+  gh(args).pipe(
+    Effect.retry({
+      times: 2,
+      schedule: Schedule.exponential("500 millis"),
+      while: (error) =>
+        error._tag === "SelectionFailed" &&
+        !/\bHTTP \d{3}\b/u.test(error.message) &&
+        /dial tcp|connection reset|connection refused|i\/o timeout|TLS handshake timeout|unexpected EOF|no such host|network is unreachable|context deadline exceeded/iu.test(
+          error.message,
+        ),
+    }),
+  );
 
 /**
  * The pull request's description and the open pull requests based on its branch, read again
@@ -1200,6 +1291,102 @@ NodeRuntime.runMain(
         : yield* readPullRequest({ repository, number: pullRequest, headRef, wait, poll });
     const block = read === undefined ? undefined : yield* requested(read.parsed, `${retry}.`);
     const above = read === undefined ? [] : read.above;
+    // Whether the pull request is a draft, read live, not from the event: a re-run of a draft's
+    // run keeps the event of a draft, and must run as the pull request is now. A draft's `e2e`
+    // job is named `e2e (draft)` (checks.yml), so a draft never reports the required check and
+    // its narrowed green cannot stand for the merge once it is ready. A read that fails runs as
+    // ready, in full. Locally (e2e/check-description.ts) E2E_READY says which to check as.
+    const draft =
+      read === undefined
+        ? undefined
+        : local
+          ? (yield* Config.String("E2E_READY").pipe(Config.withDefault(""))) !== "true"
+          : yield* gh(["api", `repos/${repository}/pulls/${pullRequest}`, "--jq", ".draft"]).pipe(
+              Effect.map((text) => text.trim() === "true"),
+              Effect.tap((isDraft) =>
+                Console.log(
+                  `Pull request ${pullRequest} is ${isDraft ? "a draft" : "ready for review"}.`,
+                ),
+              ),
+              Effect.catch(() =>
+                Console.log(
+                  `Could not read whether pull request ${pullRequest} is a draft, so it runs as ready for review.`,
+                ).pipe(Effect.as(false)),
+              ),
+            );
+    const draftLine = `draft=${draft === true}`;
+    // The squash's title and body must not skip main's CI (`skipDirective`). This runs on every
+    // layer, a skip layer's included, since each layer is squashed into its own commit. It passes
+    // only when it read the title and every commit's message: a read that fails, or that returns
+    // fewer commits than the pull request has, fails select.
+    if (read !== undefined && !local) {
+      const unread = (what: string, cause: string) =>
+        new SelectionFailed({
+          message: `Could not read ${what} of pull request ${pullRequest} (${cause.split("\n")[0]}), so whether the squash that lands it would skip main's CI is not known, and select fails rather than pass unchecked. Run this workflow again: gh run rerun ${runId}`,
+        });
+      const pull = yield* ghRead([
+        "api",
+        `repos/${repository}/pulls/${pullRequest}`,
+        "--jq",
+        "{title, commits} | @json",
+      ]).pipe(
+        Effect.mapError((error) => unread("the title and commit count", error.message)),
+        Effect.flatMap((text) =>
+          Effect.try({
+            try: () => {
+              const parsed = JSON.parse(text) as { title?: unknown; commits?: unknown };
+              if (
+                typeof parsed.title !== "string" ||
+                typeof parsed.commits !== "number" ||
+                !Number.isInteger(parsed.commits) ||
+                parsed.commits < 1
+              )
+                throw new Error(`unexpected answer ${text.trim().slice(0, 200)}`);
+              return { title: parsed.title, commits: parsed.commits };
+            },
+            catch: (cause) => unread("the title and commit count", String(cause)),
+          }),
+        ),
+      );
+      if (pull.commits > listedCommits)
+        return yield* new SelectionFailed({
+          message: `Pull request ${pullRequest} has ${pull.commits} commits. GitHub lists at most ${listedCommits} of a pull request's commits, so the messages of the rest, which the squash that lands it carries onto main, cannot be checked for a directive that would skip main's CI. Squash its commits into ${listedCommits} or fewer (git rebase, then a force push), or split it into a stack of smaller pull requests; the push starts a new run.`,
+        });
+      const commits = yield* ghRead([
+        "api",
+        "--paginate",
+        `repos/${repository}/pulls/${pullRequest}/commits?per_page=100`,
+        "--jq",
+        '.[] | {what: ("commit " + .sha[0:9]), text: .commit.message} | @json',
+      ]).pipe(
+        Effect.mapError((error) => unread("the commit messages", error.message)),
+        Effect.flatMap((text) =>
+          Effect.try({
+            try: () =>
+              text
+                .split("\n")
+                .filter((line) => line.trim() !== "")
+                .map((line) => {
+                  const parsed = JSON.parse(line) as { what?: unknown; text?: unknown };
+                  if (typeof parsed.what !== "string" || typeof parsed.text !== "string")
+                    throw new Error(`unexpected answer ${line.slice(0, 200)}`);
+                  return { what: parsed.what, text: parsed.text };
+                }),
+            catch: (cause) => unread("the commit messages", String(cause)),
+          }),
+        ),
+      );
+      if (commits.length !== pull.commits)
+        return yield* unread(
+          "every commit message",
+          `read ${commits.length} of its ${pull.commits} commits; a push between the two reads also does this`,
+        );
+      const found = skipDirectiveIn([{ what: "the title", text: pull.title.trim() }, ...commits]);
+      if (found !== undefined)
+        return yield* new SelectionFailed({
+          message: `${found.what[0]!.toUpperCase()}${found.what.slice(1)} of pull request ${pullRequest} holds ${JSON.stringify(found.directive)}. GitHub starts no push workflow for a commit whose message holds that, and the squash that lands this pull request carries its title and every commit message, so main would get no CI, Deploy or public export for it. ${found.change}: the title with gh pr edit ${pullRequest} --title, a commit with git rebase and a force push. Then run this workflow again: gh run rerun ${runId}`,
+        });
+    }
     // A skipped layer runs nothing, so it decides before the suites are read: the layer above
     // reads them for the combined change.
     if (block === "skip") {
@@ -1227,7 +1414,11 @@ NodeRuntime.runMain(
       ].join("\n");
       yield* Console.log(report);
       if (Option.isSome(output))
-        yield* fs.writeFileString(output.value, keyed("skip=true", read?.body), { flag: "a" });
+        yield* fs.writeFileString(
+          output.value,
+          keyed(`skip=true\n${draftLine}\ngate=${draft === true ? "draft" : "stack"}`, read?.body),
+          { flag: "a" },
+        );
       if (Option.isSome(summary))
         yield* fs.writeFileString(summary.value, `${report}\n`, { flag: "a" });
       return;
@@ -1303,7 +1494,7 @@ NodeRuntime.runMain(
     // A changed scenario that would otherwise first run on deployed Cloud after merge runs in the
     // cloud job when managed local Cloud can run it. The rest only deployed Cloud can run.
     const changedDeployedOnly = deployedOnly.filter((title) =>
-      changedSpecs.includes(fileOf.get(title)!),
+      stackSpecs.includes(fileOf.get(title)!),
     );
     const deployedOnlyRun = new Set(changedDeployedOnly.filter((title) => managedCloud.has(title)));
     const deployedOnlyUnrun = changedDeployedOnly.filter((title) => !deployedOnlyRun.has(title));
@@ -1348,7 +1539,7 @@ NodeRuntime.runMain(
           });
       }
     }
-    const named = Array.isArray(block)
+    const chosen = Array.isArray(block)
       ? yield* checkNamed(
           block,
           blocksIn(read!.body)[0]!,
@@ -1357,7 +1548,23 @@ NodeRuntime.runMain(
           `${retry}.`,
         )
       : block;
-    const changedElsewhere = changedSpecs.filter(
+    // A pull request ready for review runs every scenario unless all it changes since main is in
+    // the narrowing table: nothing ties source files to the scenarios that cover them, so the run
+    // that gates the merge must not depend on the block naming them all (e2e/narrowing.ts). A
+    // comparison GitHub cut short narrows nothing.
+    const ready = draft === false;
+    const broad =
+      read === undefined
+        ? []
+        : compared === undefined || compared.length >= compareFileLimit
+          ? ["(more files than the comparison with main lists)"]
+          : broadChanges(compared);
+    const broadReason = `changes files outside e2e/narrowing.ts since main: ${broad.slice(0, 5).join(", ")}${broad.length > 5 ? ` and ${broad.length - 5} more` : ""}`;
+    const named =
+      ready && Array.isArray(chosen) && broad.length > 0
+        ? { all: `ready for review, and ${broadReason}` }
+        : chosen;
+    const changedElsewhere = stackSpecs.filter(
       (file) =>
         (specFiles.has(file) || suites.has(file)) &&
         !jobFiles.has(file) &&
@@ -1458,11 +1665,14 @@ NodeRuntime.runMain(
             ...guardedByFile,
             // A collector input changed: the scenarios that exercise it run too.
             ...(collector ? collectorScenarios : []),
-            ...changedSpecs.filter((file) => jobFiles.has(file)),
+            // Every spec file the stack changed since main, so the top layer runs its lower
+            // layers' changed scenarios too, not only its own.
+            ...stackSpecs.filter((file) => jobFiles.has(file)),
             ...[...deployedOnlyRun].map((title) => fileOf.get(title)!),
           ]);
 
-    const selections = Object.entries(jobs).map(([job, definition]) => {
+    // The titles a job runs for this selection.
+    const jobTitles = (job: string, definition: (typeof jobs)[keyof typeof jobs]) => {
       const { target, pattern } = definition;
       const base = new RegExp(pattern);
       const extra = new Set<string>([
@@ -1474,7 +1684,7 @@ NodeRuntime.runMain(
           : []),
         ...(job === saveScenarios.job && saveChanged && files !== undefined ? saveTitles : []),
       ]);
-      const titles = planFor(definition)
+      return planFor(definition)
         .filter(
           (scenario) =>
             scenario.targets[target].status === "scheduled" &&
@@ -1485,6 +1695,44 @@ NodeRuntime.runMain(
               extra.has(scenario.title)),
         )
         .map((scenario) => scenario.title);
+    };
+
+    // A ready pull request repeats its new local and self-host scenarios (`repeats`), at most
+    // `repeatLimit` of them. Which are new: main's plan does not name them; unread, every one is.
+    const mainPlanForRepeats =
+      !ready || stackSpecs.length === 0 || defaultBranch === ""
+        ? Option.none<string>()
+        : yield* gh([
+            "api",
+            `repos/${repository}/contents/e2e/test-plan.ts?ref=${defaultBranch}`,
+            "-H",
+            "Accept: application/vnd.github.raw+json",
+          ]).pipe(
+            Effect.map((text) =>
+              text.includes("export const scenarios") ? Option.some(text) : Option.none<string>(),
+            ),
+            Effect.catch(() => Effect.succeed(Option.none<string>())),
+          );
+    const repeatCandidates = !ready
+      ? []
+      : [
+          ...new Set(
+            Object.entries(jobs)
+              .filter(([, definition]) => "shards" in definition)
+              .flatMap(([job, definition]) => jobTitles(job, definition))
+              .filter(
+                (title) =>
+                  stackSpecs.includes(fileOf.get(title)!) &&
+                  (Option.isNone(mainPlanForRepeats) || !namedIn(mainPlanForRepeats.value, title)),
+              ),
+          ),
+        ].toSorted();
+    const repeated = new Set(repeatCandidates.slice(0, repeatLimit));
+
+    const selections = Object.entries(jobs).map(([job, definition]) => {
+      const { pattern } = definition;
+      const base = new RegExp(pattern);
+      const titles = jobTitles(job, definition);
       const added = titles.filter((title) => !base.test(title));
       const selected =
         titles.length === 0
@@ -1501,16 +1749,36 @@ NodeRuntime.runMain(
           : files === undefined
             ? split(titles, definition.shards).map(exactly)
             : [selected];
-      const shards = parts.map((part, index) => ({
-        shard: `${index + 1}/${parts.length}`,
-        pattern: part,
-      }));
+      // A ready pull request's new scenarios, again on runners of their own (`repeats`).
+      const changedTitles =
+        "shards" in definition ? titles.filter((title) => repeated.has(title)) : [];
+      const shards = [
+        ...parts.map((part, index) => ({
+          shard: `${index + 1}/${parts.length}`,
+          pattern: part,
+        })),
+        ...(changedTitles.length === 0
+          ? []
+          : Array.from({ length: repeats }, (_, index) => ({
+              shard: `repeat ${index + 1}/${repeats}${index === repeats - 1 ? " under load" : ""}`,
+              pattern: exactly(changedTitles),
+              load: index === repeats - 1 ? "true" : "",
+            }))),
+      ];
       // The patterns the job's step runs, each on a local Cloud of its own.
       const localClouds =
         job === deployedOnlyJob && titles.length > localCloudScenarios
           ? split(titles, Math.ceil(titles.length / localCloudScenarios)).map(exactly)
           : [selected];
-      return { job, definition, count: titles.length, selected, shards, localClouds };
+      return {
+        job,
+        definition,
+        count: titles.length,
+        selected,
+        shards,
+        localClouds,
+        repeated: changedTitles.length,
+      };
     });
     // One e2e-cloud runner for each `runner` number with a selected job, and one more for each
     // further local Cloud of a job split into several: those parts are the longest Cloud runs, so
@@ -1573,6 +1841,11 @@ NodeRuntime.runMain(
       `collector=${collector}`,
       // Line coverage is comparable only between runs of every scenario.
       `full=${files === undefined}`,
+      draftLine,
+      // What this run vouches for, which a skip layer below reads from its record
+      // (e2e/ci-skip-check.ts): a ready pull request's full suite or the narrowing table's
+      // selection, a draft's selection, or a push.
+      `gate=${read === undefined ? "push" : draft === true ? "draft" : files === undefined ? "full" : "narrowed"}`,
     ].join("\n");
     const report = [
       "## E2E selection",
@@ -1584,6 +1857,14 @@ NodeRuntime.runMain(
         : files.size === 0
           ? "No E2E scenarios: the pull request selects none and changes no spec file these jobs run."
           : `Spec files: ${[...files].sort().join(", ")}`,
+      ...(read === undefined || ready
+        ? []
+        : [
+            "",
+            broad.length === 0
+              ? "Once ready for review: this selection, as everything this pull request changes is in e2e/narrowing.ts."
+              : `Once ready for review: the full suite, as it ${broadReason}.`,
+          ]),
       ...(changedElsewhere.length === 0
         ? []
         : [
@@ -1655,9 +1936,21 @@ NodeRuntime.runMain(
         ? "collector-native: runs (e2e/collector-inputs.ts)."
         : "collector-native: skipped, no collector input changed (e2e/collector-inputs.ts).",
       "",
+      ...selections
+        .filter(({ repeated }) => repeated > 0)
+        .map(
+          ({ job, repeated }) =>
+            `${job}: ${repeated} new scenarios run ${repeats} more times, the last with half the cores busy; any failure fails the pull request.`,
+        ),
+      ...(repeatCandidates.length > repeatLimit
+        ? [
+            `Only ${repeatLimit} of the ${repeatCandidates.length} new scenarios repeat (the first by title), so the outputs stay bounded: ${Option.isNone(mainPlanForRepeats) ? "main's plan could not be read, so every scenario of a changed spec file counted as new" : "split the change to repeat the rest"}.`,
+          ]
+        : []),
+      ...(selections.some(({ repeated }) => repeated > 0) ? [""] : []),
       "| Job | Scenarios | Runners |",
       "| --- | --- | --- |",
-      ...selections.map(({ job, definition, count, shards, localClouds }) =>
+      ...selections.map(({ job, definition, count, shards, localClouds, repeated }) =>
         count === 0
           ? `| ${job} | skipped | |`
           : `| ${job} | ${count} | ${
@@ -1667,8 +1960,8 @@ NodeRuntime.runMain(
                       ? `: ${localClouds.length} local Clouds split by spec file`
                       : ""
                   }`
-                : shards.length > 1
-                  ? `${shards.length}, split by spec file`
+                : shards.length - (repeated > 0 ? repeats : 0) > 1
+                  ? `${shards.length - (repeated > 0 ? repeats : 0)}, split by spec file`
                   : "1"
             } |`,
       ),

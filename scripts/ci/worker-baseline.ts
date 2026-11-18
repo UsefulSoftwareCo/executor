@@ -68,7 +68,7 @@ import {
   type UpperSeen,
   type Verdict,
   decisionLine,
-  enforce,
+  enforcing,
   fails,
   guarded,
   summarySentence,
@@ -544,6 +544,7 @@ const Pulls = Schema.fromJsonString(
   Schema.Array(
     Schema.Struct({
       number: Schema.Number,
+      draft: Schema.Boolean,
       head: Schema.Struct({
         sha: Schema.String,
         repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
@@ -575,10 +576,12 @@ const RunArtifacts = Schema.fromJsonString(
 
 const RunJobs = Schema.fromJsonString(
   Schema.Struct({
+    total_count: Schema.Number,
     jobs: Schema.Array(
       Schema.Struct({
         name: Schema.String,
         status: Schema.String,
+        conclusion: Schema.optional(Schema.NullOr(Schema.String)),
         steps: Schema.optional(
           Schema.Array(Schema.Struct({ name: Schema.String, status: Schema.String })),
         ),
@@ -643,6 +646,26 @@ const look = (
           ),
         ),
       );
+    // A run's jobs, page by page until those named are all listed or the run's jobs end: a full run
+    // has more than the 100 a page holds (96 E2E matrix jobs alone), and its required checks come
+    // last. Each page is a conditional read, free while it has not changed.
+    const jobsOf = (run: number, names: ReadonlyArray<string>) =>
+      Effect.gen(function* () {
+        const jobs: Array<(typeof RunJobs.Type)["jobs"][number]> = [];
+        for (let page = 1; ; page += 1) {
+          const listed = yield* read(
+            RunJobs,
+            `repos/${repository}/actions/runs/${run}/jobs?per_page=100&page=${page}`,
+          );
+          jobs.push(...listed.jobs);
+          if (
+            names.every((name) => jobs.some((job) => job.name === name)) ||
+            listed.jobs.length === 0 ||
+            jobs.length >= listed.total_count
+          )
+            return jobs;
+        }
+      });
     // A fork's pull request, and a fork's run on the same commit, run the fork's code, which could
     // write any record: only this repository's count.
     const pulls = (yield* read(
@@ -698,6 +721,22 @@ const look = (
           }
           const record = newest === undefined ? undefined : records.get(newest.id);
           if (record !== undefined) {
+            // A ready layer passes only on a merge gate that passed: how its required checks
+            // ended, once both have (read only then, one request a look).
+            const gates =
+              lower.ready && !pull.draft && (record.gate === "full" || record.gate === "narrowed")
+                ? yield* jobsOf(run.id, ["checks / check", "checks / e2e"]).pipe(
+                    Effect.map((jobs) => {
+                      const ended = (name: string) => {
+                        const job = jobs.find((candidate) => candidate.name === name);
+                        return job?.status === "completed"
+                          ? (job.conclusion ?? undefined)
+                          : undefined;
+                      };
+                      return { check: ended("checks / check"), e2e: ended("checks / e2e") };
+                    }),
+                  )
+                : undefined;
             seen.push({
               id: run.id,
               url: run.html_url,
@@ -708,6 +747,7 @@ const look = (
                 record.tested === undefined || record.base === lower.head
                   ? undefined
                   : yield* containsLower(lower, record.tested, limits.read, contained),
+              gates,
             });
             continue;
           }
@@ -715,10 +755,9 @@ const look = (
             seen.push({ id: run.id, url: run.html_url, selectDone: true, waitingAbove: false });
             continue;
           }
-          const select = (yield* read(
-            RunJobs,
-            `repos/${repository}/actions/runs/${run.id}/jobs?per_page=100`,
-          )).jobs.find((job) => job.name === "checks / select");
+          const select = (yield* jobsOf(run.id, ["checks / select"])).find(
+            (job) => job.name === "checks / select",
+          );
           seen.push({
             id: run.id,
             url: run.html_url,
@@ -729,7 +768,12 @@ const look = (
               ) ?? false,
           });
         }
-        return { pull: pull.number, head: pull.head.sha, runs: seen } satisfies UpperSeen;
+        return {
+          pull: pull.number,
+          head: pull.head.sha,
+          draft: pull.draft,
+          runs: seen,
+        } satisfies UpperSeen;
       }),
     );
     return { _tag: "Read", uppers } as Observation;
@@ -757,41 +801,54 @@ const look = (
  * The check of the layer above a skip layer (e2e/ci-skip-check.ts): it looks, waits within the
  * bounds, logs one decision line and a summary sentence, and fails only when enforcing.
  */
-const decide = Effect.gen(function* () {
-  const lower: Lower = {
+const readLower = Effect.gen(function* () {
+  return {
     repository: yield* Config.String("GITHUB_REPOSITORY"),
     ref: yield* Config.String("HEAD_REF"),
     head: yield* Config.String("HEAD_SHA"),
     bottom: yield* Config.String("BASELINE_BRANCH"),
     runId: yield* Config.String("GITHUB_RUN_ID").pipe(Config.withDefault("<run-id>")),
-  };
-  const scratch = `${yield* Config.String("RUNNER_TEMP").pipe(Config.withDefault("/tmp"))}/ci-above`;
-  // Seconds of the clock per second of the rule. The spec runs the waits faster, and then counts
-  // only the waits, since its stand-in reads take longer than the waits it shortens.
-  const scale = yield* Config.Number("SKIP_ABOVE_TIME_SCALE").pipe(Config.withDefault(1));
-  // Each read, download included, gets 20 seconds and each look a minute: a stalled connection
-  // is no answer, and cannot hold the step past its deadline.
-  const limits = {
-    read: Duration.millis(Math.max(1000, 20_000 * scale)),
-    look: Duration.millis(Math.max(2000, 60_000 * scale)),
-  };
-  const records = new Map<number, RecordFields>();
-  const contained = new Map<string, boolean>();
-  const start = yield* Clock.currentTimeMillis;
-  let previous: Verdict | undefined;
-  let waited = 0;
-  for (let polls = 0; ; polls += 1) {
-    const verdict = judge(yield* look(lower, scratch, records, limits, contained), lower, previous);
-    if (verdict._tag === "Wait" && verdict.why !== (previous?._tag === "Wait" ? previous.why : ""))
-      yield* Console.log(`Waiting: ${verdict.why}.`);
-    previous = verdict;
-    const elapsed = scale === 1 ? ((yield* Clock.currentTimeMillis) - start) / 1000 : waited;
-    const step = next(verdict, lower, elapsed, polls);
-    if (step._tag === "Done") return step.decision;
-    waited += step.after;
-    yield* Effect.sleep(Duration.millis(step.after * 1000 * scale));
-  }
+    // Ready unless select read it as a draft: a value it did not write is no proof of a draft.
+    ready: (yield* Config.String("LOWER_DRAFT").pipe(Config.withDefault(""))) !== "true",
+  } satisfies Lower;
 });
+
+const decide = (lower: Lower) =>
+  Effect.gen(function* () {
+    const scratch = `${yield* Config.String("RUNNER_TEMP").pipe(Config.withDefault("/tmp"))}/ci-above`;
+    // Seconds of the clock per second of the rule. The spec runs the waits faster, and then counts
+    // only the waits, since its stand-in reads take longer than the waits it shortens.
+    const scale = yield* Config.Number("SKIP_ABOVE_TIME_SCALE").pipe(Config.withDefault(1));
+    // Each read, download included, gets 20 seconds and each look a minute: a stalled connection
+    // is no answer, and cannot hold the step past its deadline.
+    const limits = {
+      read: Duration.millis(Math.max(1000, 20_000 * scale)),
+      look: Duration.millis(Math.max(2000, 60_000 * scale)),
+    };
+    const records = new Map<number, RecordFields>();
+    const contained = new Map<string, boolean>();
+    const start = yield* Clock.currentTimeMillis;
+    let previous: Verdict | undefined;
+    let waited = 0;
+    for (let polls = 0; ; polls += 1) {
+      const verdict = judge(
+        yield* look(lower, scratch, records, limits, contained),
+        lower,
+        previous,
+      );
+      if (
+        verdict._tag === "Wait" &&
+        verdict.why !== (previous?._tag === "Wait" ? previous.why : "")
+      )
+        yield* Console.log(`Waiting: ${verdict.why}.`);
+      previous = verdict;
+      const elapsed = scale === 1 ? ((yield* Clock.currentTimeMillis) - start) / 1000 : waited;
+      const step = next(verdict, lower, elapsed, polls);
+      if (step._tag === "Done") return step.decision;
+      waited += step.after;
+      yield* Effect.sleep(Duration.millis(step.after * 1000 * scale));
+    }
+  });
 
 /**
  * The check of the layer above a skip layer (e2e/ci-skip-check.ts): it looks, waits within the
@@ -799,13 +856,20 @@ const decide = Effect.gen(function* () {
  * observing nothing in it can fail the step, a defect included: that is logged as `error`.
  */
 const above = Effect.gen(function* () {
-  const outcome = yield* guarded(decide, enforce);
-  yield* Console.log(decisionLine(outcome));
+  // Whether to enforce is read apart from the rest, so a missing variable is still a defect the
+  // guard turns into the error outcome while observing.
+  const enforce = enforcing({
+    ready: (yield* Config.String("LOWER_DRAFT").pipe(Config.withDefault(""))) !== "true",
+  });
+  const outcome = yield* guarded(Effect.flatMap(readLower, decide), enforce);
+  yield* Console.log(decisionLine(outcome, enforce));
   const report = Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const summary = yield* Config.String("GITHUB_STEP_SUMMARY").pipe(Config.option);
     if (Option.isSome(summary))
-      yield* fs.writeFileString(summary.value, `${summarySentence(outcome)}\n`, { flag: "a" });
+      yield* fs.writeFileString(summary.value, `${summarySentence(outcome, enforce)}\n`, {
+        flag: "a",
+      });
     if (outcome._tag === "Decided" && outcome.decision.oldFormat)
       yield* Console.log(`::notice title=Skip check::${outcome.decision.message}`);
     yield* write({ decision: outcome._tag === "Error" ? "error" : outcome.decision.decision });

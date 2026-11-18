@@ -8,6 +8,15 @@
  * have been computed with this layer in its chain: its record (the select job's `ci-tested-…`
  * artifact) says it was built on this layer's head and compared Worker sizes with the branch this
  * layer's stack ends on. The E2E selection always compares with main, so the base commit covers it.
+ *
+ * A layer that is ready for review can be merged, alone or with the layers below it, so it passes
+ * only on what gates a merge: a run of a ready layer above that contains this head and finished
+ * green, its `checks / check` and `checks / e2e` passed, having run the full suite or the
+ * narrowing table's selection (record `gate` full or narrowed, e2e/ci-selection.ts); or a ready
+ * skip layer above whose own check passed by this rule (`gate` stack, `above` pass). The layer above
+ * must be ready when the check looks, not only when its run started. A draft's run never passes
+ * it: it runs only its block's selection. A draft skip layer, which cannot be merged, is
+ * checked only to have been computed on.
  */
 
 import { Cause, Effect } from "effect";
@@ -16,17 +25,22 @@ import { Cause, Effect } from "effect";
  * Observe or enforce. Observing, the step works out the decision exactly as it would enforce it,
  * logs it (`decisionLine`) and passes, as a skip layer always passed: a pull request above exists,
  * which the select step has already required. Enforcing, a decision to fail fails the step.
+ *
+ * It enforces on a layer ready for review, which can be merged; a draft, which cannot (and whose
+ * e2e job never reports the required check, checks.yml), is observed. Marking it ready runs it
+ * again, enforced.
  */
-export const enforce = false;
+export const enforcing = (lower: { readonly ready: boolean }) => lower.ready;
 
 /**
  * The format of the record this workflow writes (RECORD_FORMAT in checks.yml). Format 3 adds
- * `tested`, the merge commit the run checked out; format 2 records are still read, by the rule that
- * fits them (`judgeRecord`).
+ * `tested`, the merge commit the run checked out; format 4 adds `gate`, what the run vouches for.
+ * Format 2 and 3 records are still read, by the rule that fits them (`judgeRecord`), and never
+ * pass a ready layer.
  */
-export const recordFormat = "3";
+export const recordFormat = "4";
 /** The formats this check reads. Any other is never passed: it waits, and then fails. */
-const readFormats = new Set(["2", "3"]);
+const readFormats = new Set(["2", "3", "4"]);
 
 /**
  * How long to wait for a better answer, in seconds from the start of the step, by what was seen:
@@ -41,9 +55,19 @@ const readFormats = new Set(["2", "3"]);
  *   for the top, and each layer under it notices its upper's record within one poll (at most 60
  *   s), so `chained` covers five layers under the one waiting on the top.
  *
- * select's timeout (checks.yml) covers the description wait (3 minutes) and `chained`, the longest.
+ * - `testing`: a ready layer above chose what gates a merge, and its run has not finished. A full
+ *   run on main took 8 to 20 minutes (17 and 18 Nov); this leaves room for a slow one and for the
+ *   layers between.
+ *
+ * select's timeout (checks.yml) covers the description wait (3 minutes) and `testing`, the longest.
  */
-export const bounds = { stale: 240, noRun: 240, selecting: 900, chained: 1200 } as const;
+export const bounds = {
+  stale: 240,
+  noRun: 240,
+  selecting: 900,
+  chained: 1200,
+  testing: 3000,
+} as const;
 export type Bound = keyof typeof bounds;
 
 /** Seconds before each next look: no more often than every 20 seconds, then backing off to 60. */
@@ -58,6 +82,8 @@ export interface RecordFields {
   readonly above?: string | undefined;
   /** Format 3: the merge commit the run checked out and tested (`git rev-parse HEAD`). */
   readonly tested?: string | undefined;
+  /** Format 4: what the run vouches for: `full`, `narrowed`, `draft` or (a skip layer) `stack`. */
+  readonly gate?: string | undefined;
 }
 
 export const parseRecord = (text: string): RecordFields => {
@@ -68,6 +94,7 @@ export const parseRecord = (text: string): RecordFields => {
     baseline: field("baseline"),
     above: field("above"),
     tested: field("tested"),
+    gate: field("gate"),
   };
 };
 
@@ -87,12 +114,24 @@ export interface RunSeen {
    * answer could not be read.
    */
   readonly contains?: boolean | undefined;
+  /**
+   * How its `checks / check` and `checks / e2e` jobs ended (`success`, `failure`, ...), or
+   * undefined while either has not: read for a ready layer's check only.
+   */
+  readonly gates?:
+    | { readonly check?: string | undefined; readonly e2e?: string | undefined }
+    | undefined;
 }
 
 /** One open pull request of this repository whose base is this layer's branch. */
 export interface UpperSeen {
   readonly pull: number;
   readonly head: string;
+  /**
+   * Whether it is a draft now, as the pull request list says at this look: a run it made while
+   * ready proves nothing once it is a draft again, since a draft is not merged.
+   */
+  readonly draft: boolean;
   /** Its CI runs on `head` that were not cancelled, newest first. */
   readonly runs: ReadonlyArray<RunSeen>;
 }
@@ -109,6 +148,8 @@ export interface Lower {
   readonly bottom: string;
   readonly repository: string;
   readonly runId: string;
+  /** Ready for review: it passes only on a merge gate above (`judgeRecord`). */
+  readonly ready: boolean;
 }
 
 /**
@@ -116,7 +157,7 @@ export interface Lower {
  * exists); `base`, the run's event named this layer's head as its base (format 2 and 3); `tested`,
  * the merge commit the run tested contains this layer's head (format 3).
  */
-export type Rule = "old" | "base" | "tested";
+export type Rule = "old" | "base" | "tested" | "gate";
 
 /** What one look says. */
 export type Verdict =
@@ -155,7 +196,7 @@ const judgeRecord = (
   // Before deleting this branch and `oldFormat`: this command, from any checkout, must list no
   // pull request, that is, no open upper above a skip layer would still write main's old format:
   //   R=UsefulSoftwareCo/executor-next; gh pr list -R $R --state open -L 1000 --json number,baseRefName,headRefName,isCrossRepository,body -q '[.[]|select(.isCrossRepository|not)] as $p | ($p|map(select(.body|test("```e2e\\s+skip\\s+```"))|.headRefName)) as $s | $p[]|select(.baseRefName as $b|$s|index($b))|.number' | while read n; do gh api "repos/$R/contents/.github/workflows/checks.yml?ref=refs/pull/$n/merge" -q .content | base64 -d | grep -q RECORD_FORMAT || echo "#$n"; done
-  if (record.format === undefined && record.baseline === undefined)
+  if (record.format === undefined && record.baseline === undefined && !lower.ready)
     return { _tag: "Pass", pull: upper.pull, run: run.url, oldFormat: true, rule: "old" };
   if (!readFormats.has(record.format ?? "2"))
     return {
@@ -204,7 +245,50 @@ const judgeRecord = (
       why: `#${upper.pull}'s latest run on its head, ${run.url}, compared its Worker sizes with ${baseline ?? "a baseline it did not record"}, not ${lower.bottom}, the base this stack now ends on`,
       remedy: `${rerun} (a re-run reads the stack afresh)`,
     };
-  return { _tag: "Pass", pull: upper.pull, run: run.url, oldFormat: false, rule: builtOn };
+  if (!lower.ready)
+    return { _tag: "Pass", pull: upper.pull, run: run.url, oldFormat: false, rule: builtOn };
+  // Ready: only a merge gate above passes it, of a layer that is ready now. A layer marked ready,
+  // run in full and turned back into a draft keeps that run on its head, but it is no merge gate.
+  const ready = `mark #${upper.pull} ready for review (gh pr ready ${upper.pull}), which runs it as a merge gate, and push or rerun it`;
+  if (upper.draft)
+    return {
+      _tag: "Wait",
+      bound: "stale",
+      why: `this layer is ready for review, and #${upper.pull} is a draft now, so no run of it gates a merge`,
+      remedy: ready,
+    };
+  if (record.gate === "stack")
+    return record.above === "pass"
+      ? { _tag: "Pass", pull: upper.pull, run: run.url, oldFormat: false, rule: "gate" }
+      : {
+          _tag: "Wait",
+          bound: "stale",
+          why: `#${upper.pull}'s latest run on its head, ${run.url}, is a skip layer's whose own check did not pass`,
+          remedy: `fix #${upper.pull} as its run says`,
+        };
+  if (record.gate !== "full" && record.gate !== "narrowed")
+    return {
+      _tag: "Wait",
+      bound: "stale",
+      why: `this layer is ready for review, and #${upper.pull}'s latest run on its head, ${run.url}, ${record.gate === "draft" ? "is a draft's, which runs only its block's selection" : "recorded no merge gate (a workflow from before this rule)"}`,
+      remedy:
+        record.gate === "draft" ? ready : `bring #${upper.pull} up to date with main and push it`,
+    };
+  const { check, e2e } = run.gates ?? {};
+  if (check === "success" && e2e === "success")
+    return { _tag: "Pass", pull: upper.pull, run: run.url, oldFormat: false, rule: "gate" };
+  if (check === undefined || e2e === undefined)
+    return {
+      _tag: "Wait",
+      bound: "testing",
+      why: `#${upper.pull}'s run on its head, ${run.url}, runs ${record.gate === "full" ? "the full suite" : "the narrowing table's selection"} for a merge and has not finished`,
+    };
+  return {
+    _tag: "Wait",
+    bound: "stale",
+    why: `#${upper.pull}'s run on its head, ${run.url}, ended with checks / check ${check} and checks / e2e ${e2e}`,
+    remedy: `fix #${upper.pull}, or ${rerun} if it failed on something else`,
+  };
 };
 
 /** What one pull request above says, from its runs on its current head. */
@@ -318,9 +402,11 @@ export const next = (
         waited,
         reason: verdict.oldFormat
           ? `#${verdict.pull}'s run ${verdict.run} wrote its record in the format from before this check, so the old rule applies: a pull request above exists`
-          : verdict.rule === "tested"
-            ? `#${verdict.pull}'s run ${verdict.run} tested a merge commit that contains ${short(lower.head)}, and compared its Worker sizes with ${lower.bottom}`
-            : `#${verdict.pull}'s run ${verdict.run} was built on ${short(lower.head)} and compared its Worker sizes with ${lower.bottom}`,
+          : verdict.rule === "gate"
+            ? `#${verdict.pull}'s run ${verdict.run}, a merge gate of a ready layer above, contains ${short(lower.head)}, compared its Worker sizes with ${lower.bottom} and passed`
+            : verdict.rule === "tested"
+              ? `#${verdict.pull}'s run ${verdict.run} tested a merge commit that contains ${short(lower.head)}, and compared its Worker sizes with ${lower.bottom}`
+              : `#${verdict.pull}'s run ${verdict.run} was built on ${short(lower.head)} and compared its Worker sizes with ${lower.bottom}`,
         message: verdict.oldFormat
           ? `The layer above runs a workflow from before the skip check. Rebasing the stack onto main turns the check on.`
           : `The layer above was computed with this layer in its chain.`,
@@ -337,7 +423,7 @@ export const next = (
       rule: "none",
       waited,
       reason: verdict.why,
-      message: `The e2e block says skip: this layer passes only when the layer above has a run on its current head computed with this layer in its chain, built on ${short(lower.head)} and comparing Worker sizes with ${lower.bottom}. After ${waited} s, ${verdict.why}. ${verdict.remedy === undefined ? "Once it has" : `To fix it, ${verdict.remedy}; once that run has started`}, run this one again: ${own}`,
+      message: `The e2e block says skip: this layer passes only when the layer above has a run on its current head computed with this layer in its chain, built on ${short(lower.head)} and comparing Worker sizes with ${lower.bottom}${lower.ready ? ", and, as this layer is ready for review, only when that run is a ready layer's merge gate (the full suite, or the narrowing table's selection) and passed" : ""}. After ${waited} s, ${verdict.why}. ${verdict.remedy === undefined ? "Once it has" : `To fix it, ${verdict.remedy}; once that run has started`}, run this one again: ${own}`,
     },
   };
 };
@@ -370,7 +456,7 @@ export const guarded = <R>(
 };
 
 /** The one log line a day of decisions is counted from. */
-export const decisionLine = (outcome: Outcome, enforcing = enforce) =>
+export const decisionLine = (outcome: Outcome, enforcing: boolean) =>
   `skip-check ${JSON.stringify(
     outcome._tag === "Error"
       ? { mode: enforcing ? "enforce" : "observe", decision: "error", reason: outcome.why }
@@ -386,7 +472,7 @@ export const decisionLine = (outcome: Outcome, enforcing = enforce) =>
   )}`;
 
 /** The summary sentence for an outcome. */
-export const summarySentence = (outcome: Outcome, enforcing = enforce) => {
+export const summarySentence = (outcome: Outcome, enforcing: boolean) => {
   if (outcome._tag === "Error")
     return `The skip check could not decide: ${outcome.why}.${enforcing ? "" : " It passes while observing."}`;
   const { decision } = outcome;

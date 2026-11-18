@@ -276,8 +276,23 @@ a `workflow_call` workflow, so another repository can call the same jobs.
 
 ### Choosing a PR's E2E scenarios
 
-A pull request runs only the E2E scenarios it selects. Pushes to `main` run the
-full suite. The selection reaches the jobs as title patterns; no value it puts in
+A draft pull request runs only the E2E scenarios it selects. Once it is ready for
+review, it runs the full suite, unless everything it changes since `main` is in the
+narrowing table in [`e2e/narrowing.ts`](e2e/narrowing.ts) (notes, the repository's
+documents and skills, spec files); then it keeps its selection. Marking it ready starts
+that run, and the merge waits for it, so mark a pull request ready when you push the
+head you mean to merge, not after its draft run passes. Whether it is a draft is read
+live when `select` runs, so re-running a draft's run on a ready pull request runs it as
+ready. A draft's `e2e` job is named `e2e (draft)` and never reports the required
+`checks / e2e`, so a draft's green cannot stand for the merge. A stack's top layer is
+compared with `main`, so a tests layer above a code layer runs the full suite, and every
+spec file any layer changed runs on it. A ready pull request
+also runs its new local and self-host scenarios (those of the spec files the stack changed
+that `main`'s `e2e/test-plan.ts` does not name) four more times, each on its own runner and
+the last with half the cores busy; any failure fails it, so a new scenario that passes only
+sometimes never reaches `main`. Fix the race; never add a retry or a longer deadline. At
+most 60 repeat, the first by title, and the run summary says when there were more. Pushes to `main`
+run the full suite. The selection reaches the jobs as title patterns; no value it puts in
 an environment variable or argument may approach Linux's 128 KiB limit, and a case in
 `e2e/tests/ci-selection.spec.ts` fails at a quarter of it, naming the value. Make room by
 splitting (more shards) or by passing it through a file: scenario titles are not a budget,
@@ -355,15 +370,21 @@ open PR targets the layer's branch, so a lone PR or the top layer cannot skip. T
 `select` job waits up to 3 minutes for that PR to open, so open the stack's layers together
 (`gh stack submit` does). It then checks that that PR's latest run on its head was built on
 this layer's head and compared Worker sizes with the base the stack ends on
-([`e2e/ci-skip-check.ts`](e2e/ci-skip-check.ts)). For now it only logs what it would
-decide (`skip-check` in the select log and summary); once enforced, it fails and says which command
-runs the layer above again. Never write `skip` on a long-lived branch's PR into `main`: it must be
-compared with `main` itself.
+([`e2e/ci-skip-check.ts`](e2e/ci-skip-check.ts)). On a layer that is ready for review the
+check is enforced and stricter, because a ready layer can be merged alone: it passes only when a
+ready layer above has a run on its head that contains this layer's head and finished green, its
+`checks / check` and `checks / e2e` passed, having run the full suite (or the narrowing table's
+selection, which is what that layer merges on), or when the ready skip layer above passed this same
+check. Its `select` waits up to 50 minutes for that run, so mark the whole stack ready together,
+top included; a draft above never passes it. On a draft it only logs what it would decide
+(`skip-check` in the select log and summary): a draft cannot be merged. Never write `skip` on a
+long-lived branch's PR into `main`: it must be compared with `main` itself.
 After changing a lower layer, rebase the layers above it so the top runs again.
 Merge the stack only when the top layer passes, bottom first, without pausing between
 layers: each merge deploys production.
 
-Choose from the actual callers of the changed code. Search `e2e/tests/` for the
+The draft's selection is for fast answers while you work; the ready run is the one that
+cannot miss. Choose from the actual callers of the changed code. Search `e2e/tests/` for the
 routes, tools and UI the change touches, and include every file that exercises them
 on any target. A tests PR on top of a stack gets its own new or changed spec files
 for free; add the existing files that cover the code layers below it. `main` runs the
