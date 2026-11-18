@@ -178,8 +178,8 @@ linked to a single-account requirement and every account you linked to a
 `.many()` requirement; for each of the app's own requirements, the accounts
 linked for everyone. A single-account requirement with no account fails with
 `AccountRequired`, which says whether you need to link one or someone who can
-edit the app does. A reused app link whose creator is no longer an organization
-admin or owner fails with `AppLinkCreatorNotAuthorized` (409), unless the
+edit the app does. A reused app link whose creator is missing or no longer an
+organization admin or owner fails with `AppLinkCreatorNotAuthorized` (409), unless the
 creator owns the account or the account's owner made the link. Ask an admin to
 relink an eligible account, or ask the account's owner to link it directly.
 A tool input that passes `$accounts` fails with

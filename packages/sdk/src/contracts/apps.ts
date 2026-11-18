@@ -439,12 +439,12 @@ export const AppLinkCreatorNotAuthorized = UserFacingError.define({
   },
   presentation: callPresentation(({ requirement }) => ({
     title: "This reused app account no longer serves",
-    description: `The reused account for “${requirement}” no longer serves because the app's creator is no longer an organization admin or owner. Ask an admin to relink an eligible account, or ask the account's owner to link it directly.`,
+    description: `The reused account for “${requirement}” no longer serves because the app's creator is missing or is no longer an organization admin or owner. Ask an admin to relink an eligible account, or ask the account's owner to link it directly.`,
     recovery: {
       action:
         "Ask an admin to relink an eligible account, or ask the account's owner to link it directly.",
       instructions:
-        "In the app's Accounts tab, an admin can replace the refused link with an account eligible for this app. To keep using the same account while the creator is not an admin or owner, the account's owner must have edit access to the app and link their account directly.",
+        "In the app's Accounts tab, an admin can replace the refused link with an account eligible for this app. To keep using the same account when the creator is missing or is no longer an admin or owner, the account's owner must have edit access to the app and link their account directly.",
     },
   })),
 });

@@ -239,7 +239,7 @@ export const reusedAppLinkPrefix = "reuse:";
 
 const creatorMayUseAppLink = (sql: SqlClient.SqlClient) =>
   sql`(not starts_with(l.linked_by, ${reusedAppLinkPrefix})
-    or target.creator_id = p.personal_user_id
+    or (target.creator_id is not null and target.creator_id = p.personal_user_id)
     or coalesce(creator_member.role in ('owner', 'admin'), false))`;
 
 /** Both usable and creator-refused links, excluding accounts whose owner left. */
@@ -656,10 +656,11 @@ const TargetEditors = Schema.Struct({
  * app and so could deploy code that reads the credential. A creator who has left the organization
  * counts as a member: invited back, they would edit the app again. An app without a creator takes
  * no reuse either: the system's apps and apps whose creator's user was deleted look the same, and
- * the latter may run code a demoted creator deployed. Members never reuse an account. At use time the same creator rule applies to reused
- * links: a demotion or departure stops them serving, and promotion can restore them. Owner-made
- * links do not depend on the creator's role. The account stays its owner's; nobody else may use
- * it directly or link it for themselves.
+ * the latter may run code a demoted creator deployed. Members never reuse an account. At use
+ * time the same creator rule applies: demotion, departure or a missing creator stops a reused
+ * link serving, and promotion can restore it. Owner-made and legacy links do not depend on the
+ * creator's role. The account stays its owner's; nobody else may use it directly or link it for
+ * themselves.
  *
  * With `lock`, the app link rows a reuse relies on and the target's access row stay share-locked
  * until the transaction ends, so unlinking a source or changing the target's access waits for the
@@ -718,7 +719,7 @@ export const appLinkableAccountsAs = (
     for (const link of links)
       if (
         editable.has(link.app) &&
-        ((target.role !== null && target.role !== "member") || target.creator === link.owner)
+        (target.role === "owner" || target.role === "admin" || target.creator === link.owner)
       )
         linkable.set(link.account, "app_link");
     return linkable;

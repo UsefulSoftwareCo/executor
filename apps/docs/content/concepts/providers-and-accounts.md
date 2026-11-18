@@ -122,9 +122,11 @@ reuse an account already linked for everyone to an app they can read and edit
 with the same calling credential. A credential limited to selected apps cannot
 reuse accounts from apps outside that selection. Reuse is not allowed
 into an app a member created, unless that member owns the account, nor into one
-created by someone who has since left the organization. The same rule applies
-when the link is used. If a creator who does not own the account is demoted or
-leaves, the reused link stops serving with `AppLinkCreatorNotAuthorized` (409).
+created by someone who has since left the organization or an app without a
+creator. The same rule applies when the link is used. If a creator who does not
+own the account is demoted or leaves, or the app loses its creator, the reused
+link stops serving with `AppLinkCreatorNotAuthorized` (409). Deleting a user
+also removes reused links from the apps they created.
 If that creator becomes an admin or owner again, the stored link can serve
 again. An admin can relink an eligible account, or the account's owner can link
 it directly if they can edit the app. A link made by the account owner does not

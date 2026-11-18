@@ -9505,7 +9505,18 @@ export const scenarios = plan({
     targets: {
       local: na("Local has no organization roles."),
       "self-host": na("Self-host users are managed by the instance operator."),
-      cloud: scheduled,
+      cloud: managedCloud,
+    },
+  },
+  hostedAppLinkCreatorDemotionDuringRefresh: {
+    fixtures: "actors",
+    file: "app-account-app-links.spec.ts",
+    title:
+      "a reused hosted app account refuses a call already waiting on OAuth refresh when the creator is demoted",
+    targets: {
+      local: na("Local has no organization roles."),
+      "self-host": scheduled,
+      cloud: na("Uses a scoped loopback OAuth issuer."),
     },
   },
   hostedAppLinkOAuthConnections: {

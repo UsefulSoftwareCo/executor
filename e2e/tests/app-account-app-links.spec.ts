@@ -6,15 +6,17 @@
  * override them.
  */
 import { expect, layer } from "@effect/vitest";
-import { Effect, Schedule, Schema } from "effect";
+import { Effect, Fiber, Schedule, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { Api, body, type Session } from "../support/api.ts";
 import { Actors } from "../support/actors.ts";
 import { HostedLive, withHostedCase } from "../support/case.ts";
+import { cloudLocks } from "../support/cloud-locks.ts";
 import { Resource } from "../support/contracts.ts";
 import { Telemetry } from "../support/evidence.ts";
 import { oauthSetupIssuer } from "../support/oauth-setup-issuer.ts";
+import { settleWebhookSources } from "../support/webhook-sources.ts";
 import { appsManifest } from "../support/apps-release.ts";
 import {
   accountLinks,
@@ -89,7 +91,9 @@ const SignIn = Schema.Struct({ authorizationUrl: Schema.String });
 const TeamWho = Schema.Struct({ team: Schema.String, token: Schema.String });
 const SessionIdentity = Schema.Struct({ user: Schema.Struct({ email: Schema.String }) });
 const Memberships = Schema.Struct({
-  members: Schema.Array(Schema.Struct({ ...Resource.fields, ...SessionIdentity.fields })),
+  members: Schema.Array(
+    Schema.Struct({ ...Resource.fields, ...SessionIdentity.fields, userId: Schema.String }),
+  ),
 });
 const LogRecords = Schema.fromJsonString(
   Schema.Struct({
@@ -983,7 +987,7 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
       context,
       Effect.gen(function* () {
         const fixture = yield* appLinksFixture([{ path: "index.ts", content: source }]);
-        const { api, actors, prefix, connect } = fixture;
+        const { api, actors, prefix, connect, ids } = fixture;
         const telemetry = yield* Telemetry;
         const creator = yield* okBody(
           SessionIdentity,
@@ -1010,6 +1014,17 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         );
         const path = `${prefix}/apps/${created.id}`;
         yield* fixture.adopt(path);
+        // Keep the owner's access independent of the creator and their membership.
+        const { revision } = yield* okBody(
+          Schema.Struct({ revision: Schema.String }),
+          yield* api.request(actors.admin, "GET", `${path}/access`),
+        );
+        yield* ok(
+          yield* api.request(actors.admin, "PATCH", `${path}/access`, {
+            revision,
+            audience: { kind: "everyone" },
+          }),
+        );
         const who = (actor: Session) =>
           api.request(actor, "POST", `${path}/tools/call`, {
             tool: "who",
@@ -1037,6 +1052,19 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
           }),
         );
         yield* refused(yield* who(actors.owner), 409, "AppLinkCreatorNotAuthorized");
+
+        // Model a creator being nulled outside the deletion sweep (for example, a concurrent
+        // reuse committed after the sweep). The stored reuse must still be refused at use time.
+        const locks = yield* cloudLocks;
+        yield* locks.run({
+          sql: "update hosted_app_access set creator_id = null where id = $1",
+          params: [created.id],
+        });
+        yield* refused(yield* who(actors.owner), 409, "AppLinkCreatorNotAuthorized");
+        yield* locks.run({
+          sql: "update hosted_app_access set creator_id = $2 where id = $1",
+          params: [created.id, ids.admin],
+        });
 
         // Deleting their user leaves the app without a creator; the reuse must not serve again.
         const removal = traced();
@@ -1066,9 +1094,158 @@ layer(HostedLive, { excludeTestServices: true })("App account app links", (it) =
         });
         expect(logs.includes(token)).toBe(false);
 
+        // A creator-less app also refuses a fresh reuse of the same still-eligible source.
+        const other = members.find(({ userId }) => userId === ids.member);
+        if (other === undefined) return yield* Effect.die("The other member has no membership");
+        yield* ok(
+          yield* api.request(actors.owner, "POST", "/api/auth/organization/update-member-role", {
+            organizationId: actors.organization.id,
+            memberId: other.id,
+            role: "admin",
+          }),
+        );
+        yield* refused(
+          yield* linkAccountResponse(actors.member, path, "team", account, "app"),
+          403,
+          "OrganizationForbidden",
+        );
         // The account's owner can still link it to the app themselves.
         yield* linkAccount(actors.owner, path, "team", account, "app");
         expect((yield* okBody(TeamWho, yield* who(actors.owner))).token === token).toBe(true);
+      }),
+    ),
+  );
+  it.effect(scenarios.hostedAppLinkCreatorDemotionDuringRefresh.title, (context) =>
+    withHostedCase(
+      context,
+      Effect.gen(function* () {
+        const http = yield* HttpClient.HttpClient;
+        const issuer = yield* oauthSetupIssuer;
+        const telemetry = yield* Telemetry;
+        // The initial access token is already inside the renewal window. Settlement below lets
+        // the background source finish; the next explicit call still needs a refresh.
+        yield* issuer.configure({ refreshTokens: true, expiresIn: 20 });
+        const oauthSource = `import { defineApp, defineProvider, oauth2, query, object, router } from "apps";
+const service = defineProvider({ name: "Reuse refresh fixture", auth: { oauth: oauth2({ discover: ${JSON.stringify(`${issuer.origin}/mcp`)} }) } });
+export default defineApp({ app: { accounts: { service } } }, async ({ app }) => ({
+  tools: router({ who: query({ input: object({}) }, async () => ({ id: app.accounts.service.id })) }),
+}));`;
+        const files = [{ path: "index.ts", content: oauthSource }];
+        const fixture = yield* appLinksFixture(files);
+        const { api, actors, prefix, start, path, ids } = fixture;
+        const connection = yield* okBody(Resource, yield* start(actors.owner, "app", "service"));
+        const { authorizationUrl } = yield* okBody(
+          SignIn,
+          yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/connections/${connection.id}/oauth/start`,
+            { method: "oauth", label: "Reuse refresh fixture" },
+          ),
+        );
+        const callbackUrl = yield* Effect.scoped(
+          Effect.gen(function* () {
+            const consent = yield* HttpClient.withScope(http).get(authorizationUrl);
+            expect(consent.status).toBe(302);
+            const location = consent.headers.location;
+            if (location === undefined) return yield* Effect.die("No OAuth callback");
+            return location;
+          }),
+        ).pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }));
+        const account = yield* okBody(
+          Resource,
+          yield* api.request(
+            actors.owner,
+            "POST",
+            `${prefix}/connections/${connection.id}/oauth/complete`,
+            { callbackUrl },
+          ),
+        );
+        yield* fixture.saved(actors.owner, account.id);
+        const created = yield* okBody(
+          Resource,
+          yield* api.request(actors.admin, "POST", `${prefix}/apps/deploy`, {
+            name: "Demotion during refresh",
+            files: [...files, appsManifest],
+          }),
+        );
+        const target = `${prefix}/apps/${created.id}`;
+        yield* fixture.adopt(target);
+        yield* linkAccount(actors.admin, target, "service", account.id, "app");
+        for (const appPath of [path, target])
+          yield* settleWebhookSources(actors.owner, appPath, (sources) =>
+            sources.some((source) => source.account === account.id && source.status !== "pending"),
+          );
+
+        const { members } = yield* okBody(
+          Memberships,
+          yield* api.request(
+            actors.owner,
+            "GET",
+            `/api/auth/organization/list-members?organizationId=${actors.organization.id}`,
+          ),
+        );
+        const membership = members.find(({ userId }) => userId === ids.admin);
+        if (membership === undefined) return yield* Effect.die("The creator has no membership");
+        const role = (role: "admin" | "member") =>
+          Effect.flatMap(
+            api.request(actors.owner, "POST", "/api/auth/organization/update-member-role", {
+              organizationId: actors.organization.id,
+              memberId: membership.id,
+              role,
+            }),
+            ok,
+          );
+        const who = (traceparent?: string) =>
+          api.request(
+            actors.admin,
+            "POST",
+            `${target}/tools/call`,
+            { tool: "who", kind: "query", input: {} },
+            traceparent === undefined ? undefined : { traceparent },
+          );
+        const trace = traced();
+        yield* Effect.addFinalizer(() =>
+          issuer.configure({ hold: null }).pipe(Effect.andThen(issuer.release)),
+        );
+        yield* issuer.configure({ hold: "refresh-issued", refreshedExpiresIn: 3600 });
+        const before = yield* issuer.metrics;
+        const pending = yield* Effect.forkChild(who(trace.traceparent));
+        yield* issuer.metrics.pipe(
+          Effect.filterOrFail(
+            (metrics) => metrics.held > before.held,
+            () => new Error("The tool call never reached the issuer's refresh gate"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("100 millis"), times: 100 }),
+        );
+        yield* role("member");
+        yield* issuer.configure({ hold: null });
+        yield* issuer.release;
+        const declined = yield* Fiber.join(pending);
+        expect(declined.status).toBe(409);
+        yield* refused(declined, 409, "AppLinkCreatorNotAuthorized");
+        expect((yield* issuer.metrics).refreshesIssued).toBe(before.refreshesIssued + 1);
+
+        const action = "app_account.use_refused";
+        const logs = yield* telemetry.logs(trace.traceId).pipe(
+          Effect.filterOrFail(
+            (logs) => logs.includes(action),
+            () => new Error("The post-refresh refusal audit has not reached the collector"),
+          ),
+          Effect.retry({ schedule: Schedule.spaced("500 millis"), times: 40 }),
+        );
+        expect(auditOf(logs, action)).toEqual({
+          "audit.action": action,
+          "audit.outcome": "failure",
+          "audit.target.kind": "account",
+          "audit.target.id": account.id,
+          "audit.app": created.id,
+          "audit.requirement": "service",
+          "audit.reason": "creator_not_admin_or_owner",
+        });
+        expect(/synthetic-(access|refresh)/u.test(logs)).toBe(false);
+        yield* role("admin");
+        expect((yield* okBody(Resource, yield* who())).id).toBe(account.id);
       }),
     ),
   );
