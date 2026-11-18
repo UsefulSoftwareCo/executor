@@ -55,6 +55,15 @@ import { listTools, searchableTools, searchTools } from "./tools.ts";
 import { listAppSkills, readAppSkill } from "./skills.ts";
 
 /**
+ * The client that sent this request, as it describes itself. Protocol 2026-07-28 has no
+ * `initialize` and carries the client's info in every request's metadata; earlier versions give it
+ * once in `initialize`. The request context holds it either way. Self-reported, so attribution only.
+ */
+const requestClient = Effect.map(Effect.serviceOption(McpSchema.McpRequestContext), (request) =>
+  Option.flatMapNullishOr(request, (context) => context.clientInfo),
+);
+
+/**
  * Bind one request's verified membership and lazy SDK. The host must authenticate
  * and check membership before supplying CurrentOrganization, on every request.
  * Do not retain this adapter in an MCP session or a process-global layer.
@@ -102,7 +111,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
   ) =>
     Effect.gen(function* () {
       const current = yield* CurrentUsage;
-      const client = yield* Effect.serviceOption(McpSchema.McpServerClient);
+      const client = yield* requestClient;
       const properties = { area: "mcp", operation };
       return yield* (
         kind === "read"
@@ -112,9 +121,7 @@ export const hostedMcpBackend = Effect.gen(function* () {
         Effect.provideService(CurrentUsage, {
           ...current,
           source: "mcp",
-          ...(Option.isSome(client)
-            ? { client_name: client.value.clientInfo.name.slice(0, 100) }
-            : {}),
+          ...(Option.isSome(client) ? { client_name: client.value.name.slice(0, 100) } : {}),
         }),
         Effect.provideContext(context),
       );

@@ -3360,6 +3360,17 @@ export const scenarios = plan({
       local: na("Local does not export product analytics or replay."),
     },
   },
+  productAnalyticsMcpClient: {
+    fixtures: "actors",
+    file: "product-analytics.spec.ts",
+    title:
+      "Cloud product events name the MCP client, sent with each request on 2026-07-28 or once at initialize on earlier versions",
+    targets: {
+      cloud: managedCloud,
+      "self-host": na("Self-host does not export product analytics."),
+      local: na("Local does not export product analytics."),
+    },
+  },
   supportDialog: {
     fixtures: "actors",
     file: "support-dialog.spec.ts",
