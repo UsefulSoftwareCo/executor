@@ -1268,51 +1268,19 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
             ],
           },
         ];
-        for (const each of directives) {
-          const run = yield* select({ body: block("none"), ready: true, ...each });
-          expect(run.exitCode, JSON.stringify(each)).toBe(1);
+        // Each is its own select process; they share nothing, so they run four at a time.
+        const runs = yield* Effect.forEach(
+          directives,
+          (each) => select({ body: block("none"), ready: true, ...each }),
+          { concurrency: 4 },
+        );
+        for (const [index, run] of runs.entries()) {
+          expect(run.exitCode, JSON.stringify(directives[index])).toBe(1);
           expect(run.log).toContain(
             "GitHub starts no push workflow for a commit whose message holds that",
           );
           expect(run.outputs).toEqual({});
         }
-        // The failure says what to change.
-        const backticks = yield* select({
-          body: block("none"),
-          commits: ["Explain the lock refresh\n\nIt pushes with `[skip ci]` so CI does not run."],
-        });
-        expect(backticks.log).toContain(
-          "GitHub honours [skip ci] anywhere in a message, in a sentence or inside backticks too, so remove it or write it without its brackets",
-        );
-        const trailer = yield* select({
-          body: block("none"),
-          commits: ["Change something\n\nskip-checks: true"],
-        });
-        expect(trailer.log).toContain('holds "skip-checks: true"');
-        expect(trailer.log).toContain(
-          "GitHub honours skip-checks: true as the last line of a message, the end of its trailers, so remove that line",
-        );
-        const named = yield* select({
-          body: block("none"),
-          commits: ["Change something", "Tidy up [CI SKIP]"],
-        });
-        expect(named.log).toContain('Commit 111111111 of pull request 1 holds "[CI SKIP]".');
-        // A lower stack layer is squashed into its own commit too.
-        const skipLayer = yield* select({
-          body: block("skip"),
-          stackedAbove: "7",
-          commits: ["Change something [skip ci]"],
-        });
-        expect(skipLayer.exitCode).toBe(1);
-        expect(skipLayer.outputs).toEqual({});
-        // Words that only mention skipping are not a directive.
-        const plain = yield* select({
-          body: block("none"),
-          ready: true,
-          title: "Skip CI for documentation",
-          commits: ["Explain skip-checks: true in a sentence", "Refresh bun.lock skip ci"],
-        });
-        expect(plain.exitCode, plain.log).toBe(0);
         // skip-checks: true skips only as the final trailer, so prose about it does not fail:
         // on a line of its own with more prose after it, in backticks mid-sentence, or with a
         // trailer after it, since GitHub's page says it must come last.
@@ -1321,12 +1289,57 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           "Explain the beta push\n\nA `skip-checks: true` trailer would also stop CI.",
           "Change something\n\nskip-checks: true\nCo-authored-by: Someone <someone@example.com>",
         ];
-        for (const message of prose) {
-          const run = yield* select({ body: block("none"), ready: true, commits: [message] });
-          expect(run.exitCode, `${message}\n${run.log}`).toBe(0);
-        }
+        const [[backticks, trailer, named, skipLayer, plain], proseRuns] = yield* Effect.all(
+          [
+            Effect.all(
+              [
+                // The failure says what to change.
+                select({
+                  body: block("none"),
+                  commits: [
+                    "Explain the lock refresh\n\nIt pushes with `[skip ci]` so CI does not run.",
+                  ],
+                }),
+                select({ body: block("none"), commits: ["Change something\n\nskip-checks: true"] }),
+                select({ body: block("none"), commits: ["Change something", "Tidy up [CI SKIP]"] }),
+                // A lower stack layer is squashed into its own commit too.
+                select({
+                  body: block("skip"),
+                  stackedAbove: "7",
+                  commits: ["Change something [skip ci]"],
+                }),
+                // Words that only mention skipping are not a directive.
+                select({
+                  body: block("none"),
+                  ready: true,
+                  title: "Skip CI for documentation",
+                  commits: ["Explain skip-checks: true in a sentence", "Refresh bun.lock skip ci"],
+                }),
+              ],
+              { concurrency: 2 },
+            ),
+            Effect.forEach(
+              prose,
+              (message) => select({ body: block("none"), ready: true, commits: [message] }),
+              { concurrency: 2 },
+            ),
+          ],
+          { concurrency: 2 },
+        );
+        expect(backticks.log).toContain(
+          "GitHub honours [skip ci] anywhere in a message, in a sentence or inside backticks too, so remove it or write it without its brackets",
+        );
+        expect(trailer.log).toContain('holds "skip-checks: true"');
+        expect(trailer.log).toContain(
+          "GitHub honours skip-checks: true as the last line of a message, the end of its trailers, so remove that line",
+        );
+        expect(named.log).toContain('Commit 111111111 of pull request 1 holds "[CI SKIP]".');
+        expect(skipLayer.exitCode).toBe(1);
+        expect(skipLayer.outputs).toEqual({});
+        expect(plain.exitCode, plain.log).toBe(0);
+        for (const [index, run] of proseRuns.entries())
+          expect(run.exitCode, `${prose[index]}\n${run.log}`).toBe(0);
       }),
-    heavyCaseTimeout,
   );
 
   it.effect(
@@ -1338,47 +1351,63 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
           expect(run.exitCode).toBe(1);
           expect(run.outputs).toEqual({});
         };
-        // An HTTP error while reading the title is not retried and fails, even with the directive
-        // unread in a commit that the other read would have found.
-        const title = yield* select({
-          ...clean,
-          commits: ["Change something [skip ci]"],
-          failures: { pull: ["gh: Server Error (HTTP 502)"] },
-        });
+        const dropped =
+          'Get "https://api.github.com/repos/owner/repository/pulls/1": dial tcp: i/o timeout';
+        // GitHub lists at most 250 commits: a 252-commit pull request with the directive in commit
+        // 251 and a clean head fails, without reading a commit, and says to squash or split it.
+        const many = Array.from({ length: 252 }, (_, index) =>
+          index === 250 ? "Tidy [skip ci]" : `Change part ${index + 1}`,
+        );
+        // Each is its own select process; they share nothing, so they run four at a time.
+        const runs = yield* Effect.all(
+          {
+            // An HTTP error while reading the title is not retried and fails, even with the
+            // directive unread in a commit that the other read would have found.
+            title: select({
+              ...clean,
+              commits: ["Change something [skip ci]"],
+              failures: { pull: ["gh: Server Error (HTTP 502)"] },
+            }),
+            commits: select({ ...clean, failures: { commits: ["gh: Bad Gateway (HTTP 502)"] } }),
+            // No answer at all is retried twice: a third try that succeeds passes, three that fail
+            // do not.
+            outlasted: select({
+              ...clean,
+              failures: { pull: [dropped, dropped], commits: [dropped] },
+            }),
+            lost: select({ ...clean, failures: { pull: [dropped, dropped, dropped] } }),
+            // An answer that is not the title and count fails too.
+            answer: select({ ...clean, pullAnswer: '{"title":"Change something"}\n' }),
+            capped: select({ ...clean, commits: many }),
+            // Fewer commits read than the pull request has, as when a push lands between the reads.
+            short: select({ ...clean, commits: ["One", "Two"], commitCount: 3 }),
+            // 250 commits, every one read and clean, pass.
+            full: select({
+              ...clean,
+              commits: Array.from({ length: 250 }, (_, index) => `Change part ${index + 1}`),
+            }),
+            // A push to main is no pull request and reads none of this: the beta's and the lock
+            // repair's direct pushes skip CI on purpose.
+            push: select({ commits: ["Release 2.0.0-beta.9 [skip ci]"] }),
+          },
+          { concurrency: 4 },
+        );
+        const { title, commits, outlasted, lost, capped, short, full, push } = runs;
         fails(title);
         expect(title.reads.pull).toBe(1);
         expect(title.log).toContain(
           "Could not read the title and commit count of pull request 1 (gh api repos/owner/repository/pulls/1",
         );
         expect(title.log).toContain("select fails rather than pass unchecked");
-        const commits = yield* select({
-          ...clean,
-          failures: { commits: ["gh: Bad Gateway (HTTP 502)"] },
-        });
         fails(commits);
         expect(commits.reads.commits).toBe(1);
         expect(commits.log).toContain("Could not read the commit messages of pull request 1");
-        // No answer at all is retried twice: a third try that succeeds passes, three that fail do not.
-        const dropped =
-          'Get "https://api.github.com/repos/owner/repository/pulls/1": dial tcp: i/o timeout';
-        const outlasted = yield* select({
-          ...clean,
-          failures: { pull: [dropped, dropped], commits: [dropped] },
-        });
         expect(outlasted.exitCode, outlasted.log).toBe(0);
         expect(outlasted.reads).toEqual({ pull: 3, commits: 2 });
-        const lost = yield* select({ ...clean, failures: { pull: [dropped, dropped, dropped] } });
         fails(lost);
         expect(lost.reads.pull).toBe(3);
         expect(lost.log).toContain("dial tcp: i/o timeout");
-        // An answer that is not the title and count fails too.
-        fails(yield* select({ ...clean, pullAnswer: '{"title":"Change something"}\n' }));
-        // GitHub lists at most 250 commits: a 252-commit pull request with the directive in commit
-        // 251 and a clean head fails, without reading a commit, and says to squash or split it.
-        const many = Array.from({ length: 252 }, (_, index) =>
-          index === 250 ? "Tidy [skip ci]" : `Change part ${index + 1}`,
-        );
-        const capped = yield* select({ ...clean, commits: many });
+        fails(runs.answer);
         fails(capped);
         expect(capped.reads.commits).toBe(0);
         expect(capped.log).toContain(
@@ -1387,22 +1416,11 @@ layer(NodeServices.layer)("CI E2E selection", (it) => {
         expect(capped.log).toContain(
           "Squash its commits into 250 or fewer (git rebase, then a force push), or split it into a stack of smaller pull requests",
         );
-        // Fewer commits read than the pull request has, as when a push lands between the reads.
-        const short = yield* select({ ...clean, commits: ["One", "Two"], commitCount: 3 });
         fails(short);
         expect(short.log).toContain("read 2 of its 3 commits");
-        // 250 commits, every one read and clean, pass.
-        const full = yield* select({
-          ...clean,
-          commits: Array.from({ length: 250 }, (_, index) => `Change part ${index + 1}`),
-        });
         expect(full.exitCode, full.log).toBe(0);
-        // A push to main is no pull request and reads none of this: the beta's and the lock
-        // repair's direct pushes skip CI on purpose.
-        const push = yield* select({ commits: ["Release 2.0.0-beta.9 [skip ci]"] });
         expect(push.reads).toEqual({ pull: 0, commits: 0 });
       }),
-    heavyCaseTimeout,
   );
 
   it.effect("a name that is not a spec file in e2e/tests/ fails before any job is chosen", () =>
