@@ -18,6 +18,14 @@ import { scenarios } from "../test-plan.ts";
 
 /** How long `napOnce`'s first sleep waits; the case reads it to judge how that sleep ended. */
 const napOnceMillis = 50;
+/**
+ * How far ahead the paused, terminated and transient sleepUntils wait. Their faults fail the
+ * engine's answer after it waited, so the call must reach the engine before its time: one that
+ * arrives after it meets the engine's refusal of a time in the past instead, which ends the sleep
+ * (`sleep-until.ts`), and the fault never answers. The hop to the engine on a loaded runner has
+ * taken over 100 ms; this leaves it far more than that.
+ */
+const untilAheadMillis = 3000;
 
 /** Each workflow meets the fault the plan configures for its step names. */
 const files = [
@@ -82,7 +90,7 @@ const answered = (name) => async (ctx) => {
 /** As \`answered\`, for a sleepUntil whose engine waited until its time and then answered. */
 const answeredUntil = (name) => async (ctx) => {
   try {
-    await ctx.step.sleepUntil(name, Date.now() + 50);
+    await ctx.step.sleepUntil(name, Date.now() + ${untilAheadMillis});
     return { slept: true };
   } catch (error) {
     return { slept: false, reason: error?.reason ?? null, errorName: error?.errorName ?? null, message: error?.message ?? null };
