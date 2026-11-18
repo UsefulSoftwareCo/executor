@@ -74,7 +74,7 @@
     "format:check": "oxfmt --check .",
     "lint": "oxlint -c .oxlintrc.jsonc . --deny-warnings",
     "lint:fix": "oxlint -c .oxlintrc.jsonc --fix .",
-    "check": "node scripts/check-conflict-markers.ts && bun run patches:check && node scripts/check-engine-refusals.ts && bun run versions:check && bun run format:check && bun run lint && bun run typecheck && bun run apps:protocols && bun run apps:telemetry && bun run api:errors && bun run auth:rate-limit && node packages/apps/scripts/browser-scripts.mjs --check && node packages/app-templates/scripts/executor-intro.ts --check && node scripts/check-no-unit-tests.ts && node packages/sdk/scripts/check-storage-versions.ts && node scripts/check-local-data-steps.ts && node e2e/check-boundary.ts",
+    "check": "node scripts/check.ts",
     "e2e:prepare": "node scripts/e2e-prepare.ts",
     "e2e:runtime": "node scripts/build-test-runtime.ts",
     "e2e:apps": "node scripts/pack-test-apps.ts",
