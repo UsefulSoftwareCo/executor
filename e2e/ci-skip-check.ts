@@ -115,12 +115,16 @@ export interface RunSeen {
    */
   readonly contains?: boolean | undefined;
   /**
-   * How its `checks / check` and `checks / e2e` jobs ended (`success`, `failure`, ...), or
-   * undefined while either has not: read for a ready layer's check only.
+   * The state of its `checks / check` and `checks / e2e` jobs: how each ended (`success`,
+   * `failure`, `cancelled`, `skipped`, ...), its status while it has not (`queued`,
+   * `in_progress`, ...), `missing` when the run ended without it, or undefined while it is not
+   * listed yet: read for a ready layer's check only (`gateOutcome`).
    */
   readonly gates?:
     | { readonly check?: string | undefined; readonly e2e?: string | undefined }
     | undefined;
+  /** The run was cancelled as a whole: it counts only when no other run on the head is live. */
+  readonly cancelled?: boolean | undefined;
 }
 
 /** One open pull request of this repository whose base is this layer's branch. */
@@ -132,7 +136,10 @@ export interface UpperSeen {
    * ready proves nothing once it is a draft again, since a draft is not merged.
    */
   readonly draft: boolean;
-  /** Its CI runs on `head` that were not cancelled, newest first. */
+  /**
+   * Its CI runs on `head` that were not cancelled, newest first; or, when every run on it was
+   * cancelled, the newest, marked `cancelled`.
+   */
   readonly runs: ReadonlyArray<RunSeen>;
 }
 
@@ -159,7 +166,7 @@ export interface Lower {
  */
 export type Rule = "old" | "base" | "tested" | "gate";
 
-/** What one look says. */
+/** What one look says: pass, wait for a better answer, or fail now, since none can come. */
 export type Verdict =
   | {
       readonly _tag: "Pass";
@@ -174,9 +181,45 @@ export type Verdict =
       readonly bound: Bound;
       readonly why: string;
       readonly remedy?: string | undefined;
+    }
+  | {
+      readonly _tag: "Fail";
+      readonly why: string;
+      readonly remedy?: string | undefined;
     };
 
 const short = (sha: string) => sha.slice(0, 9);
+
+/** The job states that are not an outcome yet: the job may still pass. */
+const unfinished = new Set(["queued", "in_progress", "waiting", "pending", "requested"]);
+
+/**
+ * How a merge gate's required checks stand, failures first: one that ended any way but `success`
+ * (failed, cancelled, skipped, or missing from a run that has ended) decides the run, whatever the
+ * other is doing, since a run whose required check failed cannot pass. Only while nothing has
+ * failed and one has not ended is the run still testing.
+ */
+export const gateOutcome = (gates: {
+  readonly check?: string | undefined;
+  readonly e2e?: string | undefined;
+}) => {
+  const jobs = [
+    { name: "checks / check", state: gates.check },
+    { name: "checks / e2e", state: gates.e2e },
+  ];
+  const ended = (state: string | undefined): state is string =>
+    state !== undefined && !unfinished.has(state);
+  const failed = jobs.filter((job) => ended(job.state) && job.state !== "success");
+  if (failed.length > 0)
+    return {
+      _tag: "Failed" as const,
+      failed,
+      jobs,
+      running: jobs.filter((job) => !ended(job.state)),
+    };
+  if (jobs.every((job) => job.state === "success")) return { _tag: "Passed" as const };
+  return { _tag: "Testing" as const };
+};
 
 /** What one run's record says: it fits, or why not. */
 const judgeRecord = (
@@ -274,26 +317,44 @@ const judgeRecord = (
       remedy:
         record.gate === "draft" ? ready : `bring #${upper.pull} up to date with main and push it`,
     };
-  const { check, e2e } = run.gates ?? {};
-  if (check === "success" && e2e === "success")
+  // Failures first: a required check that has failed decides, even while the other runs.
+  const outcome = gateOutcome(run.gates ?? {});
+  if (outcome._tag === "Passed")
     return { _tag: "Pass", pull: upper.pull, run: run.url, oldFormat: false, rule: "gate" };
-  if (check === undefined || e2e === undefined)
+  if (outcome._tag === "Testing")
     return {
       _tag: "Wait",
       bound: "testing",
       why: `#${upper.pull}'s run on its head, ${run.url}, runs ${record.gate === "full" ? "the full suite" : "the narrowing table's selection"} for a merge and has not finished`,
     };
+  const { running } = outcome;
+  const states = (jobs: typeof outcome.jobs) =>
+    jobs.map((job) => `${job.name} ${job.state ?? "not listed yet"}`).join(" and ");
   return {
-    _tag: "Wait",
-    bound: "stale",
-    why: `#${upper.pull}'s run on its head, ${run.url}, ended with checks / check ${check} and checks / e2e ${e2e}`,
-    remedy: `fix #${upper.pull}, or ${rerun} if it failed on something else`,
+    _tag: "Fail",
+    why:
+      running.length === 0
+        ? `#${upper.pull}'s run on its head, ${run.url}, ended with ${states(outcome.jobs)}`
+        : `#${upper.pull}'s run on its head, ${run.url}, has failed: ${outcome.failed.map((job) => `${job.name} ended ${job.state}`).join(" and ")} while ${running.map((job) => `${job.name} is ${job.state ?? "not listed yet"}`).join(" and ")}, so it cannot pass`,
+    remedy: `fix #${upper.pull}, or ${running.length === 0 ? "" : "once that run has ended, "}${rerun} if it failed on something else`,
   };
 };
 
 /** What one pull request above says, from its runs on its current head. */
-const judgeUpper = (upper: UpperSeen, lower: Lower): Verdict => {
+const judgeUpper = (seen: UpperSeen, lower: Lower): Verdict => {
   const rerun = (run: RunSeen) => `run it again: gh run rerun ${run.id} --repo ${lower.repository}`;
+  // A run cancelled as a whole failed both required checks and runs no further. It is not judged
+  // by its record (it may have recorded and then stopped) and counts only when no other run on the
+  // head is live: then nothing on this head can pass until someone runs it again.
+  const live = seen.runs.filter((run) => run.cancelled !== true);
+  const cancelled = seen.runs.find((run) => run.cancelled === true);
+  if (live.length === 0 && cancelled !== undefined)
+    return {
+      _tag: "Fail",
+      why: `#${seen.pull}'s run on its head, ${cancelled.url}, was cancelled, and no other run on its head ${short(seen.head)} is live`,
+      remedy: `${rerun(cancelled)}, or push to #${seen.pull}`,
+    };
+  const upper = { ...seen, runs: live };
   // Any run on the current head whose record fits passes: it tested this layer's head against the
   // right bottom, whatever another run on the same head recorded. A stack push can start two runs
   // on the upper's head in the same second, one of them with the lower layer's previous head as
@@ -305,16 +366,67 @@ const judgeUpper = (upper: UpperSeen, lower: Lower): Verdict => {
     judged.find((verdict) => verdict._tag === "Pass" && !verdict.oldFormat) ??
     judged.find((verdict) => verdict._tag === "Pass");
   if (fits !== undefined) return fits;
+  // Then a fitting run still testing for a merge, with nothing required failed yet: its outcome
+  // decides, so the wait is the testing bound, whatever another run on the head shows (a run the
+  // head's newer run replaces, or a duplicate queued behind it). A full run can outlast the 15
+  // minutes of `selecting`.
+  const testing = judged.filter(
+    (verdict) => verdict._tag === "Wait" && verdict.bound === "testing",
+  );
+  const selecting = upper.runs.filter((run) => run.record === undefined && !run.selectDone);
+  if (testing.length > 0)
+    return {
+      _tag: "Wait",
+      bound: "testing",
+      why: [
+        ...selecting.map(
+          (run) => `#${upper.pull}'s run on its head, ${run.url}, has not chosen what it tests yet`,
+        ),
+        ...judged.flatMap((verdict) => (verdict._tag === "Pass" ? [] : [verdict.why])),
+      ].join("; "),
+    };
+  // Then a fitting run whose required checks have failed: it fails now, named, rather than waiting
+  // out a bound for its run to end. Before this, a failed check beside an unfinished e2e waited
+  // the testing bound (50 minutes) and was never named. A run on the same head still choosing
+  // does not hold it: queued behind the failed run (one concurrency group per head, ci.yml), it
+  // starts only once that run ends, and then tests in full, since only a pass is handed on
+  // (e2e/ci-repeat.ts). It may pass, but not within this wait's bound; it is named, so the author
+  // knows to run this layer again once it has.
+  const failed = judged.filter((verdict) => verdict._tag === "Fail");
+  if (failed.length > 0)
+    return {
+      _tag: "Fail",
+      why: [
+        ...failed.map((verdict) => verdict.why),
+        ...selecting.map(
+          (run) =>
+            `#${upper.pull}'s run ${run.url} on the same head has not chosen yet, and will test it again in full once that run ends`,
+        ),
+      ].join("; "),
+      remedy: failed.flatMap((verdict) => verdict.remedy ?? []).join(", or ") || undefined,
+    };
   // While any run on the head is still choosing (a duplicate waiting its turn behind the other,
   // a re-run), it may yet fit: wait for it, whatever the others recorded (#4575, 16 Nov: the
   // fitting run was the queued duplicate, and the other had the lower layer's previous head).
-  const selecting = upper.runs.filter((run) => run.record === undefined && !run.selectDone);
-  if (selecting.length > 0)
+  if (selecting.length > 0) {
+    // What the other runs on the head say is kept, so it is named if the wait runs out, not only
+    // the wait (on 18 Nov #4989 failed after 905 s saying only that #4990's duplicate had not
+    // chosen). They are only stale here, shorter than choosing: testing and failed were decided
+    // above.
+    const others = judged.filter((verdict) => verdict._tag === "Wait");
+    const remedies = others.flatMap((verdict) =>
+      verdict.remedy === undefined ? [] : [verdict.remedy],
+    );
     return {
       _tag: "Wait",
       bound: selecting.some((run) => run.waitingAbove) ? "chained" : "selecting",
-      why: `#${upper.pull}'s run on its head, ${selecting[0]!.url}, has not chosen what it tests yet`,
+      why: [
+        `#${upper.pull}'s run on its head, ${selecting[0]!.url}, has not chosen what it tests yet`,
+        ...others.map((verdict) => verdict.why),
+      ].join("; "),
+      ...(remedies.length > 0 && { remedy: remedies.join(", or ") }),
     };
+  }
   // Otherwise the newest run says why not.
   const newest = upper.runs[0];
   if (newest?.record !== undefined) return judgeRecord(upper, newest, newest.record, lower);
@@ -335,8 +447,9 @@ const judgeUpper = (upper: UpperSeen, lower: Lower): Verdict => {
 
 /**
  * What one look says for all the pull requests above: any one computed with this layer passes.
- * Otherwise the wait is the longest any of them asks for. A look that failed keeps the previous
- * look's bound: not reading is not an answer.
+ * Otherwise the wait is the longest any of them asks for, since another pull request above may
+ * still pass it; only when every one of them has failed does it fail now. A look that failed keeps
+ * the previous look's bound: not reading is not an answer.
  */
 export const judge = (observation: Observation, lower: Lower, previous?: Verdict): Verdict => {
   if (observation._tag === "Unread")
@@ -357,17 +470,17 @@ export const judge = (observation: Observation, lower: Lower, previous?: Verdict
     verdicts.find((verdict) => verdict._tag === "Pass" && !verdict.oldFormat) ??
     verdicts.find((verdict) => verdict._tag === "Pass");
   if (passed !== undefined) return passed;
-  const waits = verdicts.filter((verdict) => verdict._tag === "Wait");
-  const longest = waits.toSorted((a, b) => bounds[b.bound] - bounds[a.bound])[0]!;
-  return {
-    _tag: "Wait",
-    bound: longest.bound,
-    why: waits.map((verdict) => verdict.why).join("; "),
-    remedy:
-      waits
-        .flatMap((verdict) => (verdict.remedy === undefined ? [] : [verdict.remedy]))
-        .join(", or ") || undefined,
-  };
+  const unpassed = verdicts.filter((verdict) => verdict._tag !== "Pass");
+  const why = unpassed.map((verdict) => verdict.why).join("; ");
+  const remedy =
+    unpassed
+      .flatMap((verdict) => (verdict.remedy === undefined ? [] : [verdict.remedy]))
+      .join(", or ") || undefined;
+  const waits = unpassed.filter((verdict) => verdict._tag === "Wait");
+  const longest = waits.toSorted((a, b) => bounds[b.bound] - bounds[a.bound])[0];
+  return longest === undefined
+    ? { _tag: "Fail", why, remedy }
+    : { _tag: "Wait", bound: longest.bound, why, remedy };
 };
 
 /** The decision, once a look passes or its wait is over. */
@@ -412,7 +525,8 @@ export const next = (
           : `The layer above was computed with this layer in its chain.`,
       },
     };
-  if (elapsed < bounds[verdict.bound])
+  // A failure decides at once; a wait polls until its bound.
+  if (verdict._tag === "Wait" && elapsed < bounds[verdict.bound])
     return { _tag: "Poll", after: Math.min(pollAfter(polls), bounds[verdict.bound] - elapsed) };
   const own = `gh run rerun ${lower.runId} --repo ${lower.repository}`;
   return {
