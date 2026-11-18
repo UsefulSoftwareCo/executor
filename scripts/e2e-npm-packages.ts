@@ -73,13 +73,35 @@ const fail = (message: string): never => {
   process.exit(1);
 };
 
-const get = async (url: string, accept?: string) => {
-  const response = await fetch(url, {
-    signal: AbortSignal.timeout(timeout),
-    ...(accept === undefined ? {} : { headers: { Accept: accept } }),
-  });
-  if (!response.ok) fail(`${url} returned ${response.status}`);
-  return response;
+/** Attempts at one request: a CI job's e2e:prepare failed when one archive took over a minute. */
+const attempts = 3;
+
+/**
+ * One request to the registry, with its body read. A request that times out, loses its
+ * connection or gets a 429 or 5xx answer is sent again, twice at most, after 2 and then 8 seconds:
+ * this is setup, not a scenario, and every archive is still checked against its locked integrity.
+ */
+const get = async (url: string, accept?: string): Promise<Uint8Array> => {
+  for (let attempt = 1; ; attempt++) {
+    const failure = await fetch(url, {
+      signal: AbortSignal.timeout(timeout),
+      ...(accept === undefined ? {} : { headers: { Accept: accept } }),
+    })
+      .then(async (response) =>
+        response.ok
+          ? new Uint8Array(await response.arrayBuffer())
+          : response.status === 429 || response.status >= 500
+            ? `${url} returned ${response.status}`
+            : fail(`${url} returned ${response.status}`),
+      )
+      .catch(
+        (error: unknown) => `${url}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    if (typeof failure !== "string") return failure;
+    if (attempt === attempts) return fail(`${failure}, after ${attempts} attempts`);
+    console.warn(`${failure}; sending it again (attempt ${attempt + 1} of ${attempts}).`);
+    await new Promise((resolve) => setTimeout(resolve, attempt === 1 ? 2_000 : 8_000));
+  }
 };
 
 /**
@@ -110,7 +132,7 @@ const update = async () => {
     if (known !== undefined) return known;
     const url = `${upstream}/${name.startsWith("@") ? `@${encodeURIComponent(name.slice(1))}` : name}`;
     const loaded = get(url, "application/json").then(
-      (response) => response.json() as Promise<Packument>,
+      (bytes) => JSON.parse(new TextDecoder().decode(bytes)) as Packument,
     );
     packuments.set(name, loaded);
     return loaded;
@@ -199,7 +221,7 @@ const download = async () => {
   await Promise.all(
     Array.from({ length: 8 }, async () => {
       for (let next = queue.shift(); next !== undefined; next = queue.shift()) {
-        const bytes = new Uint8Array(await (await get(next.tarball)).arrayBuffer());
+        const bytes = await get(next.tarball);
         if (integrityOf(bytes) !== next.integrity)
           fail(`${next.tarball} does not match its locked integrity`);
         fs.writeFileSync(next.file, bytes);
